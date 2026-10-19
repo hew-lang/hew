@@ -31,7 +31,7 @@ supervisor App {
     child escalated: Worker { action: 1 };
 }
 
-fn expect_spent(child: ChildRef<Worker>) {
+fn expect_spent(child: Worker) {
     match child.ping() {
         .Err(_) => {}
         .Ok(_) => panic("child unexpectedly restarted"),

@@ -53,20 +53,6 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
                 visit_expr(arg, out);
             }
         }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
-            visit_expr(receiver, out);
-            visit_expr(msg, out);
-        }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            visit_expr(receiver, out);
-            visit_expr(msg, out);
-            visit_expr(timeout_ms, out);
-        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }

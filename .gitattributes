@@ -25,6 +25,8 @@
 /wasm-capability-manifest.toml text eol=lf
 /hew-types/src/wasm_capabilities_generated.rs text eol=lf
 /examples/playground/wasm-capabilities.json text eol=lf
+# The native Unicode generator compares this checked-in table byte-for-byte.
+/hew-sandbox-vm/src/interpreter/unicode-data.ts text eol=lf
 
 # File-read fixtures include empty, NUL and invalid UTF-8 byte sequences.
 /tests/core-acceptance/fixtures/file-resources/*.bin -text

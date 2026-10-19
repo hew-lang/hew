@@ -34,13 +34,15 @@ actor Sink {
         let _ = inbox.take(tagged("two"));
         match inbox.take(tagged("three")) {
             .Ok(_) => println("UNEXPECTED_ACCEPT"),
-            .Err(rejected) => match rejected.message.retry() {
+            .Err(ActorError.Rejected(rejected)) => match rejected.message.retry() {
                 .Ok(_) => println("UNEXPECTED_RETRY_ACCEPT"),
-                .Err(again) => match again.message.to(backup) {
+                .Err(ActorError.Rejected(again)) => match again.message.to(backup) {
                     .Ok(_) => println("readdressed"),
-                    .Err(_) => println("READDRESS_FAILED"),
+                    .Err(_) => panic("readdressing failed"),
                 }
+                .Err(_) => panic("retry did not return a rejected request"),
             }
+            .Err(_) => panic("submission did not return a rejected request"),
         }
         0
     }

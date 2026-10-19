@@ -1,0 +1,52 @@
+import "confined_service_support/component.hew";
+
+type SafeService {
+}
+
+impl Service for SafeService {
+    fn send(self, value: string) {}
+}
+
+type StringCodec {
+}
+
+impl Codec<string> for StringCodec {
+    type Encoded = string;
+    fn encode(self, value: string) -> string {
+        value
+    }
+}
+
+fn discard<S: Service, C>(consume service: S, consume codec: C) {
+    let held = Delivery<S, C> { service: service, codec: codec };
+}
+
+type BytesCodec {
+}
+
+impl Codec<i64> for BytesCodec {
+    type Encoded = bytes;
+
+    fn encode(self, value: i64) -> bytes {
+        b"wrong encoding"
+    }
+}
+
+fn main() {
+    discard(SafeService {  }, StringCodec {  });
+    discard(SafeService {  }, BytesCodec {  });
+    let _ = inherited_value(WrongValue {});
+}
+
+type WrongValue {
+}
+
+impl WrongValue {
+    fn take(self, value: string) -> string {
+        value
+    }
+
+    fn tag(self) -> i64 {
+        0
+    }
+}

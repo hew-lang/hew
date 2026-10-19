@@ -1,0 +1,367 @@
+import std.encoding.utf8;
+
+import std.stream;
+
+#[resource]
+type TaggedCodec {
+    closed: Sink<i64>;
+    no_progress: bool;
+}
+
+impl TaggedCodec {
+    fn close(consume self) {
+        self.closed.send(1).expect("codec closes once");
+    }
+}
+
+impl stream.Codec<string> for TaggedCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<string>, stream.CodecError> {
+        sleep(1ms);
+        if buf.is_empty() {
+            return .Ok(stream.Decoded.Incomplete(buf));
+        }
+        if self.no_progress {
+            return .Ok(stream.Decoded.Frame("stuck", buf));
+        }
+        if buf[0] != 165 {
+            return .Err(stream.CodecError.Malformed("bad tag"));
+        }
+        if buf.len() < 2 {
+            return .Ok(stream.Decoded.Incomplete(buf));
+        }
+        let length = buf[1] as i64;
+        if buf.len() < 2 + length {
+            return .Ok(stream.Decoded.Incomplete(buf));
+        }
+        match utf8.decode(buf[2 .. 2 + length]) {
+            .Ok(text) => .Ok(stream.Decoded.Frame(text, buf[2 + length .. buf.len()])),
+            .Err(error) => .Err(stream.CodecError.Malformed(to_string(error))),
+        }
+    }
+
+    fn encode(self, item: string) -> bytes {
+        let payload = item.to_bytes();
+        var out: bytes = [165, payload.len() as u8];
+        out.append(payload);
+        out
+    }
+}
+
+#[resource]
+type FrameItem {
+    value: i64;
+    closed: Sink<i64>;
+}
+
+impl FrameItem {
+    fn close(consume self) {
+        self.closed.send(1).expect("item closes once");
+    }
+}
+
+type ItemCodec {
+}
+
+impl stream.Codec<FrameItem> for ItemCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<FrameItem>, stream.CodecError> {
+        .Ok(stream.Decoded.Incomplete(buf))
+    }
+
+    fn encode(self, item: FrameItem) -> bytes {
+        [item.value as u8]
+    }
+}
+
+#[resource]
+type ComputingCodec {
+    closed: Sink<i64>;
+    started: Sink<i64>;
+}
+
+impl ComputingCodec {
+    fn close(consume self) {
+        self.closed.send(2).expect("computing codec closes once");
+    }
+}
+
+impl stream.Codec<FrameItem> for ComputingCodec {
+    fn decode(self, buf: bytes) -> Result<stream.Decoded<FrameItem>, stream.CodecError> {
+        .Ok(stream.Decoded.Incomplete(buf))
+    }
+
+    fn encode(self, item: FrameItem) -> bytes {
+        var count = item.value;
+        if count < 0 {
+            panic("encoder failed");
+        }
+        self.started.try_send(1).expect("encoder body entered");
+        loop {
+            count = count.wrapping_add(1);
+        }
+    }
+}
+
+fn assert_closed(consume audit: Stream<i64>) {
+    assert(audit.recv() == .Some(1));
+    assert(audit.recv().is_none());
+}
+
+fn chunk_boundaries() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(4).expect("bytes");
+    sink.send([165]).expect("split header");
+    sink.send([3, 97]).expect("split payload");
+    sink.send([98, 99, 165, 2, 120, 121]).expect("two frames in one chunk");
+    sink.finish();
+    let finished = sink.clone();
+    match finished.try_send([0]) {
+        .Err(SendError.Closed) => {}
+        _ => panic("a cloned finished sink stays finished"),
+    }
+    finished.close();
+    sink.close();
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(TaggedCodec { closed, no_progress: false });
+    assert(frames.recv().expect("first").expect("decode") == "abc");
+    assert(frames.recv().expect("second").expect("decode") == "xy");
+    assert(frames.recv().is_none());
+    assert_closed(audit);
+    frames.close();
+}
+
+fn terminal_error(data: bytes, no_progress: bool, detail: string) {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    sink.send(data).expect("malformed input");
+    sink.close();
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(TaggedCodec { closed, no_progress });
+    match frames.recv().expect("one terminal error") {
+        .Err(error) => match error {
+            stream.CodecError.Malformed(message) => assert(message == detail),
+        }
+        _ => panic("malformed input must be a typed error"),
+    }
+    assert_closed(audit);
+    assert(frames.recv().is_none());
+    frames.close();
+}
+
+fn pending_from_caller(consume input: Stream<bytes>, consume closed: Sink<i64>) -> Stream<Result<string, stream.CodecError>> {
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(TaggedCodec { closed, no_progress: false });
+    assert(frames.try_recv().is_none());
+    frames
+}
+
+fn early_close() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let frames = pending_from_caller(input, closed);
+    frames.close();
+    assert_closed(audit);
+    match sink.try_send([165]) {
+        .Err(SendError.Closed) => {}
+        _ => panic("early close must retire the underlying input"),
+    }
+    sink.close();
+}
+
+fn wait_for_frame(consume frames: Stream<Result<string, stream.CodecError>>, consume started: Sink<i64>) {
+    started.send(1).expect("started");
+    frames.recv();
+    panic("the empty input must wait for cancellation");
+}
+
+fn cancellation() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let (started, ready): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("started");
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(TaggedCodec { closed, no_progress: false });
+    scope within 50ms {
+        let task = fork wait_for_frame(frames, started);
+        ready.recv().expect("child owns adapter");
+        await task;
+    } handle failure {
+        match failure {
+            .Deadline { message } => {}
+            .Fault { message } => panic(message),
+        }
+    };
+    assert_closed(audit);
+    match sink.try_send([165]) {
+        .Err(SendError.Closed) => {}
+        _ => panic("cancelled receive must release the underlying input"),
+    }
+    sink.close();
+}
+
+fn cloned_encoder() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let encoded: Sink<string> = sink.framed(TaggedCodec { closed, no_progress: false });
+    let sibling = encoded.clone();
+    encoded.send("abc").expect("first frame");
+    match sibling.try_send("xy") {
+        .Err(SendError.Full) => {}
+        _ => panic("bounded output must refuse before accepting the item"),
+    }
+    assert(input.recv() == .Some([165, 3, 97, 98, 99]));
+    sibling.try_send("xy").expect("second frame");
+    encoded.finish();
+    let finished = encoded.clone();
+    match finished.try_send("closed") {
+        .Err(SendError.Closed) => {}
+        _ => panic("a cloned finished encoder stays finished"),
+    }
+    finished.close();
+    encoded.close();
+    assert(audit.try_recv().is_none());
+    assert(input.recv() == .Some([165, 2, 120, 121]));
+    sibling.finish();
+    assert(input.recv().is_none());
+    sibling.close();
+    assert_closed(audit);
+    input.close();
+}
+
+fn looping_encoder() {
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let framed: Sink<bytes> = sink.framed(stream.Slip { max: 6000 });
+    framed.try_send([192, 219, 1]).expect("escaped frame");
+    assert(input.recv() == .Some([192, 219, 220, 219, 221, 1, 192]));
+    var payload = bytes.new();
+    for _ in 0..5000 {
+        payload.push(192);
+    }
+    framed.try_send(payload).expect("compute yields preserve try_send admission");
+    let escaped = input.recv().expect("large frame");
+    assert(escaped.len() == 10002);
+    assert(escaped[0] == 192);
+    for i in 0..5000 {
+        assert(escaped[i * 2 + 1] == 219);
+        assert(escaped[i * 2 + 2] == 220);
+    }
+    assert(escaped[10001] == 192);
+    framed.close();
+    assert(input.recv().is_none());
+    input.close();
+    let (nested_sink, nested_input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("nested bytes");
+    let inner: Sink<bytes> = nested_sink.framed(stream.Slip { max: 8 });
+    let outer: Sink<bytes> = inner.framed(stream.Slip { max: 8 });
+    outer.try_send([1]).expect("nested encoder admission");
+    assert(nested_input.recv() == .Some([192, 219, 220, 1, 219, 220, 192]));
+    outer.close();
+    assert(nested_input.recv().is_none());
+    nested_input.close();
+}
+
+fn encode_until_cancel(consume output: Sink<FrameItem>, consume item: FrameItem) -> i64 {
+    output.try_send(item).expect("nonblocking admission");
+    9
+}
+
+fn encoder_peer(consume ready: Stream<i64>, consume sibling: Sink<FrameItem>) -> i64 {
+    ready.recv().expect("encoder started");
+    sibling.finish();
+    7
+}
+
+fn encoder_cancellation(with_deadline: bool) {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(2).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let (ready, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ready");
+    let output: Sink<FrameItem> = sink.framed(ComputingCodec { closed: closed.clone(), started: ready });
+    let item = FrameItem { value: 0, closed: closed.clone() };
+    if with_deadline {
+        scope within 2ms {
+            output.send(item).expect("deadline encoding");
+            panic("the computing encoder must reach its deadline");
+        } handle failure {
+            match failure {
+                .Deadline { message: _ } => {}
+                .Fault { message } => panic(message),
+            }
+        };
+        output.close();
+        assert(started.recv() == .Some(1));
+        started.close();
+    } else {
+        let sibling = output.clone();
+        assert(await race [
+            encode_until_cancel(output, item),
+            encoder_peer(started, sibling),
+        ] == 7);
+    }
+    closed.close();
+    let first = audit.recv().expect("first owner");
+    let second = audit.recv().expect("second owner");
+    assert(first + second == 3);
+    assert(audit.recv().is_none());
+    audit.close();
+    assert(input.recv().is_none());
+    input.close();
+}
+
+fn encoded_item_cleanup() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(2).expect("audit");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("bytes");
+    let encoded: Sink<FrameItem> = sink.framed(ItemCodec {  });
+    encoded.send(FrameItem { value: 7, closed: closed.clone() }).expect("accepted item");
+    match encoded.try_send(FrameItem { value: 8, closed: closed.clone() }) {
+        .Err(SendError.Full) => {}
+        _ => panic("full sink must refuse the second item"),
+    }
+    closed.close();
+    assert(audit.recv() == .Some(1));
+    assert(audit.recv() == .Some(1));
+    assert(audit.recv().is_none());
+    audit.close();
+    assert(input.recv() == .Some([7]));
+    encoded.close();
+    assert(input.recv().is_none());
+    input.close();
+}
+
+fn encoder_fault() {
+    let (closed, audit): (Sink<i64>, Stream<i64>) = stream.pipe(2).expect("fault audit");
+    let (ready, started): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("fault ready");
+    let (sink, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(1).expect("fault bytes");
+    let output: Sink<FrameItem> = sink.framed(ComputingCodec { closed: closed.clone(), started: ready });
+    let sibling = output.clone();
+    scope {
+        output.try_send(FrameItem { value: -1, closed: closed.clone() }).expect("encoder fault");
+        panic("the encoder must fault");
+    } handle failure {
+        match failure {
+            .Fault { message } => assert(message.contains("encoder failed")),
+            .Deadline { message } => panic(message),
+        }
+    };
+    output.close();
+    assert(audit.recv() == .Some(1));
+    assert(audit.try_recv().is_none());
+    sibling.close();
+    assert(audit.recv() == .Some(2));
+    closed.close();
+    assert(audit.recv().is_none());
+    audit.close();
+    assert(input.recv().is_none());
+    input.close();
+    assert(started.recv().is_none());
+    started.close();
+}
+
+fn main() {
+    chunk_boundaries();
+    terminal_error([0], false, "bad tag");
+    terminal_error([165, 1, 255], false, "invalid UTF-8 at byte 0 (1-byte sequence)");
+    terminal_error([165, 2, 97], false, "incomplete frame at end of stream");
+    terminal_error([165], true, "decoder returned a frame without consuming bytes");
+    early_close();
+    cancellation();
+    cloned_encoder();
+    encoded_item_cleanup();
+    looping_encoder();
+    encoder_cancellation(false);
+    encoder_cancellation(true);
+    encoder_fault();
+    println("user codec frames");
+}

@@ -78,6 +78,23 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
+                if hew_types::actor_delivery::timer_view_parts(&lowered_receiver.ty.to_ty())
+                    .is_some()
+                {
+                    return (
+                        HirExprKind::ActorDelivery {
+                            receiver: Box::new(lowered_receiver),
+                            args: lowered_args,
+                            operation:
+                                hew_types::actor_delivery::ActorDeliveryCall::TimerSchedule {
+                                    method: handler,
+                                    policy,
+                                    evaluation_order,
+                                },
+                        },
+                        ty,
+                    );
+                }
                 // The call IS the send: a `receive fn` without a reply
                 // builds its addressed description and submits it at the
                 // same site. The description is an internal temporary.
@@ -89,7 +106,7 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 };
-                self.try_register_enum_instantiation_ty(&ty, &span);
+
                 let message = HirExpr {
                     node: self.ids.node(),
                     site: self.ids.site(),
@@ -593,22 +610,9 @@ impl LowerCtx {
                 ..
             })
         );
-        // Look up the checker's `resolved_calls` verdict unconditionally so any
-        // boundary-type conversion failure (TyPattern -> ResolvedTy mapping
-        // bugs, `expr_types` side-table inconsistency, missing impl registration)
-        // surfaces as a real `CheckerBoundaryViolation` diagnostic at the
-        // boundary — not deferred until a runtime user hits the regression.
-        // When a resolver verdict survives boundary conversion, we emit
-        // `HirExprKind::ResolvedImplCall` carrying `MethodTarget.symbol_name`
-        // verbatim; MIR/codegen consume that symbol via `Terminator::Call`.
-        //
-        // Precedence: when both `resolved_calls` and `method_call_rewrites`
-        // have an entry for the same key (the current dual-emit overlap for
-        // HashMap/HashSet during the C2→C3 transition), `resolved_calls`
-        // wins — it carries the structured `(ImplId, MethodTarget)` verdict.
-        // The legacy `method_call_rewrites` entries for that overlap are
-        // removed in the C3 commit that retires the per-V allowlists, so the
-        // precedence is exercised by construction once dual-emit retires.
+        // Runtime rewrites retain their typed ABI contract. Other checker-selected
+        // impl calls must survive result-type conversion before HIR emits them;
+        // an inconsistent verdict cannot choose a different dispatch path.
         if !runtime_rewrite_selected {
             if let Some(resolved) = self.resolved_calls.get(&key).cloned() {
                 // The checker's `expr_types` is the authoritative source for
@@ -647,65 +651,38 @@ impl LowerCtx {
                         None
                     }
                 };
-                #[allow(
-                    clippy::items_after_statements,
-                    reason = "the activation gate lives next to the guard it controls; \
-                          promoting to a module-level const would scatter the \
-                          deferral rationale across the file"
-                )]
-                const RESOLVED_IMPL_CALL_ACTIVATED: bool = true;
-                if RESOLVED_IMPL_CALL_ACTIVATED {
-                    // Only emit when the resolver verdict survived boundary
-                    // conversion; otherwise fall through to the legacy
-                    // `method_call_rewrites` arm below.
-                    if let Some(ret_ty) = ret_ty {
-                        if !self.ensure_executable_target(
-                            &resolved.target,
-                            "resolved impl call",
-                            &span,
-                        ) {
-                            return (
-                                HirExprKind::Unsupported(
-                                    "resolved impl call has no checker target".to_string(),
-                                ),
-                                ret_ty,
-                            );
-                        }
-                        // Register any enum instantiation that surfaces as the
-                        // return type (e.g. `HashMap::get -> Option<V>`,
-                        // `HashMap::remove -> Option<V>`). Without this the
-                        // module-level `enum_layouts` table lacks the matching
-                        // key for `Named { name: "Option", .. }`, MIR records
-                        // `ValueClass::Unknown → Strategy::UnknownBlocked` at
-                        // the call site, and the totality gate fires
-                        // (`DecisionMapTotal { offending_sites: [...] }`).
-                        // This mirrors the legacy `RewriteToFunction` arm
-                        // below — the new resolver-authority path inherits
-                        // the same boundary obligation.
-                        self.try_register_enum_instantiation(&span);
-                        let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                        let lowered_args = self.lower_positional_call_args(args, &span);
-                        return (
-                            HirExprKind::ResolvedImplCall {
-                                receiver: Box::new(lowered_receiver),
-                                target: resolved.target,
-                                impl_id: resolved.impl_id,
-                                method_name: resolved.method_name,
-                                target_symbol: resolved.method_target.symbol_name,
-                                target_family: resolved.method_target.family,
-                                type_args: resolved.type_args,
-                                args: lowered_args,
-                                ret_ty: ret_ty.clone(),
-                            },
-                            ret_ty,
-                        );
-                    }
+                let Some(ret_ty) = ret_ty else {
+                    return (
+                        HirExprKind::Unsupported(
+                            "resolved impl call has no checked result type".to_string(),
+                        ),
+                        ResolvedTy::Unit,
+                    );
+                };
+                if !self.ensure_executable_target(&resolved.target, "resolved impl call", &span) {
+                    return (
+                        HirExprKind::Unsupported(
+                            "resolved impl call has no checker target".to_string(),
+                        ),
+                        ret_ty,
+                    );
                 }
-                // Dormant path: the lookup ran (and diagnostics fired if the
-                // boundary failed), but emission is deferred. Fall through to
-                // the legacy `method_call_rewrites` branch below so live sites
-                // keep their current dispatch behaviour.
-                let _ = resolved;
+                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
+                let lowered_args = self.lower_positional_call_args(args, &span);
+                return (
+                    HirExprKind::ResolvedImplCall {
+                        receiver: Box::new(lowered_receiver),
+                        target: resolved.target,
+                        impl_id: resolved.impl_id,
+                        method_name: resolved.method_name,
+                        target_symbol: resolved.method_target.symbol_name,
+                        target_family: resolved.method_target.family,
+                        type_args: resolved.type_args,
+                        args: lowered_args,
+                        ret_ty: ret_ty.clone(),
+                    },
+                    ret_ty,
+                );
             }
         }
         match rewrite {
@@ -811,103 +788,6 @@ impl LowerCtx {
                     .and_then(|ty| ResolvedTy::from_ty(ty).ok());
                 self.lower_codec(args, codec, value_ty, checked_ty, span)
             }
-            Some(MethodCallRewrite::RemoteActorSend) => {
-                self.try_register_enum_instantiation(&span);
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok());
-                let (Some(ret_ty), [msg]) = (ret_ty, args) else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "RemotePid.send".to_string(),
-                            reason: "checker side-table lacks the message or result type"
-                                .to_string(),
-                        },
-                        span.clone(),
-                        "remote actor send lowering requires its checked message and result",
-                    ));
-                    return (
-                        HirExprKind::Unsupported("RemotePid.send lost its checked facts".into()),
-                        ResolvedTy::Unit,
-                    );
-                };
-                let receiver = Box::new(self.lower_expr(receiver, IntentKind::Read));
-                let msg = Box::new(self.lower_expr(msg.expr(), IntentKind::Read));
-                let status = self.make_expr(
-                    HirExprKind::RemoteActorSend { receiver, msg },
-                    ResolvedTy::I32,
-                    IntentKind::Read,
-                    span.clone(),
-                );
-                self.lower_send_status_result(status, ret_ty, REMOTE_SEND_STATUS, &span)
-            }
-            Some(MethodCallRewrite::RemoteActorAsk) => {
-                self.try_register_enum_instantiation(&span);
-                if args.len() != 2 {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "RemotePid.ask".to_string(),
-                            reason: format!(
-                                "checker side-table expected two arguments, found {}",
-                                args.len()
-                            ),
-                        },
-                        span.clone(),
-                        "remote actor ask lowering requires message and timeout arguments",
-                    ));
-                    return (
-                        HirExprKind::Unsupported("RemotePid.ask has invalid arity".into()),
-                        ResolvedTy::Unit,
-                    );
-                }
-                let ret_ty = self
-                    .expr_types
-                    .get(&key)
-                    .cloned()
-                    .and_then(|ty| ResolvedTy::from_ty(&ty).ok())
-                    .map_or(ResolvedTy::Unit, |ty| {
-                        self.restore_type_declaration_facts(ty)
-                    });
-                let reply_ty = match &ret_ty {
-                    ResolvedTy::Named {
-                        head: hew_types::TypeHead::Builtin(BuiltinType::Result),
-                        args,
-                        ..
-                    } => args.first().cloned(),
-                    _ => None,
-                };
-                let Some(reply_ty) = reply_ty else {
-                    self.diagnostics.push(HirDiagnostic::new(
-                        HirDiagnosticKind::CheckerBoundaryViolation {
-                            name: "RemotePid.ask".to_string(),
-                            reason: format!(
-                                "expected Result<Reply, ActorError>, got {}",
-                                ret_ty.user_facing()
-                            ),
-                        },
-                        span.clone(),
-                        "remote actor ask lowering requires a Result return type",
-                    ));
-                    return (
-                        HirExprKind::Unsupported("RemotePid.ask has poisoned return type".into()),
-                        ResolvedTy::Unit,
-                    );
-                };
-                let lowered_receiver = self.lower_expr(receiver, IntentKind::Read);
-                let lowered_msg = self.lower_expr(args[0].expr(), IntentKind::Read);
-                let lowered_timeout = self.lower_expr(args[1].expr(), IntentKind::Read);
-                (
-                    HirExprKind::RemoteActorAsk {
-                        receiver: Box::new(lowered_receiver),
-                        msg: Box::new(lowered_msg),
-                        timeout_ms: Box::new(lowered_timeout),
-                        reply_ty,
-                    },
-                    ret_ty,
-                )
-            }
             Some(MethodCallRewrite::RewriteToFunction {
                 target,
                 c_symbol,
@@ -918,6 +798,45 @@ impl LowerCtx {
                 returns_receiver_identity,
                 ..
             }) => {
+                if descriptor.as_ref().is_some_and(|descriptor| {
+                    descriptor.family() == hew_types::RuntimeCallFamily::StringGetRange
+                }) {
+                    let result_ty = self
+                        .checker_expr_ty(&span, "string range get")
+                        .unwrap_or(ResolvedTy::Unit);
+                    let container = self.lower_expr(receiver, IntentKind::Read);
+                    let (start, end, inclusive) = match &args[0].expr().0 {
+                        Expr::Range {
+                            start,
+                            end,
+                            inclusive,
+                        } => (start.as_deref(), end.as_deref(), *inclusive),
+                        Expr::Binary {
+                            left,
+                            op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
+                            right,
+                        } => (
+                            Some(left.as_ref()),
+                            Some(right.as_ref()),
+                            *op == BinaryOp::RangeInclusive,
+                        ),
+                        _ => {
+                            return (
+                                HirExprKind::Unsupported("string range get has no range".into()),
+                                result_ty,
+                            )
+                        }
+                    };
+                    let kind = self.lower_string_range_call(
+                        container,
+                        (start, end),
+                        inclusive,
+                        true,
+                        &result_ty,
+                        &span,
+                    );
+                    return (kind, result_ty);
+                }
                 if !self.ensure_executable_target(&target, &c_symbol, &span) {
                     return (
                         HirExprKind::Unsupported(
@@ -926,21 +845,7 @@ impl LowerCtx {
                         ResolvedTy::Unit,
                     );
                 }
-                // S5: a method-call rewrite that lands on a builtin-generic
-                // enum result type (e.g. `Result<(), SendError>` for
-                // `RemotePid<T>::send`) needs the per-instantiation enum
-                // layout registered here. Unlike struct-ctor/variant-ctor/
-                // match-scrutinee paths — which already invoke
-                // `try_register_enum_instantiation` — the rewrite arm builds
-                // a synthetic `HirExprKind::Call` whose return type is the
-                // checker-recorded `Result<...>`. Without explicit
-                // registration MIR sees the `Named { name: "Result", .. }`
-                // type but `module.enum_layouts` lacks the matching key,
-                // and `machine_layout_names` therefore omits "Result" →
-                // `UnknownType { name: "Result" }` plus
-                // `ValueClass::Unknown → Strategy::UnknownBlocked` at the
-                // MIR boundary.
-                self.try_register_enum_instantiation(&span);
+
                 // Read the actual return type from the checker's expr_types table.
                 // Unit-returning methods (e.g. channel send/recv) record Unit there,
                 // so the fallback is safe and this path remains correct for all callers.
@@ -998,7 +903,7 @@ impl LowerCtx {
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
                     let receiver_ty = lowered_receiver.ty.clone();
-                    self.record_var_self_direct_monomorphisation(
+                    self.record_method_call_type_args(
                         &c_symbol,
                         &target,
                         &receiver_ty,
@@ -1041,24 +946,11 @@ impl LowerCtx {
                 // equality: same-named types in sibling modules can both have
                 // registered methods, making that fallback select a real but
                 // wrong body.
-                // Slice 2: a by-value direct-dot call to a generic impl method
-                // on a concrete generic receiver (e.g. `p.first()` where
-                // `impl<T> Pair<T> { fn first(self) -> T }` and `p: Pair<i64>`)
-                // needs the impl-method monomorphisation registered so MIR has a
-                // concrete body to dispatch to. The var-self (mutable-receiver)
-                // branch above already does this via
-                // `record_var_self_direct_monomorphisation`; the by-value branch
-                // omitted it, so the call lowered to a `Call` whose mangled
-                // callee (`Pair::first$$i64`) had no MIR body and failed closed
-                // at the MIR boundary ("resolved callee has no MIR body").
-                // `record_var_self_direct_monomorphisation` is a no-op for
-                // non-generic / non-named-receiver / builtin callees, so this is
-                // safe to call unconditionally for every RewriteToFunction by-value
-                // method dispatch: it derives the concrete type-args from the
-                // receiver type's args, registers the monomorphisation, and seeds
-                // `call_site_type_args[site]` so MIR's `Call` arm mangles to the
-                // same per-instantiation symbol.
-                self.record_var_self_direct_monomorphisation(
+                // Preserve receiver and method arguments for a generic impl
+                // call, just as the mutable-receiver branch does above. SIR
+                // substitutes enclosing template arguments before requesting
+                // the exact callable instance.
+                self.record_method_call_type_args(
                     &c_symbol,
                     &target,
                     &lowered_receiver.ty,
@@ -1244,7 +1136,7 @@ impl LowerCtx {
             Some(MethodCallRewrite::GeneratorNext { yield_ty }) => {
                 // The result is `Option<yield_ty>`; register its layout so MIR /
                 // codegen can size the enum slot the unbox writes into.
-                self.register_option_layout(&yield_ty, &span, "Generator::next");
+
                 let option_ty = Self::resolved_option_ty(yield_ty.clone());
                 // The receiver is borrowed (Read): the coro `.next()` drive
                 // resumes the generator but does not consume the handle — it
@@ -1276,6 +1168,7 @@ impl LowerCtx {
             Some(MethodCallRewrite::StaticTraitDispatch {
                 target,
                 receiver_type_param,
+                trait_args,
                 requires_mutable_receiver,
                 consumes_receiver,
                 returns_receiver_identity,
@@ -1366,8 +1259,8 @@ impl LowerCtx {
                                 }
                                 _ => c_symbol,
                             };
-                            self.try_register_enum_instantiation(&span);
-                            self.record_var_self_direct_monomorphisation(
+
+                            self.record_method_call_type_args(
                                 &c_symbol,
                                 &concrete_target,
                                 // receiver type will be the concrete self type
@@ -1423,6 +1316,24 @@ impl LowerCtx {
                 }
 
                 self.record_call_type_args(&span, site);
+                let Ok(trait_args) = trait_args
+                    .iter()
+                    .map(ResolvedTy::from_ty)
+                    .collect::<Result<Vec<_>, _>>()
+                else {
+                    self.diagnostics.push(HirDiagnostic::new(
+                        HirDiagnosticKind::CheckerBoundaryViolation {
+                            name: "static trait call".into(),
+                            reason: "selected trait arguments are unresolved".into(),
+                        },
+                        span.clone(),
+                        "checker selected unresolved trait arguments",
+                    ));
+                    return (
+                        HirExprKind::Unsupported("unresolved trait arguments".into()),
+                        ret_ty,
+                    );
+                };
 
                 if requires_mutable_receiver {
                     let lowered_receiver = self.lower_expr(receiver, IntentKind::Consume);
@@ -1435,6 +1346,7 @@ impl LowerCtx {
                             call_target: target,
                             target: HirVarSelfMethodTarget::StaticTrait {
                                 receiver_type_param,
+                                trait_args,
                             },
                             args: lowered_args.args,
                             evaluation_order: lowered_args.evaluation_order,
@@ -1456,7 +1368,7 @@ impl LowerCtx {
                 (
                     self.make_static_trait_dispatch_call(
                         crate::StaticTraitSelf::Receiver(Box::new(lowered_receiver)),
-                        Vec::new(),
+                        trait_args,
                         target,
                         receiver_type_param,
                         lowered_args,

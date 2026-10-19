@@ -124,8 +124,10 @@ actor body is `Self` which is that actor, and a supervisor is addressed by its
 own name the same way. There is no separate handle type to write and no second
 surface handle for a remote actor: location is a runtime fact. An anonymous
 actor's handle mirrors an `fn` type and is written `actor(M) -> R`.
-`ChildRef<A>` stays distinct because it names a supervised *role* rather than
-an incarnation, and re-resolves on every call (§5.6).
+A supervised reference also has type `A`; its runtime identity names a stable
+role and re-resolves on every use (§5.6). Direct and imported references name an
+exact incarnation. `is` compares the carried identity, so a role differs from
+its occupant and remains equal to its aliases across replacement.
 
 **Completion calls.** A call on a `receive fn` through an actor handle waits
 for the handler to finish, exactly as a call on a function does.
@@ -142,7 +144,7 @@ handler's turn has finished, which means processed, not durable.
 
 One-way delivery is a separate, explicit surface: `mailbox(target)` yields a
 view whose calls submit and return as soon as the message is accepted, with
-the value `Result<Delivery, SendFailure<Req>>`. `Delivery` reports
+the value `Result<Delivery, ActorError<Never, Req>>`. `Delivery` reports
 `.Accepted`, or `.Discarded` for a loss chosen by the destination's declared
 policy or by the sender's own `on_full`. A value-returning
 handler cannot be called through a mailbox view; the diagnostic names
@@ -170,7 +172,7 @@ was accepted or its fate is unknown. One view type per kind — `policy`
 completes, `mailbox` submits — and both are immutable.
 
 **Rejected requests.** A rejected completion or
-submission returns `SendFailure<Req>`, which retains the unaccepted request
+submission returns `ActorError.Rejected(SendFailure<Req>)`, which retains the unaccepted request
 and exposes its `reason`. The payload stays sealed. Consuming retry resubmits
 to the original target; consuming redirection checks the new target against
 the request's handler and parameter types before resubmitting. A program
@@ -329,7 +331,7 @@ actor Counter {
 
 - `receive fn` declares a message handler (entry point for actor messages)
 - `fn` declares a private internal method
-- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, SendFailure<Req>>`.
+- **`receive fn` without return type** → completion. The call waits for the handler to finish and produces `Result<(), ActorError>`. Through a `mailbox(..)` view the same call submits instead, with the value `Result<Delivery, ActorError<Never, Req>>`.
 - **`receive fn` with return type** → request-response. The call waits for the reply and produces `Result<R, ActorError>`. Inside a `select` arm the call is the arm's source, so the arm's `from` clause is what waits.
 
 **Calling named actors:**
@@ -380,7 +382,7 @@ let _ = counter.increment(10);
 **Message payloads (normative):**
 
 A `receive fn` parameter is a **value** (snapshotted on send, §3.4.4), a **pid
-handle** (`Pid`, `ChildRef` — copied, both sides address the
+handle** (`A` — copied, both sides address the
 one actor), or an **opaque or resource handle** on a local send. A handle
 payload is a move: the send consumes it and the sender's binding is dead
 afterwards (`E_USE_AFTER_SEND`, §3.9.6). Such a handle may also be an actor's
@@ -396,12 +398,15 @@ refused at the remote call.
 
 **Delivery outcomes (normative).**
 
-A mailbox view returns `Result<Delivery, SendFailure<Req>>` for every
+A mailbox view returns `Result<Delivery, ActorError<Never, Req>>` for every
 submission, whether the mailbox is bounded or unbounded. `Delivery.Accepted`
 means the mailbox accepted responsibility for the message; it does not mean
 that the handler has run. A policy that explicitly discards this submission
 reports `Delivery.Discarded`. Refusal returns the unaccepted request and its
-reason under the intended sealed-request contract above.
+reason in `ActorError.Rejected` under the sealed-request contract above.
+For an imported actor, success acknowledges admission at the authenticated
+destination. Connection loss before that acknowledgement can leave delivery
+uncertain; that error consumes the request and cannot be retried from its result.
 
 A direct handle call or a completion-policy view returns the completion
 envelope. A handler's `fails E` result maps to `ActorError.Failed(E)`; a
@@ -414,23 +419,17 @@ policy do not change these result types (§6).
 The following are gaps in the current native cutover, not alternative
 language contracts:
 
-- A handle obtained from a node lookup is still written `RemotePid<A>`. A
-  remote handle has its own runtime representation, so unifying it under the
-  actor's own type waits on the location-aware delivery path.
 - There is no abandon or unjoin primitive. `fork orders.log(line)` without a
   later `await` is the one-shot send, and it still joins at the enclosing
   scope's exit like every fork. Whether Hew needs a true fire-and-forget send
   is an open question: it would make resources, cleanup and control flow less
   deterministic, and nothing in this specification promises it.
-- Native `select` realizes task, timer, actor-call and stream receive
+- Native `select` realizes task, timer, actor-call, ordinary callable and stream receive
   sources. A line, chunk or take adapter over a socket stream, and a file
   stream over a pipe, device or terminal, are not select sources yet
   (§6.4.5).
-- Generic `frames` / `framed` codec adapters are not lowered; the `Codec`
-  trait, `lines()` and the shipped codecs are separate from that gap
-  (§6.4.6).
-- Native supervision supports declared children and pools of them; a literal
-  `count:` is required, and sibling wiring and parts of the shutdown-deadline
+- Native supervision supports declared children and pools of them, with a checked
+  runtime `count:` expression. Sibling wiring and parts of the shutdown-deadline
   contract remain incomplete (§5).
 - Captured WASI execution can still expose an internal trap tag as its exit
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
@@ -1609,7 +1608,7 @@ value closes.
 | ordinary data | scalars, strings, bytes, cloneable records/enums and collections | an independent logical value | snapshot when sendable | automatic recursive release |
 | affine composite | an aggregate containing a non-copyable owner, or `dyn Trait` without a clone contract | transfers ownership | requires a valid transfer contract | automatic release of owned members |
 | linear value | a type marked `#[linear]` | transfers ownership | transfers ownership when sendable | must be explicitly consumed |
-| pid handle | `Pid`, `ChildRef` | names the same actor or role | copies the identity | use `stop` to request actor termination |
+| actor reference | the actor's own type | names the same actor or role | copies the identity | use `stop` to request actor termination |
 | counted handle | `Rc`, `Weak`, `actor(M) -> R` | retains the same identity | subject to handle-specific sendability rules | releases a reference |
 | opaque/resource handle | pipe halves, sockets, user `#[resource]` types | transfers ownership | local transfer where admitted; no wire serialization | declared consuming close |
 | callable | closure | copies independent state or transfers affine captures, according to its capabilities | subject to callable boundary restrictions | releases captures |
@@ -3234,6 +3233,11 @@ does. A trait with no required method of its own - a marker trait, or one
 whose methods all carry defaults - is not satisfied structurally and still
 needs an explicit `impl Trait for T` block.
 
+Trait arguments compose through inherited bounds. For `trait Child<U>:
+Parent<U>`, a `Child<i64>` bound provides `Parent<i64>`. Inherited method
+signatures use those arguments for structural satisfaction, generic calls
+and dynamic dispatch.
+
 #### 3.8.3 Trait Bounds
 
 **Inline bounds:**
@@ -3734,7 +3738,7 @@ or ask site.
 
 A generic supervisor's child specs name the instantiated actor, so a restarted
 child has the same instantiation and `workers.worker` has type
-`ChildRef<Worker<Job>>`. Construction arguments can infer the supervisor's type
+`Worker<Job>`. Construction arguments can infer the supervisor's type
 arguments and the type arguments of its children. Each instance retains its own
 typed configuration and restart budget:
 
@@ -4530,10 +4534,12 @@ Important current details:
   The same adapters and terminals are methods on `VecIter<T>` and on each
   adapter, available without an import:
   `v.into_iter().filter(p).map(f).collect()`
-- `std.sort` generic helpers — one `sort<T: Ord>` and one
-  `reverse<T>` over `Vec<T>` are the intended surface, preserving an
-  independent input value. The current std source still contains specialized
-  helpers; generic consolidation is pending, not an implemented API claim
+- `std.sort` exposes `sort<T: Ord>` and `reverse<T>` over `Vec<T>`,
+  preserving an independent input value. `sort_by<T>` accepts an explicit strict
+  ordering and consumes its comparator, which may keep private mutable state.
+  Floats retain
+  their partial ordering and use `sort_by(values, |a, b| math.total_cmp(a, b) < 0)`
+  for IEEE 754 total order, preserving signed zeros and NaN payloads
 - Assertions are one prelude builtin, `assert(condition)` or
   `assert(condition, message)`, desugared once in HIR. A failure reports the
   condition's source text; a comparison condition (`==`, `!=`, `<`, `<=`, `>`,
@@ -4578,7 +4584,7 @@ The `string_*` builtin family — the `string_*`-prefixed names, `substring`,
 the free `len`, and the four `*_to_string` conversions — is deleted, together
 with the free-function twins in `std.string` that shadowed the same methods
 and the aliases in `std.fmt` that shadowed them again. `s.len()`,
-`s.slice(a, b)`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
+`s[a..b]`, `s.contains(t)`, and `f"{v}"` are the spellings; there is no
 second name for any of them. A type renders itself through `Display`
 (§3.10.2), never through a per-type `to_string` builtin.
 
@@ -4586,6 +4592,39 @@ second name for any of them. A type renders itself through `Display`
 index and range-slice surface. `s[i]` reads the `i`th codepoint of a string,
 the `i`th byte of a `bytes` value, and the `i`th element of a vector.
 String `len()` counts Unicode scalars; `byte_len()` counts encoded UTF-8 bytes.
+Both lengths and scalar indexing take O(1) time, including on non-ASCII text.
+`get(i)`, `first()` and `last()` return `Option<char>` in O(1) time. A range
+such as `s[a..=b]` copies the selected scalars in O(result length) time;
+`get(range)` returns `None` for invalid bounds and `Some("")` for a valid empty
+range. Negative bounds, reversed ranges and inclusive endpoints that cannot
+name a scalar are invalid; an inclusive maximum integer is a bounds failure,
+not an arithmetic overflow. Signed narrow indices widen to `i64` through the
+ordinary parameter coercion. Unsigned indices require an explicit cast.
+
+Strings have value semantics. `s += suffix` and `s.push(c)` update a writable
+string and preserve earlier copies and iterators as snapshots. Unique storage
+grows in amortized O(added length) time; `s + suffix` creates a new string.
+`clear()` empties a writable string. Indexed assignment is refused with
+`E_STRING_INDEX_ASSIGN`. `s.iter()` yields scalars in linear time without
+first building a vector. `find(needle)` and `find_from(needle, start)` return
+scalar positions; the latter searches from `start` without copying the tail.
+The clamping `slice`, `char_at`, `chars`, `char_count_utf8`,
+`codepoint_at_utf8` and whole-string classification aliases are absent.
+
+Character classification belongs to `char`: `is_digit` means ASCII digits,
+`is_letter` means Unicode Alphabetic, and `is_alphanumeric` is their union.
+`is_whitespace`, `is_upper`, `is_lower`, `is_punctuation`, `is_control` and
+`is_ascii` expose their Unicode or ASCII properties. `to_upper`, `to_lower`
+and `to_title` return a single scalar, leaving it unchanged when the full
+mapping expands; string case conversion performs full mapping. `to_digit`
+accepts radices 2 through 36 and returns `Option<i64>`. `len_utf8` reports a
+scalar's encoded width. `as u32`, `as i64`, `as_u32()` and `as_i64()` preserve
+the scalar value. Casts to 8-bit or 16-bit integers are refused; use an exact
+integer conversion such as `(c as u32).try_to_u8()`. Every integer type has
+`try_to_char()`, returning `None` for a negative value, surrogate or value
+above U+10FFFF. Integer `as char` casts remain refused. `std.text.unicode`
+is replaced by these character methods and string scalar access.
+
 `x[a..b]`, `x[a..]`, `x[..b]` and `x[..]` select a range: a string slice is a
 fresh owned string of codepoints, a bytes slice is an independent handle onto
 the same buffer, and a `Vec<T>` slice is a fresh vector holding a copy of each
@@ -5595,9 +5634,12 @@ Pending results, queued stream values and collection elements retain their own
 cleanup effects. Placing a resource inside a service or container does not hide
 its destructor, including during explicit close or destructive updates.
 
-Generator values erase their producer and captured cleanup authority. Advancing
-or owning the cleanup of such a value inside a confined boundary is currently
-refused when that authority cannot be proved.
+Erased callables, dynamic services and generators retain their checked source
+origins through construction and forwarding. Confined execution and required
+cleanup follow those concrete bodies and captures. A generator's early close
+includes its producer's resource cleanup. Unknown origins remain refused.
+Generic resource cleanup proves the close implementation's ordinary trait
+arguments and associated-type bindings at each concrete application.
 
 ```hew,no_run
 import std.fs;
@@ -5647,9 +5689,10 @@ Distributed delegation requires an authenticated narrowed service reference,
 not a serialized native handle, path or forgeable identifier. Its contract must
 bind issuer, recipient, incarnation and rights, and define whether and how
 rights may be delegated onward or discovered through a registry. Ordinary
-`Node.lookup` and a `RemotePid` location are not authorization. The current
-confinement slice refuses distributed ambient acquisition and remote calls;
-it does not yet implement that service-reference protocol.
+`Node.lookup` returns a `Location`, which provides discovery rather than
+authorization. Authenticated service grants provide ordinary actor handles
+with narrowed rights. The current confinement slice refuses distributed
+ambient acquisition and remote calls.
 
 ### 4.8 Interaction with Actor Messages
 
@@ -5731,19 +5774,20 @@ A timer arm does not create a new public cancellation token.
 #### 4.11.1 `select` Expression
 
 `select { }` is a **sealed compiler-known construct** in edition 2026. It
-waits for the first of four named operation forms to complete, evaluates
+waits for the first of five named operation forms to complete, evaluates
 the corresponding arm, and disarms the losing registrations. There is no
-user-implementable `Awaitable` trait — the four forms are exhaustive.
+user-implementable `Awaitable` trait — the five forms are exhaustive.
 
 **Canonical syntax:**
 
-<!-- Illustrates all four select arm forms; native actor-call registration is pending (§2.1.1). -->
+<!-- Illustrates the select arm forms. -->
 
 ```hew,ignore
 select {
     reply   from worker.call(x)        => use(reply),     // actor call
     item    from inbox.recv()          => use(item),      // stream receive
     value   from job                   => use(value),     // forked task
+    notice  from subscription.recv()   => use(notice),    // ordinary call
     after 5s                           => abort(),        // timer
 }
 ```
@@ -5757,16 +5801,18 @@ consumes that classification:
 - `<stream-expr>.recv()` — a receive on a pipe `Stream<T>` (§6.4.5).
 - `<task-expr>` — an expression of type `Task<T>`, the handle `fork`
   produces (§4.4).
+- `<call-expr>` — an ordinary checked call, including a callable value.
+  The call starts during source preparation and produces its ordinary result.
 - `after <duration-expr>` — the timer arm; carries no binding.
 
 An arm source never writes `await`: the `select` is what waits (§4.0). The
 spelling is refused at check time with a fix-it that deletes it, and a
 `select` with no arms at all is refused the same way.
 
-Current native realization of the four specified forms is listed in
+Current native realization of the specified forms is listed in
 §2.1.1.
 
-**The four forms (closed set).** Each form is fully specified by four
+**The five forms (closed set).** Each form is fully specified by four
 columns: what the winning arm binds, how the winning arm propagates a
 non-success outcome at the source, how the runtime cleans up *that* arm
 when a different arm wins (loser cleanup), and how the runtime cleans up
@@ -5779,7 +5825,20 @@ cleanup columns; the difference is which side initiates the teardown.
 | `<id> from <actor>.<method>(<args>)` | `id: Result<R, ActorError<E>>` for a reply type `R` | `ActorError` per HEW-DIST-SPEC §6 — `Partition`, `Timeout`, or `Dead` as observed by the caller. Traps in the callee are isolated by the mailbox boundary and do not propagate through the ask. | If the envelope has **not yet been dispatched**, withdraw it from the target actor's mailbox by correlation id — no `OrphanedAsk` is observed on either side. If it **has been dispatched**, the reply sink is tombstoned; a late reply arriving at the tombstoned sink is classified as `OrphanedAsk` and discarded silently (no caller-visible failure). | Same as loser cleanup: withdraw-or-tombstone by correlation id, late reply classified as `OrphanedAsk` and discarded.                                       |
 | `<id> from <rx>.recv()`    | `id: Option<T>` for `Stream<T>` | `None` is a normal winning value indicating end of data; `Some(value)` carries the received item. A faulted pipe traps the winner exactly as a plain `recv` would (§6.4.4).                              | Pending receive is withdrawn from the pipe core; the stream binding remains usable in the enclosing scope.                                                                                         | Same as loser cleanup: pending receive withdrawn, stream binding remains usable for the cancellation handler.                                             |
 | `<id> from <task>`         | `id: T` for `Task<T>`             | The task's own outcome, exactly as `await` would deliver it.                                                                                                                                                | The handle is not consumed: the losing task keeps running and its handle stays owned by the enclosing scope, which must still join it. Its registration is disarmed, never cancelled.                     | The registration is disarmed; the task takes the enclosing scope's ordinary cancellation.                                                                  |
+| `<id> from <call>` | The call's ordinary return type | A selected fault propagates as an ordinary call fault. | The select-local invocation is cancelled and drained before entering the winning arm. | The invocation is cancelled and drained before releasing its inputs. |
 | `after <duration>`         | no binding; arm type is `()`-shaped at the source | Timer expiry selects this arm; evaluating its duration follows ordinary expression rules.                                                                                                                                                                          | The timer is cancelled. No effect propagates.                                                                                                                                                            | The timer is cancelled. No effect propagates.                                                                                                              |
+
+Ordinary calls may perform effects while the remaining sources are being
+prepared. Cancellation does not undo those effects. Shared inputs require
+`Sync`; exclusively borrowed or transferred inputs and returned values require
+`Send`. The prepared invocation retains its input slots and loans until it has
+finished cleanup, including when later source preparation faults. Those loans
+end before the selected arm runs. This private lifetime applies only to newly
+prepared calls; an explicitly forked task keeps the task-arm rules below.
+Mutable method receivers are restored before that invocation completes, on
+success, fault and cancellation. Staged machine receivers commit only on
+success. Trait-object calls use their checked receiver mode and vtable slot;
+their erased type must retain the `Send` or `Sync` bounds required above.
 
 **Only the winning task arm consumes the task (normative).** A task arm takes
 the task's result only when it wins, so only the winning arm's body sees the
@@ -6244,7 +6303,7 @@ source API is implemented; see HEW-FUTURE.md for additional supervision policy.
 
 A child declaration can name another supervisor. Dotted access such as
 `root.sub` addresses that supervisor, and `root.sub.worker` addresses the
-leaf's stable `ChildRef<Worker>`. Each role resolves the currently supervised
+leaf's stable `Worker`. Each role resolves the currently supervised
 incarnation rather than preserving a stale child address.
 
 The shape is:
@@ -6292,10 +6351,10 @@ fn main() {
     sleep(50ms);
 
     // Access children by declared name
-    let w = pool.worker1;              // ChildRef<Worker>
+    let w = pool.worker1;              // Worker
     let _ = w.tick();
 
-    let w2 = pool.worker2;             // ChildRef<Worker>
+    let w2 = pool.worker2;             // Worker
     let _ = w2.tick();
 
     stop(pool);               // Request graceful shutdown
@@ -6305,18 +6364,18 @@ fn main() {
 
 - `spawn SupervisorName { ... }` — starts a supervisor with its declared children
 - `sup.child_name` — named actor-child access via field syntax. The compiler
-  resolves the child name to a static slot and returns `ChildRef<Actor>`, which
+  resolves the child name to a static slot and returns `Actor`, which
   re-resolves the current incarnation on every ask or tell. The child name must
   match one of the `child` declarations in the supervisor definition.
 - `sup.pool_name` — a `pool` child's members, addressed by index. The members
   are fungible: identical children in consecutive slots, each restarting on its
   own. `len()` is the declared `count:`; `[i]` yields the member's
-  `ChildRef<Actor>` and traps out of range, matching `Vec[i]`; `get(i)` yields
-  `Option<ChildRef<Actor>>` instead. A negative index and one at or past the
+  `Actor` and traps out of range, matching `Vec[i]`; `get(i)` yields
+  `Option<Actor>` instead. A negative index and one at or past the
   count are both out of range.
 - `restarted(sup.child_name)` / `restarted(sup.pool_name[i])` — resume
-  once that one slot is Live again after a crash, or is permanently gone, with
-  the same `ChildRef<Actor>`. A whole pool names many slots and has no single
+  once that one slot is live again after a crash, or is permanently gone,
+  returning `()`. The retained `Actor` keeps its role identity. A whole pool names many slots and has no single
   restart signal, so it is not an operand. The form resumes when the role holds
   a live incarnation with no crash still awaiting a supervisor's ruling, or when
   the role is permanently gone; a role with nothing pending resumes at once. A
@@ -6324,14 +6383,16 @@ fn main() {
   — is pending by then, so `let _ = child.fail(); restarted(sup.child);` waits
   for the ruling. A crash from a one-way mailbox submission that has not been
   processed when `restarted` is entered is not yet pending and is not waited
-  for.
+  for. Direct-incarnation and imported references have no local role replacement
+  to settle and return immediately; this does not establish their liveness or
+  remote readiness.
 - `stop(sup)` — requests a graceful stop of every child in reverse declaration order.
 - `terminate(sup)` — requests cancellation of every child in that order.
 - `stopped(sup)` — waits for the whole tree's terminal cleanup.
 
 **Terminal destinations (normative).**
 
-A `ChildRef` names a supervised role and resolves its current incarnation for
+A supervised actor reference names a stable role and resolves its current incarnation for
 each call or submission. Once the role is permanently unavailable, such as
 when its restart budget is spent, a completion call reports `ActorError.Dead`.
 A mailbox submission reports a `SendFailure` with a lifecycle reason. Neither
@@ -6840,9 +6901,55 @@ either byte order whose declared length above `max` is `Malformed` (a
 length-prefixed stream cannot resynchronize), and `Slip { max }` (RFC
 1055), which skips an empty, malformed or oversized record to the next
 END and never errors. Because `encode` returns `bytes`, an item past a
-codec's bound panics and names the codec. `lines()` is the `Lines` case
-as a method. Generic `frames(codec)` / `framed(codec)` adapters over
-a user codec are decided but not lowered in edition 2026 (§2.1.1).
+codec's bound panics and names the codec. The `lines()` convenience retains
+its existing line-normalization and EOF behaviour; `frames(Lines {})`
+delivers typed codec errors.
+
+`input.frames(codec)` consumes a `Stream<bytes>` and a `Codec<T> + Send`
+value, returning `Stream<Result<T, CodecError>>` for `T: Send`. The adapter
+buffers across chunk boundaries and yields every complete frame in order.
+Malformed input, a complete frame that consumes no buffered bytes, or EOF
+with an incomplete frame produces one terminal `Err`, then EOF. Input and
+codec cleanup finishes before that error is delivered. A clean EOF with no
+buffered bytes produces EOF directly. Decode may suspend through ordinary
+inferred effects. Closing or cancelling the adapter drains any active poll
+and releases its input, buffered bytes and codec. `try_recv()` performs one
+nonblocking poll; pending work belongs to the retained stream after the
+calling function returns.
+
+`output.framed(codec)` consumes a `Sink<bytes>` and a `Codec<T> + Send`
+value, returning `Sink<T>` for `T: Send`. Construction requires the concrete
+encoder, including calls and implicit cleanup through generic helpers, to
+be non-suspending. This requirement belongs to `framed`; ordinary `Codec`
+calls retain inferred suspension. Encode is infallible, so send retains the
+ordinary `SendError` admission contract. Accepted partial-write remainders
+are flushed before another item is admitted.
+
+Encoding retains ordinary cooperative compute polling. `try_send()` never
+waits for sink readiness and does not report `Full` because encoding is
+unfinished; after encoding it makes one capacity attempt.
+
+Cloning a sink shares one sender owner. Framed clones share its codec,
+pending frame and underlying sink without requiring `C: Clone`; concurrent
+admission is serialized and `try_send()` returns `Full` when that owner is
+busy. Finishing an endpoint retires that producer, and the last open
+endpoint finishes the underlying sink. The final endpoint release closes
+the codec exactly once through ordinary affine cleanup.
+
+```hew
+import std.stream;
+
+fn main() {
+    let (output, input): (Sink<bytes>, Stream<bytes>) = stream.pipe(2).expect("pipe");
+    let sender: Sink<string> = output.framed(stream.Lines {});
+    let frames: Stream<Result<string, stream.CodecError>> = input.frames(stream.Lines {});
+    sender.send("hello").expect("send");
+    sender.close();
+    assert(frames.recv().expect("frame").expect("decode") == "hello");
+    assert(frames.recv().is_none());
+    frames.close();
+}
+```
 
 #### 6.4.7 Sockets
 
@@ -7386,6 +7493,30 @@ runtime library), platform threading (e.g. `pthread`), and the math
 library `-lm`, producing a standalone native executable. WASM
 linking uses LLVM's WASM linker and a WASI libc; thread-dependent
 runtime modules are gated out for Tier 2.
+
+### 8.3.1 Explicit C host exports
+
+Native same-build libraries may select public monomorphic root-source functions
+with repeated `hew build --emit-obj --export-c SOURCE=SYMBOL` options. The compiler
+emits a matching C11/C++17 header. Selection does not grant source authority:
+ordinary confinement, effects, ownership and cleanup checks still apply.
+
+Fixed-width scalars cross directly; `bool` is a `uint8_t` zero or one, and unit
+needs no C slot. Other concrete values use typed opaque owners. An opaque
+consuming parameter takes an owner-slot pointer and clears it at handoff, even
+when the checked call subsequently faults. Borrowed parameters pin their owners
+until the call completes; mutable borrows require exclusive host access. Text
+inputs preserve the public text API's borrowed-copy contract. Results and errors
+are independent owners. Scalar result slots are written only on success.
+
+Calls and generated typed release functions complete before returning, including
+suspension and mandatory cleanup. Cleanup uses the compiler's existing value
+descriptors and combines cleanup faults with the primary fault. Actor and I/O
+components require the process-default runtime. All owners must be released
+before runtime shutdown or unloading their descriptor code. This experimental
+boundary requires one host thread and matching compiler/runtime builds; it adds
+no cross-version or independent-runtime isolation guarantee. The C preconditions
+and an executable supplied-directory component are documented in `tests/host`.
 
 ### 8.4 Runtime contract
 
@@ -7975,7 +8106,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
-13. Range: `..`, `..=` (only lowered inside `for` loop iterables; standalone range value expressions are not lowered). `..` cannot begin an expression, so `..expr` at the start of a literal item is the spread of §3.1 and no range spelling is shadowed
+13. Range: `..`, `..=` (lowered in `for` loop iterables, range indexing and the string `get(range)` form; standalone range values are not lowered). Open endpoints are admitted for range selectors. At the start of a literal item, `..expr` is the spread of §3.1
 14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
 > **Bool bitwise operators:** `&`, `^` and `|` take two integers of one type, or two `bool`s. On `bool` they are logical operators that always evaluate both operands and yield `bool`; `&&` and `||` are the short-circuiting forms. A `bool` mixed with an integer is refused.

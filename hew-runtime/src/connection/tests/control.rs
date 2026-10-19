@@ -13,6 +13,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         expected_peer_ids: PoisonSafe::new(HashMap::new()),
         transport: std::ptr::null_mut(),
         inbound_router: None,
+        service_exports: Arc::default(),
         routing_table: std::ptr::null_mut(),
         cluster: std::ptr::null_mut(),
         reconnect_enabled: AtomicBool::new(false),
@@ -22,9 +23,10 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
-        reverse_link_workers: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
+        gossip_in: AtomicU64::new(0),
+        gossip_out: Arc::new(AtomicU64::new(0)),
         local_node_id: 1,
         local_identity: None,
         local_session_incarnation: None,
@@ -40,6 +42,8 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
     // No claim exists for conn 10; any reader token denies immediately.
     let conn10_token = 1_u64;
     let payload = crate::envelope::LinkReqPayload {
+        grant_id: 0,
+        reciprocal_ref: 0,
         linker: test_location(9, 88),
         ref_id: 123,
         target: test_location(1, 77),

@@ -25,7 +25,7 @@ actor Driver {
             }
         }
         match inbox.work(2) {
-            .Err(failure) => match failure.reason {
+            .Err(ActorError.Rejected(failure)) => match failure.reason {
                 SendError.Full => {
                     println("DERIVED_REJECT");
                     exit(43);
@@ -35,7 +35,7 @@ actor Driver {
                     exit(44);
                 }
             }
-            .Ok(_) => {
+            _ => {
                 println("DERIVED_WAIT");
                 exit(45);
             }

@@ -5,7 +5,7 @@ import std.string;
 fn main() {
     let endpoint = quic.new_server("127.0.0.1:0");
     let observation = endpoint.observe();
-    let address_parts = string.split(observation.local_addr, ":");
+    let address_parts = (observation.local_addr).split(":");
     if address_parts.len() != 2 {
         panic("QUIC endpoint has a malformed local address");
     }

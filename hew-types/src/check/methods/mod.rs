@@ -23,6 +23,7 @@ use crate::stdlib::{STD_NET_CONNECTION, STD_NET_LISTENER};
 use crate::BuiltinType;
 
 mod actor_wire;
+mod bound_receiver;
 mod clone_rc;
 mod collections;
 mod dispatch;

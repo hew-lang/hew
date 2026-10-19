@@ -39,7 +39,7 @@ actor Server {
                 .None => "",
             };
             reads = reads + 1;
-            if string.is_empty(chunk) {
+            if (chunk).is_empty() {
                 done = true;
             } else {
                 raw = raw + chunk;
@@ -90,7 +90,7 @@ actor Client {
                 .None => "",
             };
             reads = reads + 1;
-            if string.is_empty(chunk) {
+            if (chunk).is_empty() {
                 done = true;
             } else {
                 raw = raw + chunk;

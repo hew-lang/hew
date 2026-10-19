@@ -1,5 +1,7 @@
 #[resource]
-type Ticket { id: i64; }
+type Ticket {
+    id: i64;
+}
 
 impl Ticket {
     fn close(consume self) {
@@ -9,7 +11,9 @@ impl Ticket {
 }
 
 #[resource]
-type Wrapper<T> { value: T; }
+type Wrapper<T> {
+    value: T;
+}
 
 impl<T> Wrapper<T> {
     fn close(consume self) {
@@ -36,7 +40,14 @@ fn second(n: i64) {
     first(n);
 }
 
+fn swap<A, B>(consume first: A, consume second: B, n: i64) {
+    if n > 0 {
+        swap(second, first, n - 1);
+    }
+}
+
 fn scalar() {
+    swap(1, "second", 2);
     forward(7);
     forward(Wrapper { value: 8 });
 }
@@ -53,8 +64,9 @@ fn main() {
         println(reusable() + reusable());
     };
     let ticket = Ticket { id: 3 };
-    let once: fn[once,suspends]() -> Ticket = move || ticket;
+    let once: fn[once, suspends]() -> Ticket = move || ticket;
     let result = once();
     result.close();
+    swap(Ticket { id: 4 }, 5, 2);
     println("done");
 }

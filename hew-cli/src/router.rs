@@ -137,7 +137,32 @@ impl CommandDispatcher for MainCommandDispatcher {
     }
 
     fn pkg(&mut self, cmd: &hew_pkg::cli::PkgCommand) {
-        hew_pkg::cli::dispatch(cmd, crate::generate::check_package);
+        let requested = match cmd {
+            hew_pkg::cli::PkgCommand::Native {
+                action: hew_pkg::cli::NativeAction::Build { target, .. },
+            } => target.as_deref(),
+            _ => None,
+        };
+        let target = crate::target::TargetSpec::from_requested(requested).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(2);
+        });
+        if target.is_wasm()
+            && matches!(
+                cmd,
+                hew_pkg::cli::PkgCommand::Native {
+                    action: hew_pkg::cli::NativeAction::Build { .. }
+                }
+            )
+        {
+            eprintln!("Error: native package archives require a native target");
+            std::process::exit(2);
+        }
+        hew_pkg::cli::dispatch(
+            cmd,
+            target.normalized_triple(),
+            crate::generate::check_package,
+        );
     }
 }
 
@@ -231,7 +256,7 @@ mod tests {
     };
 
     use super::{
-        compile_fallback_args, dispatch_command, parse_from, try_parse_cli_with_compile_fallback,
+        compile_fallback_args, dispatch_command, try_parse_cli_with_compile_fallback,
         CommandDispatcher,
     };
 
@@ -413,9 +438,11 @@ mod tests {
             output: None,
             target: None,
             emit_obj: false,
-            export_c: None,
+            export_c: Vec::new(),
             emit_llvm: false,
             release: false,
+            trim_paths: false,
+            no_trim_paths: false,
             debug: false,
             opt_level: "0".to_string(),
             link_libs: Vec::new(),
@@ -485,44 +512,6 @@ mod tests {
         dispatch_command(None, &mut dispatcher);
 
         assert_eq!(dispatcher.calls, vec!["help"]);
-    }
-
-    #[test]
-    fn dispatch_command_routes_observe_to_dispatcher() {
-        let command = crate::args::Command::Observe(crate::args::ObserveArgs {
-            args: vec!["--demo".to_string()],
-        });
-        let mut dispatcher = RecordingDispatcher::default();
-
-        dispatch_command(Some(&command), &mut dispatcher);
-
-        assert_eq!(dispatcher.calls, vec!["observe"]);
-    }
-
-    #[test]
-    fn observe_version_flag_is_forwarded_to_sibling() {
-        let cli = parse_from(
-            ["hew", "observe", "--version"]
-                .into_iter()
-                .map(OsString::from)
-                .collect(),
-        )
-        .expect("observe arguments should parse");
-
-        let Some(crate::args::Command::Observe(args)) = cli.command else {
-            panic!("expected observe command");
-        };
-        assert_eq!(args.args, ["--version"]);
-    }
-
-    #[test]
-    fn dispatch_command_routes_lsp_to_dispatcher() {
-        let command = crate::args::Command::Lsp(crate::args::LspArgs { args: vec![] });
-        let mut dispatcher = RecordingDispatcher::default();
-
-        dispatch_command(Some(&command), &mut dispatcher);
-
-        assert_eq!(dispatcher.calls, vec!["lsp"]);
     }
 
     #[derive(Default)]

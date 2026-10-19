@@ -61,7 +61,7 @@ mod canonical_type_publication_tests {
 #[cfg(test)]
 mod node_builtin_catalog_tests {
     use super::*;
-    use crate::runtime_call::RuntimeCallFamily;
+    use crate::check::dispatch::CallTarget;
 
     #[test]
     fn emitted_node_builtins_are_catalogued_for_wasm_rejection() {
@@ -83,6 +83,7 @@ mod node_builtin_catalog_tests {
                 "Node::id",
                 "Node::identity_key",
                 "Node::lookup",
+                "Node::peer",
                 "Node::register",
                 "Node::shutdown",
                 "Node::start",
@@ -90,13 +91,19 @@ mod node_builtin_catalog_tests {
         );
 
         for name in emitted {
-            let family = RuntimeCallFamily::from_c_symbol(name)
-                .unwrap_or_else(|| panic!("registered Node builtin {name:?} is not catalogued"));
+            let CallTarget::Runtime(family) = checker.call_target_for_signature(name) else {
+                panic!("registered Node builtin {name:?} must publish its runtime authority");
+            };
             assert!(
                 family.is_node_builtin(),
                 "registered Node builtin {name:?} is not classified for wasm rejection"
             );
         }
+        assert_eq!(
+            checker.call_target_for_signature("Node::lookup"),
+            CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::NodeLookup),
+            "the concrete catalogue identity retains the canonical lookup runtime operation",
+        );
     }
 }
 
@@ -135,10 +142,10 @@ mod failure_surface_lockstep_tests {
         }
     }
 
-    /// M-5: `CrashInfo` carries `code: i64` AND `message: string` in the
+    /// M-5: `CrashInfo` carries `kind: CrashKind` AND `message: string` in the
     /// embedded copy (the field-presence half of `wire-contract-test-presence`).
     #[test]
-    fn embedded_crash_info_has_code_and_message_fields() {
+    fn embedded_crash_info_has_kind_and_message_fields() {
         let parsed = hew_parser::parse(FAILURE_HEW);
         let crash_info = parsed
             .program
@@ -161,8 +168,8 @@ mod failure_surface_lockstep_tests {
             .collect();
         assert_eq!(
             field_names,
-            vec!["code", "message"],
-            "CrashInfo must carry exactly `code` then `message`"
+            vec!["kind", "message"],
+            "CrashInfo must carry exactly `kind` then `message`"
         );
     }
 }

@@ -115,7 +115,7 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         if !entry.type_params.is_empty() {
-            self.register_free_fn_monomorphisation(symbol, None, span, site);
+            self.record_free_fn_call_type_args(symbol, None, span, site);
         }
         let key = self.mk_key(span);
         if !entry.type_params.is_empty()
@@ -371,9 +371,6 @@ impl LowerCtx {
             .map(|(type_name, variant_idx, _)| (type_name, variant_idx));
         if let Some((tagged_union_name, variant_idx)) = registry_hit {
             if let Some(result_ty) = checker_owner {
-                // Register the generic-enum instantiation before building
-                // result_ty so codegen's mangled-key lookup finds the entry.
-                self.try_register_enum_instantiation(&span);
                 self.assert_resolved_ty_totality(&span);
                 return (
                     HirExprKind::MachineVariantCtor {

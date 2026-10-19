@@ -53,13 +53,13 @@ fn fuzz_channel_surfaces(
     sink: Sink<i64>,
     duplex: Duplex<i64, string>,
     local: FuzzWorker,
-    remote: RemotePid<FuzzWorker>,
+    other: FuzzWorker,
 ) {{
     sink.send(1);
     duplex.send(2);
     stream.recv();
     local;
-    remote;
+    other;
 }}
 "#
         )

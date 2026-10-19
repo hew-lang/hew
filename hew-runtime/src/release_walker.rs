@@ -32,6 +32,8 @@ use crate::hashmap::HewLayoutHashMap;
 pub(crate) enum ReleaseItem {
     /// Prepare and consume one actor-owned Rc survivor wave incrementally.
     RcSurvivors(Box<crate::rc::RcSurvivors>),
+    /// Expand endpoint owners after its final I/O operation is quiescent.
+    Sink { sink: *mut crate::stream::HewSink },
     /// One initialized value; the descriptor consumes its semantic owners.
     Value {
         slot: *mut c_void,
@@ -294,6 +296,7 @@ unsafe fn expand(
     unsafe {
         match item {
             ReleaseItem::RcSurvivors(wave) => return wave.step(pending),
+            ReleaseItem::Sink { sink } => crate::stream::expand_sink(sink, pending),
             ReleaseItem::Value { .. } => pending.push(item),
             ReleaseItem::String { value } => hew_cabi::string::string_release(value),
             ReleaseItem::Storage { owner, free } => free(owner),

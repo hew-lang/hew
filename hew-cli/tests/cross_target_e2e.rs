@@ -284,12 +284,16 @@ fn emit_obj_reports_expected_metadata_for_cross_target_matrix() {
 /// cross-building from macOS). Section presence, not `count > 0`.
 #[test]
 fn wire_actor_emits_target_walked_ctor_section() {
-    assert_actor_codec_ctor_sections(&format!("{WIRE_ECHO}fn main() {{}}\n"));
+    assert_actor_codec_ctor_sections(&format!("{WIRE_ECHO}fn main() {{ {DEMAND_WIRE_ECHO} }}\n"));
 }
 
 /// A remote member whose payload has a wire schema: the one actor protocol
 /// that registers request and reply codecs.
-const WIRE_ECHO: &str = "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n\nactor Echo {\n    receive fn handle(msg: Ping) -> i64 {\n        msg.seq\n    }\n}\n\nimpl ActorMsg for Echo {\n    type Msg = Ping;\n    type Reply = i64;\n}\n";
+const WIRE_ECHO: &str = "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n\nactor Echo {\n    #[wire]\n    receive fn handle(msg: Ping) -> i64 {\n        msg.seq\n    }\n}\n";
+
+// A wire declaration becomes executable only when its concrete actor is demanded.
+const DEMAND_WIRE_ECHO: &str =
+    "let echo = spawn Echo; let _ = echo.handle(Ping { seq: 42 }); stop(echo);";
 
 #[cfg(target_os = "linux")]
 const ACTOR_CODEC_PROBE: &str = r#"
@@ -384,7 +388,7 @@ fn wire_actor_registration_transports_request_and_reply_between_processes() {
     let source = dir.path().join("codec.hew");
     std::fs::write(
         &source,
-        format!("{WIRE_ECHO}extern \"C\" {{ fn codec_probe() -> i32; }}\nfn main() -> i32 {{ unsafe {{ codec_probe() }} }}\n"),
+        format!("{WIRE_ECHO}extern \"C\" {{ fn codec_probe() -> i32; }}\nfn main() -> i32 {{ {DEMAND_WIRE_ECHO} unsafe {{ codec_probe() }} }}\n"),
     )
     .expect("write wire actor");
     for level in ["0", "2"] {

@@ -260,6 +260,7 @@ impl LowerCtx {
             &[hew_types::actor_protocol::ActorHandlerSpec {
                 declaration: identity.handler,
                 wire_identity: String::new(),
+                wire: false,
                 name: handler_name.clone(),
                 param_tys,
                 return_ty: reply_ty.clone(),
@@ -383,7 +384,7 @@ impl LowerCtx {
                 ResolvedTy::Unit,
             );
         };
-        self.try_register_enum_instantiation_ty(&ty, span);
+
         let message = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),

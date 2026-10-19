@@ -1,0 +1,10 @@
+[[case]]
+id = "confined-service-summaries"
+intent = "A confined component uses its supplied service through a generic codec-bound resource and required cleanup."
+source = "cases/confined-service-summaries.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "confined supplied service closed\n"
+exit = 0

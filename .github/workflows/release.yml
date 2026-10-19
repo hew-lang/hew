@@ -510,8 +510,8 @@ jobs:
 
       # ── Rust builds ─────────────────────────────────────────────────────
 
-      - name: Build hew, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build the Hew toolchain
+        run: cargo build -p hew-cli --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         if: startsWith(matrix.target, 'darwin')
@@ -535,17 +535,17 @@ jobs:
             -Hew "target/${{ matrix.rust_target }}/release/hew.exe" `
             -Archive "cross-release-libs/${{ matrix.rust_target }}/hew.lib"
 
-      - name: Smoke test hew-lsp and hew-observe (Unix)
+      - name: Smoke test linked LSP and Observe (Unix)
         if: "!startsWith(matrix.target, 'windows')"
         run: |
-          ./target/${{ matrix.rust_target }}/release/hew-lsp --version
-          ./target/${{ matrix.rust_target }}/release/hew-observe --version
+          ./target/${{ matrix.rust_target }}/release/hew lsp --version
+          ./target/${{ matrix.rust_target }}/release/hew observe --version
 
-      - name: Smoke test hew-lsp and hew-observe (Windows)
+      - name: Smoke test linked LSP and Observe (Windows)
         if: startsWith(matrix.target, 'windows')
         run: |
-          ./target/${{ matrix.rust_target }}/release/hew-lsp.exe --version
-          ./target/${{ matrix.rust_target }}/release/hew-observe.exe --version
+          ./target/${{ matrix.rust_target }}/release/hew.exe lsp --version
+          ./target/${{ matrix.rust_target }}/release/hew.exe observe --version
 
       # ── Package archive ─────────────────────────────────────────────────
 
@@ -675,15 +675,11 @@ jobs:
           echo "Signing with identity: ${IDENTITY}"
 
           # Sign each binary with hardened runtime and secure timestamp
-          for bin in hew hew-lsp hew-observe; do
-            codesign --force --options runtime --timestamp \
-              --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/${bin}"
-          done
+          codesign --force --options runtime --timestamp \
+            --sign "${IDENTITY}" "${ARCHIVE_NAME}/bin/hew"
 
           # Verify signatures
-          for bin in hew hew-lsp hew-observe; do
-            codesign --verify --verbose "${ARCHIVE_NAME}/bin/${bin}"
-          done
+          codesign --verify --verbose "${ARCHIVE_NAME}/bin/hew"
 
           rm -f certificate.p12
 
@@ -840,8 +836,8 @@ jobs:
           restore-keys: |
             release-${{ matrix.target }}-jammy-cargo-
 
-      - name: Build hew, hew-lsp, and hew-observe
-        run: cargo build -p hew-cli -p hew-lsp -p hew-observe --release --target ${{ matrix.rust_target }}
+      - name: Build the Hew toolchain
+        run: cargo build -p hew-cli --release --target ${{ matrix.rust_target }}
 
       - name: Build libhew.a (runtime + stdlib)
         # Non-LTO release-lib profile: the shipped archive must keep verbatim
@@ -858,8 +854,8 @@ jobs:
         run: |
           ldd --version 2>&1 | sed -n "1p"
           "target/${{ matrix.rust_target }}/release/hew" --version
-          "target/${{ matrix.rust_target }}/release/hew-lsp" --version
-          "target/${{ matrix.rust_target }}/release/hew-observe" --version
+          "target/${{ matrix.rust_target }}/release/hew" lsp --version
+          "target/${{ matrix.rust_target }}/release/hew" observe --version
           test -f "target/${{ matrix.rust_target }}/release-lib/libhew.a"
 
           if ldd "target/${{ matrix.rust_target }}/release/hew" | grep -Eqi 'llvm|mlir'; then
@@ -882,9 +878,7 @@ jobs:
             --destination "${ARCHIVE_NAME}" \
             --completion-shells "bash zsh fish"
 
-          for b in hew hew-lsp hew-observe; do
-            strip "${ARCHIVE_NAME}/bin/${b}"
-          done
+          strip "${ARCHIVE_NAME}/bin/hew"
 
           echo "ARCHIVE_NAME=${ARCHIVE_NAME}" >> "$GITHUB_ENV"
 
@@ -983,7 +977,7 @@ jobs:
             /usr/local/llvm22/bin/llvm-config --version
 
             # ── Rust builds (release) ──────────────────────────────────────
-            cargo build -p hew-cli -p hew-lsp -p hew-observe --release
+            cargo build -p hew-cli --release
             bash scripts/test-release-lib-link.sh \
               --hew target/release/hew \
               --archive cross-release-libs/x86_64-unknown-freebsd/libhew.a
@@ -1002,9 +996,7 @@ jobs:
               --completion-shells "bash zsh fish"
 
             # Staging proves every binary exists; strip failures remain fatal.
-            for b in hew hew-lsp hew-observe; do
-              strip "${ARCHIVE_NAME}/bin/${b}"
-            done
+            strip "${ARCHIVE_NAME}/bin/hew"
 
             tar czf "${ARCHIVE_NAME}.tar.gz" "${ARCHIVE_NAME}"
 

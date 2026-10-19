@@ -234,8 +234,23 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit(self) -> CodegenResult<()> {
         let inspectable = self.debug.is_some();
         let value = self.value;
+        let chunks = if self.frame.is_some() && !inspectable && self.module.coverage.is_empty() {
+            self.function.loop_chunks()
+        } else {
+            Vec::new()
+        };
         for block in &self.function.blocks {
             self.builder.position_at_end(self.blocks[&block.id]);
+            if let Some(chunk) = chunks.iter().find(|chunk| chunk.blocks.contains(&block.id)) {
+                if block.id == chunk.header {
+                    self.emit_loop_chunk(chunk)?;
+                } else {
+                    self.builder
+                        .build_unreachable()
+                        .llvm_ctx("omit outlined loop block")?;
+                }
+                continue;
+            }
             // Blocks are emitted in id order, not execution order, so a block
             // opens on its own first source point rather than inheriting the
             // line of whichever block was emitted before it.
@@ -406,7 +421,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         clippy::too_many_lines,
         reason = "the physical operation match is deliberately exhaustive and contains no ownership selection"
     )]
-    fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
+    pub(super) fn emit_op(&self, operation: &PhysicalOp) -> CodegenResult<()> {
         match operation {
             PhysicalOp::GeneratorMake { callable, dest, .. } => {
                 self.emit_generator_make(*callable, *dest)
@@ -437,6 +452,13 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 dest,
                 ..
             } => self.emit_task_spawn(*scope, *callable, *dest),
+            PhysicalOp::TaskInvoke {
+                scope,
+                callee,
+                args,
+                dest,
+                ..
+            } => self.emit_task_invoke(*scope, callee, args, *dest),
             PhysicalOp::ClosureMake {
                 dest,
                 closure,
@@ -791,8 +813,9 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     }
                 ) {
                     if let Some(action) = destroy {
-                        let value = self.load(*storage, "seat.release")?;
-                        self.release_loaded(value, &self.storage(*storage)?.layout, *action)?;
+                        self.destroy_value(*storage, *action, cleanup)?;
+                    } else {
+                        self.clear_owned(*storage)?;
                     }
                     return Ok(());
                 }
@@ -1070,32 +1093,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             }
             (BasicValueEnum::FloatValue(left), BasicValueEnum::FloatValue(right)) => {
                 emit_float_binary(&self.builder, op, left, right)?
-            }
-            (BasicValueEnum::StructValue(left), BasicValueEnum::StructValue(right))
-                if ty.is_builtin(hew_types::BuiltinType::ChildRef) && op == BinaryOp::Equal =>
-            {
-                let mut equal = self.ctx.bool_type().const_int(1, false);
-                for index in 0..2 {
-                    let left = self
-                        .builder
-                        .build_extract_value(left, index, "identity.left")
-                        .llvm_ctx("read supervised role identity")?
-                        .into_int_value();
-                    let right = self
-                        .builder
-                        .build_extract_value(right, index, "identity.right")
-                        .llvm_ctx("read supervised role identity")?
-                        .into_int_value();
-                    let component = self
-                        .builder
-                        .build_int_compare(IntPredicate::EQ, left, right, "identity.component")
-                        .llvm_ctx("compare supervised role identity")?;
-                    equal = self
-                        .builder
-                        .build_and(equal, component, "identity.equal")
-                        .llvm_ctx("combine supervised role identity")?;
-                }
-                equal.into()
             }
             _ => {
                 return Err(CodegenError::FailClosed(

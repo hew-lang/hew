@@ -1,7 +1,6 @@
 //! Runtime retention measurements for the identity formatters.
 //!
-//! The public Hew `NodeId::display`, `Location::display`, and
-//! `RemotePid::display` calls are compiler synthetics that codegen rewrites to
+//! The public Hew `NodeId::display` and `Location::display` calls are compiler synthetics that codegen rewrites to
 //! these two exports. MIR may mint the synthetic result's caller-side
 //! `hew_string_drop` only after the real runtime allocation has established:
 //!
@@ -17,7 +16,7 @@ use std::ffi::{c_char, CStr};
 
 use hew_cabi::cabi::{cstring_ensure_unique, free_cstring};
 use hew_runtime::hew_node::{hew_location_format, hew_node_id_format};
-use hew_runtime::node_identity::{HewNodeId, HewRemotePid};
+use hew_runtime::node_identity::{HewLocation, HewNodeId};
 
 fn assert_result_is_transferred<T: Copy>(
     symbol: &str,
@@ -90,7 +89,7 @@ fn node_id_format_result_is_transferred() {
 
 #[test]
 fn location_format_result_is_transferred() {
-    let location = HewRemotePid {
+    let location = HewLocation {
         node: HewNodeId {
             hi: 0x0123_4567_89ab_cdef,
             lo: 0xfedc_ba98_7654_3210,

@@ -2296,78 +2296,6 @@ fn wasm_http_server_surface_rejected_before_codegen() {
 }
 
 #[test]
-fn wasm_scope_block_rejected_before_codegen() {
-    // Edition-2026 scope{} requires the OS-thread-per-task substrate in
-    // hew-runtime/src/task_scope.rs, which is `#[cfg(not(target_arch =
-    // "wasm32"))]`. The checker must reject a scope-block when the target
-    // is wasm32 so the rejection is observable at compile time rather
-    // than as a runtime trap or a silent no-op. Tracked at #1451.
-    let output = typecheck_inline_wasm(
-        r"
-        fn main() {
-            scope {
-                let _ = 42;
-            }
-        }
-        ",
-    );
-    let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
-    assert!(
-        count >= 1,
-        "expected scope block to be rejected on WASM, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn wasm_scope_with_fork_child_rejected_before_codegen() {
-    // The block-form rejection fires once on the outer scope{}; nested
-    // children inside the block do not re-fire because Ty::Error short-
-    // circuits the body synthesis. The user-facing outcome is what
-    // matters: a scope{} with child tasks is observably rejected on
-    // wasm32 with the StructuredConcurrency label naming the substrate
-    // dependency.
-    let output = typecheck_inline_wasm(
-        r"
-        fn compute() -> i64 { 7 }
-        fn main() {
-            scope {
-                let a = fork compute();
-                await a;
-            }
-        }
-        ",
-    );
-    let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
-    assert!(
-        count >= 1,
-        "expected scope{{}} with children to be rejected on WASM, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
-fn wasm_scope_deadline_rejected_before_codegen() {
-    // A deadline scope and a fork block need the same task-scope substrate
-    // as a plain scope; without the check they reached the wasm32 link step
-    // and failed there with unresolved `hew_checked_scope_*` symbols.
-    let output = typecheck_inline_wasm(
-        r"
-        fn main() {
-            let value = scope within 50ms { 1 } handle failure { 2 };
-            println(value);
-        }
-        ",
-    );
-    let count = platform_limitation_error_count(&output, "Structured concurrency scopes");
-    assert!(
-        count >= 1,
-        "expected a deadline scope to be rejected on WASM, got: {:#?}",
-        output.errors
-    );
-}
-
-#[test]
 fn wasm_tcp_networking_surface_rejected_before_codegen() {
     let output = typecheck_inline_wasm(
         r#"
@@ -5669,14 +5597,9 @@ fn main() {
     );
 }
 
-/// Cross-node guard for the local pipe-handle transfer surface: a
-/// `RemotePid<T>` exposes no receive-fn dispatch, so a pipe handle can
-/// never ride an actor message across a node boundary through this
-/// surface. If `RemotePid` ever grows handler dispatch, its payloads must
-/// route through the Serializable enforcement (pipe handles are not
-/// Serializable) — this pin fails first.
+/// Discovery metadata grants no actor dispatch capability.
 #[test]
-fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
+fn location_receive_fn_dispatch_with_pipe_handle_refused() {
     let output = typecheck_inline(
         r"
         import std.stream;
@@ -5687,33 +5610,31 @@ fn remote_receive_fn_dispatch_with_pipe_handle_refused() {
             }
         }
 
-        fn forward(o: RemotePid<Observer>, rx: stream.Stream<string>) {
+        fn forward(o: Location, rx: stream.Stream<string>) {
             o.watch(rx);
         }
         ",
     );
     assert!(
-        output.errors.iter().any(|e| e
-            .message
-            .contains("no method `watch` on `RemotePid<Observer>`")),
-        "remote receive-fn dispatch must stay refused; got: {:#?}",
+        output
+            .errors
+            .iter()
+            .any(|e| e.message.contains("no method `watch` on `Location`")),
+        "discovery metadata receive-fn dispatch must stay refused; got: {:#?}",
         output.errors
     );
 }
 
-fn remote_ask_source(ping: &str) -> String {
+fn wire_actor_call_source(ping: &str) -> String {
     format!(
         r"
         {ping}
         actor Echo {{
+            #[wire]
             receive fn handle(msg: Ping) -> i64 {{ msg.seq }}
         }}
-        impl ActorMsg for Echo {{
-            type Msg = Ping;
-            type Reply = i64;
-        }}
-        fn call(echo: RemotePid<Echo>) -> i64 {{
-            match echo.ask(Ping {{ seq: 1 }}, 100) {{
+        fn call(echo: Echo) -> i64 {{
+            match echo.handle(Ping {{ seq: 1 }}) {{
                 .Ok(value) => value,
                 .Err(_) => 0,
             }}
@@ -5722,28 +5643,20 @@ fn remote_ask_source(ping: &str) -> String {
     )
 }
 
-/// A value crosses a node only through an explicit wire schema (D524). A
-/// plain record is refused at the remote call, naming the type and the fix.
+/// Wire handlers require tagged payloads throughout the complete value shape.
 #[test]
-fn remote_ask_requires_explicit_wire_schema() {
-    let plain = typecheck_inline(&remote_ask_source("type Ping {\n    seq: i64;\n}\n"));
-    let refusal = plain
+fn wire_actor_handler_requires_explicit_wire_schema() {
+    let plain = typecheck_inline(&wire_actor_call_source("type Ping {\n    seq: i64;\n}\n"));
+    plain
         .errors
         .iter()
         .find(|e| {
-            e.message.contains("remote actor `Echo` (`Ping`)")
+            e.message
+                .contains("wire handler `Echo.handle` reaches `Ping`")
                 && e.message.contains("without `#[wire]` tags")
         })
         .unwrap_or_else(|| panic!("plain record must be refused; got: {:#?}", plain.errors));
-    assert!(
-        refusal
-            .suggestions
-            .iter()
-            .any(|help| help.contains("#[wire]") && help.contains("@1")),
-        "refusal must suggest a tagged #[wire] schema: {refusal:#?}"
-    );
-
-    let wire = typecheck_inline(&remote_ask_source(
+    let wire = typecheck_inline(&wire_actor_call_source(
         "#[wire]\ntype Ping {\n    seq: i64 @1;\n}\n",
     ));
     assert!(
@@ -5753,7 +5666,7 @@ fn remote_ask_requires_explicit_wire_schema() {
     );
 
     // Every record a remote payload reaches is tagged; the refusal names the field.
-    let nested = typecheck_inline(&remote_ask_source(
+    let nested = typecheck_inline(&wire_actor_call_source(
         "type Inner {\n    v: i64;\n}\n#[wire]\ntype Ping {\n    seq: i64 @1;\n    inner: Inner @2;\n}\n",
     ));
     assert!(

@@ -12,7 +12,7 @@ fn first_symlink(root: string, rel_path: string) -> string {
     if is_symlink(root) {
         return root;
     }
-    let parts = string.split(rel_path, "/");
+    let parts = (rel_path).split("/");
     var prefix = root;
     for part in parts {
         if part != "" {

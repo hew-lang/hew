@@ -119,8 +119,3 @@ fn handshake_rejects_zero_node_id() {
     encoded[16..32].fill(0);
     assert!(HewHandshake::deserialize(&encoded).is_none());
 }
-
-#[test]
-fn local_schema_hash_covers_acknowledged_setup_controls() {
-    assert_eq!(local_schema_hash(), 0x8c2c_2f54);
-}

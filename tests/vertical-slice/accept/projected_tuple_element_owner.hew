@@ -15,12 +15,12 @@ type Slot {
 
 fn mk() -> T {
     var v: Vec<string> = Vec.new();
-    v.push(string.repeat("k", 32));
-    T { pair: (v, 7), tag: string.repeat("y", 32) }
+    v.push(("k").repeat(32));
+    T { pair: (v, 7), tag: ("y").repeat(32) }
 }
 
 fn mk_slot() -> Slot {
-    Slot { balancer: [3, 4], label: string.repeat("s", 32) }
+    Slot { balancer: [3, 4], label: ("s").repeat(32) }
 }
 
 fn main() {

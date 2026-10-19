@@ -36,8 +36,8 @@
 //! * The server prints `READY <port>` only after its actor is registered; the
 //!   harness blocks on that line before launching the client (readiness signal,
 //!   not a fixed sleep).
-//! * The client retries `Node::lookup` in a bounded poll loop until registry
-//!   gossip resolves the remote actor, instead of sleeping once and hoping.
+//! * The client receives ordinary actor values from authenticated peer offers.
+//!   Registry lookup supplies discovery metadata and never callable authority.
 
 mod support;
 
@@ -134,8 +134,14 @@ fn compiled_node_binary() -> &'static Path {
             let emit_dir = tempfile::tempdir().expect("create dist_node compile dir");
             let emit_path = emit_dir.path().to_path_buf();
 
-            let mut command = Command::new(hew_binary());
+            let compiler =
+                std::env::var_os("HEW_DIST_E2E_HEW_BIN").map_or_else(hew_binary, PathBuf::from);
+            let mut command = Command::new(compiler);
             command.arg("compile");
+            let sanitize = std::env::var("HEW_SANITIZE_ADDRESS").is_ok_and(|value| value == "1");
+            if sanitize {
+                command.arg("--emit-llvm");
+            }
             // The same scenarios prove the optimized build when requested.
             if let Ok(level) = std::env::var("HEW_DIST_E2E_OPT_LEVEL") {
                 command.arg("--opt-level").arg(level);
@@ -144,9 +150,19 @@ fn compiled_node_binary() -> &'static Path {
                 .arg("--emit-dir")
                 .arg(&emit_path)
                 .arg(&source)
+                .env("HEW_STD", repo_root().join("std"))
                 .current_dir(repo_root());
-            let output =
-                support::run_bounded_command(command, format!("hew compile {}", source.display()));
+            let compile_timeout = if sanitize {
+                Duration::from_mins(2)
+            } else {
+                hew_testutil::DEFAULT_EXEC_TIMEOUT
+            };
+            let output = support::try_run_bounded_command(
+                command,
+                format!("hew compile {}", source.display()),
+                compile_timeout,
+            )
+            .unwrap_or_else(|error| panic!("{error}"));
             assert!(
                 output.status.success(),
                 "compiling dist_node.hew failed\n{}",
@@ -159,6 +175,12 @@ fn compiled_node_binary() -> &'static Path {
                 "compiled dist_node binary missing at {}",
                 binary.display()
             );
+            if sanitize {
+                let ir = std::fs::read_to_string(binary.with_extension("ll"))
+                    .expect("read instrumented distributed LLVM IR");
+                assert!(ir.contains("sanitize_address"));
+                assert!(ir.contains("call void @__asan_init()"));
+            }
             CompiledNodeBinary {
                 _emit_dir: emit_dir,
                 path: binary,
@@ -180,6 +202,95 @@ impl Drop for ManagedChild {
         // after the client finishes (it otherwise sleeps to a safety ceiling).
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+struct PeerLink {
+    port: u16,
+    stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PeerLink {
+    fn new(directory: &Path) -> Self {
+        use std::net::{Shutdown, TcpListener, TcpStream};
+        use std::sync::{atomic::Ordering, Arc};
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind peer gate");
+        let port = listener.local_addr().unwrap().port();
+        listener.set_nonblocking(true).unwrap();
+        let directory = directory.to_owned();
+        let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop = Arc::clone(&stopped);
+        let worker = std::thread::spawn(move || {
+            let mut sockets: Vec<TcpStream> = Vec::new();
+            let mut transfers = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                if directory.join("service.disconnect").exists()
+                    && !directory.join("service.reconnect").exists()
+                {
+                    for socket in sockets.drain(..) {
+                        let _ = socket.shutdown(Shutdown::Both);
+                    }
+                    std::fs::write(directory.join("service.disconnected"), "1").unwrap();
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                }
+                match listener.accept() {
+                    Ok((client, _)) => {
+                        let server_port = std::fs::read_to_string(directory.join("server.ready"))
+                            .expect("published server port")
+                            .parse::<u16>()
+                            .unwrap();
+                        let address = std::net::SocketAddr::from((
+                            std::net::Ipv4Addr::LOCALHOST,
+                            server_port,
+                        ));
+                        let Ok(server) =
+                            TcpStream::connect_timeout(&address, Duration::from_millis(500))
+                        else {
+                            continue;
+                        };
+                        sockets.extend([client.try_clone().unwrap(), server.try_clone().unwrap()]);
+                        for (mut input, mut output) in [
+                            (client.try_clone().unwrap(), server.try_clone().unwrap()),
+                            (server, client),
+                        ] {
+                            transfers.push(std::thread::spawn(move || {
+                                let _ = std::io::copy(&mut input, &mut output);
+                                let _ = output.shutdown(Shutdown::Write);
+                            }));
+                        }
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("peer gate accept: {error}"),
+                }
+            }
+            for socket in sockets {
+                let _ = socket.shutdown(Shutdown::Both);
+            }
+            for transfer in transfers {
+                transfer.join().expect("peer gate transfer");
+            }
+        });
+        Self {
+            port,
+            stopped,
+            worker: Some(worker),
+        }
+    }
+}
+
+impl Drop for PeerLink {
+    fn drop(&mut self) {
+        self.stopped
+            .store(true, std::sync::atomic::Ordering::Release);
+        self.worker
+            .take()
+            .unwrap()
+            .join()
+            .expect("peer gate worker");
     }
 }
 
@@ -864,7 +975,7 @@ fn remote_monitor_setup_after_drop_delivers_lost_down() {
 fn remote_monitor_and_link_target_exit_during_setup_deliver_once() {
     let stdout = run_setup_exit_race_scenario(StderrExpectation::ExactOneCrashIn("Linker"));
     assert!(
-        stdout.contains("PASS remote_setup_exit_race_monitor reason=-1")
+        stdout.contains("PASS remote_setup_exit_race_monitor reason=6")
             && stdout.contains("PASS remote_setup_exit_race_monitor no-dup")
             && stdout.contains("PASS remote_setup_exit_race link-down=5")
             && stdout.contains("PASS remote_setup_exit_race link-no-dup"),
@@ -960,6 +1071,25 @@ fn remote_ask_under_partition_fails_closed_not_hang() {
     );
 }
 
+#[test]
+fn authenticated_service_grants_supply_and_revoke_exact_interface() {
+    let scene = SecureScenario::new();
+    let gate = PeerLink::new(scene.kx_dir.path());
+    let mut server = scene.spawn_server("service_grants");
+    let gate_port = gate.port.to_string();
+    let client = scene.spawn_client("service_grants", &[("HEW_DIST_PROXY_PORT", &gate_port)]);
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
+    run_client_to_completion(server, 0, StderrExpectation::Ignore);
+    assert!(
+        stdout.contains(
+            "PASS service_grants identity-equal independent-revocation rejected-request-retained"
+        ),
+        "{stdout}"
+    );
+    assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]
@@ -1023,10 +1153,10 @@ fn pending_inbound_asks_preserve_other_services_and_retire_on_shutdown() {
     assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
-/// A `RemotePid` of the client's own actor routes locally beside a live peer:
-/// its send, ask, monitor DOWN and linked crash match what a peer delivers.
+/// Ordinary local actors operate beside a supplied actor from a live peer:
+/// submission, completion, monitor DOWN and linked crash retain their semantics.
 #[test]
-fn remote_pid_on_own_node_routes_locally() {
+fn local_actor_operations_compose_with_imported_peer() {
     // The linked crash leaves the client exiting nonzero.
     let stdout = run_link_cascade_scenario(
         "local_route",
@@ -1114,8 +1244,8 @@ fn node_identity_location_and_incarnation_cross_process() {
     );
 }
 
-/// Re-pointing a registry name changes future lookups without revoking an
-/// already-issued Location for a still-live actor.
+/// Re-pointing discovery and issuing another grant preserve the captured actor
+/// identity and state while the newly supplied actor starts independently.
 #[test]
 fn captured_remote_ref_survives_name_repoint() {
     let stdout = run_two_process_scenario("repoint_preserves_ref");
@@ -1221,7 +1351,7 @@ fn monitor_watcher_node_death_prunes_target_table() {
 
 /// Cross-node link headline: a `CrashLinked` cross-node link crashes the LOCAL linked
 /// actor when the remote actor cleanly exits. The client spawns a linker that
-/// `link_remote(kv, CrashLinked)`s the remote actor, then tells the remote to
+/// links the imported actor with `PartitionPolicy.CrashLinked`, then tells it to
 /// stop. The cross-node link-down lands in the linker's MAILBOX as a
 /// `HewSysMsg::Exit` and crashes it (terminal Crashed == 5) — NOT a monitor recv
 /// slot. The fixture polls the linker's terminal state (probe ledger) and
@@ -1242,6 +1372,17 @@ fn link_remote_crash_cascade_on_clean_exit() {
         !stdout.contains("FAIL "),
         "client reported a FAIL on the link clean-exit cascade; client stdout:\n{stdout}"
     );
+}
+
+/// The typed hook retains the peer's complete Location and handles one crash.
+#[test]
+fn link_remote_typed_crash_preserves_origin_once() {
+    let stdout = run_two_process_scenario("link_remote_typed_crash");
+    assert!(
+        stdout.contains("PASS link_remote_typed_crash remote-origin class=fault count=1"),
+        "typed remote link notification failed: {stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
 /// A `CrashLinked` cross-node link crashes the LOCAL linked actor when the remote
@@ -1410,23 +1551,80 @@ fn quarantine_rejoin_stale_rejected_higher_readmitted() {
     );
 }
 
-/// A carried `RemotePid` is fenced across a same-key process restart. The
+/// An imported actor is fenced across a same-key process restart. The
 /// replacement has the same key-derived `NodeId` and a strictly higher durable
-/// session incarnation; its fresh PID works while the captured PID fails. The
+/// session incarnation; its fresh grant works while the captured grant fails. The
 /// runtime's stale-reference refusal reaches the caller as `ActorError.Dead`:
 /// the incarnation it named is gone and will not come back.
 #[test]
-fn carried_remote_pid_rejected_after_same_key_restart() {
+fn imported_actor_rejected_after_same_key_restart() {
     let stdout = run_stale_incarnation_restart_scenario();
     assert!(
         stdout.contains("PASS stale_incarnation_restart old=")
             && stdout.contains(" new=")
             && stdout.contains(" error=Dead"),
         "same-key restart must admit only the higher incarnation and reject the \
-         captured PID as Dead; client stdout:\n{stdout}"
+         captured actor as Dead; client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on stale-incarnation fencing; client stdout:\n{stdout}"
     );
+}
+
+/// A discovery location cannot be promoted to callable or lifecycle authority.
+#[test]
+fn discovery_locations_cannot_authorize_actor_operations() {
+    let directory = tempfile::tempdir().expect("create location refusal fixtures");
+    for (name, operation) in [
+        ("completion", "target.ping()"),
+        ("mailbox", "mailbox(target).ping()"),
+        ("monitor", "monitor(target)"),
+        ("link", "link(target)"),
+        ("stopped", "stopped(target)"),
+    ] {
+        let source = directory.path().join(format!("{name}.hew"));
+        std::fs::write(
+            &source,
+            format!(
+                "actor Observer {{ receive fn inspect() {{ \
+                 let target = Node.lookup(\"discovery-only\").expect(\"location\"); \
+                 let _ = {operation}; }} }} fn main() {{}}"
+            ),
+        )
+        .expect("write location refusal fixture");
+        let mut command = Command::new(
+            std::env::var_os("HEW_DIST_E2E_HEW_BIN").map_or_else(hew_binary, PathBuf::from),
+        );
+        command
+            .arg("check")
+            .arg(&source)
+            .env("HEW_STD", repo_root().join("std"))
+            .current_dir(repo_root());
+        let output =
+            support::run_bounded_command(command, format!("check location {name} refusal"));
+        let diagnostics = support::describe_output(&output);
+        assert!(
+            !output.status.success()
+                && diagnostics.contains("Location")
+                && (diagnostics.contains("actor") || diagnostics.contains("method")),
+            "discovery metadata must be refused as {name} authority:\n{diagnostics}"
+        );
+    }
+}
+
+#[test]
+fn discovery_metadata_display_releases_temporary_and_named_strings() {
+    for (scenario, iterations) in [("identity_display_low", 3), ("identity_display_high", 50)] {
+        let stdout = run_two_process_scenario(scenario);
+        assert!(
+            stdout.contains(&format!("PASS {scenario} iterations={iterations}")),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("FAIL "), "{stdout}");
+        assert_eq!(
+            stdout.lines().filter(|line| *line == "frame").count(),
+            iterations
+        );
+    }
 }

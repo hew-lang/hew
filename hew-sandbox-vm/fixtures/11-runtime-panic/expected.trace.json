@@ -39,7 +39,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 995,
+    "budget_remaining": 991,
     "diagnostics": [],
     "exit_code": null,
     "globals": [],
@@ -70,7 +70,7 @@
       "hew: failure: UserPanic (212): sandbox panic\n"
     ],
     "stdout": [],
-    "step_count": 5,
+    "step_count": 9,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -78,7 +78,7 @@
     }
   },
   "fixture_id": "runtime-panic",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

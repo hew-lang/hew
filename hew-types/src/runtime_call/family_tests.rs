@@ -12,6 +12,27 @@ fn named_type(name: &str, builtin: Option<crate::BuiltinType>) -> ResolvedTy {
 }
 
 #[test]
+fn node_lookup_requires_nongeneric_discovery_metadata() {
+    let contract = RuntimeCallFamily::NodeLookup.semantic_contract().unwrap();
+    let defs = crate::DefTable::new();
+    let location = ResolvedTy::named_builtin(BuiltinType::Location, Vec::new());
+    let error = ResolvedTy::named_builtin(BuiltinType::LookupError, Vec::new());
+    let result =
+        |payload| ResolvedTy::named_builtin(BuiltinType::Result, vec![payload, error.clone()]);
+    assert!(contract.matches_signature(&defs, &[ResolvedTy::String], &result(location)));
+    for payload in [
+        ResolvedTy::actor_for_test("Echo", Vec::new()),
+        ResolvedTy::named_builtin(BuiltinType::Location, vec![ResolvedTy::I64]),
+        ResolvedTy::user_for_test("Location", Vec::new()),
+    ] {
+        assert!(
+            !contract.matches_signature(&defs, &[ResolvedTy::String], &result(payload)),
+            "lookup must not infer an actor capability or accept a malformed or same-named metadata type"
+        );
+    }
+}
+
+#[test]
 fn utf8_decode_result_contract_requires_exact_nominal_error_identity() {
     let exact_error = named_type("std.encoding.utf8.Utf8Error", None);
     let exact_result = ResolvedTy::Named {

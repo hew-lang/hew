@@ -20,7 +20,7 @@ import {
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
 const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
-const NATIVE_SUSPENSIONS = new Set(["NativeIo", "RemoteAsk", "Read", "Accept"]);
+const NATIVE_SUSPENSIONS = new Set(["NativeIo", "Read", "Accept"]);
 
 const OPS = new Set([
   "coverage.hit",
@@ -74,6 +74,7 @@ const OPS = new Set([
   "task_scope.enter",
   "task_scope.close",
   "task.spawn",
+  "task.invoke",
   "task.race",
 ]);
 const TERMS = new Set([
@@ -103,6 +104,7 @@ const TERMS = new Set([
 ]);
 
 const ACTOR_OPS = new Set([
+  "identity",
   "spawn",
   "self_handle",
   "stop",
@@ -113,6 +115,7 @@ const ACTOR_OPS = new Set([
   "call_take",
   "submit",
   "stream_start",
+  "timer_schedule",
   "supervisor_spawn",
   "supervisor_child",
   "supervisor_pool_view",
@@ -126,13 +129,11 @@ function capabilityMessage(capability: string, native: boolean): string {
     NativeIo: "Host input and output",
     Read: "Host input and output",
     Accept: "Accepting network connections",
-    RemoteAsk: "Remote actor calls",
   };
   const features: Record<string, string> = {
     Vector: "This vector operation",
     Map: "This map operation",
     Set: "This set operation",
-    "actor.periodic": "Periodic actor handlers",
     "actor.local_observation": "Actor links and monitors",
     "actor.heap_limit": "Per-actor heap limits",
     "actor.ingress_adapter": "Actor ingress adapters",
@@ -165,6 +166,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     };
   }
 
+  const timerResources = new Set<number>();
   for (const function_ of pkg.functions) {
     for (const block of function_.blocks) {
       if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
@@ -207,6 +209,62 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       }
       const term = block.term;
+      if (
+        term.op === "runtime.call" &&
+        pkg.runtime_families[term.family]?.family === "BytesDecodeUtf8"
+      ) {
+        const shapes = term.variant_result_shapes;
+        const error = shapes && pkg.aggregates[shapes.error];
+        const length = shapes && pkg.variants[shapes.error_len];
+        const result =
+          term.result_shape === null
+            ? undefined
+            : pkg.variants[term.result_shape];
+        if (
+          !error ||
+          error.fields.length !== 2 ||
+          !length ||
+          !result ||
+          length.runtime_tags?.OptionSome === undefined ||
+          length.runtime_tags?.OptionNone === undefined ||
+          result.runtime_tags?.ResultOk === undefined ||
+          result.runtime_tags?.ResultErr === undefined
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.variant_result_shapes",
+            capability: null,
+            message: "UTF-8 decode lacks its checked result carrier",
+            span: null,
+          };
+      }
+      if (term.op === "actor.call" && term.operation.op === "timer_schedule") {
+        const operation = term.operation;
+        const handler = pkg.actors
+          ?.find((actor) => actor.id === operation.actor)
+          ?.handlers.find(
+            (handler) => handler.message_id === operation.message,
+          );
+        const resource = pkg.resources?.[operation.resource];
+        if (
+          !handler ||
+          handler.streams ||
+          term.args.length !== 5 ||
+          !["reject", "drop_newest"].includes(operation.policy) ||
+          resource?.kind !== "opaque" ||
+          resource.close === undefined ||
+          !pkg.functions.some((fn) => fn.id === resource.close)
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.invalid_timer",
+            capability: "actor.timer_schedule",
+            message:
+              "timer schedule lacks its checked handler, timing or non-waiting admission",
+            span: null,
+          };
+        timerResources.add(operation.resource);
+      }
       if (term.op === "suspend") {
         const mandatoryClose = (pkg.resources ?? []).some(
           (resource) => resource.close === function_.id,
@@ -239,7 +297,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     }
   }
 
-  for (const resource of pkg.resources ?? []) {
+  for (const [index, resource] of (pkg.resources ?? []).entries()) {
     if (
       resource.kind === "record" &&
       (resource.shape === undefined ||
@@ -252,7 +310,8 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         message: "record resource has no exact aggregate shape",
         span: null,
       };
-    if (resource.kind === "opaque") return unavailable("resource.opaque_close");
+    if (resource.kind === "opaque" && !timerResources.has(index))
+      return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&
       !resolveExternShim(resource.release ?? "")
@@ -261,8 +320,52 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const actor of pkg.actors ?? []) {
-    if (actor.handlers.some((handler) => handler.every_ns != null))
-      return unavailable("actor.periodic");
+    if (typeof actor.name !== "string" || actor.name.length === 0)
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.actor_name",
+        capability: null,
+        message: "actor lacks its declared diagnostic name",
+        span: null,
+      };
+    if (
+      actor.crash != null &&
+      (actor.crash_info == null ||
+        !pkg.aggregates[actor.crash_info] ||
+        actor.crash_kind == null ||
+        !pkg.variants[actor.crash_kind] ||
+        actor.crash_action == null ||
+        !pkg.variants[actor.crash_action])
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.crash_hook_shapes",
+        capability: null,
+        message: "crash hook lacks its exact info, kind or action shape",
+        span: null,
+      };
+    if (
+      actor.handlers.some(
+        (handler) =>
+          handler.every_ns != null &&
+          (!Number.isInteger(handler.every_ns) ||
+            handler.every_ns < 1_000_000 ||
+            handler.params !== 0 ||
+            handler.streams ||
+            handler.fallible ||
+            !pkg.functions.some(
+              (fn) => fn.id === handler.callable && fn.params.length === 1,
+            )),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.invalid_periodic",
+        capability: "actor.periodic",
+        message:
+          "periodic handler lacks its checked interval or zero-argument body",
+        span: null,
+      };
     if (actor.exit != null || actor.down != null)
       return unavailable("actor.local_observation");
     if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");

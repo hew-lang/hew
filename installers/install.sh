@@ -351,12 +351,10 @@ main() {
         "${INSTALL_PREFIX}/std" "${INSTALL_PREFIX}/include" \
         "${INSTALL_PREFIX}/completions" "${INSTALL_PREFIX}/share"
 
-    for b in hew hew-lsp hew-observe; do
-        if [ -f "${extracted_dir}/bin/${b}" ]; then
-            cp -f "${extracted_dir}/bin/${b}" "${INSTALL_PREFIX}/bin/${b}"
-            chmod +x "${INSTALL_PREFIX}/bin/${b}"
-        fi
-    done
+    if [ -f "${extracted_dir}/bin/hew" ]; then
+        cp -f "${extracted_dir}/bin/hew" "${INSTALL_PREFIX}/bin/hew"
+        chmod +x "${INSTALL_PREFIX}/bin/hew"
+    fi
 
     # Copy all of lib/ — preserves libhew.a at both the flat path and any
     # triple-specific subdirectory (e.g. lib/aarch64-apple-darwin/libhew.a)

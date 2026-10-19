@@ -7,11 +7,11 @@ type Pair {
 
 fn main() -> i64 {
     var m: HashMap<string, string> = HashMap.new();
-    m.insert(string.repeat("k", 32), string.repeat("v", 32));
-    var p = Pair { keep: m, churn: string.repeat("a", 32) };
+    m.insert(("k").repeat(32), ("v").repeat(32));
+    var p = Pair { keep: m, churn: ("a").repeat(32) };
     var i: i64 = 0;
     while i < 50 {
-        p = Pair { ..p, churn: string.repeat("b", 32) };
+        p = Pair { ..p, churn: ("b").repeat(32) };
         i = i + 1;
     }
     p.keep.len()

@@ -49,25 +49,25 @@ fn node_register_rejects_integer_literal() {
     );
 }
 
-/// Passing a `RemotePid<T>` (via wrong-type annotation) must be rejected.
+/// Discovery metadata is not an actor reference that can be registered.
 #[test]
-fn node_register_rejects_remote_pid() {
+fn node_register_rejects_location() {
     let output = common::typecheck(
-        r#"actor Worker {
-    let n: i32;
-    init() {}
-}
-
-fn main() {
-    let pid = spawn Worker { n: 0 };
-    let remote: RemotePid<Worker> = pid;
-    Node.register("worker", remote);
+        r#"fn register(location: Location) {
+    Node.register("worker", location);
 }
 "#,
     );
     assert!(
-        !output.errors.is_empty(),
-        "Node::register with RemotePid must produce at least one type error"
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::InvalidOperation
+                && error
+                    .message
+                    .contains("`Node.register` expects an actor handle")
+                && error.message.contains("`Location` is not one")
+        }),
+        "Node::register must reject discovery metadata: {:#?}",
+        output.errors
     );
 }
 

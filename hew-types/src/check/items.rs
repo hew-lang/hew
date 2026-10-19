@@ -469,11 +469,8 @@ impl Checker {
     /// A static pool (`pool workers: Worker { .. } count: N`) spawns exactly N
     /// fungible members at bootstrap. The clause is REQUIRED on a pool
     /// declaration, must type as an integer, and — when a compile-time integer
-    /// literal — must be positive. A non-literal expr (`count: config.workers`)
-    /// is accepted here (the type resolves through the config record layout),
-    /// but codegen currently rejects it at compile time with
-    /// `CodegenError::FailClosed` — the dynamic `0..N` bootstrap loop is not
-    /// yet emitted. Use a literal `count: N` until that loop lands.
+    /// literal — must be positive. A non-literal expression is evaluated once
+    /// at construction and checked before any pool member is spawned.
     ///
     /// Must run with the supervisor's config params bound in scope (it is
     /// invoked from `check_supervisor_init_args`) so a `config.field` count
@@ -811,8 +808,6 @@ impl Checker {
         };
 
         // Expected: outer has the supervisor-local pid role, inner = expected_sibling_type.
-        // RemotePid is intentionally rejected here by role: supervisors are local, and a
-        // wired_to child param typed `RemotePid<Sibling>` is semantically invalid.
         let type_ok = supervisor_local_pid_target(&param.ty)
             .is_some_and(|target_type| target_type == expected_sibling_type);
 
@@ -1179,7 +1174,7 @@ impl Checker {
             self.record_receiver_output(false);
         }
         // A completely empty body on a method whose `Self` is a compiler
-        // builtin (`ActorHandle`, `RemotePid`, `Vec`, …) is a fail-closed
+        // builtin (`ActorHandle`, `Vec`, …) is a fail-closed
         // declaration stub: no source constructor exists for an opaque pid
         // handle or an abstract `T`, a self-call would stack-overflow, and the
         // real value is produced by codegen / the runtime. The placeholder body
@@ -1953,6 +1948,7 @@ impl Checker {
     /// the checked body's type: a `!` body never reaches its back edge.
     pub(super) fn exit_loop_checked(&mut self, body_ty: &Ty) {
         let exit = self.env.exit_loop(!Self::arm_skips_join(body_ty));
+        self.record_join_cleanup_effects(&exit.cleanup);
         self.loop_value_candidates.extend(exit.value_candidates);
         self.report_deferred_init_conflicts(&exit.deferred_init_conflicts);
         self.report_loop_carried_moves(&exit.carried_moves);
@@ -1972,7 +1968,7 @@ impl Checker {
         let qualified_name = format!("{actor_name}::init");
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
-        let previous_effect_body = self.enter_named_effect_body(&qualified_name);
+        let previous_effect_body = self.enter_named_effect_body(&format!("{actor_name}::<init>"));
 
         // Bind actor fields directly in scope (bare field access, all
         // writable in the init body — init is where `let` fields receive
@@ -2318,7 +2314,7 @@ impl Checker {
     /// Validate a `#[on(link)]` linked-actor end hook (M-7-R, Q210/A211).
     ///
     /// Fires when an actor THIS actor is linked to crashes/exits, delivering a
-    /// typed `CrashNotification { actor_id, kind }`. Mirrors `#[on(crash)]`'s
+    /// typed `CrashNotification { target, kind }`. Mirrors `#[on(crash)]`'s
     /// attribute shape (one typed payload param) but, unlike crash, returns
     /// `()` — an exit hook reacts (log / re-establish a link / drop work), it
     /// does not steer a restart decision. The signature is
@@ -2493,22 +2489,33 @@ impl Checker {
         self.env.pop_scope();
     }
 
-    /// Validate `#[every(duration)]` attributes on a receive fn.
-    pub(super) fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
-        let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
-
-        if every_attrs.is_empty() {
-            // Check for unknown attributes on receive fns.
-            for attr in &rf.attributes {
+    fn validate_receive_attributes(&mut self, rf: &ReceiveFnDecl) {
+        for attr in &rf.attributes {
+            let message = if attr.name == "wire" && !attr.args.is_empty() {
+                Some("#[wire] on a receive fn takes no arguments".to_string())
+            } else if !matches!(attr.name.as_str(), "wire" | "every") {
+                Some(format!(
+                    "unknown attribute `#[{}]` on receive fn `{}`",
+                    attr.name, rf.name
+                ))
+            } else {
+                None
+            };
+            if let Some(message) = message {
                 self.errors.push(TypeError::new(
                     TypeErrorKind::InvalidOperation,
                     attr.span.clone(),
-                    format!(
-                        "unknown attribute `#[{}]` on receive fn `{}`",
-                        attr.name, rf.name
-                    ),
+                    message,
                 ));
             }
+        }
+    }
+
+    /// Validate `#[every(duration)]` attributes on a receive fn.
+    pub(super) fn validate_every_attribute(&mut self, rf: &ReceiveFnDecl) {
+        self.validate_receive_attributes(rf);
+        let every_attrs: Vec<_> = rf.attributes.iter().filter(|a| a.name == "every").collect();
+        if every_attrs.is_empty() {
             return;
         }
 

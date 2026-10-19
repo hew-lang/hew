@@ -3,29 +3,30 @@
 
 // Distributed chat service — idiomatic Hew networked actors
 //
-// Architecture:
-//   Server node: ChatRoom actor manages connected users
-//   Client node: connects, looks up "room", sends messages
-//
 // This runnable path keeps the actor and client on one native process. The
-// Node API is also available for a distributed deployment: start, shutdown,
-// register, connect, and typed lookup are native-only, and lookup returns a
-// Result<RemotePid<T>, LookupError>.
+// receive handlers marked #[wire] can also be offered to an authenticated peer
+// with net.PeerSession.export; the recipient obtains an ordinary ChatRoom via
+// receive_service<ChatRoom>(). A registry lookup supplies only Location
+// metadata and does not grant permission to call the actor.
 actor ChatRoom {
     var users: Vec<string>;
     var messages: Vec<string>;
+    #[wire]
     receive fn enter(username: string) {
         users.push(username);
         println(f"[room] {username} entered ({users.len()} online)");
     }
+    #[wire]
     receive fn say(username: string, text: string) {
         let msg = f"{username}: {text}";
         messages.push(msg);
         println(f"[room] {msg}");
     }
+    #[wire]
     receive fn exit_room(username: string) {
         println(f"[room] {username} left");
     }
+    #[wire]
     receive fn history() -> i64 {
         let total = messages.len();
         println(f"[room] {total} messages total");
@@ -42,17 +43,13 @@ fn main() {
     let empty_users: Vec<string> = Vec.new();
     let empty_msgs: Vec<string> = Vec.new();
     let room = spawn ChatRoom { users: empty_users, messages: empty_msgs };
-    // Node.register("room", room);
-
     // ── Client side (same process for now) ───────────────────
-    // In a distributed setup:
-    //   Node.start("0.0.0.0:9001");
-    //   Node.connect("127.0.0.1:9000");
-    //   let found: Result<RemotePid<ChatRoom>, LookupError> = Node.lookup("room");
+    // In a distributed setup, the server exports `room` through its
+    // authenticated PeerSession and the client calls the imported ChatRoom
+    // using these same receive methods.
 
-    // These are direct calls on the local actor. Every handler call is an ask:
-    // it waits for the handler's turn and returns a Result. A RemotePid uses
-    // the same typed methods and the same Result.
+    // These are ordinary completion calls on the local actor. Imported
+    // ChatRoom handles use the same method names and Result behaviour.
     let _ = room.enter("alice");
     let _ = room.enter("bob");
     let _ = room.say("alice", "hello everyone!");

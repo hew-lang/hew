@@ -222,3 +222,28 @@ pub fn powi(x: f64, n: i32) -> f64 {
 pub fn from_bits(bits: u64) -> f64 {
     0.0
 }
+
+/// Compare two floats in IEEE 754 total order, returning -1, 0 or 1.
+/// Negative zero precedes positive zero. NaN signs and payloads participate
+/// in the ordering, without changing ordinary floating-point comparisons.
+pub fn total_cmp(a: f64, b: f64) -> i64 {
+    let left = a.to_bits();
+    let right = b.to_bits();
+    if left == right {
+        return 0;
+    }
+    let left_sign = left >> 63;
+    let right_sign = right >> 63;
+    let less = if left_sign != right_sign {
+        left_sign > right_sign
+    } else if left_sign != 0 {
+        left > right
+    } else {
+        left < right
+    };
+    if less {
+        -1
+    } else {
+        1
+    }
+}

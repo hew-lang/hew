@@ -219,7 +219,7 @@ impl LowerCtx {
                     .insert(name.clone(), variants.clone());
                 self.enum_type_params
                     .insert(name.clone(), definition.type_params.clone());
-                self.enum_item_ids.insert(name.clone(), id);
+
                 declarations.push(HirTypeDecl {
                     kind: HirTypeDeclKind::Enum,
                     id,

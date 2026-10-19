@@ -420,11 +420,7 @@ fn main() {}
         .get("Alpha::run")
         .copied()
         .expect("checker must publish Alpha's implementation declaration");
-    let mut ctx = LowerCtx::new(
-        &type_output,
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut ctx = LowerCtx::new(&type_output, TargetArch::host());
     assert!(merge_planned_impl_body_symbols(
         &mut ctx,
         &[(alpha, "Alpha::run".to_string())],
@@ -470,7 +466,7 @@ fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
         output
             .impl_method_declaration_ids
             .insert("fixture.owner.Widget::run".to_string(), declaration);
-        let mut ctx = LowerCtx::new(&output, MONOMORPHISATION_REGISTRY_CAP, TargetArch::host());
+        let mut ctx = LowerCtx::new(&output, TargetArch::host());
         for path in paths {
             assert!(merge_planned_impl_body_symbols(
                 &mut ctx,
@@ -496,11 +492,7 @@ fn two_import_paths_select_one_declaration_owned_impl_body_symbol() {
 
 #[test]
 fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     let left = hew_types::DefId::for_test(
         "left.render.Result::<impl inherent for left.render.Result>::echo",
     );
@@ -534,11 +526,7 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
 
 #[test]
 fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     ctx.canonical_std_source_type_identities
         .insert("std.stream.Sink".to_string());
     ctx.current_module_name = Some("std.net.http".to_string());
@@ -618,11 +606,7 @@ fn checker_stream_compatibility_spelling_requires_exact_std_provenance() {
 
 #[test]
 fn imported_const_key_uses_the_checker_module_owner() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     ctx.module_import_bindings.insert(
         (None, 0, "codec".to_string()),
         "std.net.http.codec".to_string(),
@@ -631,37 +615,6 @@ fn imported_const_key_uses_the_checker_module_owner() {
     assert_eq!(
         ctx.imported_module_member_key("codec", "MAX_READS"),
         "std.net.http.codec.MAX_READS"
-    );
-}
-
-#[test]
-fn checker_remote_pid_fact_requires_discriminator_and_preserves_source_names() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
-    let args = vec![ResolvedTy::user_for_test("Echo", Vec::new())];
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
-        ResolvedTy::user_for_test("RemotePid", args.clone()),
-        "a bare spelling cannot manufacture the compiler actor-carrier discriminator"
-    );
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::named_builtin(
-            BuiltinType::RemotePid,
-            args.clone()
-        )),
-        ResolvedTy::named_builtin(BuiltinType::RemotePid, args.clone()),
-        "a checker-authored compiler actor carrier retains its value class"
-    );
-
-    ctx.root_visible_source_type_short_names
-        .insert("RemotePid".to_string());
-    assert_eq!(
-        ctx.restore_type_declaration_facts(ResolvedTy::user_for_test("RemotePid", args.clone(),)),
-        ResolvedTy::user_for_test("RemotePid", args.clone()),
-        "a root source declaration wins over the compiler carrier spelling"
     );
 }
 
@@ -683,7 +636,6 @@ fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
             "hew_stream_try_send_layout",
             SYNTHETIC_STREAM_TRY_SEND_LAYOUT_ITEM,
         ),
-        ("link_remote", SYNTHETIC_LINK_REMOTE_ITEM),
     ];
     for (i, (name_a, id_a)) in ids.iter().enumerate() {
         for (name_b, id_b) in &ids[i + 1..] {
@@ -846,6 +798,8 @@ fn main() {}
     let mut diagnostics = Vec::new();
     admit_resource_record_lifecycles(
         &items,
+        &HashSet::from([resource_declaration]),
+        &tco.type_fact_context,
         &lowered.module.defs,
         &HashSet::new(),
         &mut table,
@@ -1367,13 +1321,11 @@ mod mailbox_transfer_gate {
 
     #[test]
     fn non_owning_actor_references_are_not_transfers() {
-        // ChildRef, the actor handle, and the raw runtime word free nothing.
-        for (name, kind) in [
-            ("ChildRef", BuiltinType::ChildRef),
-            ("Worker", BuiltinType::ActorHandle),
-        ] {
-            assert!(!transfers(&builtin_handle(name, kind)));
-        }
+        // The actor handle and the raw runtime word have no payload transfer.
+        assert!(!transfers(&builtin_handle(
+            "Worker",
+            BuiltinType::ActorHandle
+        )));
         assert!(!transfers(&builtin_handle(
             "HewActor",
             BuiltinType::HewActor
@@ -1529,11 +1481,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
     );
     assert_eq!(LowerCtx::actor_handle_identity(&user_nominal), None);
 
-    let mut vec_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut vec_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     vec_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
@@ -1547,11 +1495,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         "a renamed builtin Vec<T> still owns array literal lowering"
     );
 
-    let mut user_vec_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut user_vec_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     user_vec_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::user_for_test("Vec", vec![Ty::I64]),
@@ -1579,11 +1523,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         "a user Vec<T> must not acquire array literal runtime lowering, got {user_vec_literal_ty:?}"
     );
 
-    let mut map_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut map_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     map_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::Named {
@@ -1604,11 +1544,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         )),
         "a renamed builtin HashMap<K, V> still owns map literal lowering"
     );
-    let mut user_map_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut user_map_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     user_map_ctx.expr_types.insert(
         SpanKey::in_module(&(0..0), 0),
         Ty::user_for_test("HashMap", vec![Ty::String, Ty::I64]),
@@ -1618,11 +1554,7 @@ fn builtin_lowering_gates_use_discriminants_not_type_spellings() {
         "a user HashMap<K, V> must not acquire map literal runtime lowering"
     );
 
-    let mut select_ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut select_ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     let renamed_stream = select_ctx.make_expr(
         HirExprKind::Unsupported("test stream".to_string()),
         named(
@@ -2697,11 +2629,7 @@ fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
 
 #[test]
 fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() {
-    let mut ctx = LowerCtx::new(
-        &TypeCheckOutput::default(),
-        MONOMORPHISATION_REGISTRY_CAP,
-        TargetArch::host(),
-    );
+    let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
     for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
         let name = builtin.canonical_name();
         ctx.type_declarations.insert(
@@ -2761,68 +2689,6 @@ fn postfix_try_in_non_result_returning_fn_stays_fail_closed() {
 ///
 /// LESSONS: `type-info-survival` (P0) — read type from `expr_types`,
 /// not the un-substituted HIR node type. `checker-authority` (P0).
-#[test]
-fn generic_enum_option_i64_registered_in_enum_layouts() {
-    let (_, _, lowered) = parse_typecheck_and_lower(
-        r"enum Maybe<T> {
-    Some(T);
-    None;
-}
-
-fn main() -> i64 {
-    let x: Maybe<i64> = Maybe.Some(42);
-    match x {
-        Maybe.Some(v) => v,
-        Maybe.None => 0,
-    }
-}
-",
-    );
-
-    let layouts = &lowered.module.enum_layouts;
-    assert_eq!(
-        layouts.len(),
-        1,
-        "exactly one enum-layout entry expected for Maybe<i64>; got {layouts:#?}"
-    );
-
-    let layout = &layouts[0];
-    assert_eq!(
-        layout.key.origin_name, "Maybe",
-        "enum origin name must be 'Maybe'"
-    );
-    assert_eq!(
-        layout.key.type_args,
-        vec![ResolvedTy::I64],
-        "type_args must be [I64]"
-    );
-    assert_eq!(
-        layout.mangled_name, "Maybe$$i64",
-        "mangled name must follow shared scheme"
-    );
-
-    // Two variants: Some(T→i64) and None.
-    assert_eq!(layout.variants.len(), 2, "Maybe has two variants");
-    let some_variant = layout
-        .variants
-        .iter()
-        .find(|v| v.name == "Some")
-        .expect("Some variant must be present");
-    assert_eq!(
-        some_variant.field_tys,
-        vec![ResolvedTy::I64],
-        "Some variant payload must be substituted to I64, not a type-param symbol"
-    );
-    let none_variant = layout
-        .variants
-        .iter()
-        .find(|v| v.name == "None")
-        .expect("None variant must be present");
-    assert!(
-        none_variant.field_tys.is_empty(),
-        "None variant must have no payload fields"
-    );
-}
 
 #[test]
 fn authored_generic_local_records_shadow_generic_builtin_spellings() {
@@ -2867,29 +2733,14 @@ fn keep_sink(value: OutputSink<i64>) -> OutputSink<i64> {
 /// A STDLIB bare `None` — with NO user `enum Option<T>` in source — must
 /// lower to a unit ctor whose stamped result type carries the concrete
 /// `Option<i64>` args, so codegen's mangled key resolves to `Option$$i64`.
-///
-/// Note: `enum_layouts` alone does NOT discriminate — the match scrutinee
-/// (`f()` typed `Option<i64>`) registers `Option$$i64` regardless. The
-/// load-bearing assertion is the `None` ctor node's stamped `ty`.
+
 #[test]
-fn stdlib_option_none_registers_in_enum_layouts() {
+fn stdlib_option_none_preserves_concrete_type_arguments() {
     let (_, _, lowered) = parse_typecheck_and_lower(
         r"
             fn f() -> Option<i64> { .None }
             fn main() -> i64 { match f() { .Some(x) => x, .None => 7 } }
             ",
-    );
-
-    // The match scrutinee registers Option$$i64 even on tip; assert it is
-    // present (the layout the None ctor must resolve against).
-    assert!(
-        lowered
-            .module
-            .enum_layouts
-            .iter()
-            .any(|l| l.mangled_name == "Option$$i64"),
-        "Option$$i64 must be in enum_layouts; got {:#?}",
-        lowered.module.enum_layouts
     );
 
     // Discriminating assertion: the bare `None` ctor in `f`'s body must
@@ -2934,98 +2785,6 @@ fn stdlib_option_none_registers_in_enum_layouts() {
     }
 }
 
-/// A plain monomorphic enum must NOT appear in `enum_layouts` — the
-/// registry is only for generic-enum instantiations.
-#[test]
-fn monomorphic_enum_does_not_appear_in_enum_layouts() {
-    let (_, _, lowered) = parse_typecheck_and_lower(
-        r"enum Colour {
-    Red;
-    Green;
-    Blue;
-}
-
-fn main() -> i64 {
-    let c: Colour = Colour.Red;
-    match c {
-        Colour.Red => 1,
-        Colour.Green => 2,
-        Colour.Blue => 3,
-    }
-}
-",
-    );
-
-    assert!(
-        lowered.module.enum_layouts.is_empty(),
-        "monomorphic enums must not appear in enum_layouts; got {:#?}",
-        lowered.module.enum_layouts
-    );
-}
-
-/// Nested generic instantiation: `Maybe<Maybe<i64>>` must produce two
-/// registry entries — one for `Maybe<Maybe<i64>>` and one for
-/// `Maybe<i64>`. The worklist transitively expands type args so that the
-/// inner instantiation is discovered even though only the outer type
-/// appears at the call site.
-///
-/// This exercises the fixpoint path in `try_register_enum_instantiation`.
-#[test]
-fn nested_generic_enum_option_option_i64_registers_both_instantiations() {
-    let (_, _, lowered) = parse_typecheck_and_lower(
-        r"enum Maybe<T> {
-    Some(T);
-    None;
-}
-
-fn main() -> i64 {
-    let inner: Maybe<i64> = Maybe.Some(5);
-    let outer: Maybe<Maybe<i64>> = Maybe.Some(inner);
-    match outer {
-        Maybe.Some(v) => match v {
-            Maybe.Some(n) => n,
-            Maybe.None => 0,
-        }
-        Maybe.None => -1,
-    }
-}
-",
-    );
-
-    let layouts = &lowered.module.enum_layouts;
-    // Both Maybe<i64> and Maybe<Maybe<i64>> must be registered.
-    assert!(
-        layouts.len() >= 2,
-        "expected at least two enum-layout entries for Maybe<i64> and \
-             Maybe<Maybe<i64>>; got {layouts:#?}"
-    );
-
-    let has_option_i64 = layouts
-        .iter()
-        .any(|l| l.key.origin_name == "Maybe" && l.key.type_args == vec![ResolvedTy::I64]);
-    let has_option_option_i64 = layouts.iter().any(|l| {
-        l.key.origin_name == "Maybe"
-            && l.key.type_args == vec![ResolvedTy::named_for_test("Maybe", vec![ResolvedTy::I64])]
-    });
-
-    assert!(
-        has_option_i64,
-        "registry must contain Maybe<i64>; got {layouts:#?}"
-    );
-    assert!(
-        has_option_option_i64,
-        "registry must contain Maybe<Maybe<i64>>; got {layouts:#?}"
-    );
-}
-
-// ── Walker recursion regression tests ────────────────────────────────────
-//
-// These tests construct HIR nodes directly and call the private walker
-// functions.  They guard against a future variant arm accidentally dropping
-// recursion — exhaustivity catches a *missing* arm, but not an arm that
-// exists yet skips sub-expressions.
-
-/// A lambda actor's graceful stop is an ordinary unit-valued call in either position.
 #[test]
 fn lambda_actor_stop_produces_unit_in_value_and_statement_positions() {
     for operation in ["stop(a);", "let value: () = stop(a);"] {
@@ -3036,12 +2795,8 @@ fn lambda_actor_stop_produces_unit_in_value_and_statement_positions() {
     }
 }
 
-/// A user record sharing a prelude generic enum's name (`type Result {
-/// handle: i64 }`) must not poison the enum-layout registries or the
-/// handler return-type resolution: the actor ask still registers the
-/// builtin `Result<Result, ActorError>` instantiation and the handler's
-/// return type resolves to the USER record (matching the checker), not
-/// the builtin enum.
+/// A source record whose leaf shadows a builtin retains its exact nominal
+/// identity in the actor handler return type.
 #[test]
 fn record_shadowing_builtin_result_keeps_actor_ask_lowerable() {
     let (_program, _tco, lowered) = parse_typecheck_and_lower(
@@ -3089,25 +2844,6 @@ fn main() {
         handler.return_ty,
         ResolvedTy::named_for_test("QueryReply", vec![]),
         "handler return type must resolve to the user record, not the builtin enum"
-    );
-    // The ask site registered the builtin `Result<Result, ActorError>`
-    // layout — the record name must not have clobbered the prelude's
-    // `enum_type_params` entry (which would silently no-op registration).
-    assert!(
-        lowered
-            .module
-            .enum_layouts
-            .iter()
-            .any(|layout| layout.key.origin_name == "Result"
-                && layout.key.type_args.first()
-                    == Some(&ResolvedTy::named_for_test("QueryReply", vec![]))),
-        "ask-site Result<Result, ActorError> layout missing from enum_layouts: {:?}",
-        lowered
-            .module
-            .enum_layouts
-            .iter()
-            .map(|layout| &layout.key)
-            .collect::<Vec<_>>()
     );
 }
 

@@ -9,7 +9,7 @@ fn main() {
     println(len);
 
     // Test char_at
-    let ch = hello.char_at(0) ?? '?';
+    let ch = hello.get(0) ?? '?';
     println(to_string(ch));
 
     // Test string equality

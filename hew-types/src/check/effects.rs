@@ -7,9 +7,9 @@
 //! spelled `fn[suspends]`; a closure or named function flowing into a written
 //! type that never suspends is an obligation checked once every body is known.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use hew_parser::ast::{Expr, Pattern, Span, Spanned, Stmt};
+use hew_parser::ast::{Expr, Span, Spanned};
 
 use super::{CallTarget, Checker, MethodCallRewrite, SpanKey};
 use crate::env::TypeBindingId;
@@ -18,14 +18,9 @@ use crate::Ty;
 
 #[path = "effect_solver.rs"]
 mod effect_solver;
+#[path = "effect_instances.rs"]
+mod instances;
 use effect_solver::EffectSolver;
-#[path = "effect_markers.rs"]
-mod effect_markers;
-use effect_markers::MarkerSolver;
-
-#[cfg(test)]
-#[path = "tests/effect_markers.rs"]
-mod marker_tests;
 
 /// The checker-owned contract consumed by lowering.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -50,6 +45,8 @@ impl SuspensionEffect {
 pub struct SuspensionEffects {
     pub bodies: HashMap<EffectBody, SuspensionEffect>,
     pub calls: HashMap<SpanKey, SuspensionEffect>,
+    /// Checked constructors have no executable callee.
+    pub construct_calls: HashSet<SpanKey>,
     pub fork_transfers: HashMap<SpanKey, ForkTransferFact>,
     /// Exact checker body for each visited expression, including implicit calls.
     pub call_owners: HashMap<SpanKey, EffectBody>,
@@ -92,59 +89,13 @@ struct Invocation {
     source_module: Option<String>,
 }
 
-/// The concrete callable behind a fork operand. A written callable slot
-/// erases its captures, so the Send proof for a fork through a record field
-/// or tuple element is not in the slot's type; this ledger keeps the concrete
-/// callable types stored through local bindings for fork transfers only.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-enum CallableOrigin {
-    Unknown,
-    Typed(Ty),
-    Aggregate(BTreeMap<String, CallableOrigin>),
-    Binding {
-        binding: TypeBindingId,
-        path: Vec<String>,
-    },
-}
-
-impl CallableOrigin {
-    /// Replace the value at `path`; a conflicting replacement is unknown.
-    fn merge_at(&mut self, path: &[String], value: Self) {
-        if let Some((field, rest)) = path.split_first() {
-            if let Self::Aggregate(fields) = self {
-                fields
-                    .entry(field.clone())
-                    .or_insert(Self::Unknown)
-                    .merge_at(rest, value);
-            } else {
-                *self = Self::Unknown;
-            }
-        } else if *self != value {
-            *self = Self::Unknown;
-        }
-    }
-
-    fn project(&self, field: &str) -> Self {
-        match self {
-            Self::Aggregate(fields) => fields.get(field).cloned().unwrap_or(Self::Unknown),
-            Self::Binding { binding, path } => {
-                let mut path = path.clone();
-                path.push(field.to_string());
-                Self::Binding {
-                    binding: *binding,
-                    path,
-                }
-            }
-            _ => Self::Unknown,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 struct PendingForkTransfer {
+    required: crate::traits::MarkerTrait,
+    context: &'static str,
     key: SpanKey,
     ty: Ty,
-    origin: CallableOrigin,
+    candidates: super::IndirectCallCandidates,
     source_module: Option<String>,
     acquisition: crate::ClosureCaptureAcquisition,
 }
@@ -154,6 +105,7 @@ struct PendingForkTransfer {
 #[derive(Debug, Clone)]
 struct SuspensionObligation {
     body: EffectBody,
+    owner: Option<EffectBody>,
     once: bool,
     key: SpanKey,
     slot: ObligationSlot,
@@ -192,7 +144,6 @@ pub(super) struct EffectGraph {
     seen_calls: HashMap<SpanKey, Option<EffectBody>>,
     construct_calls: HashSet<SpanKey>,
     submission_effects: HashMap<SpanKey, bool>,
-    bindings: HashMap<TypeBindingId, CallableOrigin>,
     fork_transfers: Vec<PendingForkTransfer>,
     obligations: Vec<SuspensionObligation>,
     pub(super) releases: Vec<super::cleanup_effects::CleanupEffect>,
@@ -200,7 +151,20 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
-    pub(super) fn record_iteration_effect(&mut self, span: &Span, ty: &Ty) {
+    pub(super) fn record_iteration_effect(
+        &mut self,
+        span: &Span,
+        ty: &Ty,
+        candidates: super::IndirectCallCandidates,
+    ) {
+        self.generic_trait_call_arguments
+            .entry(SpanKey::in_module(span, self.current_module_idx))
+            .or_insert_with(|| {
+                vec![super::CallableDispatchActual {
+                    slot: 0,
+                    candidates,
+                }]
+            });
         self.effect_graph.iteration_operations.insert(
             SpanKey::in_module(span, self.current_module_idx),
             ty.clone(),
@@ -266,7 +230,8 @@ impl Checker {
                         field: method.clone(),
                     };
                     if let Some(ty) = self.record_fn_field_type(receiver, method.0.name.as_str()) {
-                        self.check_fork_transfer(&field, &branch.1, &ty);
+                        let candidates = self.callable_field_candidates(receiver, method);
+                        self.check_fork_value_transfer(&field, &branch.1, &ty, candidates);
                     }
                 } else if !matches!(
                     self.method_call_receiver_kinds.get(&key),
@@ -298,14 +263,127 @@ impl Checker {
         }
     }
 
-    pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
-        let ty = self.subst.resolve(ty);
-        // A literal is its own origin; a fork body shares its span with the
-        // synthetic block whose type is already recorded there.
-        let origin = match expr {
-            Expr::Lambda { .. } | Expr::ForkBlock { .. } => CallableOrigin::Typed(ty.clone()),
-            _ => self.expression_callable_origin(expr, span),
+    pub(super) fn check_select_call_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        shared: bool,
+        loan: Option<bool>,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let ty = self.expr_types.get(&key).cloned().or_else(|| match expr {
+            Expr::Ident(name) => self.env.lookup_ref(name).map(|binding| binding.ty.clone()),
+            _ => None,
+        });
+        let Some(ty) = ty else {
+            self.report_error(
+                crate::error::TypeErrorKind::InvalidOperation,
+                span,
+                "select call input lacks its checked type".into(),
+            );
+            return;
         };
+        if let Some(exclusive) = loan {
+            self.record_select_input_loan(expr, span, &ty, exclusive);
+        }
+        self.check_select_call_transfer_typed(
+            span,
+            ty,
+            self.callable_candidates_for_expr(expr, span),
+            shared,
+        );
+    }
+
+    pub(super) fn record_select_input_loan(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        ty: &Ty,
+        exclusive: bool,
+    ) {
+        if self.type_has_marker(ty, crate::traits::MarkerTrait::Copy) {
+            return;
+        }
+        let Some((root, path)) = self.expr_place(expr) else {
+            return;
+        };
+        self.reject_prepared_input_access(
+            root,
+            &path,
+            span,
+            crate::error::TypeErrorKind::InvalidOperation,
+            !exclusive,
+        );
+        let Some(binding) = self.env.lookup_ref(root) else {
+            return;
+        };
+        self.prepared_select_inputs
+            .push(super::types::PreparedSelectInput {
+                binding: binding.id,
+                path,
+                span: span.clone(),
+                access: if exclusive {
+                    super::types::PreparedSelectAccess::Exclusive
+                } else {
+                    super::types::PreparedSelectAccess::Shared
+                },
+            });
+    }
+
+    pub(super) fn check_select_call_transfer_typed(
+        &mut self,
+        span: &Span,
+        ty: Ty,
+        candidates: super::IndirectCallCandidates,
+        shared: bool,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: if shared {
+                crate::traits::MarkerTrait::Sync
+            } else {
+                crate::traits::MarkerTrait::Send
+            },
+            context: "select call",
+            key,
+            ty,
+            candidates,
+            source_module: self.current_module.clone(),
+            acquisition: crate::ClosureCaptureAcquisition::Snapshot,
+        });
+    }
+
+    pub(super) fn record_actor_marker_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        error_span: &Span,
+        ty: Ty,
+    ) {
+        self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: crate::traits::MarkerTrait::Send,
+            context: "actor send",
+            key: SpanKey::in_module(error_span, self.current_module_idx),
+            ty,
+            candidates: self.callable_candidates_for_expr(expr, span),
+            source_module: self.current_module.clone(),
+            acquisition: crate::ClosureCaptureAcquisition::Move,
+        });
+    }
+
+    pub(super) fn check_fork_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        let candidates = self.callable_candidates_for_expr(expr, span);
+        self.check_fork_value_transfer(expr, span, ty, candidates);
+    }
+
+    fn check_fork_value_transfer(
+        &mut self,
+        expr: &Expr,
+        span: &Span,
+        ty: &Ty,
+        candidates: super::IndirectCallCandidates,
+    ) {
+        let ty = self.subst.resolve(ty);
         let key = SpanKey::in_module(span, self.current_module_idx);
         // Invocation checking has already recorded explicit consuming
         // parameters/receivers. Ordinary value operands acquire snapshots.
@@ -321,9 +399,11 @@ impl Checker {
             && !matches!(ty, Ty::Borrow { .. })
             && self.parameter_has_independent_clone(&ty);
         self.effect_graph.fork_transfers.push(PendingForkTransfer {
+            required: crate::traits::MarkerTrait::Send,
+            context: "fork",
             key,
             ty: ty.clone(),
-            origin,
+            candidates,
             source_module: self.current_module.clone(),
             acquisition: if snapshot {
                 crate::ClosureCaptureAcquisition::Snapshot
@@ -410,6 +490,7 @@ impl Checker {
             if plain {
                 obligations.push(SuspensionObligation {
                     body: EffectBody::Declaration(impl_method),
+                    owner: self.effect_graph.current_body.clone(),
                     once: false,
                     key: SpanKey::in_module(span, self.current_module_idx),
                     slot: ObligationSlot::Dyn {
@@ -497,6 +578,7 @@ impl Checker {
         }
         self.effect_graph.obligations.push(SuspensionObligation {
             body,
+            owner: self.effect_graph.current_body.clone(),
             once,
             key: SpanKey::in_module(span, self.current_module_idx),
             slot,
@@ -518,7 +600,7 @@ impl Checker {
     }
 
     /// The instantiated type of a callable record field selected as a method.
-    fn record_fn_field_type(&self, receiver: &Spanned<Expr>, field: &str) -> Option<Ty> {
+    pub(super) fn record_fn_field_type(&self, receiver: &Spanned<Expr>, field: &str) -> Option<Ty> {
         let receiver_ty = self
             .expr_types
             .get(&SpanKey::in_module(&receiver.1, self.current_module_idx))?;
@@ -533,107 +615,6 @@ impl Checker {
         ))
     }
 
-    fn expression_callable_origin(&self, expr: &Expr, span: &Span) -> CallableOrigin {
-        let typed = |span: &Span| {
-            self.expr_types
-                .get(&SpanKey::in_module(span, self.current_module_idx))
-                .map_or(CallableOrigin::Unknown, |ty| {
-                    CallableOrigin::Typed(ty.clone())
-                })
-        };
-        match expr {
-            Expr::Ident(name) => match self.env.lookup_ref(name) {
-                Some(binding) if self.effect_graph.bindings.contains_key(&binding.id) => {
-                    CallableOrigin::Binding {
-                        binding: binding.id,
-                        path: Vec::new(),
-                    }
-                }
-                Some(binding) => CallableOrigin::Typed(binding.ty.clone()),
-                None => typed(span),
-            },
-            Expr::Tuple(elements) => CallableOrigin::Aggregate(
-                elements
-                    .iter()
-                    .enumerate()
-                    .map(|(index, value)| {
-                        (
-                            index.to_string(),
-                            self.expression_callable_origin(&value.0, &value.1),
-                        )
-                    })
-                    .collect(),
-            ),
-            // A spread can carry callables whose origin is not visible here.
-            Expr::StructInit {
-                fields, base: None, ..
-            } => CallableOrigin::Aggregate(
-                fields
-                    .iter()
-                    .map(|(name, value)| {
-                        (
-                            name.to_string(),
-                            self.expression_callable_origin(&value.0, &value.1),
-                        )
-                    })
-                    .collect(),
-            ),
-            Expr::FieldAccess { object, field } => self
-                .expression_callable_origin(&object.0, &object.1)
-                .project(field.0.name.as_str()),
-            _ => typed(span),
-        }
-    }
-
-    pub(super) fn record_statement_effect_binding(&mut self, stmt: &Stmt) {
-        match stmt {
-            Stmt::Assign { target, value, .. } => {
-                let Some((root, path)) = self.expr_place(&target.0) else {
-                    return;
-                };
-                let Some(binding) = self.env.lookup_ref(root).map(|binding| binding.id) else {
-                    return;
-                };
-                let origin = self.expression_callable_origin(&value.0, &value.1);
-                self.effect_graph
-                    .bindings
-                    .entry(binding)
-                    .or_insert(CallableOrigin::Unknown)
-                    .merge_at(&path, origin);
-            }
-            Stmt::Let {
-                pattern: (Pattern::Identifier(name), _),
-                value: Some(value),
-                ..
-            }
-            | Stmt::Var {
-                name,
-                value: Some(value),
-                ..
-            } => {
-                let Some((binding, ty)) = self
-                    .env
-                    .lookup_ref(name.name.as_str())
-                    .map(|binding| (binding.id, binding.ty.clone()))
-                else {
-                    return;
-                };
-                let origin = self.expression_callable_origin(&value.0, &value.1);
-                if matches!(origin, CallableOrigin::Typed(_))
-                    && !self.subst.resolve(&ty).contains_callable()
-                {
-                    return;
-                }
-                self.effect_graph
-                    .bindings
-                    .entry(binding)
-                    .and_modify(|existing| existing.merge_at(&[], origin.clone()))
-                    .or_insert(origin);
-            }
-            _ => {}
-        }
-    }
-
     fn record_value_operation_effects(&mut self, expr: &Expr, span: &Span) {
         let key = SpanKey::in_module(span, self.current_module_idx);
         let receiver = match expr {
@@ -646,7 +627,13 @@ impl Checker {
                 self.method_call_rewrites.get(&key),
                 Some(MethodCallRewrite::GeneratorNext { .. })
             ) {
-                self.record_iteration_effect(span, &receiver);
+                let candidates = match expr {
+                    Expr::MethodCall { receiver, .. } => {
+                        self.callable_candidates_for_expr(&receiver.0, &receiver.1)
+                    }
+                    _ => super::IndirectCallCandidates::unknown(),
+                };
+                self.record_iteration_effect(span, &receiver, candidates);
             }
             self.effect_graph.receivers.insert(key.clone(), receiver);
         }
@@ -689,27 +676,16 @@ impl Checker {
                 .insert(key.clone(), owner.clone());
         }
         self.record_value_operation_effects(expr, span);
-        let releases_receiver = self.call_target(&key).is_some_and(|target| {
-            let family = match target {
-                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
-                    Some(*family)
-                }
-                CallTarget::RuntimeCollection(method) => method.runtime_family(),
-                _ => None,
-            };
-            family.is_some_and(|family| {
-                family.consumes_receiver() || family.releases_receiver_contents()
-            })
-        });
-        if releases_receiver {
-            if let Some(receiver) = self.effect_graph.receivers.get(&key).cloned() {
-                self.record_owned_cleanup_effect(&receiver);
-            }
-        }
+        self.record_receiver_release_effect(&key);
+        let checked_invocation = self.selected_callable_target(span).is_some()
+            || self.method_call_rewrites.contains_key(&key)
+            || self.actor_method_dispatch.contains_key(&key)
+            || self.actor_delivery_calls.contains_key(&key);
         if matches!(
             expr,
             Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Spawn { .. }
-        ) {
+        ) || (checked_invocation && matches!(expr, Expr::Index { .. }))
+        {
             self.effect_graph
                 .seen_calls
                 .insert(key.clone(), self.effect_graph.current_body.clone());
@@ -717,13 +693,12 @@ impl Checker {
         if matches!(expr, Expr::Spawn { .. }) {
             self.effect_graph.construct_calls.insert(key.clone());
         }
-        let checked_invocation = self.direct_call_targets.contains_key(&key)
-            || self.resolved_calls.contains_key(&key)
-            || self.method_call_rewrites.contains_key(&key)
-            || self.dyn_trait_method_calls.contains_key(&key)
-            || self.actor_method_dispatch.contains_key(&key)
-            || self.actor_delivery_calls.contains_key(&key);
-        if checked_invocation && matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
+        if checked_invocation
+            && matches!(
+                expr,
+                Expr::Call { .. } | Expr::MethodCall { .. } | Expr::Index { .. }
+            )
+        {
             let (callee, name) = match expr {
                 Expr::Call { function, .. } => (
                     self.callee_value_type(function),
@@ -759,6 +734,7 @@ impl Checker {
                     };
                     (callee, method.0.to_string())
                 }
+                Expr::Index { .. } => (None, "Index.at".to_string()),
                 _ => (None, "send".to_string()),
             };
             self.effect_graph.calls.insert(
@@ -767,6 +743,7 @@ impl Checker {
                     owner: self.effect_graph.current_body.clone(),
                     receiver: match expr {
                         Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
+                        Expr::Index { object, .. } => self.callee_value_type(object),
                         _ => None,
                     },
                     callee,
@@ -777,6 +754,26 @@ impl Checker {
             );
         }
         self.record_intrinsic_suspension(expr);
+    }
+
+    fn record_receiver_release_effect(&mut self, key: &SpanKey) {
+        let releases_receiver = self.call_target(key).is_some_and(|target| {
+            let family = match target {
+                CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+                    Some(*family)
+                }
+                CallTarget::RuntimeCollection(method) => method.runtime_family(),
+                _ => None,
+            };
+            family.is_some_and(|family| {
+                family.consumes_receiver() || family.releases_receiver_contents()
+            })
+        });
+        if releases_receiver {
+            if let Some(receiver) = self.effect_graph.receivers.get(key).cloned() {
+                self.record_owned_cleanup_effect(&receiver);
+            }
+        }
     }
 
     pub(super) fn is_construct_call(&self, span: &Span) -> bool {
@@ -927,38 +924,29 @@ impl Checker {
         substitutions
     }
 
-    fn finish_fork_transfers(&mut self, graph: &EffectGraph, output: &mut SuspensionEffects) {
-        let mut markers = MarkerSolver::new(self, graph);
-        let facts: Vec<_> = graph
-            .fork_transfers
-            .iter()
-            .map(|transfer| {
-                let ty = self.subst.resolve(&transfer.ty);
-                let mut proven = |marker| {
-                    self.registry.implements_marker(&ty, marker)
-                        || markers.proves(&transfer.origin, marker)
-                };
-                (
-                    transfer,
-                    ty.clone(),
-                    proven(crate::traits::MarkerTrait::Send),
-                    proven(crate::traits::MarkerTrait::Sync),
-                )
-            })
-            .collect();
-        drop(markers);
-        for (
-            PendingForkTransfer {
-                key,
-                source_module,
-                acquisition,
-                ..
-            },
+    fn finish_fork_transfers(
+        &mut self,
+        graph: &EffectGraph,
+        output: &mut SuspensionEffects,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) {
+        for PendingForkTransfer {
+            key,
             ty,
-            is_send,
-            is_sync,
-        ) in facts
+            candidates,
+            source_module,
+            acquisition,
+            required,
+            context,
+        } in &graph.fork_transfers
         {
+            let ty = self.subst.resolve(ty);
+            let proven = |marker| {
+                self.type_has_marker(&ty, marker)
+                    || self.value_candidates_have_marker(&ty, candidates, marker, flows)
+            };
+            let is_send = proven(crate::traits::MarkerTrait::Send);
+            let is_sync = proven(crate::traits::MarkerTrait::Sync);
             output.fork_transfers.insert(
                 key.clone(),
                 ForkTransferFact {
@@ -967,16 +955,31 @@ impl Checker {
                     acquisition: *acquisition,
                 },
             );
-            if !is_send {
+            if !proven(*required) {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidSend,
                     key.start..key.end,
-                    format!(
-                        "fork cannot transfer `{}`: the value is not proven Send",
-                        ty.user_facing()
-                    ),
+                    if *context == "actor send" {
+                        format!(
+                            "cannot send `{}` to actor: type is not Send",
+                            ty.user_facing()
+                        )
+                    } else if *context == "fork" {
+                        format!(
+                            "fork cannot transfer `{}`: the value is not proven Send",
+                            ty.user_facing()
+                        )
+                    } else {
+                        format!(
+                            "{context} cannot schedule `{}`: the value is not proven {required}",
+                            ty.user_facing()
+                        )
+                    },
                 );
                 error.source_module.clone_from(source_module);
+                if *context == "actor send" {
+                    error.suggestions.push("keep the resource inside one owning actor and send that actor a message instead — see the language guide, 'Own a resource with an actor'".into());
+                }
                 self.errors.push(error);
             }
         }
@@ -986,9 +989,12 @@ impl Checker {
         clippy::too_many_lines,
         reason = "Resolve the effect fixed point and report its source obligations in one pass"
     )]
-    pub(super) fn finish_suspension_effects(&mut self) -> SuspensionEffects {
+    pub(super) fn finish_suspension_effects(
+        &mut self,
+        flows: &HashMap<SpanKey, Vec<super::CallableArgumentFlow>>,
+    ) -> SuspensionEffects {
         let graph = std::mem::take(&mut self.effect_graph);
-        let mut solver = EffectSolver::new(self, &graph);
+        let mut solver = EffectSolver::new(self, &graph, flows);
         let mut conservative = HashMap::new();
         for body in graph.bodies.keys() {
             if let Some(witness) = solver.body(body, true) {
@@ -1000,18 +1006,14 @@ impl Checker {
             .iter()
             .map(|(key, invocation)| (key.clone(), solver.invocation(key, invocation)))
             .collect();
-        let once: HashMap<_, _> = graph
+        let failures: Vec<_> = graph
             .obligations
             .iter()
-            .filter(|obligation| obligation.once)
-            .filter_map(|obligation| {
-                solver
-                    .once(&obligation.body, true)
-                    .map(|witness| (obligation.body.clone(), witness))
-            })
+            .map(|obligation| solver.obligation(obligation))
             .collect();
         drop(solver);
         let mut output = SuspensionEffects {
+            construct_calls: graph.construct_calls.clone(),
             call_owners: graph.expression_owners.clone(),
             value_operations: graph
                 .value_operations
@@ -1071,21 +1073,22 @@ impl Checker {
                 self.errors.push(error);
             }
         }
-        for obligation in &graph.obligations {
+        for (obligation, failures) in graph.obligations.iter().zip(failures) {
             if matches!(obligation.body, EffectBody::Declaration(_))
                 && !graph.bodies.contains_key(&obligation.body)
             {
                 continue;
             }
-            let witness = conservative.get(&obligation.body).or_else(|| {
-                obligation
-                    .once
-                    .then(|| once.get(&obligation.body))
-                    .flatten()
-            });
-            let Some(witness) = witness else {
+            if failures.is_empty() {
+                output
+                    .bodies
+                    .insert(obligation.body.clone(), SuspensionEffect::Never);
                 continue;
-            };
+            }
+            let witness = failures
+                .first()
+                .map(|(_, _, witness)| witness)
+                .expect("suspending instance");
             let subject = match &obligation.body {
                 EffectBody::Declaration(id) => format!("function `{}`", self.defs.path(*id)),
                 _ => "closure".to_string(),
@@ -1100,15 +1103,17 @@ impl Checker {
                      declared `fn[suspends]`"
                 ),
             };
-            let mut error = crate::error::TypeError::new(
-                crate::error::TypeErrorKind::InvalidOperation,
-                obligation.key.start..obligation.key.end,
-                message,
-            );
-            error.source_module.clone_from(&obligation.source_module);
-            self.errors.push(error);
+            for (key, source_module, _) in failures {
+                let mut error = crate::error::TypeError::new(
+                    crate::error::TypeErrorKind::InvalidOperation,
+                    key.start..key.end,
+                    message.clone(),
+                );
+                error.source_module = source_module;
+                self.errors.push(error);
+            }
         }
-        self.finish_fork_transfers(&graph, &mut output);
+        self.finish_fork_transfers(&graph, &mut output, flows);
         output
     }
 }

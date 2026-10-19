@@ -219,7 +219,7 @@ fn main() {
 
 The available methods are `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `.try_to_u8()`, `.try_to_u16()`, `.try_to_u32()`, `.try_to_u64()`, `.try_to_isize()`, `.try_to_usize()`, `.try_to_f32()`, and `.try_to_f64()`. They return `None` for out-of-range values, negative values converted to unsigned targets, `NaN`, infinities, nonzero fractional parts in float→integer conversions, and inexact integer→float or float→float conversions.
 
-`char as <integer>` extracts the Unicode scalar value — the codepoint. `'A' as i64` is `65`, and `s[i] as i64` reads the codepoint of the char at codepoint offset `i` (the read primitive for text/byte parsers). Wider integer targets zero-extend; narrower ones truncate to the low byte (`'€' as u8` is `172`), following the same width rules as above. The reverse — `<integer> as char` — is not an `as` cast (not every integer is a valid scalar value); build a one-character string with `string.from_char(code)` instead.
+`char as u32` and `char as i64` extract the Unicode scalar value without loss. Casts to 8-bit or 16-bit integers are refused: use `(c as u32).try_to_u8()` for an exact optional conversion. Every integer type supports `n.try_to_char()`, which returns `None` for negative values, surrogates and values above U+10FFFF. Integer `as char` casts remain refused. Render a character with `f"{c}"`.
 
 ### Mixed-width arithmetic requires a cast
 
@@ -1702,7 +1702,7 @@ fn main() {
 }
 ```
 
-`spawn Greeter { ... }` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. There is no separate pid type to write. Handlers may take multiple arguments.
+`spawn Greeter { ... }` has type `Greeter`: the actor is the type of its handle, so the annotation above is optional and every field, parameter, return, collection element and record field that holds an actor is written with the actor's own name. No separate handle wrapper is needed. Handlers may take multiple arguments.
 
 `fork g.greet()` is the forked call: keep the task and `await` it later, or leave it unawaited as a bare statement (`fork g.greet();`) and it joins at the enclosing scope's exit like every fork, which is how a one-shot send is written. Binding the task and dropping it (`let _ = fork g.greet();`) cancels it instead. A discarded `Result` from a waiting call is still `E_RESULT_DROPPED`.
 
@@ -1825,12 +1825,12 @@ that result remains an ordinary value. Other waiting operations are calls:
 
 | You want                          | You write                            |
 | --------------------------------- | ------------------------------------ |
-| a reply from an actor             | `pid.method(args)`                   |
-| that reply concurrently           | `let t = fork pid.method(args);` then `await t` |
-| an actor to stop, and to wait     | `stop(pid); stopped(pid);`           |
-| an actor to stop, without waiting | `stop(pid)`                          |
-| to wait for a stop someone else asked for | `stopped(pid)`               |
-| each item of another actor's stream | `for x in pid.stream()`            |
+| a reply from an actor             | `worker.method(args)`                 |
+| that reply concurrently           | `let t = fork worker.method(args);` then `await t` |
+| an actor to stop, and to wait     | `stop(worker); stopped(worker);`       |
+| an actor to stop, without waiting | `stop(worker)`                        |
+| to wait for a stop someone else asked for | `stopped(worker)`             |
+| each item of another actor's stream | `for x in worker.stream()`          |
 
 Do not put `await` on an actor call, actor handle or generator operation.
 Use it on the task created by `fork`.
@@ -2103,7 +2103,7 @@ actor Counter {
 }
 ```
 
-An actor method has no mailbox slot, so it is unreachable from outside the actor — `Counter.next()` from `main` is `E_ACTOR_METHOD_OUTSIDE`. Send the actor a message instead; only a `receive fn` is reachable through a pid.
+An actor method has no mailbox slot, so it is unreachable from outside the actor — `Counter.next()` from `main` is `E_ACTOR_METHOD_OUTSIDE`. Call the actor through one of its `receive fn` handlers instead; those handlers are reachable through a handle of the actor's own type.
 
 ### Actor-to-actor messaging
 
@@ -2161,7 +2161,7 @@ fn main() {
 ```
 
 Calling the handle is the completion call: it waits for the handler and yields
-`Result<R, ActorError>`, exactly as a call on a named actor's pid does. A
+`Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
@@ -2388,9 +2388,9 @@ hook, which is a plain `fn` invoked when the actor is tearing down. The
 receive handler loops around `sleep`/`sleep_until` without an in-loop exit path.
 
 The handler above is named `halt` for its application-level flag change. A
-`receive fn stop()` is also allowed; the lifecycle operation is `stop(actor)`.
+`receive fn stop()` is also allowed; the lifecycle operation is `stop(worker)`.
 It requests a graceful stop and returns immediately, whether called inside or
-outside the actor. `stopped(actor)` waits for terminal cleanup, while
+outside the actor. `stopped(worker)` waits for terminal cleanup, while
 `terminate(actor)` requests cancellation. After `stop(self)`, the current
 handler finishes and queued messages drain before `#[on(stop)]` runs.
 
@@ -3567,13 +3567,13 @@ Trims leading/trailing whitespace, returns a new string.
 fn main() {
     let path = "src/main.hew";
     if path.starts_with("src/") {
-        let rest = path.slice(4, path.len());
+        let rest = path[4..];
         println(rest);   // main.hew
     }
 }
 ```
 
-`.starts_with`/`.ends_with` return `bool`. `.slice(a, b)` is half-open `[a, b)`; use `s.slice(start, s.len())` to slice to the end. No negative-index support.
+`.starts_with`/`.ends_with` return `bool`. `s[a..b]` is half-open; use `s[start..]` to slice to the end. Invalid bounds fault; `s.get(a..b)` returns `None` instead. No negative-index support.
 
 ### .find returns Option<i64>
 
@@ -3610,21 +3610,21 @@ fn main() {
 ```hew
 import std.string;
 fn main() {
-    println(string.from_int(42));            // 42
+    println(f"{42}");            // 42
     let n = match string.to_int("42") {
         .Ok(v) => v,
         .Err(_) => 0,
     };
     println(f"n={n}");                        // 42
     println(string.pad_left("7", 3, "0"));   // 007
-    println(string.join(["a", "b", "c"], ", "));  // a, b, c
+    println(["a", "b", "c"].join(", "));  // a, b, c
     let c = string.count("abcabc", "abc");
     println(f"count={c}");                    // 2
 }
 ```
 
-Import `std.string` and call via the module name. `from_int`/`to_float` for conversions; `to_int` and `to_float` return Results: match, propagate or recover the error.
-`string.join(Vec<string>, sep)` assembles text; it is unrelated to task joining.
+Import `std.string` and call via the module name. Use f-strings to format values; `to_int` and `to_float` return Results: match, propagate or recover the error.
+`parts.join(sep)` assembles text; it is unrelated to task joining.
 
 ### Concatenation, char round-trip, escapes
 
@@ -3633,17 +3633,17 @@ import std.string;
 fn main() {
     let g = "Hello" + ", " + "world";
     println(g);
-    match "Z".char_at(0) {
-        .Some(ch) => println(string.from_char(ch as i64)),   // Z
+    match "Z".get(0) {
+        .Some(ch) => println(f"{ch}"),   // Z
         .None => println("out of bounds"),
     }
     var acc = "";
-    for i in 0 .. 3 { acc = acc + "x"; }
+    for i in 0 .. 3 { acc += "x"; }
     println(acc);                       // xxx
 }
 ```
 
-Build strings with `+`. `char_at` returns `Option<char>` — `Some` of the Unicode scalar at that codepoint offset, or `None` when out of bounds; consume it with `match`. Cast a `char` to its codepoint with `as i64`, then `string.from_char` renders it back. Strings are immutable — concatenation produces new strings.
+`+` creates a new string. Use `+=` to append a string and `push` to append a `char`; earlier copies keep their values. `get(i)` returns the Unicode scalar at index `i`, or `None` when out of bounds. String lengths and scalar indexing take O(1) time on both ASCII and non-ASCII text. `iter()` yields scalars without creating a vector. `find_from(needle, start)` searches from a scalar offset without copying the tail.
 
 ## Traits and stdlib
 
@@ -3940,14 +3940,14 @@ Use `?` to short-circuit a failure and propagate it; the enclosing fn declares i
 ```hew
 import std.string;
 fn main() {
-    println(string.from_int(42));            // 42
+    println(f"{42}");            // 42
     println(string.to_int("100") handle _ { 0 });  // 100
-    println(string.repeat("*", 3));          // ***
+    println("*".repeat(3));          // ***
     println(string.pad_left("7", 3, "0"));   // 007
 }
 ```
 
-Import `std.string` and call via the module name. Most case/slice/trim/find operations are builtin methods on `string` itself; `std.string` is for conversions and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
+Import `std.string` and call via the module name. Use ranges for slicing and methods for operations such as trimming and searching; `std.string` provides parsing and padding. `to_int` fails with `string.NumberError` (`Invalid` or `OutOfRange`, carrying the text) — use `?`, `handle` or `match` to deal with a parse failure.
 
 ### std.math helpers
 
@@ -4025,42 +4025,37 @@ distinct ownership obligations.
 
 ```hew
 import std.sort;
+import std.math;
+
 fn main() {
-    var nums: Vec<i64> = Vec.new();
-    nums.push(3); nums.push(1); nums.push(4); nums.push(1); nums.push(5);
-    let sorted   = sort.sort_ints(nums);            // returns new Vec — original unchanged
-    let reversed = sort.reverse_ints(sorted);
+    let nums: Vec<i64> = [3, 1, 4, 1, 5];
+    let sorted = sort.sort(nums);
+    let reversed = sort.reverse(sorted);
     println(sorted[0]);    // 1
     println(reversed[0]);  // 5
+    assert(nums[0] == 3);
 
-    var words: Vec<string> = Vec.new();
-    words.push("banana"); words.push("apple"); words.push("cherry");
-    let sw = sort.sort_strings(words);
-    println(sw[0]);        // apple
+    let words: Vec<string> = ["banana", "apple", "cherry"];
+    println(sort.sort(words)[0]); // apple
 
-    var floats: Vec<f64> = Vec.new();
-    floats.push(3.14); floats.push(1.41); floats.push(2.72);
-    let sf = sort.sort_floats(floats);
-    println(sf[0]);        // 1.41
+    let floats: Vec<f64> = [3.14, 1.41, 2.72];
+    let ordered = sort.sort_by(floats, |a, b| math.total_cmp(a, b) < 0);
+    println(ordered[0]); // 1.41
 }
 ```
 
-`sort_ints`, `sort_strings` and `sort_floats` each return a new sorted Vec (ascending); `reverse_ints`, `reverse_strings` and `reverse_floats` each return a new reversed one. The original Vec is never modified. There is no unconditional generic `sort<T>`/`reverse<T>` yet — [the v0.6.0 migration note](migrations/v0.6.0.md) names one as the eventual replacement for this monomorphic family, but it is not implemented on this build. Integer and string sorting use iterative merge passes, so their comparison count is O(n log n); float sorting retains its total-order runtime implementation.
+`sort.sort<T: Ord>(values)` sorts in ascending order, and
+`sort.reverse<T>(values)` reverses any vector. Both return an independent vector
+and preserve the input. Sorting is stable and uses O(n log n) comparisons.
 
-`sort.sort_by(v, less)` sorts any `Vec<T>` today, given an explicit `less(a, b)`
-predicate (no `Ord`/`PartialOrd` trait exists yet to bound a parameterless
-generic `sort`). It has no `v.sort_by(less)` fluent method form — `Vec<T>`'s
-inherent methods are reserved for `std/builtins.hew` on this build.
+`sort.sort_by(values, less)` consumes its comparator, which defines an explicit
+strict ordering and may keep private mutable state using `capture(var count)`.
+For descending integer order, use `sort.sort_by(values, |a, b| a > b)`.
 
-```hew
-import std.sort;
-fn main() {
-    var nums: Vec<i64> = Vec.new();
-    nums.push(3); nums.push(1); nums.push(2);
-    let sorted = sort.sort_by(nums, |a: i64, b: i64| a < b);
-    println(sorted[0]);  // 1
-}
-```
+Floats retain their ordinary partial ordering and do not satisfy `Ord`.
+`math.total_cmp(a, b)` returns -1, 0 or 1 in IEEE 754 total order: negative zero
+precedes positive zero, and NaN signs and payloads participate in the ordering.
+Use the explicit comparator above when sorting floats in this order.
 
 ### std.random — pseudo-random number generation
 
@@ -4160,7 +4155,7 @@ import std.string;
 import std.math;
 import std.iter;
 fn main() {
-    println(string.from_int(math.max(2, 9)));   // 9
+    println(f"{math.max(2, 9)}");   // 9
     let v: Vec<i64> = [1, 2, 3];
     println(iter.sum(v.iter()));                 // 6
 }
@@ -4230,7 +4225,7 @@ as `c.function_name()` /
 import std.string;
 
 fn main() {
-    println(string.from_int(42));
+    println(f"{42}");
 }
 ```
 
@@ -4830,32 +4825,26 @@ the free function `template.render_template(t, ctx)` (panics on error) or
 with a literal message rather than interpolating it. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
-### Unicode — rune helpers + classification predicates
+### Unicode scalars and character methods
 
 ```hew
-import std.text.unicode;
-
 fn main() {
-    let s = "Aé!";
-    println(f"runes={unicode.rune_count(s)} bytes={s.byte_len()}");   // runes=3 bytes=4
-    let runes = unicode.runes(s);
-    for cp in runes {
-        let up = unicode.is_upper(cp);
-        let width = unicode.rune_len(cp).expect("decoded codepoint is valid");
-        println(f"cp={cp} upper={up} width={width}");
+    let text = "Aé!";
+    println(f"scalars={text.len()} bytes={text.byte_len()}");
+    for c in text.iter() {
+        println(f"cp={c.as_i64()} upper={c.is_upper()} width={c.len_utf8()}");
     }
+    assert('f'.to_digit(16).expect("hex digit") == 15);
+    assert((0xD800).try_to_char().is_none());
 }
 ```
 
-`rune_count(s)` and `s.len()` count codepoints; `s.byte_len()` counts UTF-8
-bytes. `runes(s)` decodes a string into a `Vec<i64>` of codepoints.
-`codepoint_at(s, i)` returns the codepoint at codepoint index `i` as a `Result`;
-`rune_len(cp)` returns a valid codepoint's UTF-8 width as a `Result`. Classify a
-codepoint with the predicates `is_upper` / `is_lower` / `is_digit` / `is_letter`
-/ `is_space` / `is_punct` / `is_alnum` / `is_valid_rune`, and case-fold with
-`to_upper` / `to_lower` / `to_title` (all over `i64` codepoints). Dispatch with
-`match` guards over the predicates rather than range checks. Full example:
-[`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
+`is_digit` recognises ASCII digits; `is_letter` recognises Unicode Alphabetic.
+`is_alphanumeric` combines those two. Other character predicates are
+`is_whitespace`, `is_upper`, `is_lower`, `is_punctuation`, `is_control` and
+`is_ascii`. Character `to_upper`, `to_lower` and `to_title` preserve one scalar;
+use string case conversion for mappings that expand, such as `"ß".to_upper()`.
+Full example: [`examples/v05/surfaces/unicode_runes.hew`](../examples/v05/surfaces/unicode_runes.hew).
 
 ### Scanner — line and word tokenisation
 
@@ -4959,64 +4948,56 @@ An operation's ordinary `Err` stays a value to handle at the call. Explicit
 An unrecovered fault prints its typed diagnostic and exits 1; an explicit
 non-zero program exit status is preserved.
 
-### Remote ask suspension — a remote `.ask` from an actor handler
+### Authenticated remote actor calls
+
+An actor's ordinary type is used for local and imported handles. Mark each
+receive handler with `#[wire]` before exporting the actor; its named arguments and result cross
+the node using Hew's checked wire codec:
 
 ```hew
+import std.net;
+
 actor Echo {
-    receive fn handle(req: i64) -> i64 {
-        req
+    #[wire]
+    receive fn handle(value: i64) -> i64 {
+        value
     }
 }
 
-impl ActorMsg for Echo {
-    type Msg = i64;
-    type Reply = i64;
+fn offer_echo(peer: net.PeerSession, echo: Echo, keep_alive: Stream<i64>) {
+    let export = peer.export(echo).expect("service offer accepted");
+    let _ = keep_alive.recv();
+    export.close();
 }
 
-actor Client {
-    receive fn go(unused: i64) {
-        let found: Result<RemotePid<Echo>, LookupError> = Node.lookup("echo");
-        match found {
-            .Ok(peer) => {
-                let reply = peer.ask(7, 1000);
-                match reply {
-                    .Ok(n) => println(f"answer={n}"),
-                    .Err(_) => println("ask failed"),
-                }
-            }
-            .Err(_) => println("lookup failed"),
-        }
+fn use_echo(peer: net.PeerSession) {
+    let echo: Echo = peer.receive_service<Echo>().expect("receive Echo service");
+    match echo.handle(7) {
+        .Ok(answer) => println(f"answer={answer}"),
+        .Err(_) => println("call failed"),
     }
 }
 ```
 
-An actor handle names an actor wherever it lives; a lookup through the node registry
-returns one for a peer. From an actor handler, `peer.ask(msg, timeout_ms)`
-lowers to the cross-node suspending remote-ask path and returns
-`Result<T.Reply, ActorError>` on resume; match `Ok`/`Err` instead of assuming a
-reply. A same-node lookup returns a handle to the local actor: its send, ask,
-link and monitor reach that actor directly, with the results a peer would give,
-and a handle from an earlier node session is stale.
+The issuer keeps the returned `net.Export<Echo>` alive while the recipient
+needs admission. Closing or dropping it revokes future calls through that
+grant. The recipient receives an ordinary `Echo` handle and calls
+`echo.handle(7)` like a local actor; completion calls wait for the handler and
+return `Result`.
 
-The explicit ask timeout can shorten an inherited request budget. Setup,
-encoding and queue time consume it. Nodes exchange a remaining duration and
-use their own monotonic clocks; they never compare absolute timestamps.
-A timeout or partition leaves the remote effect uncertain. Use idempotency
-keys, reconciliation or explicit job/status messages when the caller needs
-to determine whether work happened; retry is an application decision.
+`Node.lookup(name)` returns `Result<Location, LookupError>` for discovery. A
+`Location` describes identity but cannot authorize an actor call. Obtain call
+authority from an authenticated `Node.peer(credential)` session and an explicit
+service offer. All receive handlers of an exported actor must be `#[wire]`, and an imported
+service cannot be exported onward.
 
-A remote call addresses the one receive fn whose parameter is the actor's
-`ActorMsg.Msg` and whose result is its `ActorMsg.Reply`. Both cross the node
-as bytes, so each is a scalar, a collection of such values, or a `#[wire]`
-type with tagged fields. A plain record is refused at the call with a
-suggestion to declare its wire schema.
+Setup, encoding and queue time consume the current request budget. A lost
+connection or acknowledgement can leave remote admission uncertain. Use an
+idempotency key, reconciliation or an explicit status call when the caller
+needs to determine whether an operation happened; retry remains an application
+decision.
 
-> A local handle uses the actor's own type (HEW-SPEC-2026 §2.1.1). A handle
-> obtained from a node lookup uses `RemotePid<A>` because remote handles have a
-> distinct runtime representation. The example above therefore writes
-> `RemotePid<Echo>`.
-
-Full example:
+Full paired example:
 [`examples/distributed/kv_client.hew`](../examples/distributed/kv_client.hew)
 and [`examples/distributed/kv_server.hew`](../examples/distributed/kv_server.hew).
 
@@ -5098,28 +5079,24 @@ authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
-higher session. A remote handle carries the complete `Location`:
+higher session. A `Location` carries the complete identity:
 
 ```text
 { node: NodeId, slot: u64, incarnation: u32 }
 ```
 
-The value is an allocation-free 32-byte inline handle. It has no reference
-count, does not keep the actor alive, and cannot be constructed from raw
-integers. A PID captured before a same-key restart fails with `StaleRef`, even
-if the replacement process reuses the same actor slot.
+The value is an allocation-free 32-byte inline identity record. It has no
+reference count, does not keep the actor alive, and cannot be constructed from
+raw integers. A location from before a same-key restart is stale even if the
+replacement process reuses the same actor slot.
 
 Registry names are discovery aliases. Repointing a name affects future
-`Node.lookup` calls but does not rewrite or revoke a previously issued
-handle.
-
-The registry knows what it holds. `Node.register(name, pid)` returns
-`Result<(), RegisterError>` and records the actor's declaration identity beside
-its location; `Node.lookup<A>(name)` compares that record against `A` and
-answers `Err(LookupError.TypeMismatch)` when they disagree, so the type
-argument on a lookup is checked rather than trusted. `Node.register` is the one
-registration verb: it registers locally whether or not a node has started, and
-publishes cluster-wide once one has.
+`Node.lookup` results; a `Location` cannot grant call authority or revoke an
+existing service grant. `Node.lookup(name)` returns
+`Result<Location, LookupError>`. `Node.register(name, actor)` publishes the
+actor's location locally and, once a node has started, cluster-wide. Local
+`whereis<A>(name)` checks the actor type; cluster-wide lookup returns discovery
+metadata without claiming a call interface.
 
 Remote monitors deliver one typed notification through `#[on(down)]`:
 

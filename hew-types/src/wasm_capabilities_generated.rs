@@ -26,11 +26,8 @@ pub enum WasmFeatureDisposition { Warn, Reject }
 /// Exhaustive reject/warn feature carrier generated from the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmUnsupportedFeature {
-    Select,
     SupervisionTrees,
     LinkMonitor,
-    StructuredConcurrency,
-    Tasks,
     BlockingSemaphoreAcquire,
     Timers,
     PeriodicTimers,
@@ -57,11 +54,8 @@ pub enum WasmUnsupportedFeature {
 impl WasmUnsupportedFeature {
     /// Every reject/warn variant, in manifest order.
     pub const ALL: &'static [Self] = &[
-        Self::Select,
         Self::SupervisionTrees,
         Self::LinkMonitor,
-        Self::StructuredConcurrency,
-        Self::Tasks,
         Self::BlockingSemaphoreAcquire,
         Self::Timers,
         Self::PeriodicTimers,
@@ -88,11 +82,8 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn capability_id(self) -> WasmCapabilityId {
         match self {
-            Self::Select => WasmCapabilityId("select"),
             Self::SupervisionTrees => WasmCapabilityId("supervision-trees"),
             Self::LinkMonitor => WasmCapabilityId("link-monitor"),
-            Self::StructuredConcurrency => WasmCapabilityId("structured-concurrency"),
-            Self::Tasks => WasmCapabilityId("tasks"),
             Self::BlockingSemaphoreAcquire => WasmCapabilityId("semaphore-blocking-acquire"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
@@ -120,11 +111,8 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn disposition(self) -> WasmFeatureDisposition {
         match self {
-            Self::Select => WasmFeatureDisposition::Reject,
             Self::SupervisionTrees => WasmFeatureDisposition::Reject,
             Self::LinkMonitor => WasmFeatureDisposition::Reject,
-            Self::StructuredConcurrency => WasmFeatureDisposition::Reject,
-            Self::Tasks => WasmFeatureDisposition::Reject,
             Self::BlockingSemaphoreAcquire => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
@@ -152,11 +140,8 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Select => "`select {}` operations",
             Self::SupervisionTrees => "Supervision tree operations",
             Self::LinkMonitor => "Link/monitor operations",
-            Self::StructuredConcurrency => "Structured concurrency scopes",
-            Self::Tasks => "Task handles spawned from scopes",
             Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
@@ -184,11 +169,8 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
-            Self::Select => "a select builds its readiness waitset through the task-scope runtime (`hew_checked_task_select_*`), which is not compiled for wasm32",
             Self::SupervisionTrees => "they require OS threads for restart strategies and child supervision",
             Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
-            Self::StructuredConcurrency => "the wasm32 scheduler has no cooperative task executor or non-blocking scope join",
-            Self::Tasks => "the scheduler-owned task continuation executor is not compiled for wasm32, so forked bodies have no wasm32 task executor",
             Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
@@ -242,24 +224,17 @@ pub mod wasm_capability_ids {
     pub const QUIC: WasmCapabilityId = WasmCapabilityId("quic");
     pub const RUNTIME_SUBSTRATE_CLASSIFICATION: WasmCapabilityId = WasmCapabilityId("runtime-substrate-classification");
     pub const RUNTIME_TRAPS: WasmCapabilityId = WasmCapabilityId("runtime-traps");
-    pub const SCOPE: WasmCapabilityId = WasmCapabilityId("scope");
-    pub const SELECT: WasmCapabilityId = WasmCapabilityId("select");
     pub const SEMAPHORE: WasmCapabilityId = WasmCapabilityId("semaphore");
     pub const SEMAPHORE_BLOCKING_ACQUIRE: WasmCapabilityId = WasmCapabilityId("semaphore-blocking-acquire");
     pub const SMTP: WasmCapabilityId = WasmCapabilityId("smtp");
     pub const STD_OS: WasmCapabilityId = WasmCapabilityId("std-os");
     pub const STREAMS: WasmCapabilityId = WasmCapabilityId("streams");
-    pub const STRUCTURED_CONCURRENCY: WasmCapabilityId = WasmCapabilityId("structured-concurrency");
     pub const SUPERVISION: WasmCapabilityId = WasmCapabilityId("supervision");
     pub const SUPERVISION_TREES: WasmCapabilityId = WasmCapabilityId("supervision-trees");
-    pub const SUSPENDING_SELECT: WasmCapabilityId = WasmCapabilityId("suspending-select");
-    pub const SUSPENSION_DEADLINE: WasmCapabilityId = WasmCapabilityId("suspension-deadline");
-    pub const TASKS: WasmCapabilityId = WasmCapabilityId("tasks");
     pub const TCP_NETWORKING: WasmCapabilityId = WasmCapabilityId("tcp-networking");
     pub const TERMINATION_SIGNALS: WasmCapabilityId = WasmCapabilityId("termination-signals");
     pub const TIMERS_EVERY: WasmCapabilityId = WasmCapabilityId("timers-every");
     pub const TIMERS_SLEEP: WasmCapabilityId = WasmCapabilityId("timers-sleep");
-    pub const TIMER_SUSPENSION: WasmCapabilityId = WasmCapabilityId("timer-suspension");
     pub const TLS: WasmCapabilityId = WasmCapabilityId("tls");
     pub const WASI_ERRNO: WasmCapabilityId = WasmCapabilityId("wasi-errno");
     pub const WASI_SOCKETS: WasmCapabilityId = WasmCapabilityId("wasi-sockets");
@@ -424,14 +399,14 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_set_transport", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_api_set_transport", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_lookup_location_string", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_api_send_location", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_shutdown", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_monitor_location", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_link_remote_location", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_remote_call_new", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_peer_new", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_export", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_receive", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_acquire_new", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_remote_call_poll", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_remote_call_take", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_stdin_read_line", capability: WasmCapabilityId("stdin-input") },
@@ -557,14 +532,14 @@ pub const GENERATE_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_set_transport", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_api_set_transport", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_lookup_location_string", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_api_send_location", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_shutdown", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_monitor_location", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_link_remote_location", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_remote_call_new", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_peer_new", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_export", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_receive", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_service_acquire_new", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_remote_call_poll", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_remote_call_take", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_stdin_read_line", capability: WasmCapabilityId("stdin-input") },

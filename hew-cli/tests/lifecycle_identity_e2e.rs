@@ -76,7 +76,7 @@ pub fn code() -> i64 {
 }
 
 #[test]
-fn whole_module_alias_exit_hook_compiles_and_runs_with_scalar_abi() {
+fn whole_module_alias_exit_hook_compiles_and_runs_with_typed_target() {
     require_codegen();
 
     let workspace = support::tempdir();
@@ -89,7 +89,7 @@ import std.failure as f;
 actor Watcher {
     #[on(link)]
     fn on_peer_exit(note: f.CrashNotification) {
-        let _id = note.actor_id;
+        let _id = note.target;
         let _kind = note.kind;
     }
 }
@@ -126,7 +126,8 @@ fn down_hook_payload_reads_have_total_mir_decisions() {
     fs::write(
         &source,
         r#"
-import std.link_monitor.{DownNotification, DownReason, DownTarget};
+import std.failure.{DownTarget};
+import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
     #[on(down)]

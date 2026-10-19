@@ -1244,23 +1244,6 @@ fn register() {
 "
     }
 
-    fn remote_monitor_returns_typed_result_source() -> &'static str {
-        r"actor Worker {
-    receive fn ping() {}
-}
-
-fn register(remote: RemotePid<Worker>) {
-    let result: Result<MonitorRef, LinkError> = monitor(remote);
-    match result {
-        .Ok(m) => {
-            m.close();
-        }
-        .Err(_) => {}
-    }
-}
-"
-    }
-
     fn structured_concurrency_scope_source() -> &'static str {
         // `scope { .. }` is a statement, not a `Primary` (HEW-SPEC-2026 §4.2),
         // so the WASM admission check sees it through a statement-expression.
@@ -1350,8 +1333,8 @@ fn main() {}
         );
     }
 
-    /// Regression for PR #920: the `"link" | "unlink" | "monitor" | "demonitor"
-    /// | "link_remote"` bare-name arm in `reject_if_wasm_incompatible_call`
+    /// Regression for PR #920: the `"link" | "unlink" | "monitor" | "demonitor"`
+    /// bare-name arm in `reject_if_wasm_incompatible_call`
     /// fired on raw name alone, so an ordinary user function bare-named
     /// `link`/`monitor` (unrelated signature, no actor handle involved) hard-
     /// failed a WASM build with the `LinkMonitor` diagnostic pointed at the
@@ -1434,7 +1417,7 @@ fn main() {}
             actor Watcher {
                 #[on(exit)]
                 fn on_peer_exit(note: CrashNotification) {
-                    let _id = note.actor_id;
+                    let _id = note.target;
                 }
 
                 receive fn watch(peer: u64) {
@@ -1483,11 +1466,16 @@ fn main() {}
     }
 
     #[test]
-    fn remote_monitor_returns_typed_result() {
-        let output = check_native(remote_monitor_returns_typed_result_source());
+    fn location_cannot_be_monitored() {
+        let output =
+            check_native("fn monitor_discovery(location: Location) { let _ = monitor(location); }");
         assert!(
-            output.errors.is_empty(),
-            "monitor(RemotePid) should return Result<MonitorRef, LinkError>; got: {:?}",
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::InvalidOperation
+                    && error.message.contains("`monitor` expects an actor handle")
+                    && error.message.contains("`Location` is not one")
+            }),
+            "discovery metadata must not grant actor lifecycle authority: {:?}",
             output.errors
         );
     }
@@ -1506,51 +1494,11 @@ fn main() {}
     }
 
     #[test]
-    fn wasm_rejects_structured_concurrency_scope() {
-        let output = check_wasm(structured_concurrency_scope_source());
-        assert!(
-            has_platform_limitation_error(&output),
-            "scope expressions should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Structured concurrency"),
-            "error message should mention Structured concurrency feature; got: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "no cooperative task executor"),
-            "error message should name the missing wasm32 task executor; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
     fn native_scope_no_platform_error() {
         let output = check_native(structured_concurrency_scope_source());
         assert!(
             !has_platform_limitation_error(&output),
             "scope expressions should not emit PlatformLimitation on native target; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_scope_tasks() {
-        let output = check_wasm(scope_tasks_source());
-        assert!(
-            has_platform_limitation_error(&output),
-            "scope tasks should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Task handles"),
-            "error message should mention Task feature; got: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "no wasm32 task executor"),
-            "error message should name the missing task spawn/executor path; got: {:?}",
             output.errors
         );
     }
@@ -1565,40 +1513,8 @@ fn main() {}
         );
     }
 
-    // ── Node:: distributed namespace + RemotePid messaging reject ──────────
-    //
-    // The `Node::*` cluster API (`start`, `connect`, `load_keys`, `register`,
-    // `lookup`, …) and `RemotePid<T>::send` / `RemotePid<T>::ask` remote
-    // messaging lower to the native mesh transport (`hew_node_api_*` /
-    // `hew_remote_pid_send`), which is not compiled for wasm32.  Without a
-    // check-time gate the checker admitted these on wasm32 and codegen emitted a
-    // module importing an undefined `env::hew_node_api_*` symbol that fails at
-    // instantiation (admit-then-abort).  They must fail closed AT CHECK, like
-    // every other native-only surface in this file.
-
-    fn remote_pid_send_source() -> &'static str {
-        concat!(
-            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
-            "actor Worker { receive fn ping(msg: Ping) {} }\n",
-            "impl ActorMsg for Worker { type Msg = Ping; type Reply = (); }\n",
-            "fn main() {\n",
-            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
-            "    let _ = pid.send(Ping { n: 0 });\n",
-            "}\n",
-        )
-    }
-
-    fn remote_pid_ask_source() -> &'static str {
-        concat!(
-            "#[wire]\ntype Ping {\n    n: i64 @1;\n}\n",
-            "actor Worker { receive fn ping(msg: Ping) -> i64 { 0 } }\n",
-            "impl ActorMsg for Worker { type Msg = Ping; type Reply = i64; }\n",
-            "fn main() {\n",
-            "    let pid = Node.lookup<Worker>(\"worker\").expect(\"lookup\");\n",
-            "    let _ = pid.ask(Ping { n: 0 }, 1000);\n",
-            "}\n",
-        )
-    }
+    // The Node namespace uses the native mesh transport and is refused at
+    // check time on wasm32, before undefined runtime imports can be emitted.
 
     #[test]
     fn wasm_rejects_node_start() {
@@ -1627,14 +1543,14 @@ fn main() {}
 
     #[test]
     fn wasm_rejects_node_register_and_lookup() {
-        // `Node::register` (actor-handle arg) and `Node::lookup` (RemotePid result)
+        // `Node::register` (actor-handle arg) and `Node::lookup` (Location result)
         // both ride the native registry transport and must fail closed too.
         let source = concat!(
             "actor Worker { receive fn ping() {} }\n",
             "fn main() {\n",
             "    let w = spawn Worker;\n",
             "    Node.register(\"w\", w);\n",
-            "    let _ = Node.lookup<Worker>(\"w\");\n",
+            "    let _ = Node.lookup(\"w\");\n",
             "}\n",
         );
         let output = check_wasm(source);
@@ -1671,109 +1587,6 @@ fn main() {}
         assert!(
             output.errors.is_empty(),
             "Node:: calls should typecheck cleanly on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_remote_pid_send() {
-        let output = check_wasm(remote_pid_send_source());
-        assert!(
-            platform_error_contains(&output, "remote-actor"),
-            "RemotePid::send should be a Distributed remote-actor WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_remote_pid_ask() {
-        let output = check_wasm(remote_pid_ask_source());
-        assert!(
-            platform_error_contains(&output, "remote-actor"),
-            "RemotePid::ask should be a Distributed remote-actor WASM error; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn native_remote_pid_send_no_platform_error() {
-        let output = check_native(remote_pid_send_source());
-        assert!(
-            !has_platform_limitation_error(&output),
-            "RemotePid::send must not emit PlatformLimitation on native; got: {:?}",
-            output.errors
-        );
-        assert!(
-            output.errors.is_empty(),
-            "RemotePid::send should typecheck cleanly on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn native_remote_pid_ask_no_platform_error() {
-        let output = check_native(remote_pid_ask_source());
-        assert!(
-            !has_platform_limitation_error(&output),
-            "RemotePid::ask must not emit PlatformLimitation on native; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_a_computed_timed_select_like_any_other() {
-        // The literal-timeout twin of this case is gone: both existed to pin
-        // that a select emitted no spurious warning on wasm32, and the reject
-        // that replaced that claim does not read the timeout expression at all.
-        let output = check_wasm(
-            r"actor Responder {
-    let value: i64;
-    receive fn get() -> i64 {
-        value
-    }
-}
-
-fn main() {
-    let a = spawn Responder { value: 1 };
-    let b = spawn Responder { value: 2 };
-    let timeout = 1ms;
-    let result = select {
-        x from a.get() => match x {
-            .Ok(value) => value,
-            .Err(_) => -2,
-        }
-        y from b.get() => match y {
-            .Ok(value) => value,
-            .Err(_) => -2,
-        }
-        after timeout => -1,
-    };
-    println(result);
-}
-",
-        );
-        // A select builds its readiness waitset in the task-scope runtime, which
-        // wasm32 does not compile, so the reject is the select itself and does
-        // not depend on how the timeout is spelled: one error, no warning.
-        assert!(
-            !output.warnings.iter().any(
-                |w| w.kind == TypeErrorKind::PlatformLimitation && w.message.contains("Select")
-            ),
-            "the select reject is an error, not a warning; got warnings: {:?}",
-            output.warnings
-        );
-        let rejects: Vec<_> = output
-            .errors
-            .iter()
-            .filter(|e| {
-                e.kind == TypeErrorKind::PlatformLimitation
-                    && e.message.contains("`select {}` operations")
-            })
-            .collect();
-        assert_eq!(
-            rejects.len(),
-            1,
-            "a computed timeout must not change the select reject; got errors: {:?}",
             output.errors
         );
     }

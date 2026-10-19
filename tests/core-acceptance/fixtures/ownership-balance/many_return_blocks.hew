@@ -1,4 +1,4 @@
-import std.string;
+
 
 type Admission {
     label: string;
@@ -11,9 +11,9 @@ enum AdmissionError {
 
 fn admit(n: i64) -> Result<Admission, AdmissionError> {
     if n >= 0 {
-        return .Ok(Admission { label: "admit" + string.from_int(n), ordinal: n });
+        return .Ok(Admission { label: "admit" + f"{n}", ordinal: n });
     }
-    .Err(AdmissionError.Rejected("negative" + string.from_int(n)))
+    .Err(AdmissionError.Rejected("negative" + f"{n}"))
 }
 
 fn route(n: i64) -> string {

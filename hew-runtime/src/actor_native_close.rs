@@ -1,6 +1,6 @@
 //! Local termination observers outlive the actor or supervisor allocation.
 
-use crate::actor::{HewActor, HewDispatchOwnership};
+use crate::actor::HewActor;
 use crate::internal::types::HewActorState;
 use crate::lifetime::{live_actors, local_handles};
 use crate::util::MutexExt;
@@ -17,6 +17,7 @@ pub struct NativeActorCompletion {
     pub(crate) cleanup: super::cleanup::Cleanup,
     pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
     pub(crate) crash_action: AtomicI32,
+    pub(crate) construction: Mutex<Option<crate::coro_state::ConstructionWake>>,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,
@@ -30,6 +31,16 @@ impl NativeActorCompletion {
         Self {
             crash,
             ..Self::default()
+        }
+    }
+
+    pub(crate) fn cancel_construction(&self, reason: i32) -> bool {
+        let construction = self.construction.lock_or_recover();
+        if let Some(wake) = construction.as_ref() {
+            wake.cancel(reason);
+            true
+        } else {
+            false
         }
     }
 
@@ -119,10 +130,9 @@ pub(crate) unsafe fn finish_native_terminal_after_terminate(actor: &HewActor) {
     {
         return;
     }
-    debug_assert_eq!(
-        actor.dispatch_ownership,
-        HewDispatchOwnership::UniqueEnvelope
-    );
+    // A pending timer owns a registered payload. Retire it before terminal
+    // cleanup closes the inbox and waits for its remaining owners.
+    crate::timer_periodic::cancel_all_timers_for_actor(std::ptr::from_ref(actor).cast_mut());
     if completion.crash.is_some() || completion.cleanup.needs_terminal_cleanup() {
         // SAFETY: the terminal claim retains state until scheduler cleanup
         // completes; raw actor reclamation must observe this pending claim.
@@ -244,6 +254,8 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
 #[derive(Debug)]
 pub struct HewNativeActorWait {
     completion: Option<Arc<NativeActorCompletion>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    imported: Option<Box<crate::hew_node::monitor_link::HewNativeActorObservation>>,
     pub(crate) target: live_actors::ActorIncarnation,
     _waker: Arc<OwnedWaker>,
 }
@@ -272,6 +284,8 @@ pub(crate) unsafe fn wait_from_target(
     }
     Box::into_raw(Box::new(HewNativeActorWait {
         completion,
+        #[cfg(not(target_arch = "wasm32"))]
+        imported: None,
         target: actor,
         _waker: waker,
     }))
@@ -287,6 +301,33 @@ pub unsafe extern "C" fn hew_actor_wait_new(
     token: local_handles::HewLocalPidId,
     waker: *const HewWaker,
 ) -> *mut HewNativeActorWait {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(imported) = local_handles::current_imported_actor(token) {
+        // SAFETY: the caller retains its live wake descriptor.
+        let (completion, operation) =
+            unsafe { crate::hew_node::monitor_link::imported_actor_wait(&imported, waker) };
+        // SAFETY: this borrow remains live while retaining the descriptor.
+        let owned = Arc::new(unsafe { OwnedWaker::retain(&*waker) });
+        completion.ready.register(&owned);
+        return Box::into_raw(Box::new(HewNativeActorWait {
+            completion: Some(completion),
+            imported: Some(operation),
+            target: live_actors::ActorIncarnation::NONE,
+            _waker: owned,
+        }));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((owner, slot, kind)) = local_handles::current_actor_role_owner_slot(token) {
+        // SAFETY: the caller retains the descriptor during role resolution.
+        return unsafe {
+            crate::supervisor::hew_supervisor_native_role_wait_new(
+                owner,
+                slot,
+                waker,
+                i32::from(kind == local_handles::SupervisorRoleKind::Supervisor),
+            )
+        };
+    }
     let target = local_handles::resolve_current_actor(token).and_then(|id| {
         live_actors::with_actor_send_by_id(id, |actor| {
             // SAFETY: the send guard pins this exact actor during registration.
@@ -324,7 +365,14 @@ pub unsafe extern "C" fn hew_actor_wait_new(
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) -> i32 {
     // SAFETY: the operation remains live during this poll.
-    let wait = unsafe { &*wait };
+    let wait = unsafe { &mut *wait.cast_mut() };
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(operation) = &mut wait.imported {
+        // SAFETY: the unique wait owner serializes polls of its setup operation.
+        unsafe {
+            crate::hew_node::monitor_link::hew_native_actor_observe_poll(&raw mut **operation)
+        };
+    }
     match &wait.completion {
         Some(completion) if completion.phase.load(Ordering::Acquire) != 2 => 0,
         Some(completion) if completion.code.load(Ordering::Relaxed) != 0 => 2,
@@ -390,13 +438,14 @@ mod tests {
             let mut actor = crate::test_actor::stub_actor();
             actor.state = storage.as_mut_ptr().cast();
             actor.state_drop_fn = Some(drop_state);
-            actor.dispatch_ownership = HewDispatchOwnership::UniqueEnvelope;
             let completion = Arc::new(NativeActorCompletion::default());
             actor.native_completion = Some(completion.clone());
             let waker = Arc::new(waker);
             completion.ready.register(&waker);
             let wait = Box::into_raw(Box::new(HewNativeActorWait {
                 completion: Some(completion),
+                #[cfg(not(target_arch = "wasm32"))]
+                imported: None,
                 target: live_actors::ActorIncarnation::NONE,
                 _waker: waker,
             }));
@@ -431,7 +480,6 @@ mod tests {
         for observe in [false, true] {
             crate::exit_status::reset_process_exit_status();
             let mut actor = crate::test_actor::stub_actor();
-            actor.dispatch_ownership = HewDispatchOwnership::UniqueEnvelope;
             let completion = Arc::new(NativeActorCompletion::default());
             actor.native_completion = Some(completion.clone());
             actor
@@ -449,6 +497,8 @@ mod tests {
             let (_, waker) = crate::wake::blocking::Readiness::new();
             let wait = Box::into_raw(Box::new(HewNativeActorWait {
                 completion: Some(completion),
+                #[cfg(not(target_arch = "wasm32"))]
+                imported: None,
                 target: live_actors::ActorIncarnation::NONE,
                 _waker: Arc::new(waker),
             }));
@@ -517,6 +567,7 @@ mod tests {
                 config.cast(),
                 Some(drop_config),
                 [].as_ptr(),
+                0,
                 0,
                 &raw mut fault,
             );
@@ -622,6 +673,7 @@ mod tests {
                 Some(drop_child),
                 [].as_ptr(),
                 0,
+                0,
                 &raw mut fault,
             );
             assert!(fault.is_null());
@@ -647,17 +699,46 @@ mod tests {
                 Some(drop_parent),
                 children.as_ptr(),
                 children.len(),
+                0,
                 &raw mut fault,
             );
             assert!(fault.is_null());
             (child, parent)
         };
         let (_, wake) = crate::wake::blocking::Readiness::new();
-        let role = local_handles::current_supervisor_role_owner(parent, 0);
+        let role = local_handles::current_supervisor_role_owner(
+            parent,
+            0,
+            local_handles::SupervisorRoleKind::Supervisor,
+        );
         assert_eq!(
             role,
-            local_handles::current_supervisor_role_owner(parent, 0)
+            local_handles::current_supervisor_role_owner(
+                parent,
+                0,
+                local_handles::SupervisorRoleKind::Supervisor
+            )
         );
+        let actor_role = local_handles::current_supervisor_role_owner(
+            parent,
+            0,
+            local_handles::SupervisorRoleKind::Actor,
+        );
+        assert_ne!(actor_role, role);
+        assert_eq!(
+            local_handles::hew_actor_handle_identical(actor_role, role),
+            0
+        );
+        assert_eq!(
+            actor_role,
+            local_handles::current_supervisor_role_owner(
+                parent,
+                0,
+                local_handles::SupervisorRoleKind::Actor
+            )
+        );
+        assert!(local_handles::pin_current_supervisor(actor_role).is_none());
+        assert!(crate::supervisor::current_actor_role_identity(role).is_none());
         assert!(local_handles::pin_current_supervisor(role).is_some());
         // SAFETY: the wake descriptor stays live and this test owns the observer.
         let observer = unsafe { hew_actor_wait_new(parent, wake.descriptor()) };

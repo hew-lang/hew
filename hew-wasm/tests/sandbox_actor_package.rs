@@ -358,6 +358,11 @@ fn main() {
 }
 
 #[test]
+fn select_plain_call_source_executes() {
+    assert_native_manifest("select-plain-call-arm", hew_compile::SourceSet::in_memory());
+}
+
+#[test]
 fn select_keeps_a_losing_task_joinable() {
     let trace = execute(
         r"fn delayed(n: i64, delay: duration) -> i64 {
@@ -470,7 +475,10 @@ fn actor_task_and_pipe_selection_compose_without_consuming_losers() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/select-actor-call-arm.hew"
     ));
-    assert_eq!(stdout(&trace), "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n");
+    assert_eq!(
+        stdout(&trace),
+        "OWNED ACTOR REPLY\ntask still joinable\nreceiver still usable\nreceiver evaluated once\nprepared receiver\n"
+    );
 }
 
 #[test]
@@ -540,7 +548,7 @@ actor Driver {
             _ => "wrong first outcome",
         });
         println(match inbox.work(2) {
-            .Err(failure) => match failure.reason {
+            .Err(ActorError.Rejected(failure)) => match failure.reason {
                 .Full => "full",
                 _ => "wrong reason",
             }
@@ -647,7 +655,10 @@ fn rejected_completion_requests_keep_owned_payloads_for_retry_and_redirection() 
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-policy-reject.hew"
     ));
-    assert_eq!(stdout(&trace), "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n");
+    assert_eq!(
+        stdout(&trace),
+        "submitted: accepted\nrejected: Full: the destination mailbox is full\ntrue\n2\n2\ntrue\ntrue\nclosed\n"
+    );
 }
 
 #[test]
@@ -670,19 +681,95 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
 }
 
 #[test]
-fn crash_info_uses_the_native_fault_code_and_class() {
+fn crash_info_uses_the_native_public_crash_kind() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/crash-info-hook-fields.hew"
     ));
-    assert_eq!(stdout(&trace), "212\nUserPanic\n");
+    assert_eq!(stdout(&trace), "Fault\nUserPanic\n");
     assert_eq!(trace["final_state"]["exit_code"], 42);
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/actor-mailbox-fails-faults.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "open\nvault\n60\nHandlerFailed\nopen\n100\nHandlerFailed\nvault\n50\n"
+    );
+}
+
+#[test]
+fn actor_periodic_handlers_follow_lifecycle_and_restart() {
+    assert_native_manifest(
+        "actor-periodic-handlers",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
+fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
+    for name in [
+        "actor-one-shot-lifetime",
+        "actor-timer-overdue-compute",
+        "actor-timer-discard-overdue",
+    ] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
+    let failed = execute_options(
+        include_str!("../../tests/core-acceptance/cases/actor-timer-construction-overdue.hew"),
+        "panic",
+        "{}",
+        hew_compile::SourceSet::in_memory(),
+    );
+    let closed = stdout(&failed);
+    let mut closed: Vec<_> = closed.lines().collect();
+    assert_eq!(closed.pop(), Some("closed state"));
+    closed.sort_unstable();
+    assert_eq!(
+        closed,
+        ["closed overdue", "closed pending", "closed queued"]
+    );
+    let mut module = semantics(include_str!(
+        "../../tests/core-acceptance/cases/actor-one-shot-lifetime.hew"
+    ));
+    let operation = module
+        .module
+        .functions
+        .iter_mut()
+        .flat_map(|function| &mut function.blocks)
+        .find_map(|block| match &mut block.terminator {
+            hew_sir::SemTerminator::ActorCall {
+                operation: hew_sir::ActorOperation::TimerSchedule { policy, .. },
+                ..
+            } => Some(policy),
+            _ => None,
+        })
+        .expect("source demanded a timer operation");
+    *operation = hew_types::actor_delivery::SendPolicy::Wait;
+    let diagnostics = hew_sir::verify_module(&module.module);
+    assert!(format!("{diagnostics:?}").contains("a timer cannot wait for mailbox capacity"));
+}
+
+#[test]
+fn indexed_unicode_values_preserve_scalar_operations_and_snapshots() {
+    let trace = execute(include_str!(
+        "../../tests/core-acceptance/cases/string-indexed-unicode.hew"
+    ));
+    assert_eq!(
+        stdout(&trace),
+        "222:407\n222:407\nindexed Unicode preserved\n"
+    );
 }
 
 #[test]
 fn structural_display_preserves_checked_nested_and_alias_selections() {
     for (source, expected) in [
-        (include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"), "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n"),
-        (include_str!("../../tests/core-acceptance/cases/structural-rendering-aliases.hew"), "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n"),
+        (
+            include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"),
+            "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/structural-rendering-aliases.hew"),
+            "Report { readings: readings(2), archived: Some(readings(2)), plain: [3, 5], pair: (readings(2), west) }\n[Update { readings: readings(2) }, History(Some(readings(2)))]\nStations { values: {west: readings(2)} }\nreadings(2)\n",
+        ),
     ] {
         assert_eq!(stdout(&execute(source)), expected);
     }
@@ -714,7 +801,10 @@ fn generators_close_through_records_variants_captures_and_lazy_owners() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/generator-nested-values.hew"
     ));
-    assert_eq!(stdout(&trace), "record\nrecord cleaned\nenum\nenum cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n");
+    assert_eq!(
+        stdout(&trace),
+        "record\nrecord cleaned\nenum\nenum cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n"
+    );
 }
 
 #[test]
@@ -785,14 +875,39 @@ fn nested_supervisor_roles_follow_group_replacements() {
 
 #[test]
 fn pools_restart_only_the_failed_member_from_its_template() {
-    let trace = execute(include_str!(
-        "../../tests/core-acceptance/cases/supervisor-pool-lifecycle.hew"
-    ));
-    assert_eq!(
-        stdout(&trace),
-        "4\nno member 4\n4\n4\n4\n4\n1\n3\n11\n4\n4\n4\nstopped\n"
+    assert_native_manifest(
+        "supervisor-pool-lifecycle",
+        hew_compile::SourceSet::in_memory(),
     );
-    assert_eq!(trace["final_state"]["exit_code"], 0);
+}
+
+#[test]
+fn pool_count_refusal_precedes_child_bootstrap_and_cleans_the_caller() {
+    for source in [
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-zero.hew"),
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-negative.hew"),
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-overflow.hew"),
+    ] {
+        let trace = execute_expected(source, "panic");
+        assert_eq!(stdout(&trace), "count evaluated\ncaller cleaned\n");
+        assert_eq!(
+            trace["final_state"]["runtime_failures"][0]["message"],
+            "supervisor pool count must be between 1 and 2147483647",
+        );
+    }
+}
+
+#[test]
+fn pool_count_expression_fault_cleans_borrowed_construction_config() {
+    let trace = execute_expected(
+        include_str!("../../tests/core-acceptance/cases/supervisor-pool-count-fault.hew"),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "count evaluated\ncaller cleaned\n");
+    assert_eq!(
+        trace["final_state"]["runtime_failures"][0]["message"],
+        "count evaluated"
+    );
 }
 
 #[test]
@@ -882,7 +997,10 @@ fn nested_display_resumes_peer_calls_and_drains_actor_close_cancellation() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/structural-rendering-actor-lifecycle.hew"
     ));
-    assert_eq!(stdout(&trace), "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n");
+    assert_eq!(
+        stdout(&trace),
+        "start [1, 2]\nfinished ONE\n{west: [ONE]}\nfinished ONE\nfault returned\nstart [1, 2]\nfinished CANCELLED\ncancelled formatter closed\n"
+    );
     assert_eq!(trace["final_state"]["exit_code"], 1);
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 0);
 }
@@ -896,6 +1014,34 @@ fn authored_resource_close_runs_once_for_explicit_and_implicit_release() {
         stdout(&trace),
         "close e1\nreleased early\nlate live 2\nclose l2\n"
     );
+}
+
+#[test]
+fn authored_close_compute_helpers_yield_to_the_queued_peer() {
+    assert_native_manifest(
+        "compute-close-safepoints",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
+fn seeded_driver_covers_serialized_and_lost_deposits() {
+    for (name, seed) in [
+        ("driver-lost-update-random-1", 1),
+        ("driver-lost-update-random-13", 13),
+        ("driver-lost-update-hooks-random-1", 1),
+        ("driver-lost-update-hooks-random-13", 13),
+    ] {
+        let options =
+            serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();
+        let trace =
+            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &options);
+        let replay = serde_json::json!({"replay": trace["replay"]}).to_string();
+        assert_eq!(
+            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &replay),
+            trace
+        );
+    }
 }
 
 #[test]
@@ -943,6 +1089,18 @@ fn dead_actor_calls_drain_their_consumed_message_before_returning() {
     );
     let trace = execute_expected(&failure, "panic");
     assert_eq!(stdout(&trace), "closed 9\n");
+}
+
+#[test]
+fn observed_machine_feeds_snapshot_lag_and_detach() {
+    assert_native_manifest("machine-observed-feed", hew_compile::SourceSet::in_memory());
+}
+
+#[test]
+fn http_routing_and_strict_url_decoding_use_shared_source_oracles() {
+    for name in ["http-router", "example-http-router"] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
 }
 
 #[test]
@@ -1023,6 +1181,51 @@ fn parent_relative_generic_actor_imports_execute() {
     assert_eq!(trace["final_state"]["exit_code"], 0);
 }
 
+#[test]
+fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "confined_service_support/component.hew",
+        include_str!("../../tests/core-acceptance/cases/confined_service_support/component.hew"),
+    );
+    assert_native_manifest("confined-service-summaries", inputs.clone());
+    let source = include_str!("../../tests/core-acceptance/cases/confined-service-summaries.hew");
+    let trace = execute_options(source, "ok", "{}", inputs.clone());
+    assert_eq!(stdout(&trace), "confined supplied service closed\n");
+    assert_eq!(trace["final_state"]["exit_code"], 0);
+    for (source, kind, message) in [
+        (
+            include_str!(
+                "../../tests/core-acceptance/cases/confined-service-summaries-refused.hew"
+            ),
+            "E_CONFINED_AUTHORITY",
+            "confined `run_factory` reaches `fs.open_read`",
+        ),
+        (
+            include_str!("../../tests/core-acceptance/cases/generic-resource-bounds-refused.hew"),
+            "BoundsNotSatisfied",
+            "trait `ValueChild<i64>`",
+        ),
+    ] {
+        let rejected = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+            source,
+            Some("sandbox-vm-export"),
+            inputs.clone(),
+        )
+        .expect("source refusal is a diagnostic");
+        assert!(rejected.bytecode.is_none());
+        assert!(
+            rejected.diagnostics.iter().any(|diagnostic| {
+                diagnostic.severity == "error"
+                    && diagnostic.kind == kind
+                    && diagnostic.message.contains(message)
+            }),
+            "{:?}",
+            rejected.diagnostics
+        );
+    }
+}
+
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
     assert_native_manifest_options(name, inputs, "{}")
 }
@@ -1037,12 +1240,41 @@ fn assert_native_manifest_options(
         .expect("shared native manifest");
     let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
     let case = &manifest["case"][0];
-    let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap()))
-        .expect("shared native source");
-    let trace = execute_options(&source, "ok", options, inputs);
+    let source_path = root.join(case["source"].as_str().unwrap());
+    let source = std::fs::read_to_string(&source_path).expect("shared native source");
+    let mut options: serde_json::Value = serde_json::from_str(options).expect("VM options");
+    if let Some(arguments) = case.get("argv").and_then(toml::Value::as_array) {
+        let mut argv = vec![source_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()];
+        argv.extend(arguments.iter().map(|value| {
+            value
+                .as_str()
+                .expect("manifest argument string")
+                .to_string()
+        }));
+        options["argv"] = serde_json::json!(argv);
+    }
+    let trace = execute_options(&source, "ok", &options.to_string(), inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
+        "{name}"
+    );
+    let stderr: String = trace["final_state"]["stderr"]
+        .as_array()
+        .expect("VM stderr")
+        .iter()
+        .map(|value| value.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        stderr,
+        case["expected"]
+            .get("stderr")
+            .and_then(toml::Value::as_str)
+            .unwrap_or(""),
         "{name}"
     );
     assert_eq!(
@@ -1051,6 +1283,58 @@ fn assert_native_manifest_options(
         "{name}"
     );
     trace
+}
+
+#[test]
+fn cli_parser_and_examples_share_native_source_arguments_and_output() {
+    for case in [
+        "cli-commands",
+        "example-cli-argparse",
+        "example-cli-argparse-error",
+        "example-cli-argparse-help",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn cli_arguments_have_owned_strings_and_a_stable_default() {
+    let trace = execute(
+        r#"
+import std.os;
+fn main() {
+    var arguments = os.args();
+    let retained = arguments;
+    assert(arguments.len() == 1);
+    arguments.set(0, "changed");
+    assert(os.args()[0] == "main.hew");
+    println(retained[0]);
+}
+"#,
+    );
+    assert_eq!(stdout(&trace), "main.hew\n");
+}
+
+#[test]
+fn cli_argument_admission_keeps_native_environment_operations_refused() {
+    let trace = execute_expected(
+        r#"
+import std.os;
+fn main() {
+    println("must not execute");
+    let _ = os.env("HOME");
+}
+"#,
+        "sandbox_rejected",
+    );
+    assert!(stdout(&trace).is_empty());
+    assert!(trace["final_state"]["sandbox_rejections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|refusal| refusal["capability"]
+            .as_str()
+            .is_some_and(|symbol| symbol.starts_with("hew_env_"))));
 }
 
 #[test]
@@ -1083,6 +1367,13 @@ fn coalescing_accepts_replacement_and_reports_fallback_discard() {
 }
 
 #[test]
+fn suspended_start_hooks_finish_before_actor_calls() {
+    for case in ["on-start-suspension-low", "on-start-suspension-high"] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
 fn actor_constructor_cleanup_preserves_child_rc_owner() {
     assert_native_manifest(
         "actor-rc-constructor-close",
@@ -1111,7 +1402,9 @@ fn actor_stop_drains_owned_work_in_both_runtimes() {
             .iter()
             .map(|event| event["rc_sweep"]["count"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["132", "2"]
+        // Worker includes its later close allocation; Faulting and failed
+        // Broken construction each drain their two remaining cycles.
+        ["132", "2", "2"]
     );
 }
 
@@ -1690,7 +1983,10 @@ fn actor_interceptor_chain_specializes_only_supervised_instances() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-interceptor-chain.hew"
     ));
-    assert_eq!(stdout(&trace), "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n");
+    assert_eq!(
+        stdout(&trace),
+        "root before\nbranch before\nactor before\nhandler\nactor after\nbranch after\nroot after\nactor before\nhandler\nactor after\n"
+    );
 }
 
 #[test]

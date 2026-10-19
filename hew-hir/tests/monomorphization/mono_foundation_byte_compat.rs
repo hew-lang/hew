@@ -1,22 +1,7 @@
-//! Foundation lift validation tests.
+//! Symbol spelling, category separation and LLVM-safe origin names.
 //!
-//! Covers two invariants the parametric `MonoKey<K>` foundation
-//! promises to downstream subsystems:
-//!
-//! 1. **Byte compatibility** — every function-mono mangled name
-//!    produced by the legacy [`hew_hir::monomorph::mangle`] helper
-//!    equals the new
-//!    [`hew_hir::mono::mangle_instantiation`]`(SymbolClass::Function,
-//!    ..., &[])` output for the same inputs. This is the non-breaking-
-//!    change guarantee: no callsite consuming the legacy helper's
-//!    output observes any change in mangled symbols across this
-//!    refactor.
-//! 2. **Class-tag uniqueness** — two instantiations sharing origin
-//!    name and identical type args but differing only in
-//!    [`SymbolClass`] mangle to distinct symbols. This is the
-//!    cross-category collision guarantee that makes
-//!    `MonoKey<Actor>` safe to dispatch to
-//!    downstream codegen alongside the existing function-mono symbols.
+//! Function symbols use the same projection as concrete layout symbols.
+//! Distinct symbol classes remain disjoint for the same origin and arguments.
 
 use hew_hir::mono::{mangle_instantiation, ConstValue, SymbolClass};
 use hew_hir::monomorph::mangle as legacy_mangle;
@@ -178,25 +163,6 @@ fn const_args_segment_format() {
         &[ConstValue::Usize(16), ConstValue::Usize(32)],
     );
     assert_eq!(two, "ac$$M$$i32$$c$u16$u32");
-}
-
-/// `MonoKey<Function>` constructed via the parametric helper and then
-/// mangled equals the legacy `mangle` output for the same name/args.
-/// Exercises the `mangle_no_const_args` specialisation.
-#[test]
-fn function_mono_key_mangle_matches_legacy() {
-    use hew_hir::ids::ItemId;
-    use hew_hir::mono::FunctionMonoKey;
-
-    let origin = ItemId(7);
-    for name in sample_origin_names() {
-        for type_args in sample_resolved_tys() {
-            let key = FunctionMonoKey::new(origin, (*name).to_string(), type_args.clone());
-            let key_mangled = key.mangle_no_const_args();
-            let legacy = legacy_mangle(name, &type_args);
-            assert_eq!(key_mangled, legacy);
-        }
-    }
 }
 
 // ── sanitize_for_symbol wiring tests ──────────────────────────────────────

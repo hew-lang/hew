@@ -278,10 +278,26 @@ impl MarkerDerivation<'_> {
 }
 
 impl TraitRegistry {
-    /// Create a new empty trait registry.
+    /// Create a trait registry with the builtin marker constraints.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let mut registry = Self::default();
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Send,
+        );
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Sync,
+        );
+        registry.register_negative_impl(
+            crate::KnownDecl::ActorTimerMailbox.head(),
+            MarkerTrait::Frozen,
+        );
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Send);
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Sync);
+        registry.register_negative_impl(crate::KnownDecl::Timer.head(), MarkerTrait::Frozen);
+        registry
     }
 
     /// Register a type definition with its field types.
@@ -407,7 +423,7 @@ impl TraitRegistry {
     /// Marker traits are derived automatically based on the structure of the type:
     /// - Primitives implement most marker traits
     /// - Composite types implement a trait if all their components do
-    /// - `ChildRef`/`ActorHandle`/`RemotePid` are always `Send` and `Frozen`
+    /// - Actor handles are always `Send` and `Frozen`
     /// - Negative impls can override automatic derivation
     #[must_use]
     pub fn implements_marker(&self, ty: &Ty, marker: MarkerTrait) -> bool {
@@ -566,7 +582,7 @@ impl TraitRegistry {
             // Local actor references are immutable identities, not resources:
             // Send + Sync + Frozen + Copy + Clone + Debug.
             Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::ChildRef) | crate::TypeHead::Actor(_),
+                head: crate::TypeHead::Actor(_),
                 ..
             } => matches!(
                 marker,
@@ -580,10 +596,7 @@ impl TraitRegistry {
 
             // Key-backed node identity values are immutable inline aggregates.
             Ty::Named {
-                head:
-                    crate::TypeHead::Builtin(
-                        BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid,
-                    ),
+                head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location),
                 ..
             } => matches!(
                 marker,
@@ -683,7 +696,7 @@ impl TraitRegistry {
                             | MarkerTrait::Drop
                     );
                 }
-                // Actors are always Send + Sync
+                // Actors are always Send and Sync
                 if self.actors.contains(&name)
                     && matches!(marker, MarkerTrait::Send | MarkerTrait::Sync)
                 {
@@ -1018,19 +1031,6 @@ mod tests {
         assert!(registry.is_send(&Ty::String));
     }
 
-    #[test]
-    fn child_ref_is_a_copyable_local_actor_reference() {
-        let registry = TraitRegistry::new();
-        let child_ref = Ty::child_ref(Ty::named_for_test("Worker", vec![]));
-        for marker in [
-            MarkerTrait::Send,
-            MarkerTrait::Frozen,
-            MarkerTrait::Copy,
-            MarkerTrait::Clone,
-        ] {
-            assert!(registry.implements_marker(&child_ref, marker));
-        }
-    }
     #[test]
     fn test_tuple_send_if_all_elements_send() {
         let registry = TraitRegistry::new();

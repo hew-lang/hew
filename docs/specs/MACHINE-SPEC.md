@@ -70,9 +70,16 @@ For `machine M`, the compiler supplies:
 | `MEvent` | The input enum |
 | `MOutput` | The independent output enum |
 | `MStepDisposition` | `Taken` and `Ignored` variants |
-| `MStep` | Report with `outputs: Vec<MOutput>` and `disposition: MStepDisposition` |
+| `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rule: Option<i64>` |
 | `step(var self, event: MEvent) -> MStep` | Staged mutable evaluation |
 | `state_name(self) -> string` | Current state tag |
+
+Each machine implements the compiler-generated `Machine` interface. Its
+associated `Event` and `Step` types identify the input and report types;
+`step_info(report)` returns the common `MachineStepInfo` view. Handwritten
+implementations cannot replace the checked machine evaluator. A report's
+`input` is the source event tag; `rule` is the zero-based source rule ordinal,
+or `None` when the default handles the input.
 
 `MStep` is must-use: discarding it as an expression produces the ordinary
 must-use diagnostic. A caller can explicitly acknowledge deliberate discard
@@ -197,6 +204,86 @@ target instead.
 
 The hierarchy represents one active branch. Parallel regions and history
 states are not part of this surface.
+
+## Observed ownership
+
+`std.machine.watch` adds explicit observation around an independent machine
+copy. The machine evaluator stays synchronous; an observed owner's `step`
+uses ordinary actor service suspension. This example uses the threaded scheduler;
+the documentation runner checks its compilation without deterministic execution.
+
+```hew,no_run
+import std.machine.watch;
+
+machine Counter {
+    events { Add { value: i64; } }
+    state Ready { value: i64; }
+    on Add: Ready => Ready { value: state.value + event.value }
+    default { state }
+}
+
+fn main() {
+    let initial: Counter = .Ready { value: 0 };
+    let (owner, feed) = watch.observe(initial, capacity: 8, subscribers: 2)
+        .expect("observe");
+    var live = owner;
+    let updates = feed.subscribe().expect("subscribe");
+    assert(updates.initial().revision == 0);
+    let _ = live.step(.Add { value: 4 });
+    let notice = updates.recv().expect("history retained").expect("notice");
+    assert(notice.revision == 1);
+    live.close();
+}
+```
+
+`Owner<M.Event, M.Step>` exclusively holds writable identity. Moving it transfers ownership;
+it cannot be copied or cloned. `Feed<M>` is copyable and permits subscription
+only. A subscription is an owning resource; closing or dropping it detaches
+its cursor and readiness waiter. Neither feed nor subscription exposes the
+private actor identity or a callable that can step it.
+
+Subscribing atomically returns a snapshot at revision `r` and registers a
+cursor for `r + 1`. Each successful input commits one notice containing the
+post-step state, revision and `MachineStepInfo`, including ignored inputs and
+same-state transitions. Step outputs belong to the returned report and do
+not enter the observation history. A failed step publishes neither state nor
+notice. Machine state and reports must satisfy `Send` to use this wrapper.
+
+The owner retains at most `capacity` notices for at most `subscribers`
+registered cursors. Readiness is coalesced; slow subscribers never block a
+commit. A subscriber that falls behind receives `Lag { last_seen,
+available_from }` and detaches instead of silently skipping notices. It may
+subscribe again for a new atomic snapshot. Closing the owner rejects new
+subscriptions, lets existing subscribers drain retained history, then returns
+`None`; lag still takes precedence when the retained range was exceeded.
+Creating another owner creates an independent revision sequence and identity.
+Dropping a subscription detaches its cursor and pending receive before resource
+cleanup completes. An ordinary `scope within` can bound a receive.
+
+An ordinary receive call can also be selected repeatedly without consuming
+the subscription. A timer win cancels and drains that receive before its arm
+runs; the next iteration can receive from the same cursor. Ordinary-call
+preparation can advance the cursor before selection; cancelling a completed
+receive does not undo that consumption (§4.11.1 of the language specification):
+
+```hew,ignore
+loop {
+    select {
+        item from updates.recv() => {
+            match item {
+                .Ok(.Some(notice)) => println(notice.revision),
+                .Ok(.None) => break,
+                .Err(lag) => panic(f"history incomplete: {lag}"),
+            }
+        }
+        after 1s => println("still waiting"),
+    };
+}
+```
+
+The wrapper uses ordinary Hew actors, bounded streams and resource cleanup.
+It invokes the same generated evaluator as direct `M.step`; it has no second
+transition evaluator or observer callback execution inside commit.
 
 ## Implementation scope
 

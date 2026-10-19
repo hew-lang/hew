@@ -65,7 +65,7 @@ pub(super) fn file_import_item_module_indices(program: &Program) -> HashMap<usiz
 /// into `program.items` by `flatten_file_import_items` (i.e. reached via a
 /// file-path `import "x.hew";`).
 ///
-/// The fourth pass (`lower_program_with_mono_cap`'s module-graph walk) visits
+/// The fourth pass (`lower_program`'s module-graph walk) visits
 /// every module in `mg.topo_order`, which contains BOTH package-imported and
 /// file-imported modules. File-import items are ALSO lowered by the
 /// source-order third pass (they live in `program.items` after the splice), so

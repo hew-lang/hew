@@ -1,4 +1,4 @@
-// Regression: ChildRef carries supervised-role identity through ordinary values.
+// Regression: An actor handle carries supervised-role identity through ordinary values.
 //
 // This program sweeps six value-flow positions (inline, parameter, return,
 // record field, Vec element, and closure capture) across four role states
@@ -60,32 +60,32 @@ supervisor StaticPool {
 }
 
 type Holder {
-    child: ChildRef<Worker>;
+    child: Worker;
 }
 
-fn expect_live(child: ChildRef<Worker>) -> bool {
+fn expect_live(child: Worker) -> bool {
     match child.work() {
         .Ok(value) => value == 7,
         .Err(_) => false,
     }
 }
 
-fn expect_unavailable(child: ChildRef<Worker>) -> bool {
+fn expect_unavailable(child: Worker) -> bool {
     match child.work() {
         .Ok(_) => false,
         .Err(_) => true,
     }
 }
 
-fn pass_through(child: ChildRef<Worker>) -> ChildRef<Worker> {
+fn pass_through(child: Worker) -> Worker {
     child
 }
 
-fn tell_through(child: ChildRef<Worker>) {
+fn tell_through(child: Worker) {
     let _ = child.note();
 }
 
-fn wait_for_live(child: ChildRef<Worker>) -> bool {
+fn wait_for_live(child: Worker) -> bool {
     var attempts = 0;
     while attempts < 1000 {
         if expect_live(child) {
@@ -97,7 +97,7 @@ fn wait_for_live(child: ChildRef<Worker>) -> bool {
     false
 }
 
-fn wait_for_unavailable(child: ChildRef<Worker>) -> bool {
+fn wait_for_unavailable(child: Worker) -> bool {
     var attempts = 0;
     while attempts < 1000 {
         if expect_unavailable(child) {
@@ -109,7 +109,7 @@ fn wait_for_unavailable(child: ChildRef<Worker>) -> bool {
     false
 }
 
-fn crash_and_wait_for_restart(child: ChildRef<Worker>) -> bool {
+fn crash_and_wait_for_restart(child: Worker) -> bool {
     let _ = child.crash_me();
     wait_for_live(child)
 }
@@ -129,7 +129,7 @@ fn main() {
     ok = ok && expect_live(live_returned);
     let live_holder = Holder { child: live };
     ok = ok && expect_live(live_holder.child);
-    var live_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var live_vec: Vec<Worker> = Vec.new();
     live_vec.push(live);
     ok = ok && expect_live(live_vec[0]);
     let live_capture = || live;
@@ -161,7 +161,7 @@ fn main() {
     ok = ok && expect_unavailable(restarting_returned);
     let restarting_holder = Holder { child: restarting };
     ok = ok && expect_unavailable(restarting_holder.child);
-    var restarting_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var restarting_vec: Vec<Worker> = Vec.new();
     restarting_vec.push(restarting);
     ok = ok && expect_unavailable(restarting_vec[0]);
     let restarting_capture = || restarting;
@@ -191,7 +191,7 @@ fn main() {
     ok = ok && expect_unavailable(exhausted_returned);
     let exhausted_holder = Holder { child: exhausted };
     ok = ok && expect_unavailable(exhausted_holder.child);
-    var exhausted_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var exhausted_vec: Vec<Worker> = Vec.new();
     exhausted_vec.push(exhausted);
     ok = ok && expect_unavailable(exhausted_vec[0]);
     let exhausted_capture = || exhausted;
@@ -219,7 +219,7 @@ fn main() {
     ok = ok && expect_unavailable(stopped_returned);
     let stopped_holder = Holder { child: stopped };
     ok = ok && expect_unavailable(stopped_holder.child);
-    var stopped_vec: Vec<ChildRef<Worker>> = Vec.new();
+    var stopped_vec: Vec<Worker> = Vec.new();
     stopped_vec.push(stopped);
     ok = ok && expect_unavailable(stopped_vec[0]);
     let stopped_capture = || stopped;

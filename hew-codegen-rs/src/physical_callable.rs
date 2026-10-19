@@ -7,6 +7,20 @@ pub(super) fn environment_descriptor_symbol(index: usize) -> String {
     format!("__hew_callable_environment_{index}")
 }
 
+fn receiver_disposal_suspends(
+    module: &PhysicalModule,
+    receiver: &hew_mir::physical::PhysicalValueRecipe,
+    output: Option<&hew_mir::physical::PhysicalValueRecipe>,
+) -> bool {
+    receiver.destroy.is_some_and(|action| {
+        module.releases.suspends(action)
+            || (module.releases.raises_fault(action)
+                && output
+                    .and_then(|output| output.destroy)
+                    .is_some_and(|action| module.releases.suspends(action)))
+    })
+}
+
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     pub(super) fn emit_environment_descriptors(&self) -> CodegenResult<()> {
         for (index, glue) in self.module.environment_glue.iter().enumerate() {
@@ -467,12 +481,12 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
 
 use hew_mir::physical::{ClosureId, PhysicalClosure, StorageOrigin};
 
-fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
+pub(super) fn callable_descriptor_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let pointer = ctx.ptr_type(AddressSpace::default());
     ctx.struct_type(&[pointer.into(); 6], false)
 }
 
-fn callable_carrier<'ctx>(
+pub(super) fn callable_carrier<'ctx>(
     ctx: &'ctx Context,
     builder: &Builder<'ctx>,
     environment: PointerValue<'ctx>,
@@ -494,6 +508,14 @@ fn callable_carrier<'ctx>(
 fn function_descriptor_symbol(id: CallableId) -> String {
     format!("__hew_callable_function_{}", id.0)
 }
+pub(super) fn prepared_descriptor_symbol(id: CallableId) -> String {
+    format!("__hew_prepared_function_{}", id.0)
+}
+
+pub(super) fn prepared_mutable_symbol(id: CallableId, update: hew_types::ReceiverUpdate) -> String {
+    format!("__hew_prepared_mutable_{}_{update:?}", id.0)
+}
+
 fn closure_descriptor_symbol(id: ClosureId) -> String {
     format!("__hew_callable_closure_{}", id.0)
 }
@@ -568,6 +590,109 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 ty,
                 None,
             )?;
+        }
+        let prepared = self
+            .module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.ops)
+            .filter_map(|op| {
+                if let PhysicalOp::TaskInvoke {
+                    callee: hew_mir::physical::PhysicalInvocationCallee::Direct(target),
+                    ..
+                } = op
+                {
+                    Some(*target)
+                } else {
+                    None
+                }
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut dynamic = Vec::new();
+        for function in &self.module.functions {
+            for op in function.blocks.iter().flat_map(|block| &block.ops) {
+                if let PhysicalOp::TaskInvoke {
+                    callee: callee @ hew_mir::physical::PhysicalInvocationCallee::Dyn { .. },
+                    dest,
+                    ..
+                } = op
+                {
+                    dynamic.push((
+                        super::dyn_object::prepared_dyn_symbol(function.callable, *dest),
+                        callee,
+                    ));
+                }
+            }
+        }
+        let mut mutable = BTreeMap::new();
+        for op in self
+            .module
+            .functions
+            .iter()
+            .flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.ops)
+        {
+            if let PhysicalOp::TaskInvoke {
+                callee:
+                    hew_mir::physical::PhysicalInvocationCallee::Mutable {
+                        target,
+                        update,
+                        recipe,
+                        ..
+                    },
+                output,
+                ..
+            } = op
+            {
+                mutable.insert(
+                    prepared_mutable_symbol(*target, *update),
+                    (*target, *update, recipe, output.as_ref()),
+                );
+            }
+        }
+        if !prepared.is_empty() || !mutable.is_empty() || !dynamic.is_empty() {
+            let target = TargetData::create(&self.module.target.data_layout);
+            let pointer = self.ctx.ptr_type(AddressSpace::default());
+            let size = self.ctx.ptr_sized_int_type(&target, None);
+            let ty = value_descriptor_type(self.ctx, &target);
+            let environment = self.llvm.add_global(ty, None, "__hew_prepared_environment");
+            environment.set_linkage(Linkage::Internal);
+            environment.set_constant(true);
+            environment.set_initializer(
+                &ty.const_named_struct(&[
+                    size.const_zero().into(),
+                    size.const_int(1, false).into(),
+                    self.ctx
+                        .i8_type()
+                        .const_int(HewTypeOwnershipKind::Plain as u64, false)
+                        .into(),
+                    pointer.const_null().into(),
+                    pointer.const_null().into(),
+                    pointer.const_null().into(),
+                ]),
+            );
+            for (name, callee) in dynamic {
+                self.emit_prepared_dyn_descriptor(&name, environment.as_pointer_value(), callee)?;
+            }
+            for (name, (id, update, recipe, output)) in mutable {
+                self.emit_invocation_descriptor(
+                    &name,
+                    callable(self.module, id)?,
+                    environment.as_pointer_value(),
+                    None,
+                    Some((update, recipe, output)),
+                )?;
+            }
+            for id in prepared {
+                self.emit_invocation_descriptor(
+                    &prepared_descriptor_symbol(id),
+                    callable(self.module, id)?,
+                    environment.as_pointer_value(),
+                    None,
+                    None,
+                )?;
+            }
         }
         Ok(())
     }
@@ -659,12 +784,36 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     "callable descriptor lacks its environment layout global".into(),
                 )
             })?;
+        self.emit_invocation_descriptor(
+            name,
+            body,
+            environment.as_pointer_value(),
+            closure.map(|_| &self.module.environment_glue[index]),
+            None,
+        )
+    }
+
+    fn emit_invocation_descriptor(
+        &self,
+        name: &str,
+        body: &PhysicalCallable,
+        environment: PointerValue<'ctx>,
+        receiver: Option<&PhysicalEnvironmentGlue>,
+        mutable: Option<(
+            hew_types::ReceiverUpdate,
+            &hew_mir::physical::PhysicalValueRecipe,
+            Option<&hew_mir::physical::PhysicalValueRecipe>,
+        )>,
+    ) -> CodegenResult<()> {
         let descriptor_ty = callable_descriptor_type(self.ctx);
         let descriptor = self.llvm.add_global(descriptor_ty, None, name);
         descriptor.set_linkage(Linkage::Internal);
         descriptor.set_constant(true);
         let pointer = self.ctx.ptr_type(AddressSpace::default());
-        let owned_body = closure.is_some()
+        let disposal_suspends = mutable.is_some_and(|(_, recipe, output)| {
+            receiver_disposal_suspends(self.module, recipe, output)
+        });
+        let owned_body = receiver.is_some()
             && body.params[0].passing == hew_mir::physical::SemParamPassing::Consume;
         let borrow = if owned_body {
             pointer.const_null()
@@ -673,7 +822,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &format!("{name}_borrow"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.map(|_| &self.module.environment_glue[index]),
+                receiver,
+                mutable,
                 false,
                 false,
             )?
@@ -684,16 +834,18 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             &format!("{name}_once"),
             descriptor.as_pointer_value(),
             body,
-            closure.map(|_| &self.module.environment_glue[index]),
+            receiver,
+            mutable,
             true,
             false,
         )?;
-        let synchronous_borrow = if !owned_body && !body.is_resumable {
+        let synchronous_borrow = if !owned_body && !body.is_resumable && !disposal_suspends {
             self.emit_invoke_adapter(
                 &format!("{name}_borrow_sync"),
                 descriptor.as_pointer_value(),
                 body,
-                closure.map(|_| &self.module.environment_glue[index]),
+                receiver,
+                mutable,
                 false,
                 true,
             )?
@@ -702,27 +854,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             pointer.const_null()
         };
-        let synchronous_once = if !invocation_suspends(
-            self.module,
-            body,
-            closure.map(|_| &self.module.environment_glue[index]),
-            true,
-        ) {
-            self.emit_invoke_adapter(
-                &format!("{name}_once_sync"),
-                descriptor.as_pointer_value(),
-                body,
-                closure.map(|_| &self.module.environment_glue[index]),
-                true,
-                true,
-            )?
-            .as_global_value()
-            .as_pointer_value()
-        } else {
-            pointer.const_null()
-        };
+        let synchronous_once =
+            if !invocation_suspends(self.module, body, receiver, true) && !disposal_suspends {
+                self.emit_invoke_adapter(
+                    &format!("{name}_once_sync"),
+                    descriptor.as_pointer_value(),
+                    body,
+                    receiver,
+                    mutable,
+                    true,
+                    true,
+                )?
+                .as_global_value()
+                .as_pointer_value()
+            } else {
+                pointer.const_null()
+            };
         descriptor.set_initializer(&descriptor_ty.const_named_struct(&[
-            environment.as_pointer_value().into(),
+            environment.into(),
             borrow.into(),
             once.as_global_value().as_pointer_value().into(),
             synchronous_borrow.into(),
@@ -732,12 +881,187 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        reason = "receiver handback and staged cleanup complete before invocation publication"
+    )]
+    fn finish_prepared_receiver(
+        &self,
+        builder: &Builder<'ctx>,
+        function: FunctionValue<'ctx>,
+        frame: Option<&coro::Frame<'ctx>>,
+        body: &PhysicalCallable,
+        recipe: &hew_mir::physical::PhysicalValueRecipe,
+        output: Option<&hew_mir::physical::PhysicalValueRecipe>,
+        update: hew_types::ReceiverUpdate,
+        receiver: PointerValue<'ctx>,
+        dual: PointerValue<'ctx>,
+        result: PointerValue<'ctx>,
+        fault: PointerValue<'ctx>,
+        status: IntValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let dual_ty =
+            llvm_type(self.ctx, &body.return_layout.as_ref().unwrap().repr)?.into_struct_type();
+        let receiver_layout = &body.params[0].layout;
+        let returned = builder
+            .build_struct_gep(dual_ty, dual, 1, "method.handback")
+            .llvm_ctx("address returned receiver")?;
+        let value = builder
+            .build_load(
+                llvm_type(self.ctx, &receiver_layout.repr)?,
+                returned,
+                "method.returned.receiver",
+            )
+            .llvm_ctx("read returned receiver")?;
+        let status_slot = builder
+            .build_alloca(self.ctx.i32_type(), "method.status")
+            .llvm_ctx("allocate method outcome")?;
+        builder
+            .build_store(status_slot, status)
+            .llvm_ctx("retain method outcome")?;
+        let values = ValueEmitter {
+            module: self.module,
+            ctx: self.ctx,
+            llvm: &self.llvm,
+            builder,
+            value: function,
+            fault_sink: Some((fault, status_slot)),
+        };
+        let success = self.ctx.append_basic_block(function, "method.success");
+        let failure = self.ctx.append_basic_block(function, "method.failure");
+        let done = self.ctx.append_basic_block(function, "method.done");
+        let ok = builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "method.ok",
+            )
+            .llvm_ctx("test method result")?;
+        if update == hew_types::ReceiverUpdate::Replace {
+            builder
+                .build_store(receiver, value)
+                .llvm_ctx("restore receiver on success or fault")?;
+        }
+        builder
+            .build_conditional_branch(ok, success, failure)
+            .llvm_ctx("select receiver completion")?;
+        builder.position_at_end(failure);
+        if update == hew_types::ReceiverUpdate::Staged {
+            if let Some(action) = recipe.destroy {
+                if let Some(frame) = frame {
+                    release::slot(&values, frame, returned, receiver_layout, action)?;
+                } else {
+                    values.destroy_loaded_value(value, receiver_layout, action)?;
+                }
+            }
+        }
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish failed method handback")?;
+        builder.position_at_end(success);
+        if update == hew_types::ReceiverUpdate::Staged {
+            let previous = builder
+                .build_load(
+                    llvm_type(self.ctx, &receiver_layout.repr)?,
+                    receiver,
+                    "method.previous.receiver",
+                )
+                .llvm_ctx("read displaced receiver")?;
+            builder
+                .build_store(receiver, value)
+                .llvm_ctx("commit staged receiver")?;
+            if let Some(action) = recipe.destroy {
+                if let Some(frame) = frame {
+                    builder
+                        .build_store(returned, previous)
+                        .llvm_ctx("stage displaced receiver cleanup")?;
+                    release::slot(&values, frame, returned, receiver_layout, action)?;
+                } else {
+                    values.destroy_loaded_value(previous, receiver_layout, action)?;
+                }
+            }
+        }
+        if let Some(output) = output.filter(|output| output.ty != ResolvedTy::Unit) {
+            let PhysicalRepr::Struct(fields) = &body.return_layout.as_ref().unwrap().repr else {
+                unreachable!("verified mutable method returns its user value and receiver")
+            };
+            let result_slot = builder
+                .build_struct_gep(dual_ty, dual, 0, "method.user.result")
+                .llvm_ctx("address method user result")?;
+            let combined = builder
+                .build_load(self.ctx.i32_type(), status_slot, "method.combined.status")
+                .llvm_ctx("read receiver cleanup outcome")?
+                .into_int_value();
+            let publish = self.ctx.append_basic_block(function, "method.publish");
+            let discard = self.ctx.append_basic_block(function, "method.discard");
+            let ok = builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    combined,
+                    self.ctx.i32_type().const_zero(),
+                    "method.cleanup.ok",
+                )
+                .llvm_ctx("test receiver cleanup")?;
+            builder
+                .build_conditional_branch(ok, publish, discard)
+                .llvm_ctx("retain result only on success")?;
+            builder.position_at_end(publish);
+            let value = builder
+                .build_load(
+                    llvm_type(self.ctx, &fields[0].repr)?,
+                    result_slot,
+                    "method.result",
+                )
+                .llvm_ctx("read method result")?;
+            builder
+                .build_store(result, value)
+                .llvm_ctx("publish method result")?;
+            builder
+                .build_unconditional_branch(done)
+                .llvm_ctx("finish method publication")?;
+            builder.position_at_end(discard);
+            if let Some(action) = output.destroy {
+                if let Some(frame) = frame {
+                    release::slot(&values, frame, result_slot, &fields[0], action)?;
+                } else {
+                    let value = builder
+                        .build_load(
+                            llvm_type(self.ctx, &fields[0].repr)?,
+                            result_slot,
+                            "method.abandoned.result",
+                        )
+                        .llvm_ctx("read abandoned method result")?;
+                    values.destroy_loaded_value(value, &fields[0], action)?;
+                }
+            }
+        }
+        builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish method result cleanup")?;
+        builder.position_at_end(done);
+        Ok(builder
+            .build_load(self.ctx.i32_type(), status_slot, "method.final.status")
+            .llvm_ctx("read final method outcome")?
+            .into_int_value())
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one descriptor adapter retains receiver recipes and both ABI entry modes"
+    )]
     fn emit_invoke_adapter(
         &self,
         name: &str,
         descriptor: PointerValue<'ctx>,
         body: &PhysicalCallable,
         receiver_recipe: Option<&PhysicalEnvironmentGlue>,
+        mutable: Option<(
+            hew_types::ReceiverUpdate,
+            &hew_mir::physical::PhysicalValueRecipe,
+            Option<&hew_mir::physical::PhysicalValueRecipe>,
+        )>,
         consuming: bool,
         synchronous: bool,
     ) -> CodegenResult<FunctionValue<'ctx>> {
@@ -774,8 +1098,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 parameter.passing != hew_mir::physical::SemParamPassing::BorrowMut
             });
         let frame = if transfers_receiver
-            || !invocation_suspends(self.module, body, receiver_recipe, consuming)
-        {
+            || (!invocation_suspends(self.module, body, receiver_recipe, consuming)
+                && !mutable.is_some_and(|(_, recipe, output)| {
+                    receiver_disposal_suspends(self.module, recipe, output)
+                })) {
             None
         } else {
             Some(coro::begin(
@@ -796,10 +1122,49 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         } else {
             None
         };
+        if let Some((update, recipe, _)) = mutable {
+            let parameter = &body.params[0];
+            let mut value = builder
+                .build_load(
+                    llvm_type(self.ctx, &parameter.layout.repr)?,
+                    environment,
+                    "method.receiver",
+                )
+                .llvm_ctx("read prepared mutable receiver")?;
+            if update == hew_types::ReceiverUpdate::Staged {
+                let values = ValueEmitter {
+                    module: self.module,
+                    ctx: self.ctx,
+                    llvm: &self.llvm,
+                    builder: &builder,
+                    value: function,
+                    fault_sink: None,
+                };
+                value = values.clone_loaded_value(
+                    value,
+                    &parameter.layout,
+                    recipe.clone.ok_or_else(|| {
+                        CodegenError::FailClosed("staged receiver lacks its copy recipe".into())
+                    })?,
+                )?;
+            }
+            arguments.push(match parameter.carrier {
+                ParamCarrier::Direct => value.into(),
+                ParamCarrier::Indirect => {
+                    let slot = builder
+                        .build_alloca(value.get_type(), "method.receiver.input")
+                        .llvm_ctx("stage prepared receiver")?;
+                    builder
+                        .build_store(slot, value)
+                        .llvm_ctx("initialize prepared receiver")?;
+                    slot.into()
+                }
+            });
+        }
         for (index, parameter) in body
             .params
             .iter()
-            .skip(usize::from(has_receiver))
+            .skip(usize::from(has_receiver || mutable.is_some()))
             .enumerate()
         {
             // SAFETY: the typed physical call supplies exactly this argument array.
@@ -828,6 +1193,16 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     .into(),
             });
         }
+        let dual_result = mutable
+            .map(|_| {
+                builder
+                    .build_alloca(
+                        llvm_type(self.ctx, &body.return_layout.as_ref().unwrap().repr)?,
+                        "method.dual.result",
+                    )
+                    .llvm_ctx("allocate prepared receiver handback")
+            })
+            .transpose()?;
         let staged_result = if weakened_once {
             body.return_layout
                 .as_ref()
@@ -841,7 +1216,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             None
         };
         if body.return_layout.is_some() {
-            arguments.push(staged_result.unwrap_or(result_out).into());
+            arguments.push(dual_result.or(staged_result).unwrap_or(result_out).into());
         }
         arguments.push(fault_out.into());
         if transfers_receiver && body.is_resumable {
@@ -879,6 +1254,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 "invoke.status",
             )?
             .into_int_value()
+        };
+        let status = if let Some((update, recipe, output)) = mutable {
+            self.finish_prepared_receiver(
+                &builder,
+                function,
+                frame.as_ref(),
+                body,
+                recipe,
+                output,
+                update,
+                environment,
+                dual_result.unwrap(),
+                result_out,
+                fault_out,
+                status,
+            )?
+        } else {
+            status
         };
         // A weakened borrowed body leaves receiver disposal to this adapter.
         // Keep a successful result private until that release also succeeds.
@@ -1096,7 +1489,50 @@ pub(super) fn capture_parameter_slot<'ctx>(
 }
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {
-    fn select_callable_descriptor(
+    pub(super) fn borrowed_slot(&self, source: StorageId) -> CodegenResult<PointerValue<'ctx>> {
+        let Some(parent) = self.storage(source)?.borrow_parent else {
+            return Ok(self.slots[source.0 as usize]);
+        };
+        if self.storage(source)?.ty == self.storage(parent)?.ty {
+            return self.borrowed_slot(parent);
+        }
+        let projection = self
+            .function
+            .blocks
+            .iter()
+            .flat_map(|block| &block.ops)
+            .find_map(|op| {
+                if let PhysicalOp::AggregateProjectBorrow {
+                    dest,
+                    aggregate,
+                    field,
+                    glue,
+                } = op
+                {
+                    (*dest == source && *aggregate == parent).then_some((*field, *glue))
+                } else {
+                    None
+                }
+            });
+        if let Some((field, glue)) = projection {
+            let recipe = &self.module.aggregate_glue[glue.0 as usize];
+            let layout = self.module.target.layout(&recipe.ty).ok_or_else(|| {
+                CodegenError::FailClosed("borrowed field lacks its checked layout".into())
+            })?;
+            return self
+                .builder
+                .build_struct_gep(
+                    llvm_type(self.ctx, &layout.repr)?.into_struct_type(),
+                    self.borrowed_slot(parent)?,
+                    field,
+                    "borrowed.field.address",
+                )
+                .llvm_ctx("address the canonical borrowed field");
+        }
+        Ok(self.slots[source.0 as usize])
+    }
+
+    pub(super) fn select_callable_descriptor(
         &self,
         descriptor: PointerValue<'ctx>,
         specialization: Option<hew_mir::physical::CallableSpecializationId>,
@@ -1252,12 +1688,69 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )
     }
 
+    pub(super) fn prepare_callable_arguments(
+        &self,
+        args: &[ArgumentTransfer],
+    ) -> CodegenResult<(PointerValue<'ctx>, Vec<StorageId>)> {
+        let pointer = self.ctx.ptr_type(AddressSpace::default());
+        let mut moved = Vec::new();
+        let argument_slots = if args.is_empty() {
+            pointer.const_null()
+        } else {
+            let count = u32::try_from(args.len())
+                .map_err(|_| CodegenError::FailClosed("argument array exceeds u32".into()))?;
+            let slots = self
+                .value_emitter()
+                .entry_scratch(pointer.array_type(count).into(), "callable.arguments")?;
+            for (index, argument) in args.iter().enumerate() {
+                let source = argument_source(argument);
+                let address = match argument {
+                    ArgumentTransfer::Clone { .. } | ArgumentTransfer::Move(_) => {
+                        let value = if let ArgumentTransfer::Clone { action, .. } = argument {
+                            self.clone_value(source, *action)?
+                        } else {
+                            moved.push(source);
+                            self.load(source, "callable.argument.move")?
+                        };
+                        let slot = self.value_emitter().entry_scratch(
+                            llvm_type(
+                                self.ctx,
+                                &self.function.storage[source.0 as usize].layout.repr,
+                            )?,
+                            "callable.argument.value",
+                        )?;
+                        self.builder
+                            .build_store(slot, value)
+                            .llvm_ctx("stage owned invocation argument")?;
+                        slot
+                    }
+                    _ => self.borrowed_slot(source)?,
+                };
+                // SAFETY: this index is within the allocated argument pointer array.
+                let slot = unsafe {
+                    self.builder.build_in_bounds_gep(
+                        pointer,
+                        slots,
+                        &[self.ctx.i64_type().const_int(index as u64, false)],
+                        "callable.argument.slot",
+                    )
+                }
+                .llvm_ctx("address invocation argument slot")?;
+                self.builder
+                    .build_store(slot, address)
+                    .llvm_ctx("store invocation argument address")?;
+            }
+            slots
+        };
+        Ok((argument_slots, moved))
+    }
+
     pub(super) fn emit_indirect_call(&self, call: &PhysicalTerminator) -> CodegenResult<()> {
         let PhysicalTerminator::IndirectCall {
             targets,
             specialization,
             callee,
-            signature,
+            signature: _,
             args,
             result,
             normal,
@@ -1325,49 +1818,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_load(pointer, entry_slot, "callable.entry")
             .llvm_ctx("load exact invocation adapter")?
             .into_pointer_value();
-        let mut moved = Vec::new();
-        let argument_slots = if args.is_empty() {
-            pointer.const_null()
-        } else {
-            let count = u32::try_from(args.len())
-                .map_err(|_| CodegenError::FailClosed("argument array exceeds u32".into()))?;
-            let slots = self
-                .value_emitter()
-                .entry_scratch(pointer.array_type(count).into(), "callable.arguments")?;
-            for (index, (argument, parameter)) in args.iter().zip(&signature.params).enumerate() {
-                let source = argument_source(argument);
-                let address = if let ArgumentTransfer::Clone { action, .. } = argument {
-                    let value = self.clone_value(source, *action)?;
-                    let slot = self.value_emitter().entry_scratch(
-                        llvm_type(self.ctx, &parameter.layout.repr)?,
-                        "callable.argument.copy",
-                    )?;
-                    self.builder
-                        .build_store(slot, value)
-                        .llvm_ctx("stage copied argument")?;
-                    slot
-                } else {
-                    if matches!(argument, ArgumentTransfer::Move(_)) {
-                        moved.push(source);
-                    }
-                    self.slots[source.0 as usize]
-                };
-                // SAFETY: this index is within the allocated argument pointer array.
-                let slot = unsafe {
-                    self.builder.build_in_bounds_gep(
-                        pointer,
-                        slots,
-                        &[self.ctx.i64_type().const_int(index as u64, false)],
-                        "callable.argument.slot",
-                    )
-                }
-                .llvm_ctx("address invocation argument slot")?;
-                self.builder
-                    .build_store(slot, address)
-                    .llvm_ctx("store invocation argument address")?;
-            }
-            slots
-        };
+        let (argument_slots, moved) = self.prepare_callable_arguments(args)?;
         if consuming {
             self.clear_owned(source)?;
         }

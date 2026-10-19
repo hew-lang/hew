@@ -328,6 +328,17 @@ impl LowerCtx {
                     self.lower_expr(args[0].expr(), IntentKind::Read),
                     Vec::new(),
                 ),
+                (ActorDeliveryCall::TimerView { after, overdue, .. }, Expr::Call { args, .. }) => {
+                    // Preserve the written timing order; the operation carries
+                    // the positions that determine the view's canonical fields.
+                    let timing = args
+                        .iter()
+                        .enumerate()
+                        .filter(|(index, _)| *index == *after || Some(*index) == *overdue)
+                        .map(|(_, arg)| self.lower_expr(arg.expr(), IntentKind::Read))
+                        .collect();
+                    (self.lower_expr(args[0].expr(), IntentKind::Read), timing)
+                }
                 // `view(actor)` derives its admission from the destination's
                 // declaration; `view(actor, on_full: ..)` overrides it. The
                 // checker resolved both to one policy, so only the target
@@ -364,7 +375,7 @@ impl LowerCtx {
             let Some(ty) = self.checker_expr_ty_if_present(&span) else {
                 return self.unsupported_expr(span, "actor delivery operation has no checked type");
             };
-            self.try_register_enum_instantiation_ty(&ty, &span);
+
             // `.to(actor)` readdresses AND resubmits in one call: the
             // readdressed description is an internal temporary that never
             // reaches a binding, so it is built and submitted here.
@@ -706,9 +717,8 @@ impl LowerCtx {
                 fields,
                 // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
-                // `record_init_type_args` side-table (which already reconciled
-                // inferred-vs-explicit and substituted enclosing-fn type-params
-                // where applicable), so we ignore the raw surface args here.
+                // resolved expression type, which already reconciles explicit
+                // and inferred arguments. Ignore the raw surface args here.
                 type_args: _,
                 base,
                 ..
@@ -721,8 +731,20 @@ impl LowerCtx {
                     .get(&self.mk_key(&span))
                     .map(|coercion| &coercion.concrete_type)
                     .or_else(|| self.expr_types.get(&self.mk_key(&span)));
-                let checker_ctor_ty =
-                    checked_constructor.and_then(|ty| ResolvedTy::from_ty(ty).ok());
+                let checker_ctor_ty = match checked_constructor.map(ResolvedTy::from_ty) {
+                    Some(Ok(ty)) => Some(ty),
+                    missing_or_poisoned => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: format!("initializer `{name}`"),
+                                reason: format!("missing or poisoned checked constructor type: {missing_or_poisoned:?}"),
+                            },
+                            span.clone(),
+                            "record or variant initializer has no valid checker type",
+                        ));
+                        None
+                    }
+                };
                 let enum_struct_variant = if let Some((type_name, variant_idx, kind)) =
                     self.lookup_variant_ctor(name, checker_ctor_ty.as_ref())
                 {
@@ -806,9 +828,6 @@ impl LowerCtx {
                             ));
                         }
                     }
-                    // Register the generic-enum instantiation before building
-                    // result_ty so codegen's mangled-key lookup finds the entry.
-                    self.try_register_enum_instantiation(&span);
                     let result_ty = self.restore_type_declaration_facts(
                         checker_ctor_ty.expect("variant selection requires a checked owner"),
                     );
@@ -838,7 +857,7 @@ impl LowerCtx {
                     };
                     let record_identity = self.defs.path(declaration.declaration()).to_string();
                     let resolved_type_args = args.clone();
-                    self.record_record_layout(&record_identity, &span);
+
                     let hir_fields = fields
                         .iter()
                         .map(|(fname, expr)| {
@@ -1198,6 +1217,23 @@ impl LowerCtx {
                 (HirExprKind::Block(hir_block), ty)
             }
             Expr::Index { object, index } => {
+                if self.method_call_rewrites.contains_key(&self.mk_key(&span)) {
+                    let (kind, ty) = self.lower_method_call(
+                        object,
+                        "at",
+                        &[hew_parser::ast::CallArg::Positional((**index).clone())],
+                        span.clone(),
+                        site,
+                    );
+                    return HirExpr {
+                        node: self.ids.node(),
+                        site,
+                        ty,
+                        intent,
+                        kind,
+                        span,
+                    };
+                }
                 // The checker records the element/result type at the whole
                 // index expression's span. LESSONS: `checker-authority` P0 —
                 // we never re-derive the element type from the container;
@@ -1238,6 +1274,17 @@ impl LowerCtx {
                     inclusive,
                 } = &index.0
                 {
+                    if container.ty == ResolvedTy::String {
+                        let kind = self.lower_string_range_call(
+                            container,
+                            (start.as_deref(), end.as_deref()),
+                            *inclusive,
+                            false,
+                            &result_ty,
+                            &span,
+                        );
+                        return self.make_expr(kind, result_ty, intent, span);
+                    }
                     // C-3 range-slice: result type is Vec<T> (checker-authoritative).
                     let lowered_start = start
                         .as_ref()
@@ -1313,52 +1360,6 @@ impl LowerCtx {
                     // also falls through to the plain `Index` node, which the
                     // MIR `assign` arm recognises and lowers to
                     // `hew_hashmap_insert_layout`.
-
-                    if let ResolvedTy::Named { head, .. } = &container.ty {
-                        let name = head.registry_key();
-                        let builtin = head.builtin();
-                        let callee_name = format!("{name}::at");
-                        if !matches!(builtin, Some(BuiltinType::Vec | BuiltinType::HashMap))
-                            && self.fn_registry.contains_key(&callee_name)
-                        {
-                            let target = self.registered_symbol_target(&callee_name);
-                            let callee_ty = ResolvedTy::Function {
-                                capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                                params: vec![container.ty.clone(), index_expr.ty.clone()],
-                                ret: Box::new(result_ty.clone()),
-                            };
-                            let resolved = self
-                                .fn_registry
-                                .get(&callee_name)
-                                .map_or(ResolvedRef::Unresolved, |entry| {
-                                    ResolvedRef::Item(entry.id)
-                                });
-                            let callee = HirExpr {
-                                node: self.ids.node(),
-                                site: self.ids.site(),
-                                ty: callee_ty,
-                                intent: IntentKind::Read,
-                                kind: HirExprKind::BindingRef {
-                                    name: callee_name,
-                                    resolved,
-                                },
-                                span: span.clone(),
-                            };
-                            return HirExpr {
-                                node: self.ids.node(),
-                                site,
-                                ty: result_ty.clone(),
-                                intent,
-                                kind: HirExprKind::Call {
-                                    target,
-                                    callee: Box::new(callee),
-                                    args: vec![container, index_expr],
-                                    evaluation_order: Vec::new(),
-                                },
-                                span: span.clone(),
-                            };
-                        }
-                    }
 
                     // C-2 single-element Vec indexing: result type is element type T.
                     // D432: the checker records the reads whose element has no

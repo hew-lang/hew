@@ -32,6 +32,58 @@ pub(super) enum ReceiverSeat {
 }
 
 impl Builder<'_, '_> {
+    pub(super) fn lower_prepared_var_self_call(
+        &mut self,
+        expr: &HirExpr,
+        scope: crate::TaskScopeId,
+        loans: &mut Vec<ValueId>,
+    ) -> Result<ValueId, String> {
+        let HirExprKind::VarSelfMethodCall {
+            receiver,
+            receiver_update,
+            call_target,
+            target,
+            args,
+            evaluation_order,
+            ..
+        } = &expr.kind
+        else {
+            return Err("prepared mutable call requires its checked method".into());
+        };
+        let ty = self.ty(&receiver.ty);
+        let callee = self.resolve_mutable_callee(expr, call_target, target, &ty)?;
+        let mut signature = callee.signature;
+        if !signature.hands_back_receiver() || signature.params[0].ty != ty {
+            return Err("prepared mutable method lacks its receiver handback contract".into());
+        }
+        let output = signature
+            .erased_return_ty(SemParamPassing::BorrowMut)?
+            .clone();
+        signature.params.remove(0);
+        signature.return_ty = output;
+        let arguments =
+            self.lower_user_arguments(args, evaluation_order, &signature.params, loans)?;
+        self.resolve_mutable_place(receiver)?;
+        let value = self.lower_place_read(receiver, loans, true)?.value;
+        self.service
+            .record_checked_call(self.callable.id, expr.site, callee.id);
+        self.emit_prepared_call(
+            expr,
+            scope,
+            crate::InvocationCallee::Mutable {
+                target: callee.id,
+                receiver: BoundaryOperand {
+                    operand: Operand { value },
+                    decision: BoundaryDecision::BorrowMut,
+                },
+                update: *receiver_update,
+            },
+            signature,
+            arguments,
+            loans,
+        )
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "receiver acquisition and normal writeback share one exact source place"
@@ -41,6 +93,7 @@ impl Builder<'_, '_> {
             receiver,
             receiver_update,
             call_target,
+            target,
             args,
             evaluation_order,
             ret_ty,
@@ -51,30 +104,7 @@ impl Builder<'_, '_> {
             return Err("mutable method lowering requires a var-self call".into());
         };
         let receiver_ty = self.ty(receiver_ty);
-        let callee = match call_target {
-            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => self
-                .service
-                .resolve_direct_call(*declaration, expr.site, &self.substitution)?,
-            // A generic body reaches `it.next()` through its bound; the
-            // implementation is selected here, from the receiver type this
-            // instance substituted.
-            CallTarget::StaticTraitMethod {
-                declaring_trait,
-                method,
-            } => self.service.resolve_static_trait_call(
-                *declaring_trait,
-                *method,
-                &receiver_ty,
-                &[],
-                expr.site,
-                &self.substitution,
-            )?,
-            _ => {
-                return Err(
-                    "mutable method requires a resolved direct or static-trait declaration".into(),
-                )
-            }
-        };
+        let callee = self.resolve_mutable_callee(expr, call_target, target, &receiver_ty)?;
         let source = self
             .service
             .table
@@ -227,6 +257,45 @@ impl Builder<'_, '_> {
             self.emit_destroy(value)?;
         }
         Ok(fields[0].id)
+    }
+
+    fn resolve_mutable_callee(
+        &mut self,
+        expr: &HirExpr,
+        call_target: &CallTarget,
+        target: &hew_hir::HirVarSelfMethodTarget,
+        receiver_ty: &ResolvedTy,
+    ) -> Result<crate::SemCallable, String> {
+        Ok(match call_target {
+            CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) => self
+                .service
+                .resolve_direct_call(*declaration, expr.site, &self.substitution)?,
+            // A generic body reaches `it.next()` through its bound; the
+            // implementation is selected here, from the receiver type this
+            // instance substituted.
+            CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } => {
+                let hew_hir::HirVarSelfMethodTarget::StaticTrait { trait_args, .. } = target else {
+                    return Err("mutable trait call has no checked trait arguments".into());
+                };
+                let trait_args: Vec<_> = trait_args.iter().map(|ty| self.ty(ty)).collect();
+                self.service.resolve_static_trait_call(
+                    *declaring_trait,
+                    *method,
+                    receiver_ty,
+                    &trait_args,
+                    expr.site,
+                    &self.substitution,
+                )?
+            }
+            _ => {
+                return Err(
+                    "mutable method requires a resolved direct or static-trait declaration".into(),
+                )
+            }
+        })
     }
 
     /// Take, copy or open the receiver's place for the call, and name where

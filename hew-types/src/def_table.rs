@@ -413,10 +413,14 @@ pub enum KnownDecl {
     Caller,
     Call,
     Outcome,
+    PeerSession,
+    ServiceExport,
+    ActorTimerMailbox,
+    Timer,
 }
 
 impl KnownDecl {
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 27] = [
         Self::ActorError,
         Self::Never,
         Self::ActorMailbox,
@@ -440,6 +444,10 @@ impl KnownDecl {
         Self::Caller,
         Self::Call,
         Self::Outcome,
+        Self::PeerSession,
+        Self::ServiceExport,
+        Self::ActorTimerMailbox,
+        Self::Timer,
     ];
 
     /// The declaration's canonical path in `std.builtins`.
@@ -450,6 +458,8 @@ impl KnownDecl {
             Self::ActorError => "std.builtins.ActorError",
             Self::Never => "std.builtins.Never",
             Self::ActorMailbox => "std.builtins.ActorMailbox",
+            Self::ActorTimerMailbox => "std.builtins.ActorTimerMailbox",
+            Self::Timer => "std.builtins.Timer",
             Self::ActorPolicy => "std.builtins.ActorPolicy",
             Self::Message => "std.builtins.Message",
             Self::SendFailure => "std.builtins.SendFailure",
@@ -469,6 +479,8 @@ impl KnownDecl {
             Self::Caller => "std.builtins.Caller",
             Self::Call => "std.builtins.Call",
             Self::Outcome => "std.builtins.Outcome",
+            Self::PeerSession => "std.net.PeerSession",
+            Self::ServiceExport => "std.net.Export",
         }
     }
 
@@ -478,6 +490,8 @@ impl KnownDecl {
             Self::ActorError => "ActorError",
             Self::Never => "Never",
             Self::ActorMailbox => "ActorMailbox",
+            Self::ActorTimerMailbox => "ActorTimerMailbox",
+            Self::Timer => "Timer",
             Self::ActorPolicy => "ActorPolicy",
             Self::Message => "Message",
             Self::SendFailure => "SendFailure",
@@ -497,6 +511,8 @@ impl KnownDecl {
             Self::Caller => "Caller",
             Self::Call => "Call",
             Self::Outcome => "Outcome",
+            Self::PeerSession => "PeerSession",
+            Self::ServiceExport => "Export",
         }
     }
 
@@ -576,8 +592,7 @@ pub(crate) enum BuiltinAnchor {
     Generator,
     Vec,
     HashMap,
-    ChildRef,
-    RemotePid,
+
     Stream,
     Sink,
     Option,
@@ -590,7 +605,7 @@ pub(crate) enum BuiltinAnchor {
 }
 
 impl BuiltinAnchor {
-    const ALL: [Self; 30] = [
+    const ALL: [Self; 28] = [
         Self::I8,
         Self::I16,
         Self::I32,
@@ -610,8 +625,6 @@ impl BuiltinAnchor {
         Self::Generator,
         Self::Vec,
         Self::HashMap,
-        Self::ChildRef,
-        Self::RemotePid,
         Self::Stream,
         Self::Sink,
         Self::Option,
@@ -646,8 +659,6 @@ impl BuiltinAnchor {
             Self::Generator => "Generator",
             Self::Vec => "Vec",
             Self::HashMap => "HashMap",
-            Self::ChildRef => "ChildRef",
-            Self::RemotePid => "RemotePid",
             Self::Stream => "Stream",
             Self::Sink => "Sink",
             Self::Option => "Option",
@@ -842,7 +853,6 @@ impl DefTable {
             BuiltinType::Generator => BuiltinAnchor::Generator,
             BuiltinType::Stream => BuiltinAnchor::Stream,
             BuiltinType::Sink => BuiltinAnchor::Sink,
-            BuiltinType::RemotePid => BuiltinAnchor::RemotePid,
             _ => panic!("builtin has no generic catalogue binder owner"),
         };
         crate::ParamHead::new(
@@ -1033,6 +1043,18 @@ impl DefTable {
     #[must_use]
     pub fn path(&self, id: DefId) -> &str {
         &self.row(id).path
+    }
+
+    /// Render a callable as written by its caller, without an impl's internal
+    /// linkage discriminator. The selected declaration still owns its identity.
+    #[must_use]
+    pub fn callable_diagnostic_path(&self, id: DefId) -> std::borrow::Cow<'_, str> {
+        if let (DeclarationKind::ImplMethod | DeclarationKind::DefaultImplMethod, Some(receiver)) =
+            (self.kind(id), self.owner(id))
+        {
+            return format!("{}::{}", self.path(receiver), self.name(id)).into();
+        }
+        self.path(id).into()
     }
 
     /// Render portable declaration ownership using module and member facts.

@@ -25,9 +25,37 @@ pub struct CleanupEffect {
     pub owner: EffectBody,
     value: CleanupValue,
     pub witness: String,
+    pub captured: bool,
 }
 
 impl Checker {
+    pub(super) fn resource_close_instances(&self, ty: &Ty) -> Vec<(crate::DefId, Ty, Vec<Ty>)> {
+        cleanup_targets(
+            &CleanupValue {
+                ty: ty.clone(),
+                absent: Vec::new(),
+                owned: None,
+                own_close: false,
+                static_callable: false,
+                candidates: super::IndirectCallCandidates::unknown(),
+            },
+            &HashMap::new(),
+            self,
+            true,
+        )
+        .into_iter()
+        .filter_map(|target| match target {
+            CleanupTarget::Body {
+                body: EffectBody::Declaration(method),
+                receiver,
+                type_args,
+                ..
+            } => Some((method, receiver, type_args)),
+            _ => None,
+        })
+        .collect()
+    }
+
     fn binding_cleanup(&self, binding: &Binding) -> Option<CleanupValue> {
         if binding.origin == BindingOrigin::Synthetic
             || self.actor_field_binding_ids.contains_key(&binding.id)
@@ -80,7 +108,16 @@ impl Checker {
                 owner,
                 witness: format!("implicit release of {}", value.ty.user_facing()),
                 value,
+                captured: false,
             });
+        }
+    }
+
+    pub(super) fn record_join_cleanup_effects(&mut self, bindings: &[Binding]) {
+        for binding in bindings {
+            if let Some(value) = self.binding_cleanup(binding) {
+                self.record_cleanup(value);
+            }
         }
     }
 
@@ -204,6 +241,7 @@ impl Checker {
                     owner: owner.clone(),
                     value: value.clone(),
                     witness: "release of captured values".to_string(),
+                    captured: true,
                 });
             }
         }
@@ -236,6 +274,27 @@ impl Checker {
                 own_close: false,
                 static_callable: false,
                 candidates: super::IndirectCallCandidates::unknown(),
+            },
+            substitutions,
+            unknown,
+        )
+    }
+
+    pub(super) fn cleanup_known_value_targets(
+        &self,
+        ty: &Ty,
+        candidates: super::IndirectCallCandidates,
+        substitutions: &HashMap<ParamHead, Ty>,
+        unknown: bool,
+    ) -> Vec<CleanupTarget> {
+        self.cleanup_value_targets(
+            &CleanupValue {
+                ty: ty.clone(),
+                absent: Vec::new(),
+                owned: None,
+                own_close: false,
+                static_callable: false,
+                candidates,
             },
             substitutions,
             unknown,
@@ -276,8 +335,13 @@ pub enum CleanupTarget {
     Body {
         body: EffectBody,
         type_args: Vec<Ty>,
+        receiver: Ty,
+        candidates: super::IndirectCallCandidates,
     },
-    Callable(super::IndirectCallCandidates),
+    Callable {
+        ty: Ty,
+        candidates: super::IndirectCallCandidates,
+    },
     Unknown(Ty),
     Suspends,
 }
@@ -285,7 +349,7 @@ pub enum CleanupTarget {
 trait CleanupModel {
     fn trivial(&self, ty: &Ty) -> bool;
     fn resource(&self, ty: &Ty) -> bool;
-    fn close(&self, ty: &Ty) -> Option<crate::DefId>;
+    fn close(&self, ty: &Ty) -> Option<(crate::DefId, Vec<Ty>)>;
     fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef>;
 }
 
@@ -300,8 +364,15 @@ impl CleanupModel for Checker {
         })
         .is_some_and(|id| self.registry.is_resource(id))
     }
-    fn close(&self, ty: &Ty) -> Option<crate::DefId> {
-        self.inherent_impl_method_declaration(ty, "close")
+    fn close(&self, ty: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
+        let close = self.inherent_impl_method_declaration(ty, "close")?;
+        let receiver = crate::ResolvedTy::from_ty(ty).ok()?;
+        let args = self
+            .impl_method_binders
+            .get(&close)?
+            .arguments(&self.defs, close, &receiver)
+            .ok()?;
+        Some((close, args.iter().map(crate::ResolvedTy::to_ty).collect()))
     }
     fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef> {
         self.type_defs.get(&id)
@@ -320,11 +391,11 @@ impl CleanupModel for super::TypeCheckOutput {
         .and_then(|id| self.type_fact_context.declarations().get(&id))
         .is_some_and(|decl| decl.marker == crate::DeclarationMarker::Resource)
     }
-    fn close(&self, ty: &Ty) -> Option<crate::DefId> {
-        let instance = crate::ResolvedTy::from_ty(ty)
-            .ok()?
-            .impl_receiver_instance(&self.defs)?;
-        self.dispatch
+    fn close(&self, ty: &Ty) -> Option<(crate::DefId, Vec<Ty>)> {
+        let receiver = crate::ResolvedTy::from_ty(ty).ok()?;
+        let instance = receiver.impl_receiver_instance(&self.defs)?;
+        let close = self
+            .dispatch
             .candidates(
                 instance.nominal,
                 Some(&instance),
@@ -333,7 +404,11 @@ impl CleanupModel for super::TypeCheckOutput {
             .into_iter()
             .find_map(|(owner, id)| {
                 (owner == super::dispatch_table::MethodOwner::Inherent).then_some(id)
-            })
+            })?;
+        let args = self
+            .type_fact_context
+            .impl_method_arguments(close, &receiver)?;
+        Some((close, args.iter().map(crate::ResolvedTy::to_ty).collect()))
     }
     fn definition(&self, id: crate::NominalId) -> Option<&super::TypeDef> {
         self.type_defs.get(&id)
@@ -372,6 +447,7 @@ impl super::TypeCheckOutput {
         &self,
         ty: &Ty,
         substitutions: &HashMap<ParamHead, Ty>,
+        candidates: &super::IndirectCallCandidates,
     ) -> Vec<CleanupTarget> {
         cleanup_targets(
             &CleanupValue {
@@ -380,7 +456,7 @@ impl super::TypeCheckOutput {
                 owned: None,
                 own_close: false,
                 static_callable: false,
-                candidates: super::IndirectCallCandidates::unknown(),
+                candidates: candidates.clone(),
             },
             substitutions,
             self,
@@ -399,12 +475,41 @@ fn cleanup_targets(
     model: &impl CleanupModel,
     unknown: bool,
 ) -> Vec<CleanupTarget> {
-    let ty = value.ty.substitute_type_params_parallel(substitutions);
+    let root = value.ty.substitute_type_params_parallel(substitutions);
     let mut effects = Vec::new();
-    let mut pending = vec![(ty, Vec::<String>::new(), value.own_close)];
+    let mut pending = vec![(
+        root.clone(),
+        Vec::<String>::new(),
+        value.own_close,
+        Vec::<Ty>::new(),
+    )];
     let mut seen = HashSet::new();
 
-    while let Some((ty, path, own_close)) = pending.pop() {
+    while let Some((ty, path, own_close, mut inline_ancestors)) = pending.pop() {
+        // An inline containment cycle has no realizable value. Leave its layout
+        // diagnostic to HIR instead of growing symbolic field projections while
+        // checking cleanup effects. Heap boundaries start a new inline chain.
+        if inline_ancestors.contains(&ty) {
+            continue;
+        }
+        let inline = match ty.callable_body() {
+            Ty::Tuple(_) => true,
+            Ty::Named { head, .. } => match head.builtin() {
+                Some(BuiltinType::Option | BuiltinType::Result) => true,
+                None => head
+                    .nominal()
+                    .and_then(|id| model.definition(id))
+                    .is_some_and(|definition| !definition.is_indirect),
+                _ => false,
+            },
+            _ => false,
+        };
+        if inline {
+            inline_ancestors.push(ty.clone());
+        } else {
+            inline_ancestors.clear();
+        }
+        let candidates = || cleanup_candidates(&root, &value.candidates, &path, model);
         if value.absent.iter().any(|absent| path.starts_with(absent)) {
             continue;
         }
@@ -436,6 +541,7 @@ fn cleanup_targets(
             whole,
             remaining_absent,
             remaining_owned,
+            candidates(),
         )) {
             continue;
         }
@@ -445,7 +551,7 @@ fn cleanup_targets(
         let mut child = |label: String, ty: Ty| {
             let mut child_path = path.clone();
             child_path.push(label);
-            pending.push((ty, child_path, false));
+            pending.push((ty, child_path, false, inline_ancestors.clone()));
         };
         match ty.callable_body() {
             Ty::Closure { captures, .. } => {
@@ -454,9 +560,15 @@ fn cleanup_targets(
                 }
             }
             Ty::Function { .. } if whole && !value.static_callable => {
-                effects.push(CleanupTarget::Callable(value.candidates.clone()));
+                effects.push(CleanupTarget::Callable {
+                    ty: ty.clone(),
+                    candidates: candidates(),
+                });
             }
-            Ty::TraitObject { .. } if whole => effects.push(CleanupTarget::Unknown(ty.clone())),
+            Ty::TraitObject { .. } if whole => effects.push(CleanupTarget::Callable {
+                ty: ty.clone(),
+                candidates: candidates(),
+            }),
             Ty::Var(_) if whole && unknown => effects.push(CleanupTarget::Unknown(ty.clone())),
             Ty::Tuple(fields) => {
                 for (index, ty) in fields.iter().enumerate() {
@@ -471,19 +583,23 @@ fn cleanup_targets(
                 }
                 if whole && model.resource(&ty) && !own_close {
                     match model.close(&ty) {
-                        Some(close) => effects.push(CleanupTarget::Body {
+                        Some((close, type_args)) => effects.push(CleanupTarget::Body {
                             body: EffectBody::Declaration(close),
-                            type_args: args.clone(),
+                            type_args,
+                            receiver: ty.clone(),
+                            candidates: candidates(),
                         }),
                         None => effects.push(CleanupTarget::Unknown(ty.clone())),
                     }
                     continue;
                 }
                 match head.builtin() {
-                    // A generator erases its producer and captured cleanup.
-                    // Suspension is known, but its source authority is not.
+                    // Suspension is structural; execution authority follows the producer.
                     Some(BuiltinType::Generator) if whole && unknown => {
-                        effects.push(CleanupTarget::Unknown(ty.clone()));
+                        effects.push(CleanupTarget::Callable {
+                            ty: ty.clone(),
+                            candidates: candidates(),
+                        });
                     }
                     Some(BuiltinType::Generator) if whole => {
                         effects.push(CleanupTarget::Suspends);
@@ -564,4 +680,68 @@ fn cleanup_targets(
         }
     }
     effects
+}
+
+fn cleanup_candidates(
+    root: &Ty,
+    source: &super::IndirectCallCandidates,
+    path: &[String],
+    model: &impl CleanupModel,
+) -> super::IndirectCallCandidates {
+    let mut ty = root.clone();
+    let mut candidates = source.clone();
+    for label in path {
+        let (index, owner, next) = match &ty {
+            Ty::Named { head, args } => {
+                let Some(owner) = head.nominal() else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                let Some(definition) = model.definition(owner) else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                let Some(index) = definition
+                    .field_order
+                    .iter()
+                    .position(|field| field == label)
+                else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                let Some(field) = definition.fields.get(label) else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                (
+                    index,
+                    Some(owner),
+                    Checker::instantiate_type_def_member(field, &definition.type_params, args),
+                )
+            }
+            Ty::Tuple(fields) => {
+                let Some(index) = label.parse::<usize>().ok() else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                let Some(field) = fields.get(index) else {
+                    return super::IndirectCallCandidates::unknown();
+                };
+                (index, None, field.clone())
+            }
+            _ => return super::IndirectCallCandidates::unknown(),
+        };
+        candidates.known = candidates
+            .known
+            .into_iter()
+            .map(|receiver| match owner {
+                Some(owner) => super::CallableCandidate::Field {
+                    receiver: Box::new(receiver),
+                    owner,
+                    index: u32::try_from(index).expect("checked field index"),
+                },
+                None => super::CallableCandidate::Element {
+                    receiver: Box::new(receiver),
+                    index,
+                },
+            })
+            .collect();
+        ty = next;
+    }
+    candidates
 }

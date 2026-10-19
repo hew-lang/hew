@@ -539,7 +539,7 @@ enum CallableState {
 /// Recursive and mutually-recursive calls can therefore refer to the stable
 /// `CallableId` immediately, while a FIFO worklist keeps the construction
 /// deterministic.  The service intentionally never reads
-/// `HirModule::monomorphisations` or invokes MIR lowering.
+/// a HIR body-discovery registry or invokes MIR lowering.
 struct InstanceService<'a> {
     module: &'a HirModule,
     callable_facts: callable_facts::CallableFacts<'a>,
@@ -579,7 +579,7 @@ struct InstanceService<'a> {
     scanned_record_closes: usize,
     /// Authored opaque `#[resource]` closes already demanded, so a repeated
     /// projection scan does not queue the same body twice.
-    demanded_opaque_closes: std::collections::HashSet<hew_types::DefId>,
+    demanded_opaque_closes: std::collections::HashSet<(hew_types::DefId, ResolvedTy)>,
     pending: VecDeque<CallableId>,
     functions: Vec<SemFunction>,
     aggregate_shapes: Vec<SemAggregateShape>,
@@ -879,85 +879,29 @@ fn concrete_user_variant_shape(
         ));
     }
 
-    let layout = exact_user_variant_layout(module, decl, &instance.args, enum_ty)?;
-    let variants = sem_variants_from_decl(decl, &instance.args, layout, enum_ty)?;
+    let variants = sem_variants_from_decl(decl, &instance.args, enum_ty)?;
     Ok((decl.is_indirect, variants))
-}
-
-fn exact_user_variant_layout<'a>(
-    module: &'a HirModule,
-    decl: &hew_hir::HirTypeDecl,
-    args: &[ResolvedTy],
-    enum_ty: &ResolvedTy,
-) -> Result<Option<&'a hew_hir::EnumLayout>, String> {
-    let layout = if decl.type_params.is_empty() {
-        None
-    } else {
-        let mut matches = module
-            .enum_layouts
-            .iter()
-            .filter(|layout| layout.key.origin == decl.id && layout.key.type_args == args);
-        let layout = matches.next().ok_or_else(|| {
-            format!(
-                "generic enum `{}` has no exact HIR specialization layout",
-                enum_ty.user_facing()
-            )
-        })?;
-        if matches.next().is_some() {
-            return Err(format!(
-                "generic enum `{}` has more than one exact HIR specialization layout",
-                enum_ty.user_facing()
-            ));
-        }
-        Some(layout)
-    };
-    Ok(layout)
 }
 
 fn sem_variants_from_decl(
     decl: &hew_hir::HirTypeDecl,
     args: &[ResolvedTy],
-    layout: Option<&hew_hir::EnumLayout>,
     enum_ty: &ResolvedTy,
 ) -> Result<Vec<SemVariant>, String> {
     decl.variants
         .iter()
-        .enumerate()
-        .map(|(variant_index, variant)| {
+        .map(|variant| {
             let names = variant.field_names();
-            let tys = layout.map_or_else(
-                || {
-                    variant
-                        .field_tys()
-                        .iter()
-                        .map(|ty| hew_hir::substitute_type_params(ty, &decl.type_params, args))
-                        .collect::<Vec<_>>()
-                },
-                |layout| {
-                    layout
-                        .variants
-                        .get(variant_index)
-                        .map(|variant| variant.field_tys.clone())
-                        .unwrap_or_default()
-                },
-            );
+            let tys: Vec<_> = variant
+                .field_tys()
+                .iter()
+                .map(|ty| hew_types::substitute_type_params(ty, &decl.type_params, args))
+                .collect();
             if names.len() != tys.len() {
                 return Err(format!(
                     "enum `{}` variant `{}` has inconsistent HIR field names and types",
                     enum_ty.user_facing(),
                     variant.name
-                ));
-            }
-            if layout.is_some_and(|layout| {
-                layout
-                    .variants
-                    .get(variant_index)
-                    .is_none_or(|candidate| candidate.name != variant.name)
-            }) {
-                return Err(format!(
-                    "enum `{}` specialization layout disagrees with variant {} identity",
-                    enum_ty.user_facing(),
-                    variant_index
                 ));
             }
             Ok(SemVariant {
@@ -1040,6 +984,9 @@ pub(crate) fn runtime_variant_tags(
             (Role::SendErrorVersionMismatch, "VersionMismatch"),
             (Role::SendErrorBackpressure, "Backpressure"),
             (Role::SendErrorDead, "Dead"),
+            (Role::SendErrorUnauthorized, "Unauthorized"),
+            (Role::SendErrorInvalidMessage, "InvalidMessage"),
+            (Role::SendErrorTimedOut, "TimedOut"),
             (Role::SendErrorWriteTimedOut, "WriteTimedOut"),
         ],
         head if *head == KnownDecl::Caller.head() => &[
@@ -1062,6 +1009,13 @@ pub(crate) fn runtime_variant_tags(
             (Role::ActorErrorPartition, "Partition"),
         ],
         TypeHead::Builtin(BuiltinType::LinkError) => &[(Role::LinkErrorNoContext, "NoContext")],
+        TypeHead::Builtin(BuiltinType::CrashKind) => &[
+            (Role::CrashKindFault, "Fault"),
+            (Role::CrashKindHeapExceeded, "HeapExceeded"),
+            (Role::CrashKindPartitionDetected, "PartitionDetected"),
+            (Role::CrashKindHandlerFailed, "HandlerFailed"),
+            (Role::CrashKindTimerOverdue, "TimerOverdue"),
+        ],
         head if *head == KnownDecl::Delivery.head() => &[
             (Role::DeliveryAccepted, "Accepted"),
             (Role::DeliveryDiscarded, "Discarded"),
@@ -1194,14 +1148,9 @@ fn require_type_shapes(
                 );
             }
         }
-        // The actor parameter of `RemotePid<T>` is phantom at the ABI
-        // boundary. It selects checked dispatch and codec contracts elsewhere,
-        // but is not an independently carried value that needs a SIR shape.
-        // A pool view's supervisor and member parameters are the same: they
-        // name the role its accessors mint, not a value the view carries.
-        if ty.is_builtin(hew_types::BuiltinType::RemotePid)
-            || ty.is_builtin(hew_types::BuiltinType::SupervisorPool)
-        {
+        // A pool view's parameters name the role its accessors mint,
+        // rather than independently carried values that need SIR shapes.
+        if ty.is_builtin(hew_types::BuiltinType::SupervisorPool) {
             continue;
         }
         if actor::declaration(module, &ty).is_none()
@@ -1537,7 +1486,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         || collection_type_arguments(ty).is_some()
         || ty.is_builtin(hew_types::BuiltinType::ActorHandle)
         || ty.is_builtin(hew_types::BuiltinType::ActorFn)
-        || ty.is_builtin(hew_types::BuiltinType::ChildRef)
         // A pool view is the same fixed-width pair a role is: the owning
         // supervisor and a slot.
         || ty.is_builtin(hew_types::BuiltinType::SupervisorPool)
@@ -1546,7 +1494,6 @@ fn is_initial_call_value(ty: &ResolvedTy) -> bool {
         // as exact compiler-owned ABI carriers rather than user records.
         || ty.is_builtin(hew_types::BuiltinType::NodeId)
         || ty.is_builtin(hew_types::BuiltinType::Location)
-        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
         || ty.is_builtin(hew_types::BuiltinType::JsonValue)
         || ty.is_builtin(hew_types::BuiltinType::YamlValue)
         // A shared handle is one pointer into a runtime-counted allocation.
@@ -1607,7 +1554,7 @@ fn is_opaque_handle(facts: &TypeFactService, ty: &ResolvedTy) -> bool {
 /// a checker-discovered one names the producers that mint the handle, and an
 /// authored one is the `close` HIR admitted as the type's own release.
 fn is_checked_opaque_resource(module: &HirModule, ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty())
+    matches!(ty, ResolvedTy::Named { head: hew_types::TypeHead::Nominal(_) | hew_types::TypeHead::Param(_) | hew_types::TypeHead::Unresolved(_), is_opaque: true, args, .. } if args.is_empty() || hew_types::runtime_call::ServiceHandleKind::of_ty(ty).is_some())
         && (crate::resource::authored_opaque_lifecycle(module, ty).is_some()
             || module
                 .type_classes

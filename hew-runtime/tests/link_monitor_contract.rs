@@ -26,15 +26,8 @@ static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 // ── Signal infrastructure ────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(C)]
-struct ExitMessageView {
-    crashed_actor_id: u64,
-    reason: i32,
-}
-
 struct ExitSignal {
-    state: Mutex<Vec<ExitMessageView>>,
+    state: Mutex<Vec<hew_runtime::link::ExitMessage>>,
     cond: Condvar,
 }
 
@@ -54,17 +47,23 @@ impl ExitSignal {
         let mut state = self.state.lock().unwrap();
         if sys_msg == HewSysMsg::Exit.as_i32()
             && !data.is_null()
-            && data_size == std::mem::size_of::<ExitMessageView>()
+            && data_size == std::mem::size_of::<hew_runtime::link::ExitMessage>()
         {
             // SAFETY: The runtime sent an Exit payload with the exact
             // expected size, so the cast and unaligned read are valid.
-            let msg = unsafe { (data.cast::<ExitMessageView>().cast_const()).read_unaligned() };
+            let msg = unsafe {
+                (data.cast::<hew_runtime::link::ExitMessage>().cast_const()).read_unaligned()
+            };
             state.push(msg);
             self.cond.notify_all();
         }
     }
 
-    fn wait_for_count(&self, n: usize, timeout: Duration) -> Option<Vec<ExitMessageView>> {
+    fn wait_for_count(
+        &self,
+        n: usize,
+        timeout: Duration,
+    ) -> Option<Vec<hew_runtime::link::ExitMessage>> {
         let deadline = Instant::now() + timeout;
         let mut state = self.state.lock().unwrap();
         loop {
@@ -233,8 +232,10 @@ fn link_to_dead_actor_sends_exit_and_does_not_panic() {
         .wait_for_count(1, Duration::from_secs(5))
         .expect("link to dead target must deliver EXIT to the survivor");
     let exit = exits.last().copied().unwrap();
+    assert_eq!(exit.target.kind, 0, "a local link has a local origin");
     assert_eq!(
-        exit.crashed_actor_id, target_id,
+        exit.target.slot,
+        hew_runtime::pid::hew_pid_serial(target_id),
         "EXIT must identify the dead target"
     );
 
@@ -289,7 +290,7 @@ fn monitor_to_dead_actor_returns_ok() {
         .expect("monitor on dead target must deliver DOWN immediately");
     let down = downs.last().copied().unwrap();
     assert_eq!(
-        down.slot,
+        down.target.slot,
         hew_runtime::pid::hew_pid_serial(target_id),
         "DOWN must identify the dead target"
     );

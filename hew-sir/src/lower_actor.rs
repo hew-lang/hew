@@ -146,9 +146,7 @@ impl InstanceService<'_> {
         }
         .ok_or("local actor handle lacks its exact declaration")?
         .clone();
-        // A `ChildRef<A>` role and the actor's own handle address one actor, so
-        // the descriptor is keyed by the handle. An anonymous actor's handle is
-        // already its own spelling and has no separate role.
+        // All references share the actor's own descriptor identity.
         let lambda_handle = source.lambda_handle_ty.clone().map(|ty| *ty);
         let handle_ty = if let Some(handle) = lambda_handle {
             handle
@@ -648,7 +646,7 @@ impl Builder<'_, '_> {
     /// value coercions as ordinary calls, and return the owners in protocol
     /// order. Earlier owners stay live until all later arguments have
     /// succeeded.
-    fn lower_actor_payload(
+    pub(super) fn lower_actor_payload(
         &mut self,
         args: &[HirExpr],
         parameters: &[ResolvedTy],
@@ -784,7 +782,8 @@ impl Builder<'_, '_> {
     }
 
     pub(super) fn lower_actor_ask(&mut self, expression: &HirExpr) -> Result<ValueId, String> {
-        match self.prepare_actor_request(expression)? {
+        let retained = self.owned_live.clone();
+        let value = match self.prepare_actor_request(expression)? {
             ActorRequestPreparation::Diverged(value) => Ok(value),
             ActorRequestPreparation::Ready {
                 protocol,
@@ -798,7 +797,27 @@ impl Builder<'_, '_> {
                 false,
                 inputs,
             ),
+        }?;
+        self.destroy_actor_temporaries(retained, Some(value))?;
+        Ok(value)
+    }
+
+    fn destroy_actor_temporaries(
+        &mut self,
+        mut retained: std::collections::BTreeMap<ValueId, ResolvedTy>,
+        result: Option<ValueId>,
+    ) -> Result<(), String> {
+        if self.is_open() {
+            if let Some(value) = result {
+                if let Some(ty) = self.owned_live.get(&value) {
+                    retained.insert(value, ty.clone());
+                }
+            }
+            // Borrowing the target does not transfer a copied handle. Its
+            // temporary owner ends here, before normal and recovery paths join.
+            self.destroy_live_since(&retained)?;
         }
+        Ok(())
     }
 
     pub(super) fn lower_actor_select_start(
@@ -923,23 +942,13 @@ impl Builder<'_, '_> {
                     return Err("actor lifecycle boundary has unexpected arguments".into());
                 }
                 let target_ty = self.ty(&receiver.ty);
-                let role = target_ty.is_builtin(hew_types::BuiltinType::ChildRef);
-                let target =
-                    if super::supervisor::declaration(self.service.module, &target_ty).is_some() {
-                        let supervisor = self.service.require_supervisor(&target_ty)?;
-                        if role {
-                            crate::LifecycleTarget::SupervisorRole(supervisor)
-                        } else {
-                            crate::LifecycleTarget::Supervisor(supervisor)
-                        }
-                    } else {
-                        let actor = self.service.require_actor(&target_ty)?;
-                        if role {
-                            crate::LifecycleTarget::ActorRole(actor)
-                        } else {
-                            crate::LifecycleTarget::Actor(actor)
-                        }
-                    };
+                let target = if super::supervisor::declaration(self.service.module, &target_ty)
+                    .is_some()
+                {
+                    crate::LifecycleTarget::Supervisor(self.service.require_supervisor(&target_ty)?)
+                } else {
+                    crate::LifecycleTarget::Actor(self.service.require_actor(&target_ty)?)
+                };
                 let boundary = match operation {
                     hew_types::actor_delivery::ActorDeliveryCall::Stop => {
                         crate::ActorOperation::Stop(target)
@@ -950,7 +959,7 @@ impl Builder<'_, '_> {
                     hew_types::actor_delivery::ActorDeliveryCall::AwaitStopped => {
                         crate::ActorOperation::AwaitStopped(target)
                     }
-                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted if role => {
+                    hew_types::actor_delivery::ActorDeliveryCall::AwaitRestarted => {
                         crate::ActorOperation::AwaitRestarted(target)
                     }
                     _ => return Err("restart wait requires a supervised role".into()),
@@ -1090,6 +1099,10 @@ impl Builder<'_, '_> {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "actor boundary keeps source evaluation and ownership transfers together"
+    )]
     pub(super) fn lower_actor_boundary(
         &mut self,
         expression: &HirExpr,
@@ -1102,6 +1115,7 @@ impl Builder<'_, '_> {
                 return self.lower_actor_construction(expression, args);
             }
         }
+        let retained = self.owned_live.clone();
         let (operation, sources, argument_order) = self.actor_arguments(expression)?;
         let signature = self.actor_signature(&operation)?;
         let mut values = Vec::new();
@@ -1140,7 +1154,14 @@ impl Builder<'_, '_> {
             }
             values.push(value);
         }
-        if argument_order.len() != signature.params.len() {
+        let pool_count = match &operation {
+            crate::ActorOperation::SupervisorSpawn(id) => self.service.supervisors[id.0 as usize]
+                .children
+                .iter()
+                .find_map(|child| child.pool_count),
+            _ => None,
+        };
+        if argument_order.len() + usize::from(pool_count.is_some()) != signature.params.len() {
             return Err("actor argument count differs from its protocol".into());
         }
         let mut args = Vec::new();
@@ -1186,7 +1207,13 @@ impl Builder<'_, '_> {
                 Provenance::Site(expression.site),
             )?);
         }
-        self.emit_actor_call(operation, signature, args)
+        if let Some(count) = pool_count {
+            let count = self.lower_supervisor_pool_count(expression, count, &args)?;
+            args.push(count);
+        }
+        let result = self.emit_actor_call(operation, signature, args)?;
+        self.destroy_actor_temporaries(retained, result)?;
+        Ok(result)
     }
 
     /// Materialize defaults/init/start as one ordinary checked initializer.
@@ -1636,6 +1663,88 @@ impl Builder<'_, '_> {
         self.make_delivery_record(expression, vec![target, message, payload])
     }
 
+    fn lower_actor_timer(
+        &mut self,
+        expression: &HirExpr,
+        receiver: &HirExpr,
+        args: &[HirExpr],
+        method: hew_types::DefId,
+        policy: hew_types::actor_delivery::SendPolicy,
+        evaluation_order: &[usize],
+    ) -> Result<ValueId, String> {
+        let view_ty = self.ty(&receiver.ty);
+        let source_ty = view_ty.to_ty();
+        let (target_ty, selected) = hew_types::actor_delivery::timer_view_parts(&source_ty)
+            .ok_or("timer schedule has no checked timer view")?;
+        if policy != selected || policy.may_suspend() {
+            return Err("timer schedule changes its admission policy".into());
+        }
+        let target_ty = ResolvedTy::from_ty(target_ty).map_err(|error| error.to_string())?;
+        let actor = self.service.require_actor(&target_ty)?;
+        let handler = self.service.actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| handler.declaration == method && handler.owes_no_reply())
+            .cloned()
+            .ok_or("timer schedule has no exact one-way handler")?;
+        let view =
+            lower_initial_value_transfer(self, receiver, "timer view", OwnedBindingUse::Copy)?;
+        if !self.is_open() {
+            return Ok(view);
+        }
+        let shape = self.service.require_aggregate_shape(&view_ty)?;
+        let mut inputs = Vec::new();
+        for (field, ty) in [
+            target_ty,
+            ResolvedTy::Duration,
+            ResolvedTy::Duration,
+            ResolvedTy::Bool,
+        ]
+        .iter()
+        .enumerate()
+        {
+            inputs.push(self.emit_typed(
+                crate::Provenance::Site(expression.site),
+                ty,
+                crate::SemOpKind::AggregateProjectCopy {
+                    shape,
+                    aggregate: Operand { value: view },
+                    field: u32::try_from(field).map_err(|_| "timer field index")?,
+                },
+            )?);
+        }
+        let values = match self.lower_actor_payload(args, &handler.params, evaluation_order)? {
+            std::ops::ControlFlow::Continue(values) => values,
+            std::ops::ControlFlow::Break(value) => return Ok(value),
+        };
+        let payload_ty = ResolvedTy::Tuple(handler.params);
+        let shape = self.service.require_aggregate_shape(&payload_ty)?;
+        let payload = self.emit_typed(
+            crate::Provenance::Site(expression.site),
+            &payload_ty,
+            crate::SemOpKind::AggregateMake {
+                shape,
+                fields: values
+                    .iter()
+                    .map(|value| Operand { value: *value })
+                    .collect(),
+            },
+        )?;
+        for value in values {
+            self.owned_live.remove(&value);
+        }
+        inputs.push(payload);
+        let operation = crate::ActorOperation::TimerSchedule {
+            actor,
+            message: handler.message_id,
+            policy,
+        };
+        let signature = self.actor_signature(&operation)?;
+        self.service.require_signature_shapes(&signature)?;
+        self.emit_actor_call(operation, signature, inputs)?
+            .ok_or_else(|| "timer schedule has no cancellation handle".into())
+    }
+
     fn make_delivery_record(
         &mut self,
         expression: &HirExpr,
@@ -1786,6 +1895,54 @@ impl Builder<'_, '_> {
                 ];
                 self.finish_actor_ask(expression, actor, message, *policy, true, inputs)
             }
+            ActorDeliveryCall::TimerView { after, overdue, .. } => {
+                let (target, _) = self.delivery_target(receiver)?;
+                let mut timing = Vec::new();
+                for arg in args {
+                    timing.push(lower_initial_value_transfer(
+                        self,
+                        arg,
+                        "timer timing",
+                        OwnedBindingUse::Copy,
+                    )?);
+                }
+                let after_index = usize::from(overdue.is_some_and(|index| index < *after));
+                let after_value = *timing
+                    .get(after_index)
+                    .ok_or("timer view lacks its delay")?;
+                let overdue_value = if overdue.is_some() {
+                    *timing
+                        .get(1 - after_index)
+                        .ok_or("timer view lacks its overdue duration")?
+                } else {
+                    self.emit_typed(
+                        crate::Provenance::Site(expression.site),
+                        &ResolvedTy::Duration,
+                        crate::SemOpKind::ConstDuration(0),
+                    )?
+                };
+                let has_overdue = self.emit_typed(
+                    crate::Provenance::Site(expression.site),
+                    &ResolvedTy::Bool,
+                    crate::SemOpKind::ConstBool(overdue.is_some()),
+                )?;
+                self.make_delivery_record(
+                    expression,
+                    vec![target, after_value, overdue_value, has_overdue],
+                )
+            }
+            ActorDeliveryCall::TimerSchedule {
+                method,
+                policy,
+                evaluation_order,
+            } => self.lower_actor_timer(
+                expression,
+                receiver,
+                args,
+                *method,
+                *policy,
+                evaluation_order,
+            ),
             ActorDeliveryCall::Policy { .. } => {
                 let (target, _) = self.delivery_target(receiver)?;
                 self.make_delivery_record(expression, vec![target])

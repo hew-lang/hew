@@ -1,0 +1,26 @@
+fn count_members(size: i64, label: string) -> i64 {
+    println(label);
+    size
+}
+
+fn child_value() -> i64 {
+    println("child bootstrap ran");
+    1
+}
+
+actor Worker {
+    var value: i64;
+    receive fn read() -> i64 { value }
+}
+
+supervisor Farm(size: i64, label: string) {
+    strategy: simple_one_for_one;
+    pool workers: Worker { value: child_value() } count: count_members(size, label);
+}
+
+fn main() {
+    defer { println("caller cleaned"); }
+    let farm = spawn Farm { size: 0, label: "count evaluated" };
+    stop(farm);
+    stopped(farm);
+}

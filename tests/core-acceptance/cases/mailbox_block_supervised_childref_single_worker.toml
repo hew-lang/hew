@@ -1,6 +1,6 @@
 [[case]]
 id = "mailbox_block_supervised_childref_single_worker"
-intent = "A cooperative bounded send through ChildRef must resolve and pin the stable supervisor role."
+intent = "A cooperative bounded send through a role must resolve and pin the stable supervisor role."
 source = "../vertical-slice/accept/mailbox_block_supervised_childref_single_worker.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

@@ -1,8 +1,8 @@
 //! Inbound frame routing and retained ask completion.
 
 use super::{
-    submission_delivered, with_current_node_read, AskError, AskRejectionReasonCode, HewNode,
-    InboundRequest, SendConnMgr, SendTransport,
+    with_current_node_read, AskError, AskRejectionReasonCode, HewNode, InboundRequest, SendConnMgr,
+    SendTransport,
 };
 use crate::connection;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
@@ -151,8 +151,13 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     conn_mgr: *mut connection::HewConnMgr,
     peer: crate::node_identity::HewNodeId,
     publication: u64,
+    grant: u64,
     deadline_ns: i64,
+    kind: u8,
 ) {
+    let Some(kind) = crate::request_state::RequestKind::from_wire(kind) else {
+        return;
+    };
     // SAFETY: the reader supplies a NUL-terminated UTF-8 declaration for this call.
     let identity = unsafe { std::ffi::CStr::from_ptr(identity) }
         .to_str()
@@ -180,68 +185,10 @@ pub(super) unsafe extern "C" fn node_inbound_router(
             shutdown,
             caller,
             publication,
+            grant,
             crate::request_deadline::RequestDeadline::from_raw(deadline_ns),
+            kind,
         );
-    } else {
-        // Fire-and-forget message — reconstruct the value into THIS node's
-        // address space before delivering it to the local mailbox.
-        let _remote_trace_source = crate::tracing::enter_remote_trace_source();
-        // SAFETY: data is valid for `size` bytes (reader_loop contract).
-        unsafe { deliver_inbound_send(target_actor_id, identity, data, size, caller) };
-    }
-}
-
-/// Deliver an inbound fire-and-forget (`send`) frame to its target actor's local
-/// mailbox, reconstructing the value into THIS node's address space first. The
-/// inbound `data` is the serialized wire form; feeding it raw to the mailbox
-/// would make the actor handler dereference sender-side heap pointers and crash.
-///
-/// Fail closed throughout: an unregistered codec, a decode failure, or a
-/// target actor that is no longer live all DROP the message rather than deliver
-/// garbage. An empty payload (`size == 0`) is a genuine zero-field message and
-/// bypasses decode.
-///
-/// # Safety
-/// `data` must be valid for `size` bytes (or null when `size == 0`).
-unsafe fn deliver_inbound_send(
-    target_actor_id: u64,
-    identity: &str,
-    data: *mut u8,
-    size: usize,
-    caller: crate::actor_caller::HewCallerStamp,
-) {
-    let Some(msg_type) = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
-        .and_then(|dispatch| crate::xnode_serial::local_message(dispatch, identity))
-    else {
-        set_last_error(format!(
-            "cross-node send refused unknown handler {identity}"
-        ));
-        return;
-    };
-    let codec = crate::lifetime::live_actors::dispatch_ptr_by_id(target_actor_id)
-        .and_then(|dispatch| crate::xnode_serial::lookup_request(dispatch, msg_type));
-    let payload = if size == 0 {
-        &[][..]
-    } else {
-        // SAFETY: data is valid for `size` bytes (caller contract).
-        unsafe { std::slice::from_raw_parts(data.cast_const(), size) }
-    };
-    // SAFETY: a registered codec decodes into a fresh owned wrapper.
-    let request = codec.and_then(|codec| unsafe { InboundRequest::decode(codec, payload) });
-    let Some(request) = request else {
-        set_last_error(format!(
-            "cross-node send dropped: target actor {target_actor_id} has no codec \
-             or the frame failed to decode for msg_type={msg_type}"
-        ));
-        return;
-    };
-    if !request
-        .submit(target_actor_id, msg_type, caller)
-        .is_some_and(submission_delivered)
-    {
-        set_last_error(format!(
-            "cross-node send dropped: target actor {target_actor_id} refused msg_type={msg_type}"
-        ));
     }
 }
 
@@ -264,7 +211,9 @@ pub(super) fn handle_inbound_ask(
     shutdown_started: Arc<AtomicBool>,
     caller: crate::actor_caller::HewCallerStamp,
     publication: u64,
+    grant: u64,
     deadline: crate::request_deadline::RequestDeadline,
+    kind: crate::request_state::RequestKind,
 ) {
     // Hold a router before it acquires the manager's publication barrier.
     #[cfg(test)]
@@ -297,9 +246,10 @@ pub(super) fn handle_inbound_ask(
     let reject = |reason: AskError| {
         #[cfg(test)]
         INBOUND_ASK_ERROR_REPLY_HOOK.hit();
-        send_rejection_reply(
+        send_refusal_reply(
             source_node_id,
             request_id,
+            publication,
             reason,
             conn_mgr.0,
             shutdown_started.as_ref(),
@@ -309,25 +259,28 @@ pub(super) fn handle_inbound_ask(
         reject(AskError::Timeout);
         return;
     }
-    // A dead target (never spawned, or already freed) has no dispatch pointer
-    // tracked at all: that is an ActorStopped fact (folds to the public
-    // `ActorError.Dead`, matching the local ask route, D526), never a decode
-    // problem. Only once a live actor's dispatch is resolved does a missing
-    // codec registration for `msg_type` become a genuine DecodeFailure.
-    let target = crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
-        // SAFETY: the send pin keeps the complete actor incarnation live.
-        unsafe {
-            Some((
-                crate::lifetime::live_actors::ActorIncarnation::of(actor),
-                (*actor).local_pid_id,
-                (*actor).dispatch? as *const c_void,
-            ))
-        }
-    })
-    .flatten();
+    // Resolve target lifetime before validating its codec: a dead actor is
+    // a lifecycle failure, while a missing codec is a decode failure.
+    let target = inbound_target(target_actor_id);
     let Some((target, token, dispatch)) = target else {
-        reject(AskError::ActorStopped);
+        reject(AskError::StaleRef);
         return;
+    };
+    // SAFETY: the admission guard pins this manager until the request retires.
+    let admission = super::service::RemoteAdmission::new(
+        unsafe { &*conn_mgr.0 },
+        target,
+        caller.identity.into(),
+        publication,
+        grant,
+        identity,
+    );
+    let admission = match admission {
+        Ok(admission) => admission,
+        Err(reason) => {
+            reject(reason);
+            return;
+        }
     };
     let Some(msg_type) = crate::xnode_serial::local_message(dispatch, identity) else {
         reject(AskError::DecodeFailure);
@@ -335,12 +288,15 @@ pub(super) fn handle_inbound_ask(
     };
     // The codecs are keyed by the target actor type's dispatch pointer, so a
     // frame is decoded, and its reply encoded, only by that actor's member.
-    let codecs = crate::xnode_serial::lookup_request(dispatch, msg_type)
-        .zip(crate::xnode_serial::lookup_reply(dispatch, msg_type));
-    let Some((request_codec, reply_codec)) = codecs else {
+    let Some(request_codec) = crate::xnode_serial::lookup_request(dispatch, msg_type) else {
         reject(AskError::DecodeFailure);
         return;
     };
+    let reply_codec = crate::xnode_serial::lookup_reply(dispatch, msg_type);
+    if kind.completion_policy().is_some() && reply_codec.is_none() {
+        reject(AskError::DecodeFailure);
+        return;
+    }
     // SAFETY: the registered codec decodes into a fresh owned wrapper.
     let Some(request) = (unsafe { InboundRequest::decode(request_codec, payload) }) else {
         reject(AskError::DecodeFailure);
@@ -359,6 +315,8 @@ pub(super) fn handle_inbound_ask(
         guard,
         publication,
         deadline,
+        admission,
+        kind,
     );
     if let Err(reason) = pending.admit(target, call, gate.as_ref()) {
         if reason != AskError::LocalShutdown {
@@ -373,13 +331,54 @@ pub(super) fn handle_inbound_ask(
 /// status plus a 1-byte [`AskError`] reason payload. The connection reader on
 /// the receiving node recognises the sentinel and calls
 /// [`fail_remote_reply`] instead of [`complete_remote_reply`], preserving the
-/// remote rejection reason for the originating `hew_node_api_ask` caller.
+/// remote rejection reason for the originating granted actor call.
 pub(super) fn send_rejection_reply(
     target_node_id: u16,
     request_id: u64,
+    publication: u64,
     reason: AskError,
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
+) {
+    send_failure_reply(
+        target_node_id,
+        request_id,
+        publication,
+        reason,
+        conn_mgr,
+        shutdown_started,
+        crate::envelope::EnvelopeMessage::Rejected,
+    );
+}
+
+/// Report a proved refusal before destination mailbox admission.
+pub(super) fn send_refusal_reply(
+    target_node_id: u16,
+    request_id: u64,
+    publication: u64,
+    reason: AskError,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+) {
+    send_failure_reply(
+        target_node_id,
+        request_id,
+        publication,
+        reason,
+        conn_mgr,
+        shutdown_started,
+        crate::envelope::EnvelopeMessage::NotAdmitted,
+    );
+}
+
+fn send_failure_reply(
+    target_node_id: u16,
+    request_id: u64,
+    publication: u64,
+    reason: AskError,
+    conn_mgr: *mut connection::HewConnMgr,
+    shutdown_started: &AtomicBool,
+    message: crate::envelope::EnvelopeMessage,
 ) {
     if conn_mgr.is_null() {
         return;
@@ -400,9 +399,9 @@ pub(super) fn send_rejection_reply(
             return;
         }
         // SAFETY: the current-node guard pins this manager for the reply.
-        let Some(send_claim) =
-            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
-        else {
+        let Some(send_claim) = (unsafe {
+            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+        }) else {
             return;
         };
 
@@ -415,7 +414,7 @@ pub(super) fn send_rejection_reply(
             encode_envelope_frame_from_raw_parts(
                 None,
                 None,
-                crate::envelope::EnvelopeMessage::Rejected,
+                message,
                 reason_payload.as_ptr(),
                 reason_payload.len(),
                 request_id,
@@ -439,6 +438,7 @@ pub(super) fn send_rejection_reply(
 pub(super) fn send_reply_envelope(
     target_node_id: u16,
     request_id: u64,
+    publication: u64,
     reply_data: &[u8],
     conn_mgr: *mut connection::HewConnMgr,
     shutdown_started: &AtomicBool,
@@ -474,9 +474,9 @@ pub(super) fn send_reply_envelope(
             return;
         }
         // SAFETY: the current-node guard pins this manager for the reply.
-        let Some(send_claim) =
-            (unsafe { connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id) })
-        else {
+        let Some(send_claim) = (unsafe {
+            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+        }) else {
             return;
         };
 
@@ -552,4 +552,24 @@ pub(super) fn stop_node_accept_thread(node: &mut HewNode) {
     if let Some(handle) = handle {
         crate::util::report_join_panic("hew node accept thread", handle.join());
     }
+}
+
+fn inbound_target(
+    actor_id: u64,
+) -> Option<(
+    crate::lifetime::live_actors::ActorIncarnation,
+    crate::lifetime::local_handles::HewLocalPidId,
+    *const c_void,
+)> {
+    crate::lifetime::live_actors::with_actor_send_by_id(actor_id, |actor| {
+        // SAFETY: the send pin keeps the complete actor incarnation live.
+        unsafe {
+            Some((
+                crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                (*actor).local_pid_id,
+                (*actor).dispatch? as *const c_void,
+            ))
+        }
+    })
+    .flatten()
 }

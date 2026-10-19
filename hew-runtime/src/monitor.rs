@@ -11,10 +11,11 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Barrier;
 #[cfg(test)]
 use std::sync::LazyLock;
-#[cfg(test)]
-use std::sync::{Arc, Barrier};
 use std::sync::{Mutex, PoisonError};
 
 use crate::actor::HewActor;
@@ -49,10 +50,10 @@ struct MonitorShard {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TerminalMonitorReason {
-    state: i32,
-    crash_kind: u32,
-    end: crate::internal::types::ActorEndReason,
+pub(crate) struct TerminalMonitorReason {
+    pub(crate) state: i32,
+    pub(crate) crash_kind: u32,
+    pub(crate) end: crate::internal::types::ActorEndReason,
 }
 
 /// Per-runtime actor-monitor state: the sharded monitor table plus the
@@ -94,15 +95,25 @@ enum ObservationTarget {
     Remote(Location),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 struct ObservationEntry {
+    authority: Option<ObservationAuthority>,
+    completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
     target: ObservationTarget,
     action: WatcherAction,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ObservationAuthority {
+    pub(crate) grant: u64,
+    pub(crate) publication: u64,
+    pub(crate) watcher: Location,
+}
+
 /// A claimed remote monitor terminal action.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) struct MonitorDown {
+    pub(crate) completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
     pub monitor_id: u64,
     pub watcher_actor_id: u64,
     pub target: Location,
@@ -112,13 +123,16 @@ pub(crate) struct MonitorDown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LinkDown {
     pub local_actor_id: u64,
-    pub remote_target_serial: u64,
+    pub target: Location,
     pub reason: i32,
+    pub crash_kind: i32,
     pub policy_tag: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RemoteWatcher {
+    publication: Option<u64>,
+    reciprocal_ref: u64,
     watcher: Location,
     ref_id: u64,
     is_link: bool,
@@ -126,6 +140,7 @@ struct RemoteWatcher {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemoteWatcherTarget {
+    pub(crate) publication: Option<u64>,
     pub watcher: Location,
     pub ref_id: u64,
     pub is_link: bool,
@@ -134,6 +149,8 @@ pub(crate) struct RemoteWatcherTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteWatcherSetup {
     Registered,
+    Terminal(TerminalMonitorReason),
+    Refused,
     TargetGone,
 }
 
@@ -180,6 +197,7 @@ impl MonitorState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn register_remote_monitor(
         &self,
         target: Location,
@@ -188,6 +206,7 @@ impl MonitorState {
         self.register_remote_observation(target, WatcherAction::Monitor { watcher_actor_id })
     }
 
+    #[cfg(test)]
     pub(crate) fn register_link_watcher(
         &self,
         target: Location,
@@ -199,6 +218,7 @@ impl MonitorState {
         Some(monitor_id)
     }
 
+    #[cfg(test)]
     pub(crate) fn register_link_watcher_with_id(
         &self,
         monitor_id: u64,
@@ -216,12 +236,14 @@ impl MonitorState {
         );
     }
 
+    #[cfg(test)]
     fn register_remote_observation(&self, target: Location, action: WatcherAction) -> Option<u64> {
         let monitor_id = self.next_observation_id()?;
         self.insert_remote_observation(monitor_id, target, action);
         Some(monitor_id)
     }
 
+    #[cfg(test)]
     fn insert_remote_observation(&self, monitor_id: u64, target: Location, action: WatcherAction) {
         self.observations
             .lock()
@@ -229,6 +251,8 @@ impl MonitorState {
             .insert(
                 monitor_id,
                 ObservationEntry {
+                    authority: None,
+                    completion: None,
                     target: ObservationTarget::Remote(target),
                     action,
                 },
@@ -241,12 +265,120 @@ impl MonitorState {
             .observations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).copied()?;
+        let entry = observations.get(&monitor_id).cloned()?;
         let ObservationTarget::Remote(target) = entry.target else {
             return None;
         };
         observations.remove(&monitor_id);
+        drop(observations);
+        if let (WatcherAction::Link { local_actor_id, .. }, Some(authority)) =
+            (entry.action, entry.authority)
+        {
+            self.remove_reciprocal_target(
+                local_actor_id,
+                target,
+                monitor_id,
+                authority.publication,
+            );
+        }
         Some(target)
+    }
+
+    fn remove_reciprocal_target(&self, actor: u64, target: Location, id: u64, publication: u64) {
+        let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
+        let actor = crate::pid::hew_pid_serial(actor);
+        if let Some(watchers) = targets.get_mut(&actor) {
+            watchers.retain(|watcher| {
+                !(watcher.watcher == target
+                    && watcher.reciprocal_ref == id
+                    && watcher.publication == Some(publication))
+            });
+            if watchers.is_empty() {
+                targets.remove(&actor);
+            }
+        }
+    }
+
+    pub(crate) fn insert_admitted_observation(
+        &self,
+        id: u64,
+        target: Location,
+        action: WatcherAction,
+        authority: ObservationAuthority,
+        completion: Option<Arc<crate::actor_native::NativeActorCompletion>>,
+    ) {
+        crate::util::MutexExt::lock_or_recover(&self.observations).insert(
+            id,
+            ObservationEntry {
+                target: ObservationTarget::Remote(target),
+                action,
+                authority: Some(authority),
+                completion,
+            },
+        );
+    }
+
+    /// A reciprocal request can only complete the exact link this caller began.
+    #[cfg(test)]
+    pub(crate) fn permits_reciprocal(
+        &self,
+        payload: &crate::envelope::LinkReqPayload,
+        publication: u64,
+    ) -> bool {
+        let entries = crate::util::MutexExt::lock_or_recover(&self.observations);
+        Self::reciprocal_matches(&entries, payload, publication)
+    }
+
+    fn reciprocal_matches(
+        entries: &HashMap<u64, ObservationEntry>,
+        payload: &crate::envelope::LinkReqPayload,
+        publication: u64,
+    ) -> bool {
+        entries.get(&payload.reciprocal_ref).is_some_and(|entry| {
+            matches!(entry.action, WatcherAction::Link { policy_tag, .. } if policy_tag == payload.policy_tag)
+                && entry.target == ObservationTarget::Remote(payload.linker)
+                && entry.authority.is_some_and(|auth| auth.grant == payload.grant_id
+                    && auth.publication == publication && auth.watcher == payload.target)
+        })
+    }
+
+    pub(crate) fn remove_imported_links(
+        &self,
+        actor: u64,
+        target: Location,
+    ) -> Vec<(u64, ObservationAuthority)> {
+        let mut entries = crate::util::MutexExt::lock_or_recover(&self.observations);
+        let selected: Vec<_> = entries.iter().filter_map(|(&id, entry)| {
+            (entry.target == ObservationTarget::Remote(target)
+                && matches!(entry.action, WatcherAction::Link { local_actor_id, .. } if local_actor_id == actor))
+                .then(|| entry.authority.map(|auth| (id, auth))).flatten()
+        }).collect();
+        for (id, _) in &selected {
+            entries.remove(id);
+        }
+        drop(entries);
+        for (id, authority) in &selected {
+            self.remove_reciprocal_target(actor, target, *id, authority.publication);
+        }
+        selected
+    }
+
+    pub(crate) fn enqueue_terminal(&self, down: MonitorDown, crash_kind: u32, end_reason: u8) {
+        if let Some(completion) = down.completion {
+            completion.finish(if end_reason == 2 {
+                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+            } else {
+                0
+            });
+        } else {
+            self.enqueue_down(
+                down.watcher_actor_id,
+                down.monitor_id,
+                down.target,
+                crash_kind,
+                end_reason,
+            );
+        }
     }
 
     pub(crate) fn sole_remote_monitor_for_watcher(&self, watcher_actor_id: u64) -> Option<u64> {
@@ -276,7 +408,7 @@ impl MonitorState {
             .observations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).copied()?;
+        let entry = observations.get(&monitor_id).cloned()?;
         match (entry.target, entry.action) {
             (
                 ObservationTarget::Remote(entry_target),
@@ -284,6 +416,7 @@ impl MonitorState {
             ) if entry_target == target => {
                 observations.remove(&monitor_id);
                 Some(MonitorDown {
+                    completion: entry.completion,
                     monitor_id,
                     watcher_actor_id,
                     target,
@@ -298,12 +431,13 @@ impl MonitorState {
         monitor_id: u64,
         target: Location,
         reason: i32,
+        crash_kind: i32,
     ) -> Option<LinkDown> {
         let mut observations = self
             .observations
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let entry = observations.get(&monitor_id).copied()?;
+        let entry = observations.get(&monitor_id).cloned()?;
         match (entry.target, entry.action) {
             (
                 ObservationTarget::Remote(entry_target),
@@ -315,8 +449,9 @@ impl MonitorState {
                 observations.remove(&monitor_id);
                 Some(LinkDown {
                     local_actor_id,
-                    remote_target_serial: target.slot(),
+                    target,
                     reason,
+                    crash_kind,
                     policy_tag,
                 })
             }
@@ -342,12 +477,13 @@ impl MonitorState {
         for down in self.take_monitor_downs_matching(|_| true) {
             self.enqueue_shutdown(down);
         }
-        for down in self.take_link_downs_matching(|_| true, MONITOR_REASON_LOST) {
+        for down in self.take_link_downs_matching(|_| true) {
             crate::link::deliver_cross_node_link_exit(
                 down.local_actor_id,
-                down.remote_target_serial,
+                down.target,
                 down.reason,
                 down.policy_tag,
+                down.crash_kind,
             );
         }
     }
@@ -363,47 +499,45 @@ impl MonitorState {
                 (
                     ObservationTarget::Remote(target),
                     WatcherAction::Monitor { watcher_actor_id },
-                ) if matches(target) => Some((monitor_id, watcher_actor_id, target)),
+                ) if matches(target) => Some((
+                    monitor_id,
+                    watcher_actor_id,
+                    target,
+                    entry.completion.clone(),
+                )),
                 _ => None,
             })
             .collect();
-        for (monitor_id, _, _) in &ids {
+        for (monitor_id, _, _, _) in &ids {
             observations.remove(monitor_id);
         }
         ids.into_iter()
-            .map(|(monitor_id, watcher_actor_id, target)| MonitorDown {
-                monitor_id,
-                watcher_actor_id,
-                target,
-            })
+            .map(
+                |(monitor_id, watcher_actor_id, target, completion)| MonitorDown {
+                    completion,
+                    monitor_id,
+                    watcher_actor_id,
+                    target,
+                },
+            )
             .collect()
     }
 
-    pub(crate) fn take_link_downs_for_node(
-        &self,
-        remote_node: NodeId,
-        reason: i32,
-    ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(|target| target.node() == remote_node, reason)
+    pub(crate) fn take_link_downs_for_node(&self, remote_node: NodeId) -> Vec<LinkDown> {
+        self.take_link_downs_matching(|target| target.node() == remote_node)
     }
 
     pub(crate) fn take_link_downs_for_session(
         &self,
         remote_node: NodeId,
         session_incarnation: u32,
-        reason: i32,
     ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(
-            |target| target.node() == remote_node && target.incarnation() == session_incarnation,
-            reason,
-        )
+        self.take_link_downs_matching(|target| {
+            target.node() == remote_node && target.incarnation() == session_incarnation
+        })
     }
 
-    fn take_link_downs_matching(
-        &self,
-        matches: impl Fn(Location) -> bool,
-        reason: i32,
-    ) -> Vec<LinkDown> {
+    fn take_link_downs_matching(&self, matches: impl Fn(Location) -> bool) -> Vec<LinkDown> {
         let mut observations = self
             .observations
             .lock()
@@ -421,8 +555,9 @@ impl MonitorState {
                     monitor_id,
                     LinkDown {
                         local_actor_id,
-                        remote_target_serial: target.slot(),
-                        reason,
+                        target,
+                        reason: MONITOR_REASON_LOST,
+                        crash_kind: crate::internal::types::CrashKind::PartitionDetected.tag(),
                         policy_tag,
                     },
                 )),
@@ -435,38 +570,141 @@ impl MonitorState {
         ids.into_iter().map(|(_, down)| down).collect()
     }
 
-    pub(crate) fn register_remote_watcher(
+    pub(crate) fn register_admitted_watcher(
         &self,
-        target_actor_id: u64,
+        actor: u64,
         watcher: Location,
-        monitor_id: u64,
+        id: u64,
+        link: bool,
+        publication: u64,
+        reciprocal_ref: u64,
     ) -> RemoteWatcherSetup {
-        self.register_remote_watcher_kind(target_actor_id, watcher, monitor_id, false)
+        self.register_remote_watcher_kind(
+            actor,
+            RemoteWatcher {
+                watcher,
+                ref_id: id,
+                is_link: link,
+                publication: Some(publication),
+                reciprocal_ref,
+            },
+            None,
+        )
     }
 
-    pub(crate) fn register_remote_link_watcher(
+    pub(crate) fn register_reciprocal_watcher(
         &self,
-        target_actor_id: u64,
-        watcher: Location,
-        monitor_id: u64,
+        actor: u64,
+        payload: &crate::envelope::LinkReqPayload,
+        publication: u64,
     ) -> RemoteWatcherSetup {
-        self.register_remote_watcher_kind(target_actor_id, watcher, monitor_id, true)
+        self.register_remote_watcher_kind(
+            actor,
+            RemoteWatcher {
+                watcher: payload.linker,
+                ref_id: payload.ref_id,
+                is_link: true,
+                publication: Some(publication),
+                reciprocal_ref: payload.reciprocal_ref,
+            },
+            Some(payload),
+        )
+    }
+
+    pub(crate) fn retract_admitted_watcher(
+        &self,
+        actor: u64,
+        watcher: Location,
+        id: u64,
+        publication: u64,
+    ) {
+        let reverse = {
+            let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
+            let Some(entries) = targets.get_mut(&actor) else {
+                return;
+            };
+            let Some(index) = entries.iter().position(|entry| {
+                entry.watcher == watcher
+                    && entry.ref_id == id
+                    && entry.publication == Some(publication)
+            }) else {
+                return;
+            };
+            let reverse = entries.remove(index).reciprocal_ref;
+            if entries.is_empty() {
+                targets.remove(&actor);
+            }
+            reverse
+        };
+        if reverse != 0 {
+            self.remove_remote_observation(reverse);
+        }
+    }
+
+    pub(crate) fn permits_terminal(&self, id: u64, target: Location, publication: u64) -> bool {
+        crate::util::MutexExt::lock_or_recover(&self.observations)
+            .get(&id)
+            .is_some_and(|entry| {
+                entry.target == ObservationTarget::Remote(target)
+                    && entry
+                        .authority
+                        .is_none_or(|authority| authority.publication == publication)
+            })
     }
 
     fn register_remote_watcher_kind(
         &self,
         target_actor_id: u64,
-        watcher: Location,
-        monitor_id: u64,
-        is_link: bool,
+        registration: RemoteWatcher,
+        reciprocal: Option<&crate::envelope::LinkReqPayload>,
     ) -> RemoteWatcherSetup {
+        let RemoteWatcher {
+            watcher,
+            ref_id: monitor_id,
+            is_link: _,
+            publication,
+            reciprocal_ref: _,
+        } = registration;
         let shard_index = get_shard_index(target_actor_id);
         let register = |actor: &HewActor| {
             self.table[shard_index].access(|shard| {
-                if shard.terminal_reasons.contains_key(&target_actor_id)
-                    || terminal_monitor_reason(actor.actor_state.load(Ordering::Acquire)).is_some()
+                // Match and install under the same observation claim. Cancellation
+                // cannot retire the caller between reciprocal authorization and insertion.
+                let caller =
+                    reciprocal.map(|_| crate::util::MutexExt::lock_or_recover(&self.observations));
+                if reciprocal
+                    .zip(caller.as_ref())
+                    .is_some_and(|(payload, entries)| {
+                        !Self::reciprocal_matches(
+                            entries,
+                            payload,
+                            publication.expect("authenticated reciprocal publication"),
+                        )
+                    })
                 {
-                    return RemoteWatcherSetup::TargetGone;
+                    return RemoteWatcherSetup::Refused;
+                }
+                if let Some(reason) = shard.terminal_reasons.get(&target_actor_id) {
+                    return RemoteWatcherSetup::Terminal(*reason);
+                }
+                let state = actor.actor_state.load(Ordering::Acquire);
+                if terminal_monitor_reason(state).is_some()
+                    && actor
+                        .native_completion
+                        .as_ref()
+                        .is_none_or(|completion| completion.is_finished())
+                {
+                    return RemoteWatcherSetup::Terminal(TerminalMonitorReason {
+                        state,
+                        crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
+                            actor.error_code.load(Ordering::Acquire),
+                        )
+                        .cast_unsigned(),
+                        // SAFETY: the send pin retains this actor and mailbox.
+                        end: crate::internal::types::ActorEndReason::from_terminal(state, unsafe {
+                            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
+                        }),
+                    });
                 }
                 let target_serial = crate::pid::hew_pid_serial(target_actor_id);
                 let mut targets = self
@@ -478,11 +716,7 @@ impl MonitorState {
                     .iter()
                     .any(|entry| entry.watcher == watcher && entry.ref_id == monitor_id)
                 {
-                    watchers.push(RemoteWatcher {
-                        watcher,
-                        ref_id: monitor_id,
-                        is_link,
-                    });
+                    watchers.push(registration);
                     self.remote_watchers_registered_total
                         .fetch_add(1, Ordering::Relaxed);
                 }
@@ -516,6 +750,8 @@ impl MonitorState {
             .entry(target_serial)
             .or_default()
             .push(RemoteWatcher {
+                publication: None,
+                reciprocal_ref: 0,
                 watcher,
                 ref_id: monitor_id,
                 is_link: true,
@@ -550,6 +786,7 @@ impl MonitorState {
                 watchers
                     .into_iter()
                     .map(|entry| RemoteWatcherTarget {
+                        publication: entry.publication,
                         watcher: entry.watcher,
                         ref_id: entry.ref_id,
                         is_link: entry.is_link,
@@ -632,6 +869,10 @@ impl MonitorState {
         reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
     )]
     pub(crate) fn enqueue_lost(&self, down: MonitorDown) {
+        if let Some(completion) = down.completion {
+            completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+            return;
+        }
         deliver_down_message(
             down.watcher_actor_id,
             HewDownMessage::remote_lost(down.monitor_id, down.target),
@@ -643,6 +884,10 @@ impl MonitorState {
         reason = "mailbox delivery remains namespaced under the sole MonitorState authority"
     )]
     pub(crate) fn enqueue_shutdown(&self, down: MonitorDown) {
+        if let Some(completion) = down.completion {
+            completion.finish(crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED);
+            return;
+        }
         deliver_down_message(
             down.watcher_actor_id,
             HewDownMessage::remote_shutdown(down.monitor_id, down.target),
@@ -720,17 +965,46 @@ const DOWN_REASON_CRASHED: u32 = 2;
 const DOWN_REASON_MONITOR_LOST: u32 = 3;
 const DOWN_REASON_LOCAL_SHUTDOWN: u32 = 4;
 
+/// Shared physical target payload for monitor and link notifications.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HewNotificationTarget {
+    pub kind: u32,
+    pub session_incarnation: u32,
+    pub node_hi: u64,
+    pub node_lo: u64,
+    pub slot: u64,
+}
+
+impl HewNotificationTarget {
+    pub(crate) fn local(actor_id: u64) -> Self {
+        Self {
+            kind: DOWN_TARGET_LOCAL,
+            session_incarnation: 0,
+            node_hi: 0,
+            node_lo: 0,
+            slot: crate::pid::hew_pid_serial(actor_id),
+        }
+    }
+
+    pub(crate) fn remote(target: Location) -> Self {
+        Self {
+            kind: DOWN_TARGET_REMOTE,
+            session_incarnation: target.incarnation(),
+            node_hi: target.node().hi(),
+            node_lo: target.node().lo(),
+            slot: target.slot(),
+        }
+    }
+}
+
 /// Fixed actor-mailbox DOWN payload.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HewDownMessage {
     pub monitor_id: u64,
-    pub target_kind: u32,
+    pub target: HewNotificationTarget,
     pub reason_kind: u32,
-    pub node_hi: u64,
-    pub node_lo: u64,
-    pub slot: u64,
-    pub session_incarnation: u32,
     pub crash_kind: u32,
 }
 
@@ -748,12 +1022,8 @@ impl HewDownMessage {
         };
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_LOCAL,
+            target: HewNotificationTarget::local(actor_id),
             reason_kind,
-            node_hi: 0,
-            node_lo: 0,
-            slot: crate::pid::hew_pid_serial(actor_id),
-            session_incarnation: 0,
             crash_kind: if reason_kind == DOWN_REASON_CRASHED {
                 crash_kind
             } else {
@@ -779,12 +1049,8 @@ impl HewDownMessage {
         };
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_REMOTE,
+            target: HewNotificationTarget::remote(target),
             reason_kind,
-            node_hi: target.node().hi(),
-            node_lo: target.node().lo(),
-            slot: target.slot(),
-            session_incarnation: target.incarnation(),
             crash_kind: if reason_kind == DOWN_REASON_CRASHED {
                 crash_kind
             } else {
@@ -796,12 +1062,8 @@ impl HewDownMessage {
     pub(crate) fn remote_lost(monitor_id: u64, target: Location) -> Self {
         Self {
             monitor_id,
-            target_kind: DOWN_TARGET_REMOTE,
+            target: HewNotificationTarget::remote(target),
             reason_kind: DOWN_REASON_MONITOR_LOST,
-            node_hi: target.node().hi(),
-            node_lo: target.node().lo(),
-            slot: target.slot(),
-            session_incarnation: target.incarnation(),
             crash_kind: 0,
         }
     }
@@ -815,14 +1077,11 @@ impl HewDownMessage {
 }
 
 const _: () = {
+    assert!(std::mem::size_of::<HewNotificationTarget>() == 32);
     assert!(std::mem::size_of::<HewDownMessage>() == 48);
     assert!(std::mem::offset_of!(HewDownMessage, monitor_id) == 0);
-    assert!(std::mem::offset_of!(HewDownMessage, target_kind) == 8);
-    assert!(std::mem::offset_of!(HewDownMessage, reason_kind) == 12);
-    assert!(std::mem::offset_of!(HewDownMessage, node_hi) == 16);
-    assert!(std::mem::offset_of!(HewDownMessage, node_lo) == 24);
-    assert!(std::mem::offset_of!(HewDownMessage, slot) == 32);
-    assert!(std::mem::offset_of!(HewDownMessage, session_incarnation) == 40);
+    assert!(std::mem::offset_of!(HewDownMessage, target) == 8);
+    assert!(std::mem::offset_of!(HewDownMessage, reason_kind) == 40);
     assert!(std::mem::offset_of!(HewDownMessage, crash_kind) == 44);
 };
 
@@ -930,6 +1189,8 @@ unsafe fn register_local_monitor(
 
     let monitor_entry = MonitorEntry { ref_id };
     let observation = ObservationEntry {
+        authority: None,
+        completion: None,
         target: ObservationTarget::Local(target_id),
         action: WatcherAction::Monitor {
             watcher_actor_id: watcher_id,
@@ -1192,7 +1453,11 @@ pub extern "C" fn hew_actor_demonitor(ref_id: u64) {
             });
         }
         ObservationTarget::Remote(target) => {
-            if let WatcherAction::Monitor { watcher_actor_id } = entry.action {
+            if let Some(authority) = entry.authority {
+                crate::hew_node::monitor_link::send_admitted_cleanup(
+                    target, authority, ref_id, false,
+                );
+            } else if let WatcherAction::Monitor { watcher_actor_id } = entry.action {
                 crate::hew_node::send_remote_demonitor(ref_id, target, watcher_actor_id);
             }
         }
@@ -1245,6 +1510,7 @@ pub(crate) fn notify_monitors_on_end(
             .unwrap_or_default()
             .into_iter()
             .map(|entry| RemoteWatcherTarget {
+                publication: entry.publication,
                 watcher: entry.watcher,
                 ref_id: entry.ref_id,
                 is_link: entry.is_link,
@@ -1368,7 +1634,7 @@ pub(crate) fn remove_all_monitors_for_actor(actor_id: u64, _actor_addr: *mut Hew
     let own_shard = get_shard_index(actor_id);
     let target_refs = state.table[own_shard].access(|shard| {
         // Incarnation identities never reuse within a runtime. Preserve the
-        // terminal cause for monitors created through a retired LocalPid.
+        // terminal cause for monitors created through a retired actor token.
         let monitors = shard.monitors.remove(&actor_id).unwrap_or_default();
         for m in &monitors {
             shard.ref_to_monitor.remove(&m.ref_id);
@@ -1560,6 +1826,10 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps target retirement and terminal observation in one scenario"
+    )]
     fn native_monitor_reclaimed_target_preserves_terminal_cause_and_context() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: empty actors are test-owned; no scheduler workers execute them.
@@ -1594,6 +1864,31 @@ mod tests {
             hew_actor_demonitor(id);
             hew_actor_demonitor(id);
             assert!(!has_monitor_ref_in_any_index(id));
+            let (_, wake) = crate::wake::blocking::Readiness::new();
+            let observation = crate::hew_node::monitor_link::hew_native_actor_observe_new(
+                token,
+                1,
+                wake.descriptor(),
+            );
+            assert_eq!(
+                crate::hew_node::monitor_link::hew_native_actor_observe_poll(observation),
+                0
+            );
+            assert!(crate::link::has_links_for_actor((*watcher).id, watcher));
+            crate::hew_node::monitor_link::hew_native_actor_observe_free(observation);
+            assert!(!crate::link::has_links_for_actor((*watcher).id, watcher));
+            assert_eq!(crate::link::hew_native_actor_link(token), 0);
+            let duplicate = crate::hew_node::monitor_link::hew_native_actor_observe_new(
+                token,
+                1,
+                wake.descriptor(),
+            );
+            crate::hew_node::monitor_link::hew_native_actor_observe_free(duplicate);
+            assert!(
+                crate::link::has_links_for_actor((*watcher).id, watcher),
+                "cancelling a duplicate setup removed an existing link"
+            );
+            crate::link::hew_native_actor_unlink(token);
 
             let crash = crate::internal::types::HEW_TRAP_DIVIDE_BY_ZERO;
             let crash_kind =
@@ -1627,8 +1922,8 @@ mod tests {
                 let down = &*((*node).data.cast::<HewDownMessage>());
                 assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
                 assert_eq!(down.monitor_id, id);
-                assert_eq!(down.target_kind, DOWN_TARGET_LOCAL);
-                assert_eq!(down.slot, crate::pid::hew_pid_serial(target_id));
+                assert_eq!(down.target.kind, DOWN_TARGET_LOCAL);
+                assert_eq!(down.target.slot, crate::pid::hew_pid_serial(target_id));
                 assert_eq!(down.reason_kind, DOWN_REASON_CRASHED);
                 assert_eq!(down.crash_kind, crash_kind);
                 mailbox::hew_msg_node_free(node);
@@ -1750,7 +2045,6 @@ mod tests {
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
             state: std::ptr::null_mut(),
@@ -1879,16 +2173,11 @@ mod tests {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(&ref_id)
-            .copied();
-        assert_eq!(
-            observation,
-            Some(ObservationEntry {
-                target: ObservationTarget::Local(target_id),
-                action: WatcherAction::Monitor {
-                    watcher_actor_id: watcher_id,
-                },
-            })
-        );
+            .cloned();
+        assert!(matches!(observation, Some(ObservationEntry {
+            target: ObservationTarget::Local(target),
+            action: WatcherAction::Monitor { watcher_actor_id }, ..
+        }) if target == target_id && watcher_actor_id == watcher_id));
 
         // Remove monitor
         hew_actor_demonitor(ref_id);
@@ -2088,8 +2377,8 @@ mod tests {
             assert_eq!((*node).msg_type, HewSysMsg::Down.as_i32());
             let payload = &*((*node).data.cast::<HewDownMessage>());
             assert_eq!(payload.monitor_id, ref_id);
-            assert_eq!(payload.target_kind, DOWN_TARGET_LOCAL);
-            assert_eq!(payload.slot, crate::pid::hew_pid_serial(target_id));
+            assert_eq!(payload.target.kind, DOWN_TARGET_LOCAL);
+            assert_eq!(payload.target.slot, crate::pid::hew_pid_serial(target_id));
             assert_eq!(payload.reason_kind, DOWN_REASON_CRASHED);
             mailbox::hew_msg_node_free(node);
 
@@ -2412,7 +2701,9 @@ mod tests {
             .register_remote_monitor(target, 20)
             .expect("monitor id");
 
-        assert_eq!(state.deliver_monitor_to_ref(monitor_id, stale_target), None);
+        assert!(state
+            .deliver_monitor_to_ref(monitor_id, stale_target)
+            .is_none());
         assert_eq!(state.pending_observation_count(), 1);
 
         let down = state
@@ -2421,7 +2712,7 @@ mod tests {
         assert_eq!(down.monitor_id, monitor_id);
         assert_eq!(down.watcher_actor_id, 20);
         assert_eq!(down.target, target);
-        assert_eq!(state.deliver_monitor_to_ref(monitor_id, target), None);
+        assert!(state.deliver_monitor_to_ref(monitor_id, target).is_none());
         assert_eq!(state.pending_observation_count(), 0);
     }
 
@@ -2434,7 +2725,7 @@ mod tests {
             .expect("monitor id");
 
         assert_eq!(state.remove_remote_observation(monitor_id), Some(target));
-        assert_eq!(state.deliver_monitor_to_ref(monitor_id, target), None);
+        assert!(state.deliver_monitor_to_ref(monitor_id, target).is_none());
     }
 
     #[test]
@@ -2466,15 +2757,75 @@ mod tests {
             .expect("link observation id");
 
         let down = state
-            .deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32)
+            .deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32, 1)
             .expect("link terminal claim");
         assert_eq!(down.local_actor_id, 24);
-        assert_eq!(down.remote_target_serial, target.slot());
+        assert_eq!(down.target, target);
+        assert_eq!(down.crash_kind, 1);
         assert_eq!(down.policy_tag, 3);
         assert_eq!(
-            state.deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32),
+            state.deliver_link_down_to_ref(link_id, target, HewActorState::Crashed as i32, 1),
             None
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn remote_link_wire_notice_preserves_target_and_class_once() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: this test owns an empty actor without scheduler workers.
+        unsafe {
+            let watcher =
+                crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch));
+            assert!(!watcher.is_null());
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Runnable as i32, Ordering::Release);
+            let target = remote_location(9, 73, 6);
+            let id = monitor_state()
+                .register_link_watcher(target, (*watcher).id, 3)
+                .unwrap();
+            let payload = crate::envelope::MonitorDownPayload {
+                ref_id: id,
+                target,
+                reason: HewActorState::Crashed as i32,
+                end_reason: crate::internal::types::ActorEndReason::Crashed as u8,
+                crash_kind: crate::internal::types::CrashKind::HeapExceeded.tag(),
+            };
+            let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
+            let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
+            let mailbox = (*watcher).mailbox.cast::<mailbox::HewMailbox>();
+            crate::hew_node::handle_inbound_link_down(
+                id,
+                remote_location(9, 73, 5),
+                decoded.reason,
+                decoded.crash_kind,
+            );
+            assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            for _ in 0..2 {
+                crate::hew_node::handle_inbound_link_down(
+                    decoded.ref_id,
+                    decoded.target,
+                    decoded.reason,
+                    decoded.crash_kind,
+                );
+            }
+            let node = mailbox::hew_mailbox_try_recv_sys(mailbox);
+            assert!(!node.is_null());
+            assert_eq!((*node).msg_type, HewSysMsg::Exit.as_i32());
+            let exit = &*((*node).data.cast::<crate::link::ExitMessage>());
+            assert_eq!(exit.target, HewNotificationTarget::remote(target));
+            assert_eq!(
+                exit.crash_kind,
+                crate::internal::types::CrashKind::HeapExceeded.tag()
+            );
+            mailbox::hew_msg_node_free(node);
+            assert!(mailbox::hew_mailbox_try_recv_sys(mailbox).is_null());
+            (*watcher)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            assert_eq!(crate::actor::hew_actor_free(watcher), 0);
+        }
     }
 
     #[test]
@@ -2491,5 +2842,126 @@ mod tests {
         state.drain_remote_observations_for_shutdown();
 
         assert_eq!(state.pending_observation_count(), 0);
+    }
+    #[test]
+    fn reciprocal_setup_requires_the_exact_live_publication_and_cancels_in_either_order() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: the test owns this actor and sends it no executable messages.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: the actor remains live throughout its observation registrations.
+        let actor_id = unsafe { (*actor).id };
+        let local = remote_location(91, crate::pid::hew_pid_serial(actor_id), 1);
+        let remote = remote_location(92, 11, 3);
+        let state = monitor_state();
+        for cancel_first in [false, true] {
+            let id = state.next_observation_id().unwrap();
+            state.insert_admitted_observation(
+                id,
+                remote,
+                WatcherAction::Link {
+                    local_actor_id: actor_id,
+                    policy_tag: 3,
+                },
+                ObservationAuthority {
+                    grant: 7,
+                    publication: 17,
+                    watcher: local,
+                },
+                None,
+            );
+            let reciprocal = crate::envelope::LinkReqPayload {
+                grant_id: 7,
+                reciprocal_ref: id,
+                linker: remote,
+                ref_id: 99,
+                target: local,
+                policy_tag: 3,
+                reciprocate: 0,
+                setup_id: 101,
+            };
+            assert!(state.permits_terminal(id, remote, 17));
+            assert!(!state.permits_terminal(id, remote, 18));
+            assert!(state.permits_reciprocal(&reciprocal, 17));
+            assert!(!state.permits_reciprocal(&reciprocal, 18));
+            for malformed in [
+                crate::envelope::LinkReqPayload {
+                    grant_id: 8,
+                    ..reciprocal.clone()
+                },
+                crate::envelope::LinkReqPayload {
+                    reciprocal_ref: id + 1,
+                    ..reciprocal.clone()
+                },
+                crate::envelope::LinkReqPayload {
+                    policy_tag: 0,
+                    ..reciprocal.clone()
+                },
+                crate::envelope::LinkReqPayload {
+                    target: remote_location(91, 999, 1),
+                    ..reciprocal.clone()
+                },
+                crate::envelope::LinkReqPayload {
+                    linker: remote_location(92, 12, 3),
+                    ..reciprocal.clone()
+                },
+            ] {
+                assert_eq!(
+                    state.register_reciprocal_watcher(actor_id, &malformed, 17),
+                    RemoteWatcherSetup::Refused
+                );
+            }
+            if cancel_first {
+                state.remove_remote_observation(id);
+            }
+            assert_eq!(
+                state.register_reciprocal_watcher(actor_id, &reciprocal, 17),
+                if cancel_first {
+                    RemoteWatcherSetup::Refused
+                } else {
+                    RemoteWatcherSetup::Registered
+                }
+            );
+            if !cancel_first {
+                state.remove_remote_observation(id);
+            }
+            assert!(state
+                .take_remote_watchers(crate::pid::hew_pid_serial(actor_id))
+                .is_empty());
+        }
+        // SAFETY: both cancellation orders retired every observation of this actor.
+        unsafe { crate::actor::hew_actor_free(actor) };
+    }
+
+    #[test]
+    fn remote_registration_waits_for_native_cleanup_and_preserves_late_terminal_reason() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: this test exclusively owns a message-free actor allocation.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        let completion = Arc::new(crate::actor_native::NativeActorCompletion::default());
+        // SAFETY: no scheduler activation borrows this fixture's actor.
+        unsafe {
+            (*actor).native_completion = Some(completion.clone());
+            (*actor)
+                .actor_state
+                .store(HewActorState::Stopped as i32, Ordering::Release);
+            let state = monitor_state();
+            let watcher = remote_location(93, 19, 1);
+            assert_eq!(
+                state.register_admitted_watcher((*actor).id, watcher, 1, false, 17, 0),
+                RemoteWatcherSetup::Registered
+            );
+            state.remove_remote_watcher(crate::pid::hew_pid_serial((*actor).id), watcher, 1);
+            completion.finish(0);
+            assert!(matches!(
+                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
+                RemoteWatcherSetup::Terminal(TerminalMonitorReason {
+                    end: crate::internal::types::ActorEndReason::Stopped,
+                    ..
+                })
+            ));
+            crate::actor::hew_actor_free(actor);
+        }
     }
 }

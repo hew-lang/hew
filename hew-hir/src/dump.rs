@@ -548,23 +548,6 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 dump_expr(defs, out, arg, indent + 4);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            reply_ty,
-        } => {
-            writeln!(out, "{pad}  remote-actor-ask -> {}", reply_ty.user_facing())
-                .expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
-            dump_expr(defs, out, msg, indent + 4);
-            dump_expr(defs, out, timeout_ms, indent + 4);
-        }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
-            writeln!(out, "{pad}  remote-actor-send").expect("write to string");
-            dump_expr(defs, out, receiver, indent + 4);
-            dump_expr(defs, out, msg, indent + 4);
-        }
         HirExprKind::Block(block) => {
             writeln!(out, "{pad}  block {}", block.scope).expect("write to string");
         }
@@ -743,7 +726,13 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             for arm in &select.arms {
                 let kind_label = match &arm.kind {
                     crate::node::HirSelectArmKind::StreamNext { .. } => "stream-next",
-                    crate::node::HirSelectArmKind::ActorAsk { .. } => "actor-ask",
+                    crate::node::HirSelectArmKind::Call { call } => {
+                        if matches!(&call.kind, HirExprKind::ActorAsk { .. }) {
+                            "actor-ask"
+                        } else {
+                            "call"
+                        }
+                    }
                     crate::node::HirSelectArmKind::TaskAwait { .. } => "task-await",
                     crate::node::HirSelectArmKind::AfterTimer { .. } => "after-timer",
                 };
@@ -954,6 +943,7 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 },
                 crate::node::HirVarSelfMethodTarget::StaticTrait {
                     receiver_type_param,
+                    ..
                 } => match call_target {
                     hew_types::CallTarget::StaticTraitMethod { method, .. } => format!(
                         "{} [receiver_param={receiver_type_param}]",

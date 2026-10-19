@@ -2915,7 +2915,6 @@ fn registry_imported_extern_call_requires_unsafe() {
                 clean_names: Vec::new(),
                 handle_types: Vec::new(),
                 handle_methods: Vec::new(),
-                wrapper_fns: Vec::new(),
                 drop_types: Vec::new(),
                 resource_wrapper_types: Vec::new(),
                 drop_funcs: Vec::new(),
@@ -2953,4 +2952,81 @@ fn registry_imported_extern_call_requires_unsafe() {
         "an `unsafe`-wrapped registry extern call must type-check; got: {:?}",
         wrapped.errors
     );
+}
+
+fn repeated_sort_import_program(second_body: &str) -> Program {
+    let root_id = ModulePath::root();
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut order = Vec::new();
+    for (name, source) in [
+        (
+            "first",
+            "import std.sort; pub fn ordered() -> Vec<string> { sort.sort([\"b\", \"a\"]) }",
+        ),
+        ("second", second_body),
+    ] {
+        let parsed = hew_parser::parse(source);
+        assert!(
+            parsed.errors.is_empty(),
+            "parse errors: {:?}",
+            parsed.errors
+        );
+        let id = ModulePath::new([name]);
+        graph
+            .add_module(Module {
+                id: id.clone(),
+                items: parsed.program.items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .unwrap();
+        order.push(id);
+    }
+    graph
+        .add_module(Module {
+            id: root_id.clone(),
+            items: vec![],
+            imports: vec![],
+            source_paths: vec![],
+            doc: None,
+        })
+        .unwrap();
+    order.push(root_id);
+    graph.topo_order = order;
+    Program {
+        module_graph: Some(graph),
+        items: vec![],
+        module_doc: None,
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+    }
+}
+
+#[test]
+fn repeated_stdlib_import_preserves_declaration_ordering_bounds() {
+    let program = repeated_sort_import_program(
+        "import std.sort; pub fn ordered() -> Vec<string> { sort.sort([\"d\", \"c\"]) }",
+    );
+    let output = Checker::new(test_registry()).check_program(&program);
+    assert!(
+        output.errors.is_empty(),
+        "repeated imports must preserve source bounds: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn repeated_stdlib_import_does_not_grant_ordering_to_unbounded_parameters() {
+    let program = repeated_sort_import_program(
+        "import std.sort; pub fn unbounded<T>(a: T, b: T) -> bool { a < b }",
+    );
+    let output = Checker::new(test_registry()).check_program(&program);
+    assert_eq!(
+        output.errors.len(),
+        1,
+        "only the unbounded function should fail: {:?}",
+        output.errors
+    );
+    assert!(output.errors[0].message.contains("`PartialOrd`"));
+    assert_eq!(output.errors[0].source_module, Some("second".to_string()));
 }

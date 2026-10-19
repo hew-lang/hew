@@ -83,6 +83,8 @@ pub enum RuntimeValueKind {
     /// A file-read owner, with exact source or builtin identity supplied by the signature.
     FileReadHandle(FileReadHandleKind),
     IoHandle(IoHandleKind),
+    ServiceHandle(super::ServiceHandleKind),
+    ServiceResult(super::ServiceOp),
     /// One generic pipe half, resolved to the receiver's checked type.
     PipeHalf(PipeHalfKind),
     /// A freshly extracted pipe half named by the operation, not by the
@@ -134,7 +136,7 @@ pub enum RuntimeValueKind {
     ArrayElement,
     /// The exact `SupervisorPool<S, T>` receiver.
     PoolView,
-    /// One member's role, `ChildRef<T>`, from that pool receiver.
+    /// One member's role, `T`, from that pool receiver.
     PoolMember,
     /// One type argument from the signature's canonical collection receiver.
     TypeArgument(usize),
@@ -142,15 +144,12 @@ pub enum RuntimeValueKind {
     /// handle is not a collection, so its argument does not resolve through
     /// [`Self::TypeArgument`].
     SharedPayload,
-    /// The exact checked result type for a compiler-owned operation whose
-    /// generic payload is not carried by an argument (Node.lookup).
-    NodeLookupResult,
     /// A builtin nominal with no type parameters, named by its own identity
     /// rather than by a source spelling (`NodeId`).
     BuiltinNominal(BuiltinType),
     /// The argument's own checked type, required to carry this builtin
     /// identity. A declared accessor names its value as an ordinary parameter
-    /// rather than a method receiver (`hew_remote_pid_slot(pid)`), so identity
+    /// rather than a method receiver (`hew_location_slot(location)`), so identity
     /// is checked on the argument itself. One authority for that identity: the
     /// type's own `builtin` discriminator, never the receiver table.
     BuiltinArgument(BuiltinType),
@@ -163,6 +162,10 @@ pub enum RuntimeValueKind {
     /// concrete type the call site carries; the rendering recipe comes from
     /// that type's physical layout, not from this kind.
     StructuralOperand,
+    /// Exact lazy generator and encoder contracts admitted by the stream bridge.
+    CodecGenerator,
+    CodecEncoder,
+    CodecItem,
 }
 
 impl RuntimeValueKind {
@@ -211,6 +214,23 @@ impl RuntimeValueKind {
             ))
         };
         Some(match self {
+            Self::ServiceHandle(kind) => {
+                if kind == super::ServiceHandleKind::Peer {
+                    ResolvedTy::named_opaque(
+                        crate::NominalHead::new(
+                            crate::KnownDecl::PeerSession.nominal(),
+                            crate::KnownDecl::PeerSession.path(),
+                        ),
+                        Vec::new(),
+                    )
+                } else {
+                    let receiver = receiver?;
+                    if !kind.matches(receiver) {
+                        return None;
+                    }
+                    receiver.clone()
+                }
+            }
             Self::IoHandle(kind) => {
                 let receiver = receiver?;
                 if !kind.matches(receiver) {
@@ -232,7 +252,7 @@ impl RuntimeValueKind {
                 }
                 receiver.clone()
             }
-            Self::PipeHalfResult(_) | Self::NodeLookupResult => return None,
+            Self::ServiceResult(_) | Self::PipeHalfResult(_) => return None,
             Self::StreamPair => ResolvedTy::named_opaque(
                 contract(
                     crate::ffi_contracts::extern_owned_resource_result("hew_stream_channel")?
@@ -255,6 +275,37 @@ impl RuntimeValueKind {
                 ),
                 Vec::new(),
             ),
+            Self::CodecGenerator => {
+                let source = receiver?;
+                if !matches!(source, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Generator), args, .. } if matches!(args.as_slice(), [_, ResolvedTy::Unit]))
+                {
+                    return None;
+                }
+                source.clone()
+            }
+            Self::CodecEncoder => {
+                let source = receiver?;
+                if !matches!(source, ResolvedTy::Function { capabilities, params, ret } | ResolvedTy::Closure { capabilities, params, ret, .. }
+                    if capabilities.call == crate::CallableCallMode::Read && !capabilities.suspends && params.len() == 1 && **ret == ResolvedTy::Bytes)
+                {
+                    return None;
+                }
+                source.clone()
+            }
+            Self::CodecItem => match receiver? {
+                ResolvedTy::Named {
+                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
+                    args,
+                    ..
+                } if matches!(args.as_slice(), [_, ResolvedTy::Unit]) => args[0].clone(),
+                ResolvedTy::Function { params, ret, .. }
+                | ResolvedTy::Closure { params, ret, .. }
+                    if params.len() == 1 && **ret == ResolvedTy::Bytes =>
+                {
+                    params[0].clone()
+                }
+                _ => return None,
+            },
             Self::StructuralOperand => receiver?.clone(),
             Self::Named(name) => ResolvedTy::named_user(contract(name)?, Vec::new()),
             Self::NamedOpaque(name) => ResolvedTy::named_opaque(contract(name)?, Vec::new()),
@@ -313,10 +364,7 @@ impl RuntimeValueKind {
                 supervisor_pool_member_type(view)?;
                 view.clone()
             }
-            Self::PoolMember => ResolvedTy::named_builtin(
-                BuiltinType::ChildRef,
-                vec![supervisor_pool_member_type(receiver?)?.clone()],
-            ),
+            Self::PoolMember => supervisor_pool_member_type(receiver?)?.clone(),
             Self::Applied(builtin, arguments) => ResolvedTy::named_builtin(
                 builtin,
                 arguments
@@ -596,7 +644,19 @@ impl RuntimeSemanticContract {
         // failing that, in its result.
         let shared_constructor =
             (runtime_receiver_builtin(result_hint) == Some(BuiltinType::Rc)).then_some(result_hint);
-        let receiver = shared_constructor
+        let codec_source = self
+            .arguments
+            .iter()
+            .zip(params)
+            .find_map(|(argument, actual)| {
+                matches!(
+                    argument.ty,
+                    RuntimeValueKind::CodecGenerator | RuntimeValueKind::CodecEncoder
+                )
+                .then_some(actual)
+            });
+        let receiver = codec_source
+            .or(shared_constructor)
             .or_else(|| {
                 params.iter().find(|ty| {
                     runtime_receiver_builtin(ty).is_some()
@@ -630,6 +690,7 @@ impl RuntimeSemanticContract {
                     || matches!(
                         expected.ty,
                         RuntimeValueKind::PipeHalf(_)
+                            | RuntimeValueKind::ServiceHandle(_)
                             | RuntimeValueKind::NominalArgument(_)
                             | RuntimeValueKind::BuiltinArgument(_)
                             | RuntimeValueKind::StructuralOperand
@@ -652,9 +713,8 @@ impl RuntimeSemanticContract {
             | RuntimeResultEffect::Borrowed(kind)
             | RuntimeResultEffect::UpdatedReceiver(kind)
             | RuntimeResultEffect::UpdatedReceiverAndValue(kind) => {
-                let resolved = if (matches!(kind, RuntimeValueKind::NodeLookupResult)
-                    && is_node_lookup_result(result_hint))
-                    || matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                let resolved = if matches!(kind, RuntimeValueKind::IoHandle(handle) if handle.matches(result_hint))
+                    || matches!(kind, RuntimeValueKind::ServiceResult(op) if op.matches_result(result_hint))
                     || matches!(kind, RuntimeValueKind::PipeHalfResult(half) if half.matches(result_hint))
                 {
                     Some(result_hint.clone())
@@ -745,13 +805,6 @@ pub fn shared_handle_payload(ty: &ResolvedTy) -> Option<&ResolvedTy> {
         } if args.len() == 1 => args.first(),
         _ => None,
     }
-}
-
-fn is_node_lookup_result(ty: &ResolvedTy) -> bool {
-    matches!(ty, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Result), args, .. }
-        if matches!(args.as_slice(), [ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::RemotePid), args: remote_args, .. }, error]
-            if remote_args.len() == 1
-                && error.is_builtin(BuiltinType::LookupError)))
 }
 
 /// Which half of a pipe a runtime contract's receiver is.

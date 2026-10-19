@@ -117,6 +117,22 @@ pub trait ClassDeclarations {
 
     /// The exact source declaration implementing a compiler-owned aggregate.
     fn builtin_declaration(&self, builtin: BuiltinType) -> Option<crate::NominalId>;
+
+    /// Instantiate declaration members using the checked associated-type schema.
+    ///
+    /// # Errors
+    /// Refuses a member whose projection cannot be resolved at this instance.
+    fn instantiate_members(
+        &self,
+        declaration: &DeclaredType,
+        arguments: &[ResolvedTy],
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
+        Ok(declaration
+            .members
+            .iter()
+            .map(|member| substitute(member, &declaration.type_params, arguments))
+            .collect())
+    }
 }
 
 impl ClassDeclarations for BTreeMap<crate::NominalId, DeclaredType> {
@@ -658,14 +674,14 @@ fn classify_uncached(
 
     Ok(match ty {
         ResolvedTy::GenericCallable { callable, .. } => classify(callable, decls, walk)?,
-        // integers, floats, Bool, Char, Unit, Never, Duration; and an actor,
-        // which is the type of its handle: a pid never owns the actor, so its
-        // drop frees nothing.
+        // Actor values share their descriptor, never the actor allocation or
+        // the issuer's export authority. Local descriptor retain/release is a
+        // no-op; an imported descriptor is reclaimed after its last local use.
         ResolvedTy::Named {
             head: crate::TypeHead::Actor(_),
             ..
-        }
-        | ResolvedTy::I8
+        } => (ValueClass::PersistentShare, CloneKind::Retain),
+        ResolvedTy::I8
         | ResolvedTy::I16
         | ResolvedTy::I32
         | ResolvedTy::I64
@@ -736,10 +752,8 @@ fn classify_uncached(
         } => match builtin {
             // marker BitCopy today
             BuiltinType::SupervisorPool
-            | BuiltinType::ChildRef
             | BuiltinType::NodeId
             | BuiltinType::Location
-            | BuiltinType::RemotePid
             | BuiltinType::MonitorId
             | BuiltinType::DownTarget
             | BuiltinType::DownReason
@@ -895,11 +909,7 @@ fn classify_declaration(
             name: name.to_string(),
         });
     }
-    let members: Vec<ResolvedTy> = declared
-        .members
-        .iter()
-        .map(|member| substitute(member, &declared.type_params, args))
-        .collect();
+    let members = decls.declarations.instantiate_members(&declared, args)?;
     Ok(aggregate_facts(&classify_all(&members, decls, walk)?))
 }
 

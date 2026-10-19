@@ -144,9 +144,6 @@ fn named_receiver_parts(ty: &Ty) -> Option<(&str, &[Ty])> {
         Ty::Bytes => Some(("bytes", &[])),
         Ty::CancellationToken => Some(("CancellationToken", &[])),
         Ty::Duration => Some(("duration", &[])),
-        // RemotePid<T> is intentionally NOT unwrapped here: its methods are
-        // resolved against RemotePid itself, not T.
-        //
         // An actor handle names the actor itself, so the single-method
         // `lookup_method_sig` path the checker falls back to for receive-fn
         // dispatch resolves `orders.order(arg)` against `Orders::order` in

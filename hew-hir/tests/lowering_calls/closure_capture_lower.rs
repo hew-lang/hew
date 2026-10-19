@@ -392,17 +392,21 @@ fn contextual_option_result_preserves_nested_callable_storage() {
 fn generic_function_values_register_concrete_targets_and_site_arguments() {
     let output = typecheck_and_lower("fn id<T>(x: T) -> T { x } fn main() { let a: fn(i64) -> i64 = id; let b = id<string>; a(4); b(\"hew\"); }");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    let monos = &output.module.monomorphisations;
-    assert_eq!(monos.len(), 2, "{monos:?}");
-    let origin = monos[0].key.origin;
-    assert!(monos
+    let origin = output
+        .module
+        .items
         .iter()
-        .all(|mono| mono.key.origin == origin
-            && output.module.defs.path(mono.key.declaration) == "id"));
+        .find_map(|item| match item {
+            HirItem::Function(f) if f.name == "id" => Some(f.id),
+            _ => None,
+        })
+        .expect("generic id template");
     for ty in [ResolvedTy::I64, ResolvedTy::String] {
-        assert!(monos
-            .iter()
-            .any(|mono| mono.key.type_args == vec![ty.clone()]));
+        assert!(output
+            .module
+            .call_site_type_args
+            .values()
+            .any(|args| args == std::slice::from_ref(&ty)));
     }
     let main = output
         .module
@@ -425,22 +429,6 @@ fn generic_function_values_register_concrete_targets_and_site_arguments() {
             matches!(&value.ty, ResolvedTy::Function { capabilities, .. } if *capabilities == hew_types::CallableCapabilities::FUNCTION_ITEM)
         );
     }
-}
-
-#[test]
-fn generic_function_values_close_under_substitution() {
-    let output = typecheck_and_lower("fn id<T>(x: T) -> T { x } fn factory<T>() -> fn(T) -> T { id<T> } fn main() { let f = factory<i64>(); f(4); }");
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
-    assert!(
-        output.module.monomorphisations.iter().any(|mono| output
-            .module
-            .defs
-            .path(mono.key.declaration)
-            == "id"
-            && mono.key.type_args == vec![ResolvedTy::I64]),
-        "{:?}",
-        output.module.monomorphisations
-    );
 }
 
 #[test]

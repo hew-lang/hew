@@ -361,17 +361,28 @@ pub enum CheckedSelectSource {
     ActorAsk {
         call: SpanKey,
     },
+    Call {
+        call: SpanKey,
+    },
     StreamReceive {
         call: SpanKey,
     },
 }
 
-/// A task place borrowed while later selection sources are evaluated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PreparedSelectAccess {
+    Task,
+    Shared,
+    Exclusive,
+}
+
+/// An input place borrowed while later selection sources are evaluated.
 #[derive(Debug, Clone)]
-pub(super) struct PreparedSelectTask {
+pub(super) struct PreparedSelectInput {
     pub binding: TypeBindingId,
     pub path: Vec<String>,
     pub span: Span,
+    pub access: PreparedSelectAccess,
 }
 
 /// How one `for` loop binds each `Vec<T>` element (D432).
@@ -764,22 +775,6 @@ pub struct TypeCheckOutput {
     pub call_type_args: HashMap<SpanKey, Vec<Ty>>,
     /// Concrete invocation views selected when quantified values meet monomorphic types.
     pub callable_value_specializations: HashMap<SpanKey, Vec<ResolvedTy>>,
-    /// Per-concrete-element `Vec<T>` runtime-ABI verdict for the
-    /// monomorphisation re-resolution of element-typed methods under a type
-    /// parameter (#1929 Stage 1).
-    ///
-    /// Populated at the checker output boundary by classifying every concrete
-    /// type that appears as a generic call / record-init type-argument through
-    /// the same authority that backs the constructor path
-    /// ([`crate::vec_authority::classify_element`] + the `Copy` marker for the
-    /// layout class). A `Vec<T>` `push`/`get`/`set`/`pop` whose element
-    /// is a declared type parameter keeps the `hew_vec_*_FAMILY` placeholder
-    /// through HIR; MIR substitutes the concrete element per instantiation,
-    /// looks it up here, and resolves the concrete symbol through
-    /// [`crate::vec_authority::resolve_runtime_symbol`]. An element ABSENT from this
-    /// map (non-`Copy`/owned layout, tuples, closures, unresolved nominals)
-    /// fails closed at MIR — never a silent accept.
-    pub vec_generic_element_abi: HashMap<Ty, crate::vec_authority::VecElementToken>,
     /// Inferred or explicit type arguments for record / enum-struct-variant
     /// initialiser sites on user-defined generic types.  Keyed by the
     /// initialiser expression's span.
@@ -1112,6 +1107,11 @@ pub enum CallableCandidate {
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.
     Closure(SpanKey),
+    GeneratorBlock(SpanKey),
+    Erasure {
+        site: SpanKey,
+        value: Box<IndirectCallCandidates>,
+    },
     TaskProducer(SpanKey),
     TaskResult(Box<CallableCandidate>),
     Sequence(Vec<IndirectCallCandidates>),
@@ -1197,7 +1197,8 @@ pub struct IndirectCallCandidates {
 }
 
 impl IndirectCallCandidates {
-    pub(crate) fn unknown() -> Self {
+    #[must_use]
+    pub fn unknown() -> Self {
         Self {
             known: Vec::new(),
             may_be_unknown: true,
@@ -1346,7 +1347,7 @@ pub struct PoolAccessor {
 pub enum PoolAccessorKind {
     /// `sup.pool[i]` — trapping member access (`Vec[i]` OOB parity).
     Index,
-    /// `sup.pool.get(i)` — `Option<ChildRef<T>>` member access (`None` on OOB).
+    /// `sup.pool.get(i)` — `Option<T>` member access (`None` on OOB).
     Get,
     /// `sup.pool.len()` — `i64` member count.
     Len,
@@ -1899,16 +1900,10 @@ pub enum MethodCallRewrite {
     /// descriptor.
     ///
     /// `consumes_receiver` is `true` when the rewritten runtime call takes
-    /// ownership of (consumes) its receiver — the `.close()`-family handle
-    /// release builtins plus the lambda-actor handle release. The single
-    /// authority for which symbols consume is
-    /// [`crate::builtin_names::runtime_symbol_consumes_receiver`] (currently
-    /// `hew_stream_close`, `hew_sink_close`, `hew_channel_sender_close`,
-    /// `hew_channel_receiver_close`, `hew_duplex_close`, `hew_duplex_close_half`,
-    /// `hew_lambda_actor_release`); consult that function rather than this list,
-    /// which is illustrative and must not drift from it. HIR lowers a consuming
-    /// receiver with `IntentKind::Consume` so the MIR move-checker marks the
-    /// handle moved-out — its scope-exit drop must NOT fire again
+    /// ownership of its receiver. The sole symbol authority is
+    /// [`crate::builtin_names::runtime_symbol_consumes_receiver`]. HIR lowers a
+    /// consuming receiver with `IntentKind::Consume` so the MIR move-checker
+    /// marks the handle moved-out; its scope-exit drop must not fire again
     /// (double-`close`/double-free). Borrowing methods (`send`/`recv`) leave
     /// this `false`. The verdict is derived from the resolved `c_symbol` in
     /// the single rewrite-recording authority, keyed on the runtime
@@ -1989,15 +1984,6 @@ pub enum MethodCallRewrite {
     GeneratorNext {
         yield_ty: crate::resolved_ty::ResolvedTy,
     },
-    /// Remote `RemotePid<T>::ask(msg, timeout_ms)` request/reply dispatch.
-    ///
-    /// HIR consumes this structured marker and emits a dedicated
-    /// `HirExprKind::RemoteActorAsk`, preserving the checker-authoritative
-    /// `Result<T::Reply, AskError>` return type.
-    RemoteActorAsk,
-    /// Remote `RemotePid<T>::send(msg)` one-way submission, lowered by HIR to
-    /// `HirExprKind::RemoteActorSend` with its `Result<(), SendError>` type.
-    RemoteActorSend,
     /// Builtin `Vec<T>` higher-order pipeline call (`map` / `filter` /
     /// `reduce`, spec §3.8.6). HIR expands the call site into a counted
     /// loop over the receiver — bind the receiver and the closure argument
@@ -2066,6 +2052,7 @@ pub enum MethodCallRewrite {
         /// (e.g. "T" in `fn foo<T: Show>(x: T)`). Used by MIR to look up the
         /// concrete type from the monomorphization substitution map.
         receiver_type_param: crate::ParamHead,
+        trait_args: Vec<Ty>,
         /// Checker-owned receiver ABI bit from the declaring trait signature.
         requires_mutable_receiver: bool,
         /// Checker-owned receiver ownership bit from the declaring trait.
@@ -2419,6 +2406,7 @@ pub(super) struct GenericRequirement {
 pub(super) enum GenericRequirementKind {
     Eq,
     BorrowedTransfer { root: String },
+    ResourceClose,
 }
 
 /// One generic function call site, recorded so type obligations
@@ -2426,10 +2414,10 @@ pub(super) enum GenericRequirementKind {
 ///
 #[derive(Debug, Clone)]
 pub(super) struct GenericFnInstantiationSite {
-    pub(super) caller: Option<String>,
+    pub(super) caller: Option<crate::DefId>,
     pub(super) caller_type_params: Vec<crate::ParamHead>,
-    pub(super) callee: String,
-    /// Partial, name-keyed binding of the callee's type parameters, captured in
+    pub(super) callee: crate::DefId,
+    /// Partial, binder-keyed binding of the callee's type parameters, captured in
     /// the CALLER's terms: inside a generic caller the values may still name the
     /// caller's own parameters, which is what lets
     /// [`Checker::finalize_generic_requirements`] walk generic → generic call
@@ -2462,26 +2450,26 @@ pub(super) enum GenericCallee<'a> {
     },
 }
 
-/// One generic → generic call edge, carrying a partial, NAME-keyed
+/// One generic → generic call edge, carrying a partial, binder-keyed
 /// substitution in the enclosing generic function's own terms.
 ///
-/// Name-keyed rather than positional: an impl method's `fn_sigs` type-parameter
+/// Binder-keyed rather than positional: an impl method's `fn_sigs` type-parameter
 /// list interleaves method-level and impl-level parameters (the impl's are
 /// appended after the method's during registration), and the two are pinned by
-/// different sources at the call site. Zipping by name lets each source
+/// different sources at the call site. Binding by identity lets each source
 /// contribute what it knows without any positional assumption, and a parameter
 /// no source pinned simply stays abstract — which the walk then treats as
 /// undischarged rather than silently mis-binding.
 #[derive(Debug, Clone)]
 pub(super) struct GenericCallEdge {
-    pub(super) callee: String,
+    pub(super) callee: crate::DefId,
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
 }
 
 /// One instantiation queued for type-requirement discharge.
 #[derive(Debug, Clone)]
 pub(super) struct PendingInstantiation {
-    pub(super) callee: String,
+    pub(super) callee: crate::DefId,
     pub(super) substitution: HashMap<crate::ParamHead, Ty>,
     /// Span and module of the CONCRETE application the diagnostic points at —
     /// carried unchanged along every edge so a nested obligation still reports
@@ -2489,9 +2477,9 @@ pub(super) struct PendingInstantiation {
     pub(super) report_span: Span,
     pub(super) report_module: Option<String>,
     pub(super) depth: u32,
-    /// Callee keys from the concrete root to here, so a chain that outruns the
+    /// Callee declarations from the concrete root to here, so a chain that outruns the
     /// hop budget can be named in the diagnostic instead of vanishing.
-    pub(super) chain: Vec<String>,
+    pub(super) chain: Vec<crate::DefId>,
 }
 
 impl PendingLoweringFact {
@@ -3395,7 +3383,7 @@ pub struct Checker {
     pub(super) shadowed_method_type_param_reports: HashSet<(String, usize, usize, String)>,
     /// Type demands grouped by owning function; None covers expressions
     /// outside a function. Resolved once concretely or through generic calls.
-    pub(super) generic_requirements: HashMap<Option<String>, Vec<GenericRequirement>>,
+    pub(super) generic_requirements: HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
     /// Every generic function call site observed while checking bodies, in
     /// source order. Consumed alongside `generic_requirements`.
     pub(super) generic_fn_instantiation_sites: Vec<GenericFnInstantiationSite>,
@@ -3653,7 +3641,7 @@ pub struct Checker {
     /// distinguish an actor ask under `await` (valid) from an actor ask without
     /// Only these operand calls are explicitly awaited or forked.
     pub(super) suspension_operands: HashSet<SpanKey>,
-    pub(super) prepared_select_tasks: Vec<PreparedSelectTask>,
+    pub(super) prepared_select_inputs: Vec<PreparedSelectInput>,
     pub(super) loop_depth: u32,
     /// Loop and label floors of a currently checked deferred body.
     pub(super) deferred_body: Option<(u32, usize)>,
@@ -3671,7 +3659,7 @@ pub struct Checker {
     pub(super) trait_defs: HashMap<crate::DefId, TraitInfo>,
     /// The direct super-traits of each trait, resolved where the trait
     /// declares them.
-    pub(super) trait_super: HashMap<crate::DefId, Vec<crate::DefId>>,
+    pub(super) trait_super: HashMap<crate::DefId, Vec<TraitRef>>,
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
@@ -4118,16 +4106,6 @@ pub struct Checker {
     /// registering a trait method signature). The carrier is collapsed at
     /// call sites where `Self` is substituted by a concrete type.
     pub(super) current_trait_for_self_projection: Option<crate::DefId>,
-    /// Resolved impl-side `type Bar = X` bindings, keyed by
-    /// `(impl_type_name, trait_name, assoc_name)`. Populated at impl
-    /// registration so that downstream projection-collapse
-    /// (`project_assoc_types`) can substitute `Ty::AssocType` carriers once
-    /// their `base` becomes concrete.
-    ///
-    /// Distinct from `ImplAliasScope.entries`, which is the per-impl scope
-    /// stack used for `Self::Bar` lookup during impl-body checking.
-    pub(super) impl_assoc_type_bindings:
-        HashMap<(ResolvedTy, crate::DefId, Symbol), Vec<ImplAssociatedType>>,
     pub(super) associated_schema_parameters: super::AssociatedTypeSchemas,
     /// Whether warnings for WASM-only builds should be emitted.
     pub(super) wasm_target: bool,
@@ -4545,7 +4523,7 @@ impl Checker {
             in_generator: false,
             implied_display_context: None,
             suspension_operands: HashSet::new(),
-            prepared_select_tasks: Vec::new(),
+            prepared_select_inputs: Vec::new(),
             loop_depth: 0,
             deferred_body: None,
             loop_labels: Vec::new(),
@@ -4644,7 +4622,6 @@ impl Checker {
             lambda_actor_declarations: HashMap::new(),
             impl_alias_scopes: Vec::new(),
             current_trait_for_self_projection: None,
-            impl_assoc_type_bindings: HashMap::new(),
             associated_schema_parameters: super::AssociatedTypeSchemas::default(),
             wasm_target: false,
             repl_fragment: false,

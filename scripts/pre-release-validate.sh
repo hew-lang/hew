@@ -302,8 +302,8 @@ validate_linux() {
 
         echo "==> Step 2: Verify binaries exist and run"
         "${release_dir}/hew" --version
-        "${release_dir}/hew-lsp" --version
-        "${release_dir}/hew-observe" --version
+        "${release_dir}/hew" lsp --version
+        "${release_dir}/hew" observe --version
         test -f "${release_lib_dir}/libhew.a"
 
         echo "==> Step 3: Smoke test — run a Hew program"
@@ -351,8 +351,7 @@ validate_linux() {
         mkdir -p "${package_root}/bin" "${package_root}/lib/x86_64-unknown-linux-gnu" \
             "${package_root}/std" "${package_stage}"
 
-        cp "${release_dir}/hew" "${release_dir}/hew-lsp" \
-            "${release_dir}/hew-observe" "${package_root}/bin/"
+        cp "${release_dir}/hew" "${package_root}/bin/"
         chmod +x "${package_root}/bin/"*
         verify_libhew_external_link "${release_dir}/hew" "${release_lib_dir}/libhew.a"
         cp "${release_lib_dir}/libhew.a" "${package_root}/lib/"
@@ -478,8 +477,8 @@ validate_macos() {
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/hew-lsp\" --version
-            \"\$release_dir/hew-observe\" --version
+            \"\$release_dir/hew\" lsp --version
+            \"\$release_dir/hew\" observe --version
 
             echo \"==> Smoke test: hew run (guards against process-exit SIGABRT — issue #1606)\"
             scripts/test-release-binary.sh
@@ -569,8 +568,8 @@ validate_linux_aarch64() {
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/hew-lsp\" --version
-            \"\$release_dir/hew-observe\" --version
+            \"\$release_dir/hew\" lsp --version
+            \"\$release_dir/hew\" observe --version
             test -f \"\$release_lib_dir/libhew.a\"
 
             printf '%s\n' \"fn main() { println(\\\"Hello from Hew release test\\\") }\" > _smoke.hew
@@ -646,8 +645,8 @@ validate_freebsd() {
             release_dir=\"\$(scripts/cargo-output-dir.py --profile release)\"
             release_lib_dir=\"\$(scripts/cargo-output-dir.py --profile release-lib)\"
             \"\$release_dir/hew\" --version
-            \"\$release_dir/hew-lsp\" --version
-            \"\$release_dir/hew-observe\" --version
+            \"\$release_dir/hew\" lsp --version
+            \"\$release_dir/hew\" observe --version
 
             echo \"FreeBSD build succeeded\"
         '"

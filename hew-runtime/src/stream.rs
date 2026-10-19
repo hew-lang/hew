@@ -77,7 +77,10 @@ pub use hew_cabi::sink::{into_sink_ptr, into_write_sink_ptr, HewSink, TrySendRes
 // (the single owner of the C ABI); hew-cabi only declares them as imports so that
 // native packages resolve them against libhew.a at final link.
 
+mod generator;
 pub(crate) mod native;
+pub(crate) mod sender;
+pub use sender::hew_sink_clone;
 
 /// Returns 1 if the stream pointer is non-null (valid), 0 otherwise.
 #[no_mangle]
@@ -104,9 +107,7 @@ type Item = Vec<u8>;
 
 // ── Backing traits ────────────────────────────────────────────────────────────
 
-/// How `select` observes a content stream without taking an item. Select is
-/// native-only (a wasm32 manifest reject), so wasm32 has no reader.
-#[cfg(not(target_arch = "wasm32"))]
+/// How `select` observes a content stream without taking an item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SelectReadiness {
     /// The next read never waits indefinitely: a regular file or an in-memory
@@ -114,6 +115,7 @@ pub(crate) enum SelectReadiness {
     Ready,
     /// Ready once this reactor handle (a connection or a child process pipe)
     /// is readable.
+    #[cfg(not(target_arch = "wasm32"))]
     Reactor(i32),
     /// This stream cannot report readiness without taking an item; the reason
     /// a selection over it refuses.
@@ -123,9 +125,9 @@ pub(crate) enum SelectReadiness {
 /// An adapter may hold only part of its next item when its upstream turns
 /// ready, so it is observable only over an upstream whose next read never
 /// waits.
-#[cfg(not(target_arch = "wasm32"))]
 fn adapter_select_readiness(upstream: SelectReadiness) -> SelectReadiness {
     match upstream {
+        #[cfg(not(target_arch = "wasm32"))]
         SelectReadiness::Reactor(_) => SelectReadiness::Unsupported(
             "select cannot observe a line, chunk or take adapter over a socket or pipe stream yet",
         ),
@@ -151,6 +153,13 @@ pub(crate) enum NativeRead {
 }
 
 trait StreamBacking: Send + std::fmt::Debug {
+    fn generator(&mut self) -> Option<&mut generator::GeneratorStream> {
+        None
+    }
+    fn owned_values(&mut self) -> Vec<(*mut c_void, crate::vec::HewValueLayout)> {
+        Vec::new()
+    }
+
     /// How a native receive reaches this backing's reactor handle, if it has
     /// one; see [`NativeRead`].
     #[cfg(not(target_arch = "wasm32"))]
@@ -159,7 +168,6 @@ trait StreamBacking: Send + std::fmt::Debug {
     }
 
     /// How a selection observes this backing; see [`SelectReadiness`].
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Unsupported("select cannot observe this stream yet")
     }
@@ -245,14 +253,12 @@ impl HewStream {
     /// The shared pipe core when this stream is the read half of an
     /// in-memory pipe; `None` for a content stream (socket, file, adapter).
     #[must_use]
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pipe_core(&self) -> Option<&Arc<crate::channel_core::ChannelCore>> {
         self.channel.as_ref().filter(|_| !self.exhausted())
     }
 
     /// How a selection observes this content stream. A closed stream answers
     /// its next read at once.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn select_readiness(&self) -> SelectReadiness {
         if self.exhausted() {
             SelectReadiness::Ready
@@ -330,7 +336,6 @@ impl StreamBacking for ChannelStream {
 }
 
 impl StreamBacking for VecStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         SelectReadiness::Ready
     }
@@ -364,7 +369,6 @@ struct FileReadStream {
 impl StreamBacking for FileReadStream {
     /// Only a regular file answers its next read at once. A FIFO, a device or
     /// a terminal opens like a file, but its next read can wait indefinitely.
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         if self
             .reader
@@ -547,7 +551,6 @@ struct LinesStream {
 }
 
 impl StreamBacking for LinesStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -657,7 +660,6 @@ struct ChunksStream {
 }
 
 impl StreamBacking for ChunksStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -748,7 +750,6 @@ struct TakeStream {
 }
 
 impl StreamBacking for TakeStream {
-    #[cfg(not(target_arch = "wasm32"))]
     fn select_readiness(&self) -> SelectReadiness {
         adapter_select_readiness(self.upstream.select_readiness())
     }
@@ -1972,9 +1973,8 @@ pub unsafe extern "C" fn hew_stream_recv_cancel_cleanup(
 pub unsafe extern "C" fn hew_stream_close(stream: *mut HewStream) {
     if !stream.is_null() {
         crate::tracing::record_channel_event(stream as u64, crate::tracing::SPAN_STREAM_CLOSED);
-        // SAFETY: stream was allocated with Box::into_raw.
-        // Drop impl calls close() on the backing.
-        unsafe { drop(Box::from_raw(stream)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        // SAFETY: the foreign synchronous boundary transfers this unique handle to its value cursor.
+        unsafe { crate::release_walker::hew_release_sync(hew_stream_release_begin(stream)) };
     }
 }
 
@@ -1987,21 +1987,29 @@ pub unsafe extern "C" fn hew_stream_release_begin(
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
     unsafe fn free_stream(owner: *mut c_void) {
-        // SAFETY: the cursor owns the handle and has drained all queued values.
-        unsafe { hew_stream_close(owner.cast()) };
+        if !owner.is_null() {
+            // SAFETY: the cursor owns the handle and has drained all queued values.
+            unsafe { drop(Box::from_raw(owner.cast::<HewStream>())) };
+        }
     }
     // SAFETY: the caller supplies an exclusive live handle or null.
     let (layout, discarded) = unsafe { stream.as_ref() }
         .and_then(|stream| stream.channel.as_ref())
         .map_or_else(|| (None, Vec::new()), |core| core.close_stream_take());
-    HewReleaseCursor::envelopes(
+    // SAFETY: the consuming boundary holds the stream's exclusive owner.
+    let values =
+        unsafe { stream.as_mut() }.map_or_else(Vec::new, |stream| stream.inner.owned_values());
+    let owners = HewReleaseCursor::values(values);
+    let queued = HewReleaseCursor::envelopes(
         discarded,
         layout,
         ReleaseItem::Storage {
             owner: stream.cast(),
             free: free_stream,
         },
-    )
+    );
+    // SAFETY: both fresh cursors transfer to the one ordered release walk.
+    unsafe { HewReleaseCursor::join(vec![owners, queued]) }
 }
 
 /// Nominally typed file-read handle release used by `std.fs`.
@@ -2056,9 +2064,43 @@ pub unsafe extern "C" fn hew_sink_flush(sink: *mut HewSink) {
 pub unsafe extern "C" fn hew_sink_close(sink: *mut HewSink) {
     if !sink.is_null() {
         crate::tracing::record_channel_event(sink as u64, crate::tracing::SPAN_SINK_CLOSED);
-        // SAFETY: sink was allocated with Box::into_raw.
-        // Drop impl calls close() on the backing.
-        unsafe { drop(Box::from_raw(sink)) }; // ALLOCATOR-PAIRING: GlobalAlloc
+        // SAFETY: synchronous foreign callers own the handle and finish I/O before its owners drain.
+        unsafe {
+            let cursor = hew_sink_release_begin(sink, std::ptr::null());
+            (*sink).close();
+            crate::release_walker::hew_release_sync(cursor);
+        }
+    }
+}
+
+pub(crate) unsafe fn expand_sink(
+    sink: *mut HewSink,
+    pending: &mut Vec<crate::release_walker::ReleaseItem>,
+) {
+    use crate::release_walker::ReleaseItem;
+    unsafe fn free_sink(owner: *mut c_void) {
+        if !owner.is_null() {
+            // SAFETY: the cursor drained every owner pinned by this endpoint.
+            unsafe { drop(Box::from_raw(owner.cast::<HewSink>())) };
+        }
+    }
+    pending.push(ReleaseItem::Storage {
+        owner: sink.cast(),
+        free: free_sink,
+    });
+    // SAFETY: native finish completed before the cursor expands the owned endpoint.
+    if let Some(owners) = unsafe { sink.as_mut() }.and_then(HewSink::take_owners) {
+        pending.push(ReleaseItem::Storage {
+            owner: owners.storage,
+            free: owners.free,
+        });
+        pending.extend(
+            owners
+                .values
+                .into_iter()
+                .rev()
+                .map(|(slot, layout)| ReleaseItem::Value { slot, layout }),
+        );
     }
 }
 
@@ -2071,35 +2113,33 @@ pub unsafe extern "C" fn hew_sink_release_begin(
     state: *const crate::coro_state::HewCoroState,
 ) -> *mut crate::release_walker::HewReleaseCursor {
     use crate::release_walker::{HewReleaseCursor, ReleaseItem};
-    unsafe fn free_sink(owner: *mut c_void) {
-        // SAFETY: the cursor owns this handle after discarded values finish.
-        unsafe { hew_sink_close(owner.cast()) };
-    }
+
     // SAFETY: the consuming callback retains its invocation through this call.
     let owner = unsafe { crate::coro_state::cleanup_fault_owner(state) }
         .or_else(crate::fault::crashing_owner);
     // SAFETY: the consuming invocation and sink remain live during cleanup.
     if unsafe { crate::coro_state::cleanup_abandons_io(state) } || owner.is_some() {
-        // SAFETY: the caller retains this optional sink through cleanup.
-        if let Some(sink) = unsafe { sink.as_mut() } {
-            drop(sink.take_pending());
-        }
+        // SAFETY: cleanup retains the endpoint after its active producer drains.
+        unsafe { sender::abandon_pending(sink) };
     }
-    let (layout, discarded) = if let Some(actor) = owner {
+    let (layout, discarded) = if let Some(actor) = owner.filter(|_| !sink.is_null()) {
         // SAFETY: a live channel sink retains its core through cursor completion.
-        unsafe { sink_channel_core(sink) }
-            .map_or_else(|| (None, Vec::new()), |core| core.fault_close_take(actor))
+        let shared = unsafe { sender::shared(sink) };
+        // SAFETY: an unfinished endpoint pins its underlying core until native finish.
+        let channel = unsafe {
+            if (*sink).is_closed() {
+                None
+            } else if let Some(sender) = &shared {
+                sender::fault_channel(sender)
+            } else {
+                sink_channel_core(sink)
+            }
+        };
+        channel.map_or_else(|| (None, Vec::new()), |core| core.fault_close_take(actor))
     } else {
         (None, Vec::new())
     };
-    HewReleaseCursor::envelopes(
-        discarded,
-        layout,
-        ReleaseItem::Storage {
-            owner: sink.cast(),
-            free: free_sink,
-        },
-    )
+    HewReleaseCursor::envelopes(discarded, layout, ReleaseItem::Sink { sink })
 }
 
 /// `Sink.finish`: publish EOF to the reader and keep the handle.
@@ -2116,46 +2156,8 @@ pub unsafe extern "C" fn hew_sink_release_begin(
 pub unsafe extern "C" fn hew_sink_finish(sink: *mut HewSink) {
     if !sink.is_null() {
         // SAFETY: sink is valid per caller contract.
-        unsafe { (*sink).close() };
+        unsafe { (*sink).finish() };
     }
-}
-
-/// `Sink.clone`: one more producer handle on the same pipe. The pipe reaches
-/// EOF when the last handle finishes or closes.
-///
-/// Only a pipe sink has a shareable queue behind it. A socket or file sink has
-/// one writer; cloning one is refused fail-closed.
-///
-/// # Safety
-///
-/// `sink` must be a valid pointer created by a stream sink constructor.
-#[no_mangle]
-pub unsafe extern "C" fn hew_sink_clone(sink: *mut HewSink) -> *mut HewSink {
-    cabi_guard!(sink.is_null(), ptr::null_mut());
-    // SAFETY: sink is valid per caller contract.
-    let core_raw = unsafe { (*sink).channel_core_ptr() };
-    if core_raw.is_null() {
-        crate::channel_common::abort_elem_witness(
-            "hew_sink_clone",
-            "only a pipe sink can be cloned; a socket or file sink has one writer",
-        );
-    }
-    let core_raw = core_raw.cast::<crate::channel_core::ChannelCore>();
-    // SAFETY: the sink's backing owns the Arc this pointer borrows; the
-    // increment mints the clone's independent owner.
-    unsafe { Arc::increment_strong_count(core_raw) };
-    // SAFETY: the increment above balances this reconstruction.
-    let core = unsafe { Arc::from_raw(core_raw) };
-    core.clone_sink();
-    let clone = into_sink_ptr(
-        core,
-        channel_sink_write,
-        channel_sink_flush,
-        channel_sink_close,
-    );
-    // SAFETY: clone was just allocated by into_sink_ptr.
-    unsafe { (*clone).set_channel_core(core_raw.cast::<c_void>()) };
-    clone
 }
 
 /// Whether the sink's peer (the consumer / `Stream<T>` half) has closed or
@@ -2720,6 +2722,7 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
     stream: *mut HewStream,
     out: *mut c_void,
     layout: *const crate::vec::HewValueLayout,
+    fault_out: *mut *mut crate::fault::HewFault,
 ) -> i32 {
     cabi_guard!(stream.is_null() || out.is_null(), 0);
     // SAFETY: layout validity is the caller's contract.
@@ -2729,7 +2732,28 @@ pub unsafe extern "C" fn hew_stream_try_next_layout(
         crate::channel_common::move_elem_layout_witness(layout, "hew_stream_try_next_layout")
     };
     // SAFETY: stream is valid and exclusively borrowed per caller contract.
-    let item = unsafe { (*stream).try_next(layout) };
+    let item = unsafe {
+        *fault_out = ptr::null_mut();
+        if (*stream).exhausted() {
+            return 0;
+        }
+        if let Some(generator) = (*stream).inner.generator() {
+            let (status, item) = generator.poll(ptr::null_mut(), layout);
+            if status == 3 {
+                crate::generator_checked::hew_checked_generator_take_fault(
+                    generator.generator,
+                    fault_out,
+                );
+                return 0;
+            }
+            if item.is_some() {
+                (*stream).received();
+            }
+            item
+        } else {
+            (*stream).try_next(layout)
+        }
+    };
     // SAFETY: out points to one writable element slot per caller contract.
     unsafe {
         crate::channel_common::decode_elem_envelope(item, out, layout, "hew_stream_try_next_layout")
@@ -2872,12 +2896,12 @@ pub unsafe extern "C" fn hew_stream_try_send_layout(
 /// # Safety
 /// `sink` is null or a live exclusive loan, `data` transfers one value matching
 /// `layout`, and `release_out` is a disjoint writable cursor output.
-#[no_mangle]
-pub unsafe extern "C" fn hew_stream_try_send_move_release(
+unsafe fn try_send_underlying(
     sink: *mut HewSink,
     data: *mut c_void,
     layout: *const crate::vec::HewValueLayout,
     release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    fault_out: *mut *mut crate::fault::HewFault,
 ) -> i32 {
     use crate::channel_common::{move_elem_envelope, move_elem_layout_witness};
     use crate::release_walker::HewReleaseCursor;
@@ -2885,6 +2909,7 @@ pub unsafe extern "C" fn hew_stream_try_send_move_release(
     // SAFETY: the caller supplies a checked descriptor and one transferred owner.
     unsafe {
         *release_out = std::ptr::null_mut();
+        *fault_out = std::ptr::null_mut();
         let layout = move_elem_layout_witness(layout, "Sink.try_send");
         let envelope = move_elem_envelope(data, layout, "Sink.try_send");
         let (status, rejected) = if sink.is_null() || (*sink).is_closed() {
@@ -2907,6 +2932,9 @@ pub unsafe extern "C" fn hew_stream_try_send_move_release(
             if layout.ownership_kind == crate::vec::HewTypeOwnershipKind::LayoutManaged {
                 *release_out = HewReleaseCursor::detached(envelope.as_ptr().cast(), *layout);
             }
+        }
+        if status == TrySendResult::Failed {
+            *fault_out = hew_stream_take_error_fault();
         }
         status.into_abi_code()
     }
@@ -3457,6 +3485,86 @@ mod tests {
     }
 
     // ── Sink operations ─────────────────────────────────────────────────
+
+    #[test]
+    fn concurrent_first_clones_share_one_sender_and_close_once() {
+        unsafe extern "C-unwind" fn drop_sink(slot: *mut c_void) {
+            // SAFETY: the cursor transfers the one sink owner stored in this slot.
+            unsafe { hew_sink_close(*slot.cast::<*mut HewSink>()) };
+        }
+        static SINK: HewValueLayout = HewValueLayout {
+            size: size_of::<*mut HewSink>(),
+            align: align_of::<*mut HewSink>(),
+            ownership_kind: HewTypeOwnershipKind::LayoutManaged,
+            clone_fn: None,
+            drop_fn: Some(drop_sink),
+            release_start: None,
+        };
+        let _guard = crate::runtime_test_guard();
+        let closed = Arc::new(AtomicUsize::new(0));
+        let sink = hew_cabi::sink::into_sink_ptr(
+            closed.clone(),
+            |_, _| {},
+            |_| {},
+            |closed| {
+                closed.fetch_add(1, Ordering::SeqCst);
+            },
+        );
+        // SAFETY: the constructor transferred this unique heap owner.
+        let source = Arc::new(unsafe { Box::from_raw(sink) });
+        let ready = Arc::new(std::sync::Barrier::new(8));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let source = source.clone();
+                let ready = ready.clone();
+                std::thread::spawn(move || {
+                    ready.wait();
+                    // SAFETY: shared source owners retain the read-borrowed endpoint;
+                    // clone installs its backing once and receives the exact descriptor.
+                    let sibling = unsafe {
+                        hew_sink_clone((&raw const **source).cast_mut(), &raw const SINK)
+                    };
+                    // SAFETY: this thread owns its newly cloned endpoint.
+                    let identity = unsafe { (*sibling).runtime_adapter() } as usize;
+                    // SAFETY: this endpoint has no live operation or competing borrower.
+                    unsafe { hew_sink_close(sibling) };
+                    identity
+                })
+            })
+            .collect();
+        let identities: Vec<_> = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect();
+        assert!(identities
+            .iter()
+            .all(|identity| *identity == identities[0] && *identity != 0));
+        assert_eq!(closed.load(Ordering::SeqCst), 0);
+        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        let pointer = (&raw const **source).cast_mut();
+        // SAFETY: the source endpoint pins this shared owner through its final finish drain.
+        unsafe {
+            let owner = sender::shared(pointer).expect("installed shared sender");
+            assert!(owner.claim());
+            let finish = crate::async_io::hew_async_sink_finish(pointer, waker.descriptor());
+            crate::async_io::hew_async_io_cancel(finish);
+            assert_eq!(
+                crate::async_io::hew_async_io_cleanup_status(finish, waker.descriptor()),
+                0
+            );
+            assert_eq!(closed.load(Ordering::SeqCst), 0);
+            owner.release();
+            while crate::async_io::hew_async_io_cleanup_status(finish, waker.descriptor()) == 0 {
+                readiness.wait();
+            }
+            crate::async_io::hew_async_io_free(finish);
+        }
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+        let source = Arc::try_unwrap(source).unwrap();
+        // SAFETY: all shared read loans ended and the final endpoint is uniquely owned.
+        unsafe { hew_sink_close(Box::into_raw(source)) };
+        assert_eq!(closed.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn sink_write_null_sink_is_safe() {
@@ -4974,11 +5082,14 @@ mod tests {
 
             let layout = plain_elem_layout(8, 8);
             let mut out: f64 = 0.0;
+            let mut fault = ptr::null_mut();
             let rc = hew_stream_try_next_layout(
                 stream,
                 std::ptr::addr_of_mut!(out).cast(),
                 &raw const layout,
+                &raw mut fault,
             );
+            assert!(fault.is_null());
             assert_eq!(rc, 0, "empty pipe binds no value without blocking");
 
             let value: f64 = 2.5;
@@ -4987,7 +5098,9 @@ mod tests {
                 stream,
                 std::ptr::addr_of_mut!(out).cast(),
                 &raw const layout,
+                &raw mut fault,
             );
+            assert!(fault.is_null());
             assert_eq!(rc, 1);
             assert!((out - 2.5).abs() < f64::EPSILON);
 

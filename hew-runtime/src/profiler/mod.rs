@@ -145,33 +145,8 @@ pub(crate) fn register_reset_hooks() {
 /// Called from [`hew_sched_init`](crate::scheduler::hew_sched_init) during
 /// scheduler startup. If `HEW_PPROF` is not set, this is a no-op.
 ///
-/// Distributed subsystem pointers default to null (no cluster/connection/
-/// routing data will be served). Use [`maybe_start_with_context`] to pass
-/// live pointers from a running [`HewNode`](crate::hew_node::HewNode).
+/// Distributed endpoints read the current node through its lifetime guard.
 pub fn maybe_start() {
-    maybe_start_with_context(
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-        std::ptr::null_mut(),
-    );
-}
-
-/// Check `HEW_PPROF` and start the profiler with distributed runtime context.
-///
-/// Like [`maybe_start`] but accepts pointers to the cluster, connection
-/// manager, and routing table so the profiler can expose distributed
-/// runtime endpoints.
-///
-/// # Safety
-///
-/// The pointers (if non-null) must remain valid until [`shutdown()`] is called.
-/// Null pointers are safe and result in empty JSON responses for the
-/// corresponding endpoints.
-pub fn maybe_start_with_context(
-    cluster: *mut crate::cluster::HewCluster,
-    connmgr: *mut crate::connection::HewConnMgr,
-    routing: *mut crate::routing::HewRoutingTable,
-) {
     let env_val = match std::env::var("HEW_PPROF") {
         Ok(val) if !val.is_empty() => val,
         _ => return,
@@ -195,12 +170,7 @@ pub fn maybe_start_with_context(
         return;
     };
 
-    let ctx = Arc::new(ProfilerContext {
-        ring,
-        cluster,
-        connmgr,
-        routing,
-    });
+    let ctx = Arc::new(ProfilerContext { ring });
 
     // HTTP server thread — TCP or Unix depending on mode. Startup waits for
     // the server to finish every fallible runtime/listener conversion before
@@ -363,6 +333,7 @@ fn sampler_loop(ring: &Arc<Mutex<MetricsRing>>) {
 /// | `both` | Both files |
 /// | *(unset)* | Nothing |
 pub fn maybe_write_on_exit() {
+    shutdown();
     let output = match std::env::var("HEW_PROF_OUTPUT") {
         Ok(val) if !val.is_empty() => val,
         _ => return,
@@ -400,8 +371,7 @@ pub fn maybe_write_on_exit() {
 
 /// Stop all profiler threads and wait for them to exit.
 ///
-/// This MUST be called before freeing any node resources (cluster, connection
-/// manager, routing table) that the profiler threads might be accessing.
+/// Call before freeing the runtime whose metrics the profiler samples.
 ///
 /// Safe to call multiple times or when no profiler was started (no-op).
 pub(crate) fn shutdown() {

@@ -1,0 +1,4 @@
+import std.net;
+#[confined]
+fn acquire() { let peer = Node.peer("00"); }
+fn main() { acquire(); }

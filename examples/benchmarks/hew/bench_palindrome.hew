@@ -3,7 +3,7 @@ fn is_palindrome(s: string) -> bool {
     let half = n / 2;
     for i in 0..half {
         let j = n - 1 - i;
-        if s.char_at(i) != s.char_at(j) {
+        if s.get(i) != s.get(j) {
             return false;
         }
     }

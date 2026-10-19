@@ -80,8 +80,6 @@ impl Checker {
         let candidate = match name {
             "std.builtins.VecIter" => Some(BuiltinType::VecIter),
             "std.builtins.HashMapIter" => Some(BuiltinType::HashMapIter),
-            "std.builtins.ChildRef" => Some(BuiltinType::ChildRef),
-            "std.builtins.RemotePid" => Some(BuiltinType::RemotePid),
             _ => crate::lookup_builtin_type(name),
         }?;
         let Some((surface_owner, _)) = name.rsplit_once('.') else {
@@ -533,7 +531,7 @@ impl Checker {
             }
         }
         // Root expressions may carry a compiler builtin through a bare
-        // source-facing declaration name (notably `LocalPid`).  Its builtin
+        // source-facing declaration name. Its builtin
         // discriminator is established before lowering; qualifying that
         // presentation through the general unique-owner fallback would turn
         // it into a source nominal after the lexical authority has gone away.
@@ -1132,7 +1130,19 @@ impl Checker {
         // `dyn X` names a trait; an unknown name has no vtable to build and no
         // methods to dispatch, so refuse it here rather than letting it reach a
         // coercion site as an unexplained type mismatch.
-        if trait_id.and_then(|id| self.trait_info(id)).is_none() {
+        let predicate = trait_id
+            .and_then(crate::DefTable::as_predicate)
+            .filter(|predicate| {
+                matches!(predicate, crate::Predicate::Send | crate::Predicate::Sync)
+            });
+        if predicate.is_some() && (!args.is_empty() || !assoc_bindings.is_empty()) {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a trait-object predicate takes no type arguments or associated bindings".into(),
+            );
+        }
+        if predicate.is_none() && trait_id.and_then(|id| self.trait_info(id)).is_none() {
             // A type annotation is resolved once per registration pass and
             // again at use, so report the span once.
             let dedup_key = (
@@ -1145,6 +1155,27 @@ impl Checker {
                     span,
                     format!("unknown trait `{}` in `dyn` type", bound.path), // TRANSITION(P1): deleted by A1 commit 2
                 );
+            }
+        }
+        if let Some(required) = trait_id
+            .and_then(|id| self.trait_info(id))
+            .map(|info| info.type_params.len())
+            .filter(|required| args.len() != *required)
+        {
+            let message = format!(
+                "`dyn {}` requires {required} positional type argument(s); received {}",
+                bound.path,
+                args.len(),
+            );
+            // Signature registration and use can resolve one annotation
+            // repeatedly. Keep one diagnostic per source annotation.
+            if !self.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::ArityMismatch
+                    && error.span == *span
+                    && error.source_module == self.current_module
+                    && error.message == message
+            }) {
+                self.report_error(TypeErrorKind::ArityMismatch, span, message);
             }
         }
         if let Some(trait_id) = trait_id {
@@ -1298,13 +1329,24 @@ impl Checker {
             VariantDef::Tuple(fields) => VariantDef::Tuple(
                 fields
                     .iter()
-                    .map(|field| self.normalize_for_type_params(field, params))
+                    .map(|field| {
+                        self.bind_associated_schema_type(
+                            &self.normalize_for_type_params(field, params),
+                        )
+                    })
                     .collect(),
             ),
             VariantDef::Struct(fields) => VariantDef::Struct(
                 fields
                     .iter()
-                    .map(|(name, ty)| (name.clone(), self.normalize_for_type_params(ty, params)))
+                    .map(|(name, ty)| {
+                        (
+                            name.clone(),
+                            self.bind_associated_schema_type(
+                                &self.normalize_for_type_params(ty, params),
+                            ),
+                        )
+                    })
                     .collect(),
             ),
         }
@@ -1318,7 +1360,9 @@ impl Checker {
                 .map(|(name, ty)| {
                     (
                         name.clone(),
-                        self.normalize_for_type_params(ty, &type_def.type_params),
+                        self.bind_associated_schema_type(
+                            &self.normalize_for_type_params(ty, &type_def.type_params),
+                        ),
                     )
                 })
                 .collect(),
@@ -2048,7 +2092,7 @@ impl Checker {
     /// `Ty::AssocType`, etc.) pass through unchanged so they can be diagnosed
     /// or collapsed later when more substitutions arrive.
     ///
-    /// Lookup goes through `impl_assoc_type_bindings`, populated at impl-
+    /// Lookup goes through `AssociatedTypeSchemas`, populated at impl-
     /// registration. When no binding exists for `(base_type, trait, assoc)`,
     /// the carrier passes through — `enforce_type_param_bounds` is the
     /// authoritative diagnostic surface for "type does not implement trait".
@@ -2107,18 +2151,11 @@ impl Checker {
                 }
             }
         }
-        if let Some(key) = Self::impl_self_key(&resolved_base) {
-            if let Some(binding) = self
-                .impl_assoc_type_bindings
-                .get(&(key, trait_id, associated))
-                .and_then(|bindings| {
-                    bindings
-                        .iter()
-                        .find_map(|binding| binding.instantiate(&resolved_base))
-                })
-            {
-                return self.project_assoc_types(&binding);
-            }
+        if let Some(binding) =
+            self.associated_schema_parameters
+                .implementation(&resolved_base, trait_id, associated)
+        {
+            return self.project_assoc_types(&binding);
         }
         Ty::AssocType {
             base: Box::new(resolved_base),

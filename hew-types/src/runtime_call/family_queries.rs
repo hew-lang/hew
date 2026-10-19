@@ -208,7 +208,8 @@ impl RuntimeCallFamily {
     pub const fn is_node_builtin(self) -> bool {
         matches!(
             self,
-            Self::NodeAllowPeer
+            Self::Service(super::ServiceOp::Peer)
+                | Self::NodeAllowPeer
                 | Self::NodeConnect
                 | Self::NodeId
                 | Self::NodeIdentityKey
@@ -238,6 +239,7 @@ impl RuntimeCallFamily {
             | Self::MetricHistogramRecord
             | Self::MetricVecRegister
             | Self::MetricVecWith => Some(RuntimeCapability::Metrics),
+            Self::Service(_) => Some(RuntimeCapability::Node),
             family if family.is_node_builtin() => Some(RuntimeCapability::Node),
             _ => None,
         }
@@ -522,12 +524,16 @@ impl RuntimeCallFamily {
                     | RuntimeValueKind::ConstBytePointer
                     | RuntimeValueKind::TypeArgument(_)
                     | RuntimeValueKind::SharedPayload
-                    | RuntimeValueKind::NodeLookupResult
+                    | RuntimeValueKind::CodecGenerator
+                    | RuntimeValueKind::CodecEncoder
+                    | RuntimeValueKind::CodecItem
                     | RuntimeValueKind::BuiltinNominal(_)
                     | RuntimeValueKind::BuiltinArgument(_)
                     | RuntimeValueKind::Applied(_, _)
                     | RuntimeValueKind::Tuple(_)
                     | RuntimeValueKind::IoHandle(_)
+                    | RuntimeValueKind::ServiceHandle(_)
+                    | RuntimeValueKind::ServiceResult(_)
                     | RuntimeValueKind::FileReadHandle(_)
                     | RuntimeValueKind::Named(_)
                     | RuntimeValueKind::NamedOpaque(_)
@@ -680,6 +686,7 @@ impl RuntimeCallFamily {
         use RuntimeCallFamily as F;
         match self {
             F::AsyncIo(op) => Some(AsyncSuspendKind::NativeIo(op)),
+            F::Service(op @ (super::ServiceOp::Export | super::ServiceOp::Receive)) => Some(AsyncSuspendKind::Service(op)),
             // The suspending symbols (HIR await-classifier source of truth).
             // Every describable sink-send element rides the layout-witness
             // stream send on the backpressure-aware `SuspendKind::StreamSend`
@@ -689,7 +696,8 @@ impl RuntimeCallFamily {
 
             // Everything else: NOT suspending today. Exhaustively listed
             // so adding a new variant requires an explicit decision.
-            F::FileRead(_)
+            F::Service(super::ServiceOp::Peer | super::ServiceOp::ClosePeer | super::ServiceOp::CloseExport)
+            | F::FileRead(_)
             | F::Tcp(_)
             | F::Array(_)
             // The pool member barrier blocks its calling thread; SIR refuses
@@ -707,27 +715,21 @@ impl RuntimeCallFamily {
             | F::StreamTryNextLayout
             | F::StreamTrySendLayout
             | F::StreamForward
+            | F::StreamFromGenerator
+            | F::SinkFromEncoder
             | F::StreamPairSink
             | F::StreamPairStream
             | F::SinkClone
             | F::SinkClose
             | F::SinkPeerClosed
-            | F::ActorGenSinkComplete
-            | F::ActorGenSinkRegister
             | F::ActorRequestRelease
             | F::ActorCallFree
             | F::ActorRequestTake
-            | F::ActorAsk
-            | F::ActorAskWithChannel
             | F::ActorDemonitor
             | F::ActorLink
-            | F::LinkRemote
             | F::ActorMonitor
-            | F::ActorSelf
             | F::ActorCaller
             | F::ActorRefusalLog
-            | F::ActorSendById
-            | F::ActorSpawn
             | F::ActorUnlink
             | F::AutoMutexAlloc
             | F::AutoMutexFree
@@ -818,15 +820,9 @@ impl RuntimeCallFamily {
             | F::LocationSlot
             | F::LocationIncarnation
             | F::LocationDisplay
-            | F::RemotePidLocation
-            | F::RemotePidNodeId
-            | F::RemotePidSlot
-            | F::RemotePidIncarnation
-            | F::RemotePidDisplay
             | F::NodeIdentityKey
             | F::NodeLoadKeys
             | F::NodeLookup
-            | F::NodeMonitor
             | F::NodeRegister
             | F::NodeSetTransport
             | F::NodeShutdown
@@ -858,9 +854,29 @@ impl RuntimeCallFamily {
             | F::ReplyPayloadFree
             | F::ReplyWait
             | F::SelectFirst
-            | F::StringCharAt
-            | F::StringCharAtUtf8
-            | F::StringCharCount
+            | F::CharIsDigit
+            | F::CharIsLetter
+            | F::CharIsAlphanumeric
+            | F::CharIsWhitespace
+            | F::CharIsUpper
+            | F::CharIsLower
+            | F::CharIsPunctuation
+            | F::CharIsControl
+            | F::CharIsAscii
+            | F::CharToUpper
+            | F::CharToLower
+            | F::CharToTitle
+            | F::CharLenUtf8
+            | F::CharToDigit
+            | F::CharFromI64
+            | F::CharFromU64
+            | F::StringGet
+            | F::StringGetRange
+            | F::StringSliceRange
+            | F::StringAppend
+            | F::StringPush
+            | F::StringClear
+            | F::StringFindFrom
             | F::StringByteLen
             | F::StringConcat
             | F::ProcessExit
@@ -872,20 +888,15 @@ impl RuntimeCallFamily {
             | F::StringStartsWith
             | F::StringEndsWith
             | F::StringIsEmpty
-            | F::StringIsDigit
-            | F::StringIsAlpha
-            | F::StringIsAlphanumeric
             | F::StructuralFormat
             | F::StringFind
             | F::StringIndex
             | F::StringLen
-            | F::StringSlice
             | F::StringRepeat
             | F::StringReplace
             | F::StringClone
             | F::StringSplit
             | F::StringLines
-            | F::StringChars
             | F::StringToLowercase
             | F::StringSliceCodepoints
             | F::StringSliceCodepointsFrom

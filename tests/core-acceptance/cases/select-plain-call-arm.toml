@@ -1,0 +1,10 @@
+[[case]]
+id = "select-plain-call-arm"
+intent = "An ordinary call is admitted as a select source and the selected arm receives its result."
+source = "cases/select-plain-call-arm.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "done:7\n"
+exit = 0

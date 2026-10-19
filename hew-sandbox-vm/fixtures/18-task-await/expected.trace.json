@@ -17,14 +17,14 @@
       "type": "runtime.id_allocated"
     },
     {
-      "budget_remaining": 991,
+      "budget_remaining": 990,
       "id": "task:t1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
       "span": null,
-      "step_count": 9,
+      "step_count": 10,
       "type": "step.committed"
     },
     {
@@ -42,14 +42,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 983,
+      "budget_remaining": 980,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 4,
       "span": null,
-      "step_count": 17,
+      "step_count": 20,
       "type": "step.committed"
     },
     {
@@ -74,14 +74,14 @@
       "type": "io.stdout"
     },
     {
-      "budget_remaining": 981,
+      "budget_remaining": 978,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 7,
       "span": null,
-      "step_count": 19,
+      "step_count": 22,
       "type": "step.committed"
     },
     {
@@ -99,14 +99,14 @@
       "type": "replay.input"
     },
     {
-      "budget_remaining": 978,
+      "budget_remaining": 975,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 9,
       "span": null,
-      "step_count": 22,
+      "step_count": 25,
       "type": "step.committed"
     },
     {
@@ -132,7 +132,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 976,
+    "budget_remaining": 973,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -154,7 +154,7 @@
     "stdout": [
       "42\n"
     ],
-    "step_count": 24,
+    "step_count": 27,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -162,7 +162,7 @@
     }
   },
   "fixture_id": "task-await",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

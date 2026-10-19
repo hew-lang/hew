@@ -34,7 +34,7 @@ pub(crate) fn notify_child_supervisor_stopped(
 }
 
 pub(crate) unsafe fn supervisor_sys_dispatch_impl(
-    ctx: *mut crate::execution_context::HewExecutionContext,
+    _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
     sys_msg: i32,
     data: *mut c_void,
@@ -60,8 +60,8 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
 
     match kind {
         HewSysMsg::ChildStopped | HewSysMsg::ChildCrashed => {
-            // SAFETY: forwarded unchanged; `sup`/`ctx` are this dispatch's own.
-            unsafe { dispatch_child_lifecycle_event(sup, ctx, data, data_size) };
+            // SAFETY: this dispatch keeps the supervisor live.
+            unsafe { dispatch_child_lifecycle_event(sup, data, data_size) };
         }
         HewSysMsg::ChildSupervisorEscalated => {
             if data.is_null() || data_size < std::mem::size_of::<ChildSupervisorEscalation>() {
@@ -358,8 +358,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
-        on_crash: sp.on_crash,
-        // Carried IN the spec literal (like on_crash) so the initial supervised
+        // Carried in the spec literal so the initial supervised
         // spawn — which happens inside this call via restart_child_from_spec —
         // fires the lifecycle wrapper. A post-hoc setter would run too late to
         // cover the initial fire (see hew_supervisor_set_child_lifecycle).
@@ -797,6 +796,12 @@ pub extern "C" fn hew_local_pid_supervisor_stop(
 /// Request a graceful supervisor stop without waiting for whole-tree release.
 #[no_mangle]
 pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handles::HewLocalPidId) {
+    if let Some((owner, slot, crate::lifetime::local_handles::SupervisorRoleKind::Supervisor)) =
+        crate::lifetime::local_handles::current_actor_role_owner_slot(token)
+    {
+        hew_supervisor_native_role_request(owner, slot, 0);
+        return;
+    }
     let _ = stop_local_supervisor(token, true);
 }
 
@@ -805,6 +810,12 @@ pub extern "C" fn hew_supervisor_stop_native(token: crate::lifetime::local_handl
 pub extern "C" fn hew_supervisor_terminate_native(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) {
+    if let Some((owner, slot, crate::lifetime::local_handles::SupervisorRoleKind::Supervisor)) =
+        crate::lifetime::local_handles::current_actor_role_owner_slot(token)
+    {
+        hew_supervisor_native_role_request(owner, slot, 1);
+        return;
+    }
     if let Some(control) =
         crate::lifetime::local_handles::pin_current_supervisor(token).map(|pin| pin.control())
     {
@@ -921,7 +932,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -1063,7 +1073,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -1741,7 +1750,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -1790,7 +1798,6 @@ mod tests {
                     message_drop_fn: None,
                     arena_cap_bytes: 0,
                     cycle_capable: 0,
-                    on_crash: None,
                     lifecycle_fn: None,
                     init_fn: None,
                     config: ptr::null_mut(),
@@ -1876,7 +1883,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: Some(init_counted_teardown_race_state),
                 config: ptr::null_mut(),
@@ -2984,7 +2990,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),
@@ -2997,6 +3002,88 @@ mod tests {
             let self_actor = (*sup).self_actor;
             (sup, child, self_actor)
         }
+    }
+
+    #[test]
+    fn native_capacity_wait_follows_a_replaced_supervised_role() {
+        use crate::mailbox::native::{
+            hew_actor_send_wait_free, hew_actor_send_wait_new, hew_actor_send_wait_poll,
+        };
+        use crate::wake::blocking::Readiness;
+        unsafe extern "C" fn drop_empty(_payload: *mut c_void) {}
+        let _rt = crate::runtime_test_guard();
+        let _scheduler = crate::scheduler::NoWorkerSchedulerForTest::install();
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the worker-less fixture owns the supervisor and both incarnations.
+        unsafe {
+            let (sup, old_child, _self_actor) = make_supervisor_with_block_mailbox_child();
+            let role = hew_supervisor_native_role_owner((*sup).local_pid_id, 0, false);
+            let old_mailbox = (*old_child).mailbox.cast::<mailbox::HewMailbox>();
+            assert_eq!(
+                mailbox::hew_mailbox_send(old_mailbox, 1, ptr::null_mut(), 0),
+                0
+            );
+            let caller = crate::actor_caller::local_sender();
+            let wait = hew_actor_send_wait_new(
+                role,
+                7,
+                ptr::null_mut(),
+                0,
+                drop_empty,
+                waker.descriptor(),
+                None,
+                1,
+                &raw const caller,
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Pending as i32
+            );
+            assert!(!ready.take_ready());
+            mailbox::mailbox_close(old_mailbox);
+            assert!(
+                ready.take_ready(),
+                "retiring the old mailbox wakes its waiter"
+            );
+
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            actor::hew_actor_stop(old_child);
+            assert_eq!(actor::hew_actor_free(old_child), 0);
+            let replacement_mailbox = (*replacement).mailbox.cast::<mailbox::HewMailbox>();
+            assert_eq!(
+                mailbox::hew_mailbox_send(replacement_mailbox, 2, ptr::null_mut(), 0),
+                0
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Pending as i32
+            );
+            assert!(!ready.take_ready());
+            let filler = mailbox::hew_mailbox_try_recv(replacement_mailbox);
+            assert!(!filler.is_null());
+            mailbox::hew_msg_node_free(filler);
+            assert!(
+                ready.take_ready(),
+                "the same role waiter must subscribe to its new mailbox"
+            );
+            assert_eq!(
+                hew_actor_send_wait_poll(wait),
+                crate::actor_native::HewSubmitStatus::Accepted as i32
+            );
+            let request = mailbox::hew_mailbox_try_recv(replacement_mailbox);
+            assert!(!request.is_null());
+            assert_eq!((*request).msg_type, 7);
+            mailbox::hew_msg_node_free(request);
+            hew_actor_send_wait_free(wait);
+            assert!(scheduler::discard_queued_actor_for_test(replacement));
+            (*replacement)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            hew_supervisor_stop(sup);
+        }
+        drop(waker);
+        assert_eq!(Arc::strong_count(&ready), 1);
     }
 
     /// LOCK-ORDER INVARIANT: the role-ask enqueue — including a Block-policy
@@ -3425,6 +3512,63 @@ mod tests {
 
     // ── await_restart cooperative observer ───────────────────────────────────
 
+    #[test]
+    fn native_restart_wait_rejects_ending_incarnations() {
+        let _rt = crate::runtime_test_guard();
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: no workers run. The test owns the tree and drives the exact
+        // intermediate states before handing both incarnations to teardown.
+        let (healthy, ending, closed, replacement_ready, notified) = unsafe {
+            let (sup, child, _self_actor) = make_supervisor_with_child();
+            let wait = hew_supervisor_native_restart_wait_new(
+                (*sup).local_pid_id,
+                0,
+                ROLE_KIND_ACTOR,
+                waker.descriptor(),
+            );
+            let healthy = hew_supervisor_native_restart_wait_poll(wait);
+            // A cancelled parked call publishes its failure while Stopping;
+            // a failed resume publishes its fallback while Crashing. Neither
+            // has published the terminal fault record or its replacement yet.
+            let ending = [HewActorState::Stopping, HewActorState::Crashing].map(|state| {
+                (*child).actor_state.store(state as i32, Ordering::Release);
+                hew_supervisor_native_restart_wait_poll(wait)
+            });
+            // External timer faults close admission before their checked turn
+            // drains, while the physical state may still read Running.
+            (*child)
+                .actor_state
+                .store(HewActorState::Running as i32, Ordering::Release);
+            mailbox::mailbox_close((*child).mailbox.cast());
+            let closed = hew_supervisor_native_restart_wait_poll(wait);
+
+            (*child)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            let replacement = restart_child_from_spec(sup, 0);
+            assert!(!replacement.is_null());
+            actor::hew_actor_stop(child);
+            assert_eq!(actor::hew_actor_free(child), 0);
+            wake_restart_waiters(sup);
+            let notified = ready.take_ready();
+            let replacement_ready = hew_supervisor_native_restart_wait_poll(wait);
+            hew_supervisor_native_restart_wait_free(wait);
+            hew_supervisor_stop(sup);
+            (healthy, ending, closed, replacement_ready, notified)
+        };
+        assert_eq!(healthy, 1, "a healthy occupant needs no restart wait");
+        assert_eq!(ending, [0, 0], "an ending occupant is not a settled role");
+        assert_eq!(
+            closed, 0,
+            "closed admission cannot satisfy restart readiness"
+        );
+        assert!(
+            notified,
+            "replacement settlement wakes the registered observer"
+        );
+        assert_eq!(replacement_ready, 1, "the fresh occupant settles the wait");
+    }
+
     /// A `temporary` child that crashes is never restarted: the decline spends
     /// the spec, so the empty slot classifies `Dead(BudgetExhausted)` instead of
     /// sitting on `Transient(Restarting)` for good.
@@ -3786,7 +3930,6 @@ mod tests {
             message_drop_fn: None,
             arena_cap_bytes: 0,
             cycle_capable: 0,
-            on_crash: None,
             lifecycle_fn: None,
             init_fn: None,
             config: ptr::null_mut(),
@@ -4727,7 +4870,6 @@ mod tests {
                 message_drop_fn: None,
                 arena_cap_bytes: 0,
                 cycle_capable: 0,
-                on_crash: None,
                 lifecycle_fn: None,
                 init_fn: None,
                 config: ptr::null_mut(),

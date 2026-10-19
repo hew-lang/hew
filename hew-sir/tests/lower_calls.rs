@@ -484,7 +484,7 @@ fn recursive_scalar_call_resolves_to_its_own_callable_id() {
     reason = "the fixture intentionally verifies one complete instance graph, malformed-IR boundary, and dump"
 )]
 fn generic_scalar_instances_are_closed_cached_and_template_free() {
-    let (mut hir, type_facts) = lower_hir(
+    let (hir, type_facts) = lower_hir(
         r"
         pub fn id<T>(x: T) -> T {
             let result: T = x;
@@ -511,11 +511,6 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
         }
         ",
     );
-    assert!(
-        !hir.monomorphisations.is_empty(),
-        "the fixture must prove SIR is not merely observing an empty legacy registry"
-    );
-    hir.monomorphisations.clear();
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(
@@ -691,7 +686,7 @@ fn generic_scalar_instances_are_closed_cached_and_template_free() {
 /// second body would be unable to resolve its edge back to `even<i64>`.
 #[test]
 fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisation() {
-    let (mut hir, type_facts) = lower_hir(
+    let (hir, type_facts) = lower_hir(
         r"
         pub fn even<T>(value: T, count: i64) -> T {
             if count == 0 {
@@ -714,11 +709,6 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
         }
         ",
     );
-    assert!(
-        !hir.monomorphisations.is_empty(),
-        "the fixture must prove SIR closes the generic cycle itself"
-    );
-    hir.monomorphisations.clear();
 
     let lowered = lower_module(&hir, &type_facts);
     assert!(
@@ -764,5 +754,141 @@ fn generic_scalar_instances_support_mutual_recursion_without_legacy_monomorphisa
             .all(|(_, status)| matches!(status, SirLoweringStatus::Lowered)),
         "the closed mutual-recursive instance graph must have no missing body: {:#?}",
         lowered.callable_statuses
+    );
+}
+
+#[test]
+fn supervisor_pool_rejects_missing_or_noninteger_count_producer() {
+    let lowered = lower_source(
+        r"
+actor Worker { receive fn read() -> i64 { 1 } }
+supervisor Farm(size: i64) {
+    strategy: simple_one_for_one;
+    pool workers: Worker count: size + 1;
+}
+fn main() {
+    let farm = spawn Farm { size: 2 };
+    stop(farm);
+    stopped(farm);
+}
+",
+    );
+    assert!(
+        verify_module(&lowered.module).is_empty(),
+        "{:#?}",
+        verify_module(&lowered.module)
+    );
+    assert_eq!(lowered.module.supervisors.len(), 1);
+    let mut missing = lowered.module.clone();
+    missing.supervisors[0].children[0].pool_count = None;
+    assert!(format!("{:?}", verify_module(&missing))
+        .contains("simple_one_for_one requires exactly one pool"));
+
+    let mut noninteger = lowered.module;
+    noninteger.supervisors[0].children[0].pool_count =
+        Some(noninteger.supervisors[0].children[0].spawn);
+    assert!(format!("{:?}", verify_module(&noninteger))
+        .contains("pool count callable differs from its config or integer result"));
+}
+
+#[test]
+fn inner_generic_call_in_while_condition_surfaces_via_substitution() {
+    // `wrap<T>` is generic and is called from `main` at T=i64.
+    // `should_continue<T>` is a generic function called inside the while
+    // condition of `wrap`. Before the fix, the walker missed the While arm
+    // so `should_continue$$i64` was never discovered during
+    // closure-under-substitution.
+    //
+    // `should_continue` accepts T and returns bool by ordering T.
+    // The outer `wrap` passes a concrete `i64` counter into `should_continue`
+    // so the checker records `should_continue(counter)` with T=i64.
+    let source = r"
+        pub fn should_continue<T: PartialOrd>(x: T, limit: T) -> bool {
+            x < limit
+        }
+
+        pub fn wrap<T>(limit: T) -> i64 {
+            var count = 0;
+            while should_continue(count, 3) {
+                count = count + 1;
+            }
+            return count;
+        }
+
+        fn main() -> i64 {
+            return wrap(10);
+        }
+    ";
+
+    let (hir, facts) = lower_hir(source);
+    let output = lower_module(&hir, &facts);
+    assert!(
+        verify_module(&output.module).is_empty(),
+        "{:#?}",
+        verify_module(&output.module)
+    );
+    // Both `wrap$$i64` and `should_continue$$i64` must appear in the
+    // registry. `should_continue` is discovered only if the walker
+    // traverses the while condition.
+    let mono = &output.module.callables;
+    assert!(
+        mono.iter()
+            .any(|m| output.module.defs.path(m.declaration) == "wrap"),
+        "expected `wrap` in monomorphisation registry; got {mono:#?}"
+    );
+    assert!(
+        mono.iter()
+            .any(|m| output.module.defs.path(m.declaration) == "should_continue"),
+        "expected `should_continue` in monomorphisation registry \
+         (discovered via while-condition walker); got {mono:#?}"
+    );
+}
+
+#[test]
+fn inner_generic_call_in_for_range_body_surfaces_via_substitution() {
+    // `accumulate<T>` is generic and is called from `main` at T=i64.
+    // `passthrough<T>` is a generic function called inside the for-range body
+    // of `accumulate`. Before the fix, the walker missed the ForRange arm
+    // so `passthrough$$i64` was never discovered during
+    // closure-under-substitution.
+    let source = r"
+        pub fn passthrough<T>(x: T) -> T {
+            x
+        }
+
+        pub fn accumulate<T>(n: T) -> i64 {
+            var result = 0;
+            for i in 0..3 {
+                result = passthrough(result);
+            }
+            return result;
+        }
+
+        fn main() -> i64 {
+            return accumulate(5);
+        }
+    ";
+
+    let (hir, facts) = lower_hir(source);
+    let output = lower_module(&hir, &facts);
+    assert!(
+        verify_module(&output.module).is_empty(),
+        "{:#?}",
+        verify_module(&output.module)
+    );
+    // Both `accumulate$$i64` and `passthrough$$i64` must appear in the
+    // registry. `passthrough` is discovered only if the walker traverses
+    // the for-range body.
+    let mono = &output.module.callables;
+    assert!(
+        mono.iter()
+            .any(|m| output.module.defs.path(m.declaration) == "accumulate"),
+        "expected `accumulate` in monomorphisation registry; got {mono:#?}"
+    );
+    assert!(
+        mono.iter()
+            .any(|m| output.module.defs.path(m.declaration) == "passthrough"),
+        "expected `passthrough` in monomorphisation registry \
+         (discovered via for-range-body walker); got {mono:#?}"
     );
 }

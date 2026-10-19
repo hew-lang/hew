@@ -507,11 +507,11 @@ pub enum SuspendKind {
         /// The input is the sealed request owner instead of fresh arguments.
         sealed: bool,
     },
-    /// A `RemotePid` ask to the actor's checked remote member. The request
+    /// An imported actor ask to the actor's checked remote member. The request
     /// is encoded before the caller parks; the reply is decoded on resume.
-    RemoteAsk {
+    ServiceAcquire {
         actor: crate::ActorId,
-        message: u32,
+        export: bool,
     },
     Read,
     Accept,
@@ -553,6 +553,7 @@ pub enum SuspendKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaskScopeJoinMode {
     Wait,
+    CancelLosers,
     PropagateFault,
 }
 

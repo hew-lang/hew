@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-pool-count-fault"
+intent = "A failing count expression releases borrowed construction config before any child bootstrap and unwinds the caller."
+source = "cases/supervisor-pool-count-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "count evaluated\ncaller cleaned\n"
+stderr = "hew: failure: UserPanic (212): count evaluated\n"
+exit = 1

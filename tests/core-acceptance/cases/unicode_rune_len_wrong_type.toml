@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "Mismatch"
-line = 4
-column = 22
+line = 2
+column = 18
 message = "type mismatch: expected `i64`, found `string`"

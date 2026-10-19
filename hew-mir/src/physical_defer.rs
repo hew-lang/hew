@@ -139,12 +139,6 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
-        | PhysicalTerminator::RemoteAsk {
-            normal,
-            cancel,
-            unwind,
-            ..
-        }
         | PhysicalTerminator::GeneratorNext {
             normal,
             cancel,
@@ -152,6 +146,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             ..
         }
         | PhysicalTerminator::NativeIo {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::ServiceAcquire {
             normal,
             cancel,
             unwind,
@@ -306,7 +306,6 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::StreamSend { .. }
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::ActorAsk { .. }
-            | PhysicalTerminator::RemoteAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
             | PhysicalTerminator::IndirectCall { .. }
             | PhysicalTerminator::ValueCall { .. } => {
@@ -421,6 +420,7 @@ pub(super) fn verify_regions(
             match &block.terminator {
                 PhysicalTerminator::CheckedBinary { result, .. }
                 | PhysicalTerminator::NativeIo { result, .. }
+                | PhysicalTerminator::ServiceAcquire { result, .. }
                 | PhysicalTerminator::WireCodec { result, .. }
                 | PhysicalTerminator::ValueCall { result, .. } => {
                     region.values.insert(*result);

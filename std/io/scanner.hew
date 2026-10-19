@@ -235,7 +235,7 @@ pub fn text(sc: Scanner) -> string {
 /// a trailing empty element — only content lines are emitted (Go
 /// `bufio.Scanner` semantics).  An empty input returns an empty vector.
 ///
-/// For trailing-empty-element behaviour, use `std.string.lines()`.
+/// For trailing-empty-element behaviour, use `std.().lines()`.
 ///
 /// # Examples
 ///
@@ -336,21 +336,21 @@ fn scan_line(sc: Scanner) -> Scanner {
     if pos >= slen {
         return Scanner { source: sc.source, pos: pos, current: "", valid: false, done: true, mode: sc.mode };
     }
-    let rest = sc.source.slice(pos, slen);
+    let rest = sc.source[pos..slen];
     let found = rest.find("\n");
     if found.is_none() {
         // No newline: remainder is the final token.
-        let line = sc.source.slice(pos, slen);
+        let line = sc.source[pos..slen];
         Scanner { source: sc.source, pos: slen, current: line, valid: true, done: false, mode: sc.mode }
     } else {
         let nl_pos = pos + (found ?? 0);
         // Strip \r before \n for \r\n line endings.
-        let line_end = if nl_pos > pos && sc.source.slice(nl_pos - 1, nl_pos) == "\r" {
+        let line_end = if nl_pos > pos && sc.source[nl_pos - 1 .. nl_pos] == "\r" {
             nl_pos - 1
         } else {
             nl_pos
         };
-        let line = sc.source.slice(pos, line_end);
+        let line = sc.source[pos..line_end];
         Scanner { source: sc.source, pos: nl_pos + 1, current: line, valid: true, done: false, mode: sc.mode }
     }
 }
@@ -366,7 +366,7 @@ fn scan_word(sc: Scanner) -> Scanner {
     let slen = sc.source.len();
     var pos = sc.pos;
     // Skip leading whitespace.
-    while pos < slen && is_ascii_whitespace(sc.source.slice(pos, pos + 1)) {
+    while pos < slen && is_ascii_whitespace(sc.source[pos .. pos + 1]) {
         pos = pos + 1;
     }
     if pos >= slen {
@@ -374,9 +374,9 @@ fn scan_word(sc: Scanner) -> Scanner {
     }
     // Collect non-whitespace characters.
     var end = pos;
-    while end < slen && !is_ascii_whitespace(sc.source.slice(end, end + 1)) {
+    while end < slen && !is_ascii_whitespace(sc.source[end .. end + 1]) {
         end = end + 1;
     }
-    let word = sc.source.slice(pos, end);
+    let word = sc.source[pos..end];
     Scanner { source: sc.source, pos: end, current: word, valid: true, done: false, mode: sc.mode }
 }

@@ -32,7 +32,7 @@ fn main() -> i32 {
     }
     let captured = {
         let text = "\u{A0} kept \u{2003}".to_upper();
-        || string.trim(text)
+        || (text).trim()
     };
     if captured() != "KEPT" || captured() != "KEPT" {
         return 6;

@@ -21,7 +21,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HEW="$REPO_ROOT/target/debug/hew"
-OBSERVE="$REPO_ROOT/target/debug/hew-observe"
 WORKLOAD="$SCRIPT_DIR/observe_workload.hew"
 SCREENSHOT_DIR="$SCRIPT_DIR/screenshots"
 PPROF_PORT=6060
@@ -79,27 +78,19 @@ cleanup() {
 trap cleanup EXIT
 
 # ── Build ───────────────────────────────────────────────────────────
-echo "▸ Building hew-observe..."
-cargo build -p hew-observe --quiet 2>&1
+echo "▸ Building hew..."
+make -C "$REPO_ROOT" hew-native
 
 if [[ "$mode" == "demo" ]]; then
-    echo "▸ Launching hew-observe in demo mode..."
-    exec "$OBSERVE" --demo
-fi
-
-if [[ ! -x "$HEW" ]]; then
-    echo "▸ Building hew compiler..."
-    (cd "$REPO_ROOT" && make 2>&1) || {
-        echo "✗ Build failed. Falling back to --demo mode."
-        exec "$OBSERVE" --demo
-    }
+    echo "▸ Launching hew observe in demo mode..."
+    exec "$HEW" observe --demo
 fi
 
 # ── Compile workload ────────────────────────────────────────────────
 echo "▸ Compiling workload: $(basename "$WORKLOAD")..."
 "$HEW" build "$WORKLOAD" -o "$SCRIPT_DIR/observe_workload" 2>&1 || {
     echo "✗ Compilation failed. Falling back to --demo mode."
-    exec "$OBSERVE" --demo
+    exec "$HEW" observe --demo
 }
 
 # ── Run ─────────────────────────────────────────────────────────────
@@ -114,15 +105,15 @@ if [[ "$IS_UNIX" -eq 1 && "$force_tcp" -eq 0 ]]; then
     echo "▸ Waiting for profiler discovery..."
     _i=0
     while [[ $_i -lt 40 ]]; do
-        if "$OBSERVE" --list 2>/dev/null | grep -qE "^[0-9]+"; then
+        if "$HEW" observe --list 2>/dev/null | grep -qE "^[0-9]+"; then
             echo "▸ Profiler discovered (unix socket, auto-discovered by hew-observe)."
             break
         fi
         sleep 0.25
-        (( _i++ )) || true
+        ((_i++)) || true
     done
 
-    OBSERVE_CMD="$OBSERVE"          # no --addr: uses auto-discovery
+    OBSERVE_CMD="\"$HEW\" observe" # no --addr: uses auto-discovery
     OBSERVE_ADDR="(auto-discovered)"
 else
     echo "▸ Starting workload with HEW_PPROF=:$PPROF_PORT (TCP)..."
@@ -138,10 +129,10 @@ else
             break
         fi
         sleep 0.25
-        (( _i++ )) || true
+        ((_i++)) || true
     done
 
-    OBSERVE_CMD="$OBSERVE --addr localhost:$PPROF_PORT"
+    OBSERVE_CMD="\"$HEW\" observe --addr localhost:$PPROF_PORT"
     OBSERVE_ADDR="localhost:$PPROF_PORT"
 fi
 

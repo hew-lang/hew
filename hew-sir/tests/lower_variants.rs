@@ -1153,3 +1153,76 @@ fn main() {
                 if reason.contains("disagrees with its checked shape")
         )));
 }
+
+#[test]
+fn generic_instances_publish_exact_nested_and_indirect_shapes() {
+    let lowered = lower_source(include_str!(
+        "../../tests/core-acceptance/cases/generic-instance-shapes.hew"
+    ));
+    assert_main_lowered(&lowered);
+    for argument in [ResolvedTy::I64, ResolvedTy::String] {
+        let packet = ResolvedTy::named_path(&lowered.module.defs, "Packet", vec![argument.clone()]);
+        let cell = ResolvedTy::named_path(&lowered.module.defs, "Cell", vec![argument.clone()]);
+        let shape = lowered
+            .module
+            .variant_shape_for_type(&packet)
+            .expect("exact demanded enum");
+        assert_eq!(shape.variants.len(), 2);
+        assert_eq!(shape.variants[0].name, "Item");
+        assert_eq!(shape.variants[0].fields[0].ty, cell);
+        assert!(shape.variants[1].fields.is_empty());
+        let record = lowered
+            .module
+            .aggregate_shape_for_type(&cell)
+            .expect("nested generic record");
+        assert_eq!(record.fields[0].ty, argument);
+    }
+    let chain = ResolvedTy::named_path(&lowered.module.defs, "Chain", vec![ResolvedTy::String]);
+    let shape = lowered
+        .module
+        .variant_shape_for_type(&chain)
+        .expect("finite recursive shape");
+    assert!(shape.is_indirect);
+    assert_eq!(shape.variants[0].fields[0].ty, ResolvedTy::String);
+    assert_eq!(shape.variants[0].fields[1].ty, chain);
+}
+
+#[test]
+fn user_enum_shape_requires_its_exact_declaration_and_argument_arity() {
+    let source = "enum Wrapper<T> { Value(T); Empty; } fn inspect(value: Wrapper<i64>) {} fn main() { inspect(.Value(4)); }";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty());
+    let facts = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let hir = lower_program_host_target(&parsed.program, &facts, &ResolutionCtx);
+    assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
+    for missing_declaration in [false, true] {
+        let mut module = hir.module.clone();
+        if missing_declaration {
+            module.items.retain(
+                |item| !matches!(item, hew_hir::HirItem::TypeDecl(decl) if decl.name == "Wrapper"),
+            );
+        } else {
+            for item in &mut module.items {
+                if let hew_hir::HirItem::TypeDecl(decl) = item {
+                    if decl.name == "Wrapper" {
+                        decl.type_params.clear();
+                    }
+                }
+            }
+        }
+        let refused = lower_module(&module, &facts);
+        assert!(
+            refused
+                .statuses
+                .iter()
+                .any(|status| matches!(&status.status, SirLoweringStatus::Unsupported { .. })),
+            "malformed enum contract must refuse: {:?}",
+            refused.statuses
+        );
+        assert!(refused.module.variant_shapes.iter().all(|shape| shape
+            .enum_ty
+            .nominal_instance(&module.defs)
+            .is_none_or(|instance| module.defs.path(instance.nominal.declaration()) != "Wrapper")));
+    }
+}

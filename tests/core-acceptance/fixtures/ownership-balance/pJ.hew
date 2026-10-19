@@ -1,4 +1,4 @@
-import std.string;
+
 
 type Secret {
     value: string;
@@ -11,9 +11,9 @@ enum CredErr {
 
 fn resolve(n: i64) -> Result<Secret, CredErr> {
     if n > 0 {
-        return .Ok(Secret { value: "s" + string.from_int(n), length: n });
+        return .Ok(Secret { value: "s" + f"{n}", length: n });
     }
-    .Err(CredErr.Missing("nope" + string.from_int(n)))
+    .Err(CredErr.Missing("nope" + f"{n}"))
 }
 
 fn preflight(n: i64, a: bool) -> string {

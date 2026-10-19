@@ -656,6 +656,7 @@
             "task_scope.enter",
             "task_scope.close",
             "task.spawn",
+            "task.invoke",
             "task.race",
             "actor.ingress_adapter"
           ]
@@ -718,10 +719,21 @@
     "actor": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "state_fields", "stop", "handlers", "overflow"],
+      "required": [
+        "id",
+        "name",
+        "state_fields",
+        "stop",
+        "handlers",
+        "overflow"
+      ],
       "properties": {
         "id": {
           "$ref": "#/$defs/id"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
         },
         "state_fields": {
           "type": "array",
@@ -839,6 +851,9 @@
           }
         },
         "crash_info": {
+          "$ref": "#/$defs/id"
+        },
+        "crash_kind": {
           "$ref": "#/$defs/id"
         },
         "crash_action": {

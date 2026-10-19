@@ -13,11 +13,11 @@ use hew_runtime::envelope::{
     encode_monitor_down_payload, encode_monitor_req_payload, encode_registry_gossip_payload,
     encode_setup_result_payload, encode_swim_payload, ControlFrame, DecodeError, EnvelopeFrame,
     EnvelopeMessage, LinkReqPayload, MonitorDownPayload, MonitorPayloadError, MonitorReqPayload,
-    NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, SetupResultPayload,
-    SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame, CTRL_DEMONITOR,
-    CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN, CTRL_MONITOR_REQ,
-    CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK, FRAME_TYPE_CONTROL,
-    FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
+    NodeSessionIdentity, RegistryGossipPayload, RegistryGossipPayloadError, RequestKind,
+    SetupResultPayload, SwimControlPayload, SwimGossipEntry, SwimPayloadError, WireFrame,
+    CTRL_DEMONITOR, CTRL_LINK_DOWN, CTRL_LINK_REQ, CTRL_LINK_SETUP_RESULT, CTRL_MONITOR_DOWN,
+    CTRL_MONITOR_REQ, CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK,
+    FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
     MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
     MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
@@ -189,7 +189,11 @@ fn assert_node_session_value(value: &Value, expected: NodeSessionIdentity) {
 }
 
 fn handler() -> EnvelopeMessage {
-    EnvelopeMessage::Handler("tests.Actor.handle".into())
+    EnvelopeMessage::Service {
+        handler: "tests.Actor.handle".into(),
+        grant_id: 1,
+        kind: RequestKind::CallWait,
+    }
 }
 
 fn envelope_frame(
@@ -204,7 +208,7 @@ fn envelope_frame(
         source,
         message,
         payload,
-        request_id: 0,
+        request_id: 1,
         budget_ns: None,
     }
 }
@@ -232,12 +236,22 @@ fn cddl_envelope_shape(frame: &EnvelopeFrame) {
     assert_optional_location_value(find_field(entries, 3), frame.target);
     assert_optional_location_value(find_field(entries, 4), frame.source);
     match &frame.message {
-        EnvelopeMessage::Handler(identity) => {
-            assert_eq!(find_field(entries, 5), &Value::Text(identity.clone()));
-        }
         EnvelopeMessage::Reply => assert_integer_value(find_field(entries, 5), 0),
         EnvelopeMessage::Rejected => assert_integer_value(find_field(entries, 5), 1),
+        EnvelopeMessage::NotAdmitted => assert_integer_value(find_field(entries, 5), 3),
         EnvelopeMessage::Withdraw => assert_integer_value(find_field(entries, 5), 2),
+        EnvelopeMessage::Service {
+            handler,
+            grant_id,
+            kind,
+        } => {
+            let Value::Map(service) = find_field(entries, 5) else {
+                panic!("service map");
+            };
+            assert_eq!(find_field(service, 1), &Value::Text(handler.clone()));
+            assert_integer_value(find_field(service, 2), i128::from(*grant_id));
+            assert_integer_value(find_field(service, 3), i128::from(*kind as u8));
+        }
     }
     assert_bytes_value(find_field(entries, 6), &frame.payload);
     assert_integer_value(find_field(entries, 7), i128::from(frame.request_id));
@@ -271,15 +285,40 @@ fn registry_payload(op: u8, name: &str, location: Location) -> RegistryGossipPay
     }
 }
 
+fn service_request_value() -> Value {
+    Value::Map(vec![
+        (int(1u64), Value::Text("tests.Actor.handle".into())),
+        (int(2u64), int(1u64)),
+        (int(3u64), int(RequestKind::CallWait as u8)),
+    ])
+}
+
+#[test]
+fn ungranted_handler_text_is_rejected() {
+    let mut value = well_formed_envelope_value_with_frame_type(int(FRAME_TYPE_ENVELOPE));
+    let Value::Map(fields) = &mut value else {
+        unreachable!()
+    };
+    fields
+        .iter_mut()
+        .find(|(key, _)| *key == int(5u64))
+        .unwrap()
+        .1 = Value::Text("tests.Actor.handle".into());
+    assert!(matches!(
+        decode_envelope_frame(&value_to_cbor(&value)),
+        Err(DecodeError::MalformedFrame { .. })
+    ));
+}
+
 fn well_formed_envelope_value_with_frame_type(frame_type: Value) -> Value {
     Value::Map(vec![
         (int(1u64), int(WIRE_VERSION)),
         (int(2u64), frame_type),
         (int(3u64), location_value(location(1, 1, 1))),
         (int(4u64), Value::Null),
-        (int(5u64), Value::Text("tests.Actor.handle".into())),
+        (int(5u64), service_request_value()),
         (int(6u64), Value::Bytes(vec![])),
-        (int(7u64), int(0u64)),
+        (int(7u64), int(1u64)),
         (int(8u64), Value::Null),
     ])
 }
@@ -326,12 +365,77 @@ fn frame_type_discriminants_match_cddl() {
     );
 }
 
+#[test]
+fn service_offer_and_request_reject_noncanonical_authority() {
+    use hew_runtime::envelope::{
+        decode_service_offer_payload, encode_service_offer_payload, ServiceOfferPayload,
+    };
+    let offer = ServiceOfferPayload {
+        request_id: 3,
+        grant_id: 7,
+        target: location(1, 8, 2),
+        recipient: node_session(2, 4),
+        handlers: vec!["tests.Service.read".into()],
+    };
+    let bytes = encode_service_offer_payload(&offer).unwrap();
+    assert_eq!(decode_service_offer_payload(&bytes).unwrap(), offer);
+    let mut trailing = bytes.clone();
+    trailing.push(0);
+    assert!(decode_service_offer_payload(&trailing).is_err());
+    let mut duplicate = decode_value(&bytes);
+    let Value::Map(entries) = &mut duplicate else {
+        panic!("offer map");
+    };
+    entries.push(entries[0].clone());
+    assert!(decode_service_offer_payload(&value_to_cbor(&duplicate)).is_err());
+    for handlers in [
+        vec![],
+        vec!["tests.Service.read".into(); 2],
+        vec!["bad\0handler".into()],
+    ] {
+        let invalid = ServiceOfferPayload {
+            handlers,
+            ..offer.clone()
+        };
+        assert!(encode_service_offer_payload(&invalid).is_err());
+    }
+    let mut request = minimal_envelope();
+    request.request_id = 3;
+    for kind in [
+        RequestKind::CallWait,
+        RequestKind::CallReject,
+        RequestKind::SendWait,
+        RequestKind::SendReject,
+        RequestKind::SendDropNewest,
+    ] {
+        request.message = EnvelopeMessage::Service {
+            handler: offer.handlers[0].clone(),
+            grant_id: 7,
+            kind,
+        };
+        assert_eq!(
+            decode_envelope_frame(&encode_envelope_frame(&request).unwrap()).unwrap(),
+            request
+        );
+    }
+    request.request_id = 0;
+    assert!(encode_envelope_frame(&request).is_err());
+    assert!(decode_envelope_frame(&to_cbor(&request)).is_err());
+    request.request_id = 3;
+    request.message = EnvelopeMessage::Service {
+        handler: offer.handlers[0].clone(),
+        grant_id: 0,
+        kind: RequestKind::CallReject,
+    };
+    assert!(encode_envelope_frame(&request).is_err());
+}
+
 // -- EnvelopeFrame round-trip tests ----------------------------------------
 
 #[test]
-fn envelope_frame_fire_and_forget_round_trips() {
-    let original = EnvelopeFrame::fire_and_forget(
-        location(1, 42, 7),
+fn envelope_frame_granted_request_round_trips() {
+    let original = envelope_frame(
+        Some(location(1, 42, 7)),
         Some(location(2, 7, 11)),
         handler(),
         vec![1, 2, 3],
@@ -360,7 +464,7 @@ fn envelope_frame_with_request_id_round_trips() {
 
 #[test]
 fn envelope_frame_empty_payload_round_trips() {
-    let original = EnvelopeFrame::fire_and_forget(location(5, 1, 19), None, handler(), vec![]);
+    let original = envelope_frame(Some(location(5, 1, 19)), None, handler(), vec![]);
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
     assert_eq!(original, decoded);
@@ -368,8 +472,8 @@ fn envelope_frame_empty_payload_round_trips() {
 
 #[test]
 fn envelope_frame_large_payload_round_trips() {
-    let original = EnvelopeFrame::fire_and_forget(
-        location(6, 1000, 23),
+    let original = envelope_frame(
+        Some(location(6, 1000, 23)),
         Some(location(7, 2000, 29)),
         handler(),
         payload(4096),
@@ -598,7 +702,7 @@ fn boundary_payload_sizes_encode_as_bstr_and_round_trip() {
 
 #[test]
 fn public_encoder_preserves_integer_width_boundaries() {
-    for request_id in [0u64, 1, u64::MAX] {
+    for request_id in [1u64, 23, 24, 255, 256, u64::MAX] {
         let frame = EnvelopeFrame {
             version: WIRE_VERSION,
             target: Some(location(16, 1, 1)),
@@ -710,7 +814,11 @@ fn request_budgets_and_withdrawals_are_bounded_and_kind_checked() {
 
 #[test]
 fn reply_status_round_trips_outside_handler_namespace() {
-    for message in [EnvelopeMessage::Reply, EnvelopeMessage::Rejected] {
+    for message in [
+        EnvelopeMessage::Reply,
+        EnvelopeMessage::Rejected,
+        EnvelopeMessage::NotAdmitted,
+    ] {
         let frame = EnvelopeFrame {
             target: None,
             source: None,
@@ -751,8 +859,8 @@ fn encoded_frames_match_cddl_structural_rules() {
 
 #[test]
 fn envelope_frame_serialises_to_nonempty_bytes() {
-    let frame = EnvelopeFrame::fire_and_forget(
-        location(23, 1, 67),
+    let frame = envelope_frame(
+        Some(location(23, 1, 67)),
         Some(location(24, 2, 71)),
         handler(),
         vec![],
@@ -763,8 +871,8 @@ fn envelope_frame_serialises_to_nonempty_bytes() {
 
 #[test]
 fn same_envelope_produces_same_bytes() {
-    let frame = EnvelopeFrame::fire_and_forget(
-        location(25, 1, 73),
+    let frame = envelope_frame(
+        Some(location(25, 1, 73)),
         Some(location(26, 2, 79)),
         handler(),
         vec![10, 20],
@@ -777,20 +885,20 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x04, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x07, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
-    // 3=>target location, 4=>nil source, 5=>handler identity, 6=>empty bstr,
+    // 3=>target location, 4=>nil source, 5=>granted request, 6=>empty bstr,
     // 7=>request_id, 8=>nil budget.
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa8, 0x01, 0x04, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x07, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
-            0x01, 0x04, 0xf6, 0x05, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41, 0x63, 0x74,
-            0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x06, 0x40, 0x07, 0x00, 0x08,
-            0xf6
+            0x01, 0x04, 0xf6, 0x05, 0xa3, 0x01, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41,
+            0x63, 0x74, 0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x02, 0x01, 0x03,
+            0x00, 0x06, 0x40, 0x07, 0x01, 0x08, 0xf6
         ]
     );
 }
@@ -805,7 +913,7 @@ fn wrong_version_frame_is_rejected() {
         source: Some(location(28, 2, 89)),
         message: handler(),
         payload: vec![],
-        request_id: 0,
+        request_id: 1,
         budget_ns: None,
     };
     let bytes = to_cbor(&bogus);
@@ -836,8 +944,8 @@ fn wrong_version_frame_is_rejected() {
 
 #[test]
 fn truncated_cbor_returns_error() {
-    let frame = EnvelopeFrame::fire_and_forget(
-        location(29, 42, 97),
+    let frame = envelope_frame(
+        Some(location(29, 42, 97)),
         Some(location(30, 7, 101)),
         handler(),
         vec![1, 2, 3, 4, 5],
@@ -867,8 +975,8 @@ fn mismatched_frame_type_is_rejected() {
         Err(DecodeError::FrameTypeUnsupported { found: 0 })
     ));
 
-    let env = EnvelopeFrame::fire_and_forget(
-        location(31, 1, 103),
+    let env = envelope_frame(
+        Some(location(31, 1, 103)),
         Some(location(32, 2, 107)),
         handler(),
         vec![],
@@ -892,8 +1000,8 @@ fn decode_wire_frame_dispatches_by_frame_type() {
         WireFrame::Control(control)
     );
 
-    let envelope = EnvelopeFrame::fire_and_forget(
-        location(33, 1, 109),
+    let envelope = envelope_frame(
+        Some(location(33, 1, 109)),
         Some(location(34, 2, 113)),
         handler(),
         vec![4, 5, 6],
@@ -937,9 +1045,9 @@ fn decode_wire_frame_rejects_missing_and_duplicate_frame_type() {
         (int(1u64), int(WIRE_VERSION)),
         (int(3u64), location_value(location(35, 1, 127))),
         (int(4u64), Value::Null),
-        (int(5u64), Value::Text("tests.Actor.handle".into())),
+        (int(5u64), service_request_value()),
         (int(6u64), Value::Bytes(vec![])),
-        (int(7u64), int(0u64)),
+        (int(7u64), int(1u64)),
         (int(8u64), Value::Null),
     ]);
     assert!(matches!(
@@ -1016,9 +1124,9 @@ fn array_payload_with_integer_keys_is_rejected() {
         (int(2u64), int(FRAME_TYPE_ENVELOPE)),
         (int(3u64), location_value(location(36, 1, 131))),
         (int(4u64), Value::Null),
-        (int(5u64), Value::Text("tests.Actor.handle".into())),
+        (int(5u64), service_request_value()),
         (int(6u64), Value::Array(vec![int(0xaau8), int(0xbbu8)])),
-        (int(7u64), int(0u64)),
+        (int(7u64), int(1u64)),
         (int(8u64), Value::Null),
     ]);
     assert!(matches!(
@@ -1046,9 +1154,9 @@ fn envelope_location_fields_reject_malformed_shapes() {
             (int(2u64), int(FRAME_TYPE_ENVELOPE)),
             (int(3u64), malformed_target),
             (int(4u64), Value::Null),
-            (int(5u64), Value::Text("tests.Actor.handle".into())),
+            (int(5u64), service_request_value()),
             (int(6u64), Value::Bytes(vec![])),
-            (int(7u64), int(0u64)),
+            (int(7u64), int(1u64)),
             (int(8u64), Value::Null),
         ]);
         assert!(matches!(
@@ -1062,9 +1170,9 @@ fn envelope_location_fields_reject_malformed_shapes() {
         (int(2u64), int(FRAME_TYPE_ENVELOPE)),
         (int(3u64), location_value(location(67, 1, 269))),
         (int(4u64), int(2u64)),
-        (int(5u64), Value::Text("tests.Actor.handle".into())),
+        (int(5u64), service_request_value()),
         (int(6u64), Value::Bytes(vec![])),
-        (int(7u64), int(0u64)),
+        (int(7u64), int(1u64)),
         (int(8u64), Value::Null),
     ]);
     assert!(matches!(
@@ -1338,6 +1446,7 @@ fn monitor_ctrl_kinds_are_distinct_and_stable() {
 #[test]
 fn monitor_req_payload_round_trips_with_cddl_shape() {
     let original = MonitorReqPayload {
+        grant_id: 17,
         watcher: location(50, 55, 181),
         ref_id: 4242,
         target: location(51, 99, 191),
@@ -1347,15 +1456,16 @@ fn monitor_req_payload_round_trips_with_cddl_shape() {
     let decoded = decode_monitor_req_payload(&bytes).expect("req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4} with exact Location values.
+    // CDDL shape: definite map keyed {1,2,3,4,5} with exact Location values.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 4);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
+    assert_eq!(entries.len(), 5);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
     assert_location_value(find_field(entries, 1), original.watcher);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
     assert_integer_value(find_field(entries, 4), 8080);
+    assert_integer_value(find_field(entries, 5), 17);
 }
 
 #[test]
@@ -1455,11 +1565,12 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
         (int(4u64), int(4u64)),
-        (int(5u64), int(5u64)),
+        (int(6u64), int(6u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 5 })
+        Err(MonitorPayloadError::UnknownKey { key: 6 })
     ));
 
     // Missing required key 3 (target Location).
@@ -1467,6 +1578,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(1u64), location_value(location(53, 1, 197))),
         (int(2u64), int(2u64)),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&missing)),
@@ -1479,6 +1591,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), location_value(location(54, 3, 199))),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&wrong_type)),
@@ -1502,6 +1615,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
             (int(2u64), int(2u64)),
             (int(3u64), location_value(location(54, 3, 199))),
             (int(4u64), int(4u64)),
+            (int(5u64), int(17u64)),
         ]);
         assert!(matches!(
             decode_monitor_req_payload(&value_to_cbor(&malformed)),
@@ -1514,6 +1628,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
         (int(2u64), int(2u64)),
         (int(3u64), Value::Null),
         (int(4u64), int(4u64)),
+        (int(5u64), int(17u64)),
     ]);
     assert!(matches!(
         decode_monitor_req_payload(&value_to_cbor(&malformed_target)),
@@ -1539,6 +1654,7 @@ fn monitor_payload_rejects_oversized_input() {
 #[test]
 fn monitor_payload_truncated_cbor_returns_error() {
     let req = MonitorReqPayload {
+        grant_id: 0,
         watcher: location(56, 3, 211),
         ref_id: 7,
         target: location(57, 11, 223),
@@ -1611,6 +1727,8 @@ fn link_req_payload_round_trips_with_cddl_shape() {
     // CrashLinked (policy_tag == 3) link request carrying both directions'
     // identity for the bidirectional reciprocation.
     let original = LinkReqPayload {
+        grant_id: 17,
+        reciprocal_ref: 0,
         linker: location(58, 55, 227),
         ref_id: 4242,
         target: location(59, 99, 229),
@@ -1622,17 +1740,19 @@ fn link_req_payload_round_trips_with_cddl_shape() {
     let decoded = decode_link_req_payload(&bytes).expect("link req should decode");
     assert_eq!(decoded, original);
 
-    // CDDL shape: definite map keyed {1,2,3,4,5,6} with exact Locations.
+    // CDDL shape: definite map keyed {1,2,3,4,5,6,7,8} with exact Locations.
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 6);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6]);
+    assert_eq!(entries.len(), 8);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6, 7, 8]);
     assert_location_value(find_field(entries, 1), original.linker);
     assert_integer_value(find_field(entries, 2), 4242);
     assert_location_value(find_field(entries, 3), original.target);
     assert_integer_value(find_field(entries, 4), 3);
     assert_integer_value(find_field(entries, 5), 1);
     assert_integer_value(find_field(entries, 6), 8081);
+    assert_integer_value(find_field(entries, 7), 17);
+    assert_integer_value(find_field(entries, 8), 0);
 }
 
 #[test]
@@ -1673,11 +1793,13 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
-        (int(7u64), int(10u64)),
+        (int(9u64), int(10u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&unknown_key)),
-        Err(MonitorPayloadError::UnknownKey { key: 7 })
+        Err(MonitorPayloadError::UnknownKey { key: 9 })
     ));
 
     // Missing required key 3 (target Location): the reverse-link half cannot be
@@ -1689,6 +1811,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&missing)),
@@ -1702,6 +1826,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_linker)),
@@ -1715,6 +1841,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&malformed_target)),
@@ -1729,6 +1857,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(9000u64)),
         (int(5u64), int(1u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_policy)),
@@ -1742,6 +1872,8 @@ fn link_req_payload_codec_rejects_malformed_payloads() {
         (int(4u64), int(3u64)),
         (int(5u64), int(9000u64)),
         (int(6u64), int(9u64)),
+        (int(7u64), int(17u64)),
+        (int(8u64), int(0u64)),
     ]);
     assert!(matches!(
         decode_link_req_payload(&value_to_cbor(&oob_reciprocate)),
@@ -1762,6 +1894,8 @@ fn link_payload_rejects_oversized_input() {
 #[test]
 fn link_req_payload_truncated_cbor_returns_error() {
     let req = LinkReqPayload {
+        grant_id: 0,
+        reciprocal_ref: 0,
         linker: location(62, 22, 241),
         ref_id: 7,
         target: location(63, 11, 251),
@@ -1783,6 +1917,7 @@ fn monitor_control_frame_round_trips_through_wire_frame() {
     // The monitor payload rides inside a ControlFrame; the full wire frame must
     // round-trip with the right ctrl_kind so the reader dispatches it.
     let req = MonitorReqPayload {
+        grant_id: 0,
         watcher: location(64, 55, 257),
         ref_id: 4242,
         target: location(65, 99, 263),

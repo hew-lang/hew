@@ -13,6 +13,7 @@
         }
       ],
       "id": 0,
+      "name": "Doubler",
       "overflow": "block",
       "state_fields": [],
       "stop": []
@@ -30,6 +31,7 @@
         }
       ],
       "id": 1,
+      "name": "Sink",
       "overflow": "block",
       "state_fields": [],
       "stop": []
@@ -100,7 +102,7 @@
             },
             "op": "call",
             "result": {
-              "own": "none",
+              "own": "owned",
               "value": 0
             },
             "span": {
@@ -163,10 +165,24 @@
         },
         {
           "id": 6,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            }
+          ],
           "params": [
             {
-              "own": "none",
+              "own": "owned",
               "value": 1
             }
           ],
@@ -181,7 +197,7 @@
             },
             "op": "call",
             "result": {
-              "own": "none",
+              "own": "owned",
               "value": 2
             },
             "span": {
@@ -214,7 +230,40 @@
           "id": 8,
           "ops": [
             {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 1,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 1,
+              "span": null,
+              "value": 3
+            },
+            {
               "dst": 4,
+              "op": "load.copy",
+              "own": "owned",
+              "place": 1,
+              "span": {
+                "end": 236,
+                "start": 236
+              }
+            },
+            {
+              "dst": 5,
+              "op": "load.copy",
+              "own": "owned",
+              "place": 0,
+              "span": {
+                "end": 252,
+                "start": 252
+              }
+            },
+            {
+              "dst": 6,
               "op": "const.int",
               "own": "none",
               "span": {
@@ -227,14 +276,14 @@
           ],
           "params": [
             {
-              "own": "none",
+              "own": "owned",
               "value": 3
             }
           ],
           "term": {
             "cancel": {
               "args": [],
-              "to": 11
+              "to": 14
             },
             "detail": {
               "actor": 0,
@@ -246,15 +295,15 @@
             "inputs": [
               {
                 "decision": "borrow",
-                "value": 3
-              },
-              {
-                "decision": "move",
-                "value": 1
-              },
-              {
-                "decision": "move",
                 "value": 4
+              },
+              {
+                "decision": "move",
+                "value": 5
+              },
+              {
+                "decision": "move",
+                "value": 6
               }
             ],
             "kind": "Ask",
@@ -267,15 +316,15 @@
             },
             "result": {
               "own": "none",
-              "value": 5
+              "value": 7
             },
             "result_shape": 0,
             "resumes": [
               {
                 "args": [
-                  5
+                  7
                 ],
-                "to": 10
+                "to": 13
               }
             ],
             "span": {
@@ -284,7 +333,7 @@
             },
             "unwind": {
               "args": [],
-              "to": 12
+              "to": 15
             }
           }
         },
@@ -295,7 +344,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 11
             },
             "op": "goto",
             "span": {
@@ -306,27 +355,22 @@
         },
         {
           "id": 10,
-          "ops": [],
-          "params": [
+          "ops": [
             {
-              "own": "none",
-              "value": 6
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
             }
           ],
+          "params": [],
           "term": {
-            "fault": {
+            "edge": {
               "args": [],
-              "to": 14
+              "to": 3
             },
-            "normal": {
-              "args": [],
-              "to": 13
-            },
-            "op": "cleanup.dispatch",
-            "span": {
-              "end": 258,
-              "start": 258
-            }
+            "op": "goto",
+            "span": null
           }
         },
         {
@@ -336,13 +380,10 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 12
             },
             "op": "goto",
-            "span": {
-              "end": 258,
-              "start": 258
-            }
+            "span": null
           }
         },
         {
@@ -352,28 +393,34 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 10
             },
             "op": "goto",
-            "span": {
-              "end": 258,
-              "start": 258
-            }
+            "span": null
           }
         },
         {
           "id": 13,
           "ops": [],
-          "params": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 8
+            }
+          ],
           "term": {
-            "edge": {
+            "fault": {
               "args": [],
-              "to": 15
+              "to": 21
             },
-            "op": "goto",
+            "normal": {
+              "args": [],
+              "to": 20
+            },
+            "op": "cleanup.dispatch",
             "span": {
-              "end": 236,
-              "start": 236
+              "end": 258,
+              "start": 258
             }
           }
         },
@@ -384,7 +431,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 18
             },
             "op": "goto",
             "span": {
@@ -396,6 +443,140 @@
         {
           "id": 15,
           "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 1,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 10
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 17,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 4
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 16
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 18,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 19
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 19,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 17
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 20,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 4
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 22
+            },
+            "op": "goto",
+            "span": {
+              "end": 236,
+              "start": 236
+            }
+          }
+        },
+        {
+          "id": 21,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 258,
+              "start": 258
+            }
+          }
+        },
+        {
+          "id": 22,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 1,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "op": "return",
@@ -411,7 +592,16 @@
       "id": 0,
       "name": "__hew_fn_main",
       "params": [],
-      "places": []
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        },
+        {
+          "id": 1,
+          "origin": "local"
+        }
+      ]
     },
     {
       "actor_construction": true,
@@ -470,7 +660,7 @@
               "request": null
             },
             "result": {
-              "own": "none",
+              "own": "owned",
               "value": 0
             },
             "result_shape": null,
@@ -542,7 +732,7 @@
           "ops": [],
           "params": [
             {
-              "own": "none",
+              "own": "owned",
               "value": 1
             }
           ],
@@ -654,7 +844,7 @@
               "request": null
             },
             "result": {
-              "own": "none",
+              "own": "owned",
               "value": 0
             },
             "result_shape": null,
@@ -726,7 +916,7 @@
           "ops": [],
           "params": [
             {
-              "own": "none",
+              "own": "owned",
               "value": 1
             }
           ],
@@ -785,7 +975,21 @@
       "blocks": [
         {
           "id": 0,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 0,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 0,
+              "span": null,
+              "value": 1
+            }
+          ],
           "params": [],
           "term": {
             "cancel": {
@@ -817,6 +1021,16 @@
           "ops": [
             {
               "dst": 3,
+              "op": "load.copy",
+              "own": "owned",
+              "place": 0,
+              "span": {
+                "end": 135,
+                "start": 135
+              }
+            },
+            {
+              "dst": 4,
               "op": "const.int",
               "own": "none",
               "span": {
@@ -834,7 +1048,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 7
+                  "to": 8
                 },
                 "trap": "integer_overflow"
               }
@@ -842,16 +1056,16 @@
             "lhs": 2,
             "normal": {
               "args": [
-                4
+                5
               ],
-              "to": 6
+              "to": 7
             },
             "op": "checked.binary",
             "result": {
               "own": "none",
-              "value": 4
+              "value": 5
             },
-            "rhs": 3,
+            "rhs": 4,
             "span": {
               "end": 156,
               "start": 156
@@ -866,7 +1080,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 5
             },
             "op": "goto",
             "span": null
@@ -883,12 +1097,19 @@
         },
         {
           "id": 4,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 5
+              "to": 3
             },
             "op": "goto",
             "span": null
@@ -901,7 +1122,7 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 3
+              "to": 6
             },
             "op": "goto",
             "span": null
@@ -910,16 +1131,29 @@
         {
           "id": 6,
           "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 4
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 7,
+          "ops": [],
           "params": [
             {
               "own": "none",
-              "value": 5
+              "value": 6
             }
           ],
           "term": {
             "cancel": {
               "args": [],
-              "to": 10
+              "to": 14
             },
             "detail": {
               "actor": 1,
@@ -931,11 +1165,11 @@
             "inputs": [
               {
                 "decision": "borrow",
-                "value": 1
+                "value": 3
               },
               {
                 "decision": "move",
-                "value": 5
+                "value": 6
               }
             ],
             "kind": "Ask",
@@ -948,15 +1182,15 @@
             },
             "result": {
               "own": "none",
-              "value": 6
+              "value": 7
             },
             "result_shape": 0,
             "resumes": [
               {
                 "args": [
-                  6
+                  7
                 ],
-                "to": 9
+                "to": 13
               }
             ],
             "span": {
@@ -965,18 +1199,18 @@
             },
             "unwind": {
               "args": [],
-              "to": 11
+              "to": 15
             }
           }
         },
         {
-          "id": 7,
+          "id": 8,
           "ops": [],
           "params": [],
           "term": {
             "cleanup": {
               "args": [],
-              "to": 8
+              "to": 9
             },
             "op": "checked_raise",
             "span": {
@@ -987,13 +1221,13 @@
           }
         },
         {
-          "id": 8,
+          "id": 9,
           "ops": [],
           "params": [],
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 11
             },
             "op": "goto",
             "span": {
@@ -1003,33 +1237,15 @@
           }
         },
         {
-          "id": 9,
-          "ops": [],
-          "params": [
+          "id": 10,
+          "ops": [
             {
-              "own": "none",
-              "value": 7
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 3
             }
           ],
-          "term": {
-            "fault": {
-              "args": [],
-              "to": 13
-            },
-            "normal": {
-              "args": [],
-              "to": 12
-            },
-            "op": "cleanup.dispatch",
-            "span": {
-              "end": 148,
-              "start": 148
-            }
-          }
-        },
-        {
-          "id": 10,
-          "ops": [],
           "params": [],
           "term": {
             "edge": {
@@ -1037,10 +1253,7 @@
               "to": 4
             },
             "op": "goto",
-            "span": {
-              "end": 148,
-              "start": 148
-            }
+            "span": null
           }
         },
         {
@@ -1050,13 +1263,10 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 4
+              "to": 12
             },
             "op": "goto",
-            "span": {
-              "end": 148,
-              "start": 148
-            }
+            "span": null
           }
         },
         {
@@ -1066,25 +1276,31 @@
           "term": {
             "edge": {
               "args": [],
-              "to": 14
+              "to": 10
             },
             "op": "goto",
-            "span": {
-              "end": 135,
-              "start": 135
-            }
+            "span": null
           }
         },
         {
           "id": 13,
           "ops": [],
-          "params": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 8
+            }
+          ],
           "term": {
-            "edge": {
+            "fault": {
               "args": [],
-              "to": 4
+              "to": 17
             },
-            "op": "goto",
+            "normal": {
+              "args": [],
+              "to": 16
+            },
+            "op": "cleanup.dispatch",
             "span": {
               "end": 148,
               "start": 148
@@ -1094,6 +1310,84 @@
         {
           "id": 14,
           "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 148,
+              "start": 148
+            }
+          }
+        },
+        {
+          "id": 15,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 148,
+              "start": 148
+            }
+          }
+        },
+        {
+          "id": 16,
+          "ops": [
+            {
+              "dst": null,
+              "op": "destroy_value",
+              "span": null,
+              "value": 3
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 18
+            },
+            "op": "goto",
+            "span": {
+              "end": 135,
+              "start": 135
+            }
+          }
+        },
+        {
+          "id": 17,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 11
+            },
+            "op": "goto",
+            "span": {
+              "end": 148,
+              "start": 148
+            }
+          }
+        },
+        {
+          "id": 18,
+          "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 0,
+              "span": null
+            }
+          ],
           "params": [],
           "term": {
             "op": "return",
@@ -1114,7 +1408,7 @@
           "value": 0
         },
         {
-          "own": "none",
+          "own": "owned",
           "value": 1
         },
         {
@@ -1122,7 +1416,12 @@
           "value": 2
         }
       ],
-      "places": []
+      "places": [
+        {
+          "id": 0,
+          "origin": "local"
+        }
+      ]
     },
     {
       "blocks": [
@@ -1441,6 +1740,18 @@
             "0"
           ],
           "name": "WriteTimedOut"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "InvalidMessage"
+        },
+        {
+          "fields": [],
+          "name": "TimedOut"
         }
       ],
       "id": 3,
@@ -1451,9 +1762,12 @@
         "SendErrorClosed": 1,
         "SendErrorDead": 8,
         "SendErrorFull": 0,
+        "SendErrorInvalidMessage": 11,
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
+        "SendErrorTimedOut": 12,
+        "SendErrorUnauthorized": 10,
         "SendErrorVersionMismatch": 6,
         "SendErrorWriteTimedOut": 9
       }

@@ -1,5 +1,5 @@
 // J: two string vars reassigned in a loop that also has a continue edge.
-import std.string;
+
 
 type Row {
     path: string;
@@ -12,17 +12,17 @@ pub fn rows(listing: string) -> Vec<Row> {
     let branch_prefix = "branch refs/heads/";
     var path = "";
     var branch = "";
-    for line in string.split(listing, "\n") {
-        if string.starts_with(line.clone(), worktree_prefix.clone()) {
+    for line in (listing).split("\n") {
+        if (line.clone()).starts_with(worktree_prefix.clone()) {
             if path != "" {
                 out.push(Row { path: path.clone(), branch: branch.clone() });
             }
-            path = line.slice(worktree_prefix.len(), line.len());
+            path = line[worktree_prefix.len()..];
             branch = "";
             continue;
         }
-        if string.starts_with(line.clone(), branch_prefix.clone()) {
-            branch = line.slice(branch_prefix.len(), line.len());
+        if (line.clone()).starts_with(branch_prefix.clone()) {
+            branch = line[branch_prefix.len()..];
         }
     }
     if path != "" {

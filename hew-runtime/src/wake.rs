@@ -6,7 +6,6 @@
 
 use std::ffi::c_void;
 
-#[cfg(not(target_arch = "wasm32"))]
 #[path = "wake_scheduled.rs"]
 pub(crate) mod scheduled;
 
@@ -84,7 +83,10 @@ impl ReadinessRegistrations {
     pub(crate) fn register(&self, waker: &std::sync::Arc<OwnedWaker>) {
         let mut waiters = crate::util::MutexExt::lock_or_recover(&self.0);
         waiters.retain(|waiter| waiter.strong_count() != 0);
-        waiters.push(std::sync::Arc::downgrade(waker));
+        let weak = std::sync::Arc::downgrade(waker);
+        if !waiters.iter().any(|existing| existing.ptr_eq(&weak)) {
+            waiters.push(weak);
+        }
     }
 
     pub(crate) fn notify(&self) {

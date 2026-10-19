@@ -1,33 +1,13 @@
-// Reject fixture: a process-local actor handle payload must never cross a
-// RemotePid (cross-node) boundary. The handle names an actor in this process
-// and has no wire representation, so `RemotePid::send` refuses it at the
-// checker rather than ship a local identity to another node.
-//
-// Its companion accept fixture (accept/actor_single_arg_pid_payload.hew) proves
-// the same handle payload runs on a same-node send, where the mailbox transfers
-// it by value and no codec is involved.
+// Exported actor protocols cannot carry actor handles as wire payloads.
+import std.net;
+
 actor Holder {
-    receive fn take(p: Holder) {
-        println("took");
-    }
+    #[wire]
+    receive fn take(p: Holder) {}
 }
 
-impl ActorMsg for Holder {
-    type Msg = Holder;
-    type Reply = ();
+fn offer(peer: net.PeerSession, target: Holder) {
+    let _export = peer.export(target);
 }
 
-fn main() {
-    let local: Holder = spawn Holder;
-    let found: Result<RemotePid<Holder>, LookupError> = Node.lookup("holder");
-    match found {
-        .Ok(peer) => {
-            let sent: Result<(), SendError> = peer.send(local);
-            match sent {
-                .Ok(_) => println("sent"),
-                .Err(_) => println("send failed"),
-            }
-        }
-        .Err(_) => println("lookup failed"),
-    }
-}
+fn main() {}

@@ -2011,10 +2011,10 @@ fn index_read_for_hashmap_string_key_is_not_option() {
 
 #[test]
 fn dyn_index_with_output_binding() {
-    let output = check_source("fn f(idx: dyn Index<Output = i32>) -> i32 { idx[2] }");
+    let output = check_source("fn f(idx: dyn Index<i64, Output = i32>) -> i32 { idx[2] }");
     assert!(
         output.errors.is_empty(),
-        "dyn Index<Output = i32> indexing should type-check: {:?}",
+        "dyn Index<i64, Output = i32> indexing should type-check: {:?}",
         output.errors
     );
     assert!(
@@ -2453,7 +2453,7 @@ fn structural_hardening_diamond_sibling_shadowing_merges_across_supers() {
 fn structural_hardening_super_trait_e1_guard_propagates() {
     // If a super-trait has an associated type, the E1 guard must veto the
     // entire structural check — even if the immediate trait has no assoc types.
-    use hew_parser::ast::{Param, TraitDecl, TraitItem, TraitMethod, TypeExpr};
+    use hew_parser::ast::{Param, Path, TraitDecl, TraitItem, TraitMethod, TypeExpr};
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     // Build super-trait with an associated type.
@@ -2480,10 +2480,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                     name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
-                            path: hew_parser::ast::Path::single(
-                                hew_parser::ast::Ident::new("Self"),
-                                0..0,
-                            ),
+                            path: Path::single(Ident::new("Self"), 0..0),
                             type_args: None,
                         },
                         0..4,
@@ -2512,7 +2509,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
         name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("AssocSuper"), 0..0),
+            path: Path::single(Ident::new("AssocSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
@@ -2527,10 +2524,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        path: hew_parser::ast::Path::single(
-                            hew_parser::ast::Ident::new("Self"),
-                            0..0,
-                        ),
+                        path: Path::single(Ident::new("Self"), 0..0),
                         type_args: None,
                     },
                     0..4,
@@ -2551,7 +2545,9 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
     let child_id = checker.test_trait_def("ChildTrait", info_child);
-    checker.trait_super.insert(child_id, vec![super_id]);
+    checker
+        .trait_super
+        .insert(child_id, vec![TraitRef::bare(super_id)]);
 
     let any = checker.test_named("AnyType", vec![]);
     assert!(
@@ -2655,7 +2651,9 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
     };
     let info_child = checker.trait_info_from_decl(&child, None, 0);
     let child_id = checker.test_trait_def("ChildTrait", info_child);
-    checker.trait_super.insert(child_id, vec![super_id]);
+    checker
+        .trait_super
+        .insert(child_id, vec![TraitRef::bare(super_id)]);
 
     let any = checker.test_named("AnyType", vec![]);
     assert!(
@@ -2677,8 +2675,12 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
     let trait_a = checker.test_trait_def("TraitA", empty());
     let trait_b = checker.test_trait_def("TraitB", empty());
     let missing = checker.test_trait_def("MissingTrait", empty());
-    checker.trait_super.insert(trait_a, vec![trait_b]);
-    checker.trait_super.insert(trait_b, vec![trait_a]);
+    checker
+        .trait_super
+        .insert(trait_a, vec![TraitRef::bare(trait_b)]);
+    checker
+        .trait_super
+        .insert(trait_b, vec![TraitRef::bare(trait_a)]);
     let thing = checker.test_named("Thing", vec![]);
     checker.record_trait_impl(&thing, &crate::check::TraitRef::bare(trait_a), Vec::new());
 

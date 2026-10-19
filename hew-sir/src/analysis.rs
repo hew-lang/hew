@@ -88,53 +88,67 @@ impl CfgIndex {
 /// `EdgeRef` meaning.
 #[must_use]
 pub fn build_cfg_index(function: &SemFunction) -> CfgIndex {
-    let mut index = CfgIndex::default();
-    let known_blocks = function
-        .blocks
-        .iter()
-        .map(|block| block.id)
-        .collect::<BTreeSet<_>>();
-
-    for block in &function.blocks {
-        index.predecessors.entry(block.id).or_default();
-        index.successors.entry(block.id).or_default();
-    }
+    let mut edges = Vec::new();
     for block in &function.blocks {
         block.terminator.visit_successors_with_slots(|slot, edge| {
-            let edge_ref = EdgeRef {
-                source: block.id,
-                slot,
-            };
-            index.successors.entry(block.id).or_default().push(edge_ref);
-            index
-                .predecessors
-                .entry(edge.target)
-                .or_default()
-                .push(edge_ref);
-            index.edge_targets.insert(edge_ref, edge.target);
+            edges.push((
+                EdgeRef {
+                    source: block.id,
+                    slot,
+                },
+                edge.target,
+            ));
         });
     }
-    for edges in index.predecessors.values_mut() {
-        edges.sort_unstable();
-    }
-    for edges in index.successors.values_mut() {
-        edges.sort_unstable();
-    }
+    CfgIndex::from_edges(
+        function.entry,
+        function.blocks.iter().map(|block| block.id),
+        edges,
+    )
+}
 
-    let mut postorder = Vec::new();
-    if known_blocks.contains(&function.entry) {
-        visit_reachable_postorder(
-            function.entry,
-            &known_blocks,
-            &index.successors,
-            &index.edge_targets,
-            &mut index.reachable,
-            &mut postorder,
-        );
+impl CfgIndex {
+    /// Index a verified CFG at a later compiler stage without reconstructing
+    /// semantic terminators. Edge slots must be unique within each block.
+    #[must_use]
+    pub fn from_edges(
+        entry: BlockId,
+        blocks: impl IntoIterator<Item = BlockId>,
+        edges: impl IntoIterator<Item = (EdgeRef, BlockId)>,
+    ) -> Self {
+        let mut index = Self::default();
+        let known_blocks = blocks.into_iter().collect::<BTreeSet<_>>();
+        for &block in &known_blocks {
+            index.predecessors.entry(block).or_default();
+            index.successors.entry(block).or_default();
+        }
+        for (edge, target) in edges {
+            index.successors.entry(edge.source).or_default().push(edge);
+            index.predecessors.entry(target).or_default().push(edge);
+            index.edge_targets.insert(edge, target);
+        }
+        for edges in index.predecessors.values_mut() {
+            edges.sort_unstable();
+        }
+        for edges in index.successors.values_mut() {
+            edges.sort_unstable();
+        }
+
+        let mut postorder = Vec::new();
+        if known_blocks.contains(&entry) {
+            visit_reachable_postorder(
+                entry,
+                &known_blocks,
+                &index.successors,
+                &index.edge_targets,
+                &mut index.reachable,
+                &mut postorder,
+            );
+        }
+        postorder.reverse();
+        index.reverse_postorder = postorder;
+        index
     }
-    postorder.reverse();
-    index.reverse_postorder = postorder;
-    index
 }
 
 fn visit_reachable_postorder(
@@ -220,12 +234,13 @@ const UNDECIDED: usize = usize::MAX;
 /// nothing: it has no reverse-postorder position and is skipped.
 #[must_use]
 pub fn compute_dominators(function: &SemFunction) -> Dominators {
-    let known = function
-        .blocks
-        .iter()
-        .map(|b| b.id)
-        .collect::<BTreeSet<_>>();
-    let cfg = build_cfg_index(function);
+    compute_indexed_dominators(&build_cfg_index(function))
+}
+
+/// Build dominance from the same CFG snapshot used by a later-stage analysis.
+#[must_use]
+pub fn compute_indexed_dominators(cfg: &CfgIndex) -> Dominators {
+    let known = cfg.successors.keys().copied().collect();
     let rpo = cfg.rpo();
     let mut dominators = Dominators {
         known,

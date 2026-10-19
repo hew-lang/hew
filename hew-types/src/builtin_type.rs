@@ -34,10 +34,6 @@ pub enum BuiltinType {
     /// `SupervisorPool<S, T>` — compiler-produced view of pool `T` owned by
     /// supervisor `S`. Runtime representation is `{ actor handle, i64 pool_key }`.
     SupervisorPool,
-    /// `ChildRef<T>` — a stable reference to a declared actor or supervisor role.
-    /// It carries an opaque owner identity and static child slot; nested owners
-    /// preserve the complete role path across supervisor replacement.
-    ChildRef,
     /// The handle of a declared actor: `Ty::Named { name: "Orders", args, builtin:
     /// Some(ActorHandle) }` is the type written `Orders` in source. An actor is
     /// the type of its handle (D489), so the actor's own name and type arguments
@@ -46,7 +42,6 @@ pub enum BuiltinType {
     ActorHandle,
     NodeId,
     Location,
-    RemotePid,
     HewActor,
     BoxedActor,
     ActorState,
@@ -59,15 +54,15 @@ pub enum BuiltinType {
     ActorFn,
     CrashInfo,
     CrashAction,
-    /// `std/failure.hew::CrashNotification { actor_id: u64, kind: CrashKind }`
-    /// — the typed payload a linked actor's `#[on(exit)]` hook receives (M-7-R).
+    /// `std/failure.hew::CrashNotification { target: DownTarget, kind: CrashKind }`.
+    /// The typed payload a linked actor's `#[on(link)]` hook receives.
     CrashNotification,
-    /// `std/failure.hew::CrashKind { Crashed; HeapExceeded; PartitionDetected }`
-    /// — the crash-class enum delivered in a `CrashNotification` (M-7-R).
+    /// `std/failure.hew::CrashKind { Fault; HeapExceeded; PartitionDetected }`.
+    /// The crash class delivered in a `CrashNotification`.
     CrashKind,
     /// `std/link_monitor.hew::MonitorId { value: u64 }`.
     MonitorId,
-    /// `std/link_monitor.hew::DownTarget`.
+    /// `std/failure.hew::DownTarget`.
     DownTarget,
     /// `std/link_monitor.hew::DownReason`.
     DownReason,
@@ -158,7 +153,6 @@ pub enum BuiltinHandleFamily {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BuiltinTypeRole {
     ActorDispatchLocal,
-    ActorDispatchRemote,
     SupervisorHandle,
     WasmNativeOnlyHandle,
     ActorStatePayload,
@@ -212,11 +206,9 @@ builtin_types! {
     Stream => "Stream",
     Sink => "Sink",
     SupervisorPool => "SupervisorPool",
-    ChildRef => "ChildRef",
     ActorHandle => "ActorHandle",
     NodeId => "NodeId",
     Location => "Location",
-    RemotePid => "RemotePid",
     HewActor => "HewActor",
     BoxedActor => "BoxedActor",
     ActorState => "ActorState",
@@ -297,13 +289,7 @@ impl BuiltinType {
     pub const fn is_affine_clone_terminal(self) -> bool {
         matches!(
             self,
-            Self::ChildRef
-                | Self::ActorHandle
-                | Self::RemotePid
-                | Self::ActorFn
-                | Self::HewActor
-                | Self::Rc
-                | Self::Weak
+            Self::ActorHandle | Self::ActorFn | Self::HewActor | Self::Rc | Self::Weak
         )
     }
 
@@ -389,10 +375,8 @@ impl BuiltinType {
             // registers none. They flip at P5 with the legacy carrier (§9).
             | Self::ActorHandle => BuiltinTypeMarker::Resource,
             Self::SupervisorPool
-            | Self::ChildRef
             | Self::NodeId
             | Self::Location
-            | Self::RemotePid
             | Self::MonitorId
             | Self::DownTarget
             | Self::DownReason
@@ -470,9 +454,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn handle_family(self) -> Option<BuiltinHandleFamily> {
         match self {
-            Self::ChildRef | Self::ActorHandle | Self::RemotePid | Self::ActorFn => {
-                Some(BuiltinHandleFamily::ActorPid)
-            }
+            Self::ActorHandle | Self::ActorFn => Some(BuiltinHandleFamily::ActorPid),
             Self::HewActor | Self::BoxedActor => Some(BuiltinHandleFamily::ActorRuntime),
             Self::ActorState => Some(BuiltinHandleFamily::ActorState),
             Self::MachineState => Some(BuiltinHandleFamily::MachineState),
@@ -495,8 +477,6 @@ impl BuiltinType {
             | Self::Weak
             | Self::Stream
             | Self::Sink
-            | Self::RemotePid
-            | Self::ChildRef
             | Self::ActorState
             | Self::MachineState => 1,
             Self::Result
@@ -538,12 +518,11 @@ impl BuiltinType {
     #[must_use]
     pub const fn roles(self) -> &'static [BuiltinTypeRole] {
         match self {
-            Self::ChildRef | Self::ActorFn => &[BuiltinTypeRole::ActorDispatchLocal],
+            Self::ActorFn => &[BuiltinTypeRole::ActorDispatchLocal],
             Self::ActorHandle => &[
                 BuiltinTypeRole::ActorDispatchLocal,
                 BuiltinTypeRole::SupervisorHandle,
             ],
-            Self::RemotePid => &[BuiltinTypeRole::ActorDispatchRemote],
             Self::HewActor | Self::BoxedActor => &[BuiltinTypeRole::WasmNativeOnlyHandle],
             Self::ActorState => &[BuiltinTypeRole::ActorStatePayload],
             Self::MachineState => &[BuiltinTypeRole::MachineStatePayload],
@@ -581,7 +560,7 @@ impl BuiltinType {
             Self::CrashNotification => Some("std.failure.CrashNotification"),
             Self::CrashKind => Some("std.failure.CrashKind"),
             Self::MonitorId => Some("std.link_monitor.MonitorId"),
-            Self::DownTarget => Some("std.link_monitor.DownTarget"),
+            Self::DownTarget => Some("std.failure.DownTarget"),
             Self::DownReason => Some("std.link_monitor.DownReason"),
             Self::DownNotification => Some("std.link_monitor.DownNotification"),
             Self::MonitorRef => Some("std.link_monitor.MonitorRef"),
@@ -651,9 +630,8 @@ impl BuiltinType {
     /// True when the builtin's complete value ABI is one opaque pointer word.
     ///
     /// This is codegen representation authority, not an ownership or source-
-    /// level handle classification. In particular, `RemotePid<T>` is excluded
-    /// because its value is an inline location aggregate, while
-    /// `SupervisorPool<S, T>` is a two-field aggregate. Consumers must use this
+    /// level handle classification. `Location` and `SupervisorPool<S, T>`
+    /// are inline aggregates. Consumers must use this
     /// discriminator instead of presentation names so renamed builtin spellings
     /// retain their ABI and same-spelling user nominals cannot acquire it.
     #[must_use]
@@ -691,7 +669,6 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         // name the carriers themselves.
         "std.builtins.NodeId" => return Some(BuiltinType::NodeId),
         "std.builtins.Location" => return Some(BuiltinType::Location),
-        "std.builtins.RemotePid" => return Some(BuiltinType::RemotePid),
         _ => {}
     }
     if let Some(kind) = builtin_types()
@@ -1008,14 +985,6 @@ mod tests {
                     BuiltinTypeRole::ActorDispatchLocal,
                     BuiltinTypeRole::SupervisorHandle,
                 ][..],
-            ),
-            (
-                BuiltinType::RemotePid,
-                BuiltinTypeMarker::BitCopy,
-                None,
-                Some(BuiltinHandleFamily::ActorPid),
-                1,
-                &[BuiltinTypeRole::ActorDispatchRemote][..],
             ),
             (
                 BuiltinType::ActorFn,

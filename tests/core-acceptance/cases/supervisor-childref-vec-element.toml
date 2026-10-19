@@ -1,6 +1,6 @@
 [[case]]
 id = "supervisor-childref-vec-element"
-intent = "Supervised roles stored in a `Vec<ChildRef<A>>` keep their identity and answer asks through the element."
+intent = "Supervised roles stored in a `Vec<A>` keep their identity and answer asks through the element."
 source = "cases/supervisor-childref-vec-element.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

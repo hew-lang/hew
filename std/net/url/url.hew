@@ -19,8 +19,6 @@
 //! }
 //! ```
 
-import std.string;
-
 import std.encoding.utf8;
 
 /// A parsed URL.
@@ -49,6 +47,25 @@ impl Display for UrlError {
 }
 
 impl Error for UrlError {}
+
+/// Invalid percent-encoded text. Offsets count bytes, not Unicode scalars.
+pub enum DecodeError {
+    /// Offset of `%` in the encoded input, without two hexadecimal digits.
+    MalformedEscape(i64);
+    /// UTF-8 error position in the decoded byte sequence.
+    InvalidUtf8(utf8.Utf8Error);
+}
+
+impl Display for DecodeError {
+    fn fmt(self) -> string {
+        match self {
+            .MalformedEscape(offset) => f"malformed percent escape at byte {offset}",
+            .InvalidUtf8(error) => f"decoded URL component: {error}",
+        }
+    }
+}
+
+impl Error for DecodeError {}
 
 /// Methods available on a parsed `Url`.
 trait UrlMethods {
@@ -202,7 +219,7 @@ fn encode_impl(s: string) -> string {
     for i in 0..data.len() {
         let b = data[i];
         if is_unreserved_byte(b) {
-            out = out + string.from_char(b as i64);
+            out = out + f"{(b as i64).try_to_char().expect("valid Unicode scalar")}";
         } else {
             out = out + percent_encode_byte(b);
         }
@@ -210,9 +227,11 @@ fn encode_impl(s: string) -> string {
     out
 }
 
-/// Decode a percent-encoded string.
+/// Decode a percent-encoded component exactly once.
 ///
-/// Returns an empty string on invalid UTF-8. Valid decoded NUL is preserved.
+/// Malformed escapes and invalid decoded UTF-8 return `DecodeError`. A literal
+/// `+` stays `+`; only form/query decoding treats it as a space. Valid NUL is
+/// preserved. This does not split paths or normalize decoded text.
 ///
 /// # Examples
 ///
@@ -220,34 +239,44 @@ fn encode_impl(s: string) -> string {
 /// import std.net.url;
 ///
 /// fn main() {
-///     let decoded = url.decode("hello%20world");  // "hello world"
+///     let decoded = url.decode("hello%20world").expect("valid component");
 /// }
 /// ```
-pub fn decode(s: string) -> string {
-    decode_impl(s)
+pub fn decode(s: string) -> string fails DecodeError {
+    decode_component(s, false)?
 }
 
-fn decode_impl(s: string) -> string {
+fn decode_component(s: string, form: bool) -> string fails DecodeError {
     let data = s.to_bytes();
     var out: bytes = bytes.new();
     var i = 0;
     while i < data.len() {
         let b = data[i];
-        if b == 37 && i + 2 < data.len() {
-            // '%' followed by two hex digits decodes to one byte; anything
-            // else passes through literally.
+        if form && b == 43 {
+            out.push(32 as u8);
+            i = i + 1;
+            continue;
+        }
+        if b == 37 {
+            if i + 2 >= data.len() {
+                return error .MalformedEscape(i);
+            }
             let hi = hex_nibble(data[i + 1]);
             let lo = hex_nibble(data[i + 2]);
-            if hi >= 0 && lo >= 0 {
-                out.push((hi * 16 + lo) as u8);
-                i = i + 3;
-                continue;
+            if hi < 0 || lo < 0 {
+                return error .MalformedEscape(i);
             }
+            out.push((hi * 16 + lo) as u8);
+            i = i + 3;
+            continue;
         }
         out.push(b);
         i = i + 1;
     }
-    utf8.decode(out) handle error { "" }
+    match utf8.decode(out) {
+        .Ok(text) => text,
+        .Err(error) => return error .InvalidUtf8(error),
+    }
 }
 
 /// Decode an `application/x-www-form-urlencoded` query string into
@@ -256,6 +285,8 @@ fn decode_impl(s: string) -> string {
 /// Entries are separated by `&`; each entry must contain `=` and entries
 /// without one are skipped, matching `encode_query`'s invalid-line convention.
 /// Percent-escapes are decoded like [`decode`], and `+` decodes to a space.
+/// Invalid encoding fails the whole operation instead of returning partial
+/// pairs. Malformed-escape offsets are relative to the encoded key or value.
 ///
 /// # Examples
 ///
@@ -263,58 +294,28 @@ fn decode_impl(s: string) -> string {
 /// import std.net.url;
 ///
 /// fn main() {
-///     let pairs = url.decode_query("name=hello+world&x=a%2Bb");
+///     let pairs = url.decode_query("name=hello+world&x=a%2Bb").expect("valid query");
 ///     // [("name", "hello world"), ("x", "a+b")]
 /// }
 /// ```
-pub fn decode_query(params: string) -> Vec<(string, string)> {
-    decode_query_impl(params)
-}
-
-fn decode_query_impl(params: string) -> Vec<(string, string)> {
+pub fn decode_query(params: string) -> Vec<(string, string)> fails DecodeError {
     var decoded: Vec<(string, string)> = Vec.new();
-    if string.is_empty(params) {
+    if (params).is_empty() {
         return decoded;
     }
-    let entries = string.split(params, "&");
+    let entries = (params).split("&");
     for i in 0..entries.len() {
         let entry = entries[i];
         match entry.find("=") {
             .Some(eq) => {
-                let key = entry.slice(0, eq);
-                let value = entry.slice(eq + 1, entry.len());
-                decoded.push((decode_form_component(key), decode_form_component(value)));
+                let key = entry[0..eq];
+                let value = entry[eq + 1 .. entry.len()];
+                decoded.push((decode_component(key, true)?, decode_component(value, true)?));
             }
             .None => {}
         }
     }
     decoded
-}
-
-fn decode_form_component(s: string) -> string {
-    let data = s.to_bytes();
-    var out: bytes = bytes.new();
-    var i = 0;
-    while i < data.len() {
-        let b = data[i];
-        if b == 43 {
-            out.push(32 as u8);
-            i = i + 1;
-            continue;
-        }
-        if b == 37 && i + 2 < data.len() {
-            let hi = hex_nibble(data[i + 1]);
-            let lo = hex_nibble(data[i + 2]);
-            if hi >= 0 && lo >= 0 {
-                out.push((hi * 16 + lo) as u8);
-                i = i + 3;
-                continue;
-            }
-        }
-        out.push(b);
-        i = i + 1;
-    }
-    utf8.decode(out) handle error { "" }
 }
 
 /// Build a percent-encoded query string from a newline-separated list of
@@ -339,19 +340,19 @@ pub fn encode_query(params: string) -> string {
 
 fn encode_query_impl(params: string) -> string {
     var encoded: Vec<string> = Vec.new();
-    let lines = string.lines(params);
+    let lines = (params).lines();
     for i in 0..lines.len() {
         let line = lines[i];
         match line.find("=") {
             .Some(eq) => {
-                let key = line.slice(0, eq);
-                let value = line.slice(eq + 1, line.len());
+                let key = line[0..eq];
+                let value = line[eq + 1 .. line.len()];
                 encoded.push(encode(key) + "=" + encode(value));
             }
             .None => {}
         }
     }
-    string.join(encoded, "&")
+    (encoded).join("&")
 }
 
 /// RFC 3986 unreserved bytes: `A-Z a-z 0-9 - . _ ~`.
@@ -364,7 +365,7 @@ fn percent_encode_byte(b: u8) -> string {
     let hex = "0123456789ABCDEF";
     let hi = (b / 16) as i64;
     let lo = (b % 16) as i64;
-    "%" + hex.slice(hi, hi + 1) + hex.slice(lo, lo + 1)
+    "%" + hex[hi .. hi + 1] + hex[lo .. lo + 1]
 }
 
 fn hex_nibble(b: u8) -> i32 { // INTERNAL-ABI: nibble values 0-15 and sentinel -1; internal URL percent-decoder helper

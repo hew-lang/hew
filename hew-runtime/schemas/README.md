@@ -15,7 +15,7 @@ remain consistent with these definitions.
 
 | File             | Covers                                                                                                         |
 | ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer, v4) — the transport CONTAINER                        |
+| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer) — the transport CONTAINER                            |
 | `wire-body.cddl` | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
 
 The fixed-width authenticated handshake is specified in HEW-DIST-SPEC §4.
@@ -48,9 +48,17 @@ and leaves older decoders unaffected (they reject unknown versions via the
 
 ### Version gating
 
-`wire-version = 4` is a constant in the schema. Any frame whose `version`
-field differs from 4 MUST be rejected by the decoder with an `UnknownVersion`
-error. This allows the schema to evolve without silent misparsing.
+`wire-version` is a constant in the schema, matching `WIRE_VERSION` in the
+runtime. Any other version MUST be rejected by the decoder with an
+`UnknownVersion` error. The authenticated handshake also checks this version
+before publishing a route.
+
+### Granted requests
+
+Every actor request carries its handler declaration, recipient-bound export
+grant and request kind. Its request id is positive, including for sends whose
+completion reports mailbox admission. A text-only handler name cannot authorize
+delivery. Replies and withdrawals echo the original request id.
 
 ### Request budgets and withdrawal
 

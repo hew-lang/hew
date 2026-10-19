@@ -115,6 +115,35 @@ fn methods_and_hooks_are_private_bodies_of_their_actor() {
 }
 
 #[test]
+fn service_acquisition_cannot_reuse_a_local_suspend_contract() {
+    let mut module = lower_source(COUNTER);
+    let main = body_named(&module, "main");
+    let actor = module.actors[0].id;
+    let kind = module
+        .functions
+        .iter_mut()
+        .find(|function| function.callable == main)
+        .unwrap()
+        .blocks
+        .iter_mut()
+        .find_map(|block| match &mut block.terminator {
+            SemTerminator::Suspend { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .expect("main observes actor completion");
+    *kind = hew_sir::SuspendKind::ServiceAcquire {
+        actor,
+        export: false,
+    };
+    assert!(verify_module(&module).iter().any(|diagnostic| matches!(
+        &diagnostic.kind,
+        SirDiagnosticKind::InvalidTerminator { reason }
+            if reason.contains("ServiceAcquire {")
+                && reason.contains("no matching input/result/resume contract")
+    )));
+}
+
+#[test]
 fn a_body_returning_an_owned_state_field_copies_it_out_of_the_seat() {
     const SOURCE: &str = r#"actor Ledger {
     var label: string = "ledger";
@@ -404,4 +433,120 @@ fn verifier_refuses_a_notification_hook_with_a_scalar_payload() {
             "{diagnostics:#?}"
         );
     }
+}
+
+#[test]
+fn lifecycle_target_temporaries_end_before_scope_recovery_joins() {
+    lower_source(
+        r"actor Worker { receive fn ping() {} }
+fn main() {
+    let worker = spawn Worker;
+    scope {
+        stop(worker);
+        stopped(worker);
+    } handle failure {
+        match failure {
+            .Fault { message } => println(message),
+            .Deadline { message } => println(message),
+        }
+    };
+    stopped(worker);
+}
+",
+    );
+}
+
+#[test]
+fn waiting_submission_target_temporaries_end_before_deadline_recovery_joins() {
+    lower_source(
+        r#"actor Probe {
+    receive fn run() {
+        println("other-actor");
+    }
+}
+
+actor Sink {
+    mailbox 1;
+    receive fn hold(me: Sink, driver: Driver, probe: Probe) {
+        let _ = mailbox(driver, on_full: .Reject).run(me, probe);
+        sleep(500ms);
+    }
+    receive fn process(value: string) {
+        println(value);
+    }
+}
+
+actor Driver {
+    receive fn run(sink: Sink, probe: Probe) {
+        let _ = mailbox(sink, on_full: .Reject).process("first".to_upper());
+        let _ = mailbox(probe, on_full: .Reject).run();
+        let waiting = mailbox(sink, on_full: .Wait);
+        let outcome = scope within 50ms {
+            defer println("sender-cleanup");
+            let _ = waiting.process("must-not-arrive".to_upper());
+            "unexpected acceptance"
+        } handle failure {
+            match failure {
+                .Deadline { message } => "deadline",
+                .Fault { message } => "unexpected fault",
+            }
+        };
+        println(outcome);
+    }
+}
+
+fn main() {
+    let sink = spawn Sink;
+    let driver = spawn Driver;
+    let probe = spawn Probe;
+    let _ = mailbox(sink, on_full: .Reject).hold(sink, driver, probe);
+}
+"#,
+    );
+}
+
+#[test]
+fn lifecycle_target_temporaries_end_before_value_recovery_joins() {
+    lower_source(
+        r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); sleep(1ms); panic("receiver-failed"); } }
+fn main() {
+    let broken = spawn Broken;
+    let _ = mailbox(broken, on_full: .Reject).fail();
+    let result = scope { stopped(broken); "unexpected clean termination" } handle failure {
+        match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
+    };
+    println(result);
+}
+"#,
+    );
+}
+
+#[test]
+fn termination_after_deadline_recovery_releases_lifecycle_temporaries() {
+    lower_source(
+        r#"actor Holder { receive fn wait() {} }
+actor Closer {
+    receive fn started(holder: Holder) {
+        let result = scope within 1ms {
+            stopped(holder);
+            "unexpected clean wait"
+        } handle failure {
+            match failure {
+                .Deadline { message } => "waiter-deadline",
+                .Fault { message } => "unexpected fault",
+            }
+        };
+        println(result);
+        terminate(holder);
+        stopped(holder);
+        println("terminated");
+    }
+}
+fn main() {
+    let holder = spawn Holder;
+    let closer = spawn Closer;
+    let _ = mailbox(closer, on_full: .Reject).started(holder);
+}
+"#,
+    );
 }

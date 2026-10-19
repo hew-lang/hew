@@ -40,15 +40,337 @@ fn registry_wire_command_child() {
     };
     let arguments: Vec<String> = serde_json::from_str(&arguments).unwrap();
     let command = FixtureCommand::parse_from(std::iter::once("hew".to_owned()).chain(arguments));
-    hew_pkg::cli::dispatch(&command.command, |root| {
-        let manifest = hew_pkg::manifest::parse_manifest(&root.join("hew.toml"))
-            .map_err(|error| error.to_string())?;
-        if manifest.generate.is_empty() {
-            Ok(())
-        } else {
-            Err("generation requires the Hew compiler driver".into())
+    hew_pkg::cli::dispatch(
+        &command.command,
+        &hew_pkg::native::embedded_rustc_identity().host,
+        |root| {
+            let manifest = hew_pkg::manifest::parse_manifest(&root.join("hew.toml"))
+                .map_err(|error| error.to_string())?;
+            if manifest.generate.is_empty() {
+                Ok(())
+            } else {
+                Err("generation requires the Hew compiler driver".into())
+            }
+        },
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "requires the ecosystem source; run make test-native-prebuilt-sqlite"]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one real SQLite publication/install/consumer boundary"
+)]
+fn native_prebuilt_sqlite_without_cargo() {
+    fn copy_tree(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).unwrap();
+        for entry in fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            if matches!(entry.file_name().to_str(), Some("target" | ".git" | ".hew")) {
+                continue;
+            }
+            let target = destination.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &target);
+            } else {
+                fs::copy(entry.path(), target).unwrap();
+            }
         }
-    });
+    }
+    let ecosystem =
+        PathBuf::from(std::env::var_os("HEW_ECOSYSTEM_SOURCE").expect("HEW_ECOSYSTEM_SOURCE"));
+    let compiler = PathBuf::from(std::env::var_os("HEW_BIN").expect("HEW_BIN"));
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let source = tempfile::tempdir().unwrap();
+    copy_tree(
+        &ecosystem.join("db/sqlite"),
+        &source.path().join("db/sqlite"),
+    );
+    copy_tree(&ecosystem.join("db/sql"), &source.path().join("db/sql"));
+    let mut workspace: toml::Value =
+        toml::from_str(&fs::read_to_string(ecosystem.join("Cargo.toml")).unwrap()).unwrap();
+    workspace["workspace"]["members"] =
+        toml::Value::Array(vec!["db/sqlite".into(), "db/sql".into()]);
+    workspace["workspace"]["dependencies"]["hew-cabi"] =
+        toml::Value::Table(toml::Table::from_iter([(
+            "path".to_string(),
+            repo.join("hew-cabi").to_str().unwrap().into(),
+        )]));
+    workspace.as_table_mut().unwrap().remove("patch");
+    fs::write(
+        source.path().join("Cargo.toml"),
+        toml::to_string(&workspace).unwrap(),
+    )
+    .unwrap();
+    let sqlite = source.path().join("db/sqlite");
+    let mut build = Command::new(&compiler);
+    build
+        .args(["native", "build", "--output", "target/sqlite.tar.zst"])
+        .current_dir(&sqlite);
+    let output = hew_testutil::run_command_bounded(
+        &mut build,
+        "build SQLite prebuilt",
+        std::time::Duration::from_mins(10),
+    )
+    .unwrap();
+    assert_success(&output);
+    let artifact = fs::read(sqlite.join("target/sqlite.tar.zst")).unwrap();
+    let package = tarball::pack(&sqlite, &[], &[]).unwrap();
+    let sql = tarball::pack(&source.path().join("db/sql"), &[], &[]).unwrap();
+    let server = FixtureServer::new();
+    let signers = Signers::new();
+    signers.serve_keys(&server);
+    for (name, packed, deps) in [
+        (
+            "hew.db.sqlite",
+            &package,
+            json!([{ "name": "hew.db.sql", "req": "0.3.0", "features": [], "optional": false, "default_features": true }]),
+        ),
+        ("hew.db.sql", &sql, json!([])),
+    ] {
+        let download = format!("/archives/{name}.tar.zst");
+        server.reply(&download, 200, packed.data.clone());
+        server.metadata(name, WireNames::Dotted, &json!({
+            "name": name, "vers": "0.3.0", "deps": deps, "features": {}, "yanked": false,
+            "cksum": packed.checksum, "sig": signers.publisher.sign(packed.checksum.as_bytes()),
+            "key_fp": signers.publisher.fingerprint(), "dl": format!("{}{download}", server.origin),
+        }));
+    }
+    let identity = hew_pkg::native_prebuilt::NativeIdentity::current(
+        &hew_pkg::native::embedded_rustc_identity().host,
+    );
+    let native = format!(
+        "/api/v1/packages/hew.db.sqlite/0.3.0/native/{}/{}/{}/{}",
+        identity.target, identity.hew, identity.rustc_release, identity.rustc_host
+    );
+    let checksum = tarball::checksum_bytes(&artifact);
+    let signature = signers.publisher.sign(checksum.as_bytes());
+    let canonical = format!(
+        "registry:native:v1:hew.db.sqlite@0.3.0:{}:{}:{}:{}:{}:{checksum}:{signature}:{PUBLISHED_AT}",
+        identity.target, identity.hew, identity.rustc_release, identity.rustc_host, package.checksum
+    );
+    let native_record = json!({ "cksum": checksum, "sig": signature,
+        "key_fp": signers.publisher.fingerprint(), "dl": format!("{}/native.tar.zst", server.origin),
+        "source_checksum": package.checksum, "registry_sig": signers.registry.sign(canonical.as_bytes()),
+        "registry_key_fp": "fixture-registry", "published_at": PUBLISHED_AT });
+    server.json(&native, &native_record);
+    server.reply("/native.tar.zst", 200, artifact.clone());
+    let tools = tempfile::tempdir().unwrap();
+    for name in [
+        "clang", "clang-22", "cc", "gcc", "nm", "llvm-nm", "ar", "as", "ld", "ld.lld", "lld",
+    ] {
+        if let Some(path) = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+            .map(|dir| dir.join(name))
+            .find(|path| path.is_file())
+        {
+            std::os::unix::fs::symlink(path, tools.path().join(name)).unwrap();
+        }
+    }
+    assert!(Command::new("cargo")
+        .env("PATH", tools.path())
+        .output()
+        .is_err());
+    assert!(Command::new("rustc")
+        .env("PATH", tools.path())
+        .output()
+        .is_err());
+    let profile = Profile::new();
+    profile.configure("", &[("fixture", &server, Some(WireNames::Dotted))]);
+    let project = profile.directory.path().join("sqlite-consumer");
+    fs::create_dir_all(&project).unwrap();
+    fs::write(
+        project.join("hew.toml"),
+        "[package]\nname = 'sqlite_consumer'\nversion = '0.1.0'\nedition = '2026'\n",
+    )
+    .unwrap();
+    fs::copy(sqlite.join("examples/basic.hew"), project.join("main.hew")).unwrap();
+    let run = |profile: &Profile, project: &Path, arguments: &[&str]| {
+        let mut command = Command::new(&compiler);
+        command
+            .args(arguments)
+            .current_dir(project)
+            .env("HOME", &profile.home)
+            .env("HEW_HOME", &profile.hew_home)
+            .env("HEW_REGISTRY", server.api())
+            .env("PATH", tools.path())
+            .env("HEW_STD", repo.join("std"))
+            .env("NO_PROXY", "127.0.0.1,localhost")
+            .env_remove("HEW_TOKEN")
+            .env_remove("HEW_REGISTRY_TOKEN");
+        hew_testutil::run_command_bounded(
+            &mut command,
+            format!("hew {}", arguments.join(" ")),
+            std::time::Duration::from_mins(2),
+        )
+        .unwrap()
+    };
+    assert_success(&run(
+        &profile,
+        &project,
+        &[
+            "add",
+            "hew.db.sqlite",
+            "--version",
+            "0.3.0",
+            "--registry",
+            "fixture",
+        ],
+    ));
+    assert_success(&run(&profile, &project, &["install"]));
+    let lock: toml::Value =
+        toml::from_str(&fs::read_to_string(project.join("hew.lock")).unwrap()).unwrap();
+    let locked = lock["package"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|package| package["name"].as_str() == Some("hew.db.sqlite"))
+        .unwrap();
+    assert_eq!(locked["native"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        locked["native"][0]["checksum"].as_str(),
+        Some(checksum.as_str())
+    );
+    assert_success(&run(&profile, &project, &["install", "--locked"]));
+    assert_success(&run(&profile, &project, &["install", "--offline"]));
+    server.clear_requests();
+    for level in ["0", "2"] {
+        assert_success(&run(
+            &profile,
+            &project,
+            &["build", "--opt-level", level, "-o", "sqlite-query"],
+        ));
+        let binary = project.join("sqlite-query");
+        let output = hew_testutil::run_command_bounded(
+            &mut Command::new(binary),
+            "run SQLite query",
+            std::time::Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_success(&output);
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "hello");
+    }
+    assert!(
+        server.requests().is_empty(),
+        "cached builds must not contact the registry"
+    );
+    let native_cache = Registry::with_root(
+        profile
+            .hew_home
+            .join("native")
+            .join(&identity.target)
+            .join(&identity.hew)
+            .join(&identity.rustc_release)
+            .join(&identity.rustc_host),
+    );
+    let cached = native_cache
+        .list_packages()
+        .into_iter()
+        .find(|package| package.name == "hew.db.sqlite")
+        .unwrap();
+    let original_library = fs::read(cached.path.join("libhew_hew_db_sqlite.a")).unwrap();
+    fs::write(
+        cached.path.join("libhew_hew_db_sqlite.a"),
+        b"damaged cached archive",
+    )
+    .unwrap();
+    assert_failure(
+        &run(&profile, &project, &["build"]),
+        "native artifact cache integrity check failed",
+    );
+    fs::write(cached.path.join("libhew_hew_db_sqlite.a"), original_library).unwrap();
+    let original_lock = fs::read_to_string(project.join("hew.lock")).unwrap();
+    fs::write(
+        project.join("hew.lock"),
+        original_lock.replace(&checksum, &format!("sha256:{}", "0".repeat(64))),
+    )
+    .unwrap();
+    assert_failure(&run(&profile, &project, &["build"]), "against hew.lock");
+    fs::write(project.join("hew.lock"), original_lock).unwrap();
+    let provenance = project.join(".hew/packages/hew/db/sqlite/.hew-registry-cache.toml");
+    let retained = fs::read(&provenance).unwrap();
+    fs::remove_file(&provenance).unwrap();
+    assert_failure(
+        &run(&profile, &project, &["build"]),
+        "missing verified source provenance",
+    );
+    fs::write(provenance, retained).unwrap();
+    server.reply("/native.tar.zst", 200, b"corrupted native archive".to_vec());
+    let corrupt = Profile::new();
+    corrupt.configure("", &[("fixture", &server, Some(WireNames::Dotted))]);
+    assert_failure(
+        &run(&corrupt, &project, &["install"]),
+        "native artifact integrity check failed",
+    );
+    server.reply("/native.tar.zst", 404, b"absent advertised bytes".to_vec());
+    assert_failure(
+        &run(&corrupt, &project, &["install"]),
+        "cannot download advertised native artifact",
+    );
+    let mut bad_signature = native_record.clone();
+    bad_signature["sig"] = json!("ed25519:00");
+    server.json(&native, &bad_signature);
+    assert_failure(&run(&profile, &project, &["install"]), "signature invalid");
+    for (field, value, expected) in [
+        ("registry_sig", "", "complete registry countersignature"),
+        ("registry_sig", "ed25519:00", "registry signature invalid"),
+        (
+            "source_checksum",
+            "sha256:wrong",
+            "registry source checksum mismatch",
+        ),
+        (
+            "registry_key_fp",
+            "wrong-key",
+            "registry signing key fingerprint mismatch",
+        ),
+    ] {
+        let mut invalid = native_record.clone();
+        invalid[field] = json!(value);
+        server.json(&native, &invalid);
+        assert_failure(&run(&profile, &project, &["install"]), expected);
+    }
+    let mut wrong_identity = native_record.clone();
+    wrong_identity["registry_sig"] = json!(signers.registry.sign(
+        canonical
+            .replace(&identity.target, "aarch64-unknown-linux-gnu")
+            .as_bytes()
+    ));
+    server.json(&native, &wrong_identity);
+    assert_failure(
+        &run(&profile, &project, &["install"]),
+        "registry signature invalid",
+    );
+    server.reply(&native, 404, b"no native artifact".to_vec());
+    assert_success(&run(&corrupt, &project, &["install"]));
+    let missing_tools = run(&corrupt, &project, &["build"]);
+    assert_failure(&missing_tools, "rustc");
+    let mut fallback = Command::new(&compiler);
+    fallback
+        .arg("build")
+        .current_dir(&project)
+        .env("HOME", &corrupt.home)
+        .env("HEW_HOME", &corrupt.hew_home)
+        .env("HEW_REGISTRY", server.api())
+        .env("HEW_STD", repo.join("std"))
+        .env(
+            "RUSTUP_HOME",
+            std::env::var_os("RUSTUP_HOME").map_or_else(
+                || PathBuf::from(std::env::var_os("HOME").unwrap()).join(".rustup"),
+                PathBuf::from,
+            ),
+        )
+        .env("NO_PROXY", "127.0.0.1,localhost");
+    for _ in 0..2 {
+        assert_success(
+            &hew_testutil::run_command_bounded(
+                &mut fallback,
+                "absent artifact source fallback",
+                std::time::Duration::from_mins(10),
+            )
+            .unwrap(),
+        );
+    }
 }
 
 #[derive(Clone)]
@@ -400,10 +722,13 @@ fn assert_success(output: &Output) {
     );
 }
 
+#[track_caller]
 fn assert_failure(output: &Output, diagnostic: &str) {
     assert!(
         !output.status.success(),
-        "invalid registry response was admitted"
+        "expected {diagnostic:?} refusal, but command succeeded:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
     assert!(
         String::from_utf8_lossy(&output.stderr)

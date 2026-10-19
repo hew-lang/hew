@@ -20,14 +20,14 @@
       "type": "clock.virtual_advance"
     },
     {
-      "budget_remaining": 998,
+      "budget_remaining": 997,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 2,
       "span": null,
-      "step_count": 2,
+      "step_count": 3,
       "type": "step.committed"
     },
     {
@@ -60,7 +60,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 993,
+    "budget_remaining": 992,
     "diagnostics": [],
     "exit_code": 0,
     "globals": [],
@@ -80,7 +80,7 @@
     "stdout": [
       "awake\n"
     ],
-    "step_count": 7,
+    "step_count": 8,
     "virtual_clock": {
       "current_ms": 25,
       "epoch_ms": 0,
@@ -88,7 +88,7 @@
     }
   },
   "fixture_id": "virtual-sleep-clock",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [

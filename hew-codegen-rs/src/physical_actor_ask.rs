@@ -303,6 +303,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         arguments.push(
             actor_value_release(self.ctx, self.llvm, self.module, &handler.return_ty)?.into(),
         );
+        types.push(ptr.into());
+        arguments.push(self.sender_stamp()?.into());
+        types.push(ptr.into());
+        let dispatch = self
+            .llvm
+            .get_function(&symbol(actor.id, "dispatch"))
+            .ok_or_else(|| CodegenError::FailClosed("actor call lacks its dispatch key".into()))?;
+        arguments.push(dispatch.as_global_value().as_pointer_value().into());
         let start = get_or_declare_external(
             self.llvm,
             if sealed {
@@ -430,7 +438,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("finish rejected request")?;
             self.builder.position_at_end(replied);
         }
-        self.emit_ask_result(result, status, reply, handler)?;
+        self.emit_ask_result(result, status, reply, &handler.return_ty)?;
         self.builder
             .build_unconditional_branch(done)
             .llvm_ctx("finish selected completion")?;
@@ -584,7 +592,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         result: StorageId,
         status: IntValue<'ctx>,
         reply: Option<PointerValue<'ctx>>,
-        handler: &SemActorHandler,
+        reply_ty: &ResolvedTy,
     ) -> CodegenResult<()> {
         let glue = self
             .module
@@ -599,7 +607,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.llvm,
             self.module,
             glue,
-            handler,
+            reply_ty,
             reply.is_some(),
         )?;
         let pointer = self.ctx.ptr_type(AddressSpace::default());
@@ -626,13 +634,13 @@ fn ask_result_thunk<'ctx>(
     llvm: &Module<'ctx>,
     module: &PhysicalModule,
     glue: &PhysicalVariantGlue,
-    handler: &SemActorHandler,
+    reply_ty: &ResolvedTy,
     has_reply: bool,
 ) -> CodegenResult<FunctionValue<'ctx>> {
     let name = format!(
         "__hew_ask_result_{}_{}_{}",
         glue.id.0,
-        handler.callable.0,
+        hew_types::mangle_resolved_ty(reply_ty),
         u8::from(has_reply)
     );
     if let Some(function) = llvm.get_function(&name) {
@@ -667,7 +675,7 @@ fn ask_result_thunk<'ctx>(
     let out = function.get_nth_param(0).unwrap().into_pointer_value();
     let status = function.get_nth_param(1).unwrap().into_int_value();
     let reply = has_reply.then(|| function.get_nth_param(2).unwrap().into_pointer_value());
-    values.write_ask_result(glue, handler, out, status, reply)?;
+    values.write_ask_result(glue, reply_ty, out, status, reply)?;
     Ok(function)
 }
 
@@ -675,7 +683,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
     fn write_ask_result(
         &self,
         glue: &PhysicalVariantGlue,
-        handler: &SemActorHandler,
+        reply_ty: &ResolvedTy,
         out: PointerValue<'ctx>,
         status: IntValue<'ctx>,
         reply: Option<PointerValue<'ctx>>,
@@ -685,7 +693,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         let done = self.ctx.append_basic_block(self.value, "ask.result");
         // A completion call on a void handler carries no reply payload: the
         // handler's return is the unit reply, so success writes `Ok(())`.
-        let completion = reply.is_none() && handler.return_ty == ResolvedTy::Unit;
+        let completion = reply.is_none() && *reply_ty == ResolvedTy::Unit;
         if reply.is_some() || completion {
             let success = self.ctx.append_basic_block(self.value, "ask.success");
             let ok = self
@@ -722,21 +730,17 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
                 .first()
                 .map(|field| field.ty.clone())
                 .unwrap_or(ResolvedTy::Unit);
-            if handler.return_ty == call_reply_ty {
-                let layout = self
-                    .module
-                    .target
-                    .layout(&handler.return_ty)
-                    .ok_or_else(|| {
-                        CodegenError::FailClosed("reply lacks its target layout".into())
-                    })?;
+            if *reply_ty == call_reply_ty {
+                let layout = self.module.target.layout(reply_ty).ok_or_else(|| {
+                    CodegenError::FailClosed("reply lacks its target layout".into())
+                })?;
                 let value = self.load_value(reply, layout, "ask.reply.value")?;
                 self.write_variant_value(out, 0, &[value], glue.id)?;
                 self.builder
                     .build_unconditional_branch(done)
                     .llvm_ctx("finish successful reply")?;
             } else {
-                self.emit_declared_failure_reply(out, reply, handler, error_ty, glue.id, done)?;
+                self.emit_declared_failure_reply(out, reply, reply_ty, error_ty, glue.id, done)?;
             }
         } else {
             // `Ok(())` still carries the unit payload seat the recipe declares.
@@ -906,7 +910,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
         &self,
         out: PointerValue<'ctx>,
         reply: PointerValue<'ctx>,
-        handler: &SemActorHandler,
+        reply_ty: &ResolvedTy,
         error_ty: &ResolvedTy,
         glue_id: hew_mir::physical::PhysicalVariantId,
         done: inkwell::basic_block::BasicBlock<'ctx>,
@@ -919,7 +923,7 @@ impl<'ctx> ValueEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("the call envelope lacks its variant recipe".into())
             })?;
-        let wire_layout = self.variant_layout(&handler.return_ty)?;
+        let wire_layout = self.variant_layout(reply_ty)?;
         let object = self.variant_object_ptr(reply, wire_layout)?;
         let tag = self.load_variant_tag(object, wire_layout)?;
         let replied = self.ctx.append_basic_block(self.value, "ask.reply.ok");

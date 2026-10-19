@@ -7,21 +7,21 @@ import std.string;
 
 fn main() {
     // Basic comma-separated split — three elements.
-    let parts = string.split("a,b,c", ",");
+    let parts = ("a,b,c").split(",");
     assert(parts.len() == 3);
     assert(parts[0] == "a");
     assert(parts[1] == "b");
     assert(parts[2] == "c");
 
     // Trailing delimiter produces a trailing empty element.
-    let trail = string.split("a,b,", ",");
+    let trail = ("a,b,").split(",");
     assert(trail.len() == 3);
     assert(trail[0] == "a");
     assert(trail[1] == "b");
     assert(trail[2] == "");
 
     // Multi-byte separator with a multi-byte character in the value.
-    let mb = string.split("héllo::world", "::");
+    let mb = ("héllo::world").split("::");
     assert(mb.len() == 2);
     assert(mb[0] == "héllo");
     assert(mb[1] == "world");

@@ -615,7 +615,6 @@ impl Checker {
                                 crate::BuiltinType::Sink
                                     | crate::BuiltinType::Stream
                                     | crate::BuiltinType::ActorHandle
-                                    | crate::BuiltinType::RemotePid
                             )
                         )
                     {

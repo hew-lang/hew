@@ -52,9 +52,9 @@ visible in `scrape()` output, not by a labelled `read` call.
 
 ### `observe.series() -> string`
 
-Returns the canonical metric names, one per line. It lists the 28 scalar names
-accepted by `observe.read` plus the labelled series names (per-handler actor
-attribution and per-child supervisor restarts).
+Returns the canonical metric names, one per line. It lists scalar names
+accepted by `observe.read` and labelled series for actor attribution,
+supervisor restarts and mailbox loss.
 
 ```hew
 import std.observe;
@@ -146,11 +146,12 @@ attribution probe path.
 
 ## Metrics surface
 
-The scalar registry has 28 metrics. `Kind` is the scrape type; `Hot?` means the
+`Kind` is the scrape type; `Hot?` means the
 value only increments when `HEW_OBSERVE` enables the hot tier.
 
 | Metric | Kind | Hot? | What it measures |
 | --- | --- | --- | --- |
+| `observe.hot_enabled` | gauge | no | `1` when hot counters are enabled, otherwise `0`; zero hot counters alone do not establish that no events occurred. |
 | `heap.live_bytes` | gauge | no | Live bytes held by every allocation Hew owns. On WASM this currently reads `0`. |
 | `heap.allocated_total` | counter | yes | Total bytes recorded by hot-tier heap allocation probes. |
 | `heap.freed_total` | counter | yes | Total bytes recorded by hot-tier heap free probes. |
@@ -182,6 +183,21 @@ value only increments when `HEW_OBSERVE` enables the hot tier.
 | `pool.threads` | gauge | no | Threads in the blocking-work pool. |
 | `pool.saturations_total` | counter | no | Jobs that queued because every pool thread was busy at the cap. |
 | `arena.resets_total` | counter | no | Arena reset count. |
+| `mailbox.depth` | gauge | no | Sum of live actors' queued user messages and bounded fast-path producer reservations. |
+| `mailbox.depth_max` | gauge | no | Largest current actor mailbox depth. |
+| `mailbox.depth_p99` | gauge | no | Nearest-rank 99th percentile of current actor mailbox depths. |
+| `node.peers` | gauge | no | Published authenticated peer claims, excluding reserved, retired and unverified connections. |
+| `node.routes` | gauge | no | Current routes in the node's routing table. |
+| `node.gossip_in_total` | counter | yes | Authenticated, validated SWIM and registry control frames received during this node lifetime. |
+| `node.gossip_out_total` | counter | yes | Successfully sent SWIM and registry control frames during this node lifetime; failed attempts do not increment it. |
+| `node.pending_asks` | gauge | no | Outbound asks awaiting a reply; service offers, imports and link setup are excluded. |
+| `swim.alive`, `swim.suspect`, `swim.dead` | gauge | no | Membership entries in each failure-detector state. |
+| `swim.quarantined` | gauge | no | Peers currently quarantined by this runtime. |
+| `registry.names` | gauge | no | Names in the running node's distributed registry, or local registered names when no node runs. |
+| `registry.conflicts_total` | counter | yes | Duplicate-name refusals by the local registry during this runtime lifetime. |
+
+Native node gauges report zero when no node runs. Node counters reset when a
+new node is constructed; distributed registry winner policy is unchanged.
 
 ### What the heap counters cover
 
@@ -212,6 +228,25 @@ exists:
 | `actors_attributed_turns_by_handler_total` | counter | `dispatch`, `msg_type`, `handler` | Actor turn count grouped by dispatch pointer, message type id, and resolved handler name. |
 | `actors_attributed_turn_duration_ns_by_handler_total` | counter | `dispatch`, `msg_type`, `handler` | Total actor turn duration in nanoseconds for the same label set. |
 | `supervisor_restarts_by_child_total` | counter | `supervisor`, `child` | Each supervised child's lifetime restart count, one row per child across every registered supervisor tree. |
+| `mailbox_dropped_new_total` | counter | `actor`, `spawn_serial` | Incoming user messages discarded by the declared policy. |
+| `mailbox_dropped_old_total` | counter | `actor`, `spawn_serial` | Queued one-way messages evicted to admit a new message. |
+| `mailbox_coalesced_total` | counter | `actor`, `spawn_serial` | Queued user messages superseded by a matching key. |
+| `mailbox_dropped_on_stop_total` | counter | `actor`, `spawn_serial` | Queued user messages retired at terminal stop, termination or fault. |
+
+Mailbox loss counters require the hot tier. They belong to an actor incarnation
+and disappear when its retained actor allocation is freed. A refused send is
+not a discarded message. System-lane signals and unpublished blocked senders
+are excluded. The actor API also reports capacity, policy and these exact
+counters beside depth and the high-water mark.
+
+The Supervisors tab supports read-only drill-down. Select a declared role to
+inspect its current incarnation, strategy, lifetime restart count and mailbox;
+press Enter in the TUI to focus that actor's events. The desktop app also
+offers **View supervisor decisions** for the role's owning supervisor.
+Selection uses producer and incarnation identities, not display labels.
+Older v1 producers remain readable and explicitly show unavailable details.
+The additive HTTP `runtime_series` list uses the same `std.observe` catalogue
+and exact decimal counter values; it does not introduce a second registry.
 
 How to read the labelled series:
 

@@ -182,7 +182,10 @@ fn role_resolve_current_child_id(
 pub(crate) fn current_actor_role_identity(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> Option<(u64, u64)> {
-    let (owner, slot) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    let (owner, slot, kind) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    if kind != crate::lifetime::local_handles::SupervisorRoleKind::Actor {
+        return None;
+    }
     role_resolve_current_child_id(owner, slot, false).ok()
 }
 
@@ -685,9 +688,25 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
         if child.is_null() {
             return false;
         }
-        // SAFETY: the roster guard owns this child pointer.
-        let state = unsafe { &*child }.actor_state.load(Ordering::Acquire);
-        state != HewActorState::Stopped as i32 && state != HewActorState::Crashed as i32
+        // SAFETY: the roster guard owns this child and its mailbox.
+        let actor = unsafe { &*child };
+        let state = actor.actor_state.load(Ordering::Acquire);
+        let running = [
+            HewActorState::Idle,
+            HewActorState::Runnable,
+            HewActorState::Running,
+            HewActorState::Suspended,
+            HewActorState::Constructing,
+        ]
+        .iter()
+        .any(|candidate| state == *candidate as i32);
+        // Cancellation and crash fallback can wake the caller before terminal
+        // publication opens the role's fault record. That ending incarnation
+        // cannot satisfy a restart observer, even while its pointer is live.
+        running
+            && actor.pending_external_trap_code.load(Ordering::Acquire) == 0
+            // SAFETY: the roster guard retains the child and its mailbox.
+            && !unsafe { mailbox::mailbox_is_closed(actor.mailbox.cast()) }
     }
 }
 
@@ -739,6 +758,39 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
         nested: role_kind == ROLE_KIND_SUPERVISOR,
         _waker: waker,
     }))
+}
+
+/// Wait for the stable role carried by an ordinary actor handle.
+/// Direct handles have no replacement and complete immediately.
+/// # Safety
+/// `waker` obeys the retained native wake contract.
+#[cfg(not(target_arch = "wasm32"))]
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_restart_wait_new(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    waker: *const crate::wake::HewWaker,
+) -> *mut HewNativeRestartWait {
+    use crate::lifetime::local_handles::{
+        current_actor_role_owner_slot, HewLocalPidId, SupervisorRoleKind,
+    };
+    let (owner, slot, kind) = current_actor_role_owner_slot(token).unwrap_or((
+        HewLocalPidId::INVALID,
+        0,
+        SupervisorRoleKind::Actor,
+    ));
+    // SAFETY: the caller retains the forwarded descriptor through registration.
+    unsafe {
+        hew_supervisor_native_restart_wait_new(
+            owner,
+            slot,
+            if kind == SupervisorRoleKind::Supervisor {
+                ROLE_KIND_SUPERVISOR
+            } else {
+                ROLE_KIND_ACTOR
+            },
+            waker,
+        )
+    }
 }
 
 /// Return 0 while the selected role is transient, or 1 when it has a live

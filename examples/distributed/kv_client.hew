@@ -1,174 +1,94 @@
-// examples/distributed/kv_client.hew — KV-store client node
+// examples/distributed/kv_client.hew — authenticated KV service client
 //
-// Connects to the KV server node, puts ("hello","world") and ("count","42"),
-// then asserts get("hello") == "world" and get("count") == "42".
-// Exits 0 on success, non-zero on any failure.
-//
-// Run after server.hew is already listening:
-//   hew run examples/distributed/kv_client.hew
+// Run both peers once without arguments to create their node keys and print
+// their public credentials. Then exchange the credentials and run:
+//   hew run examples/distributed/kv_server.hew <client-credential>
+//   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
+// Keep the key files between runs. Start this client while the server listens.
+import std.net;
+
 import std.os;
 
-// Mirror the server's wire types. Both nodes must agree on these schemas.
-#[wire]
-type KvPut {
-    key: string @1;
-    val: string @2;
-}
-
-#[wire]
-enum KvReq {
-    Put(KvPut) @0;
-    GetKey(string) @1;
-}
-
-#[wire]
-enum KvResp {
-    Ack @0;
-    Value(string) @1;
-}
-
-// Minimal actor declaration — matches the server's ActorMsg contract.
-// The client never spawns KeyValue locally; the declaration exists only so
-// RemotePid<KeyValue> resolves the Msg / Reply associated types.
+// This declaration mirrors the server's portable receive interface. The client
+// receives an ordinary KeyValue handle from the authenticated service offer.
 actor KeyValue {
-    receive fn handle(req: KvReq) -> KvResp {
-        match req {
-            KvReq.Put(_) => KvResp.Ack,
-            KvReq.GetKey(_) => KvResp.Value(""),
-        }
+    #[wire]
+    receive fn put(key: string, value: string) -> string {
+        ""
+    }
+
+    #[wire]
+    receive fn get(key: string) -> string {
+        ""
     }
 }
 
-impl ActorMsg for KeyValue {
-    type Msg = KvReq;
-    type Reply = KvResp;
+fn authenticated_peer(credential: string) -> net.PeerSession {
+    for attempt in 0..300 {
+        match Node.peer(credential) {
+            .Ok(peer) => return peer,
+            .Err(_) => {
+                if attempt == 299 {
+                    panic("authenticated KV server session did not arrive");
+                }
+                sleep(50ms);
+            }
+        }
+    }
+    panic("authenticated KV server session did not arrive");
 }
 
 fn main() -> i64 {
-    var port: string = "9100";
-    var server_addr: string = "127.0.0.1";
-    let arguments = os.args();
-    if arguments.len() > 1 {
-        if let .Some(value) = arguments.get(1) {
-            server_addr = value;
-        }
+    let args = os.args();
+    let server_credential = match args.get(1) {
+        .Some(value) => value,
+        .None => "--identity",
+    };
+    let host = match args.get(2) {
+        .Some(value) => value,
+        .None => "127.0.0.1",
+    };
+    let port = match args.get(3) {
+        .Some(value) => value,
+        .None => "9100",
+    };
+    var config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: "kv-client.key", peers: [], seeds: [] };
+    if server_credential != "--identity" {
+        config.peers = [server_credential];
     }
-    if arguments.len() > 2 {
-        if let .Some(value) = arguments.get(2) {
-            port = value;
-        }
+    Node.start(config).expect("KV client node starts");
+    println(f"[kv-client] public credential: {Node.identity_key()}");
+    if server_credential == "--identity" {
+        Node.shutdown();
+        return 0;
     }
-    let remote_addr = f"{server_addr}:{port}";
-    println(f"[kv-client] starting node, will connect to {remote_addr}");
-    let config = NodeConfig { bind: "0.0.0.0:0", transport: NodeTransport.Tcp, key: "kv-client.key", peers: [], seeds: [] };
-    match Node.start(config) {
-        .Ok(_) => {}
-        .Err(_) => panic("node start failed"),
+    let address = f"1@{host}:{port}";
+    Node.connect(address).expect("connect to pinned KV server");
+    let peer = authenticated_peer(server_credential);
+    let kv: KeyValue = peer.receive_service<KeyValue>().expect("receive KeyValue service");
+    println("[kv-client] received the KeyValue service");
+    let first = kv.put("hello", "world").expect("store first value completes");
+    let second = kv.put("count", "42").expect("store second value completes");
+    if first != "stored" || second != "stored" {
+        println("[kv-client] FAIL: a put returned an unexpected result");
+        Node.shutdown();
+        return 1;
     }
-    println("[kv-client] local node started");
-    sleep(500ms);
-    match Node.connect(remote_addr) {
-        .Ok(_) => {}
-        .Err(_) => {
-            println(f"[kv-client] FAIL: could not connect to {remote_addr}");
-            Node.shutdown();
-            return 1;
-        }
+    let hello = kv.get("hello").expect("read hello completes");
+    if hello != "world" {
+        println(f"[kv-client] FAIL: get('hello') returned '{hello}'");
+        Node.shutdown();
+        return 2;
     }
-    println(f"[kv-client] connected to {remote_addr}");
-    // Wait for the connection handshake to complete and registry gossip to arrive.
-    // hew_node_connect is non-blocking; gossip propagates asynchronously.
-    sleep(2s);
-    let found: Result<RemotePid<KeyValue>, LookupError> = Node.lookup("kv");
-    match found {
-        .Err(_) => {
-            println("[kv-client] FAIL: 'kv' not found in registry");
-            Node.shutdown();
-            return 1;
-        }
-        .Ok(kv) => {
-            // Scenario 1: put("hello","world") — wait for the remote handler.
-            let send1 = kv.send(KvReq.Put(KvPut { key: "hello", val: "world" }));
-            match send1 {
-                .Err(_) => {
-                    println("[kv-client] FAIL: put('hello','world') send error");
-                    Node.shutdown();
-                    return 2;
-                }
-                .Ok(_) => {}
-            }
-            // Scenario 2: put("count","42") — wait for the remote handler.
-            let send2 = kv.send(KvReq.Put(KvPut { key: "count", val: "42" }));
-            match send2 {
-                .Err(_) => {
-                    println("[kv-client] FAIL: put('count','42') send error");
-                    Node.shutdown();
-                    return 3;
-                }
-                .Ok(_) => {}
-            }
-            println("[kv-client] put('hello','world') and put('count','42') dispatched");
-            // The completion calls above already wait for their handlers.
-            sleep(500ms);
-
-            // Scenario 3: get("hello") — blocking remote ask, exercises the remote completion path.
-            let ask1 = kv.ask(KvReq.GetKey("hello"), 5000);
-            match ask1 {
-                .Err(_) => {
-                    println("[kv-client] FAIL: get('hello') remote ask error");
-                    Node.shutdown();
-                    return 4;
-                }
-                .Ok(resp) => {
-                    match resp {
-                        KvResp.Value(v) => {
-                            if v == "world" {
-                                println("[kv-client] PASS: get('hello') == 'world'");
-                            } else {
-                                println(f"[kv-client] FAIL: get('hello') returned '{v}', expected 'world'");
-                                Node.shutdown();
-                                return 5;
-                            }
-                        }
-                        KvResp.Ack => {
-                            println("[kv-client] FAIL: get('hello') returned Ack, expected Value");
-                            Node.shutdown();
-                            return 5;
-                        }
-                    }
-                }
-            }
-            // Scenario 4: get("count") — second blocking remote ask.
-            let ask2 = kv.ask(KvReq.GetKey("count"), 5000);
-            match ask2 {
-                .Err(_) => {
-                    println("[kv-client] FAIL: get('count') remote ask error");
-                    Node.shutdown();
-                    return 6;
-                }
-                .Ok(resp) => {
-                    match resp {
-                        KvResp.Value(v) => {
-                            if v == "42" {
-                                println("[kv-client] PASS: get('count') == '42'");
-                            } else {
-                                println(f"[kv-client] FAIL: get('count') returned '{v}', expected '42'");
-                                Node.shutdown();
-                                return 7;
-                            }
-                        }
-                        KvResp.Ack => {
-                            println("[kv-client] FAIL: get('count') returned Ack, expected Value");
-                            Node.shutdown();
-                            return 7;
-                        }
-                    }
-                }
-            }
-        }
+    println("[kv-client] PASS: get('hello') == 'world'");
+    let count = kv.get("count").expect("read count completes");
+    if count != "42" {
+        println(f"[kv-client] FAIL: get('count') returned '{count}'");
+        Node.shutdown();
+        return 3;
     }
-    println("[kv-client] all assertions passed");
+    println("[kv-client] PASS: get('count') == '42'");
     Node.shutdown();
-    println("[kv-client] shutdown complete");
+    println("[kv-client] all assertions passed");
     0
 }

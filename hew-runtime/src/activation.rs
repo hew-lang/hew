@@ -827,17 +827,44 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 let t0 = std::time::Instant::now();
                 // SAFETY: `msg` is exclusively owned by this worker.
                 let msg_ref = unsafe { &*msg };
+                #[cfg(not(target_arch = "wasm32"))]
+                if msg_ref.reply_channel.is_null()
+                    && msg_ref.caller.kind == 3
+                    // Every peer request requires authenticated request state.
+                    // Claim revalidates its grant at dispatch below.
+                    // SAFETY: the worker owns the node and its optional envelope.
+                    && !(unsafe { msg_ref.envelope.as_ref() })
+                        .and_then(|envelope| envelope.request.as_ref())
+                        .is_some_and(|state| state.has_authenticated_admission())
+                {
+                    // SAFETY: this unclaimed node and its payload belong to this worker.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
                 // The call owner may withdraw until this exact dispatch claim.
                 // Once claimed, losing its select only tombstones the reply;
                 // it does not cancel a handler that has already started.
                 // SAFETY: this node retains its sender-side reply reference.
                 if !unsafe {
-                    crate::reply_channel::claim_native_request_dispatch(
+                    crate::request_state::claim_message(
+                        msg_ref.envelope,
                         msg_ref.reply_channel.cast(),
                     )
                 } {
                     // SAFETY: this worker owns the unclaimed node and its typed
                     // request; normal node retirement settles the sender debt.
+                    unsafe { hew_msg_node_free(msg) };
+                    msgs_processed += 1;
+                    continue;
+                }
+                // A timer's start claim races its one overdue deadline. Losing
+                // the claim leaves this payload to ordinary node cleanup.
+                // SAFETY: this worker exclusively owns the dequeued envelope.
+                let timer = unsafe { msg_ref.envelope.as_ref() }
+                    .and_then(|envelope| envelope.timer.as_ref());
+                if timer.is_some_and(|timer| !timer.started()) {
+                    // SAFETY: no handler has borrowed this request.
                     unsafe { hew_msg_node_free(msg) };
                     msgs_processed += 1;
                     continue;
@@ -906,22 +933,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     std::process::abort();
                 }
 
-                let (dispatch_data, dispatch_size) = if msg_ref.envelope.is_null() {
-                    (msg_ref.data, msg_ref.data_size)
-                } else {
-                    // The generated adapter takes each payload field and clears
-                    // its owner bit before entering checked handler cleanup.
-                    // An aliased envelope cannot satisfy that exclusive contract.
-                    // SAFETY: this dequeued node owns one live envelope reference.
-                    let envelope = unsafe { &*msg_ref.envelope };
-                    if a.dispatch_ownership != crate::actor::HewDispatchOwnership::UniqueEnvelope
-                        || envelope.refcount.load(Ordering::Acquire) != 1
-                    {
-                        eprintln!("fatal: actor dispatch lacks unique envelope ownership");
-                        std::process::abort();
-                    }
-                    (envelope.payload, envelope.payload_size)
-                };
+                // Every producer publishes one owned envelope. The generated
+                // adapter takes each field and clears its typed owner bit;
+                // an aliased envelope cannot satisfy that exclusive contract.
+                // SAFETY: this dequeued node owns one live envelope reference.
+                let envelope = unsafe { &*msg_ref.envelope };
+                if envelope.refcount.load(Ordering::Acquire) != 1 {
+                    eprintln!("fatal: actor dispatch lacks unique envelope ownership");
+                    std::process::abort();
+                }
+                let (dispatch_data, dispatch_size) = (envelope.payload, envelope.payload_size);
 
                 let mut execution_context = HewExecutionContext {
                     actor,
@@ -939,9 +960,9 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                     reply_channel: msg_ref.reply_channel,
                     checked_fault: crate::actor_native::CheckedActorFault::default(),
                     caller: msg_ref.caller,
-                    // SAFETY: this request node retains its optional reply channel.
+                    // SAFETY: this request node retains its owned envelope.
                     request_deadline: unsafe {
-                        crate::reply_channel::native_request_deadline(msg_ref.reply_channel.cast())
+                        crate::request_state::message_deadline(msg_ref.envelope)
                     },
                 };
                 let prev_context = execution_context.prev_context;
@@ -1038,11 +1059,16 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // the system entry point — the discriminator is which arm
                 // of `DispatchTarget` was built, not a value either callee
                 // inspects.
+                // Raw C adapters consume their payload fields on entry. Until
+                // this claim, cancellation and failed pre-dispatch checks leave
+                // the same envelope responsible for typed cleanup.
+                // SAFETY: this activation exclusively owns the envelope.
+                unsafe { (*msg_ref.envelope).ingress_drop = None };
                 let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {
                     DispatchTarget::User(user_dispatch) =>
                     // SAFETY: `user_dispatch` is the actor's registered
                     // application trampoline; the arguments come from a
-                    // well-formed copy-mode `HewMsgNode`.
+                    // exclusively owned payload envelope.
                     unsafe {
                         user_dispatch(
                             ec_ptr,
@@ -2462,7 +2488,7 @@ pub(crate) fn enqueue_resume_by_incarnation(target: ActorIncarnation) {
 ///
 /// The scheduler wake path resolves its scheduler through [`get_scheduler`] →
 /// [`runtime::rt_default`], independently of `rt_current()`, so an `enter()`
-/// (or [`runtime::enter_actor_runtime`]) does not reroute the wake. A wake for
+/// does not reroute the wake. A wake for
 /// a non-default actor must therefore resolve to that actor's runtime before it
 /// reaches the default scheduler.
 ///

@@ -527,7 +527,6 @@ mod tests {
     #[test]
     fn string_vec_producers_carry_truthful_transfer_contracts() {
         for (symbol, params, discharge_depth) in [
-            ("hew_string_chars", 1, ReleaseDischargeDepth::Shallow),
             ("hew_string_lines", 1, ReleaseDischargeDepth::Deep),
             ("hew_string_split", 2, ReleaseDischargeDepth::Deep),
         ] {

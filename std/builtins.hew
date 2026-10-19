@@ -21,15 +21,6 @@
 // Calls to receive handlers wait for completion, including void handlers.
 // Use `mailbox(target, on_full: ...)` for submission and
 // `policy(target, on_full: ...)` to choose completion-call admission.
-/// A stable reference to a supervised actor role.
-///
-/// Unlike an actor handle, a `ChildRef<T>` never snapshots an actor
-/// allocation. Each operation resolves the role's current incarnation through
-/// its owning supervisor and returns an error while the child is unavailable
-/// or stopped.
-pub type ChildRef<T> {
-}
-
 /// Stable key-derived node identity.
 pub type NodeId {
 }
@@ -118,19 +109,6 @@ impl NodeConfig {
     }
 }
 
-/// An actor pid on a remote node carrying its complete actor location.
-///
-/// Produced by authenticated peer discovery.
-/// Does NOT coerce implicitly to a local actor handle — a remote actor is a
-/// distinct class with its own physical representation.
-///
-/// The remote call contract uses the same completion calls and
-/// mailbox submission views as local actors, with typed transport failures.
-/// Remote calls require an authenticated native node and compatible wire types.
-/// The browser sandbox does not provide distributed node transport.
-pub type RemotePid<T> {
-}
-
 /// An immutable one-way view for void receive handlers. Construct one with `mailbox(target, on_full: ...)`.
 /// A receive call through the view submits under that policy and returns as
 /// soon as admission or a policy-selected discard is resolved. The policy
@@ -138,6 +116,43 @@ pub type RemotePid<T> {
 /// handler to finish instead.
 pub type ActorMailbox<Target, Policy> {
     target: Target;
+}
+
+/// An actor-owned one-shot submission view. Construct with
+/// `mailbox(self, after: delay, overdue: limit)`; `overdue` is optional.
+pub type ActorTimerMailbox<Target, Policy> {
+    target: Target;
+    after: duration;
+    overdue: duration;
+    has_overdue: bool;
+}
+
+/// A cancellation handle for an actor-owned one-shot request.
+/// Dropping this handle does not cancel the request. The handle cannot be sent
+/// to another actor; stopping or restarting its owner cancels pending timers.
+#[resource]
+#[opaque]
+pub type Timer {
+}
+
+impl Timer {
+    /// Before firing, cancel delivery. After firing, disarm only the overdue check.
+    fn cancel(self) {
+        unsafe {
+            hew_actor_timer_cancel(self)
+        };
+    }
+
+    fn close(consume self) {
+        unsafe {
+            hew_actor_timer_release(self)
+        };
+    }
+}
+
+extern "C" {
+    fn hew_actor_timer_cancel(timer: Timer);
+    fn hew_actor_timer_release(consume timer: Timer);
 }
 
 /// An immutable completion view choosing how its own calls are admitted.
@@ -259,11 +274,20 @@ pub enum SendError {
     /// reached the operating system. The peer's view of the stream is
     /// unknown, so the caller retires the stream.
     WriteTimedOut(i64);
+    /// The peer refused this message's grant before admission.
+    Unauthorized;
+    /// Encoding or decoding refused the message before admission.
+    InvalidMessage;
+    /// The request deadline expired before admission.
+    TimedOut;
 }
 
 impl Display for SendError {
     fn fmt(self) -> string {
         match self {
+            SendError.Unauthorized => "Unauthorized: the peer refused the message grant",
+            SendError.InvalidMessage => "InvalidMessage: the message could not be encoded or decoded",
+            SendError.TimedOut => "TimedOut: the deadline expired before admission",
             SendError.Full => "Full: the destination mailbox is full",
             SendError.Closed => "Closed: the sink or connection is closed",
             SendError.Partition => "Partition: the route to the peer is unavailable or the peer is suspected dead",
@@ -280,7 +304,7 @@ impl Display for SendError {
 
 impl Error for SendError {}
 
-/// Error returned when `Node.lookup<T>(name)` cannot resolve `name`.
+/// Error returned when `Node.lookup(name)` cannot resolve a discovery location.
 ///
 /// Returned as `Err(LookupError.NotFound)` when no actor is registered
 /// under `name` on the current node (or any peer with a gossiped name).
@@ -408,40 +432,6 @@ impl Display for LinkError {
 
 impl Error for LinkError {}
 
-/// Message contract for actor types addressed through `RemotePid<A>`.
-///
-/// An actor binds `Msg` to the envelope type accepted by `.send` / `.ask` and
-/// `Reply` to the response type returned by `.ask`.
-pub trait ActorMsg {
-    type Msg;
-
-    type Reply;
-}
-
-impl<T: ActorMsg> ChildRef<T> {
-    /// Send a message to the currently live actor in this supervised role.
-    fn send(self, msg: T.Msg) -> Result<(), SendError> {
-        .Err(SendError.Closed)
-    }
-}
-
-impl<T> RemotePid<T> {
-    /// Return the complete carried actor location.
-    #[extern_symbol(hew_remote_pid_location)]
-    fn location(self) -> Location {}
-    /// Return the stable node identity.
-    #[extern_symbol(hew_remote_pid_node_id)]
-    fn node_id(self) -> NodeId {}
-    /// Return the actor's node-local slot.
-    #[extern_symbol(hew_remote_pid_slot)]
-    fn slot(self) -> u64 {}
-    /// Return the node-session incarnation.
-    #[extern_symbol(hew_remote_pid_incarnation)]
-    fn incarnation(self) -> u32 {}
-    #[extern_symbol(hew_remote_pid_display)]
-    fn display(self) -> string {}
-}
-
 impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
@@ -473,31 +463,30 @@ impl Display for Location {
     }
 }
 
-impl<T> Display for RemotePid<T> {
-    fn fmt(self) -> string {
-        self.display()
-    }
-}
-
-impl<T: ActorMsg> RemotePid<T> {
-    /// Send a message to this remote actor's `ActorMsg` member. The message
-    /// needs a `#[wire]` schema. The checker lowers every native call site
-    /// to a remote submission, so this body only seeds its signature.
-    fn send(self, msg: T.Msg) -> Result<(), SendError> {
-        .Err(SendError.Partition)
-    }
-    /// Ask this remote actor for a reply, failing with `ActorError` if the
-    /// caller-supplied timeout elapses or routing/reply delivery fails. A
-    /// remote call carries no sealed message, so it never reports `Rejected`.
-    /// The message and reply need `#[wire]` schemas.
-    fn ask(self, msg: T.Msg, timeout_ms: u64) -> Result<T.Reply, ActorError<Never, Never>> {
-        .Err(ActorError.NodeNotRunning)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Iterator trait
 // ---------------------------------------------------------------------------
+/// A machine's ordinary staged evaluator and committed transition metadata.
+#[lang_item("machine")]
+pub trait Machine {
+    type Event;
+    type Step;
+
+    fn step(var self, event: Self.Event) -> Self.Step;
+    fn step_info(self, report: Self.Step) -> MachineStepInfo;
+}
+
+pub enum MachineDisposition {
+    Taken;
+    Ignored;
+}
+
+pub type MachineStepInfo {
+    input: string;
+    rule: Option<i64>;
+    disposition: MachineDisposition;
+}
+
 /// Produce a sequence of values one item at a time.
 ///
 /// User-defined iterators implement this trait directly; `for` loops accept
@@ -663,6 +652,65 @@ impl<T> IntoIterator for Vec<T> {
     }
 }
 
+/// A snapshot cursor over a string's Unicode scalars.
+pub type StringIter {
+    text: string;
+    front: i64;
+    back: i64;
+}
+
+impl Iterator for StringIter {
+    type Item = char;
+    fn next(var self) -> Option<char> {
+        if self.front >= self.back {
+            .None
+        } else {
+            let value = self.text[self.front];
+            self.front += 1;
+            .Some(value)
+        }
+    }
+}
+
+impl DoubleEndedIterator for StringIter {
+    fn next_back(var self) -> Option<char> {
+        if self.front >= self.back {
+            .None
+        } else {
+            self.back -= 1;
+            .Some(self.text[self.back])
+        }
+    }
+}
+
+impl string {
+    fn first(self) -> Option<char> {
+        if self.len() == 0 {
+            .None
+        } else {
+            .Some(self[0])
+        }
+    }
+    fn last(self) -> Option<char> {
+        if self.len() == 0 {
+            .None
+        } else {
+            .Some(self[self.len() - 1])
+        }
+    }
+    fn iter(self) -> StringIter {
+        StringIter { text: self, front: 0, back: self.len() }
+    }
+}
+
+impl IntoIterator for string {
+    type Item = char;
+    type IntoIter = StringIter;
+    fn into_iter(self) -> StringIter {
+        self.iter()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HashMapIter — concrete IntoIterator impl for HashMap<K, V>
 // ---------------------------------------------------------------------------
@@ -780,6 +828,20 @@ impl<T> Index<i64> for Vec<T> {
     type Output = T;
     fn get(self, index: i64) -> Option<T> {}
     fn at(self, index: i64) -> T {
+        self[index]
+    }
+}
+
+impl Index<i64> for string {
+    type Output = char;
+    fn get(self, index: i64) -> Option<char> {
+        if index < 0 || index >= self.len() {
+            .None
+        } else {
+            .Some(self[index])
+        }
+    }
+    fn at(self, index: i64) -> char {
         self[index]
     }
 }
@@ -1113,11 +1175,6 @@ pub fn to_string(value: dyn Display) -> string {
     ""
 }
 
-/// Returns the length of a collection or string.
-pub fn len(value: dyn Display) -> i32 {
-    0 as i32
-}
-
 // ---------------------------------------------------------------------------
 // Program control
 // ---------------------------------------------------------------------------
@@ -1221,3 +1278,134 @@ impl Display for ScopeFailure {
 }
 
 impl Error for ScopeFailure {}
+
+/// Unicode scalar classification and one-scalar case conversion.
+impl char {
+    #[extern_symbol(hew_char_is_digit)]
+    fn is_digit(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_letter)]
+    fn is_letter(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_alphanumeric)]
+    fn is_alphanumeric(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_whitespace)]
+    fn is_whitespace(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_upper)]
+    fn is_upper(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_lower)]
+    fn is_lower(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_punctuation)]
+    fn is_punctuation(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_control)]
+    fn is_control(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_is_ascii)]
+    fn is_ascii(self) -> bool {
+        false
+    }
+    #[extern_symbol(hew_char_to_upper)]
+    fn to_upper(self) -> char {
+        '\0'
+    }
+    #[extern_symbol(hew_char_to_lower)]
+    fn to_lower(self) -> char {
+        '\0'
+    }
+    #[extern_symbol(hew_char_to_title)]
+    fn to_title(self) -> char {
+        '\0'
+    }
+    #[extern_symbol(hew_char_len_utf8)]
+    fn len_utf8(self) -> i64 {
+        0
+    }
+    #[extern_symbol(hew_char_to_digit)]
+    fn to_digit(self, radix: i64) -> Option<i64> {
+        .None
+    }
+}
+
+impl char {
+    fn as_u32(self) -> u32 {
+        self as u32
+    }
+    fn as_i64(self) -> i64 {
+        self as i64
+    }
+}
+
+impl i8 {
+    fn try_to_char(self) -> Option<char> {
+        (self as i64).try_to_char()
+    }
+}
+
+impl i16 {
+    fn try_to_char(self) -> Option<char> {
+        (self as i64).try_to_char()
+    }
+}
+
+impl i32 {
+    fn try_to_char(self) -> Option<char> {
+        (self as i64).try_to_char()
+    }
+}
+
+impl i64 {
+    #[extern_symbol(hew_char_from_i64)]
+    fn try_to_char(self) -> Option<char> {
+        .None
+    }
+}
+
+impl isize {
+    fn try_to_char(self) -> Option<char> {
+        (self as i64).try_to_char()
+    }
+}
+
+impl u8 {
+    fn try_to_char(self) -> Option<char> {
+        (self as u64).try_to_char()
+    }
+}
+
+impl u16 {
+    fn try_to_char(self) -> Option<char> {
+        (self as u64).try_to_char()
+    }
+}
+
+impl u32 {
+    fn try_to_char(self) -> Option<char> {
+        (self as u64).try_to_char()
+    }
+}
+
+impl u64 {
+    #[extern_symbol(hew_char_from_u64)]
+    fn try_to_char(self) -> Option<char> {
+        .None
+    }
+}
+
+impl usize {
+    fn try_to_char(self) -> Option<char> {
+        (self as u64).try_to_char()
+    }
+}

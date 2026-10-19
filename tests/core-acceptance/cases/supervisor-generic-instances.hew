@@ -41,7 +41,7 @@ type Packet {
     history: Vec<string>;
 }
 
-fn read_number(worker: ChildRef<Worker<i64>>) -> i64 {
+fn read_number(worker: Worker<i64>) -> i64 {
     worker.get().expect("number worker")
 }
 

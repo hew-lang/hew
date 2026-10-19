@@ -1,0 +1,13 @@
+[[case]]
+id = "actor-timer-target-reject"
+intent = "Actor-owned timers reject a target other than the constructing or receiving actor."
+source = "cases/actor-timer-target-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "E_TIMER_TARGET"
+line = 4
+column = 25
+message = "an actor-owned timer must target self through mailbox(self, after: duration)"

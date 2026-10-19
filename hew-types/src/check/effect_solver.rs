@@ -1,11 +1,21 @@
 //! Instantiate effect dependencies once and propagate suspension to their users.
 
+use super::super::task_lifetimes::OriginEnvironments;
+use super::super::CallableCandidate;
 use super::{CallTarget, Checker, EffectBody, EffectGraph, Invocation, MethodCallRewrite, SpanKey};
 use crate::check::cleanup_effects::CleanupTarget;
 use crate::{ParamHead, Ty};
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 type Actuals = HashMap<ParamHead, Ty>;
+
+#[derive(Clone, Copy)]
+struct Application<'a> {
+    types: &'a Actuals,
+    values: usize,
+    unknown: bool,
+}
 
 fn contains_type(ty: &Ty, needle: &Ty) -> bool {
     let mut pending = vec![ty];
@@ -54,7 +64,7 @@ fn cleanup_parameters(targets: impl IntoIterator<Item = CleanupTarget>) -> Param
                 }
             }
             CleanupTarget::Unknown(ty) => type_parameters(&ty, &mut parameters, Demand::Cleanup),
-            CleanupTarget::Callable(_) | CleanupTarget::Suspends => {}
+            CleanupTarget::Callable { .. } | CleanupTarget::Suspends => {}
         }
     }
     parameters
@@ -68,14 +78,25 @@ struct ParameterTransfer {
 
 /// Demand flows backwards through checked substitutions. Cleanup-only
 /// parameters need their release effects; executable dispatch retains types.
-fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBody, Parameters> {
+fn effect_parameters(
+    checker: &Checker,
+    graph: &EffectGraph,
+) -> (HashMap<EffectBody, Parameters>, HashSet<EffectBody>) {
     let mut parameters: HashMap<EffectBody, Parameters> = HashMap::new();
+    let mut values = HashSet::new();
     let mut users: HashMap<EffectBody, Vec<ParameterTransfer>> = HashMap::new();
     let empty = Actuals::new();
     for release in &graph.releases {
-        for (parameter, demand) in
-            cleanup_parameters(checker.cleanup_effect_targets(release, &empty, true))
-        {
+        let targets = checker.cleanup_effect_targets(release, &empty, true);
+        if targets.iter().any(|target| {
+            matches!(
+                target,
+                CleanupTarget::Callable { .. } | CleanupTarget::Body { .. }
+            )
+        }) {
+            values.insert(release.owner.clone());
+        }
+        for (parameter, demand) in cleanup_parameters(targets) {
             parameters
                 .entry(release.owner.clone())
                 .or_default()
@@ -85,9 +106,16 @@ fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBo
         }
     }
     for body in graph.once_releases.keys() {
-        for (parameter, demand) in
-            cleanup_parameters(checker.once_cleanup_targets(body, graph, &empty, true))
-        {
+        let targets = checker.once_cleanup_targets(body, graph, &empty, true);
+        if targets.iter().any(|target| {
+            matches!(
+                target,
+                CleanupTarget::Callable { .. } | CleanupTarget::Body { .. }
+            )
+        }) {
+            values.insert(body.clone());
+        }
+        for (parameter, demand) in cleanup_parameters(targets) {
             parameters
                 .entry(body.clone())
                 .or_default()
@@ -100,44 +128,26 @@ fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBo
         let Some(owner) = &call.owner else {
             continue;
         };
-        let target = match checker.call_target(key) {
-            Some(
-                CallTarget::User(id)
-                | CallTarget::ImplMethod(id)
-                | CallTarget::StaticTraitMethod { method: id, .. },
-            ) => Some((
-                EffectBody::Declaration(*id),
-                checker.call_cleanup_substitutions(*id, key, call.receiver.as_ref(), &empty),
-                false,
-            )),
-            target
-                if matches!(target, Some(CallTarget::IndirectFunctionValue))
-                    || (target.is_none()
-                        && matches!(
-                            checker.method_call_rewrites.get(key),
-                            Some(
-                                MethodCallRewrite::RecordFnFieldCall { .. }
-                                    | MethodCallRewrite::BuiltinVecHigherOrder { .. }
-                            )
-                        )) =>
-            {
-                call.callee.as_ref().and_then(|ty| {
-                    let ty = checker.subst.resolve(ty);
-                    type_parameters(
-                        &ty,
-                        parameters.entry(owner.clone()).or_default(),
-                        Demand::Exact,
-                    );
-                    match ty.callable_body() {
-                        Ty::Closure { identity, .. } => {
-                            Some((identity.clone(), Actuals::new(), true))
-                        }
-                        _ => None,
-                    }
-                })
-            }
-            _ => None,
-        };
+        if matches!(
+            checker.call_target(key),
+            Some(CallTarget::IndirectFunctionValue | CallTarget::StaticTraitMethod { .. })
+        ) || (checker.call_target(key).is_none()
+            && matches!(
+                checker.method_call_rewrites.get(key),
+                Some(
+                    MethodCallRewrite::RecordFnFieldCall { .. }
+                        | MethodCallRewrite::BuiltinVecHigherOrder { .. }
+                )
+            ))
+        {
+            values.insert(owner.clone());
+        }
+        let target = call_parameter_transfer(
+            checker,
+            key,
+            call,
+            parameters.entry(owner.clone()).or_default(),
+        );
         if let Some((body, actuals, inherited)) = target {
             users.entry(body).or_default().push(ParameterTransfer {
                 owner: owner.clone(),
@@ -147,7 +157,71 @@ fn effect_parameters(checker: &Checker, graph: &EffectGraph) -> HashMap<EffectBo
         }
     }
     propagate_parameter_demands(checker, &mut parameters, &users);
-    parameters
+    let mut pending: Vec<_> = values.iter().cloned().collect();
+    while let Some(body) = pending.pop() {
+        for user in users.get(&body).into_iter().flatten() {
+            if values.insert(user.owner.clone()) {
+                pending.push(user.owner.clone());
+            }
+        }
+    }
+    (parameters, values)
+}
+
+fn call_parameter_transfer(
+    checker: &Checker,
+    key: &SpanKey,
+    call: &Invocation,
+    parameters: &mut Parameters,
+) -> Option<(EffectBody, Actuals, bool)> {
+    let empty = Actuals::new();
+    if matches!(
+        checker.call_target(key),
+        Some(CallTarget::StaticTraitMethod { .. })
+    ) {
+        if let Some(receiver) = &call.receiver {
+            type_parameters(&checker.subst.resolve(receiver), parameters, Demand::Exact);
+        }
+        if let Some(MethodCallRewrite::StaticTraitDispatch { trait_args, .. }) =
+            checker.method_call_rewrites.get(key)
+        {
+            for ty in trait_args {
+                type_parameters(ty, parameters, Demand::Exact);
+            }
+        }
+    }
+    match checker.call_target(key) {
+        Some(
+            CallTarget::User(id)
+            | CallTarget::ImplMethod(id)
+            | CallTarget::StaticTraitMethod { method: id, .. },
+        ) => Some((
+            EffectBody::Declaration(*id),
+            checker.call_cleanup_substitutions(*id, key, call.receiver.as_ref(), &empty),
+            false,
+        )),
+        target
+            if matches!(target, Some(CallTarget::IndirectFunctionValue))
+                || (target.is_none()
+                    && matches!(
+                        checker.method_call_rewrites.get(key),
+                        Some(
+                            MethodCallRewrite::RecordFnFieldCall { .. }
+                                | MethodCallRewrite::BuiltinVecHigherOrder { .. }
+                        )
+                    )) =>
+        {
+            call.callee.as_ref().and_then(|ty| {
+                let ty = checker.subst.resolve(ty);
+                type_parameters(&ty, parameters, Demand::Exact);
+                match ty.callable_body() {
+                    Ty::Closure { identity, .. } => Some((identity.clone(), Actuals::new(), true)),
+                    _ => None,
+                }
+            })
+        }
+        _ => None,
+    }
 }
 
 fn propagate_parameter_demands(
@@ -256,6 +330,7 @@ struct Instance {
     arguments: Vec<(ParamHead, Ty)>,
     unknown: bool,
     captures: bool,
+    values: usize,
 }
 
 #[derive(Default)]
@@ -290,16 +365,22 @@ pub(super) struct EffectSolver<'a> {
     calls: HashMap<EffectBody, Vec<(&'a SpanKey, &'a Invocation)>>,
     releases: HashMap<EffectBody, Vec<&'a super::super::cleanup_effects::CleanupEffect>>,
     parameters: HashMap<EffectBody, Parameters>,
+    value_parameters: HashSet<EffectBody>,
     identities: HashMap<Instance, usize>,
     body_instances: HashSet<(EffectBody, bool, bool)>,
     instances: Vec<Instance>,
     nodes: Vec<Node>,
     expanded: usize,
     changed: VecDeque<usize>,
+    values: RefCell<OriginEnvironments>,
 }
 
 impl<'a> EffectSolver<'a> {
-    pub(super) fn new(checker: &'a Checker, graph: &'a EffectGraph) -> Self {
+    pub(super) fn new(
+        checker: &'a Checker,
+        graph: &'a EffectGraph,
+        flows: &HashMap<SpanKey, Vec<super::super::CallableArgumentFlow>>,
+    ) -> Self {
         let mut calls: HashMap<_, Vec<_>> = HashMap::new();
         for (key, invocation) in &graph.calls {
             if let Some(owner) = &invocation.owner {
@@ -323,19 +404,21 @@ impl<'a> EffectSolver<'a> {
         for releases in releases.values_mut() {
             releases.sort_by(|left, right| left.witness.cmp(&right.witness));
         }
-        let parameters = effect_parameters(checker, graph);
+        let (parameters, value_parameters) = effect_parameters(checker, graph);
         let mut solver = Self {
             checker,
             graph,
             calls,
             releases,
             parameters,
+            value_parameters,
             identities: HashMap::new(),
             body_instances: HashSet::new(),
             instances: Vec::new(),
             nodes: Vec::new(),
             expanded: 0,
             changed: VecDeque::new(),
+            values: RefCell::new(Checker::value_environments(flows)),
         };
         // Seed roots before answering any query, so hash-map iteration cannot
         // change which suspending dependency supplies a diagnostic witness.
@@ -357,6 +440,7 @@ impl<'a> EffectSolver<'a> {
             arguments,
             unknown,
             captures,
+            values: 0,
         }
     }
 
@@ -379,6 +463,21 @@ impl<'a> EffectSolver<'a> {
                 None => false,
             }
         });
+        if !self.value_parameters.contains(&instance.body)
+            && !instance.arguments.iter().any(|(_, ty)| {
+                self.checker
+                    .cleanup_type_targets(ty, &Actuals::new(), true)
+                    .iter()
+                    .any(|target| {
+                        matches!(
+                            target,
+                            CleanupTarget::Callable { .. } | CleanupTarget::Body { .. }
+                        )
+                    })
+            })
+        {
+            instance.values = 0;
+        }
         if let Some(id) = self.identities.get(&instance) {
             return *id;
         }
@@ -387,7 +486,7 @@ impl<'a> EffectSolver<'a> {
             instance.unknown,
             instance.captures,
         ));
-        let mut ancestor = if repeated && !instance.arguments.is_empty() {
+        let mut ancestor = if repeated && (!instance.arguments.is_empty() || instance.values != 0) {
             parent
         } else {
             None
@@ -395,6 +494,17 @@ impl<'a> EffectSolver<'a> {
         let mut expanding = false;
         while let Some(id) = ancestor {
             let previous = &self.instances[id];
+            if previous.body == instance.body
+                && previous.unknown == instance.unknown
+                && previous.captures == instance.captures
+                && self
+                    .values
+                    .borrow()
+                    .expands(instance.values, previous.values)
+            {
+                expanding = true;
+                break;
+            }
             if previous.body == instance.body
                 && previous.unknown == instance.unknown
                 && previous.captures == instance.captures
@@ -472,15 +582,18 @@ impl<'a> EffectSolver<'a> {
         self.nodes[id].witness.clone()
     }
 
-    pub(super) fn once(&mut self, body: &EffectBody, unknown: bool) -> Option<String> {
-        let id = self.intern(Self::instance(body, &Actuals::new(), unknown, true));
-        self.solve();
-        self.nodes[id].witness.clone()
-    }
-
     pub(super) fn invocation(&mut self, key: &SpanKey, invocation: &Invocation) -> bool {
         let mut dependencies = Dependencies::default();
-        self.invocation_dependencies(key, invocation, &Actuals::new(), false, &mut dependencies);
+        self.invocation_dependencies(
+            key,
+            invocation,
+            Application {
+                types: &Actuals::new(),
+                values: 0,
+                unknown: false,
+            },
+            &mut dependencies,
+        );
         let ids: Vec<_> = dependencies
             .bodies
             .into_iter()
@@ -489,6 +602,41 @@ impl<'a> EffectSolver<'a> {
         self.solve();
         dependencies.intrinsic.is_some()
             || ids.into_iter().any(|id| self.nodes[id].witness.is_some())
+    }
+
+    pub(super) fn obligation(
+        &mut self,
+        obligation: &super::SuspensionObligation,
+    ) -> Vec<(SpanKey, Option<String>, String)> {
+        let contexts = obligation.owner.as_ref().map_or_else(
+            || vec![(Actuals::new(), None)],
+            |owner| {
+                self.checker
+                    .effect_construction_contexts(owner, self.graph, &mut HashSet::new())
+            },
+        );
+        let mut instances = Vec::new();
+        for (actuals, boundary) in contexts {
+            let body = self.intern(Self::instance(&obligation.body, &actuals, true, false));
+            let captures = obligation
+                .once
+                .then(|| self.intern(Self::instance(&obligation.body, &actuals, true, true)));
+            instances.push((boundary, body, captures));
+        }
+        self.solve();
+        instances
+            .into_iter()
+            .filter_map(|(boundary, body, captures)| {
+                let witness = self.nodes[body]
+                    .witness
+                    .as_ref()
+                    .or_else(|| captures.and_then(|id| self.nodes[id].witness.as_ref()))?
+                    .clone();
+                let (key, source) = boundary
+                    .unwrap_or_else(|| (obligation.key.clone(), obligation.source_module.clone()));
+                Some((key, source, witness))
+            })
+            .collect()
     }
 
     fn dependencies(&self, instance: &Instance) -> Dependencies {
@@ -503,7 +651,11 @@ impl<'a> EffectSolver<'a> {
             ) {
                 self.cleanup_dependency(
                     target,
-                    instance.unknown,
+                    Application {
+                        types: &actuals,
+                        values: instance.values,
+                        unknown: instance.unknown,
+                    },
                     "implicit release of captured values",
                     &mut result,
                 );
@@ -532,7 +684,11 @@ impl<'a> EffectSolver<'a> {
                 {
                     self.cleanup_dependency(
                         target,
-                        instance.unknown,
+                        Application {
+                            types: &actuals,
+                            values: instance.values,
+                            unknown: instance.unknown,
+                        },
                         &release.witness,
                         &mut result,
                     );
@@ -544,8 +700,11 @@ impl<'a> EffectSolver<'a> {
                 self.invocation_dependencies(
                     key,
                     invocation,
-                    &actuals,
-                    instance.unknown,
+                    Application {
+                        types: &actuals,
+                        values: instance.values,
+                        unknown: instance.unknown,
+                    },
                     &mut result,
                 );
             }
@@ -556,33 +715,143 @@ impl<'a> EffectSolver<'a> {
     fn cleanup_dependency(
         &self,
         target: CleanupTarget,
-        unknown: bool,
+        application: Application<'_>,
         witness: &str,
         result: &mut Dependencies,
     ) {
-        match target {
-            CleanupTarget::Body { body, type_args } => {
-                let actuals = match &body {
-                    EffectBody::Declaration(id) => self
-                        .checker
-                        .fn_sigs
-                        .get(id)
-                        .and_then(|signature| signature.impl_method.as_ref())
-                        .and_then(|method| {
-                            crate::method_resolution::impl_receiver_substitution(
-                                &method.receiver_parameters,
-                                &method.receiver_args,
-                                &type_args,
-                            )
-                        })
-                        .unwrap_or_default(),
-                    EffectBody::Closure(_)
-                    | EffectBody::Generator(_)
-                    | EffectBody::GeneratorBlock(_) => Actuals::new(),
-                };
-                result.body(Self::instance(&body, &actuals, unknown, false), witness);
+        self.cleanup_dependency_inner(target, application, witness, result, &mut HashSet::new());
+    }
+
+    fn cleanup_body_instance(
+        &self,
+        body: &EffectBody,
+        type_args: &[Ty],
+        candidates: super::super::IndirectCallCandidates,
+        application: Application<'_>,
+    ) -> Instance {
+        let actuals = match body {
+            EffectBody::Declaration(id) => self
+                .checker
+                .fn_sigs
+                .get(id)
+                .and_then(|signature| signature.impl_method.as_ref())
+                .and_then(|method| {
+                    crate::method_resolution::impl_receiver_substitution(
+                        &method.receiver_parameters,
+                        &method.receiver_args,
+                        type_args,
+                    )
+                })
+                .unwrap_or_default(),
+            EffectBody::Closure(_) | EffectBody::Generator(_) | EffectBody::GeneratorBlock(_) => {
+                Actuals::new()
             }
-            CleanupTarget::Callable(_) | CleanupTarget::Unknown(_) | CleanupTarget::Suspends => {
+        };
+        let mut applied = application.types.clone();
+        applied.extend(actuals);
+        let mut instance = Self::instance(body, &applied, application.unknown, false);
+        instance.values = self.checker.callable_environment(
+            body,
+            None,
+            (&applied, application.values),
+            Some(candidates),
+            &mut self.values.borrow_mut(),
+        );
+        instance
+    }
+
+    fn cleanup_dependency_inner(
+        &self,
+        target: CleanupTarget,
+        application: Application<'_>,
+        witness: &str,
+        result: &mut Dependencies,
+        active: &mut HashSet<(SpanKey, usize)>,
+    ) {
+        let Application {
+            types: enclosing,
+            values,
+            ..
+        } = application;
+        match target {
+            CleanupTarget::Body {
+                body,
+                type_args,
+                candidates,
+                ..
+            } => {
+                result.body(
+                    self.cleanup_body_instance(&body, &type_args, candidates, application),
+                    witness,
+                );
+            }
+            CleanupTarget::Callable { ty, candidates } => {
+                if let Ty::Closure { identity, .. } = ty.callable_body() {
+                    let mut instance = Self::instance(identity, enclosing, true, true);
+                    instance.values = values;
+                    result.body(instance, witness);
+                    return;
+                }
+                let erased = matches!(ty.callable_body(), Ty::TraitObject { .. });
+                let (origins, complete) = if erased {
+                    self.checker.resolve_erased_values(
+                        &candidates,
+                        values,
+                        &mut self.values.borrow_mut(),
+                    )
+                } else {
+                    self.checker.resolve_callable_values(
+                        &candidates,
+                        values,
+                        &mut self.values.borrow_mut(),
+                    )
+                };
+                if !complete || origins.is_empty() {
+                    result.suspends(witness);
+                }
+                for origin in origins {
+                    match origin.candidate {
+                        CallableCandidate::Declaration(_) if !erased => {}
+                        CallableCandidate::Erasure { site, value } => {
+                            let key = (site.clone(), origin.actuals);
+                            if !active.insert(key.clone()) {
+                                result.suspends(witness);
+                                continue;
+                            }
+                            if let Some(coercion) = self.checker.dyn_trait_coercions.get(&site) {
+                                for target in self.checker.cleanup_known_value_targets(
+                                    &coercion.concrete_type,
+                                    *value,
+                                    enclosing,
+                                    true,
+                                ) {
+                                    self.cleanup_dependency_inner(
+                                        target,
+                                        Application {
+                                            values: origin.actuals,
+                                            ..application
+                                        },
+                                        witness,
+                                        result,
+                                        active,
+                                    );
+                                }
+                            } else {
+                                result.suspends(witness);
+                            }
+                            active.remove(&key);
+                        }
+                        CallableCandidate::Closure(site) if !erased => {
+                            let mut instance =
+                                Self::instance(&EffectBody::Closure(site), enclosing, true, true);
+                            instance.values = origin.actuals;
+                            result.body(instance, witness);
+                        }
+                        _ => result.suspends(witness),
+                    }
+                }
+            }
+            CleanupTarget::Unknown(_) | CleanupTarget::Suspends => {
                 result.suspends(witness);
             }
         }
@@ -590,11 +859,16 @@ impl<'a> EffectSolver<'a> {
 
     fn callee_dependencies(
         &self,
+        key: &SpanKey,
         invocation: &Invocation,
-        actuals: &Actuals,
-        unknown: bool,
+        application: Application<'_>,
         result: &mut Dependencies,
     ) {
+        let Application {
+            types: actuals,
+            values,
+            unknown,
+        } = application;
         match invocation.callee.as_ref().map(|ty| {
             self.checker
                 .subst
@@ -613,15 +887,19 @@ impl<'a> EffectSolver<'a> {
                 capabilities,
                 ..
             }) => {
-                result.body(
-                    Self::instance(&identity, actuals, unknown, false),
-                    &invocation.name,
+                let mut instance = Self::instance(&identity, actuals, unknown, false);
+                instance.values = self.checker.callable_environment(
+                    &identity,
+                    Some(key),
+                    (actuals, values),
+                    None,
+                    &mut self.values.borrow_mut(),
                 );
+                result.body(instance, &invocation.name);
                 if capabilities.call == crate::CallableCallMode::Once {
-                    result.body(
-                        Self::instance(&identity, actuals, unknown, true),
-                        &invocation.name,
-                    );
+                    let mut instance = Self::instance(&identity, actuals, unknown, true);
+                    instance.values = values;
+                    result.body(instance, &invocation.name);
                 }
             }
             _ => result.suspends(&invocation.name),
@@ -632,10 +910,14 @@ impl<'a> EffectSolver<'a> {
         &self,
         key: &SpanKey,
         invocation: &Invocation,
-        actuals: &Actuals,
-        unknown: bool,
+        application: Application<'_>,
         result: &mut Dependencies,
     ) {
+        let Application {
+            types: actuals,
+            values,
+            unknown,
+        } = application;
         if let Some(suspends) = self.graph.submission_effects.get(key) {
             if *suspends {
                 result.suspends(&invocation.name);
@@ -647,23 +929,30 @@ impl<'a> EffectSolver<'a> {
                 result.suspends(&invocation.name);
             }
             Some(CallTarget::IndirectFunctionValue) => {
-                self.callee_dependencies(invocation, actuals, unknown, result);
+                self.callee_dependencies(key, invocation, application, result);
             }
             Some(
-                CallTarget::User(id)
-                | CallTarget::ImplMethod(id)
-                | CallTarget::StaticTraitMethod { method: id, .. },
+                CallTarget::User(_)
+                | CallTarget::ImplMethod(_)
+                | CallTarget::StaticTraitMethod { .. },
             ) => {
-                let applied = self.checker.call_cleanup_substitutions(
-                    *id,
-                    key,
-                    invocation.receiver.as_ref(),
-                    actuals,
+                let Some((id, applied)) = self
+                    .checker
+                    .instantiated_effect_target(key, invocation, actuals)
+                else {
+                    result.suspends(&invocation.name);
+                    return;
+                };
+                let body = EffectBody::Declaration(id);
+                let mut instance = Self::instance(&body, &applied, unknown, false);
+                instance.values = self.checker.callable_environment(
+                    &body,
+                    Some(key),
+                    (&applied, values),
+                    None,
+                    &mut self.values.borrow_mut(),
                 );
-                result.body(
-                    Self::instance(&EffectBody::Declaration(*id), &applied, unknown, false),
-                    &invocation.name,
-                );
+                result.body(instance, &invocation.name);
             }
             Some(CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. }) => {
                 if family.is_async_suspending().is_some() {
@@ -695,10 +984,8 @@ impl<'a> EffectSolver<'a> {
                 Some(
                     MethodCallRewrite::RecordFnFieldCall { .. }
                     | MethodCallRewrite::BuiltinVecHigherOrder { .. },
-                ) => self.callee_dependencies(invocation, actuals, unknown, result),
-                Some(
-                    MethodCallRewrite::RemoteActorAsk | MethodCallRewrite::GeneratorNext { .. },
-                ) => result.suspends(&invocation.name),
+                ) => self.callee_dependencies(key, invocation, application, result),
+                Some(MethodCallRewrite::GeneratorNext { .. }) => result.suspends(&invocation.name),
                 Some(_) => {}
                 None => {
                     if !matches!(

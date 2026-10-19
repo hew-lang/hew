@@ -1334,9 +1334,6 @@ mod tests {
             ring: std::sync::Arc::new(std::sync::Mutex::new(
                 hew_runtime::profiler::metrics::MetricsRing::new(),
             )),
-            cluster: std::ptr::null_mut(),
-            connmgr: std::ptr::null_mut(),
-            routing: std::ptr::null_mut(),
         });
 
         std::thread::Builder::new()

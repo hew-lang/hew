@@ -1135,7 +1135,7 @@ impl Checker {
             return;
         }
         match func_name {
-            "link" | "unlink" | "monitor" | "demonitor" | "link_remote" => {
+            "link" | "unlink" | "monitor" | "demonitor" => {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
             }
             "supervisor_child" | "supervisor_stop" => {
@@ -1164,12 +1164,8 @@ impl Checker {
             // check time so the call fails closed with a structured diagnostic
             // instead of compiling to a wasm module that imports an undefined
             // `env::hew_node_api_*` symbol and traps at instantiation.
-            name if crate::runtime_call::RuntimeCallFamily::from_c_symbol(name).is_some_and(
-                |family| {
-                    family.runtime_capability()
-                        == Some(crate::runtime_call::RuntimeCapability::Node)
-                },
-            ) =>
+            name if matches!(self.call_target_for_signature(name), CallTarget::Runtime(family)
+                if family.runtime_capability() == Some(crate::runtime_call::RuntimeCapability::Node)) =>
             {
                 self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
             }
@@ -1640,9 +1636,6 @@ impl Checker {
             "link" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorLink);
             }
-            "link_remote" => {
-                return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::LinkRemote);
-            }
             "monitor" => {
                 return CallTarget::Runtime(crate::runtime_call::RuntimeCallFamily::ActorMonitor);
             }
@@ -1859,12 +1852,45 @@ impl Checker {
                     // (`(Vec.new)(args)` → `"Vec::new"`) because type/module
                     // names are not registered as value bindings.
                     if self.env.lookup_ref(obj_name).is_some() {
+                        let receiver_ty = self
+                            .env
+                            .lookup_ref(obj_name)
+                            .map(|binding| self.subst.resolve(&binding.ty));
+                        let has_method = receiver_ty
+                            .as_ref()
+                            .and_then(|ty| match ty {
+                                Ty::Named { head, args } => self.lookup_named_method_sig(
+                                    head.registry_key(),
+                                    args,
+                                    field.0.name.as_str(),
+                                ),
+                                _ => None,
+                            })
+                            .is_some();
+                        if type_args.is_some() && has_method {
+                            return self.check_method_call_with_type_args(
+                                object,
+                                field.0.name.as_str(),
+                                type_args,
+                                args,
+                                span,
+                            );
+                        }
                         let field_ty = self.synthesize(&func.0, &func.1);
                         let resolved = self.subst.resolve(&field_ty);
                         return self.check_call_with_type(&resolved, func, type_args, args, span);
                     }
                     format!("{obj_name}::{}", field.0)
                 } else {
+                    if type_args.is_some() {
+                        return self.check_method_call_with_type_args(
+                            object,
+                            field.0.name.as_str(),
+                            type_args,
+                            args,
+                            span,
+                        );
+                    }
                     let func_ty = self.synthesize(&func.0, &func.1);
                     return self.check_call_with_type(&func_ty, func, type_args, args, span);
                 }
@@ -2152,11 +2178,7 @@ impl Checker {
                     );
                     return Ty::Error;
                 }
-                let valid = if func_name == "restarted" {
-                    resolved.as_child_ref().is_some()
-                } else {
-                    resolved.addresses_local_actor()
-                };
+                let valid = resolved.addresses_local_actor();
                 if valid {
                     let operation = match func_name.as_str() {
                         "stop" => crate::actor_delivery::ActorDeliveryCall::Stop,
@@ -2175,11 +2197,7 @@ impl Checker {
                 self.report_error(
                     TypeErrorKind::InvalidOperation,
                     span,
-                    if func_name == "restarted" {
-                        "`restarted` expects a supervised role".to_string()
-                    } else {
-                        format!("`{func_name}` expects an actor handle")
-                    },
+                    format!("`{func_name}` expects an actor value, found `{resolved}`"),
                 );
                 return Ty::Error;
             }
@@ -2267,16 +2285,14 @@ impl Checker {
                                     .into_iter()
                                     .zip(sup_args.iter().cloned())
                                     .collect();
-                                return Ty::child_ref(
-                                    child_type.substitute_type_params_parallel(&substitution),
-                                );
+                                return child_type.substitute_type_params_parallel(&substitution);
                             }
                         }
                         // Non-constant index: fresh type var
-                        return Ty::child_ref(Ty::Var(TypeVar::fresh()));
+                        return Ty::Var(TypeVar::fresh());
                     }
                 }
-                return Ty::child_ref(Ty::Var(TypeVar::fresh()));
+                return Ty::Var(TypeVar::fresh());
             }
             _ => {}
         }
@@ -2483,21 +2499,6 @@ impl Checker {
                             },
                         );
                     }
-                }
-            }
-
-            if resolved_fn_name == "len" {
-                if let Some(Ty::Named {
-                    args,
-                    head: crate::TypeHead::Builtin(crate::BuiltinType::HashSet),
-                    ..
-                }) = applied_sig.params.first().map(|ty| self.subst.resolve(ty))
-                {
-                    let elem_ty = args.first().cloned().unwrap_or(Ty::Var(TypeVar::fresh()));
-                    if !self.validate_hashset_element_type(&elem_ty, span) {
-                        return Ty::Error;
-                    }
-                    self.record_hashset_lowering_fact(span, &elem_ty);
                 }
             }
 
@@ -2738,25 +2739,8 @@ impl Checker {
             return target;
         };
         let resolved = self.subst.resolve(ty).materialize_literal_defaults();
-        if resolved.as_remote_pid().is_some() {
-            match family {
-                Some(F::ActorMonitor) => {
-                    return CallTarget::Runtime(F::NodeMonitor);
-                }
-                Some(F::ActorLink | F::ActorUnlink) => {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!(
-                            "`{callee}` links a LOCAL actor; for a cross-node link use \
-                             `link_remote(pid, policy)`, which carries a `PartitionPolicy` \
-                             governing what happens to the local actor when its remote peer dies"
-                        ),
-                    );
-                    return target;
-                }
-                _ => {}
-            }
+        if matches!(family, Some(F::ActorLink | F::ActorMonitor)) {
+            self.record_submission_suspension(span, true);
         }
         self.require_actor_handle_argument(&resolved, callee, span);
         target
@@ -3055,7 +3039,7 @@ impl Checker {
         }
         self.actor_method_dispatch
             .insert(key, ActorMethodKind::Message { method, policy });
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         crate::actor_delivery::result_type(crate::actor_delivery::message_type(
             target.clone(),
             Ty::Tuple(payload),
@@ -3082,6 +3066,10 @@ impl Checker {
         );
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "classify the selected operation and its typed preparation inputs together"
+    )]
     pub(super) fn synthesize_select_source(
         &mut self,
         expr: &Expr,
@@ -3118,9 +3106,6 @@ impl Checker {
         if matches!(
             self.actor_method_dispatch.get(&key),
             Some(ActorMethodKind::Ask { .. })
-        ) || matches!(
-            self.method_call_rewrites.get(&key),
-            Some(MethodCallRewrite::RemoteActorAsk)
         ) {
             return (ty, Some(CheckedSelectSource::ActorAsk { call: key }));
         }
@@ -3139,6 +3124,132 @@ impl Checker {
             ))
         ) {
             return (ty, Some(CheckedSelectSource::StreamReceive { call: key }));
+        }
+        if matches!(
+            self.selected_callable_target(operand_span),
+            Some(
+                CallTarget::User(_)
+                    | CallTarget::ImplMethod(_)
+                    | CallTarget::StaticTraitMethod { .. }
+                    | CallTarget::IndirectFunctionValue
+                    | CallTarget::DynamicVtable { .. }
+            )
+        ) {
+            let declaration = self.selected_callable_declaration_at(&key);
+            let signature = self
+                .dyn_trait_method_calls
+                .get(&key)
+                .map(|call| call.signature.clone())
+                .or_else(|| declaration.and_then(|id| self.fn_sigs.get(&id)).cloned());
+            let argument_slots = self.call_argument_slots.get(&key).cloned();
+            match operand {
+                Expr::MethodCall {
+                    receiver,
+                    method,
+                    args,
+                } => {
+                    if matches!(
+                        self.method_call_rewrites.get(&key),
+                        Some(MethodCallRewrite::RecordFnFieldCall { .. })
+                    ) {
+                        if let Some(ty) =
+                            self.record_fn_field_type(receiver, method.0.name.as_str())
+                        {
+                            let mode = ty
+                                .callable_signature()
+                                .map_or(crate::CallableCallMode::Once, |(caps, _, _)| caps.call);
+                            let shared = mode == crate::CallableCallMode::Read;
+                            if mode != crate::CallableCallMode::Once {
+                                self.record_select_input_loan(
+                                    &Expr::FieldAccess {
+                                        object: receiver.clone(),
+                                        field: method.clone(),
+                                    },
+                                    operand_span,
+                                    &ty,
+                                    !shared,
+                                );
+                            }
+                            let candidates = self.callable_field_candidates(receiver, method);
+                            self.check_select_call_transfer_typed(
+                                operand_span,
+                                ty,
+                                candidates,
+                                shared,
+                            );
+                        }
+                    } else if !matches!(
+                        self.method_call_receiver_kinds.get(&key),
+                        Some(
+                            super::MethodCallReceiverKind::ModuleBinding { .. }
+                                | super::MethodCallReceiverKind::EnumConstructorPath { .. }
+                        )
+                    ) {
+                        let shared = signature.as_ref().is_none_or(|sig| {
+                            !sig.consumes_receiver && !sig.requires_mutable_receiver
+                        });
+                        let loan = signature
+                            .as_ref()
+                            .filter(|sig| !sig.consumes_receiver)
+                            .map(|sig| sig.requires_mutable_receiver);
+                        self.check_select_call_transfer(&receiver.0, &receiver.1, shared, loan);
+                    }
+                    let offset = usize::from(
+                        !self.dyn_trait_method_calls.contains_key(&key)
+                            && signature.as_ref().is_some_and(|sig| !sig.associated),
+                    );
+                    for (index, arg) in args.iter().enumerate() {
+                        let slot = argument_slots
+                            .as_ref()
+                            .and_then(|slots| slots.get(index))
+                            .copied()
+                            .unwrap_or(index);
+                        let shared = signature
+                            .as_ref()
+                            .and_then(|sig| sig.param_ownership.get(slot + offset))
+                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                        let (expr, span) = arg.expr();
+                        self.check_select_call_transfer(
+                            expr,
+                            span,
+                            shared,
+                            shared.then_some(false),
+                        );
+                    }
+                }
+                Expr::Call { function, args, .. } => {
+                    if declaration.is_none() {
+                        let mode = self
+                            .callee_value_type(function)
+                            .and_then(|ty| ty.callable_signature().map(|(caps, _, _)| caps.call))
+                            .unwrap_or(crate::CallableCallMode::Once);
+                        let shared = mode == crate::CallableCallMode::Read;
+                        let loan = (mode != crate::CallableCallMode::Once).then_some(!shared);
+                        self.check_select_call_transfer(&function.0, &function.1, shared, loan);
+                    }
+                    for (index, arg) in args.iter().enumerate() {
+                        let slot = argument_slots
+                            .as_ref()
+                            .and_then(|slots| slots.get(index))
+                            .copied()
+                            .unwrap_or(index);
+                        let shared = signature
+                            .as_ref()
+                            .and_then(|sig| sig.param_ownership.get(slot))
+                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                        let (expr, span) = arg.expr();
+                        self.check_select_call_transfer(
+                            expr,
+                            span,
+                            shared,
+                            shared.then_some(false),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            self.check_select_call_transfer(operand, operand_span, false, None);
+            return (ty, Some(CheckedSelectSource::Call { call: key }));
         }
         self.report_error(
             TypeErrorKind::InvalidOperation,

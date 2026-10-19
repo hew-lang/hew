@@ -32,7 +32,7 @@ fn read_pid_with_retry(pid_path: string) -> string {
     while attempts < 50 {
         if fs.exists(pid_path) {
             match fs.read(pid_path) {
-                .Ok(contents) => return string.trim(contents),
+                .Ok(contents) => return (contents).trim(),
                 .Err(_) => {}
             }
         }

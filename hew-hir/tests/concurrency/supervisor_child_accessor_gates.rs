@@ -37,7 +37,7 @@ supervisor App {
     child worker: Worker;
 }
 
-fn get_worker(app: App) -> ChildRef<Worker> {
+fn get_worker(app: App) -> Worker {
     app.worker
 }
 ",
@@ -89,7 +89,7 @@ supervisor RootSupervisor {
     child sub: SubSupervisor;
 }
 
-fn get_nested_worker(root: RootSupervisor) -> ChildRef<Worker> {
+fn get_nested_worker(root: RootSupervisor) -> Worker {
     root.sub.worker
 }
 ",

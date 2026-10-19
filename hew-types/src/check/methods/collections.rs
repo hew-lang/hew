@@ -402,6 +402,27 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if method == "get" && args.len() == 1 {
+            let bounds = match &args[0].expr().0 {
+                Expr::Range { start, end, .. } => Some((start.as_deref(), end.as_deref())),
+                Expr::Binary {
+                    left,
+                    op: hew_parser::ast::BinaryOp::Range | hew_parser::ast::BinaryOp::RangeInclusive,
+                    right,
+                } => Some((Some(left.as_ref()), Some(right.as_ref()))),
+                _ => None,
+            };
+            if let Some((start, end)) = bounds {
+                for bound in [start, end].into_iter().flatten() {
+                    self.check_against(&bound.0, &bound.1, &Ty::I64);
+                }
+                self.record_runtime_method_family_rewrite(
+                    span,
+                    crate::RuntimeCallFamily::StringGetRange,
+                );
+                return Ty::option(Ty::String);
+            }
+        }
         if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
             "string",
             &[],
@@ -828,83 +849,6 @@ impl Checker {
             }
             _ => false,
         }
-    }
-
-    /// Build the `Ty → VecElementToken` verdict table that MIR consults when
-    /// re-resolving a `Vec<T>` element-typed method under a type parameter
-    /// (#1929 Stage 1). Every concrete type observed as a generic call /
-    /// record-init type-argument is classified through
-    /// [`Self::classify_vec_generic_element`]; types absent from the result
-    /// (non-`Copy`/owned layout, owned heap-handles, closures, nested
-    /// collections, unresolved nominals) fail closed downstream.
-    pub(in crate::check) fn build_vec_generic_element_abi(
-        &self,
-        call_type_args: &HashMap<SpanKey, Vec<Ty>>,
-        record_init_type_args: &HashMap<SpanKey, Vec<Ty>>,
-        types: crate::check::TypeDefView<'_>,
-    ) -> HashMap<Ty, crate::vec_authority::VecElementToken> {
-        let mut out = HashMap::new();
-        for args in call_type_args
-            .values()
-            .chain(record_init_type_args.values())
-        {
-            for ty in args {
-                if out.contains_key(ty) {
-                    continue;
-                }
-                if let Some(token) = self.classify_vec_generic_element(ty, types) {
-                    out.insert(ty.clone(), token);
-                }
-            }
-        }
-        out
-    }
-
-    /// Classify a concrete element type's `Vec<T>` runtime ABI for the
-    /// monomorphisation re-resolution path, using
-    /// [`crate::vec_authority::classify_element`].
-    ///
-    /// Stage 1 admits exactly what already round-trips on the concrete path
-    /// without new runtime/codegen machinery: scalar (`bool`/`i32`/`i64`/`f64`)
-    /// and `string` elements unconditionally, and pointer / layout-descriptor
-    /// elements **only when the element is `Copy`**. The `Copy` gate is what
-    /// makes the pointer and layout arms safe: it admits identity handles
-    /// (actor handles) and bit-copy value records, while deferring
-    /// every shape with an ownership contract — owned heap-handles, non-`Copy`
-    /// records, closures (each owns a captured environment), and nested
-    /// collections (each owns a backing store). Those would alias an owner
-    /// across a shallow `_ptr`/`_layout` op and double-free; they stay
-    /// fail-closed until the owned generic path lands.
-    pub(super) fn classify_vec_generic_element(
-        &self,
-        ty: &Ty,
-        types: crate::check::TypeDefView<'_>,
-    ) -> Option<crate::vec_authority::VecElementToken> {
-        use crate::vec_authority::VecElementToken;
-        let token = crate::vec_authority::classify_element(ty, types)?;
-        let admissible = match token {
-            // Bit-copy scalars and the CoW `string` representation carry no
-            // owner-aliasing hazard across the shared-buffer element ops. Every
-            // integer width and both float widths route to a dedicated
-            // runtime kernel, so the whole scalar set is unconditionally
-            // admissible.
-            VecElementToken::Bool
-            | VecElementToken::I8
-            | VecElementToken::U8
-            | VecElementToken::I16
-            | VecElementToken::U16
-            | VecElementToken::I32
-            | VecElementToken::I64
-            | VecElementToken::F32
-            | VecElementToken::F64
-            | VecElementToken::Str => true,
-            // Pointer-identity and layout-descriptor elements are admitted
-            // only when `Copy` — see the doc comment for why.
-            VecElementToken::Ptr | VecElementToken::Layout => {
-                self.registry.implements_marker(ty, MarkerTrait::Copy)
-            }
-        };
-        admissible.then_some(token)
     }
 
     /// Fail-closed gate for Vec pipeline methods whose elements cannot be

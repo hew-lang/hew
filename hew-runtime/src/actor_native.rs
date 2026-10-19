@@ -336,6 +336,7 @@ pub(crate) fn submission_status(outcome: crate::mailbox::SendOutcome) -> HewSubm
 /// [`SUBMIT_DROP_NEWEST`] policy discards the message instead.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// `payload` is an unpublished malloc wrapper containing shallowly transferred
 /// typed fields. Acceptance or discard consumes those fields; rejection frees
 /// only the wrapper bytes, leaving the original typed message with the caller.
@@ -349,6 +350,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
     policy: i32,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -362,7 +364,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
             false,
             payload_release,
             discarded_release_out,
-            crate::actor_caller::local_sender(),
+            *caller,
         )
     }
 }
@@ -370,6 +372,7 @@ pub unsafe extern "C" fn hew_actor_submit_native(
 /// Submit an attachment close event after queued data without capacity refusal.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// The wrapper is uniquely owned, with the same contract as native submission.
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_submit_native_terminal(
@@ -380,6 +383,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
     drop_payload: crate::mailbox::HewMsgEnvelopeDropFn,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     discarded_release_out: *mut *mut crate::release_walker::HewReleaseCursor,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> i32 {
     // SAFETY: forwards the unpublished wrapper and typed ownership contract.
     unsafe {
@@ -393,7 +397,7 @@ pub unsafe extern "C" fn hew_actor_submit_native_terminal(
             true,
             payload_release,
             discarded_release_out,
-            crate::actor_caller::local_sender(),
+            *caller,
         )
     }
 }
@@ -462,7 +466,7 @@ pub(crate) unsafe fn submit_native(
     // the typed fields; these two allocations contain no other owning resources.
     unsafe {
         crate::mem::buf_free(payload); // ALLOCATOR-PAIRING: GlobalAlloc
-        crate::mem::buf_free(envelope.cast()); // ALLOCATOR-PAIRING: GlobalAlloc
+        crate::cow_envelope::free_allocation(envelope); // ALLOCATOR-PAIRING: GlobalAlloc
     }
     status
 }
@@ -935,7 +939,7 @@ mod tests {
         let context = unsafe { &mut *context.cast::<super::HewNativeCrashContext>() };
         // SAFETY: the fixture lends this exact scalar record until hook drain.
         let state = unsafe { &mut *context.state.cast::<ExternalTrapHooks>() };
-        assert_eq!(context.code, 91);
+        assert_eq!(context.kind, crate::internal::types::CrashKind::Crashed);
         assert_eq!(state.calls, 0);
         assert_eq!(state.drops, 0);
         // SAFETY: the context retains a managed diagnostic string.
@@ -978,7 +982,6 @@ mod tests {
         actor.state_drop_fn = Some(external_trap_state_drop);
         actor.state_clone_fn = Some(external_trap_state_clone);
         actor.state_size = std::mem::size_of::<ExternalTrapHooks>();
-        actor.dispatch_ownership = crate::actor::HewDispatchOwnership::UniqueEnvelope;
         let completion = std::sync::Arc::new(super::NativeActorCompletion::with_crash(Some(
             external_trap_hook,
         )));

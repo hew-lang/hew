@@ -29,7 +29,7 @@ supervisor Root<T>(seed: T) {
     child outer: Outer<T> { seed: seed };
 }
 
-fn read_leaf(inner: ChildRef<Inner<string>>) -> string {
+fn read_leaf(inner: Inner<string>) -> string {
     inner.leaf.get().expect("retained inner role")
 }
 

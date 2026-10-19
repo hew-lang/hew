@@ -21,6 +21,8 @@ use strum::IntoEnumIterator;
 pub enum RuntimeCReturn {
     /// The C return is the result storage's representation, or void.
     Storage,
+    /// C returns void after mutating argument zero; that same handle is the result owner.
+    ReceiverInPlace,
     /// A 32-bit status: nonzero is true.
     TruthI32,
     /// A 1-bit truth.
@@ -129,6 +131,7 @@ pub enum RuntimeCallAbiShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
     NativeIo(AsyncIoOp),
+    Service(super::ServiceOp),
     /// `sink.send(x)` over any describable `Sink<T>` element: the
     /// layout-witness `hew_stream_send_layout` on the backpressure-aware
     /// suspend ramp.
@@ -404,6 +407,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
                 }
             }
             F::AsyncIo(_) => out.extend(AsyncIoOp::iter().map(F::AsyncIo)),
+            F::Service(_) => out.extend(super::ServiceOp::iter().map(F::Service)),
             F::Encoding { .. } => {
                 for format in EncodingFormat::iter() {
                     out.extend(EncodingOp::iter().map(|op| F::Encoding { format, op }));

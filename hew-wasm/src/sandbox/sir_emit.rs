@@ -104,6 +104,11 @@ pub struct VariantShape {
 fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
     use RuntimeVariantRole as Role;
     match role {
+        Role::CrashKindFault => "CrashKindFault",
+        Role::CrashKindHeapExceeded => "CrashKindHeapExceeded",
+        Role::CrashKindPartitionDetected => "CrashKindPartitionDetected",
+        Role::CrashKindHandlerFailed => "CrashKindHandlerFailed",
+        Role::CrashKindTimerOverdue => "CrashKindTimerOverdue",
         Role::OptionSome => "OptionSome",
         Role::OptionNone => "OptionNone",
         Role::ResultOk => "ResultOk",
@@ -132,6 +137,9 @@ fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
         Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
         Role::SendErrorBackpressure => "SendErrorBackpressure",
         Role::SendErrorDead => "SendErrorDead",
+        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
+        Role::SendErrorInvalidMessage => "SendErrorInvalidMessage",
+        Role::SendErrorTimedOut => "SendErrorTimedOut",
         Role::SendErrorWriteTimedOut => "SendErrorWriteTimedOut",
         Role::DeliveryAccepted => "DeliveryAccepted",
         Role::DeliveryDiscarded => "DeliveryDiscarded",
@@ -163,6 +171,7 @@ pub struct ClosureEntry {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Actor {
     pub id: u32,
+    pub name: String,
     pub state_fields: Vec<ActorField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub init: Option<u32>,
@@ -173,6 +182,8 @@ pub struct Actor {
     pub crash: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_info: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crash_kind: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub crash_action: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -240,8 +251,8 @@ pub struct SupervisorChild {
     pub stop_ns: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_config: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pool_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_pool: bool,
     pub spawn: u32,
 }
 
@@ -604,9 +615,13 @@ impl<'m> Walker<'m> {
         let success = args
             .first()
             .and_then(|ty| self.module.variant_shape_for_type(ty));
-        let failure = args
+        let error = args
             .get(1)
-            .and_then(|ty| self.module.aggregate_shape_for_type(ty));
+            .and_then(|ty| self.module.variant_shape_for_type(ty));
+        let failure = error
+            .and_then(|shape| shape.variants.first())
+            .and_then(|variant| variant.fields.first())
+            .and_then(|field| self.module.aggregate_shape_for_type(&field.ty));
         serde_json::json!({
             "success": success.map(|shape| shape.id.0),
             "failure": failure.map(|shape| shape.id.0),
@@ -862,8 +877,12 @@ impl<'m> Walker<'m> {
             .actors
             .iter()
             .map(|actor| {
+                let hew_types::ResolvedTy::Named { head, .. } = &actor.handle_ty else {
+                    return Err(EmitError::new("actor diagnostic lacks its declared type"));
+                };
                 Ok(Actor {
                     id: actor.id.0,
+                    name: head.registry_key().to_owned(),
                     state_fields: actor
                         .fields
                         .iter()
@@ -885,6 +904,14 @@ impl<'m> Walker<'m> {
                         .and_then(|id| self.module.callable(id))
                         .and_then(|callable| callable.signature.params.get(1))
                         .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .map(|shape| shape.id.0),
+                    crash_kind: actor
+                        .crash
+                        .and_then(|id| self.module.callable(id))
+                        .and_then(|callable| callable.signature.params.get(1))
+                        .and_then(|parameter| self.module.aggregate_shape_for_type(&parameter.ty))
+                        .and_then(|shape| shape.fields.first())
+                        .and_then(|field| self.module.variant_shape_for_type(&field.ty))
                         .map(|shape| shape.id.0),
                     crash_action: actor
                         .crash
@@ -967,7 +994,7 @@ impl<'m> Walker<'m> {
                                     hew_sir::SemStopDeadline::Config(index) => Some(index),
                                     _ => None,
                                 },
-                                pool_count: child.pool_count,
+                                is_pool: child.pool_count.is_some(),
                                 spawn: self.function_id(child.spawn)?,
                             })
                         })
@@ -1515,6 +1542,22 @@ impl<'m> Walker<'m> {
                 "scope": scope.0,
                 "callable": operand(callable),
             }),
+            SemOpKind::TaskInvoke {
+                scope,
+                callee,
+                args,
+                ..
+            } => serde_json::json!({
+                "op": "task.invoke",
+                "scope": scope.0,
+                "callee": match callee {
+                    hew_sir::InvocationCallee::Direct(target) => serde_json::json!({ "direct": target.0 }),
+                    hew_sir::InvocationCallee::Mutable { target, receiver, update } => serde_json::json!({ "mutable": target.0, "receiver": boundary(receiver), "staged": *update == hew_types::ReceiverUpdate::Staged }),
+                    hew_sir::InvocationCallee::Dyn { receiver, slot, method } => serde_json::json!({ "dyn": slot, "method": self.module.defs.name(*method), "receiver": boundary(receiver) }),
+                    hew_sir::InvocationCallee::Indirect { receiver, specialization } => serde_json::json!({ "receiver": boundary(receiver), "specialization": specialization.map(|id| id.0) }),
+                },
+                "args": args.iter().map(boundary).collect::<Vec<_>>(),
+            }),
             SemOpKind::ActorIngressAdapter(adapter) => serde_json::json!({
                 "op": "actor.ingress_adapter",
                 "actor": adapter.actor.0,
@@ -1702,6 +1745,27 @@ impl<'m> Walker<'m> {
                             .to_string(),
                     );
                 }
+                if let Some(hew_types::runtime_call::RuntimeSemanticContract {
+                    result: hew_types::runtime_call::RuntimeResultEffect::FreshOwnedVariant(kind),
+                    ..
+                }) = family.semantic_contract()
+                {
+                    let CallResult::Value(value) = result else {
+                        return Err(EmitError::new("runtime variant result has no value"));
+                    };
+                    let shapes = hew_sir::runtime_variant_shape_refs(
+                        &self.module.defs,
+                        kind,
+                        &value.ty,
+                        &self.module.aggregate_shapes,
+                        &self.module.variant_shapes,
+                    )
+                    .map_err(EmitError::new)?;
+                    call["variant_result_shapes"] = serde_json::json!({
+                        "error": shapes.error.0,
+                        "error_len": shapes.error_len.0,
+                    });
+                }
                 // A failure that leaves the inputs with the caller, whose
                 // unwind edge stores the moved receiver back.
                 if family
@@ -1854,18 +1918,33 @@ impl<'m> Walker<'m> {
                 normal,
                 unwind,
                 ..
-            } => serde_json::json!({
-                "op": "actor.call",
-                "operation": actor_operation(operation),
-                "submission_shapes": self.submission_shapes(result),
-                "error_shape": self.error_shape(result),
+            } => {
+                let mut operation_json = actor_operation(operation);
+                if matches!(operation, hew_sir::ActorOperation::TimerSchedule { .. }) {
+                    let CallResult::Value(result) = result else {
+                        return Err(EmitError::new("timer has no resource result"));
+                    };
+                    let resource = self
+                        .module
+                        .resources
+                        .keys()
+                        .position(|ty| *ty == result.ty)
+                        .ok_or_else(|| EmitError::new("timer has no checked release recipe"))?;
+                    operation_json["resource"] = serde_json::json!(resource);
+                }
+                serde_json::json!({
+                    "op": "actor.call",
+                    "operation": operation_json,
+                    "submission_shapes": self.submission_shapes(result),
+                    "error_shape": self.error_shape(result),
                     "request_shapes": self.request_shapes(result),
-                "args": boundaries(args),
-                "result": call_result(result),
-                "result_shape": self.result_shape(result),
-                "normal": encode_edge(normal),
-                "unwind": encode_unwind(unwind),
-            }),
+                    "args": boundaries(args),
+                    "result": call_result(result),
+                    "result_shape": self.result_shape(result),
+                    "normal": encode_edge(normal),
+                    "unwind": encode_unwind(unwind),
+                })
+            }
             SemTerminator::WireCodec {
                 codec,
                 plan,
@@ -2114,11 +2193,10 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
                 _ => unreachable!(),
             };
             match target {
-                hew_sir::LifecycleTarget::Actor(id) | hew_sir::LifecycleTarget::ActorRole(id) => {
+                hew_sir::LifecycleTarget::Actor(id) => {
                     serde_json::json!({ "op": op, "actor": id.0 })
                 }
-                hew_sir::LifecycleTarget::Supervisor(id)
-                | hew_sir::LifecycleTarget::SupervisorRole(id) => {
+                hew_sir::LifecycleTarget::Supervisor(id) => {
                     serde_json::json!({ "op": op, "supervisor": id.0 })
                 }
             }
@@ -2132,49 +2210,36 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
             "actor": actor.0,
             "policy": send_policy_name(*policy),
         }),
+        Op::TimerSchedule {
+            actor,
+            message,
+            policy,
+        } => serde_json::json!({
+            "op": "timer_schedule", "actor": actor.0, "message": message,
+            "policy": send_policy_name(*policy),
+        }),
         Op::StreamStart { actor, message, .. } => serde_json::json!({
             "op": "stream_start",
             "actor": actor.0,
             "message": message,
         }),
+        Op::Identity { .. } => serde_json::json!({ "op": "identity" }),
         Op::LocalObservation { kind, .. } => serde_json::json!({
             "op": "local_observation",
             "kind": observation_name(*kind),
         }),
-        Op::RemoteObservation { kind, .. } => serde_json::json!({
-            "op": "remote_observation",
-            "kind": match kind {
-                hew_sir::RemoteObservationKind::Link => "link",
-                hew_sir::RemoteObservationKind::Monitor => "monitor",
-            },
-        }),
-        Op::RemoteSend { actor, message, .. } => serde_json::json!({
-            "op": "remote_send",
-            "actor": actor.0,
-            "message": message,
-        }),
         Op::SupervisorSpawn(supervisor) => {
             serde_json::json!({ "op": "supervisor_spawn", "supervisor": supervisor.0 })
         }
-        Op::SupervisorChild {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
+        Op::SupervisorChild { supervisor, child } => serde_json::json!({
             "op": "supervisor_child",
             "supervisor": supervisor.0,
             "child": child,
-            "owner_is_role": owner_is_role,
         }),
-        Op::SupervisorPoolView {
-            supervisor,
-            child,
-            owner_is_role,
-        } => serde_json::json!({
+        Op::SupervisorPoolView { supervisor, child } => serde_json::json!({
             "op": "supervisor_pool_view",
             "supervisor": supervisor.0,
             "child": child,
-            "owner_is_role": owner_is_role,
         }),
     }
 }
@@ -2183,6 +2248,7 @@ fn actor_operation(operation: &hew_sir::ActorOperation) -> serde_json::Value {
 const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
     match mode {
         hew_sir::TaskScopeJoinMode::Wait => "wait",
+        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
         hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
     }
 }
@@ -2270,6 +2336,10 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
     match kind {
         SuspendKind::Sleep => ("Sleep", serde_json::Value::Null),
         SuspendKind::SleepUntil => ("SleepUntil", serde_json::Value::Null),
+        SuspendKind::ServiceAcquire { actor, export } => (
+            "ServiceAcquire",
+            serde_json::json!({"actor": actor.0, "export": export}),
+        ),
         SuspendKind::NativeIo { operation } => (
             "NativeIo",
             serde_json::json!({ "operation": format!("{operation:?}") }),
@@ -2299,10 +2369,6 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
         ),
         SuspendKind::ActorSend => ("ActorSend", serde_json::Value::Null),
         SuspendKind::RestartWait => ("RestartWait", serde_json::Value::Null),
-        SuspendKind::RemoteAsk { actor, message } => (
-            "RemoteAsk",
-            serde_json::json!({ "actor": actor.0, "message": message }),
-        ),
         SuspendKind::Read => ("Read", serde_json::Value::Null),
         SuspendKind::Accept => ("Accept", serde_json::Value::Null),
         SuspendKind::StreamSend { park } => ("StreamSend", serde_json::json!({ "park": park })),

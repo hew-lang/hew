@@ -1,10 +1,10 @@
 //! Exact ownership contract for the `std::path::glob` failure path.
 //!
 //! `hew_glob` always returns one heap-owned handle, including an expansion
-//! failure.  Its failure detail is borrowed from that handle, so each wrapper
-//! must read the detail before releasing the handle.  This is intentionally an
+//! failure. Its failure detail is copied from that handle, so the wrapper
+//! must read the detail before releasing the handle. This is intentionally an
 //! emitted-IR counterfactual rather than a permission-shaped glob failure:
-//! before the repair each function contained zero `hew_glob_free` calls, which
+//! before the repair the wrapper contained zero `hew_glob_free` calls, which
 //! makes the regression deterministic on every host (including privileged CI).
 
 mod support;
@@ -104,10 +104,5 @@ fn path_glob_failure_handles_are_released_once_after_detail_is_copied() {
 
     let ir = std::fs::read_to_string(dir.path().join("glob_ownership.ll"))
         .expect("read emitted LLVM IR");
-    for symbol in [
-        "define internal ptr @\"__hew_fn_std$path$glob$resume\"(",
-        "define internal fastcc void @\"__hew_fn_std$path$glob$resume.resume\"(",
-    ] {
-        assert_one_failure_cleanup(&ir, symbol);
-    }
+    assert_one_failure_cleanup(&ir, "define i32 @\"__hew_fn_std$path$glob\"(");
 }

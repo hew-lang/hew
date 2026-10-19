@@ -5,7 +5,7 @@ use super::*;
 impl LowerCtx {
     /// Preserve the checked call result separately from the raw actor reply ABI.
     /// The addressed description a submission consumes, read out of the
-    /// checked `Result<Delivery, SendFailure<M>>` the call site carries.
+    /// checked `Result<Delivery, ActorError<Never, M>>` the call site carries.
     pub(super) fn submitted_message_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
         let ResolvedTy::Named {
             head: hew_types::TypeHead::Builtin(BuiltinType::Result),
@@ -18,10 +18,10 @@ impl LowerCtx {
         let [_, ResolvedTy::Named { head, args, .. }] = args.as_slice() else {
             return None;
         };
-        if *head != hew_types::KnownDecl::SendFailure.head() {
+        if *head != hew_types::KnownDecl::ActorError.head() {
             return None;
         }
-        let [message] = args.as_slice() else {
+        let [_, message] = args.as_slice() else {
             return None;
         };
         Some(message.clone())
@@ -71,7 +71,7 @@ impl LowerCtx {
             || result_ty.clone(),
             |module| self.qualify_colliding_module_record_ty(&result_ty, module),
         );
-        self.try_register_enum_instantiation_ty(&result_ty, span);
+
         Some(result_ty)
     }
 
@@ -94,7 +94,7 @@ impl LowerCtx {
         source_span: &std::ops::Range<usize>,
     ) -> Option<ResolvedTy> {
         match kind {
-            HirSelectArmKind::ActorAsk { call } => Some(call.ty.clone()),
+            HirSelectArmKind::Call { call } => Some(call.ty.clone()),
             // A stream arm wins with the receive result: `None` is EOF.
             HirSelectArmKind::StreamNext { stream } => match &stream.ty {
                 ResolvedTy::Named {
@@ -302,8 +302,10 @@ impl LowerCtx {
                     task: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };
             }
-            Some(CheckedSelectSource::ActorAsk { call }) if call == &key => {
-                return HirSelectArmKind::ActorAsk {
+            Some(CheckedSelectSource::ActorAsk { call } | CheckedSelectSource::Call { call })
+                if call == &key =>
+            {
+                return HirSelectArmKind::Call {
                     call: Box::new(self.lower_expr(operand, IntentKind::Read)),
                 };
             }

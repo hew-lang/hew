@@ -14,7 +14,7 @@ actor Buffer {
         }
     }
     receive fn scalars(text: string) -> i64 {
-        text.chars().len()
+        text.len()
     }
     receive fn size() -> i64 {
         data.len()

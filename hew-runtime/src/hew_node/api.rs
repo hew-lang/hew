@@ -8,7 +8,7 @@ use super::{
     TransportSelection,
 };
 use crate::connection;
-use crate::node_identity::{HewNodeId, HewRemotePid};
+use crate::node_identity::{HewLocation, HewNodeId};
 use crate::peer_binding::TransportSelection as PeerTransport;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
@@ -899,7 +899,7 @@ pub unsafe extern "C" fn hew_node_api_unregister(name: *const c_char) -> c_int {
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_lookup_location(
     name: *const c_char,
-    out: *mut HewRemotePid,
+    out: *mut HewLocation,
 ) -> c_int {
     if name.is_null() || out.is_null() {
         return -1;
@@ -926,7 +926,7 @@ pub unsafe extern "C" fn hew_node_api_lookup_location(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_lookup_location_string(
     name: *const HewString,
-    out: *mut HewRemotePid,
+    out: *mut HewLocation,
 ) -> c_int {
     // SAFETY: caller supplies a live managed string for this synchronous copy.
     let Ok(name) = (unsafe { string_to_cstring(name) }) else {
@@ -954,7 +954,7 @@ pub unsafe extern "C" fn hew_node_api_lookup_location_string(
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_int {
     // SAFETY: caller guarantees name is a valid C string (or null).
-    let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_set_transport") }) else {
+    let Some(s) = (unsafe { crate::util::cstr_to_str(&name, "hew_node_api_set_transport") }) else {
         return -1;
     };
     let normalized = match normalize_transport_name(s) {
@@ -1373,9 +1373,9 @@ pub unsafe extern "C" fn hew_node_id_format(node: *const HewNodeId) -> *mut c_ch
 ///
 /// # Safety
 ///
-/// `location` must point to a readable `HewRemotePid`.
+/// `location` must point to a readable `HewLocation`.
 #[no_mangle]
-pub unsafe extern "C" fn hew_location_format(location: *const HewRemotePid) -> *mut c_char {
+pub unsafe extern "C" fn hew_location_format(location: *const HewLocation) -> *mut c_char {
     if location.is_null() {
         return ptr::null_mut();
     }

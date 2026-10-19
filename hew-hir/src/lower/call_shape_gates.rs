@@ -40,21 +40,14 @@ use super::*;
 #[doc(hidden)]
 #[must_use]
 #[cfg(any(test, feature = "internal-test-hooks"))]
-pub fn run_call_shape_gates_for_test(
-    items: &[HirItem],
-    monomorphisations: &[crate::monomorph::MonomorphizedFn],
-) -> Vec<HirDiagnostic> {
+pub fn run_call_shape_gates_for_test(items: &[HirItem]) -> Vec<HirDiagnostic> {
     let mut diagnostics = Vec::new();
-    check_call_shape_gates(items, monomorphisations, &mut diagnostics);
+    check_call_shape_gates(items, &mut diagnostics);
     diagnostics
 }
 
-pub(super) fn check_call_shape_gates(
-    items: &[HirItem],
-    monomorphisations: &[crate::monomorph::MonomorphizedFn],
-    diagnostics: &mut Vec<HirDiagnostic>,
-) {
-    let callable = build_callable_set(items, monomorphisations);
+pub(super) fn check_call_shape_gates(items: &[HirItem], diagnostics: &mut Vec<HirDiagnostic>) {
+    let callable = build_callable_set(items);
     for item in items {
         scan_item_for_call_shape(item, &callable, diagnostics);
     }
@@ -89,19 +82,10 @@ pub(super) struct CallShapeTargets {
 ///    intrinsics route through `runtime_symbol_for_call_expr` before the
 ///    fail-closed arm).
 /// 2. Every user `HirItem::Function` name — monomorphic AND generic origin.
-///    The generic-origin name is admissible because MIR's
-///    `call_site_type_args` + mangled-name dispatch resolves the call at the
-///    site; if the mangled lookup fails MIR's defense-in-depth still catches
-///    it. Excluding generic origins here would false-positively reject every
-///    direct call to a generic user function.
+///    Generic origins are declarations; SIR requests their exact instances.
 /// 3. Every `HirItem::ExternFn` name.
-/// 4. Every monomorphisation's mangled name.
-/// 5. The hard-coded runtime-ABI bridge `supervisor_stop` that
-///    `seed_stdlib_fn_registry` adds to `fn_registry` for the same reason.
-pub(super) fn build_callable_set(
-    items: &[HirItem],
-    monomorphisations: &[crate::monomorph::MonomorphizedFn],
-) -> CallShapeTargets {
+/// 4. Compiler-provided runtime symbols seeded into the function registry.
+pub(super) fn build_callable_set(items: &[HirItem]) -> CallShapeTargets {
     let mut declarations: std::collections::HashSet<hew_types::DefId> =
         std::collections::HashSet::new();
     for item in items {
@@ -155,9 +139,6 @@ pub(super) fn build_callable_set(
             }
             _ => {}
         }
-    }
-    for mono in monomorphisations {
-        set.insert(mono.mangled_name.clone());
     }
     // No-AST-item builtins seeded into `fn_registry` by
     // `seed_stdlib_fn_registry`. These resolve to `ResolvedRef::Builtin`
@@ -408,20 +389,6 @@ pub(super) fn scan_expr_for_call_shape(
                 scan_expr_for_call_shape(a, callable, diagnostics);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(msg, callable, diagnostics);
-            scan_expr_for_call_shape(timeout_ms, callable, diagnostics);
-        }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
-            scan_expr_for_call_shape(receiver, callable, diagnostics);
-            scan_expr_for_call_shape(msg, callable, diagnostics);
-        }
         HirExprKind::Block(b) => scan_block_for_call_shape(b, callable, diagnostics),
         HirExprKind::If {
             condition,
@@ -464,7 +431,7 @@ pub(super) fn scan_expr_for_call_shape(
                     HirSelectArmKind::StreamNext { stream } => {
                         scan_expr_for_call_shape(stream, callable, diagnostics);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         scan_expr_for_call_shape(call, callable, diagnostics);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

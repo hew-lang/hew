@@ -3365,6 +3365,30 @@
                   }
                 ],
                 "variant": 9
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 16
+                },
+                "fields": [],
+                "variant": 10
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 17
+                },
+                "fields": [],
+                "variant": 11
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 18
+                },
+                "fields": [],
+                "variant": 12
               }
             ],
             "op": "switch.variant",
@@ -3438,7 +3462,7 @@
               "args": [
                 3
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3461,7 +3485,7 @@
               "args": [
                 4
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3484,7 +3508,7 @@
               "args": [
                 5
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3507,7 +3531,7 @@
               "args": [
                 6
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3530,7 +3554,7 @@
               "args": [
                 7
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3553,7 +3577,7 @@
               "args": [
                 8
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3576,7 +3600,7 @@
               "args": [
                 9
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3599,7 +3623,7 @@
               "args": [
                 10
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3622,7 +3646,7 @@
               "args": [
                 11
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
@@ -3658,7 +3682,7 @@
               "args": [
                 13
               ],
-              "to": 16
+              "to": 19
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -3675,6 +3699,75 @@
         },
         {
           "id": 16,
+          "ops": [
+            {
+              "dst": 20,
+              "op": "const.str",
+              "own": "owned",
+              "span": null,
+              "str": 19
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                20
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 17,
+          "ops": [
+            {
+              "dst": 21,
+              "op": "const.str",
+              "own": "owned",
+              "span": null,
+              "str": 20
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                21
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 18,
+          "ops": [
+            {
+              "dst": 22,
+              "op": "const.str",
+              "own": "owned",
+              "span": null,
+              "str": 21
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                22
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": null
+          }
+        },
+        {
+          "id": 19,
           "ops": [],
           "params": [
             {
@@ -3699,7 +3792,7 @@
               "args": [
                 15
               ],
-              "to": 17
+              "to": 20
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -3715,7 +3808,7 @@
           }
         },
         {
-          "id": 17,
+          "id": 20,
           "ops": [
             {
               "dst": null,
@@ -3760,7 +3853,7 @@
               "args": [
                 18
               ],
-              "to": 18
+              "to": 21
             },
             "op": "runtime.call",
             "releases_contents": false,
@@ -3776,7 +3869,7 @@
           }
         },
         {
-          "id": 18,
+          "id": 21,
           "ops": [
             {
               "dst": null,
@@ -3802,32 +3895,32 @@
               "args": [
                 19
               ],
-              "to": 19
+              "to": 22
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 19,
+          "id": 22,
           "ops": [],
           "params": [
             {
               "own": "owned",
-              "value": 20
+              "value": 23
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 20
+              "to": 23
             },
             "op": "goto",
             "span": null
           }
         },
         {
-          "id": 20,
+          "id": 23,
           "ops": [],
           "params": [],
           "term": {
@@ -3835,7 +3928,7 @@
             "span": null,
             "value": {
               "decision": "move",
-              "value": 20
+              "value": 23
             }
           }
         }
@@ -3923,7 +4016,10 @@
     "Backpressure: the destination or route is applying flow control",
     "Dead: the destination actor accepts no more messages",
     "WriteTimedOut: the write deadline passed after ",
-    " bytes of the item"
+    " bytes of the item",
+    "Unauthorized: the peer refused the message grant",
+    "InvalidMessage: the message could not be encoded or decoded",
+    "TimedOut: the deadline expired before admission"
   ],
   "structural_render": [],
   "supervisors": [],
@@ -4000,6 +4096,18 @@
             "0"
           ],
           "name": "WriteTimedOut"
+        },
+        {
+          "fields": [],
+          "name": "Unauthorized"
+        },
+        {
+          "fields": [],
+          "name": "InvalidMessage"
+        },
+        {
+          "fields": [],
+          "name": "TimedOut"
         }
       ],
       "id": 1,
@@ -4010,9 +4118,12 @@
         "SendErrorClosed": 1,
         "SendErrorDead": 8,
         "SendErrorFull": 0,
+        "SendErrorInvalidMessage": 11,
         "SendErrorLocalShutdown": 4,
         "SendErrorPartition": 2,
         "SendErrorStaleRef": 3,
+        "SendErrorTimedOut": 12,
+        "SendErrorUnauthorized": 10,
         "SendErrorVersionMismatch": 6,
         "SendErrorWriteTimedOut": 9
       }

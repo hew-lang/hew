@@ -672,6 +672,20 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
             }
             CloneAction::Callable => self.clone_callable_value(value, layout),
             CloneAction::Bitwise => Ok(value),
+            CloneAction::ActorRetain => {
+                let token = value.into_int_value();
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_actor_handle_retain",
+                    token.get_type().fn_type(&[token.get_type().into()], false),
+                )?;
+                self.builder
+                    .build_call(function, &[token.into()], "actor.retain")
+                    .llvm_ctx("share actor descriptor")?
+                    .try_as_basic_value()
+                    .basic()
+                    .ok_or_else(|| CodegenError::FailClosed("actor retain returned void".into()))
+            }
             CloneAction::StringRetain => {
                 let pointer = value.into_pointer_value();
                 let function = external_unary_ptr(self.ctx, self.llvm, "hew_string_clone")?;
@@ -855,6 +869,19 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                 Ok(())
             }
             DestroyAction::TraitObject => self.destroy_trait_object(value),
+            DestroyAction::ActorRelease => {
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_actor_handle_release",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[value.get_type().into()], false),
+                )?;
+                self.builder
+                    .build_call(function, &[value.into()], "")
+                    .llvm_ctx("release actor descriptor")?;
+                Ok(())
+            }
             DestroyAction::Callable => {
                 let slot =
                     self.entry_scratch(llvm_type(self.ctx, &layout.repr)?, "callable.drop.slot")?;
@@ -903,6 +930,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     | DestroyAction::TraitObject
                     | DestroyAction::RcRelease(_)
                     | DestroyAction::WeakRelease
+                    | DestroyAction::ActorRelease
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }
@@ -925,6 +953,7 @@ impl<'a, 'ctx> ValueEmitter<'a, 'ctx> {
                     | DestroyAction::TraitObject
                     | DestroyAction::RcRelease(_)
                     | DestroyAction::WeakRelease
+                    | DestroyAction::ActorRelease
                     | DestroyAction::Aggregate(_) => {
                         unreachable!("matched primitive release")
                     }

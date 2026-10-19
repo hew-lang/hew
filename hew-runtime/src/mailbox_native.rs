@@ -4,40 +4,33 @@ use crate::actor_native::HewSubmitStatus;
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::Arc;
 
-/// A capacity subscription is needed only after admission finds a full queue.
-/// The direct descriptor already retains its target independently of the frame.
+/// Retain readiness directly until a full queue needs a capacity subscription.
 #[derive(Debug)]
 enum CapacityWake {
     Direct(OwnedWaker),
-    Registered { _registration: Arc<OwnedWaker> },
+    Registered(Arc<OwnedWaker>),
 }
 
 impl CapacityWake {
     fn poll(
         &mut self,
-        token: crate::lifetime::local_handles::HewLocalPidId,
-        mut admit: impl FnMut() -> super::SendOutcome,
+        mut admit: impl FnMut(Option<&Arc<OwnedWaker>>) -> super::SendOutcome,
     ) -> super::SendOutcome {
-        let outcome = admit();
-        if matches!(outcome, super::SendOutcome::Failed) && self.register(token) {
-            admit()
-        } else {
-            outcome
+        match self {
+            Self::Registered(registration) => admit(Some(registration)),
+            Self::Direct(waker) => {
+                let outcome = admit(None);
+                if !matches!(outcome, super::SendOutcome::Failed) {
+                    return outcome;
+                }
+                // Each retry registers under the current actor pin before admission.
+                // A stable role may now select a different incarnation and mailbox.
+                let registration = Arc::new(waker.clone());
+                let outcome = admit(Some(&registration));
+                *self = Self::Registered(registration);
+                outcome
+            }
         }
-    }
-
-    /// Register before rechecking capacity, so a dequeue in either interval
-    /// is observed by the retry or by a retained readiness notification.
-    fn register(&mut self, token: crate::lifetime::local_handles::HewLocalPidId) -> bool {
-        let Self::Direct(waker) = self else {
-            return false;
-        };
-        let registration = Arc::new(waker.clone());
-        crate::actor::register_native_capacity(token, &registration);
-        *self = Self::Registered {
-            _registration: registration,
-        };
-        true
     }
 }
 
@@ -60,16 +53,17 @@ impl Drop for HewNativeSend {
             // source message. Admission clears this slot before relinquishing it.
             unsafe {
                 crate::mem::buf_free((*self.envelope).payload);
-                crate::mem::buf_free(self.envelope.cast());
+                crate::cow_envelope::free_allocation(self.envelope);
             }
         }
     }
 }
 
 /// Retain readiness without parking a worker or retaining an actor allocation.
-/// A full poll registers capacity readiness and rechecks before returning pending.
+/// A full poll registers under the admission pin and retries before parking.
 ///
 /// # Safety
+/// `caller` points to a live stamp copied before this function returns.
 /// The payload is a unique malloc wrapper with shallow fields still owned by
 /// the caller's message. The descriptor and destructor are valid for that type.
 #[allow(
@@ -86,6 +80,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     waker: *const HewWaker,
     payload_release: Option<hew_cabi::value::HewValueReleaseStart>,
     obligated: i32,
+    caller: *const crate::actor_caller::HewCallerStamp,
 ) -> *mut HewNativeSend {
     // SAFETY: the caller supplies a unique unpublished wrapper and live waker.
     let (envelope, waker) = unsafe {
@@ -102,7 +97,8 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
     // SAFETY: the unpublished envelope's fields still belong to its source.
     unsafe { (*envelope).release_start = payload_release };
     Box::into_raw(Box::new(HewNativeSend {
-        caller: crate::actor_caller::local_sender(),
+        // SAFETY: the caller retains its explicit stamp through this constructor.
+        caller: unsafe { *caller },
         obligated: obligated != 0,
         token,
         message,
@@ -118,6 +114,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_new(
 #[derive(Debug)]
 pub struct HewNativeAsk {
     caller: crate::actor_caller::HewCallerStamp,
+    obligated: bool,
     token: crate::lifetime::local_handles::HewLocalPidId,
     message: i32,
     envelope: *mut super::HewMsgEnvelope,
@@ -138,8 +135,8 @@ impl Drop for HewNativeAsk {
     }
 }
 
-/// Retain the readiness target for a completion call. A full admission poll
-/// registers capacity readiness and rechecks before returning pending.
+/// Retain readiness for a completion call; subscribe only after a full attempt.
+/// Registration and admission share the current exact actor pin.
 ///
 /// # Safety
 /// The payload is a unique malloc wrapper whose fields have transferred to this
@@ -180,38 +177,62 @@ pub unsafe extern "C" fn hew_actor_ask_wait_poll(wait: *mut HewNativeAsk) -> i32
     let Some(wait) = (unsafe { wait.as_mut() }) else {
         return AskError::SendFailed as i32;
     };
-    // SAFETY: the unpublished request retains its channel until admission.
-    if unsafe { crate::reply_channel::native_request_deadline(wait.channel.cast()) }.expired() {
-        // SAFETY: expiry and the reply owner settle the same request.
-        unsafe { crate::reply_channel::native::expire_native_request(wait.channel.cast()) };
-        return AskError::Timeout as i32;
+    // SAFETY: this operation exclusively owns its request admission.
+    match unsafe { poll_request_admission(wait) } {
+        Ok(super::SendOutcome::Enqueued) => AskError::None as i32,
+        Ok(super::SendOutcome::Failed) => -1,
+        Ok(super::SendOutcome::Closed) => AskError::ActorStopped as i32,
+        Ok(super::SendOutcome::ShuttingDown) => AskError::LocalShutdown as i32,
+        Ok(super::SendOutcome::Oom) => AskError::SendFailed as i32,
+        Err(error) => error as i32,
+        _ => unreachable!("completion admission cannot discard or coalesce its request"),
     }
-    // SAFETY: this operation owns its unpublished request until admission.
-    let outcome = wait.wake.poll(wait.token, || {
-        // SAFETY: a failed attempt keeps both owners unpublished for the retry.
+}
+
+/// Try the shared owned-envelope ingress once; caller policy decides whether a
+/// full mailbox is final or needs another readiness notification.
+/// # Safety
+/// This wait exclusively owns its unpublished envelope and optional reply.
+pub(crate) unsafe fn poll_request_admission(
+    wait: &mut HewNativeAsk,
+) -> Result<super::SendOutcome, crate::internal::types::AskError> {
+    use crate::internal::types::AskError;
+    // SAFETY: the admission owner retains the envelope through this poll.
+    if unsafe { crate::request_state::message_deadline(wait.envelope) }.expired() {
+        if wait.channel.is_null() {
+            // SAFETY: the unpublished envelope retains its immutable request state.
+            if let Some(state) = unsafe { (*wait.envelope).request.as_ref() } {
+                state.withdraw();
+            }
+        } else {
+            // SAFETY: expiry and the reply owner settle the same request.
+            unsafe { crate::reply_channel::native::expire_native_request(wait.channel.cast()) };
+        }
+        return Err(AskError::Timeout);
+    }
+    // SAFETY: the operation retains its unpublished envelope until transfer.
+    let outcome = wait.wake.poll(|capacity| {
+        // SAFETY: this poll retains its unpublished request through each pinned attempt.
         unsafe {
             crate::actor::try_submit_native_request(
                 wait.token,
                 wait.message,
                 wait.envelope,
                 wait.channel,
-                true,
+                wait.obligated,
                 wait.caller,
+                capacity,
             )
         }
     });
-    match outcome {
-        super::SendOutcome::Enqueued => {
-            wait.envelope = std::ptr::null_mut();
-            wait.channel = std::ptr::null_mut();
-            AskError::None as i32
-        }
-        super::SendOutcome::Failed => -1,
-        super::SendOutcome::Closed => AskError::ActorStopped as i32,
-        super::SendOutcome::ShuttingDown => AskError::LocalShutdown as i32,
-        super::SendOutcome::Oom => AskError::SendFailed as i32,
-        _ => unreachable!("native admission does not select an overflow policy"),
+    if matches!(
+        outcome,
+        super::SendOutcome::Enqueued | super::SendOutcome::Coalesced | super::SendOutcome::Dropped
+    ) {
+        wait.envelope = std::ptr::null_mut();
+        wait.channel = std::ptr::null_mut();
     }
+    Ok(outcome)
 }
 
 /// Release readiness, an unadmitted request and its reply-channel reference.
@@ -245,7 +266,10 @@ pub unsafe extern "C" fn hew_actor_ask_wait_take_request(
     if !envelope.is_null() {
         // SAFETY: the unadmitted request owns one channel reference. A later
         // resubmission creates its own channel; the old reply cannot escape.
-        unsafe { crate::reply_channel::hew_reply_channel_free(wait.channel.cast()) };
+        unsafe {
+            (*envelope).request = None;
+            crate::reply_channel::hew_reply_channel_free(wait.channel.cast());
+        }
         wait.channel = std::ptr::null_mut();
     }
     envelope
@@ -286,9 +310,39 @@ pub(crate) unsafe fn ask_wait_resume(
     waker: *const HewWaker,
     caller: crate::actor_caller::HewCallerStamp,
 ) -> *mut HewNativeAsk {
+    // SAFETY: the optional channel is retained through state capture.
+    let state = unsafe { crate::reply_channel::native_request_state(channel.cast()) };
+    // SAFETY: the completion adapter transfers the exclusive envelope.
+    unsafe {
+        request_wait_resume(
+            token, message, envelope, channel, waker, caller, state, true,
+        )
+    }
+}
+
+/// Bind an owned request to the existing capacity driver, with or without a reply.
+/// # Safety
+/// The envelope is exclusive and the supplied state is complete before publication.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one owned ingress request and readiness contract"
+)]
+pub(crate) unsafe fn request_wait_resume(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+    message: i32,
+    envelope: *mut super::HewMsgEnvelope,
+    channel: *mut std::ffi::c_void,
+    waker: *const HewWaker,
+    caller: crate::actor_caller::HewCallerStamp,
+    state: Option<Arc<crate::request_state::RequestState>>,
+    obligated: bool,
+) -> *mut HewNativeAsk {
     if envelope.is_null() {
         return std::ptr::null_mut();
     }
+    // A resumed request receives the new invocation's exact immutable state.
+    // SAFETY: the unpublished envelope is exclusive.
+    unsafe { (*envelope).request = state };
     // SAFETY: the completion call supplies live channel and waker references.
     let waker = unsafe {
         crate::reply_channel::hew_reply_channel_retain(channel.cast());
@@ -296,6 +350,7 @@ pub(crate) unsafe fn ask_wait_resume(
     };
     Box::into_raw(Box::new(HewNativeAsk {
         caller,
+        obligated,
         token,
         message,
         envelope,
@@ -317,8 +372,8 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
         return HewSubmitStatus::Oom as i32;
     };
     // SAFETY: this operation owns its unpublished envelope until admission.
-    let outcome = wait.wake.poll(wait.token, || {
-        // SAFETY: refusal leaves the shallow wrapper and source fields intact.
+    let outcome = wait.wake.poll(|capacity| {
+        // SAFETY: this poll retains its unpublished request through each pinned attempt.
         unsafe {
             crate::actor::try_submit_native_request(
                 wait.token,
@@ -327,6 +382,7 @@ pub unsafe extern "C" fn hew_actor_send_wait_poll(wait: *mut HewNativeSend) -> i
                 std::ptr::null_mut(),
                 wait.obligated,
                 wait.caller,
+                capacity,
             )
         }
     });
@@ -429,30 +485,27 @@ mod tests {
                     mailbox::hew_mailbox_new_with_policy(1, mailbox::OverflowPolicy::Fail);
                 assert_eq!(mailbox::hew_mailbox_send(mailbox, 0, ptr::null_mut(), 0), 0);
                 let envelope = super::super::hew_msg_envelope_new(ptr::null_mut(), 0, None);
-                let outcome = wake.poll(
-                    crate::lifetime::local_handles::HewLocalPidId::INVALID,
-                    || {
-                        attempts += 1;
-                        let outcome = mailbox::try_admit_native_request(
-                            &*mailbox,
-                            1,
-                            envelope,
-                            ptr::null_mut(),
-                            true,
-                            crate::actor_caller::local_sender(),
-                        );
-                        if attempts == 1 {
-                            assert!(matches!(outcome, mailbox::SendOutcome::Failed));
-                            let filler = mailbox::hew_mailbox_try_recv(mailbox);
-                            assert!(!filler.is_null());
-                            mailbox::hew_msg_node_free(filler);
-                            if close {
-                                mailbox::mailbox_close(mailbox);
-                            }
+                let outcome = wake.poll(|_capacity| {
+                    attempts += 1;
+                    let outcome = mailbox::try_admit_native_request(
+                        &*mailbox,
+                        1,
+                        envelope,
+                        ptr::null_mut(),
+                        true,
+                        crate::actor_caller::local_sender(),
+                    );
+                    if attempts == 1 {
+                        assert!(matches!(outcome, mailbox::SendOutcome::Failed));
+                        let filler = mailbox::hew_mailbox_try_recv(mailbox);
+                        assert!(!filler.is_null());
+                        mailbox::hew_msg_node_free(filler);
+                        if close {
+                            mailbox::mailbox_close(mailbox);
                         }
-                        outcome
-                    },
-                );
+                    }
+                    outcome
+                });
                 assert_eq!(
                     attempts, 2,
                     "the retry must observe a change before registration"
@@ -650,6 +703,7 @@ mod tests {
                     waker.descriptor(),
                     None,
                     0,
+                    &crate::actor_caller::local_sender(),
                 );
                 drop(waker);
                 if poll {

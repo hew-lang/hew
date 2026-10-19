@@ -1,0 +1,10 @@
+[[case]]
+id = "http-router"
+intent = "Pure Hew typed HTTP routing composes strict URL decoding, path specificity before method selection, explicit 404/405 errors and fallible parameter extraction. Failed registrations preserve the table; decoded separators never change raw path structure."
+source = "cases/http-router.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "http routing ok\n"
+exit = 0

@@ -150,7 +150,7 @@ pub(super) fn reader_loop(
                 // the normal inbound router.
                 if envelope.request_id > 0 && envelope.target.is_none() && envelope.source.is_none()
                 {
-                    deposit_reply_envelope(mgr, conn_id, peer_feature_flags, &envelope);
+                    deposit_reply_envelope(mgr, conn_id, claim_token, &envelope);
                 } else {
                     let Some((authenticated, peer_identity)) =
                         authenticated_peer_identity(mgr, conn_id, claim_token, "envelope")
@@ -167,8 +167,7 @@ pub(super) fn reader_loop(
                     // session — routing correctness only. Whether the specific
                     // actor is still live is `node_inbound_router`'s decision:
                     // an ask against a dead actor gets a typed `ActorStopped`
-                    // rejection (`handle_inbound_ask`), and a send against one
-                    // is fail-closed dropped (`deliver_inbound_send`). Gating
+                    // rejection (`handle_inbound_ask`). Gating
                     // on liveness here (the former `location_matches_local`)
                     // silently dropped envelopes for an already-freed actor
                     // before either path ran, leaving the asking peer to only
@@ -192,7 +191,11 @@ pub(super) fn reader_loop(
                         );
                         continue;
                     }
-                    let crate::envelope::EnvelopeMessage::Handler(identity) = &envelope.message
+                    let crate::envelope::EnvelopeMessage::Service {
+                        handler: identity,
+                        grant_id: grant,
+                        kind,
+                    } = &envelope.message
                     else {
                         set_last_error("request envelope has reply status");
                         continue;
@@ -224,7 +227,9 @@ pub(super) fn reader_loop(
                             mgr,
                             peer_identity.node_id.into(),
                             claim_token,
+                            *grant,
                             deadline.raw(),
+                            *kind as u8,
                         );
                     }
                     if let Some(saved) = saved_ctx {

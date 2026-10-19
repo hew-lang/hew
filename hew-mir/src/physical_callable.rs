@@ -17,7 +17,7 @@ fn closure(module: &PhysicalModule, id: ClosureId) -> Result<&PhysicalClosure, P
         .ok_or_else(|| PhysicalError::new("unknown physical closure identity"))
 }
 
-fn invocation_type(
+pub(super) fn invocation_type(
     module: &PhysicalModule,
     ty: &ResolvedTy,
     specialization: Option<hew_sir::CallableSpecializationId>,
@@ -38,6 +38,197 @@ fn invocation_type(
             "generic callable requires a concrete invocation entry",
         )),
     }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "all prepared target kinds discharge the same exact invocation boundary"
+)]
+pub(super) fn verify_prepared_call(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    callee: &super::PhysicalInvocationCallee,
+    args: &[ArgumentTransfer],
+) -> Result<ResolvedTy, PhysicalError> {
+    let (params, result) = match callee {
+        super::PhysicalInvocationCallee::Direct(id) => {
+            let body = module
+                .callables
+                .get(id.0 as usize)
+                .filter(|body| body.id == *id)
+                .ok_or_else(|| PhysicalError::new("prepared call target is absent"))?;
+            if body.failure_domain != hew_types::CallableFailureDomain::HewFault
+                || body.receiver_handback
+            {
+                return Err(PhysicalError::new(
+                    "prepared direct call lacks a uniform invocation ABI",
+                ));
+            }
+            (
+                body.params
+                    .iter()
+                    .map(|param| (param.ty.clone(), param.passing))
+                    .collect::<Vec<_>>(),
+                body.return_ty.clone(),
+            )
+        }
+        super::PhysicalInvocationCallee::Mutable {
+            target,
+            receiver,
+            update,
+            recipe,
+        } => {
+            super::verify_value_recipe(module, recipe)?;
+            let body = module
+                .callables
+                .get(target.0 as usize)
+                .filter(|body| body.id == *target)
+                .ok_or_else(|| PhysicalError::new("prepared mutable target is absent"))?;
+            let ArgumentTransfer::BorrowMut(source) = receiver else {
+                return Err(PhysicalError::new(
+                    "prepared mutable receiver must be an exclusive loan",
+                ));
+            };
+            let input = storage(function, *source)?;
+            let Some(parameter) = body.params.first() else {
+                return Err(PhysicalError::new(
+                    "prepared mutable target lacks its receiver",
+                ));
+            };
+            let ResolvedTy::Tuple(dual) = &body.return_ty else {
+                return Err(PhysicalError::new(
+                    "prepared mutable target lacks its dual result",
+                ));
+            };
+            if !body.receiver_handback
+                || input.ty != parameter.ty
+                || recipe.ty != input.ty
+                || dual.len() != 2
+                || dual[1] != input.ty
+                || (*update == hew_types::ReceiverUpdate::Staged
+                    && module
+                        .type_facts
+                        .get(&hew_types::TypeInstanceKey(input.ty.clone()))
+                        .is_none_or(|facts| facts.clone == hew_types::CloneKind::None))
+            {
+                return Err(PhysicalError::new(
+                    "prepared mutable call differs from its receiver contract",
+                ));
+            }
+            (
+                body.params[1..]
+                    .iter()
+                    .map(|param| (param.ty.clone(), param.passing))
+                    .collect(),
+                dual[0].clone(),
+            )
+        }
+        super::PhysicalInvocationCallee::Dyn {
+            receiver,
+            slot,
+            method,
+            signature,
+            is_resumable,
+        } => {
+            verify_dyn_boundary(module, function, *receiver, (*slot, *method), signature)?;
+            let source = match *receiver {
+                ArgumentTransfer::Borrow(source)
+                | ArgumentTransfer::BorrowMut(source)
+                | ArgumentTransfer::Move(source)
+                | ArgumentTransfer::Clone { source, .. } => source,
+            };
+            let input = storage(function, source)?;
+            if module
+                .vtables
+                .iter()
+                .filter(|table| table.dyn_ty == input.ty)
+                .flat_map(|table| &table.slots)
+                .any(|entry| entry.slot == *slot && entry.is_resumable != *is_resumable)
+            {
+                return Err(PhysicalError::new(
+                    "prepared dispatch completion ABI differs from its slot",
+                ));
+            }
+            (
+                signature
+                    .params
+                    .iter()
+                    .map(|param| (param.ty.clone(), param.passing))
+                    .collect(),
+                signature.return_ty.clone(),
+            )
+        }
+        super::PhysicalInvocationCallee::Indirect {
+            receiver,
+            specialization,
+        } => {
+            let source = match receiver {
+                ArgumentTransfer::Borrow(source)
+                | ArgumentTransfer::BorrowMut(source)
+                | ArgumentTransfer::Move(source) => *source,
+                ArgumentTransfer::Clone { .. } => {
+                    return Err(PhysicalError::new(
+                        "prepared receiver must borrow or transfer",
+                    ))
+                }
+            };
+            let receiver_slot = storage(function, source)?;
+            if !matches!(
+                (expected_receiver(&receiver_slot.ty)?, receiver),
+                (SemParamPassing::Borrow, ArgumentTransfer::Borrow(_))
+                    | (SemParamPassing::BorrowMut, ArgumentTransfer::BorrowMut(_))
+                    | (SemParamPassing::Consume, ArgumentTransfer::Move(_))
+            ) || receiver_slot.own == OwnKind::None
+            {
+                return Err(PhysicalError::new(
+                    "prepared receiver differs from its invocation capability",
+                ));
+            }
+            let ty = invocation_type(module, &receiver_slot.ty, *specialization)?;
+            let signature = hew_sir::callable_value_signature(&ty, &module.type_facts)
+                .map_err(PhysicalError::new)?;
+            (
+                signature
+                    .params
+                    .into_iter()
+                    .map(|param| (param.ty, param.passing))
+                    .collect(),
+                signature.return_ty,
+            )
+        }
+    };
+    if args.len() != params.len() {
+        return Err(PhysicalError::new(
+            "prepared argument count differs from its signature",
+        ));
+    }
+    for (argument, (ty, passing)) in args.iter().zip(&params) {
+        let source = match (passing, argument) {
+            (SemParamPassing::ReadOnly, ArgumentTransfer::Clone { source, action }) => {
+                let slot = storage(function, *source)?;
+                super::verify_clone_action(module, &slot.ty, slot.own, *action)?;
+                *source
+            }
+            (SemParamPassing::Borrow, ArgumentTransfer::Borrow(source))
+            | (SemParamPassing::BorrowMut, ArgumentTransfer::BorrowMut(source)) => *source,
+            (SemParamPassing::Consume, ArgumentTransfer::Move(source))
+                if storage(function, *source)?.own == OwnKind::Owned =>
+            {
+                *source
+            }
+            _ => {
+                return Err(PhysicalError::new(
+                    "prepared argument transfer differs from its parameter",
+                ))
+            }
+        };
+        if storage(function, source)?.ty != *ty {
+            return Err(PhysicalError::new(
+                "prepared argument type differs from its parameter",
+            ));
+        }
+    }
+    Ok(result)
 }
 
 fn expected_receiver(ty: &ResolvedTy) -> Result<SemParamPassing, PhysicalError> {
@@ -388,7 +579,7 @@ pub(super) fn verify_capture_return(
 
 impl FunctionLowerer<'_> {
     /// Realize one semantic signature's argument ABI.
-    fn call_params(
+    pub(super) fn call_params(
         &self,
         signature: &hew_sir::SemSignature,
     ) -> Result<Vec<PhysicalParam>, PhysicalError> {
@@ -587,6 +778,43 @@ pub(super) fn verify_dyn_call(
         ));
     }
 
+    verify_dyn_boundary(module, function, receiver, selected_method, signature)?;
+    if args.len() != signature.params.len() {
+        return Err(PhysicalError::new(
+            "physical dynamic dispatch argument count differs from its signature",
+        ));
+    }
+    match (result, signature.return_layout.as_ref()) {
+        (None, None) => Ok(()),
+        (Some(result), Some(layout)) => {
+            let result = storage(function, result)?;
+            if &result.layout != layout || result.ty != signature.return_ty {
+                return Err(PhysicalError::new(
+                    "physical dynamic dispatch result differs from its signature",
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(PhysicalError::new(
+            "physical dynamic dispatch result presence differs from its signature",
+        )),
+    }
+}
+
+fn verify_dyn_boundary(
+    module: &PhysicalModule,
+    function: &PhysicalFunction,
+    receiver: ArgumentTransfer,
+    selected_method: (u32, hew_types::DefId),
+    signature: &PhysicalCallSignature,
+) -> Result<(), PhysicalError> {
+    if signature.failure_domain != hew_types::CallableFailureDomain::HewFault
+        || matches!(receiver, ArgumentTransfer::Clone { .. })
+    {
+        return Err(PhysicalError::new(
+            "dynamic dispatch requires its recoverable borrowed or consumed boundary",
+        ));
+    }
     let (slot, method) = selected_method;
     let source = match receiver {
         ArgumentTransfer::Borrow(id)
@@ -629,27 +857,18 @@ pub(super) fn verify_dyn_call(
                 table.concrete_ty.user_facing()
             )));
         }
-    }
-    if args.len() != signature.params.len() {
-        return Err(PhysicalError::new(
-            "physical dynamic dispatch argument count differs from its signature",
-        ));
-    }
-    match (result, signature.return_layout.as_ref()) {
-        (None, None) => Ok(()),
-        (Some(result), Some(layout)) => {
-            let result = storage(function, result)?;
-            if &result.layout != layout || result.ty != signature.return_ty {
-                return Err(PhysicalError::new(
-                    "physical dynamic dispatch result differs from its signature",
-                ));
-            }
-            Ok(())
+        if !matches!(
+            (published.receiver, receiver),
+            (SemParamPassing::Borrow, ArgumentTransfer::Borrow(_))
+                | (SemParamPassing::BorrowMut, ArgumentTransfer::BorrowMut(_))
+                | (SemParamPassing::Consume, ArgumentTransfer::Move(_))
+        ) {
+            return Err(PhysicalError::new(
+                "physical dynamic receiver differs from its erased boundary",
+            ));
         }
-        _ => Err(PhysicalError::new(
-            "physical dynamic dispatch result presence differs from its signature",
-        )),
     }
+    Ok(())
 }
 
 pub(super) fn verify_operation(

@@ -352,13 +352,15 @@ fn package_native_ffi_is_built_and_linked() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(has_test_line(&stdout, "native_ffi_is_linked", "ok"));
     assert!(stdout.contains("1 passed, 0 failed, 0 ignored"));
-    assert!(dir.path().join("target/release-lib").is_dir());
+    let artifacts = dir
+        .path()
+        .join("target")
+        .join(hew_pkg::native::embedded_rustc_identity().host)
+        .join("release-lib");
     let archive = if cfg!(target_os = "windows") {
-        dir.path()
-            .join("target/release-lib/hew_test_ffi_package.lib")
+        artifacts.join("hew_test_ffi_package.lib")
     } else {
-        dir.path()
-            .join("target/release-lib/libhew_test_ffi_package.a")
+        artifacts.join("libhew_test_ffi_package.a")
     };
     assert!(
         archive.is_file(),

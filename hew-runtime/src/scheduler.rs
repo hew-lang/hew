@@ -3000,8 +3000,8 @@ mod tests {
     }
 
     /// R4 wake-routing net: `enqueue_resume` resolves the scheduler it enqueues
-    /// on through `get_scheduler()` → `rt_default()`, which `enter()` (and
-    /// `enter_actor_runtime`) does NOT reroute. A wake for an actor owned by a
+    /// on through `get_scheduler()` → `rt_default()`, which `enter()` does
+    /// not reroute. A wake for an actor owned by a
     /// NON-default runtime would silently land on the default runtime's
     /// scheduler, so the net traps BEFORE the mis-routed enqueue. The DEFAULT
     /// control is the existing `enqueue_resume_wakes_suspended_actor` — a default
@@ -3710,7 +3710,6 @@ mod tests {
         );
 
         let actor = HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 42,
             state: ptr::null_mut(),
@@ -6278,7 +6277,6 @@ mod tests {
         );
 
         let actor = HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id: 7,
             state: ptr::null_mut(),

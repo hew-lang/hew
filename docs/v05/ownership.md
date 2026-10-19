@@ -139,12 +139,12 @@ is what a second name means. Three categories cover the language:
 
 Handles come in four flavours, and the flavour is the whole difference:
 
-| Handle   | Members                                  | What a copy does                     | What closes it                                   |
-| -------- | ---------------------------------------- | ------------------------------------ | ------------------------------------------------ |
-| pid      | `LocalPid`, `RemotePid`, `ChildRef`      | another name for one actor           | nothing; the actor stops                         |
-| counted  | `Rc`, `Weak`, `LambdaPid`                | a refcounted retain; the count rises | the last release, through drop glue              |
-| opaque   | `#[opaque]` types, such as a channel end | another name for one resource        | `close(consume self)` where the type declares it |
-| resource | `#[resource]` wrappers, `Stream`, `Sink` | a move; the source binding is dead   | drop glue at scope exit, or an early `close`     |
+| Handle   | Members                                  | What a copy does                      | What closes it                                              |
+| -------- | ---------------------------------------- | ------------------------------------- | ----------------------------------------------------------- |
+| actor    | an actor's own type                      | retains an alias of the same identity | releases the alias; scopes and supervision govern the actor |
+| counted  | `Rc`, `Weak`, `LambdaPid`                | a refcounted retain; the count rises  | the last release, through drop glue                         |
+| opaque   | `#[opaque]` types, such as a channel end | another name for one resource         | `close(consume self)` where the type declares it            |
+| resource | `#[resource]` wrappers, `Stream`, `Sink` | a move; the source binding is dead    | drop glue at scope exit, or an early `close`                |
 
 `LambdaPid` is a **counted** handle, not a plain pid: releasing the last copy
 releases the closure environment the lambda actor captured.

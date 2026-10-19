@@ -9,9 +9,9 @@ use crate::actor_native::wait_graph::{
     hew_actor_wait_edge_fault, hew_actor_wait_edge_free, hew_actor_wait_edge_pending,
     hew_actor_wait_edge_prepare, select_alternatives, HewActorWaitEdge,
 };
-use crate::async_io::{
-    hew_async_io_free, hew_async_io_status, start_tcp_readable, AsyncIoStatus, HewAsyncIo,
-};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::async_io::start_tcp_readable;
+use crate::async_io::{hew_async_io_free, hew_async_io_status, AsyncIoStatus, HewAsyncIo};
 use crate::coro_sleep::{
     hew_coro_sleep_free, hew_coro_sleep_new, hew_coro_sleep_status, HewCoroSleep,
 };
@@ -173,23 +173,22 @@ pub unsafe extern "C" fn hew_checked_task_select_add_stream(
     }
     // SAFETY: the caller owns the selection for the duration of this call.
     let selection = unsafe { &mut *selection };
-    let mut readable = ptr::null();
     // SAFETY: the stream is a live borrowed handle per the caller's contract.
-    if let Some(stream) = unsafe { stream.as_ref() } {
-        if stream.pipe_core().is_none() {
-            match stream.select_readiness() {
-                SelectReadiness::Ready => {}
-                SelectReadiness::Reactor(connection) => {
-                    // SAFETY: the stream keeps its connection live through the
-                    // selection; the waker descriptor is the selection's own.
-                    readable = unsafe { start_tcp_readable(connection, selection.waker) };
-                }
-                SelectReadiness::Unsupported(reason) => {
-                    selection.refusal.get_or_insert_with(|| reason.to_string());
-                }
+    let readable = match unsafe { stream.as_ref() }.filter(|stream| stream.pipe_core().is_none()) {
+        Some(stream) => match stream.select_readiness() {
+            SelectReadiness::Ready => ptr::null(),
+            #[cfg(not(target_arch = "wasm32"))]
+            SelectReadiness::Reactor(connection) => {
+                // SAFETY: the stream retains the connection and the selection its waker.
+                unsafe { start_tcp_readable(connection, selection.waker) }
             }
-        }
-    }
+            SelectReadiness::Unsupported(reason) => {
+                selection.refusal.get_or_insert_with(|| reason.to_string());
+                ptr::null()
+            }
+        },
+        None => ptr::null(),
+    };
     selection.sources.push(SelectSource::Stream {
         stream,
         ready_order: None,

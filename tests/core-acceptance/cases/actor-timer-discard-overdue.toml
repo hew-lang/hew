@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-timer-discard-overdue"
+intent = "Reject, DropNewest and drop_old timer loss fault the owner immediately rather than waiting for the requested overdue duration."
+source = "cases/actor-timer-discard-overdue.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "Reject overdue\nDropNewest overdue\ndrop_old overdue\n"
+stderr = "hew: failure: ActorTimerOverdue (214)\nhew: actor crash in Rejecting.run (actor 1): ActorTimerOverdue\nhew: failure: ActorTimerOverdue (214)\nhew: actor crash in Rejecting.run (actor 2): ActorTimerOverdue\nhew: failure: ActorTimerOverdue (214)\nhew: actor crash in Latest.run (actor 3): ActorTimerOverdue\n"
+exit = 0

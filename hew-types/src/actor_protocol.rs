@@ -76,6 +76,8 @@ pub struct ActorHandlerDescriptor {
     pub name: String,
     /// Canonical dotted declaration identity, independent of surface aliases.
     pub wire_identity: String,
+    /// Only explicitly declared wire handlers may enter an exported interface.
+    pub wire: bool,
     /// Receiver-local dispatch index.
     pub msg_id: u32,
     /// Parameter types declared by the handler, in source order.
@@ -98,12 +100,11 @@ pub struct ActorHandlerDescriptor {
     /// `fails` clause, and for an error type whose rendering the checker
     /// cannot name — those handlers stay refused through a view.
     pub failure_display: Option<ReceiveFailureDisplay>,
-    /// Checked `ActorMsg` impl receivers that select this member. Concrete
-    /// instances match these patterns before admitting their wire payloads.
+    /// Checked actor instances whose payloads have admitted wire schemas.
     pub remote_receivers: Vec<ActorRemoteReceiver>,
 }
 
-/// The receiver arguments of a checked `ActorMsg` implementation.
+/// The receiver arguments of a checked actor instance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActorRemoteReceiver {
     pub parameters: Vec<crate::ParamHead>,
@@ -139,6 +140,7 @@ pub enum ReceiveFailureDisplay {
 pub struct ActorHandlerSpec {
     pub declaration: crate::DefId,
     pub wire_identity: String,
+    pub wire: bool,
     pub name: String,
     pub param_tys: Vec<ResolvedTy>,
     pub return_ty: ResolvedTy,
@@ -163,6 +165,7 @@ impl ActorProtocolDescriptor {
                     coalesce_key: None,
                     declaration: spec.declaration,
                     wire_identity: spec.wire_identity.clone(),
+                    wire: spec.wire,
                     name: spec.name.clone(),
                     msg_id: u32::try_from(index)
                         .expect("actor handler count fits a dispatch index"),

@@ -68,7 +68,7 @@ fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
 
     let shutdown_started = Arc::new(AtomicBool::new(true));
     let dangling_mgr = std::ptr::NonNull::<connection::HewConnMgr>::dangling().as_ptr();
-    send_reply_envelope(999, 123, &[], dangling_mgr, shutdown_started.as_ref());
+    send_reply_envelope(999, 123, 0, &[], dangling_mgr, shutdown_started.as_ref());
 
     // SAFETY: node pointer remains valid until drop.
     unsafe {
@@ -123,7 +123,9 @@ fn inbound_router_no_spawn_after_shutdown_started() {
             (*node.as_ptr()).conn_mgr,
             crate::node_identity::HewNodeId::default(),
             0,
+            0,
             -1,
+            crate::request_state::RequestKind::CallReject as u8,
         );
     }
 
@@ -246,7 +248,9 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
                 manager as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
                 0,
+                0,
                 -1,
+                crate::request_state::RequestKind::CallReject as u8,
             );
         }
     });
@@ -364,7 +368,9 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
                 conn_mgr_addr as *mut connection::HewConnMgr,
                 crate::node_identity::HewNodeId::default(),
                 0,
+                0,
                 -1,
+                crate::request_state::RequestKind::CallReject as u8,
             );
         }
     });
@@ -525,7 +531,9 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
             shutdown_started,
             crate::actor_caller::HewCallerStamp::default(),
             0,
+            0,
             crate::request_deadline::RequestDeadline::default(),
+            crate::request_state::RequestKind::CallReject,
         );
     });
 
@@ -557,12 +565,36 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
 #[test]
 fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     let _guard = crate::runtime_test_guard();
-    let (node, _port) = start_tcp_test_listener_node(365);
+    let (node, port, peer, _) = start_authorized_tcp_pair(365, 366);
+    crate::pid::hew_pid_set_local_node(365);
     let actor = spawn_remote_test_actor(noop_dispatch);
     inbound_test_codec(noop_dispatch, 0);
     // SAFETY: this test retains the node and actor through every admission.
     let (actor_id, manager) = unsafe { ((*actor).id, &*(*node.as_ptr()).conn_mgr) };
-    for publication in [11, 12] {
+    // SAFETY: the test retains both authenticated nodes through every admission.
+    let peer_id = unsafe { (*peer.as_ptr()).auth.node_identity().unwrap() };
+    let address = CString::new(format!("365@127.0.0.1:{port}")).unwrap();
+    for _ in 0..2 {
+        // SAFETY: each connect publishes a fresh authenticated connection.
+        unsafe {
+            connect_with_retry(peer.as_ptr(), &address);
+            wait_for_handshake(peer.as_ptr(), node.as_ptr());
+        }
+        let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+        let publication = claim.publication_token;
+        let location = connection::local_location_for_actor(manager, actor_id).unwrap();
+        // SAFETY: the test retains this actor throughout both publication checks.
+        let target = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        let (_export, offer) = manager
+            .service_exports
+            .export(
+                claim.peer_session(),
+                42,
+                target,
+                location,
+                vec!["tests.Counter.handle".into()],
+            )
+            .unwrap();
         handle_inbound_ask(
             actor_id,
             "tests.Counter.handle",
@@ -571,9 +603,11 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             366,
             SendConnMgr(ptr::from_ref(manager).cast_mut()),
             Arc::new(AtomicBool::new(false)),
-            crate::actor_caller::HewCallerStamp::default(),
+            crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
             publication,
+            offer.grant_id,
             crate::request_deadline::RequestDeadline::default(),
+            crate::request_state::RequestKind::CallReject,
         );
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
         for (target, connection, request) in [
@@ -593,5 +627,498 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     unsafe {
         crate::actor::hew_actor_free(actor);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one admitted request fixture verifies grant revocation at dispatch"
+)]
+fn service_revocation_refuses_an_already_queued_dispatch_claim() {
+    unsafe extern "C" fn drop_unit(_payload: *mut c_void) {}
+    let _guard = crate::runtime_test_guard();
+    let (node, port, peer, _) = start_authorized_tcp_pair(367, 368);
+    crate::pid::hew_pid_set_local_node(367);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    inbound_test_codec(noop_dispatch, 0);
+    let address = CString::new(format!("367@127.0.0.1:{port}")).unwrap();
+    // SAFETY: this test retains both nodes and the actor until all requests retire.
+    let (actor_id, incarnation, manager, peer_id) = unsafe {
+        connect_with_retry(peer.as_ptr(), &address);
+        wait_for_handshake(peer.as_ptr(), node.as_ptr());
+        (
+            (*actor).id,
+            crate::lifetime::live_actors::ActorIncarnation::of(actor),
+            &*(*node.as_ptr()).conn_mgr,
+            (*peer.as_ptr()).auth.node_identity().unwrap(),
+        )
+    };
+    let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+    let location = connection::local_location_for_actor(manager, actor_id).unwrap();
+    // An authenticated peer cannot call even a never-exported actor without a grant.
+    assert!(matches!(
+        super::super::service::RemoteAdmission::new(
+            manager,
+            incarnation,
+            peer_id,
+            claim.publication_token,
+            0,
+            "tests.Counter.handle",
+        ),
+        Err(AskError::Unauthorized)
+    ));
+    let (export, offer) = manager
+        .service_exports
+        .export(
+            claim.peer_session(),
+            99,
+            incarnation,
+            location,
+            vec!["tests.Counter.handle".into()],
+        )
+        .unwrap();
+    assert!(matches!(
+        super::super::service::RemoteAdmission::new(
+            manager,
+            incarnation,
+            peer_id,
+            claim.publication_token,
+            offer.grant_id,
+            "tests.Counter.other",
+        ),
+        Err(AskError::Unauthorized)
+    ));
+    let publication_removed = AtomicBool::new(false);
+    let mut wrong_session = claim.peer_session();
+    wrong_session.session_incarnation += 1;
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            wrong_session,
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            crate::lifetime::live_actors::ActorIncarnation::NONE,
+            claim.peer_session(),
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            0,
+            &publication_removed,
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            offer.grant_id,
+            &AtomicBool::new(true),
+            || ()
+        )
+        .is_err());
+    assert!(manager
+        .service_exports
+        .claim_observation(
+            incarnation,
+            claim.peer_session(),
+            offer.grant_id,
+            &publication_removed,
+            || ()
+        )
+        .is_ok());
+    let admission = super::super::service::RemoteAdmission::new(
+        manager,
+        incarnation,
+        peer_id,
+        claim.publication_token,
+        offer.grant_id,
+        "tests.Counter.handle",
+    )
+    .unwrap();
+    let (_readiness, waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test transfers one request with a live readiness owner.
+    let operation = unsafe {
+        crate::actor_call_native::actor_call_new(
+            (*actor).local_pid_id,
+            1,
+            crate::mem::buf_alloc(1),
+            1,
+            drop_unit,
+            0,
+            None,
+            waker.descriptor(),
+            -1,
+            crate::request_state::RequestKind::CallWait,
+            None,
+            None,
+            crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
+            ptr::null(),
+            Some(admission),
+        )
+    };
+    drop(export);
+    drop(claim);
+    // SAFETY: the test is the mailbox's sole consumer; no scheduler runs this actor.
+    unsafe {
+        let message = crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast());
+        assert!(!message.is_null(), "the request must already be queued");
+        assert!(!crate::request_state::claim_message(
+            (*message).envelope,
+            (*message).reply_channel.cast()
+        ));
+        crate::mailbox::hew_msg_node_free(message);
+        assert_eq!(
+            crate::actor_call_native::hew_actor_call_poll(operation),
+            AskError::Unauthorized as i32
+        );
+        crate::actor_call_native::hew_actor_call_free(operation);
+    }
+    // SAFETY: revocation and withdrawal released every queued request owner.
+    unsafe {
+        crate::actor::hew_actor_free(actor);
+        assert_eq!(hew_node_stop(node.as_ptr()), 0);
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one admission scenario follows authority through queued dispatch"
+)]
+fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
+    unsafe extern "C" fn drop_unit(_payload: *mut c_void) {}
+    let _guard = crate::runtime_test_guard();
+    for kind in [
+        crate::request_state::RequestKind::SendWait,
+        crate::request_state::RequestKind::SendReject,
+        crate::request_state::RequestKind::SendDropNewest,
+    ] {
+        for withdraw in [false, true] {
+            let (node, port, peer, _) = start_authorized_tcp_pair(367, 368);
+            crate::pid::hew_pid_set_local_node(367);
+            let actor = spawn_remote_test_actor(noop_dispatch);
+            inbound_test_codec(noop_dispatch, 0);
+            let address = CString::new(format!("367@127.0.0.1:{port}")).unwrap();
+            // SAFETY: this test retains both nodes and the actor until all requests retire.
+            let (actor_id, incarnation, manager, peer_id) = unsafe {
+                connect_with_retry(peer.as_ptr(), &address);
+                wait_for_handshake(peer.as_ptr(), node.as_ptr());
+                (
+                    (*actor).id,
+                    crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                    &*(*node.as_ptr()).conn_mgr,
+                    (*peer.as_ptr()).auth.node_identity().unwrap(),
+                )
+            };
+            let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+            let location = connection::local_location_for_actor(manager, actor_id).unwrap();
+            let (export, offer) = manager
+                .service_exports
+                .export(
+                    claim.peer_session(),
+                    99,
+                    incarnation,
+                    location,
+                    vec!["tests.Counter.handle".into()],
+                )
+                .unwrap();
+            assert!(matches!(
+                super::super::service::RemoteAdmission::new(
+                    manager,
+                    incarnation,
+                    peer_id,
+                    claim.publication_token,
+                    0,
+                    "tests.Counter.handle",
+                ),
+                Err(AskError::Unauthorized)
+            ));
+            assert!(matches!(
+                super::super::service::RemoteAdmission::new(
+                    manager,
+                    incarnation,
+                    peer_id,
+                    claim.publication_token,
+                    offer.grant_id,
+                    "tests.Counter.other",
+                ),
+                Err(AskError::Unauthorized)
+            ));
+            let admission = super::super::service::RemoteAdmission::new(
+                manager,
+                incarnation,
+                peer_id,
+                claim.publication_token,
+                offer.grant_id,
+                "tests.Counter.handle",
+            )
+            .unwrap();
+            let (readiness, waker) = crate::wake::blocking::Readiness::new();
+            // SAFETY: the test transfers one request with a live readiness owner.
+            let operation = unsafe {
+                crate::actor_call_native::actor_call_new(
+                    (*actor).local_pid_id,
+                    1,
+                    crate::mem::buf_alloc(1),
+                    1,
+                    drop_unit,
+                    0,
+                    None,
+                    waker.descriptor(),
+                    -1,
+                    kind,
+                    None,
+                    None,
+                    crate::actor_caller::HewCallerStamp::peer(peer_id.into()),
+                    ptr::null(),
+                    Some(admission),
+                )
+            };
+            // SAFETY: admission is ready while no actor worker has claimed the message.
+            let (request, timer) = unsafe {
+                assert_eq!(crate::actor_call_native::hew_actor_call_poll(operation), 0);
+                assert!(matches!(
+                    (*operation).take_outcome(ptr::null_mut()),
+                    crate::request_state::RequestOutcome::Submitted { discarded: false }
+                ));
+                let queued = (*operation).take_queued();
+                crate::actor_call_native::hew_actor_call_free(operation);
+                queued
+            };
+            assert!(timer.is_null());
+            assert!(
+                !request.terminal(),
+                "taking admission must leave dispatch possible"
+            );
+            if withdraw {
+                request.withdraw();
+            }
+            drop(export);
+            drop(claim);
+            // SAFETY: this fixture is the sole mailbox consumer; revocation and
+            // explicit withdrawal must both prevent the already accepted dispatch.
+            unsafe {
+                let message = crate::mailbox::hew_mailbox_try_recv((*actor).mailbox.cast());
+                assert!(!message.is_null());
+                assert!(
+                    (*message).reply_channel.is_null(),
+                    "mailbox sends owe no completion"
+                );
+                assert!(!crate::request_state::claim_message(
+                    (*message).envelope,
+                    ptr::null_mut()
+                ));
+                assert!(request.terminal());
+                assert!(
+                    readiness.take_ready(),
+                    "withdrawal wakes the queued publication owner"
+                );
+                crate::mailbox::hew_msg_node_free(message);
+            }
+            drop(request);
+            drop(waker);
+            assert_eq!(
+                Arc::strong_count(&readiness),
+                1,
+                "retirement releases its observer"
+            );
+            // SAFETY: revocation and withdrawal released every queued request owner.
+            unsafe {
+                crate::actor::hew_actor_free(actor);
+                assert_eq!(hew_node_stop(node.as_ptr()), 0);
+            }
+        }
+    }
+}
+
+fn await_observation_setup(operation: *mut monitor_link::HewNativeActorObservation) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // SAFETY: each fixture retains its unique operation until this helper returns.
+    while unsafe { monitor_link::hew_native_actor_observe_poll(operation) } == -1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "peer setup acknowledgement timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one peer fixture owns both nodes, actor allocations, grants and every observer"
+)]
+fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
+    use crate::actor_native::{hew_actor_wait_free, hew_actor_wait_new, hew_actor_wait_poll};
+    use crate::lifetime::local_handles::{
+        hew_actor_handle_identical, hew_actor_handle_release, register_current_imported_actor,
+    };
+    let _guard = crate::runtime_test_guard();
+    let _scheduler = init_real_scheduler();
+    let (client, _, server, port) = start_authorized_tcp_pair(371, 372);
+    crate::pid::hew_pid_set_local_node(372);
+    let target = spawn_remote_test_actor(noop_dispatch);
+    inbound_test_codec(noop_dispatch, 0);
+    crate::pid::hew_pid_set_local_node(371);
+    let watcher = spawn_remote_test_actor(noop_dispatch);
+    let address = CString::new(format!("372@127.0.0.1:{port}")).unwrap();
+    // SAFETY: both nodes and actor allocations remain live through all observers.
+    unsafe {
+        connect_with_retry(client.as_ptr(), &address);
+        wait_for_handshake(client.as_ptr(), server.as_ptr());
+        let client_manager = &*(*client.as_ptr()).conn_mgr;
+        let server_manager = &*(*server.as_ptr()).conn_mgr;
+        let client_identity = (*client.as_ptr()).auth.node_identity().unwrap();
+        let claim =
+            connection::claim_send_by_identity(server_manager, client_identity, None).unwrap();
+        let location = connection::local_location_for_actor(server_manager, (*target).id).unwrap();
+        let (export, offer) = server_manager
+            .service_exports
+            .export(
+                claim.peer_session(),
+                1,
+                crate::lifetime::live_actors::ActorIncarnation::of(target),
+                location,
+                vec!["tests.Counter.handle".into()],
+            )
+            .unwrap();
+        drop(claim);
+        let descriptor = service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            offer.clone(),
+        );
+        let token = register_current_imported_actor(descriptor).unwrap();
+        let mut same_offer = offer.clone();
+        same_offer.grant_id += 100;
+        let same = register_current_imported_actor(service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            same_offer,
+        ))
+        .unwrap();
+        let mut other_offer = offer.clone();
+        other_offer.target =
+            Location::new(location.node(), location.slot() + 1, location.incarnation()).unwrap();
+        let other = register_current_imported_actor(service_api::ImportedService::from_offer(
+            Arc::downgrade(&client_manager.service_exports),
+            other_offer,
+        ))
+        .unwrap();
+        assert_eq!(hew_actor_handle_identical(token, same), 1);
+        assert_eq!(hew_actor_handle_identical(token, other), 0);
+
+        let (readiness, waker) = crate::wake::blocking::Readiness::new();
+        // stopped is valid outside an actor context and must remain pending while alive.
+        let stopped = hew_actor_wait_new(token, waker.descriptor());
+        let (detached_ready, detached_waker) = crate::wake::blocking::Readiness::new();
+        let detached = hew_actor_wait_new(token, detached_waker.descriptor());
+        assert_eq!(hew_actor_wait_poll(stopped), 0);
+        assert_eq!(hew_actor_wait_poll(detached), 0);
+        hew_actor_wait_free(detached);
+        let _ = detached_ready.take_ready();
+
+        let mut context = crate::execution_context::HewExecutionContext {
+            actor: watcher,
+            actor_id: (*watcher).id,
+            ..Default::default()
+        };
+        let previous = crate::execution_context::set_current_context(&raw mut context);
+        let monitor = monitor_link::hew_native_actor_observe_new(token, 0, waker.descriptor());
+        await_observation_setup(monitor);
+        let mut monitor_id = 0;
+        assert_eq!(
+            monitor_link::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
+            0
+        );
+        assert_ne!(monitor_id, 0);
+        monitor_link::hew_native_actor_observe_free(monitor);
+
+        // A counterfeit grant cannot subscribe even though it has the exact Location.
+        let refused = monitor_link::hew_native_actor_observe_new(same, 0, waker.descriptor());
+        await_observation_setup(refused);
+        assert!(monitor_link::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0);
+        monitor_link::hew_native_actor_observe_free(refused);
+
+        // The reciprocal half completes before the original link is acknowledged.
+        let link = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        await_observation_setup(link);
+        assert_eq!(
+            monitor_link::hew_native_actor_observe_take(link, &raw mut monitor_id),
+            0
+        );
+        monitor_link::hew_native_actor_observe_free(link);
+        crate::link::hew_native_actor_unlink(token);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while crate::runtime::rt_current()
+            .monitors
+            .pending_observation_count()
+            > 2
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "unlink retained a reciprocal observation"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        drop(export);
+        assert_eq!(
+            hew_actor_handle_identical(token, same),
+            1,
+            "identity survives grant revocation"
+        );
+        let revoked = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        await_observation_setup(revoked);
+        assert!(monitor_link::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0);
+        monitor_link::hew_native_actor_observe_free(revoked);
+        let _ = crate::execution_context::set_current_context(previous);
+        assert_eq!(hew_actor_wait_poll(stopped), 0);
+
+        // The target's terminal owner publishes only after state cleanup.
+        with_current_node(|current| *current = server.as_ptr() as usize);
+        (*target).actor_state.store(
+            crate::internal::types::HewActorState::Stopped as i32,
+            Ordering::Release,
+        );
+        (*target).terminate_finished.store(true, Ordering::Release);
+        crate::actor_native::finish_native_terminal(&*target);
+        with_current_node(|current| *current = client.as_ptr() as usize);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while hew_actor_wait_poll(stopped) == 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "stopped missed the peer terminal notice"
+            );
+            let _ = readiness.take_ready();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert_eq!(hew_actor_wait_poll(stopped), 1);
+        assert!(
+            !detached_ready.take_ready(),
+            "cancelled stopped observer retained a callback target"
+        );
+        hew_actor_wait_free(stopped);
+        crate::monitor::hew_actor_demonitor(monitor_id);
+        hew_actor_handle_release(token);
+        hew_actor_handle_release(same);
+        hew_actor_handle_release(other);
+        crate::actor::hew_actor_free(watcher);
+        crate::actor::hew_actor_free(target);
+        assert_eq!(hew_node_stop(server.as_ptr()), 0);
+        assert_eq!(hew_node_stop(client.as_ptr()), 0);
     }
 }

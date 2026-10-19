@@ -40,6 +40,9 @@ struct Case {
     /// their observed output depends on the scheduler's worker count.
     #[serde(default)]
     env: BTreeMap<String, String>,
+    /// `kind = "run"` only: arguments after the executable name, in input order.
+    #[serde(default)]
+    argv: Vec<String>,
     #[serde(default)]
     expected: ExpectedOutcome,
 }
@@ -739,6 +742,13 @@ fn validate_case(case: &Case, root: &Path) -> Result<()> {
             case.kind.label()
         ));
     }
+    if !case.argv.is_empty() && case.kind != CaseKind::Run {
+        return Err(format!(
+            "{} has kind {} but declares run-only arguments",
+            case.id,
+            case.kind.label()
+        ));
+    }
     let source = case_source(root, case);
     if !source.is_file() {
         return Err(format!(
@@ -1190,6 +1200,7 @@ impl Runner<'_> {
 
     fn execute(&self, case: &Case, profile: Profile, binary: &Path, log: &mut String) -> bool {
         let mut command = Command::new(binary);
+        command.args(&case.argv);
         for (name, value) in &case.env {
             command.env(name, value);
         }
@@ -1945,6 +1956,7 @@ mod tests {
             timeout_seconds: 30,
             kind,
             env: BTreeMap::new(),
+            argv: Vec::new(),
             expected: ExpectedOutcome {
                 stdout: None,
                 stdout_file: None,

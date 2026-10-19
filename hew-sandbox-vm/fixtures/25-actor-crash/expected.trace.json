@@ -25,47 +25,22 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 999,
-      "id": "actor:root",
-      "id_kind": "actor",
-      "message": "actor.scheduler-step",
-      "phase": "run",
-      "seq": 3,
-      "span": null,
-      "step_count": 1,
-      "type": "step.committed"
-    },
-    {
-      "phase": "replay",
-      "replay_input": {
-        "data": {
-          "actor_id": "actor:root",
-          "family": "actor.scheduler-step",
-          "ready_id": 1
-        },
-        "kind": "user_event"
-      },
-      "seq": 4,
-      "span": null,
-      "type": "replay.input"
-    },
-    {
       "message": "actor.ask",
       "phase": "run",
-      "seq": 5,
+      "seq": 3,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"explode\"}",
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 998,
+      "budget_remaining": 990,
       "id": "actor:a1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
-      "seq": 6,
+      "seq": 4,
       "span": null,
-      "step_count": 2,
+      "step_count": 10,
       "type": "step.committed"
     },
     {
@@ -74,21 +49,35 @@
         "data": {
           "actor_id": "actor:a1",
           "family": "actor.scheduler-step",
-          "ready_id": 2
+          "ready_id": 1
         },
         "kind": "user_event"
       },
-      "seq": 7,
+      "seq": 5,
       "span": null,
       "type": "replay.input"
     },
     {
       "message": "actor.receive",
       "phase": "run",
-      "seq": 8,
+      "seq": 6,
       "span": null,
       "text": "{\"actor_id\":\"actor:a1\",\"handler\":\"explode\"}",
       "type": "state.snapshot"
+    },
+    {
+      "phase": "run",
+      "seq": 7,
+      "span": null,
+      "text": "hew: failure: UserPanic (212): boom\n",
+      "type": "io.stderr"
+    },
+    {
+      "phase": "run",
+      "seq": 8,
+      "span": null,
+      "text": "hew: actor crash in Boom.explode (actor 1): UserPanic\n",
+      "type": "io.stderr"
     },
     {
       "message": "actor.crash",
@@ -99,14 +88,14 @@
       "type": "state.snapshot"
     },
     {
-      "budget_remaining": 993,
+      "budget_remaining": 981,
       "id": "actor:a1",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 10,
       "span": null,
-      "step_count": 7,
+      "step_count": 19,
       "type": "step.committed"
     },
     {
@@ -115,7 +104,7 @@
         "data": {
           "actor_id": "actor:a1",
           "family": "actor.scheduler-step",
-          "ready_id": 3
+          "ready_id": 2
         },
         "kind": "user_event"
       },
@@ -131,14 +120,39 @@
       "type": "io.stdout"
     },
     {
-      "budget_remaining": 984,
+      "budget_remaining": 971,
       "id": "actor:root",
       "id_kind": "actor",
       "message": "actor.scheduler-step",
       "phase": "run",
       "seq": 13,
       "span": null,
-      "step_count": 16,
+      "step_count": 29,
+      "type": "step.committed"
+    },
+    {
+      "phase": "replay",
+      "replay_input": {
+        "data": {
+          "actor_id": "actor:root",
+          "family": "actor.scheduler-step",
+          "ready_id": 3
+        },
+        "kind": "user_event"
+      },
+      "seq": 14,
+      "span": null,
+      "type": "replay.input"
+    },
+    {
+      "budget_remaining": 967,
+      "id": "actor:root",
+      "id_kind": "actor",
+      "message": "actor.scheduler-step",
+      "phase": "run",
+      "seq": 15,
+      "span": null,
+      "step_count": 33,
       "type": "step.committed"
     },
     {
@@ -148,31 +162,6 @@
           "actor_id": "actor:root",
           "family": "actor.scheduler-step",
           "ready_id": 4
-        },
-        "kind": "user_event"
-      },
-      "seq": 14,
-      "span": null,
-      "type": "replay.input"
-    },
-    {
-      "budget_remaining": 982,
-      "id": "actor:root",
-      "id_kind": "actor",
-      "message": "actor.scheduler-step",
-      "phase": "run",
-      "seq": 15,
-      "span": null,
-      "step_count": 18,
-      "type": "step.committed"
-    },
-    {
-      "phase": "replay",
-      "replay_input": {
-        "data": {
-          "actor_id": "actor:root",
-          "family": "actor.scheduler-step",
-          "ready_id": 5
         },
         "kind": "user_event"
       },
@@ -196,7 +185,7 @@
     }
   ],
   "final_state": {
-    "budget_remaining": 971,
+    "budget_remaining": 954,
     "diagnostics": [],
     "exit_code": 1,
     "globals": [],
@@ -213,12 +202,15 @@
     "runtime_failures": [],
     "sandbox_rejections": [],
     "status": "ok",
-    "stderr": [],
+    "stderr": [
+      "hew: failure: UserPanic (212): boom\n",
+      "hew: actor crash in Boom.explode (actor 1): UserPanic\n"
+    ],
     "stdout": [
       "crashed\n",
       "dead\n"
     ],
-    "step_count": 29,
+    "step_count": 46,
     "virtual_clock": {
       "current_ms": 0,
       "epoch_ms": 0,
@@ -226,13 +218,13 @@
     }
   },
   "fixture_id": "actor-crash",
-  "hew_version": "0.6.0-rc5",
+  "hew_version": "0.6.1",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [
       {
         "data": {
-          "actor_id": "actor:root",
+          "actor_id": "actor:a1",
           "family": "actor.scheduler-step",
           "ready_id": 1
         },
@@ -248,7 +240,7 @@
       },
       {
         "data": {
-          "actor_id": "actor:a1",
+          "actor_id": "actor:root",
           "family": "actor.scheduler-step",
           "ready_id": 3
         },
@@ -259,14 +251,6 @@
           "actor_id": "actor:root",
           "family": "actor.scheduler-step",
           "ready_id": 4
-        },
-        "kind": "user_event"
-      },
-      {
-        "data": {
-          "actor_id": "actor:root",
-          "family": "actor.scheduler-step",
-          "ready_id": 5
         },
         "kind": "user_event"
       }

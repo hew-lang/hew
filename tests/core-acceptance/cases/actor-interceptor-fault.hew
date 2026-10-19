@@ -24,11 +24,13 @@ actor Worker {
         handled = handled + 1;
         text
     }
-    receive fn count() -> i64 { handled }
+    receive fn count() -> i64 {
+        handled
+    }
 
     #[on(crash)]
     fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
-        assert(info.code != 0);
+        assert(info.kind == CrashKind.Fault);
         println(handled);
         failure.CrashAction.Restart
     }

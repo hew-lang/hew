@@ -571,6 +571,15 @@ impl Checker {
         span: &Span,
     ) {
         let root = root.lexical_key();
+        if self.place_base_depth == 0 {
+            self.reject_prepared_input_access(
+                root,
+                path,
+                span,
+                TypeErrorKind::InvalidOperation,
+                true,
+            );
+        }
         self.env
             .note_loop_use(root, path, span, self.place_base_depth > 0);
         let Some((conflict, moved_path, moved_at)) = self.env.place_move_conflict(root, path)
@@ -793,7 +802,7 @@ impl Checker {
         let ty = self.subst.resolve(ty);
         let boundary_ty = self.normalize_for_use(&ty);
         if !self.type_is_send(&boundary_ty) {
-            self.report_invalid_actor_send(&ty, error_span);
+            self.record_actor_marker_transfer(expr, move_span, error_span, boundary_ty);
         }
         if self.ty_contains_affine_actor_transfer(&ty) {
             self.mark_affine_transfer_moved(expr, move_span);

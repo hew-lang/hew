@@ -1,4 +1,4 @@
-// A cooperative bounded send through ChildRef must resolve and pin the stable
+// A cooperative bounded send through a role must resolve and pin the stable
 // supervisor role. Treating the two-word ChildRef descriptor as an actor handle, or
 // blocking the only scheduler worker, prevents the second delivery.
 actor BlockedChild {
@@ -19,7 +19,7 @@ supervisor App {
 }
 
 actor Driver {
-    let worker: ChildRef<BlockedChild>;
+    let worker: BlockedChild;
 
     receive fn run() {
         let _ = worker.work(1);

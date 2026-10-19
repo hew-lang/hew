@@ -1088,12 +1088,6 @@ impl LowerCtx {
         span: &std::ops::Range<usize>,
     ) -> (HirExprKind, ResolvedTy) {
         let scrutinee_hir = self.lower_expr(scrutinee, IntentKind::Read);
-        // Register a generic-enum instantiation if the scrutinee's type is
-        // a parameterised enum. The checker-authoritative type at the scrutinee
-        // span carries the full `Named { name, args }` including concrete type
-        // args; `try_register_enum_instantiation` is a no-op for monomorphic enums.
-        self.try_register_enum_instantiation(&scrutinee.1);
-
         let pattern_arms = pattern_arms_from_match(arms);
         let Some((hir_arms, _)) =
             self.lower_pattern_arms(&scrutinee_hir, &pattern_arms, &ResolvedTy::Unit)
@@ -1784,7 +1778,7 @@ impl LowerCtx {
                 let scrutinee_hir = self.lower_expr(expr, IntentKind::Read);
                 // Register a generic-enum instantiation so MIR/codegen find the
                 // mangled layout — matches the Match path.
-                self.try_register_enum_instantiation(&expr.1);
+
                 let arms: Vec<PatternArm<'_>> = flatten_or_pattern(pattern)
                     .into_iter()
                     .map(|leaf| PatternArm {
@@ -1876,8 +1870,8 @@ impl LowerCtx {
     /// Convert one checker-resolved [`hew_types::PayloadVariantPattern`] into
     /// its HIR form: resolve the nested variant's declaration-order index via
     /// `machine_ctor_registry` (the same qualified-key lookup the outer arm
-    /// uses), register a generic-enum instantiation for the nested payload
-    /// type, and allocate binding ids for the inner payload bindings.
+    /// uses), preserve the checked payload type, and allocate binding ids
+    /// for the inner payload bindings.
     ///
     /// Must be called inside the arm's scope (`push_scope`) so the inner
     /// bindings resolve in the guard and body. Returns `None` after pushing a
@@ -1905,7 +1899,7 @@ impl LowerCtx {
         // Register a generic-enum instantiation for the nested payload type
         // so MIR/codegen find its mangled layout (no-op for monomorphic
         // enums; the scrutinee registration only covers the outer type).
-        self.try_register_enum_instantiation_ty(&payload_ty, pattern_span);
+
         let Some((registered_type, idx_usize, _)) =
             self.lookup_variant_ctor(&pvp.variant_match.variant_name, Some(&payload_ty))
         else {

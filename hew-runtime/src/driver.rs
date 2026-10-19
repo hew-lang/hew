@@ -235,7 +235,6 @@ enum Participant {
     /// An actor with work; the entry owns one scheduler queue reference.
     Actor(*mut crate::actor::HewActor),
     /// A task continuation or inbound call ready to resume.
-    #[cfg(not(target_arch = "wasm32"))]
     Task(Arc<dyn crate::wake::scheduled::ReadyWork>),
     /// A parked root or hosting boundary whose readiness latch is set.
     Root(Arc<Readiness>),
@@ -307,7 +306,6 @@ pub(crate) fn publish_queue_entry(mut entry: SchedulerQueueEntry) {
 }
 
 /// Accept retained work whose readiness has been published.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publish_work(task: Arc<dyn crate::wake::scheduled::ReadyWork>) {
     publish(Participant::Task(task));
 }
@@ -380,7 +378,6 @@ fn pick() -> Option<Participant> {
 fn run_participant(participant: Participant) {
     match participant {
         Participant::Actor(actor) => activate_queued_actor(actor),
-        #[cfg(not(target_arch = "wasm32"))]
         Participant::Task(task) => task.poll(),
         Participant::Root(readiness) => readiness.picked(),
         #[cfg(not(target_arch = "wasm32"))]

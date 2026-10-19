@@ -81,7 +81,7 @@ impl Checker {
             let child_type = self.canonical_supervisor_child_type(&c.actor_type);
             let entry = (
                 c.name.to_string(),
-                self.named_ty_for_key(&child_type, type_args),
+                Ty::actor_handle_of(&self.named_ty_for_key(&child_type, type_args)),
             );
             if c.is_pool {
                 pools.push(entry);
@@ -455,7 +455,7 @@ impl Checker {
             .as_ref()
             .and_then(|tb| self.resolve_trait_path(&tb.path));
         let target = self.current_impl_target();
-        // Populate impl_assoc_type_bindings on every enter (not gated on
+        // Populate AssociatedTypeSchemas on every enter (not gated on
         // `enforce`) so projection collapse can find bindings during
         // call-site monomorphisation even when this scope was entered by
         // a non-enforcing registration sweep. The first writer wins;
@@ -485,7 +485,8 @@ impl Checker {
                         );
                         let receiver = self.resolve_type_expr(&id.target_type);
                         let bindings = self
-                            .impl_assoc_type_bindings
+                            .associated_schema_parameters
+                            .implementations
                             .entry(binding_key)
                             .or_default();
                         if !bindings.iter().any(|binding| binding.receiver == receiver) {
@@ -702,12 +703,19 @@ impl Checker {
         trait_id: crate::DefId,
         td: &TraitDecl,
     ) {
-        let supers: Vec<crate::DefId> = td
+        let supers: Vec<TraitRef> = td
             .super_traits
             .iter()
             .flatten()
-            .filter_map(|bound| self.resolve_written_bound(td.name.name, bound))
-            .map(|bound| bound.trait_id)
+            .filter_map(|bound| {
+                let mut resolved = self.resolve_written_bound(td.name.name, bound)?;
+                resolved.assoc = bound
+                    .assoc_type_bindings
+                    .iter()
+                    .map(|binding| (binding.name.name, self.resolve_type_expr(&binding.ty)))
+                    .collect();
+                Some(resolved)
+            })
             .collect();
         self.trait_super.insert(trait_id, supers);
     }

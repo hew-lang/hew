@@ -73,43 +73,9 @@ impl LowerCtx {
         self.seed_channel_recv_fn_registry();
     }
 
-    /// Seed the `link_remote(RemotePid<T>, PartitionPolicy) -> Result<(),
-    /// LinkError>` builtin. Unlike `link`/`monitor`/`unlink` (1-arg
-    /// actor handle, self synthesized), `link_remote` is 2-arg: the explicit remote
-    /// target and the `PartitionPolicy`. The linking subject (self) is resolved
-    /// inside the runtime. The checker records the call-result type at the call
-    /// site, so `return_ty` is a placeholder; the params carry arity. Resolves to
-    /// `ResolvedRef::Builtin(LinkRemote)` → C symbol `hew_node_link_remote_location`.
-    pub(super) fn seed_link_remote_fn_registry(&mut self) {
-        use hew_types::runtime_call::RuntimeCallFamily;
-        self.fn_registry.insert(
-            "link_remote".to_string(),
-            FnEntry {
-                id: SYNTHETIC_LINK_REMOTE_ITEM,
-                return_ty: ResolvedTy::Unit,
-                param_tys: vec![
-                    ResolvedTy::Named {
-                        args: vec![ResolvedTy::Unit],
-                        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid),
-                        is_opaque: false,
-                    },
-                    // PartitionPolicy is the stdlib enum the checker also names.
-                    ResolvedTy::Named {
-                        head: hew_types::KnownDecl::PartitionPolicy.head(),
-                        args: vec![],
-                        is_opaque: false,
-                    },
-                ],
-                linkage: None,
-                type_params: Vec::new(),
-                builtin_family: Some(RuntimeCallFamily::LinkRemote),
-            },
-        );
-    }
-
     /// Seeds the checker-registered runtime builtins that have no
     /// `stdlib_catalog` entry and no AST `fn` item (`supervisor_stop`,
-    /// `link`, `monitor`, `unlink`, `link_remote`). See the per-entry comments for the
+    /// `link`, `monitor`, `unlink`). See the per-entry comments for the
     /// resolution contracts.
     pub(super) fn seed_typed_builtin_fn_registry(&mut self) {
         use hew_types::runtime_call::RuntimeCallFamily;
@@ -180,7 +146,6 @@ impl LowerCtx {
                 },
             );
         }
-        self.seed_link_remote_fn_registry();
         // `instant::now() -> instant`. The static (no-receiver) call resolves
         // by the joined callee name `"instant::now"`; `builtin_family` makes
         // `lower_identifier` produce `ResolvedRef::Builtin(InstantNow)` so MIR

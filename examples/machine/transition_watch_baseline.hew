@@ -1,45 +1,17 @@
-// Machine transition watch — the supported observation pattern.
-//
-// A machine is a value type: the owner steps it in place and publishes
-// each observed transition into a std/stream `Sink`. The observer
-// waits with a pipe receive select arm composed with
-// `after`, so a stalled owner can never wedge the watcher.
-//
-// This baseline keeps owner and observer in one actor; the cross-actor
-// split (pipe halves travelling through actor messages) builds on
-// the same shape.
+// Observe an independent machine copy through a typed, bounded feed.
 import std.concurrency.lifecycle.{Lifecycle};
 
-import std.stream;
-
-actor Combined {
-    receive fn run() {
-        let (tx, rx): (stream.Sink<string>, stream.Stream<string>) = match stream.pipe(8) {
-            .Ok(pair) => pair,
-            .Err(err) => panic(f"stream.pipe failed: {err}"),
-        };
-        var lc: Lifecycle<i64> = .Created;
-        let before = lc.state_name();
-        lc.step(Lifecycle.Event.Initialise);
-        let after_step = lc.state_name();
-        if before != after_step {
-            tx.send(f"{before} -> {after_step}").expect("send");
-        }
-        tx.close();
-        select {
-            t from rx.recv() => {
-                match t {
-                    .Some(tr) => println(tr),
-                    .None => println("watch closed"),
-                }
-            }
-            after 2s => println("timeout"),
-        };
-        rx.close();
-    }
-}
+import std.machine.watch;
 
 fn main() {
-    let c = spawn Combined;
-    let _ = c.run();
+    let initial: Lifecycle<i64> = .Created;
+    let (owner, feed) = watch.observe(initial, capacity: 8, subscribers: 1).expect("observe lifecycle");
+    var lifecycle = owner;
+    let updates = feed.subscribe().expect("subscribe");
+    let before = updates.initial().state.state_name();
+    let _ = lifecycle.step(.Initialise);
+    let notice = updates.recv().expect("complete history").expect("initialise notice");
+    println(f"{before} -> {notice.state.state_name()}");
+    lifecycle.close();
+    assert(updates.recv().expect("closed history").is_none());
 }

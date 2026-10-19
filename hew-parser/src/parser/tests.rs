@@ -4824,21 +4824,6 @@ fn array_spread_keeps_element_and_spread_apart() {
 }
 
 #[test]
-fn spread_does_not_start_an_expression_outside_a_literal() {
-    // Negative control for the literal-only spread: `..` still cannot begin an
-    // expression, so no range spelling changed meaning.
-    let result = parse("fn f(xs: Vec<int>) { let r = ..xs; }");
-    assert!(
-        result.errors.iter().any(|error| matches!(
-            &error.kind,
-            ParseDiagnosticKind::MissingExpression { got } if got.contains("..")
-        )),
-        "`..` outside a literal is still not an expression; got: {:?}",
-        result.errors
-    );
-}
-
-#[test]
 fn array_spread_with_a_repeat_count_is_rejected() {
     // `[..xs; 3]` has no reading: a spread splices a collection and a repeat
     // literal repeats one value.

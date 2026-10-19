@@ -464,8 +464,9 @@ fn main() {
                     _ => println("REJECT:other"),
                 }
                 match mailbox(saver).tick() {
-                    .Err(failure) => println(f"MAILBOX:{failure.reason}"),
+                    .Err(ActorError.Rejected(failure)) => println(f"MAILBOX:{failure.reason}"),
                     .Ok(_) => println("MAILBOX:accepted"),
+                    .Err(_) => println("MAILBOX:uncertain"),
                 }
                 return;
             }

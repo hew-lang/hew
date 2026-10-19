@@ -1,4 +1,4 @@
-import std.string;
+
 
 type Item {
     number: i64;
@@ -6,7 +6,7 @@ type Item {
 }
 
 fn make_item(number: i64) -> Item {
-    Item { number: number, label: "item-" + string.from_int(number) }
+    Item { number: number, label: "item-" + f"{number}" }
 }
 
 fn inspect(number: i64) -> i64 {

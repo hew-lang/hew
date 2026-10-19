@@ -35,6 +35,15 @@ actor Ledger {
         balance = balance - amount;
     }
 
+    #[on(crash)]
+    fn failed(info: CrashInfo) -> CrashAction {
+        println(match info.kind {
+            CrashKind.HandlerFailed => "HandlerFailed",
+            _ => panic("unexpected crash kind"),
+        });
+        CrashAction.Restart
+    }
+
     receive fn balance_now() -> i64 {
         balance
     }
@@ -53,6 +62,15 @@ actor Vault {
             return error VaultError.Overdrawn(amount - balance);
         }
         balance = balance - amount;
+    }
+
+    #[on(crash)]
+    fn failed(info: CrashInfo) -> CrashAction {
+        println(match info.kind {
+            CrashKind.HandlerFailed => "HandlerFailed",
+            _ => panic("unexpected crash kind"),
+        });
+        CrashAction.Restart
     }
 
     receive fn balance_now() -> i64 {

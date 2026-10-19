@@ -16,9 +16,9 @@
 // no locks, no data races — the actor model guarantees it.
 //
 // This example runs all replicas in one process to focus on the replication
-// pattern. It does not exercise the distributed runtime. A multi-node version
-// would define serializable request/reply types, implement ActorMsg, and use
-// Node.start/register/lookup to obtain RemotePid handles.
+// pattern. It does not exercise the distributed runtime. Its portable receive
+// handlers are marked #[wire]; a multi-node version would export the actors
+// through authenticated peer sessions and receive ordinary actor handles.
 
 // Coordinator — merges replica counts into a global total.
 actor Coordinator {
@@ -26,6 +26,7 @@ actor Coordinator {
     var replica_totals: Vec<i64>;
     var global_total: i64;
     var sync_count: i64;
+    #[wire]
     receive fn register_replica(name: string) {
         replica_names.push(name);
         replica_totals.push(0);
@@ -33,6 +34,7 @@ actor Coordinator {
     }
 
     // Replica reports its local count for merging.
+    #[wire]
     receive fn sync(name: string, local_count: i64) {
         sync_count = sync_count + 1;
         // Find the replica and update its known total
@@ -50,6 +52,7 @@ actor Coordinator {
         global_total = sum;
         println(f"[coordinator] sync #{sync_count}: {name} reported {local_count}, global={global_total}");
     }
+    #[wire]
     receive fn get_global() -> i64 {
         println(f"[coordinator] global total = {global_total}");
         global_total
@@ -66,15 +69,18 @@ actor Replica {
     }
 
     // Local increment — fast, no coordination needed.
+    #[wire]
     receive fn increment(n: i64) {
         local_count = local_count + n;
         println(f"  [{name}] +{n} → local={local_count}");
     }
 
     // Push local state to coordinator.
+    #[wire]
     receive fn sync_to_coordinator() {
         let _ = coordinator.sync(name, local_count);
     }
+    #[wire]
     receive fn get_local() -> i64 {
         local_count
     }
@@ -89,13 +95,10 @@ fn main() {
     let empty_totals: Vec<i64> = Vec.new();
     let coord = spawn Coordinator { replica_names: empty_names, replica_totals: empty_totals, global_total: 0, sync_count: 0 };
     // Create process-local replicas (a production deployment could place them
-    // on separate nodes after adding the distributed message protocol).
-    // Node.start("0.0.0.0:9000");
+    // on separate nodes and offer these actors to authenticated peers).
     let r1 = spawn Replica { name: "node-1", coordinator: coord, local_count: 0 };
     let r2 = spawn Replica { name: "node-2", coordinator: coord, local_count: 0 };
     let r3 = spawn Replica { name: "node-3", coordinator: coord, local_count: 0 };
-    // Node.register("counter-1", r1); // for a RemotePid-based deployment
-
     // Register replicas with coordinator
     let _ = coord.register_replica("node-1");
     let _ = coord.register_replica("node-2");
@@ -167,5 +170,5 @@ fn main() {
     println(f"  node-1: {l1}, node-2: {l2}, node-3: {l3}");
     println("");
     println("Distributed counter complete.");
-    println("A multi-node version would expose this protocol through ActorMsg.");
+    println("A multi-node version would export these wire handlers to peers.");
 }

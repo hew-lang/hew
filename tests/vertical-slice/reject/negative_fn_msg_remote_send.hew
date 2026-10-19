@@ -1,18 +1,13 @@
-// Reject: a function value has no wire representation, so it must not cross
-// a RemotePid<T>::send boundary.
-fn inc(x: i64) -> i64 {
-    x + 1
-}
+// Exported actor protocols cannot carry function values as wire payloads.
+import std.net;
 
 actor Worker {
+    #[wire]
     receive fn carry(f: fn(i64) -> i64) {}
 }
 
-impl ActorMsg for Worker {
-    type Msg = fn(i64) -> i64;
-    type Reply = ();
+fn offer(peer: net.PeerSession, target: Worker) {
+    let _export = peer.export(target);
 }
 
-fn send_remote(pid: RemotePid<Worker>) -> Result<(), SendError> {
-    pid.send(inc)
-}
+fn main() {}

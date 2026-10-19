@@ -276,8 +276,14 @@ fn node_read_and_sweep_paths_treat_missing_runtime_as_empty_state() {
     );
 
     with_current_node_read(|current| assert_eq!(*current, 0));
-    assert!(!complete_remote_reply(std::ptr::null(), 0, 1, &[1, 2, 3]));
-    assert!(!fail_remote_reply(std::ptr::null(), 0, 1, &[]));
+    assert!(!complete_remote_reply(
+        std::ptr::null(),
+        0,
+        0,
+        1,
+        &[1, 2, 3]
+    ));
+    assert!(!fail_remote_reply(std::ptr::null(), 0, 0, 1, &[]));
     fail_remote_replies_for_connection(std::ptr::null(), 0);
     // SAFETY: with no runtime there are no known-node registries to sweep.
     unsafe { unregister_actor_names(crate::pid::hew_pid_make(1, 1)) };
@@ -661,7 +667,7 @@ fn test_node_unregister() {
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
         assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
             0
@@ -718,7 +724,7 @@ fn register_same_name_repoints_future_lookup() {
             "registering the same location is idempotent"
         );
         assert_eq!(hew_node_register(node, name.as_ptr(), 7002), 0);
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
             0
@@ -750,7 +756,7 @@ fn lookup_location_writes_output_only_on_success() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 52) };
     let missing = c"missing_exact_location";
-    let sentinel = HewRemotePid::from(test_location(99, 777));
+    let sentinel = HewLocation::from(test_location(99, 777));
     let mut found = sentinel;
 
     // SAFETY: node, name, and output pointers are valid.
@@ -779,7 +785,7 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
         assert!(!actor.is_null());
         let name = c"issued_location_lifetime";
         assert_eq!(hew_node_register(node, name.as_ptr(), (*actor).id), 0);
-        let mut target = HewRemotePid::default();
+        let mut target = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut target),
             0
@@ -796,10 +802,11 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
             Some(actor)
         );
+        let incarnation = crate::lifetime::live_actors::ActorIncarnation::of(actor);
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(
-            hew_node_send_location(node, &raw const target, test_dispatch(), 1, ptr::null(), 0,),
-            HEW_ERR_STALE_REF
+            crate::lifetime::live_actors::with_live_incarnation(incarnation, |_| ()),
+            None
         );
         assert_eq!(hew_node_stop(node), 0);
         hew_node_free(node);
@@ -872,7 +879,7 @@ fn remote_lookup_via_registry_gossip() {
         assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
 
         // Node lookup should find it via remote_names.
-        let mut found = HewRemotePid::default();
+        let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node.as_ptr(), remote_name.as_ptr(), &raw mut found,),
             0

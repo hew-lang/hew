@@ -10,10 +10,6 @@ repository = "https://github.com/hew-lang/hew"
 keywords = ["hew", "debugging"]
 categories = ["development-tools::debugging"]
 
-[[bin]]
-name = "hew-observe"
-path = "src/main.rs"
-
 [dependencies]
 clap.workspace = true
 crossterm = "0.29"

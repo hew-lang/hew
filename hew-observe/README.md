@@ -35,6 +35,8 @@ processing latency. Sort and scroll to find hot spots or stuck actors.
 
 Actor group hierarchy and supervisor trees. Shows restart counts and the
 parent-child relationships that define failure handling.
+Select a role to inspect its current actor incarnation and mailbox counters.
+Press Enter to focus that actor's events. These are read-only actions.
 
 ### 4. Crashes — failure log
 
@@ -49,6 +51,8 @@ restart decision, and the surrounding context.
 
 Multi-node view for clustered deployments: per-node connection state,
 message flow across nodes, and distributed actor placement.
+The node metrics panel shows authenticated peers, routes, gossip, pending asks,
+membership states and registered names from the runtime's observe registry.
 
 ### 6. Messages — message flow
 
@@ -86,16 +90,16 @@ make observe-protocol-check
 hew run myapp.hew --profile
 
 # In another terminal, attach the observer (auto-discovers on Unix)
-hew-observe
+hew observe
 
 # Or target a specific TCP address
-hew-observe --addr localhost:6060
+hew observe --addr localhost:6060
 
 # List all discovered profiler processes (Unix only)
-hew-observe --list
+hew observe --list
 
 # If multiple profilers are running, pick one explicitly (Unix only)
-hew-observe --pid 12345
+hew observe --pid 12345
 ```
 
 You can also run an already-compiled binary directly without `hew run`:
@@ -103,7 +107,7 @@ You can also run an already-compiled binary directly without `hew run`:
 ```sh
 HEW_PPROF=auto ./myapp      # Unix: per-user socket, auto-discovered
 HEW_PPROF=:6060 ./myapp     # TCP on port 6060
-hew-observe                 # or: hew-observe --addr localhost:6060
+hew observe                 # or: hew observe --addr localhost:6060
 ```
 
 ## Part of the Hew compiler
@@ -112,14 +116,14 @@ This crate is an internal component of the [Hew](https://github.com/hew-lang/hew
 
 ## Discovery order
 
-On Unix, `hew-observe` resolves the profiler socket directory in this order:
+On Unix, `hew observe` resolves the profiler socket directory in this order:
 
 1. `$XDG_RUNTIME_DIR/hew-profilers/` (Linux, if `$XDG_RUNTIME_DIR` is set)
 2. `$TMPDIR/hew-profilers-{uid}/` (macOS / BSD, if `$TMPDIR` is set)
 3. `/tmp/hew-profilers-{uid}/` (fallback)
 
 The Hew runtime writes a JSON descriptor (`{pid}.json`) to whichever
-directory it chooses. `hew-observe` reads from the first directory that
+directory it chooses. `hew observe` reads from the first directory that
 exists and is owned by your UID. Stale entries (processes that are no longer
 alive) are pruned automatically on the next scan.
 
@@ -133,7 +137,7 @@ auto-connect as soon as a profiler appears — no restart required. The
 status bar shows `[WAITING]` and the connection indicator shows
 `◌ Waiting for profiler…` while scanning.
 
-Run `hew-observe --list` to check what is currently visible.
+Run `hew observe --list` to check what is currently visible.
 
 Make sure the Hew program was started with profiling enabled:
 
@@ -145,17 +149,17 @@ HEW_PPROF=auto ./myapp
 
 **"Multiple profilers running" error?**
 
-Use `hew-observe --list` to see all active profilers, then pick one:
+Use `hew observe --list` to see all active profilers, then pick one:
 
 ```sh
-hew-observe --list        # shows PID, program name, uptime, socket path
-hew-observe --pid 12345   # attach to that specific PID
+hew observe --list        # shows PID, program name, uptime, socket path
+hew observe --pid 12345   # attach to that specific PID
 ```
 
 **"No profiler found for PID …" error?**
 
 The process may have exited or profiling may not be enabled. Check with
-`hew-observe --list` to see what is currently available.
+`hew observe --list` to see what is currently available.
 
 **On non-Unix platforms (Windows)?**
 
@@ -164,5 +168,5 @@ address explicitly:
 
 ```sh
 HEW_PPROF=:6060 myapp.exe
-hew-observe --addr localhost:6060
+hew observe --addr localhost:6060
 ```

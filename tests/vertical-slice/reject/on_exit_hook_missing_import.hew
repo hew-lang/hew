@@ -3,7 +3,7 @@
 actor Watcher {
     #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
-        let _id = note.actor_id;
+        let _id = note.target;
         let _kind = note.kind;
     }
 }

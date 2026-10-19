@@ -4370,8 +4370,9 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
     // Without the module in the visited-set key the second one is swallowed.
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let type_param = Ty::param(crate::ParamHead::for_test("T"));
+    let declaration = checker.defs.mint_for_test("same");
     checker.generic_requirements.insert(
-        Some("same".to_string()),
+        Some(declaration),
         vec![crate::check::types::GenericRequirement {
             kind: crate::check::types::GenericRequirementKind::Eq,
             ty: Ty::builtin_named(crate::BuiltinType::Option, vec![type_param]),
@@ -4387,7 +4388,7 @@ fn generic_structural_eq_dedup_distinguishes_equal_spans_in_different_modules() 
             crate::check::types::GenericFnInstantiationSite {
                 caller: None,
                 caller_type_params: Vec::new(),
-                callee: "same".to_string(),
+                callee: declaration,
                 substitution: std::collections::HashMap::from([(
                     crate::ParamHead::for_test("T"),
                     ineligible.clone(),
@@ -5053,6 +5054,75 @@ fn selected_eq_concrete_demand_does_not_walk_unrelated_generic_calls() {
 }
 
 #[test]
+fn selected_eq_demand_does_not_walk_an_unrelated_branch_of_the_same_root() {
+    let mut source = generic_forwarder_chain(70).replace("a == b", "true");
+    source = source.replace("fn main() -> i64", "fn unrelated() -> i64");
+    source.push_str(
+        r"
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn branches<T>(left: T, right: T) -> bool {
+            let _ignored = hop_70(.Some(left), .Some(right));
+            same(left, right)
+        }
+        fn main() -> i64 { if branches(1, 1) { 0 } else { 1 } }
+    ",
+    );
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_relevant_polymorphic_recursion_still_fails_closed() {
+    let output = check_source(
+        r"
+        fn grow<T>(left: T, right: T) -> bool {
+            let _same = left == right;
+            grow<Option<T>>(.Some(left), .Some(right))
+        }
+        fn main() { let _same = grow(1, 1); }
+    ",
+    );
+    assert!(
+        output.errors.iter().any(|error| error
+            .message
+            .contains("generic instantiation chain exceeded 64 hops")),
+        "a growing relevant instantiation must still be refused: {:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn selected_eq_demand_in_an_implicit_generic_close_is_discharged() {
+    let source = r"
+        #[resource]
+        type Checked<T> { value: T; }
+        impl<T> Checked<T> {
+            fn close(consume self) { let _same = self.value == self.value; }
+        }
+        fn discard<T>(consume value: T) {}
+        fn main() {
+            let value: HashMap<string, i64> = HashMap.new();
+            discard(Checked { value: value });
+        }
+    ";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("HashMap<string, i64>")
+                && error.message.contains("has no selected Eq implementation")),
+        "implicit close must discover and discharge its generic body's Eq demand: {:?}",
+        output.errors
+    );
+    let accepted = check_source(&source.replace(
+        "let value: HashMap<string, i64> = HashMap.new();",
+        "let value = 7;",
+    ));
+    assert!(accepted.errors.is_empty(), "{:?}", accepted.errors);
+}
+
+#[test]
 fn selected_eq_generic_bound_composes_through_an_abstract_caller() {
     let output = check_source(
         r"
@@ -5211,4 +5281,54 @@ fn a_user_display_impl_satisfies_the_bound() {
         "a user impl satisfies the bound: {:?}",
         accepted.errors
     );
+}
+
+#[test]
+fn trait_object_positional_arguments_match_the_declared_binders() {
+    for (bound, arity) in [
+        ("Lookup<Output = i32>", Some((1, 0))),
+        ("Lookup<i64, string, Output = i32>", Some((1, 2))),
+        ("ReadOnly<i64, Output = i32>", Some((0, 1))),
+        ("Lookup<i64, Output = i32>", None),
+        ("ReadOnly<Output = i32>", None),
+    ] {
+        let source = format!(
+            r"
+            trait Lookup<Key> {{
+                type Output;
+                fn at(self, key: Key) -> Self.Output;
+            }}
+            trait ReadOnly {{
+                type Output = i32;
+                fn get(self) -> Self.Output;
+            }}
+            fn accept(value: dyn {bound}) {{}}
+        "
+        );
+        let output = check_source(&source);
+        if let Some((required, supplied)) = arity {
+            assert_eq!(output.errors.len(), 1, "{bound}: {:?}", output.errors);
+            let error = &output.errors[0];
+            assert_eq!(error.kind, TypeErrorKind::ArityMismatch);
+            assert!(
+                error
+                    .message
+                    .contains(&format!("requires {required} positional type argument")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                error.message.contains(&format!("received {supplied}")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                source[error.span.clone()].contains(&format!("dyn {bound}")),
+                "{:?}",
+                error.span
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{bound}: {:?}", output.errors);
+        }
+    }
 }

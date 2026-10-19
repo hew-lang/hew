@@ -19,7 +19,7 @@ fn main() {
     assert(bmp < "🙂");
     assert("🙂" > bmp);
     let values: Vec<string> = ["🙂", "Ω", second, "é", first, "", bmp];
-    let ordered = sort.sort_strings(values);
+    let ordered = sort.sort(values);
     assert(ordered[0] == "");
     assert(ordered[1] == first);
     assert(ordered[2] == second);

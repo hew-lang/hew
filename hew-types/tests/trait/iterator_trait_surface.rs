@@ -275,7 +275,7 @@ pub fn drive<I: IntoIterator>(_x: I) {{}}
 fn stdlib_builtins_carries_iterator_and_intoiterator_decls() {
     // Smoke against the live `std/builtins.hew`: confirm both trait
     // declarations are present in the parsed program. Pre-existing reds on
-    // builtins.hew (display dup, RemotePid mismatch, etc.) are tolerated — we
+    // builtins.hew (display duplication, etc.) are tolerated — we
     // only own the surface this stage adds.
     let mut path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();

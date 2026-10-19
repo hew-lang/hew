@@ -1,5 +1,21 @@
 import std.observe;
 
+import std.os;
+
+actor Lossy {
+    mailbox 1 overflow drop_new;
+    receive fn work(value: i64) {}
+}
+
+actor Fill {
+    receive fn run(worker: Lossy) {
+        let inbox = mailbox(worker);
+        assert(inbox.work(1).expect("first queued") == Delivery.Accepted);
+        assert(inbox.work(2).expect("declared loss") == Delivery.Discarded);
+        terminate(worker);
+    }
+}
+
 actor Fragile {
     let id: i32;
     receive fn break_it() {
@@ -16,7 +32,39 @@ supervisor Pair {
 }
 
 fn main() {
+    let key = os.env("HEW_OBSERVE_KEY") ?? "";
+    let peer = os.env("HEW_OBSERVE_PEER") ?? "";
+    if !key.is_empty() {
+        let bind = os.env("HEW_OBSERVE_BIND") ?? "127.0.0.1:0";
+        let peers = if peer.is_empty() {
+            Vec.new()
+        } else {
+            [peer]
+        };
+        Node.start(NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: peers, seeds: [] }).expect("observe node");
+        if (os.env("HEW_OBSERVE_MINT") ?? "") == "1" {
+            println(f"IDENTITY {Node.identity_key()}");
+            Node.shutdown();
+            return;
+        }
+    }
     let sup = spawn Pair;
+    let lossy = spawn Lossy;
+    let fill = spawn Fill;
+    fill.run(lossy).expect("mailbox filled");
+    stopped(lossy);
+    if !key.is_empty() {
+        assert(Node.register(f"observe-{os.pid()}", fill) == 0);
+        let address = os.env("HEW_OBSERVE_CONNECT") ?? "";
+        if !address.is_empty() {
+            var attempts = 0;
+            while Node.connect(address).is_err() {
+                attempts = attempts + 1;
+                assert(attempts < 40);
+                sleep(50ms);
+            }
+        }
+    }
     sleep(30ms);
     let a = sup.a;
     let _ = a.break_it();
@@ -35,5 +83,12 @@ fn main() {
     }
     let _barrier = observe.barrier().expect("barrier succeeds");
     println("restarts fixture ready");
-    sleep(15s);
+    sleep(3s);
+    if !key.is_empty() {
+        Node.shutdown();
+    }
+    sleep(1s);
+    stop(sup);
+    stopped(sup);
+    sleep(12s);
 }

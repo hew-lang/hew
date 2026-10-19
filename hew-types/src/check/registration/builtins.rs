@@ -36,9 +36,6 @@ impl Checker {
         // Numeric conversion. The math functions live in `std.math`; there is
         // no bare spelling for them (A409).
 
-        // String operations
-        self.register_builtin_fn("len", vec![Ty::Var(TypeVar::fresh())], Ty::I64);
-
         // I/O and system
         // `instant::now` has no source declaration, but it is an ordinary
         // compiler-provided runtime call.  Register its joined parser spelling
@@ -96,25 +93,6 @@ impl Checker {
             vec![Ty::Var(TypeVar::fresh())],
             Ty::result(Ty::monitor_ref(), Ty::link_error()),
         );
-        // Cross-node link: `link_remote(RemotePid<T>, PartitionPolicy)`
-        // links a local actor to a remote actor so the remote's death fires the
-        // per-link `PartitionPolicy` (`CrashLinked` crashes the local actor). The
-        // immediate return is `Result<(), LinkError>` (registration success — the
-        // EXIT arrives async). The `PartitionPolicy` enum is declared in
-        // `std/link_monitor.hew`; the call-site checker validates the precise arg
-        // type. The local `link(<actor handle>)` form keeps its 1-arg shape; a
-        // `link(RemotePid)` is rejected with a "use link_remote" diagnostic
-        // (`calls.rs`), so the cross-node link is never a silent type mismatch.
-        let link_remote_t = TypeVar::fresh();
-        self.register_builtin_fn(
-            "link_remote",
-            vec![
-                Ty::remote_pid(Ty::Var(link_remote_t)),
-                crate::actor_delivery::nominal(crate::KnownDecl::PartitionPolicy, Vec::new()),
-            ],
-            Ty::result(Ty::Unit, Ty::link_error()),
-        );
-
         // Supervisor child access
         self.register_builtin_fn(
             "supervisor_child",
@@ -202,6 +180,14 @@ impl Checker {
         self.register_builtin_fn("Node::start", vec![node_config], node_result.clone());
         self.register_builtin_fn("Node::shutdown", vec![], Ty::Unit);
         self.register_builtin_fn("Node::connect", vec![Ty::String], node_result);
+        self.register_builtin_fn(
+            "Node::peer",
+            vec![Ty::String],
+            Ty::result(
+                crate::actor_delivery::nominal(crate::KnownDecl::PeerSession, Vec::new()),
+                Ty::builtin_named(BuiltinType::NodeError, Vec::new()),
+            ),
+        );
         self.register_builtin_fn("Node::identity_key", vec![], Ty::String);
         self.register_builtin_fn(
             "Node::id",
@@ -211,26 +197,19 @@ impl Checker {
         // `Node::register(name: String, actor: A) -> i32`. Codegen assumes a
         // local actor handle (it calls `hew_actor_pid` to extract the u64 before
         // forwarding to `hew_node_api_register_by_pid`), so the call-site arm in
-        // `calls.rs` requires one; a `RemotePid<T>` or bare `u64` is caught
+        // `calls.rs` requires one; a `Location` or bare `u64` is caught
         // there rather than failing with a cryptic codegen error.
         self.register_builtin_fn(
             "Node::register",
             vec![Ty::String, Ty::Var(TypeVar::fresh())],
             Ty::I32,
         );
-        // `Node::lookup<T>(name: String) -> Result<RemotePid<T>, LookupError>`.
-        // The runtime extern returns a packed `u64` pid (0 == not found); the
-        // codegen branch lowers this into a `Result` construction inline.
-        self.register_builtin_fn_with_bounds(
+        // Discovery returns identity metadata, never callable actor authority.
+        self.register_builtin_fn(
             "Node::lookup",
-            vec!["T".to_string()],
-            None,
             vec![Ty::String],
-            &Ty::result(
-                Ty::remote_pid(Ty::Named {
-                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                    args: vec![],
-                }),
+            Ty::result(
+                Ty::builtin_named(BuiltinType::Location, Vec::new()),
                 crate::builtin_enums::monomorphic_builtin_enum_ty("LookupError")
                     .expect("generated builtin enum catalog must contain LookupError"),
             ),
@@ -366,7 +345,7 @@ impl Checker {
                             &source_def,
                         );
                     }
-                    // Compiler-carrier builtins (`RemotePid`, `NodeId`, ...)
+                    // Compiler-carrier builtins (`NodeId`, `Location`, ...)
                     // retain the catalog's canonical identity; this source file
                     // supplies their declarative surface but does not turn them
                     // into `std.builtins.*` user nominals. Builtin error enums
@@ -608,9 +587,9 @@ impl Checker {
                 &items,
                 StdlibBarePublication::Prelude,
             );
-            // `CrashInfo` / `CrashAction` are genuine prelude: a
-            // `#[on(crash)]` signature names them with no import, always.
-            for source_name in ["CrashInfo", "CrashAction"] {
+            // Crash hooks and their public crash class are available through
+            // the prelude, including field reads and variant construction.
+            for source_name in ["CrashInfo", "CrashAction", "CrashKind"] {
                 self.bind_prelude_item("std.failure", source_name);
                 self.canonical_lifecycle_import_authority.insert((
                     None,
@@ -618,7 +597,7 @@ impl Checker {
                     format!("std.failure.{source_name}"),
                 ));
             }
-            // The linked-actor payloads (`CrashNotification` / `CrashKind`)
+            // The linked-actor payloads (`CrashNotification` / `DownTarget`)
             // require an explicit `import std::failure` whenever the module
             // graph can supply that source. With no stdlib search path there
             // is no import to write — this compiled-in projection IS the
@@ -731,12 +710,11 @@ impl Checker {
         // can contain user and imported-source functions.  No call-site may
         // infer a runtime endpoint merely because a signature happens to have
         // a runtime-looking name.
-        // Namespace separators are source syntax, not ABI spelling.  The
-        // only compiler builtin with a namespace-qualified source name today
-        // is `instant::now`; retain an explicit mapping rather than making
-        // arbitrary source names look like runtime symbols.
+        // Namespace-qualified builtins retain their exact runtime row symbols.
         let runtime_symbol = match name {
             "instant::now" => "hew_instant_now".to_string(),
+            "Node::peer" => "hew_node_peer_new".to_string(),
+            "Node::register" | "Node::lookup" => name.to_string(),
             _ => format!("hew_{name}"),
         };
         let target = crate::runtime_call::RuntimeCallFamily::from_c_symbol(&runtime_symbol)
@@ -789,12 +767,7 @@ impl Checker {
             // An actor is the type of its handle, so an actor handle's
             // canonical key is the actor's own nominal, never a builtin
             // presentation name.
-            if builtin.is_collection()
-                || matches!(
-                    builtin,
-                    BuiltinType::Generator | BuiltinType::ChildRef | BuiltinType::RemotePid
-                )
-            {
+            if builtin.is_collection() || matches!(builtin, BuiltinType::Generator) {
                 return Some(builtin.canonical_name().to_string());
             }
         }
@@ -812,20 +785,11 @@ impl Checker {
         Self::canonical_primitive_or_builtin_key_from_name(name).or_else(|| {
             self.resolved_builtin_type(name)
                 .filter(|builtin| {
-                    matches!(
-                        builtin,
-                        BuiltinType::VecIter
-                            | BuiltinType::HashMapIter
-                            | BuiltinType::ChildRef
-                            | BuiltinType::RemotePid
-                    )
+                    matches!(builtin, BuiltinType::VecIter | BuiltinType::HashMapIter)
                 })
                 .map(|builtin| match builtin {
                     BuiltinType::VecIter => "std.builtins.VecIter".to_string(),
                     BuiltinType::HashMapIter => "std.builtins.HashMapIter".to_string(),
-                    BuiltinType::ChildRef | BuiltinType::RemotePid => {
-                        builtin.canonical_name().to_string()
-                    }
                     _ => unreachable!("filter admits only compiler carrier builtins"),
                 })
         })

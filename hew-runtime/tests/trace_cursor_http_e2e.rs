@@ -131,9 +131,6 @@ fn trace_http_cursors_are_independent_and_report_overflow_and_reset() {
         ring: Arc::new(Mutex::new(
             hew_runtime::profiler::metrics::MetricsRing::new(),
         )),
-        cluster: std::ptr::null_mut(),
-        connmgr: std::ptr::null_mut(),
-        routing: std::ptr::null_mut(),
     });
     thread::Builder::new()
         .name("trace-cursor-http-e2e-server".into())

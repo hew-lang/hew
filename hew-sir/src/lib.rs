@@ -28,12 +28,12 @@ mod wire;
 
 pub use actor::{
     ActorCallProtocol, ActorId, ActorIngressAdapter, ActorOperation, LifecycleTarget,
-    LocalObservationKind, RemoteObservationKind, SemActor, SemActorCoalesce, SemActorField,
-    SemActorHandler, SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
+    LocalObservationKind, SemActor, SemActorCoalesce, SemActorField, SemActorHandler,
+    SemActorOverflow, SemCoalesceFallback, SemCoalesceKey, SemFailureDisplay,
 };
 pub use analysis::{
-    build_cfg_index, build_def_use, compute_dominators, replace_all_uses, replace_use, CfgIndex,
-    DefUseIndex, Dominators, EdgeRef, RewriteError,
+    build_cfg_index, build_def_use, compute_dominators, compute_indexed_dominators,
+    replace_all_uses, replace_use, CfgIndex, DefUseIndex, Dominators, EdgeRef, RewriteError,
 };
 pub use callable::{
     callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
@@ -52,14 +52,14 @@ pub use lower::{
 pub use model::{
     runtime_variant_shape_refs, AggregateShapeId, AggregateShapeRef, BlockArg, BlockId,
     BoundaryOperand, CallResult, CallUnwind, CallableId, CallableInstance, CheckedFailure, DeferId,
-    DeferScopeId, Edge, EffectSet, FaultParkId, FunctionSourceOrigin, GenericTemplateId, OffloadId,
-    OpId, Operand, OperandSlot, Provenance, RuntimeVariantRole, RuntimeVariantShapeRefs,
-    SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock, SemCallConv, SemCallable,
-    SemCallableKind, SemFunction, SemFunctionIndex, SemGenericTemplate, SemModule, SemOp,
-    SemOpKind, SemParamPassing, SemSignature, SemStructuralRender, SemTerminator, SemTestEntry,
-    SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape, SemVtable,
-    SemVtableId, SemVtableSlot, SirInstanceKey, StructuralType, SuccessorSlot, UseSite, ValueDef,
-    ValueId, VariantShapeId,
+    DeferScopeId, Edge, EffectSet, FaultParkId, FunctionSourceOrigin, GenericTemplateId,
+    InvocationCallee, OffloadId, OpId, Operand, OperandSlot, Provenance, RuntimeVariantRole,
+    RuntimeVariantShapeRefs, SemAbiParam, SemAggregateField, SemAggregateShape, SemBlock,
+    SemCallConv, SemCallable, SemCallableKind, SemFunction, SemFunctionIndex, SemGenericTemplate,
+    SemModule, SemOp, SemOpKind, SemParamPassing, SemSignature, SemStructuralRender, SemTerminator,
+    SemTestEntry, SemVariant, SemVariantArm, SemVariantField, SemVariantKind, SemVariantShape,
+    SemVtable, SemVtableId, SemVtableSlot, SirInstanceKey, StructuralType, SuccessorSlot, UseSite,
+    ValueDef, ValueId, VariantShapeId,
 };
 pub use optimize::{
     canonicalize_module_constant_cfg, transfer_module_dead_local_reads, CfgCanonicalizationReport,

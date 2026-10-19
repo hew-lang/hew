@@ -707,20 +707,6 @@ impl Verifier {
                     self.expr(arg);
                 }
             }
-            HirExprKind::RemoteActorAsk {
-                receiver,
-                msg,
-                timeout_ms,
-                ..
-            } => {
-                self.expr(receiver);
-                self.expr(msg);
-                self.expr(timeout_ms);
-            }
-            HirExprKind::RemoteActorSend { receiver, msg } => {
-                self.expr(receiver);
-                self.expr(msg);
-            }
             HirExprKind::Block(block) => self.block(block),
             HirExprKind::If {
                 condition,
@@ -772,7 +758,7 @@ impl Verifier {
                         crate::node::HirSelectArmKind::StreamNext { stream } => {
                             self.expr(stream);
                         }
-                        crate::node::HirSelectArmKind::ActorAsk { call } => {
+                        crate::node::HirSelectArmKind::Call { call } => {
                             self.expr(call);
                         }
                         crate::node::HirSelectArmKind::TaskAwait { task } => {
@@ -1345,11 +1331,9 @@ mod tests {
             trait_object_layouts: Arc::default(),
             structural_witnesses: Vec::new(),
             type_classes: TypeClassTable::default(),
-            monomorphisations: Vec::new(),
+
             call_site_type_args: HashMap::new(),
-            vec_generic_element_abi: HashMap::new(),
-            record_layouts: Vec::new(),
-            enum_layouts: Vec::new(),
+
             supervisor_child_slots: HashMap::new(),
             pool_accessor_sites: HashMap::new(),
             regex_literals: Vec::new(),

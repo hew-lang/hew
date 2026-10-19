@@ -69,7 +69,7 @@ cloneable elements. Iterator adapters consume the iterator they wrap.
 
 ## Quick wayfinding
 
-- **CLI, files, and OS** — [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
+- **CLI, files, and OS** — [`std.cli`](cli.hew), [`std.io`](io.hew), [`std.fs`](fs.hew), [`std.path`](path.hew), [`std.os`](os.hew), [`std.process`](process.hew)
 - **Collections and scans** — [`std.vec`](vec.hew), [`std.arena`](arena.hew), [`std.deque`](deque.hew), [`std.iter`](iter.hew), [`std.sort`](sort/sort.hew)
 - **Streams and coordination** — [`std.stream`](stream.hew), [`std.semaphore`](semaphore.hew), [`std.concurrency.lifecycle`](concurrency/lifecycle.hew)
 - **Data formats and wire protocols** — [`std.encoding.json`](encoding/json/json.hew), [`std.encoding.yaml`](encoding/yaml/yaml.hew), [`std.encoding.toml`](encoding/toml/toml.hew), [`std.encoding.csv`](encoding/csv/csv.hew), [`std.encoding.xml`](encoding/xml/xml.hew)
@@ -114,6 +114,22 @@ fn main() {
 }
 ```
 
+## Command-line applications
+
+[`std.cli`](cli.hew) parses supplied `Vec<string>` arguments without reading
+process state. A command schema defines flags, typed integer or choice options,
+child commands and help. `Command.parse` returns `Outcome.Help` or parsed
+command levels in a `Result`; it never prints or exits.
+
+Pass arguments after the executable name. Options before a child command belong
+to the parent; subsequent options belong to the child. Single-value options
+reject duplicates; declare `.repeated()` to retain values in input order.
+A leaf command's `.positionals("FILE")` accepts a positional tail, and `--`
+preserves every subsequent argument literally, including leading dashes.
+
+See [`cli_argparse.hew`](../examples/cli_argparse.hew) for an application using
+`std.os.args()`, generated help, subcommands and error handling.
+
 ## Shipped module index
 
 Every shipped module under `std/` should appear here.
@@ -134,12 +150,13 @@ Every shipped module under `std/` should appear here.
 
 | Module                      | Import           | Use for                                               |
 | --------------------------- | ---------------- | ----------------------------------------------------- |
+| [`cli`](cli.hew)            | `std.cli`        | Flags, typed options, subcommands and generated help  |
 | [`io`](io.hew)              | `std.io`         | stdin, stdout, and stderr helpers                     |
 | [`scanner`](io/scanner.hew) | `std.io.scanner` | Line and word scanning over strings, stdin, and files |
 | [`fs`](fs.hew)              | `std.fs`         | File system operations and atomic writes              |
 | [`path`](path.hew)          | `std.path`       | File path and glob utilities                          |
 | [`os`](os.hew)              | `std.os`         | Operating system interfaces                           |
-| [`process`](process.hew)    | `std.process`    | Commands, child processes and piped stdio             |
+| [`process`](process.hew)    | `std.process`    | Commands, bounded output capture and piped stdio      |
 
 ### Collections, iteration, and concurrency
 
@@ -190,6 +207,7 @@ Every shipped module under `std/` should appear here.
 | [`net`](net/net.hew)                                  | `std.net`                        | TCP listeners and connections                                              |
 | [`dns`](net/dns/dns.hew)                              | `std.net.dns`                    | DNS hostname resolution                                                    |
 | [`http`](net/http/http.hew)                           | `std.net.http`                   | HTTP server and request/response handling                                  |
+| [`router`](net/http/router/router.hew)                | `std.net.http.router`            | Typed method/path routing and fallible path-parameter extraction           |
 | [`http_async_client`](net/http/http_async_client.hew) | `std.net.http.http_async_client` | Suspending HTTP/1.1 client codec for actor handlers                        |
 | [`http_async_server`](net/http/http_async_server.hew) | `std.net.http.http_async_server` | Suspending HTTP/1.1 server codec for actor handlers                        |
 | [`http_client`](net/http/http_client.hew)             | `std.net.http.http_client`       | Outbound HTTP request helpers (`request`, `request_string`, `get`, `post`) |
@@ -203,17 +221,16 @@ Every shipped module under `std/` should appear here.
 
 ### Text, time, and utilities
 
-| Module                                   | Import              | Use for                                            |
-| ---------------------------------------- | ------------------- | -------------------------------------------------- |
-| [`regex`](text/regex/regex.hew)          | `std.text.regex`    | Regular expression matching                        |
-| [`semver`](text/semver/semver.hew)       | `std.text.semver`   | Semantic version parsing and comparison            |
-| [`template`](text/template/template.hew) | `std.text.template` | Go-style text template parsing and rendering       |
-| [`unicode`](text/unicode/unicode.hew)    | `std.text.unicode`  | Unicode classification and UTF-8 codepoint helpers |
-| [`datetime`](time/datetime/datetime.hew) | `std.time.datetime` | Date and time operations                           |
-| [`cron`](time/cron/cron.hew)             | `std.time.cron`     | Cron expression parsing and scheduling             |
-| [`log`](misc/log/log.hew)                | `std.misc.log`      | Structured logging                                 |
-| [`uuid`](misc/uuid/uuid.hew)             | `std.misc.uuid`     | UUID generation and validation                     |
-| [`random`](random/random.hew)            | `std.random`        | Seedable random numbers, shuffling, and sampling   |
+| Module                                   | Import              | Use for                                          |
+| ---------------------------------------- | ------------------- | ------------------------------------------------ |
+| [`regex`](text/regex/regex.hew)          | `std.text.regex`    | Regular expression matching                      |
+| [`semver`](text/semver/semver.hew)       | `std.text.semver`   | Semantic version parsing and comparison          |
+| [`template`](text/template/template.hew) | `std.text.template` | Go-style text template parsing and rendering     |
+| [`datetime`](time/datetime/datetime.hew) | `std.time.datetime` | Date and time operations                         |
+| [`cron`](time/cron/cron.hew)             | `std.time.cron`     | Cron expression parsing and scheduling           |
+| [`log`](misc/log/log.hew)                | `std.misc.log`      | Structured logging                               |
+| [`uuid`](misc/uuid/uuid.hew)             | `std.misc.uuid`     | UUID generation and validation                   |
+| [`random`](random/random.hew)            | `std.random`        | Seedable random numbers, shuffling, and sampling |
 
 ### Testing and benchmarking
 

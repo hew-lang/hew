@@ -1,14 +1,21 @@
 import std.sort;
 
+type Entry {
+    rank: i64;
+    label: string;
+}
+
 fn check_ints() -> i64 {
     var reverse: Vec<i64> = Vec.new();
     for i in 0..1024 {
         reverse.push(1023 - i);
     }
-    let (reverse_out, reverse_comparisons) = sort.sort_ints_counted(reverse);
-    if reverse_comparisons > 1024 * 10 {
-        return 10;
-    }
+    let comparisons = 0;
+    let reverse_out = sort.sort_by(reverse, capture(var comparisons) |a: i64, b: i64| {
+        comparisons += 1;
+        assert(comparisons <= 1024 * 10);
+        a < b
+    });
     for i in 0..1024 {
         if reverse_out[i] != i {
             return 11;
@@ -21,7 +28,7 @@ fn check_ints() -> i64 {
     for i in 0..17 {
         non_power.push((i * 7) % 5);
     }
-    let non_power_out = sort.sort_ints(non_power);
+    let non_power_out = sort.sort(non_power);
     var before_sum = 0;
     var after_sum = 0;
     var before_squares = 0;
@@ -45,7 +52,7 @@ fn check_ints() -> i64 {
     for _i in 0..33 {
         equal.push(7);
     }
-    let equal_out = sort.sort_ints(equal);
+    let equal_out = sort.sort(equal);
     for i in 0..33 {
         if equal_out[i] != 7 || equal[i] != 7 {
             return 16;
@@ -72,10 +79,12 @@ fn check_strings() -> i64 {
     for i in 0..256 {
         duplicate_reverse.push(reverse_key(i));
     }
-    let (out, comparisons) = sort.sort_strings_counted(duplicate_reverse);
-    if comparisons > 256 * 8 {
-        return 20;
-    }
+    let comparisons = 0;
+    let out = sort.sort_by(duplicate_reverse, capture(var comparisons) |a: string, b: string| {
+        comparisons += 1;
+        assert(comparisons <= 256 * 8);
+        a < b
+    });
     for i in 1..256 {
         if out[i - 1] > out[i] {
             return 21;
@@ -142,6 +151,28 @@ fn check_strings() -> i64 {
 }
 
 fn main() {
+    let empty: Vec<i64> = [];
+    assert(sort.sort(empty).is_empty());
+    assert(sort.reverse(empty).is_empty());
+    let single: Vec<i64> = [9];
+    assert(sort.sort(single)[0] == 9);
+    assert(sort.reverse(single)[0] == 9);
+    let numbers: Vec<i32> = [3, -1, 2];
+    let ordered = sort.sort(numbers);
+    let reversed = sort.reverse(ordered);
+    assert(ordered[0] == -1 && ordered[2] == 3);
+    assert(reversed[0] == 3 && reversed[2] == -1);
+    assert(numbers[0] == 3 && numbers[1] == -1);
+    let words: Vec<string> = ["🙂", "é", "Ω", "é"];
+    let ordered_words = sort.sort(words);
+    let reversed_words = sort.reverse(ordered_words);
+    assert(ordered_words[0] == "é" && ordered_words[3] == "🙂");
+    assert(reversed_words[0] == "🙂" && reversed_words[3] == "é");
+    assert(words[0] == "🙂" && words[1] == "é");
+    let entries: Vec<Entry> = [Entry { rank: 2, label: "last" }, Entry { rank: 1, label: "first" }, Entry { rank: 1, label: "second" }];
+    let stable = sort.sort_by(entries, |a: Entry, b: Entry| a.rank < b.rank);
+    assert(stable[0].label == "first" && stable[1].label == "second");
+    assert(entries[0].label == "last");
     let int_status = check_ints();
     if int_status != 0 {
         println(f"sort-authority={int_status}");

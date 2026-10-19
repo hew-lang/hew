@@ -7,6 +7,8 @@ pub const DECLARATIONS: &[KnownDecl] = &[
     KnownDecl::ActorError,
     KnownDecl::Never,
     KnownDecl::ActorMailbox,
+    KnownDecl::ActorTimerMailbox,
+    KnownDecl::Timer,
     KnownDecl::ActorPolicy,
     KnownDecl::Message,
     KnownDecl::SendFailure,
@@ -76,6 +78,17 @@ pub enum ActorDeliveryCall {
     AwaitRestarted,
     Policy {
         policy: SendPolicy,
+    },
+    TimerView {
+        policy: SendPolicy,
+        /// Written option positions retain source evaluation order through HIR.
+        after: usize,
+        overdue: Option<usize>,
+    },
+    TimerSchedule {
+        method: crate::DefId,
+        policy: SendPolicy,
+        evaluation_order: Vec<usize>,
     },
     Readdress {
         policy: SendPolicy,
@@ -166,6 +179,19 @@ pub fn sender_type(target: Ty, policy: SendPolicy) -> Ty {
     )
 }
 
+#[must_use]
+pub fn timer_view_type(target: Ty, policy: SendPolicy) -> Ty {
+    nominal(
+        KnownDecl::ActorTimerMailbox,
+        vec![target, nominal(policy.witness(), Vec::new())],
+    )
+}
+
+#[must_use]
+pub fn timer_view_parts(ty: &Ty) -> Option<(&Ty, SendPolicy)> {
+    view_parts(ty, KnownDecl::ActorTimerMailbox)
+}
+
 /// The completion view `policy(target, on_full: ..)` builds: calls through it
 /// complete like a bare-handle call, under the admission policy it carries.
 #[must_use]
@@ -217,6 +243,6 @@ fn view_parts(ty: &Ty, view: KnownDecl) -> Option<(&Ty, SendPolicy)> {
 pub fn result_type(message: Ty) -> Ty {
     Ty::result(
         nominal(KnownDecl::Delivery, Vec::new()),
-        nominal(KnownDecl::SendFailure, vec![message]),
+        Ty::actor_error_with_request(Ty::never_type(), message),
     )
 }

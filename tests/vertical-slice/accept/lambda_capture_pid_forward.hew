@@ -1,9 +1,6 @@
-// Lambda actor capturing a declared-actor pid and forwarding messages to
-// it. The pid rides the heap-boxed capture env as a no-drop BitCopy field:
-// the env box copies the handle word, the synthesized state dropper frees
-// the env bytes only (no release for the pid field), and the lambda body's
-// forward send routes through the captured handle on every dispatch.
-// forward(10) + forward(32) = 42; the trailing ask fences delivery.
+// A lambda actor captures an ordinary actor value and forwards calls to it.
+// The captured descriptor must survive both dispatches and be released with
+// the environment. Both completions precede the total reply, which is 42.
 actor Counter {
     var count: i64;
 

@@ -582,3 +582,57 @@ fn indirect_call_without_checker_target_fails_closed() {
         apply.body
     );
 }
+
+#[test]
+fn resolved_impl_call_refuses_missing_or_poisoned_result_facts() {
+    let parsed = hew_parser::parse(
+        "fn main() { let values: HashMap<i64, i64> = HashMap.new(); let answer = values.get(7); }",
+    );
+    assert!(parsed.errors.is_empty());
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let site = checked
+        .resolved_calls
+        .iter()
+        .find(|(_, call)| call.method_name == "get")
+        .expect("checker-selected impl method")
+        .0
+        .clone();
+    for poisoned in [false, true] {
+        let mut facts = checked.clone();
+        if poisoned {
+            facts.expr_types.insert(site.clone(), hew_types::Ty::Error);
+        } else {
+            facts.expr_types.remove(&site);
+        }
+        let output = lower_program(
+            &parsed.program,
+            &facts,
+            &ResolutionCtx,
+            hew_hir::TargetArch::host(),
+        );
+        assert!(output.diagnostics.iter().any(|diagnostic| matches!(&diagnostic.kind, HirDiagnosticKind::CheckerBoundaryViolation { name, .. } if name == "resolved-impl call `.get`")));
+        let answer = output
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                hew_hir::HirItem::Function(f) if f.name == "main" => f
+                    .body
+                    .statements
+                    .iter()
+                    .find_map(|statement| match &statement.kind {
+                        HirStmtKind::Let(binding, Some(value)) if binding.name == "answer" => {
+                            Some(value)
+                        }
+                        _ => None,
+                    }),
+                _ => None,
+            })
+            .expect("refused call initializer");
+        assert!(
+            matches!(&answer.kind, HirExprKind::Unsupported(reason) if reason == "resolved impl call has no checked result type")
+        );
+        assert!(output.into_result().is_err());
+    }
+}

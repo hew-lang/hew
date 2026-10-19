@@ -1,57 +1,33 @@
-import std.text.unicode;
+import std.iter;
 
 fn main() {
-    println(f"upper_A={unicode.is_upper(65)} upper_eacute={unicode.is_upper(201)} lower_A={unicode.is_lower(65)}");
-    println(f"lower_a={unicode.is_lower(97)} lower_eacute={unicode.is_lower(233)} upper_a={unicode.is_upper(97)}");
-    println(f"space_tab={unicode.is_space(9)} space_nbsp={unicode.is_space(160)} space_A={unicode.is_space(65)}");
-    println(f"letter_A={unicode.is_letter(65)} letter_cjk={unicode.is_letter(26085)} letter_digit={unicode.is_letter(49)}");
-    println(f"letter_latin_ext_add={unicode.is_letter(0x1E17)} lower_latin_ext_add={unicode.is_lower(0x1E17)} upper_latin_ext_add={unicode.to_upper(0x1E17)}");
-    println(f"letter_thai={unicode.is_letter(0xE01)} letter_armenian={unicode.is_letter(0x531)} letter_cjk_ext_b={unicode.is_letter(0x20000)}");
-    println(f"punct_bang={unicode.is_punct(33)} punct_ideo={unicode.is_punct(12290)} punct_A={unicode.is_punct(65)}");
-    println(f"punct_pc={unicode.is_punct(0x5F)} punct_pd={unicode.is_punct(0x2E17)} punct_ps={unicode.is_punct(0x2045)} punct_pe={unicode.is_punct(0x2046)}");
-    println(f"punct_pi={unicode.is_punct(0x2018)} punct_pf={unicode.is_punct(0x2019)} punct_po={unicode.is_punct(0x589)} punct_astral={unicode.is_punct(0x10100)}");
-    println(f"punct_u18_2e60={unicode.is_punct(0x2E60)} punct_u18_2e61={unicode.is_punct(0x2E61)} punct_u18_2e62={unicode.is_punct(0x2E62)} punct_u18_2e63={unicode.is_punct(0x2E63)}");
-    println(f"punct_sm={unicode.is_punct(0x2B)} punct_sc={unicode.is_punct(0x24)} punct_surrogate={unicode.is_punct(0xD800)} punct_wrapped={unicode.is_punct(4294967329)}");
-    println(f"title_a={unicode.to_title(97)} title_eacute={unicode.to_title(233)} title_digit={unicode.to_title(49)}");
-    let ascii_width = match unicode.rune_len(65) {
-        .Ok(width) => width,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let latin_width = match unicode.rune_len(233) {
-        .Ok(width) => width,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let cjk_width = match unicode.rune_len(26085) {
-        .Ok(width) => width,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let emoji_width = match unicode.rune_len(128578) {
-        .Ok(width) => width,
-        .Err(reason) => panic(f"{reason}"),
-    };
+    println(f"upper_A={(65).try_to_char().expect("scalar").is_upper()} upper_eacute={(201).try_to_char().expect("scalar").is_upper()} lower_A={(65).try_to_char().expect("scalar").is_lower()}");
+    println(f"lower_a={(97).try_to_char().expect("scalar").is_lower()} lower_eacute={(233).try_to_char().expect("scalar").is_lower()} upper_a={(97).try_to_char().expect("scalar").is_upper()}");
+    println(f"space_tab={(9).try_to_char().expect("scalar").is_whitespace()} space_nbsp={(160).try_to_char().expect("scalar").is_whitespace()} space_A={(65).try_to_char().expect("scalar").is_whitespace()}");
+    println(f"letter_A={(65).try_to_char().expect("scalar").is_letter()} letter_cjk={(26085).try_to_char().expect("scalar").is_letter()} letter_digit={(49).try_to_char().expect("scalar").is_letter()}");
+    println(f"letter_latin_ext_add={(0x1E17).try_to_char().expect("scalar").is_letter()} lower_latin_ext_add={(0x1E17).try_to_char().expect("scalar").is_lower()} upper_latin_ext_add={(0x1E17).try_to_char().expect("scalar").to_upper().as_i64()}");
+    println(f"letter_thai={(0xE01).try_to_char().expect("scalar").is_letter()} letter_armenian={(0x531).try_to_char().expect("scalar").is_letter()} letter_cjk_ext_b={(0x20000).try_to_char().expect("scalar").is_letter()}");
+    println(f"punct_bang={(33).try_to_char().expect("scalar").is_punctuation()} punct_ideo={(12290).try_to_char().expect("scalar").is_punctuation()} punct_A={(65).try_to_char().expect("scalar").is_punctuation()}");
+    println(f"punct_pc={(0x5F).try_to_char().expect("scalar").is_punctuation()} punct_pd={(0x2E17).try_to_char().expect("scalar").is_punctuation()} punct_ps={(0x2045).try_to_char().expect("scalar").is_punctuation()} punct_pe={(0x2046).try_to_char().expect("scalar").is_punctuation()}");
+    println(f"punct_pi={(0x2018).try_to_char().expect("scalar").is_punctuation()} punct_pf={(0x2019).try_to_char().expect("scalar").is_punctuation()} punct_po={(0x589).try_to_char().expect("scalar").is_punctuation()} punct_astral={(0x10100).try_to_char().expect("scalar").is_punctuation()}");
+    println(f"punct_u18_2e60={(0x2E60).try_to_char().expect("scalar").is_punctuation()} punct_u18_2e61={(0x2E61).try_to_char().expect("scalar").is_punctuation()} punct_u18_2e62={(0x2E62).try_to_char().expect("scalar").is_punctuation()} punct_u18_2e63={(0x2E63).try_to_char().expect("scalar").is_punctuation()}");
+    println(f"punct_sm={(0x2B).try_to_char().expect("scalar").is_punctuation()} punct_sc={(0x24).try_to_char().expect("scalar").is_punctuation()} punct_surrogate={(0xD800).try_to_char().is_some()} punct_wrapped={(4294967329).try_to_char().is_some()}");
+    println(f"title_a={(97).try_to_char().expect("scalar").to_title().as_i64()} title_eacute={(233).try_to_char().expect("scalar").to_title().as_i64()} title_digit={(49).try_to_char().expect("scalar").to_title().as_i64()}");
+    let ascii_width = (65).try_to_char().expect("scalar").len_utf8();
+    let latin_width = (233).try_to_char().expect("scalar").len_utf8();
+    let cjk_width = (26085).try_to_char().expect("scalar").len_utf8();
+    let emoji_width = (128578).try_to_char().expect("scalar").len_utf8();
     println(f"rune_len={ascii_width},{latin_width},{cjk_width},{emoji_width}");
     let text = "Aé日🙂";
-    let rs = unicode.runes(text);
-    println(f"rune_count={unicode.rune_count(text)} runes_len={rs.len()}");
-    println(f"runes={rs[0]},{rs[1]},{rs[2]},{rs[3]}");
-    let first = match unicode.codepoint_at(text, 0) {
-        .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let second = match unicode.codepoint_at(text, 1) {
-        .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let third = match unicode.codepoint_at(text, 2) {
-        .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(f"{reason}"),
-    };
-    let fourth = match unicode.codepoint_at(text, 3) {
-        .Ok(codepoint) => codepoint,
-        .Err(reason) => panic(f"{reason}"),
-    };
+    let rs = iter.collect(text.iter());
+    println(f"rune_count={text.len()} runes_len={rs.len()}");
+    println(f"runes={rs[0].as_i64()},{rs[1].as_i64()},{rs[2].as_i64()},{rs[3].as_i64()}");
+    let first = text.get(0).expect("scalar").as_i64();
+    let second = text.get(1).expect("scalar").as_i64();
+    let third = text.get(2).expect("scalar").as_i64();
+    let fourth = text.get(3).expect("scalar").as_i64();
     println(f"codepoint_at={first},{second},{third},{fourth}");
     let empty_text = "";
-    let empty = unicode.runes(empty_text);
-    println(f"empty_rune_count={unicode.rune_count(empty_text)} empty_runes_len={empty.len()}");
+    let empty = iter.collect(empty_text.iter());
+    println(f"empty_rune_count={empty_text.len()} empty_runes_len={empty.len()}");
 }

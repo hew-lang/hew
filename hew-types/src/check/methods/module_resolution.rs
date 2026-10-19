@@ -375,8 +375,15 @@ impl Checker {
     }
 
     /// The direct super-traits of trait `id`.
-    pub(in crate::check) fn trait_supers(&self, id: crate::DefId) -> &[crate::DefId] {
-        self.trait_super.get(&id).map_or(&[], Vec::as_slice)
+    pub(in crate::check) fn trait_supers(
+        &self,
+        id: crate::DefId,
+    ) -> impl Iterator<Item = crate::DefId> + '_ {
+        self.trait_super
+            .get(&id)
+            .into_iter()
+            .flatten()
+            .map(|bound| bound.trait_id)
     }
 
     /// Look up a type definition by registry key.

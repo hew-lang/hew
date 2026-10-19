@@ -1,0 +1,14 @@
+[[case]]
+id = "actor-timer-overdue-compute"
+intent = "A queued timer interrupts a computing owner, drains active and queued resource payloads before its typed crash hook, and restarts cleanly."
+source = "cases/actor-timer-overdue-compute.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "closed active\nclosed queued\nTimerOverdue\ncompute timer recovered\n"
+stderr = "hew: failure: ActorTimerOverdue (214)\nhew: actor crash in Worker.run (actor 1): ActorTimerOverdue\n"
+exit = 0

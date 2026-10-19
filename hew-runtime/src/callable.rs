@@ -1,14 +1,176 @@
 //! Callable environment allocation and the shared erased clone/drop protocol.
 //!
 //! Compiler-generated layouts interpret capture initialization masks. These
-//! helpers only manage outer storage and invoke those layout callbacks. LLVM
-//! adapters own invocation and dispose once-call environments on both outcomes.
+//! helpers manage outer storage and drive erased invocations without interpreting
+//! captures or typed argument ownership. LLVM adapters dispose once-call
+//! environments on both outcomes.
 
 use core::{ffi::c_void, ptr};
 use std::alloc::Layout;
 
 pub use hew_cabi::callable::{HewCallableDescriptor, HewCallableInvoke, HewCallableValue};
 use hew_cabi::value::{HewTypeOwnershipKind, HewValueLayout};
+
+/// One borrowed callback, driven by its native operation's ordinary caller.
+/// The operation retains the callable, typed slots and any completed output.
+pub(crate) struct BorrowedInvocation {
+    active: Option<Box<ActiveInvocation>>,
+    completed: Option<crate::coro_state::CoroStatus>,
+    cancelled: bool,
+    fault: *mut crate::fault::HewFault,
+}
+
+struct ActiveInvocation {
+    state: crate::coro_state::HewCoroState,
+    frame: *mut c_void,
+    fault: *mut crate::fault::HewFault,
+}
+
+impl BorrowedInvocation {
+    pub(crate) fn new() -> Self {
+        Self {
+            active: None,
+            completed: None,
+            cancelled: false,
+            fault: ptr::null_mut(),
+        }
+    }
+
+    /// # Safety
+    /// The parent is live at first invocation. The callable environment,
+    /// argument array, argument slots and result slot remain at stable addresses
+    /// until terminal completion. The caller serializes every poll and cancel.
+    pub(crate) unsafe fn poll(
+        &mut self,
+        parent: *const crate::coro_state::HewCoroState,
+        callable: &HewCallableValue,
+        arguments: *const *mut c_void,
+        result: *mut c_void,
+    ) -> crate::coro_state::CoroStatus {
+        use crate::coro_state::{hew_coro_state_status, CoroStatus};
+        if let Some(status) = self.completed {
+            return status;
+        }
+        if let Some(active) = &mut self.active {
+            // SAFETY: only a live pending frame can be resumed by this operation.
+            unsafe {
+                if active.frame.is_null() || crate::cont::hew_cont_done(active.frame) {
+                    std::process::abort();
+                }
+                crate::cont::hew_cont_resume(active.frame);
+            }
+        } else {
+            if self.cancelled {
+                self.fault = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
+                self.completed = Some(CoroStatus::Cancelled);
+                return CoroStatus::Cancelled;
+            }
+            // SAFETY: the operation pins this exact compiler descriptor.
+            let descriptor =
+                unsafe { callable.descriptor.as_ref() }.unwrap_or_else(|| std::process::abort());
+            if let Some(invoke) = descriptor.invoke_borrow_sync {
+                // SAFETY: the operation retains all exact typed slots for this synchronous invocation.
+                let status = unsafe {
+                    invoke(
+                        callable.environment,
+                        arguments,
+                        result,
+                        (&raw mut self.fault).cast(),
+                    )
+                };
+                let status = CoroStatus::from_private_status(status);
+                self.record_completion(status);
+                return status;
+            }
+            // SAFETY: the operation supplies the live caller during construction.
+            let parent = unsafe { parent.as_ref() }.unwrap_or_else(|| std::process::abort());
+            let mut active = Box::new(ActiveInvocation {
+                // SAFETY: the parent retains its token and wake target during creation.
+                state: unsafe { crate::coro_state::operation_child(parent) },
+                frame: ptr::null_mut(),
+                fault: ptr::null_mut(),
+            });
+            // SAFETY: this stable box retains the completion/fault slots, and the
+            // native operation retains every borrowed input until the frame dies.
+            active.frame = unsafe {
+                descriptor
+                    .invoke_borrow
+                    .unwrap_or_else(|| std::process::abort())(
+                    callable.environment,
+                    arguments,
+                    result,
+                    (&raw mut active.fault).cast(),
+                    (&raw mut active.state).cast(),
+                )
+            };
+            self.active = Some(active);
+        }
+        let active = self.active.as_mut().unwrap();
+        // SAFETY: the callback returned before this serialized status observation.
+        let status = unsafe { hew_coro_state_status(&raw const active.state) };
+        if status == CoroStatus::Pending as i32 {
+            // SAFETY: a pending invocation must retain its suspended continuation.
+            if active.frame.is_null() || unsafe { crate::cont::hew_cont_done(active.frame) } {
+                std::process::abort();
+            }
+            return CoroStatus::Pending;
+        }
+        let status = match status {
+            1 => CoroStatus::Complete,
+            2 => CoroStatus::Fault,
+            3 => CoroStatus::Cancelled,
+            _ => std::process::abort(),
+        };
+        if !active.frame.is_null() {
+            // SAFETY: terminal publication precedes final suspension. Destroy
+            // the frame while its invocation context and borrowed slots live.
+            unsafe {
+                if !crate::cont::hew_cont_done(active.frame) {
+                    std::process::abort();
+                }
+                crate::cont::hew_cont_destroy(active.frame);
+            }
+        }
+        self.fault = std::mem::take(&mut active.fault);
+        self.active = None;
+        self.record_completion(status);
+        status
+    }
+
+    fn record_completion(&mut self, status: crate::coro_state::CoroStatus) {
+        if (status == crate::coro_state::CoroStatus::Complete) != self.fault.is_null() {
+            std::process::abort();
+        }
+        self.completed = Some(status);
+    }
+
+    pub(crate) fn cancel(&mut self) {
+        if self.completed.is_some() {
+            return;
+        }
+        self.cancelled = true;
+        if let Some(active) = &self.active {
+            // SAFETY: the operation serializes cancellation of this privately owned context.
+            unsafe { crate::coro_state::hew_coro_state_cancel(&raw const active.state) };
+        }
+    }
+
+    /// Fault and cancellation transfer one canonical owned fault after teardown.
+    pub(crate) fn take_fault(&mut self) -> *mut crate::fault::HewFault {
+        assert!(self.completed.is_some());
+        std::mem::take(&mut self.fault)
+    }
+}
+
+impl Drop for BorrowedInvocation {
+    fn drop(&mut self) {
+        if self.active.is_some() {
+            std::process::abort();
+        }
+        // SAFETY: a terminal, unobserved fault still belongs to this invocation.
+        unsafe { crate::fault::hew_fault_drop(self.fault) };
+    }
+}
 
 /// Read and validate storage metadata without interpreting capture semantics.
 ///

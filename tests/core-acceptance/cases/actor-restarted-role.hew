@@ -14,7 +14,7 @@ supervisor App {
 }
 
 actor Observer {
-    receive fn watch(role: ChildRef<Worker>, timer: Timer) {
+    receive fn watch(role: Worker, timer: Timer) {
         let _ = role.fail();
         mailbox(timer).tick().expect("schedule concurrent work");
         restarted(role);

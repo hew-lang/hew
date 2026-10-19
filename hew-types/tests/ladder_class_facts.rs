@@ -202,10 +202,10 @@ fn an_rc_is_an_affine_resource_that_retains_and_does_not_send() {
     );
 }
 
-/// §1.1's marker correction: a handle never owns the actor, so an actor
-/// handle is `BitCopy` and its drop frees nothing.
+/// Actor values retain their descriptor. Local descriptors need no release
+/// work; imported descriptors survive until their last local use.
 #[test]
-fn a_local_pid_is_bitcopy() {
+fn an_actor_value_retains_its_descriptor() {
     let output = facts_of("class_pid_bitcopy.hew");
     let facts = row_matching(&output, "`Counter`", |ty| {
         matches!(
@@ -217,13 +217,10 @@ fn a_local_pid_is_bitcopy() {
         )
     });
     assert_eq!(
-        (ValueClass::BitCopy, CloneKind::Bits),
+        (ValueClass::PersistentShare, CloneKind::Retain),
         (facts.class, facts.clone)
     );
-    // Counterfactual: `BuiltinType::marker()` gave `Resource` before this
-    // correction, which would class the pid `AffineResource` and give it a
-    // scope-exit release it must not have.
-    assert_ne!(ValueClass::AffineResource, facts.class);
+    assert_ne!(ValueClass::BitCopy, facts.class);
 }
 
 /// §1.1 `TypeParam` row: an abstract parameter never reaches SIR, so it is an

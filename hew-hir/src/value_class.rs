@@ -267,7 +267,7 @@ pub fn lookup_type_marker_for_ty(
     ty: &ResolvedTy,
     type_classes: &TypeClassTable,
 ) -> Option<ResourceMarker> {
-    let ResolvedTy::Named { head, args, .. } = ty else {
+    let ResolvedTy::Named { head, .. } = ty else {
         return None;
     };
     let name = head.registry_key();
@@ -308,21 +308,6 @@ pub fn lookup_type_marker_for_ty(
                 return Some(ResourceMarker::Linear);
             }
             hew_types::builtin_type::BuiltinTypeMarker::None => {}
-        }
-    }
-
-    if !args.is_empty() {
-        // Generic keys retain their canonical nominal paths throughout the
-        // spine; no leaf-name normalisation may select a value class.
-        let canonical_args: Vec<ResolvedTy> = args
-            .iter()
-            .cloned()
-            .map(crate::monomorph::shorten_named_arg_qualifiers)
-            .collect();
-        let concrete_key =
-            crate::monomorph::mangle(&crate::mangle_dotted_name(name), &canonical_args);
-        if let Some((marker, _)) = type_classes.get(&concrete_key) {
-            return Some(*marker);
         }
     }
 
@@ -555,77 +540,6 @@ mod tests {
             let ty = ResolvedTy::user_for_test(name, Vec::new());
             assert_eq!(lookup_type_marker_for_ty(&ty, &table), None);
         }
-    }
-
-    // ── Canonical qualified-payload concrete-key identity ───────────────────
-
-    #[test]
-    fn qualified_payload_does_not_select_bare_instantiation_marker() {
-        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
-
-        let mut table = TypeClassTable::default();
-        // Registered under a distinct bare declaration identity.
-        let bare_key =
-            crate::monomorph::mangle("Holder", &[ResolvedTy::named_for_test("Box", vec![])]);
-        table.insert(bare_key, (ResourceMarker::BitCopy, None));
-
-        // Probe with a QUALIFIED payload. It must not select the bare key.
-        let qualified = ResolvedTy::named_for_test(
-            "Holder",
-            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
-        );
-        assert_eq!(
-            lookup_type_marker_for_ty(&qualified, &table),
-            None,
-            "the qualified-payload probe must not collapse onto a bare declaration"
-        );
-    }
-
-    // ── Canonical qualified-origin concrete-key identity ────────────────────
-
-    #[test]
-    fn qualified_origin_does_not_select_bare_instantiation_marker() {
-        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
-
-        let mut table = TypeClassTable::default();
-        // The mono instance is registered under a distinct bare origin.
-        let bare_key = crate::monomorph::mangle("Key", &[ResolvedTy::String]);
-        table.insert(bare_key, (ResourceMarker::BitCopy, None));
-        // The generic origin itself carries `ResourceMarker::None` under both
-        // spellings, allowing the assertion to prove the concrete bare marker
-        // was not selected.
-        table.insert("keyed.Key".to_string(), (ResourceMarker::None, None));
-        table.insert("Key".to_string(), (ResourceMarker::None, None));
-
-        // A QUALIFIED origin must remain distinct from bare `Key<string>`.
-        let qualified = ResolvedTy::named_for_test("keyed.Key", vec![ResolvedTy::String]);
-        assert_eq!(
-            lookup_type_marker_for_ty(&qualified, &table),
-            Some(ResourceMarker::None),
-            "the qualified-origin probe must not collapse onto the bare instance"
-        );
-    }
-
-    #[test]
-    fn distinct_payload_does_not_resolve_marker_via_concrete_key() {
-        use super::{lookup_type_marker_for_ty, ResourceMarker, TypeClassTable};
-
-        let mut table = TypeClassTable::default();
-        // Only `Holder$$i64` is registered with a BitCopy marker.
-        let bare_key = crate::monomorph::mangle("Holder", &[ResolvedTy::I64]);
-        table.insert(bare_key, (ResourceMarker::BitCopy, None));
-
-        // Probe `Holder<lmonobox.Box>` (→ concrete key `Holder$$Box`): the
-        // concrete-key path must NOT match the `Holder$$i64` entry. With no
-        // outer-name `Holder` entry either, the lookup yields None. Pins that
-        // shortening collapses qualifiers, not distinct payloads.
-        let qualified = ResolvedTy::named_for_test(
-            "Holder",
-            vec![ResolvedTy::named_for_test("lmonobox.Box", vec![])],
-        );
-        assert_eq!(lookup_type_marker_for_ty(&qualified, &table), None);
-        // Sanity: the unused variant keeps the linter honest.
-        let _ = ResourceMarker::Resource;
     }
 
     #[test]

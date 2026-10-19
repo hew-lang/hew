@@ -44,6 +44,7 @@ unsafe impl Send for TaskExecution {}
 unsafe impl Sync for TaskExecution {}
 
 impl TaskExecution {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn has_live_tasks() -> bool {
         LIVE_TASKS.load(Ordering::Acquire) != 0
     }
@@ -129,12 +130,20 @@ impl Driver {
                     )
                 };
                 match invocation {
-                    CheckedTaskInvocation::Callable(callable) => {
-                        self.frame = ((*callable.descriptor)
-                            .invoke_once
-                            .unwrap_or_else(|| std::process::abort()))(
+                    CheckedTaskInvocation::Callable {
+                        value: callable,
+                        arguments,
+                        consuming,
+                    } => {
+                        let descriptor = &*callable.descriptor;
+                        let invoke = if consuming {
+                            descriptor.invoke_once
+                        } else {
+                            descriptor.invoke_borrow
+                        };
+                        self.frame = (invoke.unwrap_or_else(|| std::process::abort()))(
                             callable.environment,
-                            ptr::null(),
+                            arguments,
                             result,
                             (&raw mut self.fault).cast(),
                             self.state.cast(),

@@ -1,0 +1,37 @@
+#[resource]
+type Ticket {
+    label: string;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println("closed " + self.label);
+    }
+}
+
+actor Worker {
+    let state: Ticket;
+
+    init() {
+        let _ = mailbox(self, after: 0ms).tick(Ticket { label: "queued" });
+        let _ = mailbox(self, after: 1h).tick(Ticket { label: "pending" });
+        sleep(10ms);
+    }
+
+    #[on(start)]
+    fn started() {
+        let _ = mailbox(self, after: 1ms, overdue: 1ms).tick(Ticket { label: "overdue" });
+        loop {}
+    }
+
+    receive fn tick(ticket: Ticket) {
+        panic("unpublished handler ran");
+    }
+}
+
+fn main() {
+    let worker = spawn Worker { state: Ticket { label: "state" } };
+    stop(worker);
+    stopped(worker);
+}

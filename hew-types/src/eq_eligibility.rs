@@ -136,7 +136,7 @@ fn eq_ineligibility_inner(
         | Ty::F64
         | Ty::FloatLiteral
         | Ty::String
-        | Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location | BuiltinType::RemotePid), .. } => None,
+        | Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location), .. } => None,
         Ty::Tuple(elems) => elems.iter().enumerate().find_map(|(index, elem)| {
             eq_ineligibility(elem, types, walk)
                 .map(|failure| failure.at_member(index.to_string()))

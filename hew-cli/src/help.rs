@@ -54,7 +54,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
         "Packages",
         &[
             "add", "remove", "install", "update", "outdated", "tree", "list", "search", "info",
-            "publish",
+            "publish", "native",
         ],
     ),
     (

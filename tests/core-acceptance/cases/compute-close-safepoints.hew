@@ -33,10 +33,14 @@ fn implicit_close(consume ready: stream.Sink<i64>, consume peer_started: stream.
     1
 }
 
-fn peer(ready: stream.Stream<i64>, started: stream.Sink<i64>) -> i64 {
+fn peer(consume ready: stream.Stream<i64>, consume started: stream.Sink<i64>) -> i64 {
     started.send(1).expect("peer started");
     ready.recv().expect("ready");
     println("peer progressed");
+    // Complete endpoint cleanup here so the task's argument release cannot
+    // delay its normal completion behind the close's compute helper.
+    ready.close();
+    started.close();
     7
 }
 

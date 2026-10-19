@@ -48,6 +48,11 @@ The [package contract](bytecode/package-v1.md) describes the SIR projection.
 Source fixtures are compiled by the public compiler and executed to record
 deterministic traces. Tests also compare executable sources with native Hew.
 
+`RunOptions.argv` supplies process arguments, including the executable name at
+index zero. It defaults to `["main.hew"]` and is copied for each run. For example,
+`runBytecode(bytecode, { argv: ["greet", "--", "Zoë", ""] })` supplies those exact
+strings to `std.os.args()`. The VM never reads Node or browser process arguments.
+
 Typed serialization executes the shared Rust codecs in `@hew-lang/wasm`.
 Pass its initialized `executeCodec` export as `runBytecode`'s `codecBridge`
 option. The Node test host loads that package automatically; in a source

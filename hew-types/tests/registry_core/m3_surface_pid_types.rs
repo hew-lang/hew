@@ -85,55 +85,6 @@ fn actor_handle_is_send_sync_copy() {
     }
 }
 
-// ── RemotePid: marker traits ─────────────────────────────────────────────────
-
-#[test]
-fn remote_pid_is_send_sync_copy() {
-    use hew_types::traits::{MarkerTrait, TraitRegistry};
-    let reg = TraitRegistry::new();
-    let ty = Ty::remote_pid(Ty::named_for_test("Counter", vec![]));
-    for marker in [
-        MarkerTrait::Send,
-        MarkerTrait::Sync,
-        MarkerTrait::Copy,
-        MarkerTrait::Clone,
-        MarkerTrait::Frozen,
-        MarkerTrait::Debug,
-    ] {
-        assert!(
-            reg.implements_marker(&ty, marker),
-            "RemotePid should implement {marker:?}"
-        );
-    }
-}
-
-// ── Unification: an actor handle and RemotePid are distinct nominal types ────
-
-#[test]
-fn actor_handle_and_remote_pid_do_not_unify() {
-    // The local and remote handle families are distinct nominal types over the
-    // same actor: `Worker` (the actor handle) must never be accepted where a
-    // `RemotePid<Worker>` is expected, and vice versa. Their discriminators
-    // carry different ABI shapes (`*mut HewActor` vs a packed `i64`), so a
-    // silent unify would be a miscompile.
-    use hew_types::ty::Substitution;
-    use hew_types::unify::unify;
-    let actor_nominal = Ty::named_for_test("Worker", vec![]);
-    let actor_handle = Ty::actor_for_test("Worker", vec![]);
-    let remote_pid = Ty::remote_pid(actor_nominal);
-
-    let mut subst = Substitution::new();
-    assert!(
-        unify(&mut subst, &actor_handle, &remote_pid).is_err(),
-        "the actor handle must not unify with RemotePid<Worker>"
-    );
-    let mut subst = Substitution::new();
-    assert!(
-        unify(&mut subst, &remote_pid, &actor_handle).is_err(),
-        "RemotePid<Worker> must not unify with the actor handle"
-    );
-}
-
 // ── builtin_names registration ────────────────────────────────────────────────
 
 // Negative controls: `LocalPid`, `Pid` and `LambdaPid` are retired surface
@@ -159,11 +110,11 @@ fn lambda_pid_no_longer_registered_in_builtin_names() {
 }
 
 #[test]
-fn remote_pid_registered_in_builtin_names() {
+fn remote_pid_no_longer_registered_in_builtin_names() {
     use hew_types::builtin_names::builtin_named_type;
     assert!(
-        builtin_named_type("RemotePid").is_some(),
-        "RemotePid should be in builtin_named_type registry"
+        builtin_named_type("RemotePid").is_none(),
+        "RemotePid must not be in builtin_named_type registry"
     );
 }
 
@@ -178,17 +129,4 @@ fn ty_actor_handle_helper() {
         Some(("Msg", &[][..]))
     );
     assert!(ty.as_actor_handle().is_some());
-    assert_eq!(ty.as_remote_pid(), None);
-}
-
-#[test]
-fn ty_remote_pid_helper() {
-    let inner = Ty::named_for_test("Msg", vec![]);
-    let ty = Ty::remote_pid(inner.clone());
-    assert_eq!(ty.as_remote_pid(), Some(&inner));
-    assert_eq!(
-        ty.actor_handle_identity()
-            .map(|(head, args)| (head.spelling.as_str(), args)),
-        None
-    );
 }

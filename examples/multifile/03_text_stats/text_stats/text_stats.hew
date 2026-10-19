@@ -17,6 +17,6 @@ pub fn truncate(text: string, max_len: i64) -> string {
     if text.len() <= max_len {
         text
     } else {
-        text.slice(0, max_len) + "..."
+        text[0..max_len] + "..."
     }
 }

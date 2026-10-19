@@ -1,8 +1,8 @@
 use hew_cabi::string::{string_as_bytes, string_as_str, HewString};
 use hew_runtime::bytes::hew_bytes_drop;
 use hew_runtime::string::{
-    hew_string_byte_length, hew_string_char_at, hew_string_clone, hew_string_concat,
-    hew_string_drop, hew_string_find, hew_string_length, hew_string_literal_new, hew_string_slice,
+    hew_string_byte_length, hew_string_clone, hew_string_concat, hew_string_drop, hew_string_find,
+    hew_string_get, hew_string_length, hew_string_literal_new, hew_string_slice_codepoints,
     hew_string_to_bytes_owned, hew_string_to_uppercase,
 };
 use std::mem::MaybeUninit;
@@ -81,9 +81,9 @@ fn scalar_positions_include_nul_and_ignore_utf8_byte_width() {
     // SAFETY: both handles are live; slicing returns an independent owner.
     unsafe {
         assert_eq!(hew_string_find(value, needle), 3);
-        assert_eq!(hew_string_char_at(value, 1), 0);
-        assert_eq!(hew_string_char_at(value, 3), '🙂' as i32);
-        let slice = hew_string_slice(value, 1, 4);
+        assert_eq!(hew_string_get(value, 1), 0);
+        assert_eq!(hew_string_get(value, 3), '🙂' as i32);
+        let slice = hew_string_slice_codepoints(value, 1, 4);
         hew_string_drop(value);
         hew_string_drop(needle);
         assert_eq!(string_as_str(slice), "\0中🙂");

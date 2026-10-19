@@ -1,0 +1,14 @@
+[[case]]
+id = "service-handle-payload"
+intent = "Authenticated service offers reject native resource handles in the declared wire protocol."
+source = "cases/service-handle-payload.hew"
+kind = "reject"
+timeout_seconds = 15
+suites = ["acceptance"]
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "OpaqueMessagePayload"
+line = 3
+column = 29
+message = "opaque type `std.net.PeerSession` cannot be used as a receive-fn parameter; actor message payloads must be CBOR-serializable, and opaque handles have no serializable layout. Open or construct the handle locally inside the handler instead [E_OPAQUE_MESSAGE_PAYLOAD]"

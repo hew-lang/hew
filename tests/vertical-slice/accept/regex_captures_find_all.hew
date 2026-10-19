@@ -5,7 +5,7 @@ import std.string;
 fn main() {
     let words = regex.new("[a-z]+");
     let hits = words.find_all("12ab34cd");
-    println(string.join(hits, ","));
+    println((hits).join(","));
     let misses = words.find_all("1234");
     println(f"misses={misses.len()}");
     words.close();

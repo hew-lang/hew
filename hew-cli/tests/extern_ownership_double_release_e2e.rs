@@ -26,13 +26,13 @@
 //! EXACT release count directly.
 //!
 //! The observation is possible because the `string` handle Hew hands an extern
-//! is the real, non-copied runtime handle. `hew-cabi` pins the managed string
-//! layout as `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
-//! handle, with the UTF-8 payload directly after it, so a host staticlib reads
-//! `rc` at `handle + 8`. The spy biases `rc` by a large constant when it
-//! retains a handle, which (a) guarantees no release reaches zero and frees
-//! underneath the observation, and (b) leaves every later `hew_string_drop`
-//! visible as an exact decrement. `releases = rc_at_retain + BIAS - rc_now`.
+//! is the real, non-copied runtime handle. `hew-cabi` exposes debugger offsets
+//! and the header size for its opaque string allocation. The host
+//! staticlib uses those canonical facts to inspect the owner count. The spy
+//! biases `rc` when it retains a handle, which (a) guarantees no release
+//! reaches zero and frees underneath the observation, and (b) leaves every
+//! later `hew_string_drop` visible as an exact decrement.
+//! `releases = rc_at_retain + BIAS - rc_now`.
 //!
 //! A host cannot forge a managed handle: the spies that need one ask the
 //! linked runtime to mint it through `hew_string_literal_new`.
@@ -59,10 +59,9 @@ use support::{
 const SPY_RUST: &str = r#"//! Exact release-counting spy over the managed string header.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
-/// handle, with the UTF-8 payload directly after it.
-const RC_OFFSET: usize = 8;
-const DATA_OFFSET: usize = 16;
+const RC_OFFSET: usize = STRING_REFCOUNT_OFFSET;
+const BYTE_LEN_OFFSET: usize = STRING_BYTE_LEN_OFFSET;
+const DATA_OFFSET: usize = STRING_DATA_OFFSET;
 /// Large enough that no realistic release count can drive `rc` to zero, so the
 /// observed buffer is never freed underneath us.
 const BIAS: u32 = 1_000_000;
@@ -87,7 +86,9 @@ unsafe fn header_ok(handle: *const u8) -> bool {
     if handle.is_null() {
         return false;
     }
-    let byte_len = unsafe { std::ptr::read_unaligned(handle.cast::<usize>()) };
+    let byte_len = unsafe {
+        std::ptr::read_unaligned(handle.add(BYTE_LEN_OFFSET).cast::<usize>())
+    };
     if byte_len == 0 || byte_len > (1 << 20) {
         return false;
     }
@@ -271,17 +272,13 @@ fn main() -> i64 {
 }
 "#;
 
-/// The host allocates each return with `malloc` (the ratified ABI for a root
-/// extern `-> string`), records the pointer so it "keeps the handle alive" on
-/// its own side, and hands it to Hew. It never frees: codegen's adoption owns
-/// that single release, and a second one would abort the process.
+/// The host mints managed returns through the linked runtime and records each
+/// handle. The caller owns one release, observed through the biased count.
 const HOST_RETURN_RUST: &str = r#"//! Mints one managed handle per call, keeps every one, and never releases:
 //! the caller's single declared-owner release is the only one there is.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
-/// managed handle; `rc` therefore lives at `handle + 8`.
-const RC_OFFSET: usize = 8;
+const RC_OFFSET: usize = STRING_REFCOUNT_OFFSET;
 /// Large enough that no realistic release count reaches zero.
 const BIAS: u32 = 1_000_000;
 const SLOTS: usize = 64;
@@ -410,6 +407,21 @@ fn main() -> i64 {
 "#;
 
 fn build_staticlib(dir: &Path, name: &str, source: &str) -> Option<PathBuf> {
+    let source = source
+        .replace(
+            "STRING_REFCOUNT_OFFSET",
+            &hew_cabi::string::STRING_DEBUG_REFCOUNT_OFFSET.to_string(),
+        )
+        .replace(
+            "STRING_BYTE_LEN_OFFSET",
+            &hew_cabi::string::STRING_DEBUG_BYTE_LEN_OFFSET.to_string(),
+        )
+        .replace(
+            "STRING_DATA_OFFSET",
+            &hew_cabi::string::string_debug_header_size(std::mem::size_of::<usize>() as u64)
+                .expect("native string layout")
+                .to_string(),
+        );
     let src_path = dir.join(format!("{name}.rs"));
     std::fs::write(&src_path, source).expect("write fixture .rs");
     let archive = dir.join(format!("lib{name}.a"));
@@ -827,9 +839,7 @@ fn a_returned_channel_pair_is_not_closed_by_its_producer() {
 const HEADER_AWARE_SPY_RUST: &str = r#"//! Mints managed runtime handles and counts every release of them.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
-/// managed handle; `rc` therefore lives at `handle + 8`.
-const RC_OFFSET: usize = 8;
+const RC_OFFSET: usize = STRING_REFCOUNT_OFFSET;
 /// Large enough that no realistic release count reaches zero.
 const BIAS: u32 = 1_000_000;
 const SLOTS: usize = 64;
@@ -1062,9 +1072,7 @@ const RECORD_SPY_RUST: &str = r#"//! Mints managed runtime `string` handles, wra
 //! Hew is the one whose `rc` is observed, biased so no release frees it.
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-/// `hew-cabi` pins `HewStringHeader { byte_len: usize, rc: AtomicU32 }` AT the
-/// managed handle; `rc` therefore lives at `handle + 8`.
-const RC_OFFSET: usize = 8;
+const RC_OFFSET: usize = STRING_REFCOUNT_OFFSET;
 /// Large enough that no realistic release count reaches zero.
 const BIAS: u32 = 1_000_000;
 const SLOTS: usize = 64;

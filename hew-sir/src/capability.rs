@@ -45,7 +45,7 @@ pub fn derived_capability_components(
         | ResolvedTy::String
         | ResolvedTy::Bytes => Ok(Vec::new()),
         ResolvedTy::Tuple(fields) => Ok(fields.clone()),
-        // A node identity, location or remote pid is its fixed-width words.
+        // A node identity or location is its fixed-width words.
         _ if is_identity_carrier(ty) => Ok(Vec::new()),
         _ => {
             if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(ty) {
@@ -73,9 +73,7 @@ pub fn derived_capability_components(
 /// The node identity carriers compare and hash by their carried words.
 #[must_use]
 pub fn is_identity_carrier(ty: &ResolvedTy) -> bool {
-    ty.is_builtin(hew_types::BuiltinType::NodeId)
-        || ty.is_builtin(hew_types::BuiltinType::Location)
-        || ty.is_builtin(hew_types::BuiltinType::RemotePid)
+    ty.is_builtin(hew_types::BuiltinType::NodeId) || ty.is_builtin(hew_types::BuiltinType::Location)
 }
 
 pub(crate) fn verify_value_capability(
@@ -138,6 +136,7 @@ pub(crate) fn verify_value_capability(
         | CallableInstance::Closure(_)
         | CallableInstance::EntryAdapter
         | CallableInstance::SupervisorChild { .. }
+        | CallableInstance::SupervisorPoolCount { .. }
         | CallableInstance::ActorConstruction { .. } => false,
         CallableInstance::Monomorphic => type_args.is_empty(),
         CallableInstance::Generic(key) => {

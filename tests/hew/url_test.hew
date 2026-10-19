@@ -18,36 +18,49 @@ fn test_encode_utf8_bytes_as_uppercase_hex() {
 }
 
 #[test]
-fn test_decode_preserves_existing_behaviour() {
-    assert(url.decode("hello%20world") == "hello world");
-    assert(url.decode("bad%2Zseq") == "bad%2Zseq");
-    assert(url.decode("plus+sign") == "plus+sign");
+fn test_decode_once_preserves_literal_plus() {
+    assert(url.decode("hello%20world").expect("valid escape") == "hello world");
+    assert(url.decode("plus+sign").expect("literal plus") == "plus+sign");
+    assert(url.decode("%252F").expect("single decode") == "%2F");
 }
 
 #[test]
-fn test_decode_invalid_utf8_returns_empty_string() {
-    assert(url.decode("%FF%FE") == "");
+fn test_decode_malformed_escape_reports_input_byte_offset() {
+    for text in ["é%", "é%2", "é%2Z"] {
+        match url.decode(text) {
+            .Err(.MalformedEscape(offset)) => assert(offset == 2),
+            _ => panic("expected malformed escape at byte 2"),
+        }
+    }
+}
+
+#[test]
+fn test_decode_invalid_utf8_reports_decoded_byte_offset() {
+    match url.decode("ok%FF%FE") {
+        .Err(.InvalidUtf8(error)) => assert(error.valid_up_to == 2),
+        _ => panic("expected invalid decoded UTF-8"),
+    }
 }
 
 #[test]
 fn test_decode_preserves_decoded_nul_and_unicode() {
-    let nul = string.from_char(0);
-    assert(url.decode("%00") == nul);
-    assert(url.decode("a%00b") == "a" + nul + "b");
-    assert(url.decode("%C3%A9x%F0%9F%99%82z") == "éx🙂z");
-    assert(url.decode("%E2%82") == "");
-    assert(url.decode("%ED%A0%80") == "");
+    let nul = f"{(0).try_to_char().expect("valid Unicode scalar")}";
+    assert(url.decode("%00").expect("valid NUL") == nul);
+    assert(url.decode("a%00b").expect("embedded NUL") == "a" + nul + "b");
+    assert(url.decode("%C3%A9x%F0%9F%99%82z").expect("Unicode") == "éx🙂z");
+    assert(url.decode("%E2%82").is_err());
+    assert(url.decode("%ED%A0%80").is_err());
 }
 
 #[test]
 fn test_decode_query_empty_returns_empty_vec() {
-    let pairs = url.decode_query("");
+    let pairs = url.decode_query("").expect("empty query");
     assert(pairs.len() == 0);
 }
 
 #[test]
 fn test_decode_query_decodes_form_pairs_in_order() {
-    let pairs = url.decode_query("name=hello+world&x=a%2Bb&empty=&a=b=c");
+    let pairs = url.decode_query("name=hello+world&x=a%2Bb&empty=&a=b=c").expect("valid query");
     assert(pairs.len() == 4);
     assert(pairs[0].0 == "name");
     assert(pairs[0].1 == "hello world");
@@ -60,16 +73,18 @@ fn test_decode_query_decodes_form_pairs_in_order() {
 }
 
 #[test]
-fn test_decode_query_preserves_nul_and_rejects_invalid_utf8() {
-    let pairs = url.decode_query("value=a%00b&invalid=%FF&incomplete=%E2%82");
-    assert(pairs[0].1 == "a" + string.from_char(0) + "b");
-    assert(pairs[1].1 == "");
-    assert(pairs[2].1 == "");
+fn test_decode_query_preserves_nul_and_rejects_invalid_encoding() {
+    let pairs = url.decode_query("value=a%00b").expect("embedded NUL");
+    assert(pairs[0].1 == "a" + f"{(0).try_to_char().expect("valid Unicode scalar")}" + "b");
+    assert(url.decode_query("value=ok&invalid=%FF").is_err());
+    assert(url.decode_query("incomplete=%E2%82").is_err());
+    assert(url.decode_query("bad%=value").is_err());
+    assert(url.decode_query("value=bad%2Z").is_err());
 }
 
 #[test]
 fn test_decode_query_skips_entries_without_equals() {
-    let pairs = url.decode_query("skip-me&ok=yes&&also=no");
+    let pairs = url.decode_query("skip-me&ok=yes&&also=no").expect("valid pairs");
     assert(pairs.len() == 2);
     assert(pairs[0].0 == "ok");
     assert(pairs[0].1 == "yes");

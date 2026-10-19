@@ -4,7 +4,7 @@ import std.math;
 
 fn check_floats() -> i64 {
     let empty: Vec<f64> = Vec.new();
-    if !sort.sort_floats(empty).is_empty() {
+    if !sort.sort_by(empty, |a: f64, b: f64| math.total_cmp(a, b) < 0).is_empty() {
         return 40;
     }
     // IEEE total order: negative quiet/signalling NaNs, negative infinity,
@@ -29,7 +29,7 @@ fn check_floats() -> i64 {
     expected.push(0x7ff8_0000_0000_0002);
     var single: Vec<f64> = Vec.new();
     single.push(math.from_bits(expected[0]));
-    let single_out = sort.sort_floats(single);
+    let single_out = sort.sort_by(single, |a: f64, b: f64| math.total_cmp(a, b) < 0);
     if single_out.len() != 1 || single_out[0].to_bits() != expected[0] {
         return 41;
     }
@@ -40,13 +40,20 @@ fn check_floats() -> i64 {
     for i in 0..expected.len() {
         input.push(math.from_bits(expected[(i * 7 + 5) % expected.len()]));
     }
-    let output = sort.sort_floats(input);
+    let output = sort.sort_by(input, |a: f64, b: f64| math.total_cmp(a, b) < 0);
+    let reversed = sort.reverse(output);
     if output.len() != expected.len() {
         return 43;
     }
     for i in 0..expected.len() {
         if output[i].to_bits() != expected[i] {
             return 44;
+        }
+        if reversed[i].to_bits() != expected[expected.len() - 1 - i] {
+            return 46;
+        }
+        if math.total_cmp(output[i], output[i]) != 0 {
+            return 47;
         }
         if input[i].to_bits() != expected[(i * 7 + 5) % expected.len()] {
             return 45;

@@ -151,9 +151,9 @@ rather than a deferral of the contract to 0.7:
   one envelope form rather than a local fast path beside the wire path.
 - **The wire identity field.** A node-identity field in the envelope header,
   carried with a wire version bump (`docs/diagrams.md`, §7).
-- **Remote-handle runtime unification.** One actor-identity representation at runtime, with
-  `RemotePid` reduced to the internal wire form it already is on the surface
-  (HEW-SPEC-2026 §3.4.3).
+- **Actor-handle runtime unification.** Ordinary actor types represent local
+  and imported actors. Authenticated grants bind remote authority to their
+  identity; discovery locations do not grant access (HEW-SPEC-2026 §3.4.3).
 
 Statechart observation — the machine surface reporting its transitions to an
 observer — is a fifth item, tracked with the machine statechart core rather

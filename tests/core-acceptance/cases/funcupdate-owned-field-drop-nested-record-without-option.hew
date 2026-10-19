@@ -11,8 +11,8 @@ type T {
 }
 
 fn mk() -> T {
-    let b = T { pair: (Wrapper { inner: (string.repeat("k", 32), 9), tag: string.repeat("w", 32) }, 5), churn: string.repeat("a", 32) };
-    T { ..b, churn: string.repeat("b", 32) }
+    let b = T { pair: (Wrapper { inner: (("k").repeat(32), 9), tag: ("w").repeat(32) }, 5), churn: ("a").repeat(32) };
+    T { ..b, churn: ("b").repeat(32) }
 }
 
 fn main() -> i64 {

@@ -87,7 +87,7 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
     let id_a = actor_a.id;
     let id_b = actor_b.id;
-    let (a_terminal_reason, b_terminal_reason) = register_link(actor_a, actor_b);
+    let (a_terminal_reason, b_terminal_reason, _) = register_link(actor_a, actor_b);
 
     if let (Some(reason), None) = (a_terminal_reason, b_terminal_reason) {
         send_exit_signal(id_b, id_a, reason);
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_actor_link(a: *mut HewActor, b: *mut HewActor) {
 
 /// The single registration authority orders both shard locks and samples
 /// terminal state under those locks before publishing either direction.
-fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option<i32>) {
+fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option<i32>, bool) {
     let id_a = actor_a.id;
     let id_b = actor_b.id;
     let shard_index_a = get_shard_index(id_a);
@@ -109,24 +109,30 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
             let a_terminal_reason = terminal_exit_reason(shard, id_a, actor_a);
             let b_terminal_reason = terminal_exit_reason(shard, id_b, actor_b);
 
-            if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                add_link_locked(shard, id_a, id_b);
+            let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                let inserted = add_link_locked(shard, id_a, id_b);
                 add_link_locked(shard, id_b, id_a);
-            }
+                inserted
+            } else {
+                false
+            };
 
-            (a_terminal_reason, b_terminal_reason)
+            (a_terminal_reason, b_terminal_reason, inserted)
         }),
         std::cmp::Ordering::Less => LINK_TABLE[shard_index_a].access(|shard_a| {
             LINK_TABLE[shard_index_b].access(|shard_b| {
                 let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b);
+                let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    let inserted = add_link_locked(shard_a, id_a, id_b);
                     add_link_locked(shard_b, id_b, id_a);
-                }
+                    inserted
+                } else {
+                    false
+                };
 
-                (a_terminal_reason, b_terminal_reason)
+                (a_terminal_reason, b_terminal_reason, inserted)
             })
         }),
         std::cmp::Ordering::Greater => LINK_TABLE[shard_index_b].access(|shard_b| {
@@ -134,12 +140,15 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
                 let a_terminal_reason = terminal_exit_reason(shard_a, id_a, actor_a);
                 let b_terminal_reason = terminal_exit_reason(shard_b, id_b, actor_b);
 
-                if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
-                    add_link_locked(shard_a, id_a, id_b);
+                let inserted = if a_terminal_reason.is_none() && b_terminal_reason.is_none() {
+                    let inserted = add_link_locked(shard_a, id_a, id_b);
                     add_link_locked(shard_b, id_b, id_a);
-                }
+                    inserted
+                } else {
+                    false
+                };
 
-                (a_terminal_reason, b_terminal_reason)
+                (a_terminal_reason, b_terminal_reason, inserted)
             })
         }),
     }
@@ -151,29 +160,36 @@ fn register_link(actor_a: &HewActor, actor_b: &HewActor) -> (Option<i32>, Option
 /// current actor; a negative status is a logical fault code.
 #[no_mangle]
 pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
+    link_actor_for_observation(target).0
+}
+
+/// Return only a newly installed link's selected incarnation. Cancelling an
+/// untaken operation must not remove a link that already existed.
+pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<u64>) {
     let current = crate::actor::hew_actor_self();
     if current.is_null() {
-        return crate::monitor::HEW_OBSERVATION_NO_CONTEXT;
+        return (crate::monitor::HEW_OBSERVATION_NO_CONTEXT, None);
     }
     let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
     else {
-        return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
+        return (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None);
     };
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { &*current };
     if current.id == target_id {
-        return 0;
+        return (0, None);
     }
     let Some(target) = pin_actor_by_id(target_id) else {
         // A clean free retires an incarnation without a terminal sweep; its
         // identity still answers with a normal exit (error code zero).
         send_exit_signal(current.id, target_id, 0);
-        return 0;
+        return (0, None);
     };
-    if let (_, Some(reason)) = register_link(current, target.actor()) {
+    let (_, terminal, inserted) = register_link(current, target.actor());
+    if let Some(reason) = terminal {
         send_exit_signal(current.id, target_id, reason);
     }
-    0
+    (0, inserted.then_some(target_id))
 }
 
 /// Remove the current actor's local subscription; repeated removal is harmless.
@@ -181,6 +197,22 @@ pub extern "C" fn hew_native_actor_link(target: HewLocalPidId) -> i32 {
 pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
     let current = crate::actor::hew_actor_self();
     if current.is_null() {
+        return;
+    }
+    if let Some(imported) = crate::lifetime::local_handles::current_imported_actor(target) {
+        // SAFETY: the current activation owns its actor allocation.
+        let actor = unsafe { (*current).id };
+        for (id, authority) in crate::runtime::rt_current()
+            .monitors
+            .remove_imported_links(actor, imported.identity())
+        {
+            crate::hew_node::monitor_link::send_admitted_cleanup(
+                imported.identity(),
+                authority,
+                id,
+                true,
+            );
+        }
         return;
     }
     let Some(target) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
@@ -216,7 +248,7 @@ pub unsafe extern "C" fn hew_actor_unlink(a: *mut HewActor, b: *mut HewActor) {
 
 /// Remove both directions under the same shard ordering as registration.
 /// A concurrent link cannot publish between the two removals.
-fn unlink_by_ids(a: u64, b: u64) {
+pub(crate) fn unlink_by_ids(a: u64, b: u64) {
     let (first, second) = if get_shard_index(a) <= get_shard_index(b) {
         (a, b)
     } else {
@@ -318,14 +350,18 @@ pub extern "C" fn hew_local_pid_unlink(a: HewLocalPidId, b: HewLocalPidId) {
     unsafe { hew_actor_unlink(pin_a.as_ptr(), pin_b.as_ptr()) };
 }
 
-fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) {
-    shard
-        .links
-        .entry(from_id)
-        .or_default()
-        .push(LinkedActorEntry {
-            linked_actor_id: to_actor_id,
-        });
+fn add_link_locked(shard: &mut LinkShard, from_id: u64, to_actor_id: u64) -> bool {
+    let links = shard.links.entry(from_id).or_default();
+    if links
+        .iter()
+        .any(|entry| entry.linked_actor_id == to_actor_id)
+    {
+        return false;
+    }
+    links.push(LinkedActorEntry {
+        linked_actor_id: to_actor_id,
+    });
+    true
 }
 
 fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> Option<i32> {
@@ -343,6 +379,20 @@ fn terminal_exit_reason(shard: &LinkShard, actor_id: u64, actor: &HewActor) -> O
 }
 
 fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
+    send_exit_notification(
+        linked_actor_id,
+        crate::monitor::HewNotificationTarget::local(crashed_actor_id),
+        reason,
+        crate::internal::types::CrashKind::tag_from_error_code(reason),
+    );
+}
+
+fn send_exit_notification(
+    linked_actor_id: u64,
+    target: crate::monitor::HewNotificationTarget,
+    reason: i32,
+    crash_kind: i32,
+) {
     let Some(linked_actor_pin) = pin_actor_by_id(linked_actor_id) else {
         return;
     };
@@ -352,12 +402,9 @@ fn send_exit_signal(linked_actor_id: u64, crashed_actor_id: u64, reason: i32) {
         let linked_actor_ref = linked_actor_pin.actor();
         if !linked_actor_ref.mailbox.is_null() {
             let exit_data = ExitMessage {
-                crashed_actor_id,
+                target,
                 reason,
-                // M-7 substrate: precompute the CrashKind tag (the M-6
-                // projection) so the future typed `#[on(exit)]` hook reads
-                // `CrashNotification.kind` directly.
-                crash_kind: crate::internal::types::CrashKind::tag_from_error_code(reason),
+                crash_kind,
             };
 
             let data_ptr = (&raw const exit_data).cast::<c_void>();
@@ -428,9 +475,9 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 /// fail-together semantic. Local and cross-node link state stores actor
 /// identities only, so delivery resolves and pins the live allocation by id.
 ///
-/// `crashed_remote_serial` is the dead remote peer's serial (carried into the
-/// `ExitMessage` for the typed `#[on(exit)]` consumer). `reason` is the terminal
-/// reason (a `HewActorState` value, or a partition sentinel).
+/// `target` preserves the complete authenticated remote identity. The crash
+/// class comes from the decoded notice; `reason` is the terminal state or
+/// partition sentinel used by link policy.
 ///
 /// Non-`CrashLinked` policies are non-fatal: the link is recorded but the
 /// remote's death does not crash the local actor (it survives). This is the
@@ -440,9 +487,10 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 /// actor); false if the policy was non-fatal or the local actor is already gone.
 pub(crate) fn deliver_cross_node_link_exit(
     local_actor_id: u64,
-    crashed_remote_serial: u64,
+    target: crate::node_identity::Location,
     reason: i32,
     policy_tag: u8,
+    crash_kind: i32,
 ) -> bool {
     if policy_tag != POLICY_TAG_CRASH_LINKED {
         // Non-CrashLinked link: the remote's death is non-fatal to the local
@@ -456,9 +504,14 @@ pub(crate) fn deliver_cross_node_link_exit(
     }
     // Reuse the proven local EXIT-synthesis path (same HewSysMsg::Exit + CrashKind
     // projection + Idle→Runnable wake), so supervision / exit-trapping behaves
-    // identically to a local link EXIT. `send_exit_signal` re-validates and pins
+    // identically to a local link EXIT. `send_exit_notification` re-validates and pins
     // liveness before dereferencing the allocation.
-    send_exit_signal(local_actor_id, crashed_remote_serial, reason);
+    send_exit_notification(
+        local_actor_id,
+        crate::monitor::HewNotificationTarget::remote(target),
+        reason,
+        crash_kind,
+    );
     true
 }
 
@@ -548,25 +601,13 @@ pub(crate) fn remove_all_links_for_actor(actor_id: u64, _actor_addr: *mut HewAct
     }
 }
 
-/// Message data for EXIT system messages.
-///
-/// M-7 typed-payload substrate: this is the runtime mirror of the
-/// `std/failure.hew::CrashNotification { actor_id, kind }` a linked actor's
-/// exit hook will receive once the `#[on(exit)]` user surface is ratified
-/// (M-7-R). `crash_kind` is the M-6 `ExitReason -> CrashKind` projection of
-/// `reason`, precomputed at the delivery boundary so the (future) typed hook
-/// reads a `CrashKind` tag directly without re-deriving the projection. The
-/// raw `reason` is retained for the existing integer-tag consumers.
+/// Fixed actor-mailbox payload for `CrashNotification { target, kind }`.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExitMessage {
-    /// ID of the actor that crashed and caused this exit signal. Maps to
-    /// `CrashNotification.actor_id`.
-    pub crashed_actor_id: u64,
-    /// Reason code (`error_code` from `hew_actor_trap`).
+    pub target: crate::monitor::HewNotificationTarget,
+    /// Terminal reason retained for link policy processing.
     pub reason: i32,
-    /// The M-6 `CrashKind` tag projected from `reason` (Crashed=0,
-    /// HeapExceeded=1, PartitionDetected=2). Maps to `CrashNotification.kind`.
     pub crash_kind: i32,
 }
 
@@ -669,7 +710,6 @@ mod tests {
 
     fn create_test_actor(id: u64) -> HewActor {
         HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(std::ptr::null_mut()),
             id,
             state: std::ptr::null_mut(),
@@ -1078,7 +1118,10 @@ mod tests {
             assert!(!node.is_null());
             assert_eq!((*node).msg_type, HewSysMsg::Exit.as_i32());
             let payload = &*((*node).data.cast::<ExitMessage>());
-            assert_eq!(payload.crashed_actor_id, target_id);
+            assert_eq!(
+                payload.target,
+                crate::monitor::HewNotificationTarget::local(target_id)
+            );
             assert_eq!(payload.reason, 91);
             // M-7 substrate: the delivered EXIT message carries the projected
             // CrashKind tag. reason 91 is not a known trap code → Signal(91) →

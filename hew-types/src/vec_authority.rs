@@ -217,8 +217,7 @@ pub fn classify_element_with(
                 ),
             ..
         } => VecElementToken::Layout,
-        // An actor handle is one `*mut HewActor` word. `RemotePid<T>` is an
-        // inline aggregate and takes a different element ABI.
+        // An actor handle is one `*mut HewActor` word.
         Ty::Named {
             head: crate::TypeHead::Actor(_),
             ..

@@ -1,18 +1,16 @@
-//! Outbound sends, broadcast and connection queries.
+//! Authenticated outbound claims and connection queries.
 
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::mailbox_envelope::MailboxPayloadClass;
-use crate::node_identity::{HewLocation, Location, NodeId};
+use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, Posture};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::util::MutexExt;
 
 use super::channel::{ChannelError, ChannelProtection};
-use super::control::encode_envelope;
 use super::{HewConnMgr, ReaderLifecycleGuard, CONN_STATE_ACTIVE, CONN_STATE_CLOSED};
 
 /// One manager-issued authority for an authenticated peer and transport slot.
@@ -27,6 +25,7 @@ pub(crate) struct SendClaim {
     pub(crate) publication_token: u64,
     publication_removed: Arc<std::sync::atomic::AtomicBool>,
     channel: Arc<ChannelProtection>,
+    gossip_out: Arc<std::sync::atomic::AtomicU64>,
 }
 
 // SAFETY: the claim's lifecycle lease pins its transport connection until drop.
@@ -35,6 +34,21 @@ pub(crate) struct SendClaim {
 unsafe impl Send for SendClaim {}
 
 impl SendClaim {
+    pub(crate) fn connection_id(&self) -> c_int {
+        self.conn_id
+    }
+
+    pub(crate) fn peer_session(&self) -> crate::envelope::NodeSessionIdentity {
+        crate::envelope::NodeSessionIdentity {
+            node_id: self.identity,
+            session_incarnation: self.session_incarnation,
+        }
+    }
+
+    pub(crate) fn publication_removed(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.publication_removed)
+    }
+
     /// Transfer this lease to the existing pool. The caller never waits on the
     /// channel's send lock or on a peer accepting the frame.
     pub(crate) fn submit(
@@ -87,12 +101,24 @@ impl SendClaim {
         if self.publication_removed.load(Ordering::Acquire) {
             return Err(ChannelError::Faulted);
         }
+        let mut gossip = false;
         // SAFETY: the manager owns the transport. The claim's lifecycle lease
         // prevents this exact connection slot from being removed or reused.
         let result = unsafe {
             self.channel
-                .send_prepared(self.transport, self.conn_id, prepare)
+                .send_prepared(self.transport, self.conn_id, || {
+                    let frame = prepare()?;
+                    if crate::observe::observe_hot_tier_enabled() {
+                        gossip = matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
+                            Ok(crate::envelope::WireFrame::Control(control))
+                            if matches!(control.ctrl_kind, crate::envelope::CTRL_SWIM | crate::envelope::CTRL_REGISTRY_GOSSIP));
+                    }
+                    Some(frame)
+                })
         };
+        if result.is_ok() && gossip {
+            self.gossip_out.fetch_add(1, Ordering::Relaxed);
+        }
         if let Err(error) = result {
             set_last_error(format!("connection send on conn {}: {error}", self.conn_id));
         }
@@ -125,6 +151,7 @@ pub(crate) fn claim_send(
                 publication_token: connection.publication_token,
                 publication_removed: Arc::clone(&connection.publication_removed),
                 channel: Arc::clone(&connection.channel),
+                gossip_out: Arc::clone(&manager.gossip_out),
             },
             connection.publication_token,
             connection.credential.clone(),
@@ -146,6 +173,16 @@ pub(crate) fn claim_send(
     (published && !claim.publication_removed.load(Ordering::Acquire)).then_some(claim)
 }
 
+pub(crate) fn claim_send_by_identity(
+    manager: &HewConnMgr,
+    peer: NodeId,
+    publication: Option<u64>,
+) -> Option<SendClaim> {
+    let connection = manager.claims.0.lock_or_recover().get(&peer)?.conn_id;
+    let claim = claim_send(manager, connection, publication)?;
+    (claim.identity == peer).then_some(claim)
+}
+
 pub(crate) fn claim_send_to_location(
     manager: &HewConnMgr,
     conn_id: c_int,
@@ -160,86 +197,10 @@ pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
     conn_id: c_int,
     route_slot: u16,
+    publication: Option<u64>,
 ) -> Option<SendClaim> {
-    let claim = claim_send(manager, conn_id, None)?;
+    let claim = claim_send(manager, conn_id, publication)?;
     (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
-}
-
-/// Legacy API: outbound queue tuning is no longer supported.
-///
-/// Returns 0 on success, -1 on failure.
-///
-/// # Safety
-///
-/// `mgr` must be a valid pointer returned by [`hew_connmgr_new`](super::manager::hew_connmgr_new).
-#[no_mangle]
-pub unsafe extern "C" fn hew_connmgr_set_outbound_capacity(
-    mgr: *mut HewConnMgr,
-    _conn_id: c_int,
-    _capacity: usize,
-) -> c_int {
-    if mgr.is_null() {
-        set_last_error("hew_connmgr_set_outbound_capacity: manager is null");
-        return -1;
-    }
-    set_last_error(
-        "hew_connmgr_set_outbound_capacity: outbound queue support was removed; sends are synchronous",
-    );
-    -1
-}
-
-/// Send a wire envelope over a specific connection.
-///
-/// Returns 0 on success, -1 on failure.
-///
-/// # Safety
-///
-/// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`](super::manager::hew_connmgr_new).
-/// - `target` must point to a valid exact actor location.
-/// - `data` must point to at least `size` readable bytes, or be null
-///   when `size` is 0.
-#[no_mangle]
-pub unsafe extern "C" fn hew_connmgr_send(
-    mgr: *mut HewConnMgr,
-    conn_id: c_int,
-    target: *const HewLocation,
-    identity: *const std::ffi::c_char,
-    data: *mut u8,
-    size: usize,
-) -> c_int {
-    cabi_guard!(mgr.is_null() || target.is_null() || identity.is_null(), -1);
-    // SAFETY: the caller supplies a NUL-terminated declaration identity.
-    let Ok(identity) = (unsafe { std::ffi::CStr::from_ptr(identity) }).to_str() else {
-        return -1;
-    };
-    // SAFETY: caller guarantees `mgr` is valid.
-    let mgr_ref = unsafe { &*mgr };
-    // SAFETY: caller guarantees `target` is readable.
-    let Ok(target) = Location::try_from(unsafe { *target }) else {
-        set_last_error("hew_connmgr_send: target location is invalid");
-        return -1;
-    };
-
-    let Some(claim) = claim_send_to_location(mgr_ref, conn_id, target) else {
-        set_last_error("hew_connmgr_send: no authenticated claim for the target");
-        return -1;
-    };
-
-    // SAFETY: data is valid for size bytes per caller contract of hew_connmgr_send.
-    let Some(encoded) = (unsafe {
-        encode_envelope(
-            target,
-            identity,
-            data,
-            size,
-            MailboxPayloadClass::SerializedCrossNode as u8,
-            0,
-        )
-    }) else {
-        return -1;
-    };
-
-    claim.send(&encoded)
 }
 
 pub(super) unsafe fn send_preencoded_on_manager(
@@ -358,47 +319,6 @@ pub unsafe extern "C" fn hew_connmgr_count(mgr: *mut HewConnMgr) -> c_int {
     {
         count as c_int
     }
-}
-
-/// Send a message to all active connections.
-///
-/// Returns the number of successful sends.
-///
-/// # Safety
-///
-/// - `mgr` must be a valid pointer returned by [`hew_connmgr_new`](super::manager::hew_connmgr_new).
-/// - `data` must point to at least `size` readable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn hew_connmgr_broadcast(
-    mgr: *mut HewConnMgr,
-    target: *const HewLocation,
-    identity: *const std::ffi::c_char,
-    data: *mut u8,
-    size: usize,
-) -> c_int {
-    cabi_guard!(mgr.is_null() || target.is_null(), 0);
-    // SAFETY: caller guarantees `mgr` is valid.
-    let mgr_ref = unsafe { &*mgr };
-
-    // Collect active connection IDs under the lock.
-    let conn_ids: Vec<c_int> = mgr_ref.connections.access(|conns| {
-        conns
-            .iter()
-            .filter(|c| c.state.load(Ordering::Acquire) == CONN_STATE_ACTIVE)
-            .map(|c| c.conn_id)
-            .collect()
-    });
-
-    let mut success_count: c_int = 0;
-    for cid in conn_ids {
-        // SAFETY: mgr is valid, data/size from caller.
-        let rc = unsafe { hew_connmgr_send(mgr, cid, target, identity, data, size) };
-        if rc == 0 {
-            success_count += 1;
-        }
-    }
-
-    success_count
 }
 
 /// Get the last activity timestamp (ms) for a connection.

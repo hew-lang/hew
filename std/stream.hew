@@ -149,8 +149,10 @@ impl Display for CodecError {
     }
 }
 
+impl Error for CodecError {}
+
 /// One `decode` step: a complete frame with the bytes after it, or the
-/// buffer handed back unchanged because more bytes are needed.
+/// bytes to retain while more bytes are needed.
 pub enum Decoded<T> {
     Frame(T, bytes);
     Incomplete(bytes);
@@ -164,13 +166,93 @@ pub enum Decoded<T> {
 /// discarded a malformed record). `encode` returns one item's frame. Values
 /// are copy-on-write, so the caller keeps what `decode` hands back: a `var`
 /// parameter is the callee's own copy and cannot advance the caller's
-/// buffer. `Lines`, `LengthPrefixed` and `Slip` are the shipped codecs;
-/// `Stream<bytes>.lines()` is the `Lines` case as a method.
+/// buffer. `Lines`, `LengthPrefixed` and `Slip` are the shipped codecs.
+/// `Stream<bytes>.lines()` retains its separate line-normalization and EOF
+/// behaviour; `frames(Lines {})` delivers typed codec errors.
 pub trait Codec<T> {
     fn decode(self, buf: bytes) -> Result<Decoded<T>, CodecError>;
 
     fn encode(self, item: T) -> bytes;
 }
+
+#[resource]
+type DecodeState<C> {
+    input: Stream<bytes>;
+    codec: C;
+    buffer: bytes;
+}
+
+impl<C> DecodeState<C> {
+    fn close(consume self) {}
+}
+
+fn decode_next<T, C: Codec<T>>(consume var state: DecodeState<C>) -> Result<Option<(DecodeState<C>, T)>, CodecError> {
+    loop {
+        let before = state.buffer.len();
+        match state.codec.decode(state.buffer) {
+            .Ok(Decoded.Frame(item, rest)) => {
+                if rest.len() >= before {
+                    return .Err(CodecError.Malformed("decoder returned a frame without consuming bytes"));
+                }
+                state.buffer = rest;
+                return .Ok(.Some((state, item)));
+            }
+            .Ok(Decoded.Incomplete(rest)) => {
+                state.buffer = rest;
+                match state.input.recv() {
+                    .Some(chunk) => state.buffer.append(chunk),
+                    .None => {
+                        if state.buffer.is_empty() {
+                            return .Ok(.None);
+                        }
+                        return .Err(CodecError.Malformed("incomplete frame at end of stream"));
+                    }
+                }
+            }
+            .Err(error) => return .Err(error),
+        }
+    }
+}
+
+gen fn decoded_frames<T, C: Codec<T>>(consume input: Stream<bytes>, consume codec: C) -> Result<T, CodecError> {
+    var state = DecodeState { input: input, codec: codec, buffer: bytes.new() };
+    loop {
+        match decode_next(state) {
+            .Ok(.Some(step)) => {
+                let (next, item) = step;
+                state = next;
+                yield .Ok(item);
+            }
+            .Ok(.None) => return,
+            .Err(error) => {
+                yield .Err(error);
+                return;
+            }
+        }
+    }
+}
+
+impl Stream<bytes> {
+    /// Decode frames across arbitrary chunk boundaries. A terminal codec error
+    /// is delivered once, then the stream ends. The adapter owns both inputs.
+    fn frames<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Stream<Result<T, CodecError>> {
+        from_generator(decoded_frames(self, codec))
+    }
+}
+
+impl Sink<bytes> {
+    /// Encode each item before sending it. Encode must not suspend. Clones
+    /// share the encoder and pending bytes; final release closes the codec.
+    fn framed<T: Send, C: Codec<T> + Send>(consume self, consume codec: C) -> Sink<T> {
+        from_encoder(self, move |item: T| codec.encode(item))
+    }
+}
+
+#[intrinsic("stream.from_generator")]
+fn from_generator<T>(consume input: Generator<T, ()>) -> Stream<T> {}
+
+#[intrinsic("stream.from_encoder")]
+fn from_encoder<T>(consume output: Sink<bytes>, consume encode: fn(T) -> bytes) -> Sink<T> {}
 
 /// Newline-terminated text frames. The newline is not part of the item.
 pub type Lines {

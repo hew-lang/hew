@@ -64,9 +64,10 @@ impl ReadyState {
 }
 
 pub(crate) fn enqueue(work: Arc<dyn ReadyWork>) {
-    if crate::driver::active() {
-        crate::driver::publish_work(work);
-    } else {
+    #[cfg(not(target_arch = "wasm32"))]
+    if !crate::driver::active() {
         crate::scheduler::enqueue_work(work);
+        return;
     }
+    crate::driver::publish_work(work);
 }

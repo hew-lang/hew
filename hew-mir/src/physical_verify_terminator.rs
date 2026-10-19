@@ -76,45 +76,6 @@ pub(crate) fn terminator_successors(
         ));
     }
     match terminator {
-        PhysicalTerminator::RemoteAsk {
-            target,
-            payload,
-            timeout,
-            result,
-            normal,
-            cancel,
-            unwind,
-            ..
-        } => {
-            // The pid is borrowed, the message is consumed into its encoding
-            // before the caller parks and the timeout is a copied scalar.
-            for source in [target, payload, timeout] {
-                initialized(function, &state, *source, block, "remote ask request")?;
-            }
-            consume_if_owned(function, borrows, &mut state, *payload)?;
-            if state.fault != FaultState::None {
-                return Err(PhysicalError::new(
-                    "remote ask cannot replace an active fault",
-                ));
-            }
-            let mut completed = state.clone();
-            define(
-                function,
-                borrows,
-                &mut completed,
-                *result,
-                block,
-                "remote ask result",
-            )?;
-            let mut successors = vec![apply_edge(function, borrows, normal, completed, block)?];
-            state.fault = FaultState::Active;
-            let mut cancelled = state.clone();
-            cancelled.exit = defer::CANCEL;
-            successors.push(apply_edge(function, borrows, cancel, cancelled, block)?);
-            state.exit = defer::TRAP;
-            successors.push(apply_edge(function, borrows, unwind, state, block)?);
-            Ok(successors)
-        }
         PhysicalTerminator::ActorAsk {
             args,
             result,
@@ -397,6 +358,14 @@ pub(crate) fn terminator_successors(
             Ok(successors)
         }
         PhysicalTerminator::NativeIo {
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
+        | PhysicalTerminator::ServiceAcquire {
             args,
             result,
             normal,
@@ -976,45 +945,6 @@ pub(crate) fn verify_terminator(
         }
     };
     match terminator {
-        PhysicalTerminator::RemoteAsk {
-            actor,
-            message,
-            target,
-            payload,
-            timeout,
-            result,
-            normal,
-            cancel,
-            unwind,
-        } => {
-            let signature = module
-                .actors
-                .get(actor.0 as usize)
-                .filter(|descriptor| descriptor.id == *actor)
-                .ok_or_else(|| PhysicalError::new("remote ask requires its exact actor"))?
-                .remote_signature(
-                    *message,
-                    &slot(*target)?.ty,
-                    slot(*result)?.ty.clone(),
-                    true,
-                )
-                .map_err(PhysicalError::new)?;
-            let types = [&slot(*target)?.ty, &slot(*payload)?.ty, &slot(*timeout)?.ty];
-            if signature.params.len() != types.len()
-                || signature
-                    .params
-                    .iter()
-                    .zip(types)
-                    .any(|(parameter, ty)| parameter.ty != *ty)
-            {
-                return Err(PhysicalError::new(
-                    "remote ask differs from its member's pid, message and timeout",
-                ));
-            }
-            edge(normal)?;
-            edge(cancel)?;
-            edge(unwind)
-        }
         PhysicalTerminator::ActorAsk {
             actor,
             message,
@@ -1158,6 +1088,7 @@ pub(crate) fn verify_terminator(
         PhysicalTerminator::StreamSend {
             park,
             sink,
+            receiver,
             value,
             element,
             committed,
@@ -1185,6 +1116,12 @@ pub(crate) fn verify_terminator(
                     "stream send element differs from its sink",
                 ));
             }
+            if receiver.ty != slot(*sink)?.ty {
+                return Err(PhysicalError::new(
+                    "stream send witness disagrees with its receiver",
+                ));
+            }
+            verify_value_recipe(module, receiver)?;
             verify_value_recipe(module, element)?;
             for successor in defer::edges(terminator) {
                 edge(successor)?;
@@ -1279,6 +1216,47 @@ pub(crate) fn verify_terminator(
                 (None, None) => {}
                 (Some(result), Some(declared)) if slot(*result)?.ty == declared.recipe.ty => {}
                 _ => return Err(PhysicalError::new("offload result differs from its extern")),
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::ServiceAcquire {
+            actor,
+            export,
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let operation = if *export {
+                hew_types::runtime_call::ServiceOp::Export
+            } else {
+                hew_types::runtime_call::ServiceOp::Receive
+            };
+            let arguments = args
+                .iter()
+                .map(|argument| match argument {
+                    ArgumentTransfer::Borrow(id) => Ok(slot(*id)?.ty.clone()),
+                    _ => Err(PhysicalError::new(
+                        "service acquisition requires borrowed inputs",
+                    )),
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            let result_ty = &slot(*result)?.ty;
+            if module.actors.get(actor.0 as usize).is_none_or(|descriptor| {
+                descriptor.id != *actor || descriptor.handlers.is_empty()
+                    || descriptor.handlers.iter().any(|handler| handler.codec.is_none())
+                    || (*export && arguments.get(1) != Some(&descriptor.handle_ty))
+                    || !matches!(result_ty, ResolvedTy::Named { args, .. }
+                        if if *export {
+                            matches!(args.first(), Some(ResolvedTy::Named { args, .. }) if args.as_slice() == [descriptor.handle_ty.clone()])
+                        } else {
+                            args.first() == Some(&descriptor.handle_ty)
+                        })
+            }) || !operation.row().contract.expect("service contract").matches_signature(&module.defs, &arguments, &slot(*result)?.ty) {
+                return Err(PhysicalError::new("service acquisition differs from its admitted interface"));
             }
             edge(normal)?;
             edge(cancel)?;
@@ -1955,6 +1933,25 @@ pub(crate) fn verify_terminator(
                     Ok(slot(id)?.ty.clone())
                 })
                 .collect::<Result<Vec<_>, PhysicalError>>()?;
+            let needs_witnesses = matches!(
+                action.family,
+                RuntimeCallFamily::StreamFromGenerator
+                    | RuntimeCallFamily::SinkFromEncoder
+                    | RuntimeCallFamily::SinkClone
+            );
+            if args.value_witnesses().len() != if needs_witnesses { args.len() } else { 0 } {
+                return Err(PhysicalError::new(
+                    "physical stream bridge has incomplete value witnesses",
+                ));
+            }
+            for (recipe, ty) in args.value_witnesses().iter().zip(&parameter_types) {
+                if &recipe.ty != ty {
+                    return Err(PhysicalError::new(
+                        "physical stream bridge witness disagrees with its argument",
+                    ));
+                }
+                verify_value_recipe(module, recipe)?;
+            }
             let result_type = result
                 .map(|id| slot(id).map(|slot| &slot.ty))
                 .transpose()?
@@ -2053,11 +2050,14 @@ pub(crate) fn verify_terminator(
             // variant results carry their own checked type and are verified by
             // their operation's contract.
             let scalar_optional = match action.family {
-                RuntimeCallFamily::StringCharAt => Some(ResolvedTy::Char),
-                RuntimeCallFamily::StringFind | RuntimeCallFamily::StringCharAtUtf8 => {
-                    Some(ResolvedTy::I64)
-                }
+                RuntimeCallFamily::StringGet
+                | RuntimeCallFamily::CharFromI64
+                | RuntimeCallFamily::CharFromU64 => Some(ResolvedTy::Char),
+                RuntimeCallFamily::CharToDigit
+                | RuntimeCallFamily::StringFind
+                | RuntimeCallFamily::StringFindFrom => Some(ResolvedTy::I64),
                 RuntimeCallFamily::BytesGet => Some(ResolvedTy::U8),
+                RuntimeCallFamily::StringGetRange => Some(ResolvedTy::String),
                 _ => None,
             };
             if let (PhysicalRuntimeCarrier::Variant(descriptor), Some(payload)) =

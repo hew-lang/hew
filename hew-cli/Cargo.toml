@@ -14,6 +14,8 @@ name = "hew"
 path = "src/main.rs"
 
 [dependencies]
+hew-lsp = { path = "../hew-lsp" }
+hew-observe = { path = "../hew-observe" }
 hew-analysis = { path = "../hew-analysis" }
 hew-codec = { path = "../hew-codec" }
 hew-compile = { path = "../hew-compile" }
@@ -50,6 +52,7 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
+url = "2"
 filetime = "0.2"
 hew-cabi = { path = "../hew-cabi" }
 hew-testutil = { path = "../hew-testutil" }

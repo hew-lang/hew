@@ -1378,15 +1378,13 @@ impl Checker {
         valid
     }
 
-    /// Retain obligations that the immutable marker and Display services prove.
-    /// Other trait/associated-type predicates require the live solver and are
-    /// explicitly refused by concrete value-method selection.
+    /// Bounds outside the immutable capability services need a live proof.
     pub(super) fn value_method_obligations(
         &mut self,
         impl_params: Option<&Vec<TypeParam>>,
         impl_where: Option<&WhereClause>,
         method: &FnDecl,
-    ) -> Option<Vec<(crate::TypeParamId, crate::type_facts::ImplMethodObligation)>> {
+    ) -> Vec<(crate::TypeParamId, crate::type_facts::ImplMethodObligation)> {
         let mut bounds = self.collect_type_param_bounds(impl_params, impl_where, &mut Vec::new());
         let method_bounds = self.collect_type_param_bounds(
             method.type_params.as_ref(),
@@ -1398,16 +1396,17 @@ impl Checker {
             .iter()
             .map(|(param, bound)| {
                 if !bound.args.is_empty() || !bound.assoc.is_empty() {
-                    return None;
+                    return (*param, crate::type_facts::ImplMethodObligation::Checked);
                 }
-                let obligation = match self.trait_marker(bound.trait_id)? {
-                    MarkerTrait::Display => crate::type_facts::ImplMethodObligation::Display,
-                    MarkerTrait::Serializable => {
+                let obligation = match self.trait_marker(bound.trait_id) {
+                    Some(MarkerTrait::Display) => crate::type_facts::ImplMethodObligation::Display,
+                    Some(MarkerTrait::Serializable) => {
                         crate::type_facts::ImplMethodObligation::Serializable
                     }
-                    marker => crate::type_facts::ImplMethodObligation::Marker(marker),
+                    Some(marker) => crate::type_facts::ImplMethodObligation::Marker(marker),
+                    None => crate::type_facts::ImplMethodObligation::Checked,
                 };
-                Some((*param, obligation))
+                (*param, obligation)
             })
             .collect()
     }
@@ -1477,6 +1476,8 @@ impl Checker {
         );
         let obligations =
             self.value_method_obligations(impl_type_params, impl_where_clause, method);
+        let implemented_trait_ref =
+            trait_bound.and_then(|bound| self.resolve_written_bound(method.name.name, bound));
         self.impl_method_binders.insert(
             declaration_id,
             crate::type_facts::ImplMethodBinders {
@@ -1484,6 +1485,8 @@ impl Checker {
                 obligations,
                 impl_params: impl_parameters.clone(),
                 method_params: method_parameters,
+                checked_receivers: HashSet::new(),
+                implemented_trait: implemented_trait_ref,
             },
         );
         if let Some(bound) = trait_bound {

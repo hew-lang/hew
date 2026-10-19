@@ -107,97 +107,6 @@ fn struct_with_non_bitcopy_field_is_not_inferred_bitcopy() {
 }
 
 #[test]
-fn concrete_generic_type_instantiation_is_inferred_bitcopy() {
-    let output = lower_checked(
-        r"pub type Wrapper<T> {
-    inner: T;
-}
-
-fn main() -> i64 {
-    let w = Wrapper { inner: 7 };
-    0
-}
-",
-    );
-    assert!(
-        output.diagnostics.is_empty(),
-        "no diagnostics expected; got: {:#?}",
-        output.diagnostics
-    );
-    let key = hew_hir::mangle("Wrapper", &[ResolvedTy::I64]);
-    assert_eq!(
-        output.module.type_classes.get(&key).map(|entry| entry.0),
-        Some(ResourceMarker::BitCopy),
-        "concrete Wrapper<i64> layout should be BitCopy under its mangled key"
-    );
-    let ty = ResolvedTy::named_path(&output.module.defs, "Wrapper", vec![ResolvedTy::I64]);
-    assert_eq!(
-        lookup_type_marker_for_ty(&ty, &output.module.type_classes),
-        Some(ResourceMarker::BitCopy)
-    );
-}
-
-#[test]
-fn nested_generic_type_instantiations_converge_to_bitcopy() {
-    let output = lower_checked(
-        r"pub type Outer<T> {
-    inner: Inner<T>;
-}
-
-pub type Inner<T> {
-    value: T;
-}
-
-fn main() -> i64 {
-    let o: Outer<i64> = Outer { inner: Inner { value: 7 } };
-    0
-}
-",
-    );
-    assert!(
-        output.diagnostics.is_empty(),
-        "no diagnostics expected; got: {:#?}",
-        output.diagnostics
-    );
-    for key in [
-        hew_hir::mangle("Inner", &[ResolvedTy::I64]),
-        hew_hir::mangle("Outer", &[ResolvedTy::I64]),
-    ] {
-        assert_eq!(
-            output.module.type_classes.get(&key).map(|entry| entry.0),
-            Some(ResourceMarker::BitCopy),
-            "{key} should be BitCopy after fixed-point inference"
-        );
-    }
-}
-
-#[test]
-fn concrete_generic_type_with_string_field_is_not_inferred_bitcopy() {
-    let output = lower_checked(
-        r#"pub type Wrapper<T> {
-    inner: T;
-}
-
-fn main() -> i64 {
-    let w = Wrapper { inner: "owned" };
-    0
-}
-"#,
-    );
-    assert!(
-        output.diagnostics.is_empty(),
-        "no diagnostics expected; got: {:#?}",
-        output.diagnostics
-    );
-    let key = hew_hir::mangle("Wrapper", &[ResolvedTy::String]);
-    assert_ne!(
-        output.module.type_classes.get(&key).map(|entry| entry.0),
-        Some(ResourceMarker::BitCopy),
-        "Wrapper<string> must not be promoted to BitCopy"
-    );
-}
-
-#[test]
 fn zero_field_extern_backed_record_is_bitcopy_handle_stand_in() {
     // The FFI handle stand-in shape: a zero-field record produced and
     // consumed only by `#[extern_symbol]` methods. Its values exist behind the C ABI, so the
@@ -308,4 +217,28 @@ fn user_shadowed_builtin_name_does_not_take_builtin_value_class() {
         Some(ResourceMarker::Resource),
         "builtin-discriminated Stream still follows builtin type-class registration"
     );
+}
+
+#[test]
+fn nested_generic_records_use_exact_checker_value_classes() {
+    let parsed = hew_parser::parse(
+        "type Inner<T> { value: T; } type Outer<T> { inner: Inner<T>; } fn main() {}",
+    );
+    assert!(parsed.errors.is_empty());
+    let checked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let defs = checked.defs.clone();
+    let mut facts = hew_types::TypeFactService::new(checked.type_fact_context, checked.type_facts);
+    for name in ["Inner", "Outer"] {
+        let primitive = ResolvedTy::named_path(&defs, name, vec![ResolvedTy::I64]);
+        let owned = ResolvedTy::named_path(&defs, name, vec![ResolvedTy::String]);
+        assert_eq!(
+            facts.require(&primitive).unwrap().class,
+            hew_types::ValueClass::BitCopy
+        );
+        assert_ne!(
+            facts.require(&owned).unwrap().class,
+            hew_types::ValueClass::BitCopy
+        );
+    }
 }

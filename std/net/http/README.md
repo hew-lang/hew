@@ -3,6 +3,10 @@
 HTTP client and server helpers. The package contains the inbound server at
 `std.net.http` and outbound requests at `std.net.http.http_client`.
 
+[`std.net.http.router`](router/README.md) provides pure Hew method/path routing
+with typed route values and fallible named-parameter extraction. Pass either
+server API's method and raw target to the same table.
+
 ## HTTP/1.1 codecs
 
 The pure Hew codecs operate on `std.net` connections:

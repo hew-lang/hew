@@ -4,8 +4,8 @@
 
 use hew_hir::{lower_program_host_target, ResolutionCtx};
 use hew_sir::{
-    verify_module, BlockId, SemBlock, SemFunction, SemModule, SemOpKind, SemTerminator,
-    SirLoweringStatus, SuspendKind,
+    verify_module, BlockId, BoundaryDecision, SemBlock, SemFunction, SemModule, SemOpKind,
+    SemTerminator, SirLoweringStatus, SuspendKind,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker};
 
@@ -82,18 +82,43 @@ fn rung(function: &SemFunction, landing: BlockId) -> BlockId {
     }
 }
 
-/// `(cancel rung, unwind rung)` of every ask, in block order.
-fn ask_rungs(function: &SemFunction) -> Vec<(BlockId, BlockId)> {
+/// Each ask borrows its own copied target. Cancellation and unwind share
+/// that target's release, then enter the suffix for the remaining owners.
+fn ask_suffixes(function: &SemFunction) -> Vec<BlockId> {
     function
         .blocks
         .iter()
-        .filter_map(|block| match &block.terminator {
+        .filter_map(|site| match &site.terminator {
             SemTerminator::Suspend {
                 kind: SuspendKind::Ask { .. },
+                inputs,
                 cancel,
                 unwind,
                 ..
-            } => Some((rung(function, cancel.target), rung(function, unwind.target))),
+            } => {
+                let target = inputs.first().expect("ask target");
+                assert_eq!(target.decision, BoundaryDecision::Borrow);
+                let cancel = rung(function, cancel.target);
+                let unwind = rung(function, unwind.target);
+                assert_eq!(
+                    cancel, unwind,
+                    "one ask shares cancellation and unwind cleanup"
+                );
+                let releases = chain(function, cancel)
+                    .into_iter()
+                    .flat_map(|id| block(function, id).ops.iter().map(move |op| (id, op)))
+                    .filter_map(|(id, op)| match &op.kind {
+                        SemOpKind::DestroyValue { value } if value == &target.operand => Some(id),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    releases.len(),
+                    1,
+                    "the borrowed target is released exactly once"
+                );
+                Some(rung(function, releases[0]))
+            }
             _ => None,
         })
         .collect()
@@ -119,7 +144,7 @@ fn chain(function: &SemFunction, start: BlockId) -> Vec<BlockId> {
 }
 
 #[test]
-fn fault_sites_with_the_same_live_owners_share_one_rung() {
+fn fault_sites_share_the_suffix_after_releasing_their_own_targets() {
     let module = lower_source(
         r#"fn pair(first: Store, second: Store) -> i64 fails ActorError {
     let lease = Lease { name: "a" };
@@ -130,14 +155,12 @@ fn fault_sites_with_the_same_live_owners_share_one_rung() {
         "let _ = pair(store, store)",
     );
     let pair = function(&module, "pair");
-    let rungs = ask_rungs(pair);
+    let rungs = ask_suffixes(pair);
     assert_eq!(rungs.len(), 2);
-    let shared = rungs[0].0;
+    let shared = rungs[0];
     assert!(
-        rungs
-            .iter()
-            .all(|&(cancel, unwind)| cancel == shared && unwind == shared),
-        "both asks' cancel and unwind edges enter the same rung: {rungs:?}"
+        rungs.iter().all(|&suffix| suffix == shared),
+        "both asks enter the same suffix after releasing their targets: {rungs:?}"
     );
     assert_eq!(resume_unwinds(pair), 1, "one body, one unwind");
     let ends = chain(pair, shared)
@@ -159,9 +182,9 @@ fn a_site_with_one_more_temporary_enters_one_rung_above_the_shared_suffix() {
         "let _ = temp(store)",
     );
     let temp = function(&module, "temp");
-    let rungs = ask_rungs(temp);
+    let rungs = ask_suffixes(temp);
     assert_eq!(rungs.len(), 2);
-    let (without, with) = (chain(temp, rungs[0].0), chain(temp, rungs[1].0));
+    let (without, with) = (chain(temp, rungs[0]), chain(temp, rungs[1]));
     let releases = |chain: &[BlockId], kind: fn(&SemOpKind) -> bool| {
         chain
             .iter()
@@ -200,10 +223,9 @@ fn a_defer_rung_dispatches_its_outcome_and_no_other_fault_rung_does() {
         "let _ = deferred(store)",
     );
     let deferred = function(&module, "deferred");
-    let rungs = ask_rungs(deferred);
-    assert!(rungs
-        .iter()
-        .all(|&(cancel, unwind)| cancel == rungs[0].0 && unwind == rungs[0].0));
+    let rungs = ask_suffixes(deferred);
+    assert_eq!(rungs.len(), 2);
+    assert!(rungs.iter().all(|&suffix| suffix == rungs[0]));
     assert_eq!(resume_unwinds(deferred), 1);
     let after_finish = deferred
         .blocks
@@ -227,9 +249,10 @@ fn a_defer_rung_dispatches_its_outcome_and_no_other_fault_rung_does() {
 }
 
 #[test]
-fn a_defer_reading_rewritten_places_keeps_one_rung() {
+fn a_defer_reading_rewritten_places_keeps_one_shared_suffix() {
     // The deferred body reads `n` and `text` through their places, so every
-    // ask runs the same deferred body whatever has been stored there since.
+    // ask releases its own target, then runs the same deferred body whatever
+    // has been stored there since.
     let module = lower_source(
         r#"fn track(store: Store, label: string) -> i64 fails ActorError {
     var n = 1;
@@ -245,14 +268,9 @@ fn a_defer_reading_rewritten_places_keeps_one_rung() {
         "let _ = track(store, \"label\")",
     );
     let track = function(&module, "track");
-    let rungs = ask_rungs(track);
+    let rungs = ask_suffixes(track);
     assert_eq!(rungs.len(), 3);
-    assert!(
-        rungs
-            .iter()
-            .all(|&(cancel, unwind)| cancel == rungs[0].0 && unwind == rungs[0].0),
-        "{rungs:?}"
-    );
+    assert!(rungs.iter().all(|&suffix| suffix == rungs[0]), "{rungs:?}");
     let defers = track
         .blocks
         .iter()

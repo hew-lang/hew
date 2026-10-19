@@ -11,7 +11,7 @@ severity = "error"
 code = "Mismatch"
 line = 3
 column = 17
-message = "cannot cast `i64` to `char`"
+message = "integer-to-char conversion is fallible; use `.try_to_char()`"
 
 [[case.expected.diagnostics]]
 severity = "error"

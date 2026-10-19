@@ -162,9 +162,9 @@ fn main() {
     match text.find(":") { .Some(index) => println(index), .None => panic("missing colon"), }
     match text.find("missing") { .Some(_) => panic("false hit"), .None => println("absent"), }
     match text.find("") { .Some(index) => println(index), .None => panic("missing empty needle"), }
-    println(text.slice(1, 5).to_lower());
-    println(text.slice(-10, 1));
-    println(text.slice(99, 100).is_empty());
+    println(text[1..5].to_lower());
+    println(text.get(-10..1).is_none());
+    println(text.get(99..100).is_none());
     println(text.contains("Ω"));
     println(text.contains("no"));
     println(text);
@@ -173,6 +173,6 @@ fn main() {
     match string.to_int("1雪") { .Ok(_) => panic("nondigit accepted"), .Err(_) => println("nondigit"), }
 }
 "#,
-        "5\nabsent\n0\nélan\n雪\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",
+        "5\nabsent\n0\nélan\ntrue\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",
     );
 }

@@ -35,6 +35,7 @@ pub const MONOMORPHIC_CALLABLE_IDENTITIES: &[&str] = &[
     "Node::connect",
     "Node::id",
     "Node::identity_key",
+    "Node::lookup",
     "Node::shutdown",
     "Node::start",
     ASSERT,
@@ -78,12 +79,7 @@ pub fn compiler_synthetic_identity_endpoint(name: &str) -> Option<&str> {
         | "hew_location_node_id"
         | "hew_location_slot"
         | "hew_location_incarnation"
-        | "hew_location_display"
-        | "hew_remote_pid_location"
-        | "hew_remote_pid_node_id"
-        | "hew_remote_pid_slot"
-        | "hew_remote_pid_incarnation"
-        | "hew_remote_pid_display" => Some(name),
+        | "hew_location_display" => Some(name),
         _ => None,
     }
 }
@@ -103,11 +99,6 @@ mod tests {
             "hew_location_slot",
             "hew_location_incarnation",
             "hew_location_display",
-            "hew_remote_pid_location",
-            "hew_remote_pid_node_id",
-            "hew_remote_pid_slot",
-            "hew_remote_pid_incarnation",
-            "hew_remote_pid_display",
         ] {
             assert_eq!(
                 compiler_synthetic_identity_endpoint(endpoint),
@@ -142,8 +133,8 @@ mod tests {
     #[test]
     fn identity_carrier_synthetics_are_explicit_catalog_endpoints() {
         assert_eq!(
-            compiler_synthetic_identity_endpoint("hew_remote_pid_node_id"),
-            Some("hew_remote_pid_node_id")
+            compiler_synthetic_identity_endpoint("hew_location_node_id"),
+            Some("hew_location_node_id")
         );
         assert_eq!(compiler_synthetic_identity_endpoint("user_symbol"), None);
     }

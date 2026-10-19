@@ -1,6 +1,6 @@
 [[case]]
 id = "char_cast_roundtrip"
-intent = "The fixture runs to completion and prints exactly its recorded output."
+intent = "String indexing preserves scalar values at every UTF-8 width, and checked byte narrowing refuses a scalar outside the byte range."
 source = "../vertical-slice/accept/char_cast_roundtrip.hew"
 suites = ["acceptance"]
 timeout_seconds = 30
@@ -9,5 +9,5 @@ timeout_seconds = 30
 HEW_WORKERS = "4"
 
 [case.expected]
-stdout = "1\n1\n1\n1\n8364\n172\n"
+stdout = "1\n1\n1\n1\n8364\ntrue\n"
 exit = 0

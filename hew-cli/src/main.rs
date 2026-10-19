@@ -22,8 +22,8 @@
 //! hew tool playground-verify       # Verify runnable playground examples
 //! hew completions <shell>          # Print shell completion script
 //! hew version                      # Print version info
-//! hew observe [args...]             # Launch the TUI actor observer (delegates to hew-observe)
-//! hew lsp [args...]                 # Start the language server (delegates to hew-lsp)
+//! hew observe [args...]             # Launch the TUI actor observer
+//! hew lsp [args...]                 # Start the language server
 //! ```
 
 mod args;
@@ -51,6 +51,7 @@ mod router;
 mod run_temp;
 #[cfg(unix)]
 mod signal;
+mod source_paths;
 mod target;
 mod test_runner;
 mod util;
@@ -255,6 +256,7 @@ fn lower_file_to_semantics(
             diagnostic::emit_plain_diagnostic_line(&format!("Error: {error}"));
             DiagChannel::User
         })?;
+    source_paths::register_packages(inputs.packages.iter().map(|package| package.root.as_path()));
     Ok((output, inputs))
 }
 
@@ -423,6 +425,7 @@ fn emit_module_with_triple(
     emit_llvm: bool,
     source_path: Option<&Path>,
 ) -> Result<hew_codegen_rs::EmitArtefacts, DiagChannel> {
+    let display_source = source_path.map(hew_compile::display_source_path);
     hew_codegen_rs::emit_physical_object(
         pipeline,
         &hew_codegen_rs::PhysicalEmitOptions {
@@ -433,6 +436,7 @@ fn emit_module_with_triple(
             emit_llvm,
             address_sanitizer: link::address_sanitizer_requested(),
             debug_source: debug.then_some(source_path).flatten(),
+            debug_display_source: display_source.as_deref(),
             link_freestanding_wasm,
             build_info: Some(hew_compile::VERSION),
         },
@@ -989,16 +993,16 @@ fn emit_obj_only(
     package: Option<&hew_pkg::project::ResolvedPackage>,
     profile: &str,
     output: Option<&Path>,
-    host_export: Option<&str>,
+    host_export: &[String],
 ) -> Result<(PathBuf, Vec<PathBuf>), DiagChannel> {
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
-    if let Some(selection) = host_export {
+    if !host_export.is_empty() {
         // `--emit-deps` conflicts with `--export-c` at the argument parser.
         host::emit(
             input,
             target,
             options,
-            selection,
+            host_export,
             &final_path,
             opt_level,
             emit_llvm,
@@ -1059,6 +1063,12 @@ fn emit_obj_only(
 
 fn cmd_build(a: &args::BuildArgs) {
     diagnostic_json::set_output_format(a.format.into());
+    let _path_scope = source_paths::build_policy(
+        a.input.as_deref(),
+        a.common.project_dir.as_deref(),
+        a.trim_paths || (a.release && !a.no_trim_paths),
+    )
+    .enter();
     // Same single flush-then-exit chokepoint as `cmd_compile`: `cmd_build_run`
     // returns an exit code for EVERY path and never calls `process::exit`, so
     // the guard flushes accumulated JSON advisories on every path by construction.
@@ -1080,7 +1090,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
     let resolved = match package::resolve(a.input.as_deref()) {
         Ok(resolved) => resolved,
         Err(failure) => {
-            eprintln!("Error: {}", failure.message);
+            diagnostic::emit_plain_diagnostic_line(&format!("Error: {}", failure.message));
             return failure.code;
         }
     };
@@ -1133,7 +1143,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             resolved.package(),
             profile,
             a.output.as_deref(),
-            a.export_c.as_deref(),
+            &a.export_c,
         ) {
             Ok((object, prerequisites)) => {
                 write_deps(a.emit_deps.as_deref(), &object, &prerequisites)
@@ -2901,71 +2911,20 @@ fn cmd_env() {
 }
 
 // ---------------------------------------------------------------------------
-// Observe / LSP — sibling binary delegation
+// Linked command libraries
 // ---------------------------------------------------------------------------
 
-/// Launch `hew-observe` as a subprocess, forwarding `extra_args`.
-///
-/// Looks for `hew-observe` in the same directory as the running `hew` binary
-/// first, then falls back to PATH resolution. This keeps `hew observe` usable
-/// both from an install prefix and from a Cargo workspace `target/` tree.
-fn cmd_observe(a: &args::ObserveArgs) {
-    exec_sibling_binary("hew-observe", &a.args);
-}
-
-/// Launch `hew-lsp` as a subprocess, forwarding `extra_args`.
-///
-/// Looks for `hew-lsp` in the same directory as the running `hew` binary
-/// first, then falls back to PATH resolution.
-fn cmd_lsp(a: &args::LspArgs) {
-    exec_sibling_binary("hew-lsp", &a.args);
-}
-
-/// Replace the current process with `binary_name [extra_args]`.
-///
-/// Resolution order:
-///   1. `<dir of current executable>/<binary_name>[.exe]`
-///   2. PATH lookup (via `std::process::Command` which inherits `PATH`)
-///
-/// On Unix the process image is replaced via `execvp`; on other platforms a
-/// child process is spawned, waited for, and the exit code is forwarded.
-fn exec_sibling_binary(binary_name: &str, extra_args: &[String]) -> ! {
-    // Prefer a sibling binary next to the running `hew` executable.
-    let sibling = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|dir| dir.join(binary_name)));
-
-    let binary_path: std::path::PathBuf = match sibling {
-        Some(ref candidate) if candidate.exists() => candidate.clone(),
-        _ => std::path::PathBuf::from(binary_name),
-    };
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        let mut cmd = std::process::Command::new(&binary_path);
-        cmd.args(extra_args);
-        let error = cmd.exec();
-        // exec() only returns on failure.
-        eprintln!(
-            "Error: failed to launch `{}`: {error}",
-            binary_path.display()
-        );
+fn cmd_observe(options: &args::ObserveArgs) {
+    if let Err(error) = hew_observe::run(options) {
+        eprintln!("Error: {error}");
         std::process::exit(1);
     }
+}
 
-    #[cfg(not(unix))]
-    {
-        let status = std::process::Command::new(&binary_path)
-            .args(extra_args)
-            .status();
-        match status {
-            Ok(s) => std::process::exit(s.code().unwrap_or(1)),
-            Err(e) => {
-                eprintln!("Error: failed to launch `{}`: {e}", binary_path.display());
-                std::process::exit(1);
-            }
-        }
+fn cmd_lsp(options: &args::LspArgs) {
+    if let Err(error) = hew_lsp::run(options) {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
     }
 }
 

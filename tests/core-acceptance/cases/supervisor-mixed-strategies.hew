@@ -32,7 +32,7 @@ supervisor Rest {
     child after: Counter;
 }
 
-fn mark(before: ChildRef<Counter>, leaf: ChildRef<Counter>, after: ChildRef<Counter>) {
+fn mark(before: Counter, leaf: Counter, after: Counter) {
     before.put(11).expect("mark before");
     leaf.put(22).expect("mark nested leaf");
     after.put(33).expect("mark after");

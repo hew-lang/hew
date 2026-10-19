@@ -5,23 +5,19 @@
 //! valid state after its handlers drain and chooses the supervisor's recovery
 //! action. Actor state is released after the hook returns.
 //!
-//! ## `CrashInfo` carries `code` + `message`
+//! ## `CrashInfo` carries `kind` + `message`
 //!
-//! `code` is an opaque integer discriminator the runtime sets per crash
-//! class (arena exhaustion, link-cascade, explicit panic, …).  `message`
+//! `kind` identifies the public crash class using `CrashKind`. `message`
 //! is a heap-owned diagnostic string the runtime supplies (empty when no
 //! message is available); a crash hook can log or route on it.
 
 /// Diagnostic payload passed to `#[on(crash)]` hooks.
 ///
-/// The integer `code` discriminates crash classes; the runtime sets it
-/// before invoking `on_crash`.  `message` carries a heap-owned diagnostic
-/// string (empty when unavailable).  Hooks may match on `code` to decide a
-/// `CrashAction`, but the canonical reading is "any non-zero code is a
-/// real fault — the hook's job is to choose between Restart, Escalate,
-/// and GiveUp".
+/// Match `kind` to choose a recovery action. `message` carries a heap-owned
+/// diagnostic string (empty when unavailable); private runtime fault codes
+/// are not part of this record.
 pub type CrashInfo {
-    code: i64;
+    kind: CrashKind;
     message: string;
 }
 
@@ -39,29 +35,26 @@ pub enum CrashAction {
     GiveUp;
 }
 
-/// Identity + class of a crash that propagated to a linked actor.
+/// Actor identity carried by a monitor or link notification.
+pub enum DownTarget {
+    /// A process-local actor slot.
+    Local(u64);
+    /// A complete remote actor location.
+    Remote(Location);
+}
+
+/// Identity and class of a crash propagated to a linked actor.
 ///
-/// Delivered to a linked actor's `#[on(link)]` hook
-/// hook when an actor this one is linked to crashes.  Carries the
-/// crashed actor's identity and the class of crash — nothing else.
-///
-/// The notification provides the actor identity and crash class for recovery
-/// decisions. Signal numbers, fault addresses, and other private crash details
-/// stay with the crashed actor and its supervisor.
-///
-/// `actor_id` carries the crashed actor's id as a raw `u64`. A linked actor
-/// does not need the crashed actor's static type to inspect the notification.
+/// Delivered to the linked actor's `#[on(link)]` hook. Remote identities retain
+/// the node, actor slot and session incarnation from the authenticated notice.
+/// Signal numbers, fault addresses and other private crash details stay with
+/// the crashed actor and its supervisor.
 pub type CrashNotification {
-    /// Numeric identity of the actor that crashed.  Raw `u64` rather
-    /// than an actor handle because the linked actor does not in general
-    /// know the crashed actor's static type at the hook site.
-    actor_id: u64;
-    /// Class of the originating crash.  Mirrors the runtime
-    /// crash discriminator the supervisor receives.
+    target: DownTarget;
     kind: CrashKind;
 }
 
-/// Class of a crash propagated to a linked actor.
+/// Class of an actor crash, observed by crash and link hooks.
 ///
 /// These variants are the crash classes exposed at the link boundary; more
 /// detailed runtime reasons remain private to the crashed actor and supervisor.
@@ -71,7 +64,10 @@ pub enum CrashKind {
     Fault;
     /// Per-actor arena cap exceeded.
     HeapExceeded;
-    /// A pipe / mailbox partition was observed on a recv path the
-    /// crashed actor was awaiting.
+    /// A remote link became unreachable under its partition policy.
     PartitionDetected;
+    /// A mailbox handler returned a declared error without a waiting caller.
+    HandlerFailed;
+    /// An actor-owned timer was discarded or missed its handler-start deadline.
+    TimerOverdue;
 }

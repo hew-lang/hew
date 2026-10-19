@@ -4,15 +4,6 @@ fn lines() -> Vec<string> {
 }
 
 fn main() {
-    assert("１２3".is_digit());
-    assert(!"12x".is_digit());
-    assert("Zoë".is_alpha());
-    assert(!"Zoë3".is_alpha());
-    assert("Zoë3".is_alphanumeric());
-    assert(!"Zoë 3".is_alphanumeric());
-    assert(!"".is_digit());
-    assert(!"".is_alpha());
-    assert(!"".is_alphanumeric());
     let parts = lines();
     assert(parts.len() == 3);
     println(parts[0]);

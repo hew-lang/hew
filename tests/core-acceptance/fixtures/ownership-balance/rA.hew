@@ -1,4 +1,4 @@
-import std.string;
+
 
 type Rec {
     label: string;
@@ -6,7 +6,7 @@ type Rec {
 }
 
 fn make(seed: i64) -> Rec {
-    Rec { label: "payload-" + string.from_int(seed), n: seed }
+    Rec { label: "payload-" + f"{seed}", n: seed }
 }
 
 fn spin(seed: i64) -> i64 {
@@ -29,5 +29,5 @@ fn main() {
         let _ = spin(k);
         k = k + 1;
     }
-    println(string.from_int(spin(7)));
+    println(f"{spin(7)}");
 }

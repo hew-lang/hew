@@ -101,6 +101,7 @@ fn hew_codegen_emit(
             emit_llvm: true,
             address_sanitizer: false,
             debug_source,
+            debug_display_source: None,
             link_freestanding_wasm: false,
             build_info: None,
         },
@@ -253,7 +254,8 @@ fn a_build_without_debug_emits_no_debug_metadata() {
     let with_debug = std::fs::read_to_string(emit(debug.path(), true).ll_path.expect("textual IR"))
         .expect("read IR");
     assert!(
-        with_debug.contains("DICompileUnit") && with_debug.contains("#dbg_value"),
+        with_debug.contains("DICompileUnit")
+            && (with_debug.contains("#dbg_value") || with_debug.contains("#dbg_declare")),
         "the same build with -g must carry a compile unit and tracked local values"
     );
 }

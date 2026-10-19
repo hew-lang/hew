@@ -535,6 +535,8 @@ fn a_demanded_header_publishes_nested_shapes_and_an_unreached_one_publishes_none
     text: string;
 }
 
+enum Envelope<T> { Value(T); Empty; }
+
 type Unused {
     flag: bool;
 }
@@ -543,7 +545,7 @@ fn unrelated<Payload>(value: Payload) -> Payload {
     value
 }
 
-fn stranded(value: Result<Option<Option<Payload>>, string>) {
+fn stranded(value: Result<Envelope<Option<Payload>>, string>) {
     defer {
         println("selected");
     }
@@ -583,7 +585,7 @@ fn main() {}
     let outer = lowered
         .module
         .variant_shape_for_type(&result.variants[0].fields[0].ty)
-        .expect("the nested outer Option must have a shape");
+        .expect("the user generic enum in the selected header must have a shape");
     let inner = lowered
         .module
         .variant_shape_for_type(&outer.variants[0].fields[0].ty)

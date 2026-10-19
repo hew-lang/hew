@@ -83,29 +83,6 @@ fn restart_window_secs(window: Option<&str>) -> Result<u32, String> {
         .map_err(|_| format!("restart window `{window}` exceeds the supported range"))
 }
 
-/// A pool's arity. The `count:` clause is a compile-time member count: the
-/// declared slots are laid out at compile time, so a config-derived count has
-/// no slot space to occupy and fails closed here.
-fn pool_count(child: &hew_hir::HirSupervisorChild) -> Result<Option<u32>, String> {
-    if !child.is_pool {
-        return Ok(None);
-    }
-    let Some(count) = &child.pool_count else {
-        return Err(format!("pool `{}` declares no `count:` clause", child.name));
-    };
-    let HirExprKind::Literal(hew_hir::HirLiteral::Integer(value)) = &count.kind else {
-        return Err(format!(
-            "pool `{}` requires a literal `count:`; a computed arity has no declared slots",
-            child.name
-        ));
-    };
-    let members = u32::try_from(*value)
-        .ok()
-        .filter(|members| *members > 0)
-        .ok_or_else(|| format!("pool `{}` requires a positive `count:`", child.name))?;
-    Ok(Some(members))
-}
-
 impl InstanceService<'_> {
     pub(super) fn require_supervisor(&mut self, ty: &ResolvedTy) -> Result<SupervisorId, String> {
         self.require_supervisor_intercepted(ty, &[])
@@ -120,17 +97,6 @@ impl InstanceService<'_> {
         ty: &ResolvedTy,
         chain: &[ResolvedTy],
     ) -> Result<SupervisorId, String> {
-        if let ResolvedTy::Named {
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
-            args,
-            ..
-        } = ty
-        {
-            let [handle] = args.as_slice() else {
-                return Err("a supervised role names one supervisor type".into());
-            };
-            return self.require_supervisor_intercepted(&handle.clone(), chain);
-        }
         if let Some(supervisor) = self
             .supervisors
             .iter()
@@ -239,7 +205,28 @@ impl InstanceService<'_> {
                 role,
                 restart,
                 stop_deadline: stop_deadline(child, &source, role)?,
-                pool_count: pool_count(child)?,
+                pool_count: if child.is_pool {
+                    let count = child
+                        .pool_count
+                        .as_ref()
+                        .ok_or_else(|| format!("pool `{}` declares no count", child.name))?;
+                    Some(
+                        self.register_supervisor_expression(
+                            id,
+                            &source,
+                            count.clone(),
+                            CallableInstance::SupervisorPoolCount {
+                                supervisor: id,
+                                child: u32::try_from(index)
+                                    .map_err(|_| "pool declaration index exceeds u32")?,
+                            },
+                            &format!("pool_{index}_count"),
+                            &substitution,
+                        )?,
+                    )
+                } else {
+                    None
+                },
                 spawn,
             });
         }
@@ -259,48 +246,73 @@ impl InstanceService<'_> {
         handle: ResolvedTy,
         substitution: &TypeSubstitution,
     ) -> Result<CallableId, String> {
-        let id = CallableId(
-            u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
-        );
+        let actor_name = self
+            .module
+            .defs
+            .path(
+                crate::supervisor::declared_handle(&self.module.defs, &handle)
+                    .ok_or("supervised child lacks its declared handle type")?,
+            )
+            .to_string();
         let spawn = HirExpr {
             node: source.node,
             site: child.site,
-            ty: handle.clone(),
+            ty: handle,
             intent: IntentKind::Consume,
             kind: HirExprKind::Spawn {
-                actor_name: self
-                    .module
-                    .defs
-                    .path(
-                        crate::supervisor::declared_handle(&self.module.defs, &handle)
-                            .ok_or("supervised child lacks its declared handle type")?,
-                    )
-                    .to_string(),
+                actor_name,
                 args: child.init_args.clone(),
                 slots: child.init_slots.clone(),
             },
             span: child.span.clone(),
         };
+        self.register_supervisor_expression(
+            supervisor,
+            source,
+            spawn,
+            CallableInstance::SupervisorChild {
+                supervisor,
+                child: u32::try_from(index).map_err(|_| "supervisor child count exceeds u32")?,
+            },
+            &format!("child_{index}"),
+            substitution,
+        )
+    }
+
+    fn register_supervisor_expression(
+        &mut self,
+        supervisor: SupervisorId,
+        source: &hew_hir::HirSupervisorDecl,
+        expression: HirExpr,
+        instance: CallableInstance,
+        suffix: &str,
+        substitution: &TypeSubstitution,
+    ) -> Result<CallableId, String> {
+        let id = CallableId(
+            u32::try_from(self.table.callables.len()).map_err(|_| "callable count exceeds u32")?,
+        );
+        let result_ty = substitution.apply(&expression.ty);
+        let span = expression.span.clone();
         let function = HirFn {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             id: source.id,
             node: source.node,
             declaration: source.bootstrap_declaration,
-            name: format!("{}::{}", source.name, child.name),
+            name: format!("{}::{suffix}", source.name),
             type_params: Vec::new(),
             params: source.params.clone(),
             var_self_receiver: None,
             terminal_receiver: None,
-            return_ty: handle.clone(),
+            return_ty: result_ty.clone(),
             body: HirBlock {
                 node: source.node,
                 scope: hew_hir::ScopeId(0),
                 statements: Vec::new(),
-                tail: Some(Box::new(spawn)),
-                ty: handle.clone(),
-                span: child.span.clone(),
+                tail: Some(Box::new(expression)),
+                ty: result_ty.clone(),
+                span: span.clone(),
             },
-            span: child.span.clone(),
+            span,
             is_generator: false,
             intrinsic_id: None,
         };
@@ -320,18 +332,15 @@ impl InstanceService<'_> {
         let signature = SemSignature {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             params,
-            return_ty: handle,
+            return_ty: result_ty,
         };
         self.require_signature_shapes(&signature)?;
         self.table.callables.push(SemCallable {
             id,
             function: source.id,
             declaration: source.bootstrap_declaration,
-            instance: CallableInstance::SupervisorChild {
-                supervisor,
-                child: u32::try_from(index).map_err(|_| "supervisor child count exceeds u32")?,
-            },
-            symbol: format!("__hew_supervisor_{}_child_{index}", supervisor.0),
+            instance,
+            symbol: format!("__hew_supervisor_{}_{suffix}", supervisor.0),
             source_origin: function_source_origin(self.module, &function),
             signature,
             call_conv: SemCallConv::Default,
@@ -374,14 +383,7 @@ impl Builder<'_, '_> {
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor child lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
-        let owner_is_role = self
-            .ty(&object.ty)
-            .is_builtin(hew_types::BuiltinType::ChildRef);
-        let operation = ActorOperation::SupervisorChild {
-            supervisor,
-            child,
-            owner_is_role,
-        };
+        let operation = ActorOperation::SupervisorChild { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
             return Err("supervisor child lookup differs from its checked handle".into());
@@ -411,14 +413,7 @@ impl Builder<'_, '_> {
             .position(|child| child.name == slot.child_name)
             .ok_or("supervisor pool lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
-        let owner_is_role = self
-            .ty(&object.ty)
-            .is_builtin(hew_types::BuiltinType::ChildRef);
-        let operation = ActorOperation::SupervisorPoolView {
-            supervisor,
-            child,
-            owner_is_role,
-        };
+        let operation = ActorOperation::SupervisorPoolView { supervisor, child };
         let signature = self.actor_signature(&operation)?;
         if signature.return_ty != self.ty(&expression.ty) {
             return Err("supervisor pool lookup differs from its checked view".into());
@@ -432,10 +427,76 @@ impl Builder<'_, '_> {
             .ok_or_else(|| "supervisor pool lookup has no result".into())
     }
 
-    /// `pool.len()`, `pool[i]` and `pool.get(i)`: the fungible-slot contract.
-    /// Members are identical children addressed by index, so `len` is the
-    /// declared count, `[i]` traps outside it and `get` reports absence. The
-    /// count travels as an argument, so the accessor needs no runtime lookup.
+    pub(super) fn lower_supervisor_pool_count(
+        &mut self,
+        expression: &HirExpr,
+        count: CallableId,
+        config: &[ValueId],
+    ) -> Result<ValueId, String> {
+        let signature = self
+            .service
+            .callable(count)
+            .ok_or("pool count lost its callable")?
+            .signature
+            .clone();
+        if signature.params.len() != config.len() || !signature.return_ty.is_integer() {
+            return Err("pool count differs from its config or integer result".into());
+        }
+        let live = self.owned_live.keys().copied().collect();
+        let mut loans = Vec::new();
+        let mut args = Vec::new();
+        for (value, parameter) in config.iter().zip(&signature.params) {
+            let (value, decision) = match parameter.passing {
+                SemParamPassing::Borrow => {
+                    let borrowed = self.emit_typed(
+                        Provenance::Site(expression.site),
+                        &parameter.ty,
+                        SemOpKind::BeginBorrow {
+                            owner: crate::Operand { value: *value },
+                        },
+                    )?;
+                    loans.push(borrowed);
+                    (borrowed, crate::BoundaryDecision::Borrow)
+                }
+                SemParamPassing::ReadOnly => (*value, crate::BoundaryDecision::Copy),
+                _ => return Err("pool count must borrow its construction config".into()),
+            };
+            args.push(crate::BoundaryOperand {
+                operand: crate::Operand { value },
+                decision,
+            });
+        }
+        let value = self
+            .finish_user_call(
+                super::PreparedCallee::Direct {
+                    target: count,
+                    site: None,
+                },
+                signature,
+                args,
+                &loans,
+                &live,
+                true,
+                None,
+            )?
+            .ok_or("pool count returned no integer")?;
+        // Widen signed counts and preserve all unsigned bits. Values above
+        // i64::MAX become negative and fail the runtime's positive i32 range.
+        if self.value_ty(value) == Some(ResolvedTy::I64) {
+            Ok(value)
+        } else {
+            self.emit_typed(
+                Provenance::Site(expression.site),
+                &ResolvedTy::I64,
+                SemOpKind::Cast {
+                    value: crate::Operand { value },
+                    to: ResolvedTy::I64,
+                },
+            )
+        }
+    }
+
+    /// Pool accessors consume the constructed view's member extent.
     pub(super) fn lower_pool_accessor(
         &mut self,
         expression: &HirExpr,
@@ -446,74 +507,26 @@ impl Builder<'_, '_> {
             HirExprKind::Call { args, .. } => match args.as_slice() {
                 [receiver] => (receiver, None),
                 [receiver, index] => (receiver, Some(index)),
-                _ => {
-                    return Err("supervisor pool accessor takes its pool and one index".into());
-                }
+                _ => return Err("pool accessor requires its view and optional index".into()),
             },
-            _ => return Err("supervisor pool accessor has no pool receiver".into()),
+            _ => return Err("pool accessor has no view".into()),
         };
-        let count = self.pool_member_count(&self.ty(&receiver.ty))?;
-        if kind == hew_types::PoolAccessorKind::Len {
-            // The receiver still runs: it may be the expression that starts the
-            // supervisor. Its view is then the count's only other use.
-            lower_initial_value_transfer(self, receiver, "supervisor pool", OwnedBindingUse::Copy)?;
-            if !self.is_open() {
-                return Err("supervisor pool evaluation diverged".into());
-            }
-            return self.emit(expression, SemOpKind::ConstInteger(i128::from(count)));
-        }
-        let index = index.ok_or("supervisor pool member access takes an index")?;
-        // The member count is a declaration fact, so it is produced here rather
-        // than lowered from a source expression. Only its type is read from the
-        // stand-in operand; the call transfers the constant itself.
-        let members = self.emit_typed(
-            Provenance::Site(expression.site),
-            &ResolvedTy::I64,
-            SemOpKind::ConstInteger(i128::from(count)),
-        )?;
-        let mut bound = index.clone();
-        bound.ty = ResolvedTy::I64;
         let operation = match kind {
+            hew_types::PoolAccessorKind::Len => hew_types::runtime_call::SupervisorPoolOp::Len,
             hew_types::PoolAccessorKind::Index => hew_types::runtime_call::SupervisorPoolOp::Member,
             hew_types::PoolAccessorKind::Get => hew_types::runtime_call::SupervisorPoolOp::Get,
-            hew_types::PoolAccessorKind::Len => unreachable!("the member count returned above"),
         };
+        let mut args = vec![receiver];
+        if let Some(index) = index {
+            args.push(index);
+        }
         self.lower_runtime_operation_with(
             expression,
             hew_types::RuntimeCallFamily::SupervisorPool(operation),
-            (&[receiver, index, &bound], &[]),
+            (&args, &[]),
             true,
-            &[(2, members)],
+            &[],
         )?
-        .ok_or_else(|| "supervisor pool accessor produces no value".to_string())
-    }
-
-    /// The declared member count of the pool a `SupervisorPool<S, T>` value
-    /// names. `simple_one_for_one` admits exactly one pool child, so the
-    /// view's supervisor identifies the declaration.
-    fn pool_member_count(&mut self, view_ty: &ResolvedTy) -> Result<u32, String> {
-        let ResolvedTy::Named {
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::SupervisorPool),
-            args,
-            ..
-        } = view_ty
-        else {
-            return Err("supervisor pool accessor has no pool receiver".into());
-        };
-        let [supervisor_ty, _] = args.as_slice() else {
-            return Err("supervisor pool requires its supervisor and member types".into());
-        };
-        let supervisor = self.service.require_supervisor(supervisor_ty)?;
-        let mut pools = self.service.supervisors[supervisor.0 as usize]
-            .children
-            .iter()
-            .filter_map(|child| child.pool_count);
-        let count = pools
-            .next()
-            .ok_or("supervisor pool view names no pool declaration")?;
-        if pools.next().is_some() {
-            return Err("supervisor declares more than one pool".into());
-        }
-        Ok(count)
+        .ok_or_else(|| "pool accessor produces no value".into())
     }
 }

@@ -79,6 +79,10 @@ pub(crate) enum Route {
         runtime_id: RuntimeId,
         control_id: HewLocalPidId,
     },
+    /// Scalar provenance remains after the allocation is reclaimed, so a
+    /// stopped supervisor's declared roles retain distinct identities.
+    #[cfg(not(target_arch = "wasm32"))]
+    RetiredSupervisor { runtime_id: RuntimeId },
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -113,13 +117,30 @@ struct LocalHandleState {
     #[cfg(not(target_arch = "wasm32"))]
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
     #[cfg(not(target_arch = "wasm32"))]
-    supervisor_role_tokens: HashMap<(HewLocalPidId, u32), HewLocalPidId>,
+    supervisor_role_tokens: HashMap<(HewLocalPidId, u32, SupervisorRoleKind), HewLocalPidId>,
+    #[cfg(not(target_arch = "wasm32"))]
+    imports: HashMap<HewLocalPidId, ImportedActorBinding>,
 }
 
-/// An internal owner path used by `ChildRef`, never an incarnation `LocalPid`.
+#[cfg(not(target_arch = "wasm32"))]
+struct ImportedActorBinding {
+    references: usize,
+    service: Arc<crate::hew_node::service_api::ImportedService>,
+}
+
+/// The disjoint declared child rosters share one canonical role-token table.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SupervisorRoleKind {
+    Actor,
+    Supervisor,
+}
+
+/// A stable declared role, independent of its current occupant.
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 struct SupervisorRole {
+    kind: SupervisorRoleKind,
     root: HewLocalPidId,
     owner: HewLocalPidId,
     slot: u32,
@@ -866,6 +887,9 @@ impl LocalHandles {
             let mut current = token;
             let mut path = Vec::new();
             while let Some(role) = state.supervisor_roles.get(&current) {
+                if role.kind != SupervisorRoleKind::Supervisor {
+                    return (HewLocalPidId::INVALID, Vec::new());
+                }
                 path.push(role.slot);
                 current = role.owner;
             }
@@ -904,24 +928,39 @@ impl LocalHandles {
         runtime_id: RuntimeId,
         owner: HewLocalPidId,
         slot: u32,
+        kind: SupervisorRoleKind,
     ) -> Option<HewLocalPidId> {
         self.state.access(|state| {
             let root = state
                 .supervisor_roles
                 .get(&owner)
                 .map_or(owner, |role| role.root);
-            let control = state.controls.get(&root)?;
-            if control.runtime_id() != runtime_id || !state.routes.contains_key(&root) {
-                return None;
+            match state.routes.get(&root)? {
+                Route::Supervisor {
+                    runtime_id: owner_runtime,
+                    ..
+                }
+                | Route::RetiredSupervisor {
+                    runtime_id: owner_runtime,
+                } if *owner_runtime == runtime_id => {}
+                _ => return None,
             }
-            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot)) {
+            if let Some(token) = state.supervisor_role_tokens.get(&(owner, slot, kind)) {
                 return Some(*token);
             }
             let token = allocate()?;
+            state.supervisor_roles.insert(
+                token,
+                SupervisorRole {
+                    kind,
+                    root,
+                    owner,
+                    slot,
+                },
+            );
             state
-                .supervisor_roles
-                .insert(token, SupervisorRole { root, owner, slot });
-            state.supervisor_role_tokens.insert((owner, slot), token);
+                .supervisor_role_tokens
+                .insert((owner, slot, kind), token);
             Some(token)
         })
     }
@@ -931,12 +970,19 @@ impl LocalHandles {
         &self,
         runtime_id: RuntimeId,
         token: HewLocalPidId,
-    ) -> Option<(HewLocalPidId, u32)> {
+    ) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
         self.state.access(|state| {
             let role = state.supervisor_roles.get(&token)?;
-            let control = state.controls.get(&role.root)?;
-            (control.runtime_id() == runtime_id && state.routes.contains_key(&role.root))
-                .then_some((role.owner, role.slot))
+            match state.routes.get(&role.root)? {
+                Route::Supervisor {
+                    runtime_id: owner_runtime,
+                    ..
+                }
+                | Route::RetiredSupervisor {
+                    runtime_id: owner_runtime,
+                } if *owner_runtime == runtime_id => Some((role.owner, role.slot, role.kind)),
+                _ => None,
+            }
         })
     }
 
@@ -961,7 +1007,12 @@ impl LocalHandles {
                     if *runtime_id == control.runtime_id()
                         && *control_id == control.direct_id()
             ) {
-                state.routes.remove(&control.direct_id());
+                state.routes.insert(
+                    control.direct_id(),
+                    Route::RetiredSupervisor {
+                        runtime_id: control.runtime_id(),
+                    },
+                );
             }
             if state.supervisor_tokens.get(&control.supervisor_addr) == Some(&control.direct_id()) {
                 state.supervisor_tokens.remove(&control.supervisor_addr);
@@ -978,12 +1029,8 @@ impl LocalHandles {
                 .is_some_and(|stored| std::ptr::eq(stored.as_ref(), control));
             if matches {
                 state.controls.remove(&control.direct_id());
-                state
-                    .supervisor_roles
-                    .retain(|_, role| role.root != control.direct_id());
-                state
-                    .supervisor_role_tokens
-                    .retain(|_, token| state.supervisor_roles.contains_key(token));
+                // Canonical role keys retain scalar identity until this runtime
+                // ends. They own no supervisor allocation or completion state.
             }
         });
     }
@@ -1010,7 +1057,13 @@ impl LocalHandles {
                 .values()
                 .filter(|route| matches!(route, Route::Supervisor { .. }))
                 .count()
-                + state.supervisor_roles.len();
+                + state
+                    .supervisor_roles
+                    .values()
+                    .filter(|role| {
+                        matches!(state.routes.get(&role.root), Some(Route::Supervisor { .. }))
+                    })
+                    .count();
             (routes, state.controls.len())
         })
     }
@@ -1057,6 +1110,110 @@ fn current_handles() -> Option<&'static LocalHandles> {
 #[cfg(target_arch = "wasm32")]
 fn current_handles() -> Option<&'static LocalHandles> {
     Some(WASM_LOCAL_HANDLES.get_or_init(LocalHandles::new))
+}
+
+/// Publish one admitted descriptor in the existing actor-handle authority.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn register_current_imported_actor(
+    service: Arc<crate::hew_node::service_api::ImportedService>,
+) -> Result<HewLocalPidId, LocalHandleError> {
+    let handles = current_handles().ok_or(LocalHandleError::ShuttingDown)?;
+    let _publication = handles.begin_publication()?;
+    let token = allocate().ok_or(LocalHandleError::Exhausted)?;
+    handles.state.access(|state| {
+        state.imports.insert(
+            token,
+            ImportedActorBinding {
+                references: 1,
+                service,
+            },
+        );
+    });
+    Ok(token)
+}
+
+/// Borrow the descriptor without extending either peer's node session.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn current_imported_actor(
+    token: HewLocalPidId,
+) -> Option<Arc<crate::hew_node::service_api::ImportedService>> {
+    current_handles()?.state.access(|state| {
+        state
+            .imports
+            .get(&token)
+            .map(|binding| Arc::clone(&binding.service))
+    })
+}
+
+/// Observe an actor's identity independently of descriptor allocation and grant liveness.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_identical(left: HewLocalPidId, right: HewLocalPidId) -> i32 {
+    if left == right {
+        return 1;
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // A role names a stable place, never its current incarnation.
+        if current_actor_role_owner_slot(left).is_some()
+            || current_actor_role_owner_slot(right).is_some()
+        {
+            return 0;
+        }
+        let left_import = current_imported_actor(left);
+        let right_import = current_imported_actor(right);
+        match (left_import, right_import) {
+            (Some(left), Some(right)) => return i32::from(left.identity() == right.identity()),
+            (Some(imported), None) => {
+                return i32::from(
+                    crate::hew_node::service_api::local_actor_identity(right)
+                        == Some(imported.identity()),
+                )
+            }
+            (None, Some(imported)) => {
+                return i32::from(
+                    crate::hew_node::service_api::local_actor_identity(left)
+                        == Some(imported.identity()),
+                )
+            }
+            (None, None) => {}
+        }
+    }
+    0
+}
+
+/// Copy an actor value. Local incarnations and roles own no target allocation;
+/// imported values share only their local descriptor, never the issuer grant.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_retain(token: HewLocalPidId) -> HewLocalPidId {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(handles) = current_handles() {
+        handles.state.access(|state| {
+            if let Some(binding) = state.imports.get_mut(&token) {
+                binding.references = binding
+                    .references
+                    .checked_add(1)
+                    .expect("actor descriptor reference count overflow");
+            }
+        });
+    }
+    token
+}
+
+/// Release one actor value. Last imported-handle release frees its descriptor;
+/// exporter revocation and actor lifecycle remain separate authorities.
+#[no_mangle]
+pub extern "C" fn hew_actor_handle_release(token: HewLocalPidId) {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(handles) = current_handles() {
+        let retired = handles.state.access(|state| {
+            let binding = state.imports.get_mut(&token)?;
+            binding.references -= 1;
+            (binding.references == 0).then(|| state.imports.remove(&token))
+        });
+        drop(retired);
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = token;
 }
 
 /// Start one actor publication in the current runtime authority.
@@ -1207,18 +1364,24 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_supervisor_role_owner(owner: HewLocalPidId, slot: u32) -> HewLocalPidId {
+pub(crate) fn current_supervisor_role_owner(
+    owner: HewLocalPidId,
+    slot: u32,
+    kind: SupervisorRoleKind,
+) -> HewLocalPidId {
     let Some(runtime) = crate::runtime::rt_current_opt() else {
         return HewLocalPidId::INVALID;
     };
     runtime
         .local_handles
-        .supervisor_role_owner(runtime.runtime_id(), owner, slot)
+        .supervisor_role_owner(runtime.runtime_id(), owner, slot, kind)
         .unwrap_or(HewLocalPidId::INVALID)
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn current_actor_role_owner_slot(token: HewLocalPidId) -> Option<(HewLocalPidId, u32)> {
+pub(crate) fn current_actor_role_owner_slot(
+    token: HewLocalPidId,
+) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
     let runtime = crate::runtime::rt_current_opt()?;
     runtime
         .local_handles
@@ -1264,6 +1427,9 @@ pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option
         let mut current = owner;
         let mut path = Vec::new();
         while let Some(role) = state.supervisor_roles.get(&current) {
+            if role.kind != SupervisorRoleKind::Supervisor {
+                return (HewLocalPidId::INVALID, Vec::new());
+            }
             path.push(role.slot);
             current = role.owner;
         }
@@ -1323,6 +1489,24 @@ pub(crate) fn resolve_current_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(target_arch = "wasm32")]
     let runtime_id = RuntimeId::DEFAULT;
     current_handles()?.resolve_actor(runtime_id, token)
+}
+
+/// Pin the actor selected by a direct handle or a stable supervised role.
+/// Role resolution preserves the full incarnation serial across the pin seam.
+pub(crate) fn with_current_actor<R>(
+    token: HewLocalPidId,
+    f: impl FnOnce(*mut crate::actor::HewActor) -> R,
+) -> Option<R> {
+    if let Some(id) = resolve_current_actor(token) {
+        return crate::lifetime::live_actors::with_actor_send_by_id(id, f);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
+        return crate::lifetime::live_actors::with_actor_send_by_identity(id, serial, |pin| {
+            f(pin.as_ptr())
+        });
+    }
+    None
 }
 
 /// Resolve an observation target even after its allocation has been reclaimed.

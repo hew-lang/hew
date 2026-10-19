@@ -19,11 +19,7 @@ pub use crate::arena::ActorArena as HewArena;
 use crate::tracing::HewTraceContext;
 
 pub use crate::cancel_token::HewCancellationToken as HewCancelToken;
-#[cfg(not(target_arch = "wasm32"))]
 pub use crate::task_scope::HewTaskScope;
-
-#[cfg(target_arch = "wasm32")]
-pub type HewTaskScope = c_void;
 
 pub const EXECUTION_CONTEXT_NOT_INSTALLED: &str = "execution context not installed";
 pub const EXECUTION_CONTEXT_NOT_INSTALLED_AT_SPAWN: &str =
@@ -45,7 +41,7 @@ pub enum HewActorStateLockState {}
 /// the context-layout offset mirror is unchanged and no allocation
 /// or drop obligation is attached to the hot dispatch path.
 ///
-/// The send/ask failure path consumes this; `link_remote`
+/// The send/ask and link failure paths consume this; `set_partition_policy`
 /// writes a non-default policy into the slot.
 #[repr(usize)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -59,7 +55,7 @@ pub enum PartitionPolicy {
     /// Resolve monitor and supervision partitions as `MonitorLost`.
     MonitorLost = 2,
     /// Cross-node link/supervision fail-together behaviour. **Link-only**: not a
-    /// valid `send`/`ask` policy — `link_remote` owns it. A send/ask
+    /// valid `send`/`ask` policy — actor links own it. A send/ask
     /// failure path that observes this tag fails closed rather than silently
     /// degrading to `FailFast` (no-silent-no-op-stubs).
     CrashLinked = 3,
@@ -135,7 +131,7 @@ pub fn current_partition_policy() -> PartitionPolicy {
 /// Set the partition policy for the current dispatch's execution context.
 ///
 /// Mirrors [`current_partition_policy`]: a node configuring a non-default
-/// policy (the `link_remote` write path) stores it in the per-dispatch
+/// policy through `set_partition_policy` stores it in the per-dispatch
 /// [`HewExecutionContext::partition_policy`] slot as a repr-stable integer tag
 /// — never a heap pointer, so no allocation or drop obligation is attached to
 /// the hot dispatch path. Returns `false` (fail-closed) when no execution
@@ -282,7 +278,7 @@ pub struct HewExecutionContext {
     /// dispatch, encoded as a small repr-stable integer tag in the
     /// pointer-width slot (see [`PartitionPolicy`]). Null reads as the
     /// `FailFast` default. The send/ask failure path reads it;
-    /// `link_remote` writes a non-default policy here. Never a heap
+    /// `set_partition_policy` writes a non-default policy here. Never a heap
     /// pointer — no allocation or drop on the hot dispatch path.
     pub partition_policy: *mut c_void,
     /// Previous canonical context for nested dispatch restoration.

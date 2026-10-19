@@ -37,8 +37,10 @@ pub type HewCallableInvoke = unsafe extern "C" fn(
 
 /// Synchronous invocation with the same ownership and output contract as
 /// `HewCallableInvoke`. Returns completion status directly, without an invocation
-/// state or continuation. The compiler proves the body and consuming cleanup
-/// complete synchronously before publishing this entry.
+/// state or continuation. Zero means success, `HEW_FAULT_CANCELLED` means
+/// cancellation, and other nonzero values carry the private fault status.
+/// These are not the coroutine polling status values. The compiler proves that
+/// the body and consuming cleanup complete synchronously before publishing it.
 ///
 /// # Safety
 /// Environment, argument and output slots obey `HewCallableInvoke` requirements.

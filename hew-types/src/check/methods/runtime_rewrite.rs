@@ -144,6 +144,19 @@ impl Checker {
         c_symbol: &str,
         sig: &FnSig,
     ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        if let Some(operation) = crate::runtime_call::ServiceOp::source_method(
+            signature_key,
+            c_symbol,
+            &sig.params,
+            &sig.return_type,
+        ) {
+            let canonical = self
+                .extern_method_origins
+                .get(signature_key)
+                .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.net"))
+                || self.canonical_std_root_sources.contains("std.net");
+            return canonical.then_some(crate::RuntimeCallFamily::Service(operation));
+        }
         let declaration = crate::runtime_call::canonical_std_io_extern_signature(
             signature_key,
             c_symbol,
@@ -351,15 +364,10 @@ impl Checker {
     /// or a user binding that string-matches `hew_vec_push_layout`), no typed
     /// descriptor is produced.
     ///
-    /// `consumes_receiver` IS still derived from the resolved symbol via the
-    /// single consume authority. This is NOT string reclassification but a
-    /// load-bearing ownership fact with no other source: stdlib declares
-    /// `#[extern_symbol(hew_lambda_actor_release)]`, a genuine consuming handle
-    /// release, and dropping its consume mark would let the handle's scope-exit
-    /// drop fire on already-freed memory (double-free). The verdict stays
-    /// fail-closed (LESSONS: drop-allowset-from-value-flow): any symbol the
-    /// allow-set does not name is borrowing, so an FFI binding that merely
-    /// collides with a non-release name at worst leaks — it never double-frees.
+    /// Receiver consumption comes from the resolved symbol's consume authority.
+    /// A consuming close transfers ownership to the runtime, so scope-exit
+    /// cleanup must not release that receiver a second time. Unlisted symbols
+    /// borrow their receiver.
     pub(super) fn record_extern_symbol_method_call_rewrite(
         &mut self,
         span: &Span,
@@ -487,6 +495,15 @@ impl Checker {
         if let Some(family) =
             self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
         {
+            if matches!(
+                family,
+                crate::RuntimeCallFamily::Service(
+                    crate::runtime_call::ServiceOp::Export
+                        | crate::runtime_call::ServiceOp::Receive
+                )
+            ) {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+            }
             self.record_runtime_method_family_rewrite(span, family);
             return true;
         }
@@ -528,6 +545,15 @@ impl Checker {
         if let Some(family) =
             self.canonical_std_io_runtime_method_family(&signature_key, &spec.template.raw, sig)
         {
+            if matches!(
+                family,
+                crate::RuntimeCallFamily::Service(
+                    crate::runtime_call::ServiceOp::Export
+                        | crate::runtime_call::ServiceOp::Receive
+                )
+            ) {
+                self.reject_wasm_feature(span, WasmUnsupportedFeature::Distributed);
+            }
             self.record_runtime_method_family_rewrite(span, family);
             return true;
         }

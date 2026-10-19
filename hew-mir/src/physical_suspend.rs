@@ -41,8 +41,13 @@ pub(super) fn verify_task_scopes(function: &super::PhysicalFunction) -> Result<(
                     stack.push((*scope, false));
                 }
                 PhysicalOp::TaskSpawn { scope, .. } | PhysicalOp::TaskRace { scope, .. }
-                    if stack.last() != Some(&(*scope, false)) =>
+                    if !stack.contains(&(*scope, false)) =>
                 {
+                    return Err(PhysicalError::new(
+                        "physical task spawn has no active lexical scope",
+                    ));
+                }
+                PhysicalOp::TaskInvoke { scope, .. } if stack.last() != Some(&(*scope, false)) => {
                     return Err(PhysicalError::new(
                         "physical task spawn has no active lexical scope",
                     ));
@@ -221,6 +226,11 @@ fn actor_release_types<'a>(
     match operation {
         hew_sir::ActorOperation::Spawn(id) => vec![&actors[id.0 as usize].state_ty],
         hew_sir::ActorOperation::Submit { message_ty, .. } => vec![message_ty],
+        hew_sir::ActorOperation::TimerSchedule { actor, message, .. } => actors[actor.0 as usize]
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == *message)
+            .map_or_else(Vec::new, |handler| handler.params.iter().collect()),
         _ => Vec::new(),
     }
 }
@@ -233,6 +243,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
     let module = checked.module();
     let mut resumable = BTreeSet::new();
     let mut calls = BTreeMap::<_, Vec<_>>::new();
+    let mut entry_polls = BTreeSet::new();
+    let mut cyclic_bodies = BTreeSet::new();
     for function in &module.functions {
         if matches!(
             module.callables[function.callable.0 as usize].instance,
@@ -261,6 +273,22 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             .function(function.callable)
             .expect("verified callable body")
             .place_lifetimes();
+        let cfg = hew_sir::build_cfg_index(function);
+        let order: BTreeMap<_, _> = cfg
+            .rpo()
+            .iter()
+            .enumerate()
+            .map(|(i, id)| (*id, i))
+            .collect();
+        if cfg.rpo().iter().any(|block| {
+            cfg.successors_of(*block).iter().any(|edge| {
+                cfg.edge_target(*edge)
+                    .is_some_and(|target| order[&target] <= order[block])
+            })
+        }) {
+            cyclic_bodies.insert(function.callable);
+        }
+        let reenters_entry = !cfg.predecessors_of(function.entry).is_empty();
         for block in function
             .blocks
             .iter()
@@ -298,12 +326,38 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 }
             }
             if let hew_sir::SemTerminator::ActorCall { operation, .. } = &block.terminator {
+                if matches!(
+                    operation,
+                    hew_sir::ActorOperation::SelfHandle(_)
+                        | hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::TimerSchedule { .. }
+                ) {
+                    resumable.insert(function.callable);
+                }
                 if let hew_sir::ActorOperation::Spawn(actor) = operation {
                     let actor = &module.actors[actor.0 as usize];
                     calls
                         .entry(function.callable)
                         .or_default()
                         .extend(actor.init.iter().chain(&actor.start).copied());
+                    if let Some(init) = actor.init {
+                        for param in module.callables[init.0 as usize]
+                            .signature
+                            .params
+                            .iter()
+                            .skip(1)
+                        {
+                            let (intrinsic, dependencies) =
+                                semantic_release_dependencies(module, &param.ty, None);
+                            if intrinsic || !dependencies.is_empty() {
+                                resumable.insert(function.callable);
+                            }
+                            calls
+                                .entry(function.callable)
+                                .or_default()
+                                .extend(dependencies);
+                        }
+                    }
                 }
                 for ty in actor_release_types(&module.actors, operation) {
                     let (intrinsic, dependencies) = semantic_release_dependencies(module, ty, None);
@@ -325,14 +379,14 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                     inputs,
                     ..
                 } => {
-                    let (intrinsic, dependencies) = semantic_release_dependencies(
+                    // A non-parking send can still yield while invoking an
+                    // encoder. Its operation never waits for sink capacity.
+                    resumable.insert(function.callable);
+                    let (_, dependencies) = semantic_release_dependencies(
                         module,
                         &types[&inputs[1].operand.value],
                         None,
                     );
-                    if intrinsic {
-                        resumable.insert(function.callable);
-                    }
                     calls
                         .entry(function.callable)
                         .or_default()
@@ -354,18 +408,24 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                         .or_default()
                         .extend(&targets.known);
                 }
-                hew_sir::SemTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { policy, .. },
-                    ..
-                } if policy.may_suspend() => {
-                    resumable.insert(function.callable);
+                hew_sir::SemTerminator::Safepoint { .. }
+                    if block.id == function.entry && !reenters_entry =>
+                {
+                    entry_polls.insert(function.callable);
                 }
                 hew_sir::SemTerminator::RecoverFault { .. }
                 | hew_sir::SemTerminator::Safepoint { .. }
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::AwaitStopped(_)
+                        hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::AwaitStopped(_)
+                        | hew_sir::ActorOperation::LocalObservation {
+                            kind:
+                                hew_sir::LocalObservationKind::Link
+                                | hew_sir::LocalObservationKind::Monitor,
+                            ..
+                        }
                         | hew_sir::ActorOperation::AwaitRestarted(_)
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),
@@ -464,6 +524,32 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
             }
         }
     }
+    // A one-shot entry poll need not create a continuation for finite code.
+    // Close over the same call and release dependencies used for ABI selection;
+    // recursive components never become bounded, and retain their entry polls.
+    let bodies: BTreeSet<_> = module.functions.iter().map(|body| body.callable).collect();
+    let mut bounded = BTreeSet::new();
+    loop {
+        let mut changed = false;
+        for callable in &bodies {
+            if !bounded.contains(callable)
+                && !cyclic_bodies.contains(callable)
+                && !resumable.contains(callable)
+                && calls.get(callable).is_none_or(|callees| {
+                    callees.iter().all(|callee| {
+                        !resumable.contains(callee)
+                            && (!bodies.contains(callee) || bounded.contains(callee))
+                    })
+                })
+            {
+                changed |= bounded.insert(*callable);
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    resumable.extend(entry_polls.difference(&bounded));
     close_callers(resumable, &calls)
 }
 
@@ -498,12 +584,34 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             if let PhysicalTerminator::ActorCall { operation, .. } = &block.terminator {
+                if matches!(
+                    operation,
+                    hew_sir::ActorOperation::SelfHandle(_)
+                        | hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::TimerSchedule { .. }
+                ) {
+                    resumable.insert(function.callable);
+                }
                 if let hew_sir::ActorOperation::Spawn(actor) = operation {
                     let actor = &module.actors[actor.0 as usize];
                     calls
                         .entry(function.callable)
                         .or_default()
                         .extend(actor.init.iter().chain(&actor.start).copied());
+                    if let Some(init) = actor.init {
+                        for param in module.callables[init.0 as usize].params.iter().skip(1) {
+                            if module
+                                .actor_recipes
+                                .get(&param.ty)
+                                .and_then(|recipe| recipe.destroy)
+                                .is_some_and(|action| {
+                                    releases.suspends(action) || releases.raises_fault(action)
+                                })
+                            {
+                                resumable.insert(function.callable);
+                            }
+                        }
+                    }
                 }
                 for ty in actor_release_types(&module.actors, operation) {
                     if module
@@ -519,20 +627,9 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 }
             }
             match &block.terminator {
-                PhysicalTerminator::StreamSend {
-                    park: false,
-                    element,
-                    ..
-                } => {
-                    if element
-                        .destroy
-                        .is_some_and(|action| releases.suspends(action))
-                    {
-                        resumable.insert(function.callable);
-                    }
-                }
                 PhysicalTerminator::RecoverFault { .. }
                 | PhysicalTerminator::NativeIo { .. }
+                | PhysicalTerminator::ServiceAcquire { .. }
                 | PhysicalTerminator::Offload { .. }
                 | PhysicalTerminator::Safepoint { .. }
                 | PhysicalTerminator::Sleep { .. }
@@ -541,14 +638,20 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::GeneratorYield { .. }
                 | PhysicalTerminator::GeneratorNext { .. }
                 | PhysicalTerminator::StreamNext { park: true, .. }
-                | PhysicalTerminator::StreamSend { park: true, .. }
+                | PhysicalTerminator::StreamSend { .. }
                 | PhysicalTerminator::TaskAwait { .. }
                 | PhysicalTerminator::ActorAsk { .. }
-                | PhysicalTerminator::RemoteAsk { .. }
                 | PhysicalTerminator::TaskScopeJoin { .. }
                 | PhysicalTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::AwaitStopped(_)
+                        hew_sir::ActorOperation::Submit { .. }
+                        | hew_sir::ActorOperation::AwaitStopped(_)
+                        | hew_sir::ActorOperation::LocalObservation {
+                            kind:
+                                hew_sir::LocalObservationKind::Link
+                                | hew_sir::LocalObservationKind::Monitor,
+                            ..
+                        }
                         | hew_sir::ActorOperation::AwaitRestarted(_)
                         | hew_sir::ActorOperation::StreamStart { .. }
                         | hew_sir::ActorOperation::CallStart(_),
@@ -567,12 +670,6 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                         .entry(function.callable)
                         .or_default()
                         .extend(&targets.known);
-                }
-                PhysicalTerminator::ActorCall {
-                    operation: hew_sir::ActorOperation::Submit { policy, .. },
-                    ..
-                } if policy.may_suspend() => {
-                    resumable.insert(function.callable);
                 }
                 PhysicalTerminator::RuntimeCall { action, args, .. } => {
                     if action.family == hew_types::RuntimeCallFamily::RcNew {

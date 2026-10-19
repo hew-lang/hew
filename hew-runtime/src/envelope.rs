@@ -28,7 +28,8 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 4;
+pub const WIRE_VERSION: u8 = 7;
+pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
 pub const FRAME_TYPE_CONTROL: u8 = 0;
@@ -108,6 +109,13 @@ pub const CTRL_MONITOR_SETUP_RESULT: u64 = 9;
 /// has also completed, so the caller never observes a half-established link.
 pub const CTRL_LINK_SETUP_RESULT: u64 = 10;
 
+/// An explicit service offer from the authenticated issuer.
+pub const CTRL_SERVICE_OFFER: u64 = 11;
+/// Acknowledgement of recipient service-offer admission.
+pub const CTRL_SERVICE_OFFER_RESULT: u64 = 12;
+pub const MAX_SERVICE_HANDLERS: usize = 256;
+pub const MAX_SERVICE_OFFER_BYTES: usize = 65_536;
+
 /// Maximum accepted cross-node link control payload size, in bytes.
 ///
 /// A link request payload is a fixed small CBOR map of bounded integers (two
@@ -178,31 +186,65 @@ pub struct ControlFrame {
 /// A request names a declaration; replies carry status outside that namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvelopeMessage {
-    Handler(String),
+    Service {
+        handler: String,
+        grant_id: u64,
+        kind: RequestKind,
+    },
     Reply,
     Rejected,
+    NotAdmitted,
     Withdraw,
 }
 
 impl EnvelopeMessage {
     fn to_value(&self) -> Value {
         match self {
-            Self::Handler(identity) => Value::Text(identity.clone()),
+            Self::Service {
+                handler,
+                grant_id,
+                kind,
+            } => Value::Map(vec![
+                (Value::Integer(1.into()), Value::Text(handler.clone())),
+                (Value::Integer(2.into()), Value::Integer((*grant_id).into())),
+                (
+                    Value::Integer(3.into()),
+                    Value::Integer((*kind as u8).into()),
+                ),
+            ]),
             Self::Reply => Value::Integer(0.into()),
             Self::Rejected => Value::Integer(1.into()),
+            Self::NotAdmitted => Value::Integer(3.into()),
             Self::Withdraw => Value::Integer(2.into()),
         }
     }
 
     fn from_value(value: &Value) -> Result<Self, DecodeError> {
         match value {
-            Value::Text(identity)
-                if !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0') =>
-            {
-                Ok(Self::Handler(identity.clone()))
+            Value::Map(_) => {
+                let map = collect_map(value)?;
+                ensure_exact_keys(&map, &[1, 2, 3])?;
+                let kind = RequestKind::from_wire(value_to_u8(required(&map, 3)?, 3)?).ok_or(
+                    DecodeError::MalformedFrame {
+                        reason: "invalid request mode",
+                    },
+                )?;
+                let handler = value_to_text(required(&map, 1)?, 1)?;
+                let grant_id = value_to_u64(required(&map, 2)?, 2)?;
+                if grant_id == 0 || !valid_handler_identity(&handler) {
+                    return Err(DecodeError::MalformedFrame {
+                        reason: "invalid service request",
+                    });
+                }
+                Ok(Self::Service {
+                    handler,
+                    grant_id,
+                    kind,
+                })
             }
             Value::Integer(status) if *status == Integer::from(0) => Ok(Self::Reply),
             Value::Integer(status) if *status == Integer::from(1) => Ok(Self::Rejected),
+            Value::Integer(status) if *status == Integer::from(3) => Ok(Self::NotAdmitted),
             Value::Integer(status) if *status == Integer::from(2) => Ok(Self::Withdraw),
             _ => Err(DecodeError::MalformedFrame {
                 reason: "invalid handler declaration or reply status",
@@ -234,7 +276,7 @@ pub struct EnvelopeFrame {
     /// CDDL key 4.
     pub source: Option<Location>,
 
-    /// Handler declaration or explicit reply status (CDDL key 5).
+    /// Granted request, reply status or withdrawal (CDDL key 5).
     pub message: EnvelopeMessage,
 
     /// Serialised message body. May be empty for zero-payload messages.
@@ -245,10 +287,9 @@ pub struct EnvelopeFrame {
     /// CDDL key 6.
     pub payload: Vec<u8>,
 
-    /// Request ID for distributed ask/reply correlation.
+    /// Positive request ID for distributed request/reply correlation.
     ///
-    /// `0` = fire-and-forget. `> 0` = a reply is expected (or this frame
-    /// is a reply to a prior ask with this ID).
+    /// Requests receive a completion; replies and withdrawals echo this ID.
     ///
     /// CDDL key 7.
     pub request_id: u64,
@@ -265,6 +306,16 @@ pub enum WireFrame {
     Control(ControlFrame),
     /// Actor-to-actor message frame.
     Envelope(EnvelopeFrame),
+}
+
+/// The granted actor and its exact compiler-selected handler interface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceOfferPayload {
+    pub request_id: u64,
+    pub grant_id: u64,
+    pub target: Location,
+    pub recipient: NodeSessionIdentity,
+    pub handlers: Vec<String>,
 }
 
 /// Bounded registry-gossip control payload.
@@ -336,7 +387,7 @@ pub struct SwimControlPayload {
 /// Bounded cross-node monitor REQUEST / DEMONITOR control payload.
 ///
 /// Encoded as a definite CBOR map `{1: watcher, 2: ref_id, 3: target,
-/// 4: setup_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
+/// 4: setup_id, 5: grant_id}`. Used by both `CTRL_MONITOR_REQ` and `CTRL_DEMONITOR`: the
 /// request registers with a nonzero setup id, while demonitor retracts with
 /// `setup_id = 0`.
 ///
@@ -348,6 +399,8 @@ pub struct SwimControlPayload {
 /// - `target` is the exact monitored actor location on the owning node.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorReqPayload {
+    /// Export grant authorizing this exact observation.
+    pub grant_id: u64,
     /// Exact watcher actor identity.
     pub watcher: Location,
     /// Watcher's local monitor-registration id.
@@ -385,7 +438,7 @@ pub struct MonitorDownPayload {
 /// Bounded cross-node link REQUEST / UNLINK control payload.
 ///
 /// Encoded as a definite CBOR map `{1: linker, 2: ref_id, 3: target,
-/// 4: policy_tag, 5: reciprocate, 6: setup_id}`. Used by both `CTRL_LINK_REQ`
+/// 4: policy_tag, 5: reciprocate, 6: setup_id, 7: grant_id, 8: reciprocal_ref}`. Used by both `CTRL_LINK_REQ`
 /// and `CTRL_UNLINK`: a request carries a nonzero setup id, while unlink
 /// retracts the identifying tuple with `setup_id = 0`.
 ///
@@ -404,6 +457,10 @@ pub struct MonitorDownPayload {
 ///   again — bounding the handshake without an infinite request loop).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LinkReqPayload {
+    /// Export grant authorizing the original link.
+    pub grant_id: u64,
+    /// Original caller registration that authorizes a reciprocal request.
+    pub reciprocal_ref: u64,
     /// Exact linking actor identity.
     pub linker: Location,
     /// Linker's local link-registration id.
@@ -424,6 +481,8 @@ pub const SETUP_STATUS_ACCEPTED: u8 = 0;
 pub const SETUP_STATUS_TARGET_GONE: u8 = 1;
 /// The receiver could not allocate the state needed to complete setup.
 pub const SETUP_STATUS_RESOURCE_EXHAUSTED: u8 = 2;
+/// The authenticated publication lacks the required export grant.
+pub const SETUP_STATUS_REFUSED: u8 = 3;
 
 /// Bounded acknowledged monitor/link setup result.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -828,18 +887,22 @@ impl EnvelopeFrame {
             return Err("request budget exceeds the supported range");
         }
         if self.budget_ns.is_some()
-            && (self.request_id == 0 || !matches!(self.message, EnvelopeMessage::Handler(_)))
+            && (self.request_id == 0 || !matches!(self.message, EnvelopeMessage::Service { .. }))
         {
             return Err("only asks may carry a request budget");
         }
         match &self.message {
-            EnvelopeMessage::Handler(identity) => {
+            EnvelopeMessage::Service {
+                handler, grant_id, ..
+            } => {
                 if self.target.is_none()
-                    || identity.is_empty()
-                    || identity.len() > 4096
-                    || identity.contains('\0')
+                    || self.request_id == 0
+                    || *grant_id == 0
+                    || !valid_handler_identity(handler)
                 {
-                    return Err("request requires a target and bounded declaration identity");
+                    return Err(
+                        "service request requires a target, request id and active grant identity",
+                    );
                 }
             }
             EnvelopeMessage::Withdraw => {
@@ -853,34 +916,13 @@ impl EnvelopeFrame {
                     );
                 }
             }
-            EnvelopeMessage::Reply | EnvelopeMessage::Rejected => {
+            EnvelopeMessage::Reply | EnvelopeMessage::Rejected | EnvelopeMessage::NotAdmitted => {
                 if self.target.is_some() || self.source.is_some() || self.request_id == 0 {
                     return Err("reply status requires reply routing");
                 }
             }
         }
         Ok(())
-    }
-
-    /// Construct a fire-and-forget envelope with no reply routing.
-    ///
-    /// Convenience constructor for the common case: `request_id = 0`.
-    #[must_use]
-    pub fn fire_and_forget(
-        target: Location,
-        source: Option<Location>,
-        message: EnvelopeMessage,
-        payload: Vec<u8>,
-    ) -> Self {
-        Self {
-            version: WIRE_VERSION,
-            target: Some(target),
-            source,
-            message,
-            payload,
-            request_id: 0,
-            budget_ns: None,
-        }
     }
 }
 
@@ -942,6 +984,111 @@ pub(crate) unsafe fn encode_envelope_frame_from_raw_parts(
         request_id,
         budget_ns,
     })
+}
+
+fn valid_handler_identity(identity: &str) -> bool {
+    !identity.is_empty() && identity.len() <= 4096 && !identity.contains('\0')
+}
+
+fn valid_service_offer(offer: &ServiceOfferPayload) -> bool {
+    offer.request_id != 0
+        && offer.grant_id != 0
+        && offer.recipient.session_incarnation != 0
+        && !offer.handlers.is_empty()
+        && offer.handlers.len() <= MAX_SERVICE_HANDLERS
+        && offer
+            .handlers
+            .iter()
+            .all(|handler| valid_handler_identity(handler))
+        && offer.handlers.windows(2).all(|pair| pair[0] < pair[1])
+}
+
+/// Encode one bounded, canonical authenticated service offer.
+///
+/// # Errors
+/// Refuses invalid grants, unordered interfaces and oversized offers.
+pub fn encode_service_offer_payload(offer: &ServiceOfferPayload) -> Result<Vec<u8>, EncodeError> {
+    if !valid_service_offer(offer) {
+        return Err(EncodeError::InvalidEnvelope {
+            reason: "invalid service offer",
+        });
+    }
+    let value = Value::Map(vec![
+        (
+            Value::Integer(1.into()),
+            Value::Integer(offer.grant_id.into()),
+        ),
+        (Value::Integer(2.into()), location_to_value(offer.target)),
+        (
+            Value::Integer(3.into()),
+            node_session_to_value(offer.recipient),
+        ),
+        (
+            Value::Integer(4.into()),
+            Value::Array(offer.handlers.iter().cloned().map(Value::Text).collect()),
+        ),
+        (
+            Value::Integer(5.into()),
+            Value::Integer(offer.request_id.into()),
+        ),
+    ]);
+    let mut bytes = Vec::new();
+    ciborium::ser::into_writer(&value, &mut bytes)?;
+    if bytes.len() > MAX_SERVICE_OFFER_BYTES {
+        return Err(EncodeError::InvalidEnvelope {
+            reason: "service offer exceeds its size limit",
+        });
+    }
+    Ok(bytes)
+}
+
+/// Decode an exact service offer without trailing bytes or duplicate handlers.
+///
+/// # Errors
+/// Refuses malformed, oversized or noncanonical grant/interface data.
+pub fn decode_service_offer_payload(bytes: &[u8]) -> Result<ServiceOfferPayload, DecodeError> {
+    if bytes.len() > MAX_SERVICE_OFFER_BYTES {
+        return Err(DecodeError::MalformedFrame {
+            reason: "service offer exceeds its size limit",
+        });
+    }
+    let mut cursor = std::io::Cursor::new(bytes);
+    let value: Value = ciborium::de::from_reader(&mut cursor)?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err(DecodeError::MalformedFrame {
+            reason: "service offer has trailing bytes",
+        });
+    }
+    let map = collect_map(&value)?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    let Value::Array(handlers) = required(&map, 4)? else {
+        return Err(DecodeError::MalformedField {
+            key: 4,
+            expected: "a bounded handler interface",
+        });
+    };
+    if handlers.len() > MAX_SERVICE_HANDLERS {
+        return Err(DecodeError::MalformedField {
+            key: 4,
+            expected: "a bounded handler interface",
+        });
+    }
+    let offer = ServiceOfferPayload {
+        request_id: value_to_u64(required(&map, 5)?, 5)?,
+        grant_id: value_to_u64(required(&map, 1)?, 1)?,
+        target: value_to_location(required(&map, 2)?, 2)?,
+        recipient: value_to_node_session(required(&map, 3)?, 3)?,
+        handlers: handlers
+            .iter()
+            .map(|handler| value_to_text(handler, 4))
+            .collect::<Result<_, _>>()?,
+    };
+    if !valid_service_offer(&offer) {
+        return Err(DecodeError::MalformedFrame {
+            reason: "invalid service offer",
+        });
+    }
+    Ok(offer)
 }
 
 /// Encode a bounded registry-gossip control payload.
@@ -1312,6 +1459,10 @@ pub fn encode_monitor_req_payload(
             Value::Integer(Integer::from(4u64)),
             Value::Integer(Integer::from(payload.setup_id)),
         ),
+        (
+            Value::Integer(5u64.into()),
+            Value::Integer(payload.grant_id.into()),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1339,8 +1490,9 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
     Ok(MonitorReqPayload {
+        grant_id: value_to_u64(required(&map, 5)?, 5)?,
         watcher: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
@@ -1457,6 +1609,14 @@ pub fn encode_link_req_payload(payload: &LinkReqPayload) -> Result<Vec<u8>, Moni
             Value::Integer(Integer::from(6u64)),
             Value::Integer(Integer::from(payload.setup_id)),
         ),
+        (
+            Value::Integer(7u64.into()),
+            Value::Integer(payload.grant_id.into()),
+        ),
+        (
+            Value::Integer(8u64.into()),
+            Value::Integer(payload.reciprocal_ref.into()),
+        ),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
@@ -1486,8 +1646,10 @@ pub fn decode_link_req_payload(bytes: &[u8]) -> Result<LinkReqPayload, MonitorPa
     }
     let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6, 7, 8])?;
     Ok(LinkReqPayload {
+        grant_id: value_to_u64(required(&map, 7)?, 7)?,
+        reciprocal_ref: value_to_u64(required(&map, 8)?, 8)?,
         linker: value_to_location(required(&map, 1)?, 1)?,
         ref_id: value_to_u64(required(&map, 2)?, 2)?,
         target: value_to_location(required(&map, 3)?, 3)?,
@@ -1554,10 +1716,10 @@ pub fn decode_setup_result_payload(
     let map = collect_map(&value)?;
     ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     let status = value_to_u8(required(&map, 4)?, 4)?;
-    if status > SETUP_STATUS_RESOURCE_EXHAUSTED {
+    if status > SETUP_STATUS_REFUSED {
         return Err(MonitorPayloadError::MalformedField {
             key: 4,
-            expected: "a known setup status (0..=2)",
+            expected: "a known setup status (0..=3)",
         });
     }
     Ok(SetupResultPayload {

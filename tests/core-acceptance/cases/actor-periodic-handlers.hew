@@ -1,9 +1,17 @@
 actor Ticker {
     var ticks: i64 = 0;
     var text: string = "owned";
+    var ready: bool = false;
+
+    #[on(start)]
+    fn started() {
+        sleep(1ms);
+        ready = true;
+    }
 
     #[every(2ms)]
     receive fn tick() {
+        assert(ready);
         sleep(1ms);
         ticks = ticks + 1;
         text = "tick".to_upper();
@@ -11,6 +19,7 @@ actor Ticker {
 
     #[every(3ms)]
     receive fn pulse() {
+        assert(ready);
         text = "pulse".to_upper();
     }
 
@@ -27,7 +36,7 @@ supervisor Timers {
     child ticker: Ticker;
 }
 
-fn wait_for_ticks(ticker: ChildRef<Ticker>) {
+fn wait_for_ticks(ticker: Ticker) {
     for i in 0 .. 500 {
         if ticker.count().expect("live timer") > 0 {
             return;
@@ -35,6 +44,12 @@ fn wait_for_ticks(ticker: ChildRef<Ticker>) {
         sleep(2ms);
     }
     panic("periodic child did not fire");
+}
+
+actor Factory {
+    receive fn create() {
+        let _ = spawn Ticker;
+    }
 }
 
 fn main() {
@@ -62,5 +77,8 @@ fn main() {
     wait_for_ticks(role);
     stop(tree);
     stopped(tree);
+    let _ = spawn Ticker;
+    let factory = spawn Factory;
+    mailbox(factory, on_full: .Reject).create().expect("accepted construction");
     println("periodic direct and restarted child");
 }

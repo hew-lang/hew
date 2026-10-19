@@ -54,7 +54,7 @@ admission rules.
 
 | Operation | Ownership boundary |
 | --- | --- |
-| Actor publication | [`hew_actor_spawn_native`](../../hew-runtime/src/actor.rs) receives initialized state and its clone/drop callbacks together. Spawn consumes that state on success and failure. |
+| Actor construction | [`hew_actor_construct_native`](../../hew-runtime/src/actor/spawn.rs) consumes provisional state and its cleanup callbacks before init and start. Publication enables dispatch after both succeed; rollback joins terminal cleanup before returning the failure. |
 | Message admission | [`mailbox_native`](../../hew-runtime/src/mailbox_native.rs) retains the unaccepted request until admission transfers it. Cancellation and refusal release the owners still held by the operation. |
 | Reply observation | [`reply_channel_native`](../../hew-runtime/src/reply_channel_native.rs) separates completion readiness from taking the reply. An abandoned observer does not transfer cleanup to its former caller. |
 | Terminal observation | [`actor_native_close`](../../hew-runtime/src/actor_native_close.rs) publishes completion after terminal state cleanup. `closed` observes; `close` also requests termination. |

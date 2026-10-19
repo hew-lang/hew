@@ -96,10 +96,11 @@ impl Checker {
             // any diagnostic that still walks the unreachable tail.
             reaching = arms.iter().map(|arm| arm.ownership.clone()).collect();
         }
-        let conflicts = self.env.merge_ownership(entry, &reaching);
+        let join = self.env.merge_ownership(entry, &reaching);
         if has_reaching_arms {
-            self.report_deferred_init_conflicts(&conflicts);
-            self.report_local_init_conflicts(&conflicts, span);
+            self.record_join_cleanup_effects(&join.cleanup);
+            self.report_deferred_init_conflicts(&join.conflicts);
+            self.report_local_init_conflicts(&join.conflicts, span);
         }
     }
 

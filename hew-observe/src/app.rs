@@ -106,6 +106,7 @@ pub struct TreeRow {
     pub depth: u16,
     pub label: String,
     pub state: String,
+    pub details: Option<hew_observe_protocol::SupervisorDetails>,
 }
 
 /// A trace event together with the producer and clock domain required to
@@ -147,6 +148,7 @@ impl From<ClientSupervisorRow> for TreeRow {
             depth: row.depth,
             label: row.label,
             state: row.state,
+            details: row.details,
         }
     }
 }
@@ -558,6 +560,30 @@ impl App {
         }
     }
 
+    pub fn supervisor_show_events(&mut self) {
+        let Some(details) = self
+            .tree_rows
+            .get(self.tree_selected)
+            .and_then(|row| row.details.as_ref())
+        else {
+            return;
+        };
+        let identity = details.actor.as_ref().or(details.owner.as_ref());
+        let Some(identity) = identity else {
+            return;
+        };
+        if identity.spawn_serial.is_none() {
+            return;
+        }
+        self.trace_filter_actor = Some(TraceActorKey {
+            producer_instance_id: details.producer_instance_id.clone(),
+            actor_id: identity.actor_id,
+            spawn_serial: identity.spawn_serial,
+        });
+        self.trace_scroll = 0;
+        self.active_tab = Tab::Messages;
+    }
+
     pub fn tree_prev(&mut self) {
         self.tree_selected = self.tree_selected.saturating_sub(1);
     }
@@ -648,7 +674,10 @@ impl App {
     }
 
     fn should_fetch_traces(&self) -> bool {
-        matches!(self.active_tab, Tab::Messages | Tab::Timeline)
+        matches!(
+            self.active_tab,
+            Tab::Messages | Tab::Timeline | Tab::Supervisors
+        )
     }
 
     pub fn filtered_actors(&self) -> Vec<&ActorInfo> {
@@ -676,7 +705,10 @@ impl App {
             return;
         }
 
-        let fetch_actors = self.active_tab == Tab::Actors || self.active_tab == Tab::Overview;
+        let fetch_actors = matches!(
+            self.active_tab,
+            Tab::Actors | Tab::Overview | Tab::Supervisors
+        );
         let fetch_history = self.active_tab == Tab::Overview;
         let fetch_supervisors = self.active_tab == Tab::Supervisors;
         let fetch_crashes = self.active_tab == Tab::Crashes;
@@ -1010,6 +1042,7 @@ impl App {
             tcp_accept_count: 24,
             tcp_connect_count: 22,
             tcp_error_count: 1,
+            runtime_series: None,
         };
         self.msg_rate = 231.4;
 
@@ -1023,6 +1056,7 @@ impl App {
                 time_ns: 1_200_000_000,
                 mbox_depth: 3,
                 mbox_hwm: 12,
+                ..ActorInfo::default()
             },
             ActorInfo {
                 id: 2,
@@ -1033,6 +1067,7 @@ impl App {
                 time_ns: 800_000_000,
                 mbox_depth: 0,
                 mbox_hwm: 8,
+                ..ActorInfo::default()
             },
             ActorInfo {
                 id: 3,
@@ -1043,6 +1078,7 @@ impl App {
                 time_ns: 450_000_000,
                 mbox_depth: 15,
                 mbox_hwm: 15,
+                ..ActorInfo::default()
             },
             ActorInfo {
                 id: 4,
@@ -1053,6 +1089,7 @@ impl App {
                 time_ns: 100_000_000,
                 mbox_depth: 0,
                 mbox_hwm: 4,
+                ..ActorInfo::default()
             },
             ActorInfo {
                 id: 5,
@@ -1063,6 +1100,7 @@ impl App {
                 time_ns: 600_000_000,
                 mbox_depth: 7,
                 mbox_hwm: 20,
+                ..ActorInfo::default()
             },
             ActorInfo {
                 id: 6,
@@ -1073,6 +1111,7 @@ impl App {
                 time_ns: 30_000_000,
                 mbox_depth: 0,
                 mbox_hwm: 2,
+                ..ActorInfo::default()
             },
         ];
 
@@ -1427,6 +1466,7 @@ fn flatten_node(
         depth,
         label: format!("⊞ {} [{}]", node.name, node.strategy),
         state: "Supervisor".to_owned(),
+        details: None,
     });
     for child in &node.children {
         // Check if child is also a supervisor
@@ -1437,6 +1477,7 @@ fn flatten_node(
                 depth: depth + 1,
                 label: format!("  {} (restarts: {})", child.name, child.restarts),
                 state: child.state.to_owned(),
+                details: None,
             });
         }
     }

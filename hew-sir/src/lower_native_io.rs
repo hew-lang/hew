@@ -11,16 +11,31 @@ impl Builder<'_, '_> {
         operation: AsyncIoOp,
         args: &[&HirExpr],
     ) -> Result<Option<crate::ValueId>, String> {
+        self.lower_borrowed_native_suspend(
+            expression,
+            SuspendKind::NativeIo { operation },
+            operation.contract(),
+            args,
+        )
+    }
+
+    pub(super) fn lower_borrowed_native_suspend(
+        &mut self,
+        expression: &HirExpr,
+        kind: SuspendKind,
+        contract: hew_types::runtime_call::RuntimeSemanticContract,
+        args: &[&HirExpr],
+    ) -> Result<Option<crate::ValueId>, String> {
         let result_ty = self.ty(&expression.ty);
         let argument_types = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
-        operation
-            .contract()
-            .instantiate(&self.service.module.defs, &argument_types, &result_ty)?;
+        contract.instantiate(&self.service.module.defs, &argument_types, &result_ty)?;
         self.service.require_type_facts(&result_ty)?;
         let before: std::collections::HashSet<_> = self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
         let mut inputs = Vec::with_capacity(args.len());
+        let argument_loan_depth = self.argument_receiver_loans.len();
         for (index, argument) in args.iter().enumerate() {
+            let loan_floor = loans.len();
             let stable_tail = args[index + 1..]
                 .iter()
                 .all(|arg| Self::stable_argument_read(arg));
@@ -28,7 +43,10 @@ impl Builder<'_, '_> {
                 operand: self.lower_call_read(argument, &mut loans, stable_tail, true)?,
                 decision: BoundaryDecision::Borrow,
             });
+            self.argument_receiver_loans
+                .extend_from_slice(&loans[loan_floor..]);
         }
+        self.argument_receiver_loans.truncate(argument_loan_depth);
         let live = self.owned_live.clone();
         let own = OwnKind::of_ty(&result_ty, self.service.checked_facts.rows())?;
         let raw = self.fresh_value();
@@ -41,7 +59,7 @@ impl Builder<'_, '_> {
         let cancel = self.new_block(Vec::new());
         let unwind = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Suspend {
-            kind: SuspendKind::NativeIo { operation },
+            kind,
             inputs,
             result: CallResult::Value(ValueDef {
                 id: raw,

@@ -167,6 +167,7 @@ pub fn lower_physical_module(
                 &structural,
                 certificate,
                 &resumable_methods,
+                resumable.contains(&function.callable),
             )?;
             if let Some(attribution) = attribution {
                 debug.functions.insert(function.callable, attribution);
@@ -211,6 +212,7 @@ pub fn lower_physical_module(
                         Some(required_layout(&target, &slot.signature.return_ty)?.clone())
                     };
                     Ok(PhysicalVtableSlot {
+                        receiver: slot.receiver,
                         slot: slot.slot,
                         is_resumable: resumable_methods.contains(&slot.method),
                         method: slot.method,
@@ -648,6 +650,17 @@ pub(crate) fn clone_action_for_type(
         CloneKind::Bits => CloneAction::Bitwise,
         CloneKind::Retain if ty == &ResolvedTy::String => CloneAction::StringRetain,
         CloneKind::Retain if ty == &ResolvedTy::Bytes => CloneAction::BytesRetain,
+        CloneKind::Retain
+            if matches!(
+                ty,
+                ResolvedTy::Named {
+                    head: hew_types::TypeHead::Actor(_),
+                    ..
+                }
+            ) =>
+        {
+            CloneAction::ActorRetain
+        }
         CloneKind::Retain if ty.is_builtin(BuiltinType::Rc) => CloneAction::RcRetain,
         CloneKind::Retain if ty.is_builtin(BuiltinType::Weak) => CloneAction::WeakRetain,
         CloneKind::DeepCopy if encoding_format(ty).is_some() => {
@@ -709,6 +722,10 @@ pub(crate) fn destroy_action_for_type(
         ResolvedTy::TraitObject { .. } => Some(DestroyAction::TraitObject),
         ResolvedTy::String => Some(DestroyAction::StringRelease),
         ResolvedTy::Bytes => Some(DestroyAction::BytesRelease),
+        ResolvedTy::Named {
+            head: hew_types::TypeHead::Actor(_),
+            ..
+        } => Some(DestroyAction::ActorRelease),
         _ if ty.is_builtin(BuiltinType::Rc) => {
             ids.shared.get(ty).copied().map(DestroyAction::RcRelease)
         }
@@ -991,7 +1008,6 @@ pub(crate) fn runtime_param_carrier(ty: &ResolvedTy) -> ParamCarrier {
     if *ty == ResolvedTy::Bytes
         || ty.is_builtin(BuiltinType::NodeId)
         || ty.is_builtin(BuiltinType::Location)
-        || ty.is_builtin(BuiltinType::RemotePid)
     {
         ParamCarrier::Indirect
     } else {
@@ -1015,6 +1031,7 @@ pub(crate) fn required_layout<'a>(
 pub(crate) struct FunctionLowerer<'a> {
     pub(crate) module: &'a SemModule,
     pub(crate) resumable_methods: &'a BTreeSet<hew_types::DefId>,
+    pub(crate) is_resumable: bool,
     pub(crate) target: &'a PhysicalTarget,
     pub(crate) function: &'a SemFunction,
     pub(crate) glue_ids: &'a PhysicalGlueIds,
@@ -1030,6 +1047,7 @@ pub(crate) struct FunctionLowerer<'a> {
 
 #[allow(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "one lowering pass allocates every verified SIR value, place, and variant-arm payload before lowering CFG bodies"
 )]
 pub(crate) fn lower_function(
@@ -1040,10 +1058,12 @@ pub(crate) fn lower_function(
     structural: &std::cell::RefCell<structural::StructuralGlue>,
     certificate: &hew_sir::CheckedFunction,
     resumable_methods: &BTreeSet<hew_types::DefId>,
+    is_resumable: bool,
 ) -> Result<(PhysicalFunction, Option<PhysicalDebugFunction>), PhysicalError> {
     let mut lowerer = FunctionLowerer {
         module,
         resumable_methods,
+        is_resumable,
         target,
         function,
         glue_ids,
@@ -1290,7 +1310,7 @@ pub(crate) fn lower_function(
                 // last op, the position codegen reaches it at.
                 sites.insert((block.id, index_key(ops.len())), offset);
             }
-            let terminator = lowerer.lower_terminator(&block.terminator)?;
+            let terminator = lowerer.lower_terminator(block)?;
             Ok(PhysicalBlock {
                 id: block.id,
                 arguments,

@@ -138,20 +138,6 @@ pub(super) fn collect_captures_walk(
                 collect_captures_walk(operand, param_ids, seen, captures, self_id);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(msg, param_ids, seen, captures, self_id);
-            collect_captures_walk(timeout_ms, param_ids, seen, captures, self_id);
-        }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
-            collect_captures_walk(receiver, param_ids, seen, captures, self_id);
-            collect_captures_walk(msg, param_ids, seen, captures, self_id);
-        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
@@ -207,7 +193,7 @@ pub(super) fn collect_captures_walk(
                     HirSelectArmKind::StreamNext { stream } => {
                         collect_captures_walk(stream, param_ids, seen, captures, self_id);
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         collect_captures_walk(call, param_ids, seen, captures, self_id);
                     }
                     HirSelectArmKind::TaskAwait { task } => {
@@ -399,20 +385,6 @@ pub(super) fn collect_general_closure_captures_walk(
                 collect_general_closure_captures_walk(operand, outer_bindings, seen, captures);
             }
         }
-        HirExprKind::RemoteActorAsk {
-            receiver,
-            msg,
-            timeout_ms,
-            ..
-        } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(timeout_ms, outer_bindings, seen, captures);
-        }
-        HirExprKind::RemoteActorSend { receiver, msg } => {
-            collect_general_closure_captures_walk(receiver, outer_bindings, seen, captures);
-            collect_general_closure_captures_walk(msg, outer_bindings, seen, captures);
-        }
         HirExprKind::Block(block)
         | HirExprKind::Scope { body: block, .. }
         | HirExprKind::ForkBlock { body: block, .. }
@@ -467,7 +439,7 @@ pub(super) fn collect_general_closure_captures_walk(
                             captures,
                         );
                     }
-                    HirSelectArmKind::ActorAsk { call } => {
+                    HirSelectArmKind::Call { call } => {
                         collect_general_closure_captures_walk(call, outer_bindings, seen, captures);
                     }
                     HirSelectArmKind::TaskAwait { task } => {

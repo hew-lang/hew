@@ -97,8 +97,24 @@ pub fn module(failing: bool) -> SemModule {
     let hir =
         hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
     assert!(hir.diagnostics.is_empty(), "{:?}", hir.diagnostics);
-    let mut module =
-        lower_module_with_demand(&hir.module, &checked, SirLoweringDemand::EveryCallable).module;
+    let roots = hir
+        .module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            hew_hir::HirItem::Function(function)
+                if function.type_params.is_empty()
+                    && hir.module.defs.module(function.declaration)
+                        == hir.module.defs.root_module() =>
+            {
+                Some(function.declaration)
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let mut module = lower_module_with_roots(&hir.module, &checked, &roots)
+        .expect("authored fixture declarations must lower")
+        .module;
     let fail = module
         .callables
         .iter()

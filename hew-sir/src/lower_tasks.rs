@@ -44,6 +44,7 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
             matches!(
                 op.kind,
                 SemOpKind::TaskSpawn { .. }
+                    | SemOpKind::TaskInvoke { .. }
                     | SemOpKind::TaskRace { .. }
                     | SemOpKind::TaskScopeEnter {
                         duration: Some(_),
@@ -79,6 +80,7 @@ pub(super) fn remove_empty_scopes(function: &mut SemFunction) {
 pub(super) struct TaskScopeFrame {
     pub scope: TaskScopeId,
     pub depth: usize,
+    pub calls_only: bool,
 }
 
 impl Builder<'_, '_> {
@@ -102,42 +104,51 @@ impl Builder<'_, '_> {
         self.task_scopes.push(TaskScopeFrame {
             scope,
             depth: self.scopes.len() - 1,
+            calls_only: false,
         });
         Ok(scope)
     }
 
     /// Join the task scopes opened at or above `floor` on an ordinary exit.
-    /// A child's fault leaves through the enclosing cleanup.
     pub(super) fn finish_task_scopes(&mut self, floor: usize) -> Result<(), String> {
         for step in self.plan_task_joins(floor, false) {
             let super::cleanup::ExitStep::JoinScope { scope, mode } = step else {
-                unreachable!("task joins plan only joins");
+                unreachable!()
             };
-            self.task_scopes.pop().expect("active task scope");
-            let live = self.owned_live.clone();
-            let normal = self.new_block(Vec::new());
-            let fault = self.new_block(Vec::new());
-            self.set_terminator(SemTerminator::Suspend {
-                kind: SuspendKind::Join { scope, mode },
-                inputs: Vec::new(),
-                result: CallResult::Unit,
-                resumes: vec![edge(normal)],
-                cancel: edge(fault),
-                unwind: edge(fault),
-            })?;
-            self.current = fault;
-            self.emit_place_operation(
-                SemOpKind::TaskScopeClose { scope },
-                Provenance::Synthesized,
-            )?;
-            self.finish_fault_exit()?;
-            self.current = normal;
-            self.owned_live = live;
-            self.emit_place_operation(
-                SemOpKind::TaskScopeClose { scope },
-                Provenance::Synthesized,
-            )?;
+            self.finish_task_scope(scope, mode)?;
         }
+        Ok(())
+    }
+
+    pub(super) fn finish_task_scope(
+        &mut self,
+        scope: TaskScopeId,
+        mode: crate::TaskScopeJoinMode,
+    ) -> Result<(), String> {
+        let frame = self
+            .task_scopes
+            .pop()
+            .ok_or("task drain has no active scope")?;
+        if frame.scope != scope {
+            return Err("task drain differs from its active scope".into());
+        }
+        let live = self.owned_live.clone();
+        let normal = self.new_block(Vec::new());
+        let fault = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Suspend {
+            kind: SuspendKind::Join { scope, mode },
+            inputs: Vec::new(),
+            result: CallResult::Unit,
+            resumes: vec![edge(normal)],
+            cancel: edge(fault),
+            unwind: edge(fault),
+        })?;
+        self.current = fault;
+        self.emit_place_operation(SemOpKind::TaskScopeClose { scope }, Provenance::Synthesized)?;
+        self.finish_fault_exit()?;
+        self.current = normal;
+        self.owned_live = live;
+        self.emit_place_operation(SemOpKind::TaskScopeClose { scope }, Provenance::Synthesized)?;
         Ok(())
     }
 
@@ -171,7 +182,9 @@ impl Builder<'_, '_> {
         };
         let scope = self
             .task_scopes
-            .last()
+            .iter()
+            .rev()
+            .find(|frame| !frame.calls_only)
             .ok_or("race has no lexical task scope")?
             .scope;
         let mut inputs = Vec::new();
@@ -238,7 +251,9 @@ impl Builder<'_, '_> {
         };
         let scope = self
             .task_scopes
-            .last()
+            .iter()
+            .rev()
+            .find(|frame| !frame.calls_only)
             .ok_or("fork has no lexical task scope")?
             .scope;
         let mut closure = expression.clone();

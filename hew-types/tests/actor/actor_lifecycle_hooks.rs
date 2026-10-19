@@ -235,6 +235,23 @@ fn typecheck_link_monitor_import_edge(
 // ── Accept fixtures ──────────────────────────────────────────────────
 
 #[test]
+fn notification_target_has_one_source_owner() {
+    let canonical = typecheck_with_resolved_std(
+        r"import std.failure.{DownTarget as Target};
+        fn main() { let _target = Target.Local(7); }",
+    );
+    assert!(canonical.errors.is_empty(), "{:?}", canonical.errors);
+    let old_owner = typecheck_with_resolved_std(
+        r"import std.link_monitor.{DownTarget as Target};
+        fn main() { let _target = Target.Local(7); }",
+    );
+    assert!(
+        !old_owner.errors.is_empty(),
+        "the old module must not re-export the target type"
+    );
+}
+
+#[test]
 fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
     let output = typecheck_with_resolved_std(
         r"
@@ -243,7 +260,7 @@ fn named_imported_exit_payload_is_source_authoritative_and_consumes_import() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 
@@ -269,7 +286,7 @@ fn aliased_imported_exit_payload_keeps_canonical_lifecycle_identity() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: ExitNote) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 
@@ -289,7 +306,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: f.CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
 
             #[on(down)]
@@ -300,7 +317,7 @@ fn whole_module_aliases_keep_canonical_exit_and_down_hook_identity() {
 
         fn main() {
             let _kind = f.CrashKind.Fault;
-            let _target = lm.DownTarget.Local(7);
+            let _target = f.DownTarget.Local(7);
             let _reason = lm.DownReason.Stopped;
         }
         ",
@@ -484,59 +501,49 @@ fn named_imports_keep_requested_qualified_lifecycle_authority() {
     for (source, requested_type) in [
         (
             r"
-        import std.failure.{CrashAction};
-        fn main() {
-            let _kind = failure.CrashKind.Fault;
-        }
-        ",
-            None,
-        ),
-        (
-            r"
         import std.failure.{CrashKind};
-        fn main() {
-            let _kind = failure.CrashKind.Fault;
-        }
+        fn main() { let _kind = failure.CrashKind.Fault; }
         ",
-            Some("std.failure.CrashKind"),
-        ),
-        (
-            r"
-        import std.link_monitor.{MonitorId};
-        fn main() {
-            let _reason = link_monitor.DownReason.Stopped;
-        }
-        ",
-            None,
+            "std.failure.CrashKind",
         ),
         (
             r"
         import std.link_monitor.{DownReason};
-        fn main() {
-            let _reason = link_monitor.DownReason.Stopped;
-        }
+        fn main() { let _reason = link_monitor.DownReason.Stopped; }
         ",
-            Some("std.link_monitor.DownReason"),
+            "std.link_monitor.DownReason",
         ),
     ] {
         let output = typecheck_with_resolved_std(source);
-        if let Some(requested_type) = requested_type {
-            assert!(
-                output.errors.is_empty(),
-                "a requested named import must remain available as `{requested_type}`: {:?}",
-                output.errors
-            );
-        } else {
-            assert!(
-                output
-                    .errors
-                    .iter()
-                    .any(|error| matches!(error.kind, TypeErrorKind::UndefinedType)),
-                "a named import must not authorize an unrequested qualified type: {:?}",
-                output.errors
-            );
-        }
+        assert!(
+            output.errors.is_empty(),
+            "a requested named import must remain available as `{requested_type}`: {:?}",
+            output.errors
+        );
     }
+}
+
+#[test]
+fn named_import_does_not_bind_an_unrequested_type() {
+    let mut program =
+        common::parse_program("import app.events.{Visible}; fn observe(value: Hidden) {}");
+    let Item::Import(import) = &mut program.items[0].0 else {
+        unreachable!()
+    };
+    import.resolved_items = Some(
+        common::parse_program("pub type Visible { value: i64; } pub type Hidden { value: i64; }")
+            .items
+            .into(),
+    );
+    let output = common::checker().check_program(&program);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == TypeErrorKind::UndefinedType),
+        "a named import must not bind an unrequested non-prelude type: {:?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -568,7 +575,7 @@ fn source_owned_exit_payload_rejects_plain_and_missing_imports() {
         import std.failure;
         actor Watcher {
             #[on(link)]
-            fn on_peer_exit(note: failure.CrashNotification) { let _id = note.actor_id; }
+            fn on_peer_exit(note: failure.CrashNotification) { let _id = note.target; }
         }
         fn main() {}
         ",
@@ -644,7 +651,8 @@ fn sibling_loading_failure_does_not_authorize_root_qualified_exit_payload() {
 fn named_imported_down_payload_and_nested_types_consume_import() {
     let output = typecheck_with_resolved_std(
         r"
-        import std.link_monitor.{DownNotification, DownReason, DownTarget};
+        import std.failure.{DownTarget};
+        import std.link_monitor.{DownNotification, DownReason};
 
         actor Watcher {
             #[on(down)]
@@ -788,6 +796,15 @@ fn transitive_std_failure_defs_do_not_authorize_qualified_constructors_or_varian
             r"
         import app.helper;
         fn main() {
+            let _target = failure.DownTarget.Remote;
+        }
+        ",
+            "undefined variable `failure`",
+        ),
+        (
+            r"
+        import app.helper;
+        fn main() {
             let _note = failure.CrashNotification.Forged {
                 actor_id: 1,
             };
@@ -830,15 +847,6 @@ fn transitive_std_link_monitor_defs_do_not_authorize_qualified_constructors_or_v
         }
         ",
             "undefined type `link_monitor.DownNotification.Forged`",
-        ),
-        (
-            r"
-        import app.helper;
-        fn main() {
-            let _target = link_monitor.DownTarget.Remote;
-        }
-        ",
-            "undefined variable `link_monitor`",
         ),
         (
             r"
@@ -1524,7 +1532,7 @@ fn main() {}
 // ── M-7-R: `#[on(link)]` linked-actor exit hook ──────────────────────
 //
 // The exit hook fires when an actor THIS actor is linked to crashes/exits,
-// delivering a typed `CrashNotification { actor_id, kind }`. Signature:
+// delivering a typed `CrashNotification { target, kind }`. Signature:
 // `fn on_exit(note: CrashNotification)` (returns `()`).
 
 #[test]
@@ -1534,7 +1542,7 @@ fn accept_on_exit_hook_canonical_shape() {
         actor Watcher {
             #[on(link)]
             fn on_peer_exit(note: CrashNotification) {
-                let _id = note.actor_id;
+                let _id = note.target;
             }
         }
 

@@ -12,7 +12,7 @@ fn check(text: string) -> string fails Problem {
     if text.is_empty() {
         return error .Bad("empty");
     }
-    string.trim(text)
+    (text).trim()
 }
 
 fn main() {

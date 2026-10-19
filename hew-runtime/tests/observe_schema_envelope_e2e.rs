@@ -33,15 +33,11 @@ fn profiler_api_responses_carry_observe_schema_version_envelope() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
     let addr = listener.local_addr().expect("local addr");
 
-    // Null subsystem pointers — endpoints check `is_null()` and return the
-    // canonical empty bodies (`[]` and the unconfigured routing object).
+    // No current node: distributed endpoints return canonical empty bodies.
     let ctx = Arc::new(ProfilerContext {
         ring: Arc::new(Mutex::new(
             hew_runtime::profiler::metrics::MetricsRing::new(),
         )),
-        cluster: std::ptr::null_mut(),
-        connmgr: std::ptr::null_mut(),
-        routing: std::ptr::null_mut(),
     });
 
     // The server thread will outlive this test — cargo runs each integration

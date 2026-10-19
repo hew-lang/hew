@@ -134,12 +134,8 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 
     let down = crate::monitor::HewDownMessage {
         monitor_id: 0,
-        target_kind: 0,
+        target: crate::monitor::HewNotificationTarget::local(0),
         reason_kind: 0,
-        node_hi: 0,
-        node_lo: 0,
-        slot: 0,
-        session_incarnation: 0,
         crash_kind: 0,
     };
     // SAFETY: the actor is live, so its mailbox is valid; `down` outlives
@@ -200,7 +196,7 @@ fn system_dispatch_is_reachable_only_by_the_system_channel() {
 /// raw `msg_type` regardless of provenance, so `hew_actor_send(actor, 103,
 /// null, 0)` — a legal public C-ABI call — arrived byte-for-byte as a
 /// runtime-originated EXIT signal: the generated trampoline's EXIT arm
-/// read a 16-byte `ExitMessage` out of the null payload (no `data_size`
+/// read an `ExitMessage` out of the null payload (no `data_size`
 /// guard existed) and called `hew_actor_exit_unhandled` with the loaded
 /// reason. There is now no shared namespace to collide in: the system
 /// entry point takes `HewSysMsg` discriminants and is reachable only from
@@ -1463,7 +1459,6 @@ fn make_stop_test_actor_with_id(
         let mailbox = mailbox::hew_mailbox_new();
         assert!(!mailbox.is_null());
         let actor = Box::into_raw(Box::new(HewActor {
-            dispatch_ownership: crate::actor::HewDispatchOwnership::CopiedPayload,
             sched_link_next: AtomicPtr::new(ptr::null_mut()),
             id,
             state: ptr::null_mut(),
@@ -2988,166 +2983,6 @@ fn injected_drop_fault_reports_loss_not_delivery() {
     }
 }
 
-/// V2(a–c): the off-dispatch producer choke point `enter_actor_runtime`
-/// binds the actor's OWNING runtime, not the process default. A second
-/// worker-less runtime is minted carrying `RuntimeId(1)`, and an actor is
-/// stamped to it (both `runtime` pointer and `runtime_id` from that runtime,
-/// the spawn invariant). Then:
-///   (a) WITHOUT `enter_actor_runtime` the thread is bound to the default
-///       (`RuntimeId::DEFAULT`) via the test guard, so a held-pointer send
-///       fails closed `ErrForeignRuntime` (the existing cross-runtime wall);
-///   (b) WITH `enter_actor_runtime(actor)` the guard binds `RuntimeId(1)` —
-///       `rt_current_id()` is asserted to OBSERVE it (anti-vacuous: the bind
-///       is checked, not assumed, per `static-classification-vacuates-…`) —
-///       and the SAME send now succeeds and enqueues; the guard restores the
-///       previous (default) binding on drop (`lifecycle-symmetry`);
-///   (c) the by-construction skew invariant holds: the actor's owning-runtime
-///       stamp id equals its `runtime_id`.
-#[test]
-fn enter_actor_runtime_binds_owning_runtime_off_dispatch() {
-    let _guard = crate::runtime_test_guard();
-
-    // Mint a second, worker-less runtime carrying RuntimeId(1). It is a stack
-    // local that outlives every guard/stamp derived from it below: the
-    // actor's `runtime` field points at it and `enter_actor_runtime` borrows
-    // it, and both are dropped before `rt_b` leaves scope.
-    let rt_b = crate::runtime::RuntimeInner::new_with_id_for_test(
-        crate::scheduler::worker_less_scheduler(),
-        crate::runtime_id::RuntimeId(1),
-    );
-
-    // Build a test actor and re-stamp it as if spawned by rt_b: both the
-    // `runtime` pointer and `runtime_id` come from the SAME runtime (the
-    // spawn invariant). `Runnable` state so a successful send does not also
-    // push it onto a scheduler queue — the mailbox enqueue is what (b)
-    // asserts.
-    let (actor, mailbox) = make_stop_test_actor_with_id(0xB2, HewActorState::Runnable);
-    // SAFETY: the test exclusively owns `actor` and never publishes it.
-    unsafe {
-        (*actor).runtime_id = crate::runtime_id::RuntimeId(1);
-        (*actor).runtime = &raw const rt_b;
-    }
-
-    // (c) Skew guard: the owning-runtime stamp's id equals the runtime_id.
-    // SAFETY: the test owns `actor` and `rt_b`; the stamp is non-null here.
-    unsafe {
-        assert!(
-            (*actor).runtime.is_null() || (*(*actor).runtime).runtime_id() == (*actor).runtime_id,
-            "a spawned actor must carry an owning-runtime stamp whose id equals its runtime_id"
-        );
-    }
-
-    // (a) WITHOUT enter_actor_runtime: the calling thread is bound to the
-    // default runtime, so the foreign actor fails closed and enqueues
-    // nothing.
-    // SAFETY: `actor` is valid and fully owned by this test; null payload.
-    let foreign_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
-    assert_eq!(
-        foreign_rc,
-        HewError::ErrForeignRuntime as i32,
-        "without entering the owner, an off-dispatch send is foreign and fails closed"
-    );
-    // SAFETY: `mailbox` is owned by the test.
-    let refused_count = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
-    assert_eq!(
-        refused_count, 0,
-        "a refused cross-runtime send must not enqueue a message"
-    );
-
-    // (b) WITH enter_actor_runtime: the choke point binds rt_b, observed via
-    // rt_current_id; the same send is now in-runtime and reaches the mailbox.
-    {
-        // SAFETY: `actor` is live and owns a non-null `runtime` stamp to
-        // `rt_b`, which outlives this guard.
-        let _bind = unsafe { crate::runtime::enter_actor_runtime(actor) }
-            .expect("entering the owning runtime yields a guard");
-        assert_eq!(
-            crate::runtime::rt_current_id(),
-            Some(crate::runtime_id::RuntimeId(1)),
-            "enter_actor_runtime must bind the actor's owning runtime, not the default"
-        );
-
-        // SAFETY: as above.
-        let bound_rc = unsafe { hew_actor_try_send(actor, 1, ptr::null_mut(), 0) };
-        assert_eq!(
-            bound_rc,
-            HewError::Ok as i32,
-            "with the owner bound, the off-dispatch send is in-runtime and succeeds"
-        );
-        // SAFETY: `mailbox` is owned by the test.
-        let accepted_count = unsafe { mailbox::hew_mailbox_has_messages(mailbox) };
-        assert_eq!(
-            accepted_count, 1,
-            "the accepted send must have enqueued exactly the one message"
-        );
-    }
-
-    // The guard restored the previous (default) binding on drop.
-    assert_eq!(
-        crate::runtime::rt_current_id(),
-        Some(crate::runtime_id::RuntimeId::DEFAULT),
-        "dropping the enter_actor_runtime guard restores the previous (default) binding"
-    );
-
-    // SAFETY: the test fully owns the actor and its mailbox; drop the actor
-    // before `rt_b` leaves scope so its `runtime` stamp is never read after.
-    unsafe {
-        drop(Box::from_raw(actor));
-        mailbox::hew_mailbox_free(mailbox);
-    }
-}
-
-/// V2(d): `enter_actor_runtime` TRAPS — it does not silently default and does
-/// not return `None` — when an actor carries a non-default `runtime_id` but a
-/// NULL owning-runtime stamp. That pairing is a spawn-invariant contradiction
-/// (spawn stamps `runtime` and `runtime_id` from the same runtime), so
-/// silently binding the default would re-open the silent-default hazard the
-/// stamp closes (`no-fail-open-fallback-after-authority`). The DEFAULT path
-/// is unaffected: a default actor with a null stamp resolves the default
-/// fallback exactly as in M2.
-#[test]
-fn enter_actor_runtime_traps_on_multi_runtime_null_stamp() {
-    let _guard = crate::runtime_test_guard();
-
-    // Control (the legitimate M2 path): a DEFAULT-stamped actor with a null
-    // `runtime` resolves the default fallback — NO trap, returns Some.
-    let (default_actor, default_mailbox) = make_stop_test_actor_with_id(0xD0, HewActorState::Idle);
-    // SAFETY: the test owns `default_actor`; it carries runtime_id DEFAULT and
-    // a null runtime stamp (the helper defaults).
-    let default_bound = unsafe { crate::runtime::enter_actor_runtime(default_actor) };
-    assert!(
-        default_bound.is_some(),
-        "a DEFAULT actor with a null stamp must resolve the default fallback (no trap)"
-    );
-    drop(default_bound);
-
-    // The trap: a non-default runtime_id with a null stamp must panic rather
-    // than silently default.
-    let (foreign_actor, foreign_mailbox) = make_stop_test_actor_with_id(0xD1, HewActorState::Idle);
-    // SAFETY: the test owns `foreign_actor`; stamp a non-default id but leave
-    // `runtime` null — precisely the contradiction the trap exists to catch.
-    unsafe {
-        (*foreign_actor).runtime_id = crate::runtime_id::RuntimeId(1);
-    }
-    let trapped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // SAFETY: `foreign_actor` is live and owned by the test; the trap
-        // fires before any runtime is entered, so no guard leaks.
-        let _ = unsafe { crate::runtime::enter_actor_runtime(foreign_actor) };
-    }));
-    assert!(
-        trapped.is_err(),
-        "a non-default runtime_id with a null owning-runtime stamp must TRAP, not default"
-    );
-
-    // SAFETY: the test fully owns both actors and mailboxes.
-    unsafe {
-        drop(Box::from_raw(default_actor));
-        mailbox::hew_mailbox_free(default_mailbox);
-        drop(Box::from_raw(foreign_actor));
-        mailbox::hew_mailbox_free(foreign_mailbox);
-    }
-}
-
 static WAKE_SAW_RECORDED_FAULT: AtomicBool = AtomicBool::new(false);
 static WAKE_HOOK_FIRED: AtomicBool = AtomicBool::new(false);
 
@@ -4631,6 +4466,72 @@ fn native_ask_self_stop_without_reply_returns_null_and_releases_channel() {
     assert_eq!(reply_channel::active_channel_count(), 0);
 }
 
+mod construction_publication {
+    use super::HewActorState;
+    use loom::sync::atomic::{AtomicI32, AtomicUsize, Ordering};
+    use loom::sync::Arc;
+
+    fn model(producer_handoff: bool) {
+        loom::model(move || {
+            let shared = Arc::new((
+                AtomicI32::new(HewActorState::Constructing as i32),
+                AtomicUsize::new(0),
+            ));
+            let producer = shared.clone();
+            let send = loom::thread::spawn(move || {
+                // Match mailbox admission and finish_mailbox_enqueue_inner.
+                producer.1.fetch_add(1, Ordering::Release);
+                let mut observed = producer.0.load(Ordering::Acquire);
+                if producer_handoff && observed == HewActorState::Constructing as i32 {
+                    observed = match producer.0.compare_exchange(
+                        HewActorState::Constructing as i32,
+                        HewActorState::Constructing as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(state) | Err(state) => state,
+                    };
+                }
+                if observed == HewActorState::Idle as i32 {
+                    let _ = producer.0.compare_exchange(
+                        HewActorState::Idle as i32,
+                        HewActorState::Runnable as i32,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    );
+                }
+            });
+            // Match hew_actor_publish_native's publication and pending recheck.
+            shared.0.swap(HewActorState::Idle as i32, Ordering::AcqRel);
+            if shared.1.load(Ordering::Acquire) != 0 {
+                let _ = shared.0.compare_exchange(
+                    HewActorState::Idle as i32,
+                    HewActorState::Runnable as i32,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
+            }
+            send.join().unwrap();
+            assert_eq!(
+                shared.0.load(Ordering::Acquire),
+                HewActorState::Runnable as i32,
+                "published work must be runnable"
+            );
+        });
+    }
+
+    #[test]
+    fn admitted_work_cannot_miss_construction_publication() {
+        model(true);
+    }
+
+    #[test]
+    #[should_panic(expected = "published work must be runnable")]
+    fn omitting_the_producer_handoff_can_strand_admitted_work() {
+        model(false);
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -4713,8 +4614,14 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     }
     let mut fault = ptr::null_mut();
     // SAFETY: all callback signatures and state ownership match native spawn.
+    let (_construction_ready, construction_waker) = crate::wake::blocking::Readiness::new();
+    // SAFETY: the test retains this descriptor throughout synchronous construction.
+    let construction = unsafe {
+        crate::coro_state::hew_coro_state_new(construction_waker.descriptor(), ptr::null_mut())
+    };
+    // SAFETY: the callbacks and initialized state obey the native construction ABI.
     let token = unsafe {
-        crate::actor::hew_actor_spawn_native(
+        crate::actor::hew_actor_construct_native(
             state.cast(),
             std::mem::size_of::<StopState>(),
             dispatch,
@@ -4724,8 +4631,6 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             0,
             0,
-            ptr::null(),
-            0,
             None,
             None,
             &raw mut fault,
@@ -4733,9 +4638,30 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
             0,
             None,
             ptr::null_mut(),
-            ptr::null_mut(),
+            construction,
         )
     };
+    // A message admitted during construction cannot wake the actor yet.
+    assert_eq!(
+        // SAFETY: the actor retains its direct token and the payload is empty.
+        unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
+        0
+    );
+    assert_eq!(turns.load(Ordering::SeqCst), 0);
+    // SAFETY: test state is initialized and construction has no suspended borrower.
+    unsafe {
+        assert_eq!(
+            crate::actor::hew_actor_publish_native(
+                token,
+                ptr::null(),
+                0,
+                construction,
+                &raw mut fault
+            ),
+            0
+        );
+        crate::coro_state::hew_coro_state_free(construction);
+    }
     assert!(fault.is_null());
     assert_ne!(
         token,
@@ -4747,12 +4673,6 @@ fn native_graceful_stop_drains_accepted_turns_before_completion() {
     // SAFETY: the wait descriptor remains live until this test frees it.
     assert_eq!(unsafe { crate::actor_native::hew_actor_wait_poll(wait) }, 0);
 
-    // SAFETY: token names this live actor, and empty payloads are valid.
-    assert_eq!(
-        // SAFETY: the actor retains its direct token and the payload is empty.
-        unsafe { hew_local_pid_send(token, 1, ptr::null_mut(), 0) },
-        0
-    );
     entered.wait();
     // The second turn is already accepted when stop closes admission.
     assert_eq!(
@@ -5922,7 +5842,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // load it and release one owner.
         let handle = unsafe { *payload.cast::<*mut hew_cabi::string::HewString>() };
         // SAFETY: `handle` is a live header-aware String produced by
-        // `hew_string_from_char` (or a clone of it), released exactly once.
+        // `hew_char_to_string` (or a clone of it), released exactly once.
         unsafe { crate::string::hew_string_drop(handle) };
         DROP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
@@ -5935,7 +5855,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // retain/drop, then release the envelope. Every pointer is live for
         // the block and freed exactly once.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'x'));
+            let s = crate::string::hew_char_to_string(i32::from(b'x'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());
@@ -5966,7 +5886,7 @@ fn live_borrow_receive_retains_escaping_payload_releases_once() {
         // SAFETY: same self-contained envelope lifecycle as the borrow arm;
         // copy mode emits no clone, so the envelope release is the sole free.
         unsafe {
-            let s = crate::string::hew_string_from_char(i32::from(b'y'));
+            let s = crate::string::hew_char_to_string(i32::from(b'y'));
             let slot = std::mem::size_of::<*mut hew_cabi::string::HewString>();
             let buf = crate::mem::buf_try_alloc(slot).cast::<*mut hew_cabi::string::HewString>();
             assert!(!buf.is_null());

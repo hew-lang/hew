@@ -6,7 +6,7 @@
 //!    written in source. Handler lowering previously lost the supervisor
 //!    layout map, collapsing every accessor to slot index 0.
 //! 2. SWALLOW — a refused stable-role ask must classify as a real
-//!    `AskError` kind. The refusal paths previously returned their error code
+//!    `ActorError` variant. The refusal paths previously returned their error code
 //!    without writing the ask-error slot, surfacing an invalid public error.
 
 actor Worker {

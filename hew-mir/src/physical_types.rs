@@ -341,6 +341,8 @@ pub enum CloneAction {
     Bitwise,
     StringRetain,
     BytesRetain,
+    /// Share an actor descriptor without owning its actor or issuer grant.
+    ActorRetain,
     /// Retain one more strong reference to a shared allocation.
     RcRetain,
     /// Retain one more weak reference to a shared allocation.
@@ -366,6 +368,8 @@ pub enum DestroyAction {
     Callable,
     StringRelease,
     BytesRelease,
+    /// Release an actor descriptor, without requesting actor termination.
+    ActorRelease,
     /// Release one strong reference. When it was the last, the runtime runs
     /// the payload's release recipe - which the glue identity names - before
     /// the allocation goes.
@@ -435,6 +439,7 @@ pub struct PhysicalVtableId(pub u32);
 /// One dispatchable slot of a realized trait-object table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhysicalVtableSlot {
+    pub receiver: hew_sir::SemParamPassing,
     pub slot: u32,
     /// Every table implementing this method uses the same completion ABI.
     pub is_resumable: bool,
@@ -658,6 +663,40 @@ pub enum PhysicalSetOp {
 impl PhysicalSetOp {}
 
 #[derive(Debug, Clone, PartialEq)]
+pub enum PhysicalInvocationCallee {
+    Direct(CallableId),
+    Mutable {
+        target: CallableId,
+        receiver: ArgumentTransfer,
+        update: hew_types::ReceiverUpdate,
+        recipe: PhysicalValueRecipe,
+    },
+    Dyn {
+        receiver: ArgumentTransfer,
+        slot: u32,
+        method: hew_types::DefId,
+        is_resumable: bool,
+        signature: PhysicalCallSignature,
+    },
+    Indirect {
+        receiver: ArgumentTransfer,
+        specialization: Option<hew_sir::CallableSpecializationId>,
+    },
+}
+
+impl PhysicalInvocationCallee {
+    #[must_use]
+    pub fn receiver(&self) -> Option<ArgumentTransfer> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(*receiver),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum PhysicalOp {
     /// One bounded element pipe. Unconsumed elements are released through
     /// the element recipe by whichever half closes last.
@@ -685,6 +724,13 @@ pub enum PhysicalOp {
     TaskRace {
         scope: hew_sir::TaskScopeId,
         members: Vec<StorageId>,
+        dest: StorageId,
+        output: Option<PhysicalValueRecipe>,
+    },
+    TaskInvoke {
+        scope: hew_sir::TaskScopeId,
+        callee: PhysicalInvocationCallee,
+        args: Vec<ArgumentTransfer>,
         dest: StorageId,
         output: Option<PhysicalValueRecipe>,
     },
@@ -884,6 +930,7 @@ pub enum ArgumentTransfer {
 pub struct PhysicalArguments {
     transfers: Vec<ArgumentTransfer>,
     carriers: Vec<ParamCarrier>,
+    value_witnesses: Vec<PhysicalValueRecipe>,
 }
 
 impl PhysicalArguments {
@@ -899,12 +946,23 @@ impl PhysicalArguments {
         Ok(Self {
             transfers,
             carriers,
+            value_witnesses: Vec::new(),
         })
     }
 
     #[must_use]
     pub fn carriers(&self) -> &[ParamCarrier] {
         &self.carriers
+    }
+
+    pub(crate) fn with_value_witnesses(mut self, recipes: Vec<PhysicalValueRecipe>) -> Self {
+        self.value_witnesses = recipes;
+        self
+    }
+
+    #[must_use]
+    pub fn value_witnesses(&self) -> &[PhysicalValueRecipe] {
+        &self.value_witnesses
     }
 
     #[cfg(test)]
@@ -1051,6 +1109,7 @@ pub enum PhysicalTerminator {
     StreamSend {
         park: bool,
         sink: ArgumentTransfer,
+        receiver: PhysicalValueRecipe,
         value: ArgumentTransfer,
         element: PhysicalValueRecipe,
         normal: PhysicalEdge,
@@ -1068,19 +1127,6 @@ pub enum PhysicalTerminator {
         policy: hew_types::actor_delivery::SendPolicy,
         sealed: bool,
         args: Vec<ArgumentTransfer>,
-        result: StorageId,
-        normal: PhysicalEdge,
-        cancel: PhysicalEdge,
-        unwind: PhysicalEdge,
-    },
-    /// A `RemotePid` ask: borrowed pid, moved message and copied millisecond
-    /// timeout. The message is encoded and released before the caller parks.
-    RemoteAsk {
-        actor: ActorId,
-        message: u32,
-        target: StorageId,
-        payload: StorageId,
-        timeout: StorageId,
         result: StorageId,
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
@@ -1128,6 +1174,15 @@ pub enum PhysicalTerminator {
         function: hew_sir::OffloadId,
         args: Vec<ArgumentTransfer>,
         result: Option<StorageId>,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
+    ServiceAcquire {
+        actor: ActorId,
+        export: bool,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
         normal: PhysicalEdge,
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,

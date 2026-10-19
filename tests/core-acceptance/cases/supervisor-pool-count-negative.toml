@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-pool-count-negative"
+intent = "Invalid construction-time pool counts fail specifically before any child bootstrap and unwind the caller."
+source = "cases/supervisor-pool-count-negative.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "count evaluated\ncaller cleaned\n"
+stderr = "hew: failure: UserPanic (212): supervisor pool count must be between 1 and 2147483647\n"
+exit = 1

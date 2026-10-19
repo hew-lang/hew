@@ -206,43 +206,17 @@ impl SemModule {
 
 /// The actor declaration and type arguments a local reference names.
 ///
-/// An actor is the type of its handle, so a handle carries its own identity; a
-/// `ChildRef<A>` names the same actor through its role parameter.
+/// Direct, supervised and imported references share the actor type.
 pub(crate) fn local_actor_instance(
     ty: &ResolvedTy,
 ) -> Option<hew_types::resolved_ty::NominalInstance> {
-    if let Some(instance) = ty.actor_handle_instance() {
-        return Some(instance);
-    }
-    let ResolvedTy::Named {
-        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::ChildRef),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [actor_ty] = args.as_slice() else {
-        return None;
-    };
-    actor_ty.actor_handle_instance()
+    ty.actor_handle_instance()
 }
 
 impl SemActor {
-    /// The stable supervised role for this actor: re-resolved through its
-    /// supervisor on every use, never a cached address.
-    #[must_use]
-    pub fn child_ref_ty(&self) -> ResolvedTy {
-        ResolvedTy::named_builtin(
-            hew_types::BuiltinType::ChildRef,
-            vec![self.handle_ty.clone()],
-        )
-    }
-
     /// Whether this actor's handle is an anonymous actor's `actor(M) -> R`.
     ///
-    /// A lambda actor is spawned from an expression, never supervised as a
-    /// named role, so it has no `ChildRef` spelling.
+    /// A lambda actor is spawned from an expression rather than a declaration.
     #[must_use]
     pub fn is_lambda(&self) -> bool {
         matches!(
@@ -257,7 +231,7 @@ impl SemActor {
     /// A message may address this actor through its handle or its role.
     #[must_use]
     pub fn admits_target(&self, ty: &ResolvedTy) -> bool {
-        *ty == self.handle_ty || (!self.is_lambda() && *ty == self.child_ref_ty())
+        *ty == self.handle_ty
     }
 
     /// Every private body entered with this actor's exclusive state seat.
@@ -356,66 +330,6 @@ impl SemActor {
             {
                 return Err("sealed request differs from the admitted handler protocol".into());
             }
-        }
-        Ok(crate::SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params,
-            return_ty: result_ty,
-        })
-    }
-
-    /// A `RemotePid` send or ask to the checker-selected remote member: the
-    /// borrowed pid, the moved message and, for an ask, its millisecond
-    /// timeout. An ask returns its checked `Result`; a send answers with the
-    /// node's submission status. The request crosses the wire as bytes, so
-    /// no call is sealed.
-    ///
-    /// # Errors
-    /// Refuses a member without codecs, another actor's pid or another result.
-    pub fn remote_signature(
-        &self,
-        message: u32,
-        target: &ResolvedTy,
-        result_ty: ResolvedTy,
-        ask: bool,
-    ) -> Result<crate::SemSignature, String> {
-        let handler = self
-            .handlers
-            .iter()
-            .find(|handler| handler.message_id == message && handler.codec.is_some())
-            .ok_or("remote call has no portable receive member")?;
-        let [msg] = handler.params.as_slice() else {
-            return Err("a remote member takes exactly its message".into());
-        };
-        let addressed = matches!(target, ResolvedTy::Named { head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::RemotePid), args, .. } if args.as_slice() == std::slice::from_ref(&self.handle_ty));
-        if !addressed {
-            return Err("remote call target is not this actor's RemotePid".into());
-        }
-        if ask {
-            let [reply, error] =
-                result_parts(&result_ty).ok_or("a remote ask must return its checked Result")?;
-            let expected = hew_types::Ty::actor_error_with_request(
-                hew_types::Ty::never_type(),
-                hew_types::Ty::never_type(),
-            );
-            if *reply != handler.return_ty || error.to_ty() != expected {
-                return Err("remote ask differs from its member's reply and failure".into());
-            }
-        } else if result_ty != ResolvedTy::I32 {
-            // HIR folds the node's submission status into `Result<(), SendError>`.
-            return Err("remote send answers with its i32 submission status".into());
-        }
-        let param = |ty: &ResolvedTy, passing| crate::SemAbiParam {
-            ty: ty.clone(),
-            passing,
-            caller_visible_projection: false,
-        };
-        let mut params = vec![
-            param(target, crate::SemParamPassing::Borrow),
-            param(msg, crate::SemParamPassing::Consume),
-        ];
-        if ask {
-            params.push(param(&ResolvedTy::U64, crate::SemParamPassing::ReadOnly));
         }
         Ok(crate::SemSignature {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
@@ -837,64 +751,9 @@ impl LocalObservationKind {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
             params: vec![crate::SemAbiParam {
                 ty: target.clone(),
-                passing: crate::SemParamPassing::Consume,
+                passing: crate::SemParamPassing::Borrow,
                 caller_visible_projection: false,
             }],
-            return_ty: result.clone(),
-        })
-    }
-}
-
-/// A cross-node link or monitor addressed by a borrowed `RemotePid`. The
-/// node reports failures in the result's error vocabulary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RemoteObservationKind {
-    /// `link_remote(pid, policy) -> Result<(), LinkError>`.
-    Link,
-    /// `monitor(pid) -> Result<MonitorRef, LinkError>`.
-    Monitor,
-}
-
-impl RemoteObservationKind {
-    fn signature(
-        self,
-        params: &[ResolvedTy],
-        result: &ResolvedTy,
-    ) -> Result<crate::SemSignature, String> {
-        let valid = match (self, params) {
-            (Self::Link, [target, _]) | (Self::Monitor, [target]) => {
-                target.is_builtin(hew_types::BuiltinType::RemotePid)
-                    && result_parts(result).is_some_and(|[ok, error]| match self {
-                        Self::Link => {
-                            *ok == ResolvedTy::Unit
-                                && error.is_builtin(hew_types::BuiltinType::LinkError)
-                        }
-                        Self::Monitor => {
-                            ok.is_builtin(hew_types::BuiltinType::MonitorRef)
-                                && error.is_builtin(hew_types::BuiltinType::LinkError)
-                        }
-                    })
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err("remote observation changes its checked signature".into());
-        }
-        Ok(crate::SemSignature {
-            failure_domain: hew_types::CallableFailureDomain::HewFault,
-            params: params
-                .iter()
-                .enumerate()
-                .map(|(index, ty)| crate::SemAbiParam {
-                    ty: ty.clone(),
-                    passing: if index == 0 {
-                        crate::SemParamPassing::Borrow
-                    } else {
-                        crate::SemParamPassing::Consume
-                    },
-                    caller_visible_projection: false,
-                })
-                .collect(),
             return_ty: result.clone(),
         })
     }
@@ -904,9 +763,7 @@ impl RemoteObservationKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LifecycleTarget {
     Actor(ActorId),
-    ActorRole(ActorId),
     Supervisor(crate::SupervisorId),
-    SupervisorRole(crate::SupervisorId),
 }
 
 impl LifecycleTarget {
@@ -916,27 +773,19 @@ impl LifecycleTarget {
         supervisors: &[crate::SemSupervisor],
     ) -> Result<ResolvedTy, String> {
         match self {
-            Self::Actor(id) | Self::ActorRole(id) => {
+            Self::Actor(id) => {
                 let actor = actors
                     .get(id.0 as usize)
                     .filter(|actor| actor.id == id)
                     .ok_or("unknown lifecycle actor identity")?;
-                Ok(if matches!(self, Self::ActorRole(_)) {
-                    actor.child_ref_ty()
-                } else {
-                    actor.handle_ty.clone()
-                })
+                Ok(actor.handle_ty.clone())
             }
-            Self::Supervisor(id) | Self::SupervisorRole(id) => {
+            Self::Supervisor(id) => {
                 let supervisor = supervisors
                     .get(id.0 as usize)
                     .filter(|supervisor| supervisor.id == id)
                     .ok_or("unknown lifecycle supervisor identity")?;
-                Ok(if matches!(self, Self::SupervisorRole(_)) {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                })
+                Ok(supervisor.handle_ty.clone())
             }
         }
     }
@@ -945,6 +794,10 @@ impl LifecycleTarget {
 /// Actor boundary selected from an exact demanded protocol.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ActorOperation {
+    /// Compare actor identity without resolving a role or exercising grant rights.
+    Identity {
+        target: ResolvedTy,
+    },
     LocalObservation {
         kind: LocalObservationKind,
         target: ResolvedTy,
@@ -971,23 +824,17 @@ pub enum ActorOperation {
         /// The handle or role the request addresses.
         target: ResolvedTy,
     },
+    /// Transfer one checked request to its actor-owned one-shot timer.
+    TimerSchedule {
+        actor: ActorId,
+        message: u32,
+        policy: hew_types::actor_delivery::SendPolicy,
+    },
     Submit {
         actor: ActorId,
         policy: hew_types::actor_delivery::SendPolicy,
         message_ty: ResolvedTy,
         result_ty: ResolvedTy,
-    },
-    RemoteObservation {
-        kind: RemoteObservationKind,
-        params: Vec<ResolvedTy>,
-        result: ResolvedTy,
-    },
-    /// Encode one message for the actor's remote member and submit it to the
-    /// peer addressed by a borrowed `RemotePid`.
-    RemoteSend {
-        actor: ActorId,
-        message: u32,
-        target: ResolvedTy,
     },
     /// Construct the supervisor from its config, spawn every declared child
     /// through its spawn callable and start supervising. The result is the
@@ -998,7 +845,6 @@ pub enum ActorOperation {
     SupervisorChild {
         supervisor: crate::SupervisorId,
         child: u32,
-        owner_is_role: bool,
     },
     /// Produce a `pool` child's view: the owning supervisor and the first of
     /// the pool's consecutive member slots. The member count is a declaration
@@ -1006,7 +852,6 @@ pub enum ActorOperation {
     SupervisorPoolView {
         supervisor: crate::SupervisorId,
         child: u32,
-        owner_is_role: bool,
     },
 }
 
@@ -1050,30 +895,22 @@ impl ActorOperation {
         };
         Ok(match self {
             Self::SupervisorSpawn(_) => {
-                consume(supervisor.config.clone(), supervisor.handle_ty.clone())
+                let mut arguments = supervisor.config.clone();
+                if supervisor
+                    .children
+                    .iter()
+                    .any(|child| child.pool_count.is_some())
+                {
+                    arguments.push(ResolvedTy::I64);
+                }
+                consume(arguments, supervisor.handle_ty.clone())
             }
-            Self::SupervisorChild {
-                child,
-                owner_is_role,
-                ..
-            } => consume(
-                vec![if *owner_is_role {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                }],
+            Self::SupervisorChild { child, .. } => consume(
+                vec![supervisor.handle_ty.clone()],
                 supervisor.child_handle_ty(*child as usize, actors, supervisors)?,
             ),
-            Self::SupervisorPoolView {
-                child,
-                owner_is_role,
-                ..
-            } => consume(
-                vec![if *owner_is_role {
-                    supervisor.child_ref_ty()
-                } else {
-                    supervisor.handle_ty.clone()
-                }],
+            Self::SupervisorPoolView { child, .. } => consume(
+                vec![supervisor.handle_ty.clone()],
                 supervisor.pool_view_ty(*child as usize, actors, supervisors)?,
             ),
             _ => consume(vec![supervisor.handle_ty.clone()], ResolvedTy::Unit),
@@ -1147,14 +984,6 @@ impl ActorOperation {
         | Self::AwaitStopped(target)
         | Self::AwaitRestarted(target) = self
         {
-            if matches!(self, Self::AwaitRestarted(_))
-                && !matches!(
-                    target,
-                    LifecycleTarget::ActorRole(_) | LifecycleTarget::SupervisorRole(_)
-                )
-            {
-                return Err("restart wait requires a supervised role".into());
-            }
             return Ok(crate::SemSignature {
                 failure_domain: hew_types::CallableFailureDomain::HewFault,
                 params: vec![crate::SemAbiParam {
@@ -1165,6 +994,29 @@ impl ActorOperation {
                 return_ty: ResolvedTy::Unit,
             });
         }
+        if let Self::Identity { target } = self {
+            if !matches!(
+                target,
+                ResolvedTy::Named {
+                    head: hew_types::TypeHead::Actor(_),
+                    ..
+                }
+            ) {
+                return Err("actor identity requires an actor handle".into());
+            }
+            return Ok(crate::SemSignature {
+                failure_domain: hew_types::CallableFailureDomain::HewFault,
+                params: vec![
+                    crate::SemAbiParam {
+                        ty: target.clone(),
+                        passing: crate::SemParamPassing::Borrow,
+                        caller_visible_projection: false,
+                    };
+                    2
+                ],
+                return_ty: ResolvedTy::Bool,
+            });
+        }
         if let Self::LocalObservation {
             kind,
             target,
@@ -1172,14 +1024,6 @@ impl ActorOperation {
         } = self
         {
             return kind.signature(target, result);
-        }
-        if let Self::RemoteObservation {
-            kind,
-            params,
-            result,
-        } = self
-        {
-            return kind.signature(params, result);
         }
         let consume = |types: Vec<ResolvedTy>, return_ty| crate::SemSignature {
             failure_domain: hew_types::CallableFailureDomain::HewFault,
@@ -1194,8 +1038,8 @@ impl ActorOperation {
             return_ty,
         };
         let id = match self {
-            Self::LocalObservation { .. }
-            | Self::RemoteObservation { .. }
+            Self::Identity { .. }
+            | Self::LocalObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
             | Self::Stop(_)
@@ -1207,18 +1051,8 @@ impl ActorOperation {
             Self::Spawn(id)
             | Self::SelfHandle(id)
             | Self::StreamStart { actor: id, .. }
-            | Self::Submit { actor: id, .. } => *id,
-            Self::RemoteSend {
-                actor,
-                message,
-                target,
-            } => {
-                let actor = actors
-                    .get(actor.0 as usize)
-                    .filter(|candidate| candidate.id == *actor)
-                    .ok_or("unknown remote actor identity")?;
-                return actor.remote_signature(*message, target, ResolvedTy::I32, false);
-            }
+            | Self::Submit { actor: id, .. }
+            | Self::TimerSchedule { actor: id, .. } => *id,
             Self::SupervisorSpawn(_)
             | Self::SupervisorChild { .. }
             | Self::SupervisorPoolView { .. } => {
@@ -1230,15 +1064,14 @@ impl ActorOperation {
             .filter(|actor| actor.id == id)
             .ok_or("unknown actor identity")?;
         let (mut types, return_ty) = match self {
-            Self::LocalObservation { .. }
-            | Self::RemoteObservation { .. }
+            Self::Identity { .. }
+            | Self::LocalObservation { .. }
             | Self::CallStart(_)
             | Self::CallTake(_)
             | Self::Stop(_)
             | Self::Terminate(_)
             | Self::AwaitStopped(_)
-            | Self::AwaitRestarted(_)
-            | Self::RemoteSend { .. } => {
+            | Self::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             Self::StreamStart {
@@ -1271,6 +1104,34 @@ impl ActorOperation {
                     .collect::<Vec<_>>(),
                 actor.handle_ty.clone(),
             ),
+            Self::TimerSchedule {
+                message, policy, ..
+            } => {
+                if policy.may_suspend() {
+                    return Err("a timer cannot wait for mailbox capacity".into());
+                }
+                let handler = actor
+                    .handlers
+                    .iter()
+                    .find(|handler| handler.message_id == *message && handler.owes_no_reply())
+                    .ok_or("timer requires an exact one-way handler protocol")?;
+                (
+                    vec![
+                        actor.handle_ty.clone(),
+                        ResolvedTy::Duration,
+                        ResolvedTy::Duration,
+                        ResolvedTy::Bool,
+                        ResolvedTy::Tuple(handler.params.clone()),
+                    ],
+                    ResolvedTy::named_opaque(
+                        hew_types::NominalHead::new(
+                            hew_types::KnownDecl::Timer.nominal(),
+                            hew_types::KnownDecl::Timer.path(),
+                        ),
+                        Vec::new(),
+                    ),
+                )
+            }
             Self::Submit {
                 policy,
                 message_ty,

@@ -92,6 +92,13 @@ private func encodeTraceStreamMismatchLiteral<Key: CodingKey>(_ value: String, t
 
 public let observeSchemaVersion = "v1"
 public let actionableTraceEventTypes: Set<String> = [
+    "supervisor_restart",
+    "supervisor_escalate",
+    "supervisor_circuit_open",
+    "supervisor_circuit_half_open",
+    "supervisor_circuit_close",
+    "supervisor_max_restarts",
+    "supervisor_backoff",
     "actor.delivery_refused",
     "actor.rc_sweep",
     "send",
@@ -145,6 +152,7 @@ public struct Metrics: Codable, Sendable {
     public let tcpAcceptCount: UInt64
     public let tcpConnectCount: UInt64
     public let tcpErrorCount: UInt64
+    public let runtimeSeries: [RuntimeSeries]?
 
     enum CodingKeys: String, CodingKey {
         case timestampSecs = "timestamp_secs"
@@ -165,6 +173,7 @@ public struct Metrics: Codable, Sendable {
         case tcpAcceptCount = "tcp_accept_count"
         case tcpConnectCount = "tcp_connect_count"
         case tcpErrorCount = "tcp_error_count"
+        case runtimeSeries = "runtime_series"
     }
 
     public init(
@@ -185,7 +194,8 @@ public struct Metrics: Codable, Sendable {
         tcpBytesWritten: UInt64 = 0,
         tcpAcceptCount: UInt64 = 0,
         tcpConnectCount: UInt64 = 0,
-        tcpErrorCount: UInt64 = 0
+        tcpErrorCount: UInt64 = 0,
+        runtimeSeries: [RuntimeSeries]? = nil
     ) {
         self.timestampSecs = timestampSecs
         self.tasksSpawned = tasksSpawned
@@ -205,6 +215,7 @@ public struct Metrics: Codable, Sendable {
         self.tcpAcceptCount = tcpAcceptCount
         self.tcpConnectCount = tcpConnectCount
         self.tcpErrorCount = tcpErrorCount
+        self.runtimeSeries = runtimeSeries
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +238,11 @@ public struct Metrics: Codable, Sendable {
         tcpAcceptCount = try decodeUInt64Decimal(from: values, forKey: .tcpAcceptCount)
         tcpConnectCount = try decodeUInt64Decimal(from: values, forKey: .tcpConnectCount)
         tcpErrorCount = try decodeUInt64Decimal(from: values, forKey: .tcpErrorCount)
+        if values.contains(.runtimeSeries) {
+            runtimeSeries = try values.decode([RuntimeSeries]?.self, forKey: .runtimeSeries)
+        } else {
+            runtimeSeries = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -249,6 +265,43 @@ public struct Metrics: Codable, Sendable {
         try values.encode(String(tcpAcceptCount), forKey: .tcpAcceptCount)
         try values.encode(String(tcpConnectCount), forKey: .tcpConnectCount)
         try values.encode(String(tcpErrorCount), forKey: .tcpErrorCount)
+        try values.encode(runtimeSeries, forKey: .runtimeSeries)
+    }
+}
+
+public struct RuntimeSeries: Codable, Sendable {
+    public let name: String
+    public let kind: String
+    public let value: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case kind
+        case value
+    }
+
+    public init(
+        name: String = "",
+        kind: String = "",
+        value: UInt64 = 0
+    ) {
+        self.name = name
+        self.kind = kind
+        self.value = value
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        name = try values.decode(String.self, forKey: .name)
+        kind = try values.decode(String.self, forKey: .kind)
+        value = try decodeUInt64Decimal(from: values, forKey: .value)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(name, forKey: .name)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(String(value), forKey: .value)
     }
 }
 
@@ -325,6 +378,8 @@ public struct ActorInfo: Codable, Sendable {
     public let timeNs: UInt64
     public let mboxDepth: Int64
     public let mboxHwm: Int64
+    public let origin: ActorOrigin?
+    public let mailbox: MailboxStats?
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -335,6 +390,8 @@ public struct ActorInfo: Codable, Sendable {
         case timeNs = "time_ns"
         case mboxDepth = "mbox_depth"
         case mboxHwm = "mbox_hwm"
+        case origin
+        case mailbox
     }
 
     public init(
@@ -345,7 +402,9 @@ public struct ActorInfo: Codable, Sendable {
         msgs: UInt64 = 0,
         timeNs: UInt64 = 0,
         mboxDepth: Int64 = 0,
-        mboxHwm: Int64 = 0
+        mboxHwm: Int64 = 0,
+        origin: ActorOrigin? = nil,
+        mailbox: MailboxStats? = nil
     ) {
         self.id = id
         self.pid = pid
@@ -355,6 +414,8 @@ public struct ActorInfo: Codable, Sendable {
         self.timeNs = timeNs
         self.mboxDepth = mboxDepth
         self.mboxHwm = mboxHwm
+        self.origin = origin
+        self.mailbox = mailbox
     }
 
     public init(from decoder: Decoder) throws {
@@ -367,6 +428,16 @@ public struct ActorInfo: Codable, Sendable {
         timeNs = try decodeUInt64Decimal(from: values, forKey: .timeNs)
         mboxDepth = try decodeInt64Decimal(from: values, forKey: .mboxDepth)
         mboxHwm = try decodeInt64Decimal(from: values, forKey: .mboxHwm)
+        if values.contains(.origin) {
+            origin = try values.decode(ActorOrigin?.self, forKey: .origin)
+        } else {
+            origin = nil
+        }
+        if values.contains(.mailbox) {
+            mailbox = try values.decode(MailboxStats?.self, forKey: .mailbox)
+        } else {
+            mailbox = nil
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -379,6 +450,92 @@ public struct ActorInfo: Codable, Sendable {
         try values.encode(String(timeNs), forKey: .timeNs)
         try values.encode(String(mboxDepth), forKey: .mboxDepth)
         try values.encode(String(mboxHwm), forKey: .mboxHwm)
+        try values.encode(origin, forKey: .origin)
+        try values.encode(mailbox, forKey: .mailbox)
+    }
+}
+
+public struct ActorOrigin: Codable, Sendable {
+    public let producerInstanceId: String
+    public let identity: ActorIdentity
+
+    enum CodingKeys: String, CodingKey {
+        case producerInstanceId = "producer_instance_id"
+        case identity
+    }
+
+    public init(
+        producerInstanceId: String = "00000000000000000000000000000000",
+        identity: ActorIdentity = ActorIdentity()
+    ) {
+        self.producerInstanceId = producerInstanceId
+        self.identity = identity
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        producerInstanceId = try decodeHex128Lower(from: values, forKey: .producerInstanceId)
+        identity = try values.decode(ActorIdentity.self, forKey: .identity)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try encodeHex128Lower(producerInstanceId, to: &values, forKey: .producerInstanceId)
+        try values.encode(identity, forKey: .identity)
+    }
+}
+
+public struct MailboxStats: Codable, Sendable {
+    public let capacity: Int64
+    public let policy: String
+    public let droppedNew: UInt64
+    public let droppedOld: UInt64
+    public let coalesced: UInt64
+    public let droppedOnStop: UInt64
+
+    enum CodingKeys: String, CodingKey {
+        case capacity
+        case policy
+        case droppedNew = "dropped_new"
+        case droppedOld = "dropped_old"
+        case coalesced
+        case droppedOnStop = "dropped_on_stop"
+    }
+
+    public init(
+        capacity: Int64 = 0,
+        policy: String = "",
+        droppedNew: UInt64 = 0,
+        droppedOld: UInt64 = 0,
+        coalesced: UInt64 = 0,
+        droppedOnStop: UInt64 = 0
+    ) {
+        self.capacity = capacity
+        self.policy = policy
+        self.droppedNew = droppedNew
+        self.droppedOld = droppedOld
+        self.coalesced = coalesced
+        self.droppedOnStop = droppedOnStop
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        capacity = try decodeInt64Decimal(from: values, forKey: .capacity)
+        policy = try values.decode(String.self, forKey: .policy)
+        droppedNew = try decodeUInt64Decimal(from: values, forKey: .droppedNew)
+        droppedOld = try decodeUInt64Decimal(from: values, forKey: .droppedOld)
+        coalesced = try decodeUInt64Decimal(from: values, forKey: .coalesced)
+        droppedOnStop = try decodeUInt64Decimal(from: values, forKey: .droppedOnStop)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(String(capacity), forKey: .capacity)
+        try values.encode(policy, forKey: .policy)
+        try values.encode(String(droppedNew), forKey: .droppedNew)
+        try values.encode(String(droppedOld), forKey: .droppedOld)
+        try values.encode(String(coalesced), forKey: .coalesced)
+        try values.encode(String(droppedOnStop), forKey: .droppedOnStop)
     }
 }
 
@@ -1200,24 +1357,94 @@ public struct TraceStreamMismatch: Codable, Sendable {
     }
 }
 
+public struct SupervisorDetails: Codable, Sendable {
+    public let producerInstanceId: String
+    public let kind: String
+    public let actor: ActorIdentity?
+    public let owner: ActorIdentity?
+    public let role: String?
+    public let strategy: String
+    public let restarts: UInt64?
+    public let poolMembers: UInt64?
+
+    enum CodingKeys: String, CodingKey {
+        case producerInstanceId = "producer_instance_id"
+        case kind
+        case actor
+        case owner
+        case role
+        case strategy
+        case restarts
+        case poolMembers = "pool_members"
+    }
+
+    public init(
+        producerInstanceId: String = "00000000000000000000000000000000",
+        kind: String = "",
+        actor: ActorIdentity? = nil,
+        owner: ActorIdentity? = nil,
+        role: String? = nil,
+        strategy: String = "",
+        restarts: UInt64? = nil,
+        poolMembers: UInt64? = nil
+    ) {
+        self.producerInstanceId = producerInstanceId
+        self.kind = kind
+        self.actor = actor
+        self.owner = owner
+        self.role = role
+        self.strategy = strategy
+        self.restarts = restarts
+        self.poolMembers = poolMembers
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        producerInstanceId = try decodeHex128Lower(from: values, forKey: .producerInstanceId)
+        kind = try values.decode(String.self, forKey: .kind)
+        actor = try values.decode(ActorIdentity?.self, forKey: .actor)
+        owner = try values.decode(ActorIdentity?.self, forKey: .owner)
+        role = try values.decode(String?.self, forKey: .role)
+        strategy = try values.decode(String.self, forKey: .strategy)
+        restarts = try decodeOptionalUInt64Decimal(from: values, forKey: .restarts)
+        poolMembers = try decodeOptionalUInt64Decimal(from: values, forKey: .poolMembers)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try encodeHex128Lower(producerInstanceId, to: &values, forKey: .producerInstanceId)
+        try values.encode(kind, forKey: .kind)
+        try values.encode(actor, forKey: .actor)
+        try values.encode(owner, forKey: .owner)
+        try values.encode(role, forKey: .role)
+        try values.encode(strategy, forKey: .strategy)
+        try values.encode(restarts.map(String.init), forKey: .restarts)
+        try values.encode(poolMembers.map(String.init), forKey: .poolMembers)
+    }
+}
+
 public struct SupervisorRow: Codable, Sendable {
     public let depth: UInt16
     public let label: String
+    public let details: SupervisorDetails?
     public let state: String
 
     enum CodingKeys: String, CodingKey {
         case depth
         case label
+        case details
         case state
     }
 
     public init(
         depth: UInt16 = 0,
         label: String = "",
+        details: SupervisorDetails? = nil,
         state: String = ""
     ) {
         self.depth = depth
         self.label = label
+        self.details = details
         self.state = state
     }
 
@@ -1225,6 +1452,11 @@ public struct SupervisorRow: Codable, Sendable {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         depth = try values.decode(UInt16.self, forKey: .depth)
         label = try values.decode(String.self, forKey: .label)
+        if values.contains(.details) {
+            details = try values.decode(SupervisorDetails?.self, forKey: .details)
+        } else {
+            details = nil
+        }
         state = try values.decode(String.self, forKey: .state)
     }
 
@@ -1232,6 +1464,7 @@ public struct SupervisorRow: Codable, Sendable {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(depth, forKey: .depth)
         try values.encode(label, forKey: .label)
+        try values.encode(details, forKey: .details)
         try values.encode(state, forKey: .state)
     }
 }

@@ -16,6 +16,11 @@ mod coverage;
 mod host_admission;
 pub use coverage::{SourceCoverageCounter, SourceCoverageMap};
 mod host;
+mod source_paths;
+pub use source_paths::{
+    display_source_path, register_source_path, source_path_policy, SourcePathPolicy,
+    SourcePathScope,
+};
 
 /// Source entries checked against their host-operation admission profile.
 /// Each deterministic test is checked separately from its real-time siblings.
@@ -6667,19 +6672,12 @@ fn main() {
         );
         let symbols = hew_hir::dispatch::build_direct_call_symbol_index(&hir.module.items);
         let ids = [
-            tco.defs
-                .lookup_path("left.render.render_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("right.render.render_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("left.render.default_value")
-                .expect("declared"),
-            tco.defs
-                .lookup_path("right.render.default_value")
-                .expect("declared"),
-        ];
+            "left.render.render_value",
+            "right.render.render_value",
+            "left.render.default_value",
+            "right.render.default_value",
+        ]
+        .map(|path| tco.defs.lookup_path(path).expect("declared"));
         let projected: Vec<_> = ids
             .iter()
             .map(|id| {
@@ -6703,40 +6701,45 @@ fn main() {
         // impl. Its trait-method ID is the static lookup key, but its concrete
         // default-body declaration must drive the monomorphisation and remain
         // distinct for these same-leaf packages.
-        let defaults: Vec<_> = hir
+        let lowered = hew_sir::lower_module(&hir.module, tco);
+        assert!(
+            hew_sir::verify_module(&lowered.module).is_empty(),
+            "{:#?}",
+            lowered.statuses
+        );
+        let defaults: Vec<_> = lowered
             .module
-            .monomorphisations
+            .callables
             .iter()
-            .filter(|mono| mono.key.linker_symbol.ends_with("Box::provided"))
+            .filter(|callable| {
+                tco.defs
+                    .path(callable.declaration)
+                    .contains("::<default impl ")
+                    && tco.defs.path(callable.declaration).ends_with("::provided")
+            })
             .collect();
         assert_eq!(
             defaults.len(),
             2,
-            "each same-leaf default body must be monomorphized: {defaults:#?}"
+            "each same-leaf default must have a concrete SIR callable: {defaults:#?}"
         );
-        assert!(
-            defaults.iter().any(|mono| {
-                tco.defs.path(mono.key.declaration)
-                    == "left.render.Box::<default impl left.render.Render for left.render.Box<T>>::provided"
-            }),
-            "left default body must have its own synthetic implementation identity: {defaults:#?}"
-        );
-        assert!(
-            defaults.iter().any(|mono| {
-                tco.defs.path(mono.key.declaration)
-                    == "right.render.Box::<default impl right.render.Render for right.render.Box<T>>::provided"
-            }),
-            "right default body must have its own synthetic implementation identity: {defaults:#?}"
-        );
-        assert_ne!(defaults[0].mangled_name, defaults[1].mangled_name);
-        for mono in defaults {
+        for owner in ["left", "right"] {
+            assert!(defaults.iter().any(|callable| tco.defs.path(callable.declaration) == format!("{owner}.render.Box::<default impl {owner}.render.Render for {owner}.render.Box<T>>::provided")));
+        }
+        assert_ne!(defaults[0].symbol, defaults[1].symbol);
+        for callable in defaults {
+            let hew_sir::CallableInstance::Generic(key) = &callable.instance else {
+                panic!("default requires an exact generic instance");
+            };
+            let template = lowered
+                .module
+                .generic_templates
+                .iter()
+                .find(|template| template.id == key.template)
+                .expect("selected generic template");
             assert_eq!(
-                mono.mangled_name,
-                hew_hir::monomorph::function_monomorph_symbol(
-                    &mono.key.linker_symbol,
-                    &mono.key.type_args
-                ),
-                "generic direct dispatch must use the shared MonoKey linker-symbol projection"
+                callable.symbol,
+                hew_hir::monomorph::function_monomorph_symbol(&template.symbol, &key.type_args)
             );
         }
     }
@@ -8970,10 +8973,10 @@ mod source_analysis_batch_tests {
         let options = test_options();
         let mut batch = SourceAnalysisBatch::new(options.clone());
         let sources = [
-            "import greeting; fn first() -> i32 { greeting.greet() } fn main() {}",
-            "import greeting.{ greet as hello }; fn second() -> i32 { hello() } fn main() {}",
-            "import greeting.{ greet }; fn third() -> i32 { greet() } fn main() {}",
-            "import greeting.{ greet as invoke_greeting }; fn fourth<T>(value: T) -> T { value } fn main() { let result = fourth(invoke_greeting()); }",
+            "import greeting; fn consumer_whole_import() -> i32 { greeting.greet() } fn main() {}",
+            "import greeting.{ greet as hello }; fn consumer_aliased_import() -> i32 { hello() } fn main() {}",
+            "import greeting.{ greet }; fn consumer_named_import() -> i32 { greet() } fn main() {}",
+            "import greeting.{ greet as invoke_greeting }; fn consumer_generic_root<T>(value: T) -> T { value } fn main() { let result = consumer_generic_root(invoke_greeting()); }",
         ];
         for (index, source) in sources.iter().enumerate() {
             let label = dir.path().join(format!("consumer_{index}.hew"));
@@ -9053,14 +9056,14 @@ mod source_analysis_batch_tests {
         let mut batch = SourceAnalysisBatch::new(options.clone());
         let first_label = first.path().join("consumer.hew");
         assert_equivalent(
-            "import greeting; fn first() -> i32 { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> i32 { greeting.greet() }",
             first_label.to_str().unwrap(),
             &options,
             &mut batch,
         );
         let second_label = second.path().join("consumer.hew");
         assert_equivalent(
-            "import greeting; fn second() -> string { greeting.greet() }",
+            "import greeting; fn string_consumer() -> string { greeting.greet() }",
             second_label.to_str().unwrap(),
             &options,
             &mut batch,
@@ -9071,7 +9074,7 @@ mod source_analysis_batch_tests {
         );
         let mut proposed = SourceAnalysisBatch::new(options.clone());
         assert_equivalent(
-            "import greeting; fn first() -> string { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> string { greeting.greet() }",
             first_label.to_str().unwrap(),
             &options,
             &mut proposed,
@@ -9079,7 +9082,7 @@ mod source_analysis_batch_tests {
         // The old immutable snapshot is still valid and independently usable.
         let original_options = test_options();
         assert_equivalent(
-            "import greeting; fn first() -> i32 { greeting.greet() }",
+            "import greeting; fn integer_consumer() -> i32 { greeting.greet() }",
             first_label.to_str().unwrap(),
             &original_options,
             &mut batch,

@@ -13,7 +13,7 @@ use crate::wake::HewWaker;
 enum FileRequest {
     StreamRead(*mut crate::stream::HewStream),
     SinkWrite(*mut crate::stream::HewSink, Vec<u8>),
-    SinkFinish(*mut crate::stream::HewSink),
+    SinkFinish(hew_cabi::sink::PendingFinish),
     ReadFile(*const crate::file_resources::HewReadFile),
     WriteFile(*const crate::file_resources::HewWriteFile, Vec<u8>),
 }
@@ -24,13 +24,19 @@ enum FileRequest {
 unsafe impl Send for FileRequest {}
 
 impl FileRequest {
+    fn discard(self) {
+        if let Self::SinkFinish(pending) = self {
+            pending.finish();
+        }
+    }
     #[cfg(windows)]
     fn cancellation_handle(&self) -> Option<usize> {
         match self {
-            Self::SinkWrite(sink, _) | Self::SinkFinish(sink) => {
+            Self::SinkWrite(sink, _) => {
                 // SAFETY: this request retains the exclusive sink loan.
                 unsafe { (**sink).native_pipe_handle() }
             }
+            Self::SinkFinish(pending) => pending.native_pipe_handle(),
             Self::StreamRead(_) | Self::ReadFile(_) | Self::WriteFile(_, _) => None,
         }
     }
@@ -65,10 +71,10 @@ impl FileRequest {
                     i64::try_from(data.len()).expect("stream item size"),
                 ))
             }
-            Self::SinkFinish(sink) => {
+            Self::SinkFinish(pending) => {
                 let _ = crate::stream_error::take_last_error();
                 // SAFETY: the producer retains the sink loan until quiescence.
-                unsafe { (*sink).close() };
+                pending.finish();
                 match IoFailure::take_recorded() {
                     Some(failure) => Err(failure),
                     None => Ok(IoValue::Count(0)),
@@ -79,7 +85,7 @@ impl FileRequest {
 }
 
 pub(super) unsafe fn start_sink_finish(
-    sink: *mut crate::stream::HewSink,
+    pending: hew_cabi::sink::PendingFinish,
     waker: *const HewWaker,
 ) -> *const HewAsyncIo {
     // SAFETY: the caller retains the exclusive sink loan and supplies the waker.
@@ -87,7 +93,7 @@ pub(super) unsafe fn start_sink_finish(
         submit(
             shared_blocking_pool_opt(),
             waker,
-            Ok(FileRequest::SinkFinish(sink)),
+            Ok(FileRequest::SinkFinish(pending)),
         )
     }
 }
@@ -107,6 +113,7 @@ unsafe extern "C" fn run_file_job(context: *mut c_void) {
     {
         Ok(guard) => guard,
         Err(error) => {
+            request.discard();
             operation.complete(Err(IoFailure::from_io(
                 "register pipe cancellation",
                 &error,
@@ -115,7 +122,7 @@ unsafe extern "C" fn run_file_job(context: *mut c_void) {
         }
     };
     if !operation.is_pending() {
-        drop(request);
+        request.discard();
         return;
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| request.run()))
@@ -137,9 +144,12 @@ unsafe fn submit(
     let operation = unsafe { HewAsyncIo::new(waker) };
     match (pool, request) {
         (_, Err(error)) => operation.complete(Err(error)),
-        (None, Ok(_)) => operation.complete(Err(IoFailure::invalid(
-            "asynchronous file I/O requires an installed runtime",
-        ))),
+        (None, Ok(request)) => {
+            request.discard();
+            operation.complete(Err(IoFailure::invalid(
+                "asynchronous file I/O requires an installed runtime",
+            )));
+        }
         (Some(pool), Ok(request)) => {
             let job = Box::new(FileJob {
                 operation: IoProducer::new(Arc::clone(&operation)),
@@ -148,7 +158,11 @@ unsafe fn submit(
             // SAFETY: pool is installed for this call; the job is owned until
             // its sole callback runs. Runtime shutdown joins submitted work.
             if let Err(job) = unsafe { submit_owned(pool, run_file_job, job) } {
-                drop(job);
+                let FileJob {
+                    request,
+                    operation: _,
+                } = *job;
+                request.discard();
                 operation.complete(Err(IoFailure::invalid("file I/O pool is stopped")));
             }
         }

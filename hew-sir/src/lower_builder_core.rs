@@ -293,6 +293,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             (
                 CallableInstance::Monomorphic
                 | CallableInstance::SupervisorChild { .. }
+                | CallableInstance::SupervisorPoolCount { .. }
                 | CallableInstance::ActorConstruction { .. },
                 true,
             ) => {}
@@ -362,7 +363,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             bindings: self.source_bindings,
         };
         tasks::remove_empty_scopes(&mut function);
-        super::suspend::remove_bounded_entry_poll(&mut function);
         projection::complete_edge_partitions(
             &mut function,
             &self.service.aggregate_shapes,

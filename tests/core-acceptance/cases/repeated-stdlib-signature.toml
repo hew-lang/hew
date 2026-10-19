@@ -1,0 +1,11 @@
+[[case]]
+id = "repeated-stdlib-signature"
+intent = "Two imported modules retain the same source generic ordering contract and execute their independently specialized calls."
+source = "cases/repeated-stdlib-signature.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ac\n"
+stderr = ""
+exit = 0

@@ -6,7 +6,9 @@ type BrokenTicket {
 }
 
 impl BrokenTicket {
-    fn close(consume self) { panic(self.text); }
+    fn close(consume self) {
+        panic(self.text);
+    }
 }
 
 actor BrokenCleanup {
@@ -17,7 +19,7 @@ actor BrokenCleanup {
     receive fn work(ticket: BrokenTicket) {}
     #[on(crash)]
     fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
-        assert(info.code == 212);
+        assert(info.kind == CrashKind.Fault);
         failure.CrashAction.Restart
     }
 }

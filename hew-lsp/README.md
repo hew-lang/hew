@@ -25,19 +25,18 @@ Shipped IDE/LSP features for Hew source files include:
 
 ## Usage
 
-The language server is the standalone `hew-lsp` binary crate. The `hew` CLI
-also exposes `hew lsp` as a thin launcher that forwards all arguments to this
-binary.
+The language server is linked into the `hew` executable. Editors launch `hew`
+with the `lsp` argument; no sibling executable is required.
 
 From a source checkout, run:
 
 ```sh
-make hew-lsp
-target/debug/hew-lsp
+make hew-native
+target/debug/hew lsp
 ```
 
-For editor integrations, point your LSP client at the built `hew-lsp` binary
-or an installed Hew SDK.
+For editor integrations, use a matching installed Hew SDK and pass `lsp`
+before language-server options such as `--pkg-path`.
 
 See [`docs/dev/lsp-editor-setup.md`](../docs/dev/lsp-editor-setup.md) for the
 build/launch/VS Code walkthrough, and [`../editors/README.md`](../editors/README.md)

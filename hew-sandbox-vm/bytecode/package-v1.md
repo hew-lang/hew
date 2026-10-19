@@ -289,6 +289,9 @@ resumable frames, including during table growth.
 
 `result_member_shapes` carries variant descriptors for tuple result members,
 so operations such as map removal construct their checked `Option` result.
+`variant_result_shapes` projects the verified runtime variant contract's error
+record and optional error length descriptors. UTF-8 decode uses those exact
+shapes to return either text or the first invalid byte position and length.
 
 The `resources` table projects SIR release obligations. An authored record
 close carries its callable and exact `aggregates` shape index; the VM compares

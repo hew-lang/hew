@@ -31,7 +31,7 @@ actor Worker {
         assert(state.rows[0].values[0] == "UPDATED");
         assert(state.rows[0].values[1] == "ADDED");
         assert(state.sibling == "SIBLING");
-        assert(info.code != 0);
+        assert(info.kind == CrashKind.Fault);
         println("state preserved");
         CrashAction.Restart
     }

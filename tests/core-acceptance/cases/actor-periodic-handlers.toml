@@ -1,6 +1,6 @@
 [[case]]
 id = "actor-periodic-handlers"
-intent = "Periodic turns run for direct and supervised actors, rearm after child restart and release owned state on close."
+intent = "Periodic turns run for direct and supervised actors, rearm after child restart release owned state on close, and quiesce at main return even when accepted work constructs another actor."
 source = "cases/actor-periodic-handlers.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30

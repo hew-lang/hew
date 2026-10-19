@@ -86,6 +86,12 @@ impl Checker {
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
+        if args.iter().any(|arg| {
+            arg.name()
+                .is_some_and(|name| matches!(name.name.as_str(), "after" | "overdue"))
+        }) {
+            return self.check_actor_timer_view(view, args, span);
+        }
         let completes = view == "policy";
         let Some((target, on_full)) = self.delivery_view_args(view, args, span) else {
             return Ty::Error;
@@ -103,7 +109,7 @@ impl Checker {
             self.report_error(
                 TypeErrorKind::InvalidOperation,
                 &target.1,
-                "a delivery view requires a local actor reference".to_string(),
+                format!("a delivery view requires an actor value, found `{target_ty}`"),
             );
             return Ty::Error;
         }
@@ -169,6 +175,122 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one checked timer view validates its owner and ordered timing options"
+    )]
+    fn check_actor_timer_view(&mut self, view: &str, args: &[CallArg], span: &Span) -> Ty {
+        let Some(CallArg::Positional(target)) = args.first() else {
+            self.report_error(
+                TypeErrorKind::TimerTarget,
+                span,
+                "a timer requires mailbox(self, after: duration)".into(),
+            );
+            return Ty::Error;
+        };
+        if view != "mailbox"
+            || self.current_actor_type.is_none()
+            || !matches!(&target.0, Expr::Ident(name) if name.name.as_str() == "self")
+        {
+            self.report_error(
+                TypeErrorKind::TimerTarget,
+                &target.1,
+                "an actor-owned timer must target self through mailbox(self, after: duration)"
+                    .into(),
+            );
+            return Ty::Error;
+        }
+        let target_ty = self.synthesize(&target.0, &target.1);
+        let target_ty = self.subst.resolve(&target_ty);
+        let mut after = None;
+        let mut overdue = None;
+        let mut on_full = None;
+        for (index, arg) in args.iter().enumerate().skip(1) {
+            let CallArg::Named { name, value } = arg else {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "timer options must be named after, overdue or on_full".into(),
+                );
+                return Ty::Error;
+            };
+            let slot = match name.name.as_str() {
+                "after" => &mut after,
+                "overdue" => &mut overdue,
+                "on_full" => &mut on_full,
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &value.1,
+                        "timer options are after, overdue and on_full".into(),
+                    );
+                    return Ty::Error;
+                }
+            };
+            if slot.replace(index).is_some() {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    &value.1,
+                    "a timer option cannot be repeated".into(),
+                );
+                return Ty::Error;
+            }
+            if name.name.as_str() != "on_full" {
+                self.check_against(&value.0, &value.1, &Ty::Duration);
+            }
+        }
+        let Some(after) = after else {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a one-shot timer requires after: duration".into(),
+            );
+            return Ty::Error;
+        };
+        let mut policy = SendPolicy::DropNewest;
+        if let Some(index) = on_full {
+            let value = args[index].expr();
+            self.check_against(
+                &value.0,
+                &value.1,
+                &delivery::nominal(crate::KnownDecl::OnFull, Vec::new()),
+            );
+            policy = match &value.0 {
+                Expr::ContextVariant(variant) if variant.record.is_none() => {
+                    match variant.name.name.as_str() {
+                        "Reject" => SendPolicy::Reject,
+                        "DropNewest" => SendPolicy::DropNewest,
+                        "Wait" => {
+                            self.report_error(TypeErrorKind::TimerWait, &value.1, "a timer cannot wait for mailbox capacity; use .Reject or .DropNewest".into());
+                            return Ty::Error;
+                        }
+                        _ => return Ty::Error,
+                    }
+                }
+                _ => {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        &value.1,
+                        "a timer's on_full must be a constant OnFull variant".into(),
+                    );
+                    return Ty::Error;
+                }
+            };
+        }
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        self.named_argument_calls.insert(key.clone());
+        self.actor_delivery_calls.insert(
+            key,
+            ActorDeliveryCall::TimerView {
+                policy,
+                after,
+                overdue,
+            },
+        );
+        self.record_submission_suspension(span, false);
+        delivery::timer_view_type(target_ty, policy)
+    }
+
     pub(super) fn check_actor_delivery_method(
         &mut self,
         receiver: &Spanned<Expr>,
@@ -180,8 +302,9 @@ impl Checker {
         if let Some(result) = self.check_interceptor_method(receiver, ty, method, args, span) {
             return Some(result);
         }
-        if let Some((target, _)) =
-            delivery::sender_parts(ty).or_else(|| delivery::policy_view_parts(ty))
+        if let Some((target, _)) = delivery::sender_parts(ty)
+            .or_else(|| delivery::timer_view_parts(ty))
+            .or_else(|| delivery::policy_view_parts(ty))
         {
             // A lambda actor answers to `view(msg)` and nothing else: it
             // declares no named handler a method call could select.
@@ -244,7 +367,7 @@ impl Checker {
                 SpanKey::in_module(span, self.current_module_idx),
                 ActorDeliveryCall::Submit { policy: old_policy },
             );
-            self.record_submission_suspension(span, old_policy.may_suspend());
+            self.record_submission_suspension(span, true);
             return Some(delivery::result_type(ty.clone()));
         }
         if method != "to" || args.len() != 1 || args[0].name().is_some() {
@@ -269,7 +392,7 @@ impl Checker {
                 target_is_view: view.is_some(),
             },
         );
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         Some(delivery::result_type(delivery::message_type(
             target.clone(),
             payload.clone(),
@@ -310,7 +433,8 @@ impl Checker {
             return Ty::Error;
         };
         let receiver_ty = self.subst.resolve(receiver_ty);
-        let submitting_view = delivery::sender_parts(&receiver_ty);
+        let timer_view = delivery::timer_view_parts(&receiver_ty);
+        let submitting_view = delivery::sender_parts(&receiver_ty).or(timer_view);
         let (target, policy) = submitting_view.unwrap_or((&receiver_ty, SendPolicy::Reject));
         let through_view = submitting_view.is_some();
         // Private actor methods share the caller's state seat. Deferred closure
@@ -408,9 +532,13 @@ impl Checker {
         }
         self.actor_method_dispatch
             .insert(key, ActorMethodKind::Message { method, policy });
+        if timer_view.is_some() {
+            self.record_submission_suspension(span, false);
+            return delivery::nominal(crate::KnownDecl::Timer, Vec::new());
+        }
         // The call is the send: a `receive fn` without a reply submits at its
         // call site, under the policy its receiver view carries.
-        self.record_submission_suspension(span, policy.may_suspend());
+        self.record_submission_suspension(span, true);
         delivery::result_type(delivery::message_type(
             target.clone(),
             Ty::Tuple(payload),
@@ -502,7 +630,7 @@ impl Checker {
     /// `ActorError` carrying the handler's declared failure. A handler without
     /// a `fails` clause can never produce `Failed`, so its error parameter is
     /// the uninhabited `Never`.
-    fn completion_call_type(&mut self, method: crate::DefId, reply_ty: &Ty) -> Ty {
+    pub(super) fn completion_call_type(&mut self, method: crate::DefId, reply_ty: &Ty) -> Ty {
         let (success, failure) = match reply_ty.as_result() {
             Some((success, failure)) if self.receive_fails_methods.contains(&method) => {
                 (success.clone(), failure.clone())
@@ -732,6 +860,7 @@ impl Checker {
         let sealed = [
             crate::KnownDecl::Message,
             crate::KnownDecl::ActorMailbox,
+            crate::KnownDecl::ActorTimerMailbox,
             crate::KnownDecl::ActorPolicy,
             crate::KnownDecl::ActorRequest,
         ];

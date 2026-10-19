@@ -17,9 +17,8 @@
 //! - the caller binding is consumed at the send site — any later use
 //!   (`close()`, a second send) is refused with `UseAfterConsume`, the
 //!   double-close / racing-owner guard;
-//! - cross-node transfer is statically unreachable: `RemotePid` exposes
-//!   no receive-fn dispatch, and tell/ask payloads are
-//!   Serializable-enforced (pipe handles are not Serializable).
+//! - authenticated export refuses handle-bearing wire protocols: pipe handles
+//!   have no Serializable representation and must be supplied locally.
 
 mod support;
 
@@ -67,16 +66,13 @@ fn transition_watch_baseline_prints_transition() {
     run_machine_example("transition_watch_baseline", "Created -> Initialising\n");
 }
 
-/// The full cross-actor watch: the owner drives a Lifecycle machine in
-/// actor state, publishes transitions (attach snapshot first), the
-/// observer receives the pipe end through an actor message and selects
-/// with the `after` safety net, reacting to the Running edge and tearing
-/// down on the close-driven `None` arm.
+/// A subscription exposes its initial snapshot separately, then receives only
+/// committed transitions through select and ends when the owner closes.
 #[test]
 fn select_on_transition_example_runs_clean() {
     run_machine_example(
         "select_on_transition",
-        "Created -> Created\nCreated -> Initialising\nInitialising -> Running\nobserver: child is up\nwatch closed\n",
+        "Created -> Initialising\nInitialising -> Running\nobserver: child is up\nwatch closed\n",
     );
 }
 

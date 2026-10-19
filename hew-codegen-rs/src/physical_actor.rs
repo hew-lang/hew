@@ -6,19 +6,7 @@ use hew_mir::physical::{
     ActorId, ActorIngressAdapter, ActorOperation, SemActor, SemActorField, SemActorHandler,
     SemCoalesceFallback, SemFailureDisplay,
 };
-use hew_runtime::actor_native::HewSubmitStatus;
 use inkwell::types::StructType;
-
-/// One pre-publication body's failure exit inside `emit_actor_spawn`.
-struct SpawnFailure<'ctx> {
-    /// The block the failed status branches to; it releases what the body
-    /// left behind and then joins the spawn's completion.
-    block: BasicBlock<'ctx>,
-    status: IntValue<'ctx>,
-    /// Init leaves only the spawn-supplied fields; a start hook leaves the
-    /// complete state.
-    is_init: bool,
-}
 
 #[path = "physical_actor_ask.rs"]
 mod ask;
@@ -37,6 +25,34 @@ mod remote;
 
 #[path = "physical_actor_wait.rs"]
 mod wait;
+
+pub(super) fn caller_stamp_type(ctx: &Context) -> StructType<'_> {
+    let word = ctx.i64_type();
+    ctx.struct_type(&[word.into(), word.into(), word.into()], false)
+}
+
+fn sender_stamp<'ctx>(
+    ctx: &'ctx Context,
+    llvm: &Module<'ctx>,
+    builder: &Builder<'ctx>,
+    invocation: Option<PointerValue<'ctx>>,
+) -> CodegenResult<PointerValue<'ctx>> {
+    let ptr = ctx.ptr_type(AddressSpace::default());
+    let stamp = builder
+        .build_alloca(caller_stamp_type(ctx), "sender.stamp")
+        .llvm_ctx("allocate the outgoing caller stamp")?;
+    let (name, arguments): (_, Vec<BasicMetadataValueEnum<'ctx>>) = match invocation {
+        Some(state) => ("hew_coro_state_sender", vec![state.into(), stamp.into()]),
+        None => ("hew_local_sender", vec![stamp.into()]),
+    };
+    let parameters = vec![ptr.into(); arguments.len()];
+    let snapshot =
+        get_or_declare_external(llvm, name, ctx.void_type().fn_type(&parameters, false))?;
+    builder
+        .build_call(snapshot, &arguments, "")
+        .llvm_ctx("snapshot the sending execution owner")?;
+    Ok(stamp)
+}
 
 fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
@@ -474,12 +490,15 @@ pub(super) fn allocate<'ctx>(
 impl<'ctx> ModuleEmitter<'ctx, '_> {
     fn needs_process_runtime(&self) -> bool {
         !self.module.actors.is_empty()
+            || self.module.resources.iter().any(|resource| {
+                matches!(resource.release, hew_mir::physical::ResourceRelease::Sink)
+            })
             || self.module.functions.iter().flat_map(|function| &function.blocks).any(|block| {
-                if block.ops.iter().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. } | PhysicalOp::TaskRace { .. })) {
+                if block.ops.iter().any(|op| matches!(op, PhysicalOp::TaskSpawn { .. } | PhysicalOp::TaskInvoke { .. } | PhysicalOp::TaskRace { .. })) {
                     return true;
                 }
                 match &block.terminator {
-                    PhysicalTerminator::NativeIo { .. }
+                    PhysicalTerminator::NativeIo { .. } | PhysicalTerminator::ServiceAcquire { .. }
                     | PhysicalTerminator::Offload { .. }
                     // Content-backed stream operations offload producer work
                     // through the installed runtime's blocking pool.
@@ -1541,14 +1560,49 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         normal: &PhysicalEdge,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
+        if let ActorOperation::Identity { .. } = &operation {
+            let [ArgumentTransfer::Borrow(left), ArgumentTransfer::Borrow(right)] = transfers
+            else {
+                return Err(CodegenError::FailClosed(
+                    "actor identity requires two borrowed handles".into(),
+                ));
+            };
+            let result = result
+                .ok_or_else(|| CodegenError::FailClosed("actor identity has no result".into()))?;
+            let left = self.load(*left, "identity.left")?;
+            let right = self.load(*right, "identity.right")?;
+            let compare = get_or_declare_external(
+                self.llvm,
+                "hew_actor_handle_identical",
+                self.ctx
+                    .i32_type()
+                    .fn_type(&[left.get_type().into(), right.get_type().into()], false),
+            )?;
+            let status = call_value(
+                &self.builder,
+                compare,
+                &[left.into(), right.into()],
+                "identity.status",
+            )?
+            .into_int_value();
+            let equal = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::NE,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "identity.equal",
+                )
+                .llvm_ctx("compare actor identity")?;
+            let equal = self
+                .builder
+                .build_int_z_extend(equal, self.ctx.i8_type(), "identity.value")
+                .llvm_ctx("store the actor identity boolean")?;
+            self.store(result, equal.into())?;
+            return self.emit_result_edge(Some(result), normal);
+        }
         if let ActorOperation::LocalObservation { kind, .. } = &operation {
             return self.emit_local_observation(*kind, transfers, result, normal, unwind);
-        }
-        if let ActorOperation::RemoteSend { actor, message, .. } = &operation {
-            return self.emit_remote_send(*actor, *message, transfers, result, normal);
-        }
-        if let ActorOperation::RemoteObservation { kind, params, .. } = &operation {
-            return self.emit_remote_observation(*kind, params, transfers, result, normal);
         }
         match &operation {
             ActorOperation::CallStart(protocol) => {
@@ -1603,78 +1657,19 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "actor lifecycle requires one borrowed handle".into(),
                 ));
             };
-            let role = matches!(
-                target,
-                hew_mir::physical::LifecycleTarget::ActorRole(_)
-                    | hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-            );
             if matches!(operation, ActorOperation::AwaitStopped(_)) {
-                self.emit_actor_await_stopped(
-                    *source,
-                    role.then_some(matches!(
-                        target,
-                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                    )),
-                    unwind,
-                )?;
+                self.emit_actor_await_stopped(*source, unwind)?;
             } else if matches!(operation, ActorOperation::AwaitRestarted(_)) {
-                self.emit_actor_await_restarted(
-                    *source,
-                    matches!(
-                        target,
-                        hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-                    ),
-                    unwind,
-                )?;
-            } else if matches!(
-                target,
-                hew_mir::physical::LifecycleTarget::SupervisorRole(_)
-            ) {
-                let role = self.load(*source, "lifecycle.role")?.into_struct_value();
-                let owner = self
-                    .builder
-                    .build_extract_value(role, 0, "lifecycle.role.owner")
-                    .llvm_ctx("read nested role owner")?;
-                let slot = self
-                    .builder
-                    .build_extract_value(role, 1, "lifecycle.role.slot")
-                    .llvm_ctx("read nested role slot")?;
-                let request = get_or_declare_external(
-                    self.llvm,
-                    "hew_supervisor_native_role_request",
-                    self.ctx.void_type().fn_type(
-                        &[
-                            owner.get_type().into(),
-                            slot.get_type().into(),
-                            self.ctx.i32_type().into(),
-                        ],
-                        false,
-                    ),
-                )?;
-                let terminate = self.ctx.i32_type().const_int(
-                    u64::from(matches!(operation, ActorOperation::Terminate(_))),
-                    false,
-                );
-                self.builder
-                    .build_call(request, &[owner.into(), slot.into(), terminate.into()], "")
-                    .llvm_ctx("request nested supervisor transition")?;
+                self.emit_actor_await_restarted(*source, unwind)?;
             } else {
-                let value = self.load(*source, "lifecycle.handle")?;
-                let value = if role {
-                    self.resolve_role_handle(value.into_struct_value())?
-                } else {
-                    value.into_int_value()
-                };
+                let value = self.load(*source, "lifecycle.handle")?.into_int_value();
                 let symbol = match (&operation, target) {
-                    (
-                        ActorOperation::Stop(_),
-                        hew_mir::physical::LifecycleTarget::Actor(_)
-                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
-                    ) => "hew_actor_stop_native",
+                    (ActorOperation::Stop(_), hew_mir::physical::LifecycleTarget::Actor(_)) => {
+                        "hew_actor_stop_native"
+                    }
                     (
                         ActorOperation::Terminate(_),
-                        hew_mir::physical::LifecycleTarget::Actor(_)
-                        | hew_mir::physical::LifecycleTarget::ActorRole(_),
+                        hew_mir::physical::LifecycleTarget::Actor(_),
                     ) => "hew_actor_terminate_native",
                     (
                         ActorOperation::Stop(_),
@@ -1704,21 +1699,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             return self.emit_call_outcome(status, result, Some(normal), unwind);
         }
         let id = match &operation {
-            ActorOperation::LocalObservation { .. }
-            | ActorOperation::RemoteObservation { .. }
+            ActorOperation::Identity { .. }
+            | ActorOperation::LocalObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
             | ActorOperation::Stop(_)
             | ActorOperation::Terminate(_)
             | ActorOperation::AwaitStopped(_)
-            | ActorOperation::AwaitRestarted(_)
-            | ActorOperation::RemoteSend { .. } => {
+            | ActorOperation::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(id)
             | ActorOperation::SelfHandle(id)
             | ActorOperation::StreamStart { actor: id, .. }
-            | ActorOperation::Submit { actor: id, .. } => *id,
+            | ActorOperation::Submit { actor: id, .. }
+            | ActorOperation::TimerSchedule { actor: id, .. } => *id,
             ActorOperation::SupervisorSpawn(_)
             | ActorOperation::SupervisorChild { .. }
             | ActorOperation::SupervisorPoolView { .. } => ActorId(u32::MAX),
@@ -1747,15 +1742,14 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             })?;
         let retains_cleanup_fault = operation.retains_cleanup_fault();
         let status = match operation {
-            ActorOperation::LocalObservation { .. }
-            | ActorOperation::RemoteObservation { .. }
+            ActorOperation::Identity { .. }
+            | ActorOperation::LocalObservation { .. }
             | ActorOperation::CallStart(_)
             | ActorOperation::CallTake(_)
             | ActorOperation::Stop(_)
             | ActorOperation::Terminate(_)
             | ActorOperation::AwaitStopped(_)
-            | ActorOperation::AwaitRestarted(_)
-            | ActorOperation::RemoteSend { .. } => {
+            | ActorOperation::AwaitRestarted(_) => {
                 unreachable!("special boundary returned above")
             }
             ActorOperation::Spawn(_) => self.emit_actor_spawn(actor, &sources, result)?,
@@ -1768,11 +1762,22 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 let token = get_or_declare_external(
                     self.llvm,
                     "hew_actor_self_token",
-                    size_ty.fn_type(&[], false),
+                    size_ty.fn_type(&[self.ctx.ptr_type(AddressSpace::default()).into()], false),
                 )?;
                 let value = self
                     .builder
-                    .build_call(token, &[], "self.token")
+                    .build_call(
+                        token,
+                        &[self
+                            .frame
+                            .as_ref()
+                            .ok_or_else(|| {
+                                CodegenError::FailClosed("self handle lacks its invocation".into())
+                            })?
+                            .state
+                            .into()],
+                        "self.token",
+                    )
                     .llvm_ctx("read the running actor's own handle")?
                     .try_as_basic_value()
                     .basic()
@@ -1785,6 +1790,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             | ActorOperation::SupervisorPoolView { .. } => unreachable!("emitted above"),
             ActorOperation::StreamStart { message, .. } => {
                 self.emit_actor_stream_start(actor, message, &sources, unwind)?
+            }
+            ActorOperation::TimerSchedule { message, .. } => {
+                self.emit_actor_timer(actor, message, &sources, result)?
             }
             ActorOperation::Submit {
                 policy,
@@ -1836,7 +1844,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
         use hew_mir::physical::LocalObservationKind;
-        let [ArgumentTransfer::Move(target)] = transfers else {
+        let [ArgumentTransfer::Borrow(target)] = transfers else {
             return Err(CodegenError::FailClosed(
                 "local observation lacks its value target".into(),
             ));
@@ -1861,35 +1869,33 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         } else {
             ptr.const_null()
         };
-        let (symbol, return_type) = match kind {
-            LocalObservationKind::Link => ("hew_native_actor_link", Some(self.ctx.i32_type())),
-            LocalObservationKind::Monitor => {
-                ("hew_native_actor_monitor", Some(self.ctx.i32_type()))
-            }
-            LocalObservationKind::Unlink => ("hew_native_actor_unlink", None),
-            LocalObservationKind::Demonitor => ("hew_actor_demonitor", None),
-        };
-        let mut types = vec![target_value.get_type().into()];
-        let mut args = vec![target_value.into()];
-        if kind == LocalObservationKind::Monitor {
-            types.push(ptr.into());
-            args.push(id.into());
-        }
-        let function_type = return_type.map_or_else(
-            || self.ctx.void_type().fn_type(&types, false),
-            |ty| ty.fn_type(&types, false),
-        );
-        let function = get_or_declare_external(self.llvm, symbol, function_type)?;
-        if return_type.is_none() {
+        if matches!(
+            kind,
+            LocalObservationKind::Unlink | LocalObservationKind::Demonitor
+        ) {
+            let symbol = if kind == LocalObservationKind::Unlink {
+                "hew_native_actor_unlink"
+            } else {
+                "hew_actor_demonitor"
+            };
+            let function = get_or_declare_external(
+                self.llvm,
+                symbol,
+                self.ctx
+                    .void_type()
+                    .fn_type(&[target_value.get_type().into()], false),
+            )?;
             self.builder
-                .build_call(function, &args, "")
-                .llvm_ctx("remove local observation")?;
-            self.clear_owned(*target)?;
+                .build_call(function, &[target_value.into()], "")
+                .llvm_ctx("remove actor observation")?;
             return self.emit_result_edge(None, normal);
         }
-        let status =
-            call_value(&self.builder, function, &args, "observation.status")?.into_int_value();
-        self.clear_owned(*target)?;
+        let status = self.emit_actor_observation_wait(
+            target_value,
+            kind == LocalObservationKind::Link,
+            id,
+            unwind,
+        )?;
         let typed = self.ctx.append_basic_block(self.value, "observation.typed");
         let fault = self.ctx.append_basic_block(self.value, "observation.fault");
         let failed = self
@@ -2008,6 +2014,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         self.emit_result_edge(Some(result), normal)
     }
 
+    pub(super) fn sender_stamp(&self) -> CodegenResult<PointerValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("checked actor send lacks its invocation identity".into())
+        })?;
+        sender_stamp(self.ctx, self.llvm, &self.builder, Some(frame.state))
+    }
+
     fn emit_actor_spawn(
         &self,
         actor: &SemActor,
@@ -2072,195 +2085,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .llvm_ctx("publish spawn-supplied actor field")?;
         }
         let ptr = self.ctx.ptr_type(AddressSpace::default());
-        // Init and then `#[on(start)]` run before publication; a fault in
-        // either fails the spawn. Init releases the deferred seats it
-        // initialized and its own arguments before reporting, so its failure
-        // destroys only the spawn-supplied fields; a start fault after init
-        // leaves complete state for the ordinary destructor.
-        let bodies: Vec<_> = actor.init.iter().chain(&actor.start).copied().collect();
-        let init_failure = if bodies.is_empty() {
-            None
-        } else {
-            let joined = self
-                .ctx
-                .append_basic_block(self.value, "actor.spawn.complete");
-            let mut failure_edges: Vec<(IntValue<'ctx>, BasicBlock<'ctx>)> = Vec::new();
-            let mut cleanups: Vec<SpawnFailure<'ctx>> = Vec::new();
-            for body in bodies {
-                let callable = callable(self.module, body)?;
-                let is_init = Some(body) == actor.init;
-                let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
-                if is_init {
-                    for (source, parameter) in sources
-                        .iter()
-                        .skip(spawn_fields.len())
-                        .zip(callable.params.iter().skip(1))
-                    {
-                        arguments.push(match parameter.carrier {
-                            ParamCarrier::Direct => self.load(*source, "init.argument")?.into(),
-                            ParamCarrier::Indirect => self.slots[source.0 as usize].into(),
-                        });
-                    }
-                }
-                arguments.push(self.active_fault.into());
-                let status = if callable.is_resumable {
-                    self.emit_resumable_call(body, &arguments, &[])?
-                } else {
-                    self.builder
-                        .build_call(self.functions[&body], &arguments, "actor.init.status")
-                        .llvm_ctx("initialize actor before publication")?
-                        .try_as_basic_value()
-                        .basic()
-                        .unwrap()
-                        .into_int_value()
-                };
-                let initialized = self.ctx.append_basic_block(self.value, "actor.initialized");
-                let failed = self.ctx.append_basic_block(
-                    self.value,
-                    if is_init {
-                        "actor.init.failed"
-                    } else {
-                        "actor.start.failed"
-                    },
-                );
-                let ok = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        status,
-                        self.ctx.i32_type().const_zero(),
-                        "actor.init.ok",
-                    )
-                    .llvm_ctx("check actor initialization")?;
-                self.builder
-                    .build_conditional_branch(ok, initialized, failed)
-                    .llvm_ctx("publish only successfully initialized actors")?;
-                cleanups.push(SpawnFailure {
-                    block: failed,
-                    status,
-                    is_init,
-                });
-                self.builder.position_at_end(initialized);
-            }
-            let initialized = self.builder.get_insert_block().unwrap();
-            // Pairs with `hew_actor_payload_alloc` above: the wrapper carries a
-            // size header, so releasing it through libc `free` would corrupt
-            // the heap.
-            let free = external_drop(self.ctx, self.llvm, "hew_actor_payload_free")?;
-            for SpawnFailure {
-                block: failed,
-                status,
-                is_init,
-            } in cleanups
-            {
-                self.builder.position_at_end(failed);
-                self.builder
-                    .build_store(self.active_status, status)
-                    .llvm_ctx("retain actor initialization fault status")?;
-                if is_init {
-                    for (index, field) in spawn_fields.iter().rev() {
-                        let Some(action) = self
-                            .module
-                            .actor_recipes
-                            .get(&field.ty)
-                            .and_then(|recipe| recipe.destroy)
-                        else {
-                            continue;
-                        };
-                        let field_layout =
-                            self.module.target.layout(&field.ty).ok_or_else(|| {
-                                CodegenError::FailClosed("actor field lacks its layout".into())
-                            })?;
-                        let slot = self
-                            .builder
-                            .build_struct_gep(state_repr, state, *index, "spawn.field.failed")
-                            .llvm_ctx("address spawn-supplied actor field")?;
-                        let loaded = self
-                            .builder
-                            .build_load(
-                                llvm_type(self.ctx, &field_layout.repr)?,
-                                slot,
-                                "spawn.field.value",
-                            )
-                            .llvm_ctx("load spawn-supplied actor field")?;
-                        let flag = state_field_initialized(
-                            self.ctx,
-                            &self.builder,
-                            state,
-                            layout,
-                            *index,
-                        )?;
-                        self.builder
-                            .build_store(flag, self.ctx.bool_type().const_zero())
-                            .llvm_ctx("consume failed actor init field")?;
-                        self.release_loaded(loaded, field_layout, action)?;
-                    }
-                } else {
-                    for (index, field) in actor.fields.iter().enumerate().rev() {
-                        let Some(action) = self.module.actor_recipes[&field.ty].destroy else {
-                            continue;
-                        };
-                        let index = u32::try_from(index).map_err(|_| {
-                            CodegenError::FailClosed("actor field exceeds u32".into())
-                        })?;
-                        let flag =
-                            state_field_initialized(self.ctx, &self.builder, state, layout, index)?;
-                        let present = self
-                            .builder
-                            .build_load(
-                                self.ctx.bool_type(),
-                                flag,
-                                "spawn.failed.field.initialized",
-                            )
-                            .llvm_ctx("read failed actor field initialization")?
-                            .into_int_value();
-                        let release = self
-                            .ctx
-                            .append_basic_block(self.value, "spawn.failed.field.release");
-                        let next = self
-                            .ctx
-                            .append_basic_block(self.value, "spawn.failed.field.next");
-                        self.builder
-                            .build_conditional_branch(present, release, next)
-                            .llvm_ctx("skip absent failed actor field")?;
-                        self.builder.position_at_end(release);
-                        self.builder
-                            .build_store(flag, self.ctx.bool_type().const_zero())
-                            .llvm_ctx("consume failed actor field")?;
-                        let slot = self
-                            .builder
-                            .build_struct_gep(state_repr, state, index, "spawn.failed.field")
-                            .llvm_ctx("address failed actor field")?;
-                        let field_layout =
-                            self.module.target.layout(&field.ty).ok_or_else(|| {
-                                CodegenError::FailClosed("actor field lacks its layout".into())
-                            })?;
-                        let loaded = self
-                            .builder
-                            .build_load(
-                                llvm_type(self.ctx, &field_layout.repr)?,
-                                slot,
-                                "spawn.failed.field.value",
-                            )
-                            .llvm_ctx("load failed actor field")?;
-                        self.release_loaded(loaded, field_layout, action)?;
-                        self.builder
-                            .build_unconditional_branch(next)
-                            .llvm_ctx("finish failed actor field release")?;
-                        self.builder.position_at_end(next);
-                    }
-                }
-                self.builder
-                    .build_call(free, &[state.into()], "")
-                    .llvm_ctx("free unpublished actor state")?;
-                self.builder
-                    .build_unconditional_branch(joined)
-                    .llvm_ctx("propagate actor init failure")?;
-                failure_edges.push((status, self.builder.get_insert_block().unwrap()));
-            }
-            self.builder.position_at_end(initialized);
-            Some((failure_edges, joined))
-        };
         let target = TargetData::create(&self.module.target.data_layout);
         let size_ty = self.ctx.ptr_sized_int_type(&target, None);
         let periodic_ty = periodic_handler_type(self.ctx);
@@ -2302,7 +2126,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let spawn = get_or_declare_external(
             self.llvm,
-            "hew_actor_spawn_native",
+            "hew_actor_construct_native",
             size_ty.fn_type(
                 &[
                     ptr.into(),
@@ -2313,8 +2137,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
-                    size_ty.into(),
-                    ptr.into(),
                     size_ty.into(),
                     ptr.into(),
                     ptr.into(),
@@ -2394,8 +2216,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     size_ty
                         .const_int(actor.max_heap_bytes.unwrap_or(0), false)
                         .into(),
-                    periodic_table.into(),
-                    size_ty.const_int(u64::from(periodic_count), false).into(),
                     callback("sys_dispatch")?.into(),
                     if actor.crash.is_some() {
                         callback("on_crash")?
@@ -2423,7 +2243,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 ],
                 "spawn.token",
             )
-            .llvm_ctx("publish initialized actor")?
+            .llvm_ctx("reserve actor identity and cleanup")?
             .try_as_basic_value()
             .basic()
             .unwrap()
@@ -2437,45 +2257,158 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             release::drain(&self.value_emitter(), Some(frame), cursor)?;
         }
         self.store(result, token.into())?;
-        let failed = self
+        let missing = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
                 token,
                 size_ty.const_zero(),
-                "spawn.failed",
+                "spawn.missing",
+            )
+            .llvm_ctx("check actor reservation")?;
+        let unavailable = self.ctx.append_basic_block(self.value, "spawn.unavailable");
+        let initialize = self.ctx.append_basic_block(self.value, "spawn.initialize");
+        let rollback = self.ctx.append_basic_block(self.value, "spawn.rollback");
+        let complete = self.ctx.append_basic_block(self.value, "spawn.complete");
+        self.builder
+            .build_conditional_branch(missing, unavailable, initialize)
+            .llvm_ctx("enter actor construction")?;
+        self.builder.position_at_end(unavailable);
+        // Reservation consumed state, but init has not consumed its parameters.
+        for source in sources.iter().skip(spawn_fields.len()).rev() {
+            let storage = self.storage(*source)?;
+            if let Some(action) = self
+                .module
+                .actor_recipes
+                .get(&storage.ty)
+                .and_then(|recipe| recipe.destroy)
+            {
+                self.release_loaded(
+                    self.load(*source, "spawn.unused.init.argument")?,
+                    &storage.layout,
+                    action,
+                )?;
+            }
+        }
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish refused actor construction")?;
+        let unavailable_end = self.builder.get_insert_block().unwrap();
+        self.builder.position_at_end(initialize);
+        for body in actor.init.iter().chain(&actor.start).copied() {
+            let callable = callable(self.module, body)?;
+            let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![state.into()];
+            if Some(body) == actor.init {
+                for (source, parameter) in sources
+                    .iter()
+                    .skip(spawn_fields.len())
+                    .zip(callable.params.iter().skip(1))
+                {
+                    arguments.push(match parameter.carrier {
+                        ParamCarrier::Direct => self.load(*source, "init.argument")?.into(),
+                        ParamCarrier::Indirect => self.slots[source.0 as usize].into(),
+                    });
+                }
+            }
+            arguments.push(self.active_fault.into());
+            let status = if callable.is_resumable {
+                self.emit_resumable_call(body, &arguments, &[])?
+            } else {
+                call_value(
+                    &self.builder,
+                    self.functions[&body],
+                    &arguments,
+                    "actor.init.status",
+                )?
+                .into_int_value()
+            };
+            let next = self.ctx.append_basic_block(self.value, "actor.initialized");
+            let ok = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_zero(),
+                    "actor.init.ok",
+                )
+                .llvm_ctx("check actor initialization")?;
+            self.builder
+                .build_conditional_branch(ok, next, rollback)
+                .llvm_ctx("select construction rollback")?;
+            self.builder.position_at_end(next);
+        }
+        let construction = self
+            .frame
+            .as_ref()
+            .ok_or_else(|| CodegenError::FailClosed("construction lacks its invocation".into()))?
+            .state;
+        let publish = get_or_declare_external(
+            self.llvm,
+            "hew_actor_publish_native",
+            self.ctx.i32_type().fn_type(
+                &[
+                    size_ty.into(),
+                    ptr.into(),
+                    size_ty.into(),
+                    ptr.into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let status = call_value(
+            &self.builder,
+            publish,
+            &[
+                token.into(),
+                periodic_table.into(),
+                size_ty.const_int(u64::from(periodic_count), false).into(),
+                construction.into(),
+                self.active_fault.into(),
+            ],
+            "spawn.publication.status",
+        )?
+        .into_int_value();
+        let ok = self
+            .builder
+            .build_int_compare(
+                IntPredicate::EQ,
+                status,
+                self.ctx.i32_type().const_zero(),
+                "spawn.published",
             )
             .llvm_ctx("check actor publication")?;
-        let status = self
+        self.builder
+            .build_conditional_branch(ok, complete, rollback)
+            .llvm_ctx("publish or roll back actor")?;
+        let published_end = self.builder.get_insert_block().unwrap();
+        self.builder.position_at_end(rollback);
+        let abort = get_or_declare_external(
+            self.llvm,
+            "hew_actor_abort_construction",
+            self.ctx
+                .void_type()
+                .fn_type(&[size_ty.into(), ptr.into()], false),
+        )?;
+        self.builder
+            .build_call(abort, &[token.into(), construction.into()], "")
+            .llvm_ctx("return construction to terminal cleanup")?;
+        self.emit_actor_wait(result, None, true)?;
+        self.builder
+            .build_unconditional_branch(complete)
+            .llvm_ctx("finish construction rollback")?;
+        let rollback_end = self.builder.get_insert_block().unwrap();
+        self.builder.position_at_end(complete);
+        let outcome = self
             .builder
-            .build_select(
-                failed,
-                self.ctx.i32_type().const_int(1, false),
-                self.ctx.i32_type().const_zero(),
-                "spawn.status",
-            )
-            .llvm_ctx("select actor publication status")?
-            .into_int_value();
-        if let Some((failure_edges, joined)) = init_failure {
-            let published = self.builder.get_insert_block().ok_or_else(|| {
-                CodegenError::FailClosed("actor publication has no LLVM block".into())
-            })?;
-            self.builder
-                .build_unconditional_branch(joined)
-                .llvm_ctx("join actor publication outcome")?;
-            self.builder.position_at_end(joined);
-            let result = self
-                .builder
-                .build_phi(self.ctx.i32_type(), "actor.spawn.status")
-                .llvm_ctx("join initialization and publication statuses")?;
-            for (failure_status, block) in &failure_edges {
-                result.add_incoming(&[(failure_status, *block)]);
-            }
-            result.add_incoming(&[(&status, published)]);
-            Ok(result.as_basic_value().into_int_value())
-        } else {
-            Ok(status)
-        }
+            .build_phi(self.ctx.i32_type(), "spawn.status")
+            .llvm_ctx("join actor construction")?;
+        outcome.add_incoming(&[
+            (&self.ctx.i32_type().const_int(1, false), unavailable_end),
+            (&self.ctx.i32_type().const_int(1, false), rollback_end),
+            (&self.ctx.i32_type().const_zero(), published_end),
+        ]);
+        Ok(outcome.as_basic_value().into_int_value())
     }
 
     /// The request waits for mailbox capacity like a `.Wait` submission. A
@@ -2621,6 +2554,157 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(outcome.as_basic_value().into_int_value())
     }
 
+    fn emit_actor_timer(
+        &self,
+        actor: &SemActor,
+        message: u32,
+        sources: &[StorageId],
+        result: Option<StorageId>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let [target, after, overdue, has_overdue, payload] = sources else {
+            return Err(CodegenError::FailClosed(
+                "timer requires its owner, timing and payload".into(),
+            ));
+        };
+        let result = result.ok_or_else(|| {
+            CodegenError::FailClosed("timer lacks its cancellation handle".into())
+        })?;
+        let handler = actor
+            .handlers
+            .iter()
+            .find(|handler| handler.message_id == message && handler.owes_no_reply())
+            .ok_or_else(|| {
+                CodegenError::FailClosed("timer lost its exact handler protocol".into())
+            })?;
+        let wrapper_ty = message_type(self.module, self.ctx, handler)?;
+        let target_data = TargetData::create(&self.module.target.data_layout);
+        let size_ty = self.ctx.ptr_sized_int_type(&target_data, None);
+        let size = target_data.get_abi_size(&wrapper_ty);
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let allocate = get_or_declare_external(
+            self.llvm,
+            "hew_actor_payload_try_alloc",
+            ptr.fn_type(&[size_ty.into()], false),
+        )?;
+        let wrapper = call_value(
+            &self.builder,
+            allocate,
+            &[size_ty.const_int(size, false).into()],
+            "timer.wrapper",
+        )?
+        .into_pointer_value();
+        let failed = self.ctx.append_basic_block(self.value, "timer.failed");
+        let allocated = self.ctx.append_basic_block(self.value, "timer.allocated");
+        let accepted = self.ctx.append_basic_block(self.value, "timer.accepted");
+        let done = self.ctx.append_basic_block(self.value, "timer.done");
+        let missing = self
+            .builder
+            .build_is_null(wrapper, "timer.no_memory")
+            .llvm_ctx("check timer wrapper allocation")?;
+        self.builder
+            .build_conditional_branch(missing, failed, allocated)
+            .llvm_ctx("route timer allocation")?;
+        self.builder.position_at_end(allocated);
+        self.builder
+            .build_store(wrapper, self.ctx.i8_type().const_int(1, false))
+            .llvm_ctx("initialize timer payload ownership")?;
+        let fields = self.load(*payload, "timer.payload")?.into_struct_value();
+        for (index, ty) in handler.params.iter().enumerate() {
+            let index = u32::try_from(index)
+                .map_err(|_| CodegenError::FailClosed("timer field index overflow".into()))?;
+            let slot = self
+                .builder
+                .build_struct_gep(wrapper_ty, wrapper, index + 1, "timer.field")
+                .llvm_ctx("address timer field")?;
+            let value = self
+                .builder
+                .build_extract_value(fields, index, "timer.value")
+                .llvm_ctx("read timer field")?;
+            let layout =
+                self.module.target.layout(ty).ok_or_else(|| {
+                    CodegenError::FailClosed("timer field lacks its layout".into())
+                })?;
+            self.value_emitter().store_value(slot, layout, value)?;
+        }
+        let schedule = get_or_declare_external(
+            self.llvm,
+            "hew_actor_timer_new",
+            ptr.fn_type(
+                &[
+                    size_ty.into(),
+                    self.ctx.i32_type().into(),
+                    ptr.into(),
+                    size_ty.into(),
+                    ptr.into(),
+                    ptr.into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.bool_type().into(),
+                    ptr.into(),
+                ],
+                false,
+            ),
+        )?;
+        let drop = self
+            .llvm
+            .get_function(&message_symbol(actor.id, message))
+            .ok_or_else(|| CodegenError::FailClosed("timer lacks its payload destructor".into()))?;
+        let timer = call_value(
+            &self.builder,
+            schedule,
+            &[
+                self.load(*target, "timer.owner")?.into(),
+                self.ctx
+                    .i32_type()
+                    .const_int(u64::from(message), false)
+                    .into(),
+                wrapper.into(),
+                size_ty.const_int(size, false).into(),
+                drop.as_global_value().as_pointer_value().into(),
+                message_release(self.llvm, self.ctx, actor.id, message).into(),
+                self.load(*after, "timer.after")?.into(),
+                self.load(*overdue, "timer.overdue")?.into(),
+                self.load(*has_overdue, "timer.has_overdue")?.into(),
+                self.frame
+                    .as_ref()
+                    .ok_or_else(|| CodegenError::FailClosed("timer lacks its invocation".into()))?
+                    .state
+                    .into(),
+            ],
+            "timer.handle",
+        )?
+        .into_pointer_value();
+        let missing = self
+            .builder
+            .build_is_null(timer, "timer.not_scheduled")
+            .llvm_ctx("check timer registration")?;
+        self.builder
+            .build_conditional_branch(missing, failed, accepted)
+            .llvm_ctx("route timer registration")?;
+        self.builder.position_at_end(accepted);
+        self.store(result, timer.into())?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish accepted timer")?;
+        self.builder.position_at_end(failed);
+        self.initialize_active_fault(hew_runtime::internal::types::HEW_TRAP_ACTOR_SEND_FAILED)?;
+        self.discard_pending_message(*payload)?;
+        let failed_end = self.builder.get_insert_block().unwrap();
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish failed timer")?;
+        self.builder.position_at_end(done);
+        let status = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "timer.status")
+            .llvm_ctx("join timer status")?;
+        status.add_incoming(&[
+            (&self.ctx.i32_type().const_zero(), accepted),
+            (&self.ctx.i32_type().const_int(1, false), failed_end),
+        ]);
+        Ok(status.as_basic_value().into_int_value())
+    }
+
     #[expect(
         clippy::too_many_arguments,
         reason = "typed submission operands and cleanup edge"
@@ -2635,8 +2719,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         destination: StorageId,
         unwind: Option<&PhysicalEdge>,
     ) -> CodegenResult<()> {
-        use hew_types::actor_delivery::SendPolicy;
-
         let ResolvedTy::Named { args, .. } = message_ty else {
             return Err(CodegenError::FailClosed(
                 "message has no typed payload".into(),
@@ -2661,13 +2743,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .build_extract_value(object, 0, "submission.target")
             .llvm_ctx("read message target")?;
-        // A role addresses its actor through the supervisor: resolve the
-        // current incarnation here, at the send.
-        let role = args[0]
-            .is_builtin(hew_types::BuiltinType::ChildRef)
-            .then(|| self.resolve_role(target.into_struct_value()))
-            .transpose()?;
-        let target = role.map_or(target, |(handle, _)| handle.into());
         let member = self
             .builder
             .build_extract_value(object, 1, "submission.member")
@@ -2683,55 +2758,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let size = target_data.get_abi_size(&wrapper_ty);
         let ptr = self.ctx.ptr_type(AddressSpace::default());
         let submitted = self.ctx.append_basic_block(self.value, "submission.result");
-        // A role with no live occupant never allocates a wrapper: the message
-        // stays with the sender and the refusal names why, spent or restarting.
-        let vacant = role
-            .map(|(_, tag)| {
-                let live = self
-                    .ctx
-                    .append_basic_block(self.value, "submission.role.live");
-                let vacant = self
-                    .ctx
-                    .append_basic_block(self.value, "submission.role.vacant");
-                let occupied = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        self.ctx.i32_type().const_zero(),
-                        "submission.role.occupied",
-                    )
-                    .llvm_ctx("classify the role's occupant")?;
-                self.builder
-                    .build_conditional_branch(occupied, live, vacant)
-                    .llvm_ctx("send only to an occupied role")?;
-                self.builder.position_at_end(vacant);
-                let spent = self
-                    .builder
-                    .build_int_compare(
-                        IntPredicate::EQ,
-                        tag,
-                        self.ctx.i32_type().const_int(2, false),
-                        "submission.role.spent",
-                    )
-                    .llvm_ctx("separate a spent role from a restarting one")?;
-                let status = self
-                    .builder
-                    .build_select(
-                        spent,
-                        submit_status(self.ctx, HewSubmitStatus::RoleSpent),
-                        submit_status(self.ctx, HewSubmitStatus::Closed),
-                        "submission.role.status",
-                    )
-                    .llvm_ctx("report why the role took no message")?
-                    .into_int_value();
-                self.builder
-                    .build_unconditional_branch(submitted)
-                    .llvm_ctx("return the vacant role refusal")?;
-                self.builder.position_at_end(live);
-                CodegenResult::Ok((status, vacant))
-            })
-            .transpose()?;
         let allocate = get_or_declare_external(
             self.llvm,
             "hew_actor_payload_try_alloc",
@@ -2785,23 +2811,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 })?;
             self.value_emitter().store_value(slot, layout, field)?;
         }
-        let submit = get_or_declare_external(
-            self.llvm,
-            "hew_actor_submit_native",
-            self.ctx.i32_type().fn_type(
-                &[
-                    size_ty.into(),
-                    self.ctx.i32_type().into(),
-                    ptr.into(),
-                    size_ty.into(),
-                    ptr.into(),
-                    self.ctx.i32_type().into(),
-                    ptr.into(),
-                    ptr.into(),
-                ],
-                false,
-            ),
-        )?;
         let drop = self
             .llvm
             .get_function(&message_symbol(actor.id, handler.message_id))
@@ -2815,50 +2824,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             size_ty.const_int(size, false).into(),
             drop.as_global_value().as_pointer_value().into(),
         ];
-        let status = if policy == SendPolicy::Wait {
-            self.emit_actor_send_wait(
-                &request,
-                message_release(self.llvm, self.ctx, actor.id, handler.message_id),
-                source,
-                unwind,
-                false,
-            )?
-        } else {
-            let mut args = request.to_vec();
-            let discarded = self
-                .builder
-                .build_alloca(ptr, "submission.discarded")
-                .llvm_ctx("allocate discarded payload cursor")?;
-            self.builder
-                .build_store(discarded, ptr.const_null())
-                .llvm_ctx("initialize discarded payload cursor")?;
-            args.push(
-                self.ctx
-                    .i32_type()
-                    .const_int(
-                        if policy == SendPolicy::DropNewest {
-                            hew_runtime::actor_native::SUBMIT_DROP_NEWEST as u64
-                        } else {
-                            0
-                        },
-                        false,
-                    )
-                    .into(),
-            );
-            args.push(message_release(self.llvm, self.ctx, actor.id, handler.message_id).into());
-            args.push(discarded.into());
-            let status =
-                call_value(&self.builder, submit, &args, "submission.status")?.into_int_value();
-            if let Some(frame) = &self.frame {
-                let cursor = self
-                    .builder
-                    .build_load(ptr, discarded, "submission.discarded.cursor")
-                    .llvm_ctx("take discarded payload cursor")?
-                    .into_pointer_value();
-                release::drain(&self.value_emitter(), Some(frame), cursor)?;
-            }
-            status
-        };
+        let dispatch = self
+            .llvm
+            .get_function(&symbol(actor.id, "dispatch"))
+            .ok_or_else(|| {
+                CodegenError::FailClosed("submission lacks its actor dispatch key".into())
+            })?;
+        let (status, refused, discarded) = self.emit_owned_actor_submission(
+            &request,
+            message_release(self.llvm, self.ctx, actor.id, handler.message_id),
+            source,
+            unwind,
+            policy,
+            dispatch.as_global_value().as_pointer_value(),
+            true,
+        )?;
         let admission_block = self.builder.get_insert_block().unwrap();
         self.builder
             .build_unconditional_branch(submitted)
@@ -2869,23 +2849,52 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_phi(self.ctx.i32_type(), "submission.outcome")
             .llvm_ctx("join submission status")?;
         outcome.add_incoming(&[
-            (&submit_status(self.ctx, HewSubmitStatus::Oom), oom),
+            (
+                &self.ctx.i32_type().const_int(
+                    hew_runtime::internal::types::AskError::SendFailed as u64,
+                    false,
+                ),
+                oom,
+            ),
             (&status, admission_block),
         ]);
-        if let Some((status, block)) = vacant {
-            outcome.add_incoming(&[(&status, block)]);
-        }
+
+        let refusal = self
+            .builder
+            .build_phi(self.ctx.bool_type(), "submission.refusal")
+            .llvm_ctx("join refusal evidence")?;
+        let dropped = self
+            .builder
+            .build_phi(self.ctx.bool_type(), "submission.discarded")
+            .llvm_ctx("join discard outcome")?;
+        refusal.add_incoming(&[
+            (&self.ctx.bool_type().const_int(1, false), oom),
+            (&refused, admission_block),
+        ]);
+        dropped.add_incoming(&[
+            (&self.ctx.bool_type().const_zero(), oom),
+            (&discarded, admission_block),
+        ]);
+
         self.write_actor_delivery_result(
             outcome.as_basic_value().into_int_value(),
+            refusal.as_basic_value().into_int_value(),
+            dropped.as_basic_value().into_int_value(),
             object,
             result_ty,
             destination,
         )
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "typed admission evidence and original message"
+    )]
     fn write_actor_delivery_result(
         &self,
         status: IntValue<'ctx>,
+        refused: IntValue<'ctx>,
+        discarded: IntValue<'ctx>,
         message: inkwell::values::StructValue<'ctx>,
         result_ty: &ResolvedTy,
         destination: StorageId,
@@ -2895,72 +2904,58 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .variant_glue
             .iter()
             .find(|glue| glue.ty == *result_ty)
-            .ok_or_else(|| {
-                CodegenError::FailClosed("submission result has no variant recipe".into())
-            })?;
+            .ok_or_else(|| CodegenError::FailClosed("submission lacks its result recipe".into()))?;
         let delivery_ty = &result.variants[0].fields[0].ty;
-        let failure_ty = &result.variants[1].fields[0].ty;
+        let error_ty = &result.variants[1].fields[0].ty;
+        let error = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *error_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("submission lacks its ActorError recipe".into())
+            })?;
+        let failure_ty = &error.variants[0].fields[0].ty;
         let failure = self
             .module
             .aggregate_glue
             .iter()
             .find(|glue| glue.ty == *failure_ty)
             .ok_or_else(|| {
-                CodegenError::FailClosed("rejected message has no record recipe".into())
+                CodegenError::FailClosed("submission lacks its SendFailure recipe".into())
             })?;
-        let error_ty = &failure.fields[0].ty;
-        let reason_glue = self
+        let reason_ty = &failure.fields[0].ty;
+        let reason = self
             .module
             .variant_glue
             .iter()
-            .find(|glue| glue.ty == *error_ty)
+            .find(|glue| glue.ty == *reason_ty)
             .ok_or_else(|| {
-                CodegenError::FailClosed("send refusal reason has no variant recipe".into())
+                CodegenError::FailClosed("submission lacks its SendError recipe".into())
             })?;
-        let reason_tag = |role| {
-            reason_glue
-                .runtime_tag(role)
-                .map(|tag| self.ctx.i8_type().const_int(u64::from(tag), false))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("send refusal reason lacks a runtime role".into())
-                })
-        };
-        let dead_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorDead)?;
-        let backpressure_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorBackpressure)?;
-        let full_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorFull)?;
-        let local_shutdown_tag = reason_tag(hew_mir::RuntimeVariantRole::SendErrorLocalShutdown)?;
+        let success = self
+            .ctx
+            .append_basic_block(self.value, "submission.accepted");
+        let failure_block = self.ctx.append_basic_block(self.value, "submission.failed");
+        let rejected = self
+            .ctx
+            .append_basic_block(self.value, "submission.rejected");
+        let uncertain = self
+            .ctx
+            .append_basic_block(self.value, "submission.uncertain");
+        let done = self.ctx.append_basic_block(self.value, "submission.done");
         let accepted = self
             .builder
             .build_int_compare(
                 IntPredicate::EQ,
                 status,
-                submit_status(self.ctx, HewSubmitStatus::Accepted),
+                self.ctx.i32_type().const_zero(),
                 "submission.accepted",
             )
-            .llvm_ctx("test acceptance")?;
-        let discarded = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                submit_status(self.ctx, HewSubmitStatus::Discarded),
-                "submission.discarded",
-            )
-            .llvm_ctx("test explicit discard")?;
-        let succeeded = self
-            .builder
-            .build_or(accepted, discarded, "submission.success")
-            .llvm_ctx("combine successful delivery outcomes")?;
-        let success = self
-            .ctx
-            .append_basic_block(self.value, "submission.success");
-        let rejected = self
-            .ctx
-            .append_basic_block(self.value, "submission.rejected");
-        let done = self.ctx.append_basic_block(self.value, "submission.done");
+            .llvm_ctx("classify admission outcome")?;
         self.builder
-            .build_conditional_branch(succeeded, success, rejected)
-            .llvm_ctx("preserve message on rejection")?;
+            .build_conditional_branch(accepted, success, failure_block)
+            .llvm_ctx("route admission result")?;
         self.builder.position_at_end(success);
         let delivery_tag = self
             .builder
@@ -2975,96 +2970,89 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         self.builder
             .build_unconditional_branch(done)
-            .llvm_ctx("finish successful submission")?;
+            .llvm_ctx("finish delivery")?;
+        self.builder.position_at_end(failure_block);
+        self.builder
+            .build_conditional_branch(refused, rejected, uncertain)
+            .llvm_ctx("return the message only on proven nonadmission")?;
+        self.builder.position_at_end(uncertain);
+        self.emit_ask_result(destination, status, None, delivery_ty)?;
+        self.builder
+            .build_unconditional_branch(done)
+            .llvm_ctx("finish unknown delivery")?;
         self.builder.position_at_end(rejected);
-        let closed = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                submit_status(self.ctx, HewSubmitStatus::Closed),
-                "submission.closed",
-            )
-            .llvm_ctx("classify closed destination")?;
-        let full = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                submit_status(self.ctx, HewSubmitStatus::Full),
-                "submission.full",
-            )
-            .llvm_ctx("classify full mailbox")?;
-        let spent = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                submit_status(self.ctx, HewSubmitStatus::RoleSpent),
-                "submission.spent",
-            )
-            .llvm_ctx("classify a spent supervised role")?;
-        let shutting_down = self
-            .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                submit_status(self.ctx, HewSubmitStatus::ShuttingDown),
-                "submission.shutting_down",
-            )
-            .llvm_ctx("classify a runtime shutdown refusal")?;
-        let reason = self
-            .builder
-            .build_select(closed, dead_tag, backpressure_tag, "submission.reason")
-            .llvm_ctx("classify admission failure")?;
-        let reason = self
-            .builder
-            .build_select(
-                spent,
-                dead_tag,
-                reason.into_int_value(),
-                "submission.reason.role",
-            )
-            .llvm_ctx("name a spent supervised role")?;
-        let reason = self
-            .builder
-            .build_select(
-                full,
-                full_tag,
-                reason.into_int_value(),
-                "submission.full_reason",
-            )
-            .llvm_ctx("classify full rejection")?;
-        let reason = self
-            .builder
-            .build_select(
-                shutting_down,
-                local_shutdown_tag,
-                reason.into_int_value(),
-                "submission.shutdown_reason",
-            )
-            .llvm_ctx("classify shutdown rejection")?
-            .into_int_value();
-        let reason = self.actor_unit_variant(error_ty, reason)?;
-        let failure_layout = self.module.target.layout(failure_ty).ok_or_else(|| {
-            CodegenError::FailClosed("send failure lacks its target layout".into())
-        })?;
-        let failure_object = llvm_type(self.ctx, &failure_layout.repr)?
-            .into_struct_type()
-            .const_zero();
-        let failure_object = self
-            .builder
-            .build_insert_value(failure_object, reason, 0, "submission.failure_reason")
-            .llvm_ctx("store rejection reason")?;
-        let failure_object = self
-            .builder
-            .build_insert_value(failure_object, message, 1, "submission.returned_message")
-            .llvm_ctx("return complete rejected message")?
-            .into_struct_value();
+        use hew_mir::RuntimeVariantRole as Role;
+        use hew_runtime::internal::types::AskError;
+        let mut reason_tag = self.ctx.i8_type().const_zero();
+        for code in AskError::ALL
+            .iter()
+            .copied()
+            .filter(|code| *code != AskError::None)
+        {
+            let role = match code {
+                AskError::MailboxFull => Role::SendErrorFull,
+                AskError::ActorStopped | AskError::OrphanedAsk | AskError::StaleRef => {
+                    Role::SendErrorDead
+                }
+                AskError::NodeNotRunning | AskError::LocalShutdown => Role::SendErrorLocalShutdown,
+                AskError::RoutingFailed | AskError::Partition => Role::SendErrorPartition,
+                AskError::Unauthorized => Role::SendErrorUnauthorized,
+                AskError::EncodeFailed
+                | AskError::DecodeFailure
+                | AskError::PayloadSizeMismatch => Role::SendErrorInvalidMessage,
+                AskError::Timeout | AskError::NoRunnableWork => Role::SendErrorTimedOut,
+                AskError::Cancelled => Role::SendErrorCancelled,
+                AskError::VersionMismatch => Role::SendErrorVersionMismatch,
+                AskError::ConnectionDropped | AskError::MonitorLost => Role::SendErrorClosed,
+                _ => Role::SendErrorBackpressure,
+            };
+            let tag = reason.runtime_tag(role).ok_or_else(|| {
+                CodegenError::FailClosed("send refusal lacks its semantic tag".into())
+            })?;
+            let matches = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_int(code as u64, false),
+                    "submission.reason.matches",
+                )
+                .llvm_ctx("select refusal reason")?;
+            reason_tag = self
+                .builder
+                .build_select(
+                    matches,
+                    self.ctx.i8_type().const_int(u64::from(tag), false),
+                    reason_tag,
+                    "submission.reason.tag",
+                )
+                .llvm_ctx("name refusal reason")?
+                .into_int_value();
+        }
+        let reason = self.actor_unit_variant(reason_ty, reason_tag)?;
+        let failure = self.ask_record(failure_ty, &[reason, message.into()])?;
+        let slot = self.value_emitter().entry_scratch(
+            llvm_type(
+                self.ctx,
+                &self
+                    .module
+                    .target
+                    .layout(error_ty)
+                    .ok_or_else(|| CodegenError::FailClosed("ActorError lacks layout".into()))?
+                    .repr,
+            )?,
+            "submission.error",
+        )?;
+        self.write_variant_value(slot, 0, &[failure], error.id)?;
+        let error_value = self.value_emitter().load_value(
+            slot,
+            self.module.target.layout(error_ty).unwrap(),
+            "submission.rejected.error",
+        )?;
         self.write_variant_value(
             self.slots[destination.0 as usize],
             1,
-            &[failure_object.into()],
+            &[error_value],
             result.id,
         )?;
         self.builder

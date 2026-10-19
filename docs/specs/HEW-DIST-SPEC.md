@@ -105,14 +105,11 @@ Location {
 The native C ABI representation is 32 bytes. The reserved field MUST be zero.
 Actor slot `0` and session incarnation `0` are invalid.
 
-`RemotePid<T>` is a phantom-typed inline `Location`. It owns no heap allocation,
-has no reference count, and does not keep either the remote node or actor alive.
-Moving, storing, or duplicating the location metadata does not grant authority
-and does not affect actor lifetime.
-
-There is no public provenance-free constructor. A program obtains a
-`RemotePid<T>` only from authenticated runtime discovery or another typed value
-that already carries a validated location.
+`Location` is discovery metadata. Moving, storing or duplicating it does not
+grant authority and does not affect actor lifetime. `Node.lookup(name)` obtains
+locations from authenticated registry discovery. An imported actor value `A`
+comes from an authenticated export offer (§7.1), carrying the authority needed
+for calls and observations.
 
 ### Identity files
 
@@ -208,15 +205,19 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 4 handshake
+## 4. Protocol-version 5 handshake
+
+Version 5 adds authenticated service offers and grant-bearing requests. Upgrade
+communicating nodes together: version 4 peers fail the handshake before route
+publication, and version 5 never downgrades a grant-bearing request to a raw ask.
 
 Every connection exchanges exactly 72 bytes before actor traffic. The layout
-magic remains `HEW\x02`; the independently checked protocol version is `4`:
+magic remains `HEW\x02`; the independently checked protocol version is `5`:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `4` |
+| `4` | 2 | protocol version, big-endian, value `5` |
 | `6` | 2 | reserved, zero |
 | `8` | 4 | schema hash, big-endian |
 | `12` | 4 | feature flags, big-endian |
@@ -228,7 +229,7 @@ magic remains `HEW\x02`; the independently checked protocol version is `4`:
 The receiver MUST reject:
 
 - any length other than 72 bytes;
-- magic other than `HEW\x02` or protocol version other than `4`;
+- magic other than `HEW\x02` or protocol version other than `5`;
 - non-zero reserved bytes;
 - an all-zero `NodeId`;
 - session incarnation `0`;
@@ -298,11 +299,9 @@ that authority.
 
 `Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
 the actor's exact `Location` and records `A`'s declaration identity beside it.
-`Node.lookup<A>(name)` returns a typed `RemotePid<A>` discovered through the
-authenticated registry, and MUST compare the recorded identity against `A`
-before returning one: a disagreement is `Err(LookupError.TypeMismatch)`, never
-a handle. Without that comparison the type argument is the reader's wish and
-the returned handle is an unchecked cast.
+`Node.lookup(name) -> Result<Location, LookupError>` returns discovery metadata
+from the authenticated registry. A location cannot authorize actor operations.
+Obtain an imported actor value from an authenticated export offer (§7.1).
 
 `Node.register` is the one registration verb. It registers locally whether or
 not a node has started, and publishes cluster-wide once one has.
@@ -312,7 +311,7 @@ performs the same comparison.
 
 The current registry records and compares declaration identity on the
 registering node. Cluster-wide lookup type comparison remains deferred.
-Wire version 4 resolves handler declarations when a message is dispatched.
+Wire version 5 resolves handler declarations when a message is dispatched.
 
 Names are discovery aliases, not identity:
 
@@ -325,11 +324,73 @@ Names are discovery aliases, not identity:
 Registry gossip from an unauthenticated, unverified, stale, or superseded
 connection MUST be rejected.
 
+## 7.1 Supplied service grants
+
+`Node.peer(credential: string) -> Result<net.PeerSession, NodeError>` selects a
+configured credential on a currently authenticated connection. It does not dial.
+The peer handle binds the local and remote `NodeId` and session incarnations.
+`Node.connect(address)` retains its existing discovery and connection behaviour.
+
+`peer.export(actor)` suspends until the recipient acknowledges admission of an
+offer, then returns a resource `net.Export<A>`. The issuer owns a bounded grant
+record naming the recipient, both sessions, exact actor incarnation and portable
+handler wire identities, including canonical generic arguments. Keep the returned export resource alive while the
+recipient needs admission: discarding it or leaving its scope revokes the grant
+through ordinary affine cleanup. For example:
+
+```hew
+import std.net;
+
+actor Store {
+    #[wire]
+    receive fn get(key: string) -> string {
+        key
+    }
+}
+
+fn offer(peer: net.PeerSession, store: Store, done: Stream<i64>) {
+    let export = peer.export(store).expect("offer admission");
+    let _ = done.recv();
+    export.close();
+}
+```
+
+The recipient's cancellable
+`peer.receive_service<A>()` waits for an offer and returns an ordinary actor
+value `A` inside `Result<A, ActorError<Never, Never>>`. An offered incompatible
+interface fails promptly; an absent offer waits under ordinary scope cancellation
+and deadlines. Different generic specializations are incompatible even when
+they share a handler declaration.
+Imported actor methods use ordinary named or positional arguments and the same
+completion-call results as local actor methods. Every
+request and reply uses the actor's checked wire codec. Native handles cannot be
+transferred as payloads or forwarded as service descriptors.
+
+The receiver MUST validate the current authenticated publication, recipient and
+sessions, active grant, live actor incarnation and exact handler before decoding
+or mailbox admission. Queued dispatch MUST recheck the same authority when it
+claims the request. Closing `Export` revokes future claims; an already claimed
+request may finish. An actor becomes capability-only at its first export and
+remains so for that incarnation: raw locations, names, asks, sends and new link
+or monitor requests cannot bypass a grant after revocation. Previously admitted
+observations settle through their existing owners. Local calls retain their
+normal actor contracts.
+
+Equal-session reconnect permits new calls through the current publication. A
+pending call or setup acknowledgement remains bound to its original publication;
+it cannot replay or migrate its reply onto a replacement connection. A node
+session change, actor retirement or node shutdown makes old descriptors stale.
+Service acquisition and remote service calls are native-only; sandbox targets
+report the distributed-platform refusal at source.
+
 ## 8. Messaging and asks
 
-`RemotePid<T>.send(message)` is fire-and-forget delivery. `RemotePid<T>.ask`
-creates a request identifier, sends the typed request, suspends the caller, and
-resumes with the completion-call `Result` and its `ActorError` envelope.
+Calling a handler on an imported actor value uses the same completion-call
+syntax as a local actor value. The call creates a request identifier, sends the
+typed request, suspends the caller and resumes with its `Result` and
+`ActorError` envelope. `mailbox(actor)` selects submission-only delivery and
+returns `ActorError<Never, Req>` on failure. Only a definite rejection returns
+the original request.
 
 An ask's effective expiry is the earliest incoming request budget, active
 scope expiry and explicit timeout. Setup, payload encoding and transport send
@@ -389,10 +450,16 @@ terminal control frames back to the owning watcher.
 non-zero `u64` values, never reused, and exhaust only after issuing
 `u64::MAX`.
 
+Monitor and link notifications share `std.failure.DownTarget`: `.Local(u64)`
+for a process-local actor and `.Remote(Location)` for the complete remote
+identity. `CrashNotification.target` replaces the earlier `actor_id` field;
+imports of `DownTarget` move from `std.link_monitor` to `std.failure`.
+
 An actor receives monitor termination through one typed hook:
 
 ```hew,ignore
-import std.link_monitor.{DownNotification, DownReason, DownTarget};
+import std.failure.{DownTarget};
+import std.link_monitor.{DownNotification, DownReason};
 
 actor Watcher {
     #[on(down)]
@@ -485,17 +552,10 @@ match Node.connect("1@127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
 }
-let found: Result<RemotePid<Counter>, LookupError> = Node.lookup("counter");
+let found: Result<Location, LookupError> = Node.lookup("counter");
 ```
 
 The route-slot prefix selects the local credential pin. The authenticated key
-derives the peer's `NodeId`; the numeric prefix is never the peer identity. A
-`found` of `Err(LookupError.TypeMismatch)` means the name resolved to an actor
-whose declaration is not `Counter` (§7).
-
-> **Implementation status.** Native `Node.start(NodeConfig)` performs the
-> configuration transaction, and registration and lookup carry actor locations.
-> Lookup does not yet validate the requested actor declaration, and
-> `LookupError.TypeMismatch` is not implemented. Remote send and ask still lack
-> ownership-SIR lowering. These gaps prevent the distributed contract above
-> from being considered complete. Tracked in hew-lang/hew#3256.
+derives the peer's `NodeId`; the numeric prefix is never the peer identity. The
+discovered location is metadata; the client receives callable actor authority
+from the server's authenticated export offer (§7.1).

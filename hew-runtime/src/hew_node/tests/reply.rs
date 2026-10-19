@@ -24,12 +24,12 @@ fn remote_ask_without_active_node_returns_null_for_nonvoid_reply() {
     assert_ne!(remote_node_id, 0);
     assert_ne!(remote_node_id, local_node_id);
 
-    let remote_pid = HewRemotePid::from(test_location(remote_node_id, 1));
+    let target = (test_location(remote_node_id, 1), 1);
     // SAFETY: null data with size 0 is valid; the remote path should fail
     // immediately because no active node is installed.
     let (_, status) = unsafe {
         ask_for_test(
-            &raw const remote_pid,
+            target,
             test_dispatch(),
             7,
             ptr::null_mut(),
@@ -294,21 +294,21 @@ fn remote_call_deadline_withdraws_and_takes_timeout() {
 fn reply_completion_requires_the_originating_connection() {
     let _guard = crate::runtime_test_guard();
     let origin = ConnectionKey::new(std::ptr::without_provenance(0x5010), 21);
-    let (id, pending) = reply_table().register(origin);
+    let (id, pending) = reply_table().register_with_waker(origin, None, PendingReplyKind::Ask(17));
 
     // Same request id, wrong manager → rejected, ask stays pending.
     assert!(
-        !complete_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[1, 2, 3]),
+        !complete_remote_reply(std::ptr::without_provenance(0x9999), 21, 0, id, &[1, 2, 3]),
         "a reply on a different conn_mgr must not complete the ask"
     );
     // Same manager, wrong conn_id → rejected, ask stays pending.
     assert!(
-        !complete_remote_reply(std::ptr::without_provenance(0x5010), 99, id, &[1, 2, 3]),
+        !complete_remote_reply(std::ptr::without_provenance(0x5010), 99, 0, id, &[1, 2, 3]),
         "a reply on a different conn_id must not complete the ask"
     );
     // A rejection reply on the wrong connection is likewise rejected.
     assert!(
-        !fail_remote_reply(std::ptr::without_provenance(0x9999), 21, id, &[]),
+        !fail_remote_reply(std::ptr::without_provenance(0x9999), 21, 0, id, &[]),
         "a rejection on a different connection must not fail the ask"
     );
     assert!(
@@ -316,9 +316,23 @@ fn reply_completion_requires_the_originating_connection() {
         "the ask must remain unresolved after mismatched attempts"
     );
 
-    // The originating connection resolves it.
+    assert!(!complete_remote_reply(
+        std::ptr::without_provenance(0x5010),
+        21,
+        18,
+        id,
+        &[9, 9]
+    ));
+    assert!(!fail_remote_reply(
+        std::ptr::without_provenance(0x5010),
+        21,
+        18,
+        id,
+        &[AskError::Timeout as u8]
+    ));
+    // The originating connection publication resolves it.
     assert!(
-        complete_remote_reply(std::ptr::without_provenance(0x5010), 21, id, &[9, 9]),
+        complete_remote_reply(std::ptr::without_provenance(0x5010), 21, 17, id, &[9, 9]),
         "the originating connection must complete the ask"
     );
     let guard = pending.outcome.lock().unwrap();
@@ -506,28 +520,23 @@ fn send_failure_resolves_registered_reply_as_connection_dropped() {
 }
 
 #[test]
-fn fail_remote_reply_empty_payload_defaults_to_worker_at_capacity() {
+fn fail_remote_reply_rejects_empty_and_trailing_payloads() {
     let _guard = crate::runtime_test_guard();
-
     let (id, pending) = reply_table().register(ConnectionKey {
         conn_mgr: 91,
         conn_id: 14,
     });
-    assert!(fail_remote_reply(
-        std::ptr::without_provenance(91),
-        14,
-        id,
-        &[]
-    ));
-
-    let guard = pending
-        .outcome
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let outcome = guard.as_ref().expect("reply outcome should be set");
-    assert_eq!(outcome.status, ReplyStatus::Failed);
-    assert_eq!(outcome.ask_error, AskError::WorkerAtCapacity);
-    assert!(outcome.data.is_empty());
+    for payload in [&[][..], &[AskError::WorkerAtCapacity as u8, 0][..]] {
+        assert!(!fail_remote_reply(
+            std::ptr::without_provenance(91),
+            14,
+            0,
+            id,
+            payload,
+        ));
+        assert!(pending.outcome.lock().unwrap().is_none());
+    }
+    reply_table().remove(id);
 }
 
 #[test]
@@ -568,6 +577,9 @@ fn rejection_reason_codes_round_trip_supported_remote_failures() {
         AskError::MailboxFull,
         AskError::OrphanedAsk,
         AskError::NoRunnableWork,
+        AskError::Unauthorized,
+        AskError::StaleRef,
+        AskError::ConnectionDropped,
     ] {
         let payload = [AskRejectionReasonCode::encode(ask_error)
             .expect("supported remote ask failure must encode to a wire code")];
@@ -586,7 +598,6 @@ fn rejection_reason_codes_reject_non_remote_failures() {
         AskError::NodeNotRunning,
         AskError::RoutingFailed,
         AskError::Cancelled,
-        AskError::ConnectionDropped,
     ] {
         assert!(
             AskRejectionReasonCode::encode(ask_error).is_none(),
@@ -613,6 +624,7 @@ fn fail_remote_reply_unknown_code_returns_false_and_leaves_ask_unresolved() {
     assert!(!fail_remote_reply(
         std::ptr::without_provenance(92),
         15,
+        0,
         id,
         &[0xFF]
     ));
@@ -756,26 +768,28 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                 let (readiness, waker) = crate::wake::blocking::Readiness::new();
                 let key = ConnectionKey::new(manager as *const connection::HewConnMgr, conn_id);
                 let call = if action == "setup" {
-                    let target = HewRemotePid::from(target);
                     // SAFETY: empty request, registered codec and live waker.
                     unsafe {
-                        hew_remote_call_new(
-                            &raw const target,
+                        remote_call::start_granted_call(
+                            Ok((target, 1)),
                             test_dispatch(),
                             7,
                             ptr::null_mut(),
                             0,
                             0,
-                            TEST_REMOTE_ASK_TIMEOUT_MS,
-                            -1,
+                            crate::request_deadline::RequestDeadline::after(
+                                i64::try_from(TEST_REMOTE_ASK_TIMEOUT_MS * 1_000_000).unwrap(),
+                            )
+                            .raw(),
                             waker.descriptor(),
+                            crate::request_state::RequestKind::CallWait,
                         )
                     }
                 } else {
                     let (_, _, call) = remote_call_for_test(key);
                     // SAFETY: this thread exclusively owns the fresh call.
                     unsafe {
-                        if let RemoteCallRoute::Wire(_, location, token) = &mut (*call).route {
+                        if let RemoteCallRoute::Wire(_, location, token, _) = &mut (*call).route {
                             *location = target;
                             *token = publication;
                         }

@@ -1010,15 +1010,6 @@ pub const HEW_PRIORITY_LOW: i32 = 2;
 /// drop function that releases.
 pub type HewStateCloneFn = unsafe extern "C-unwind" fn(*const c_void) -> *mut c_void;
 
-/// Payload ownership required by the registered generated dispatch adapter.
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HewDispatchOwnership {
-    #[default]
-    CopiedPayload,
-    UniqueEnvelope,
-}
-
 /// Actor struct layout. MUST match the C definition exactly.
 ///
 /// The `sched_link_next` field (intrusive MPSC next pointer) MUST be the
@@ -1259,9 +1250,8 @@ pub struct HewActor {
 
     /// Non-owning pointer to the `RuntimeInner` that owns this actor.
     ///
-    /// Off-dispatch producers that already hold an actor pointer can enter the
-    /// actor's owning runtime through `runtime::enter_actor_runtime` instead of
-    /// resolving through the default slot. This does not own or retain the
+    /// Pinned actor operations resolve this actor's owning runtime. This does
+    /// not own or retain the
     /// runtime: `RuntimeInner` owns the live-actor table and cleanup only drops
     /// the runtime after actors/workers are drained, so the runtime outlives every
     /// actor that carries this pointer. Null is reserved for legacy/test actors
@@ -1399,8 +1389,6 @@ pub struct HewActor {
     /// **ABI note**: appended at the struct tail, after `state_drop_borrowed`,
     /// so no previously-mirrored offset (`id` at 8, `state` at 16) moves.
     pub parked_ask_channel: AtomicPtr<c_void>,
-    /// Published with the dispatch callback before the actor becomes visible.
-    pub dispatch_ownership: HewDispatchOwnership,
 
     /// Borrowed invocation state of the active checked handler, protected by
     /// activation ownership. Stop requests cancel and drain this invocation

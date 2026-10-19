@@ -1,7 +1,7 @@
-// Reject: `ref.send(msg)` on a named actor without an `ActorMsg` envelope or
-// `receive fn send` handler does not erase an arbitrary payload into the actor
-// mailbox. The concrete handle can only use the builtin `send` surface when the
-// actor declares its message envelope.
+// Reject: a named actor without a `receive fn send` handler cannot accept
+// a `.send(...)` call. Use a declared handler, including through mailbox(A).
+// The concrete actor interface determines which messages it accepts.
+//
 //
 // Distinct from `actor_receive_fn_named_send.hew` (accept): a same-named
 // handler is concrete actor dispatch and takes precedence.

@@ -30,7 +30,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc libc-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=tarball bin/hew bin/hew-lsp bin/hew-observe /usr/local/bin/
+COPY --from=tarball bin/hew /usr/local/bin/
 COPY --from=tarball lib/libhew.a /usr/local/lib/libhew.a
 COPY --from=tarball std/ /usr/local/share/hew/std/
 COPY --from=tarball include/ /usr/local/include/

@@ -1,12 +1,14 @@
 //! Status: runnable
-//! Description: Distributed actors example — demonstrates the Node API.
+//! Description: Node identity and actor discovery with local actor calls.
 
-// Distributed actors example — demonstrates the Node API. The Node namespace
-// (start/shutdown/register/lookup/connect/load_keys/allow_peer) is native-only:
-// it links the mesh transport in the native runtime. WASM/sandbox builds carry
-// no networking, so this example is native-only there.
+// Demonstrates Node identity and registry discovery alongside local actor
+// calls. Node APIs are native-only; wasm/sandbox builds do not include mesh
+// networking. Registry names return Location metadata and do not authorize
+// actor calls. A remote client must receive an exported service over an
+// authenticated PeerSession before calling the actor.
 actor Counter {
     var count: i64;
+    #[wire]
     receive fn increment(n: i64) {
         count = count + n;
         println(count);
@@ -25,7 +27,7 @@ fn main() {
     // process's receiver-local route slots, in array order starting at 1; the
     // numeric slot is not identity. A peer presenting any other credential is
     // rejected before it is routable.
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: [], seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
@@ -39,11 +41,10 @@ fn main() {
         .None => println("node identity unavailable"),
     }
     Node.register("counter", counter);
-    // A second node that pinned this credential at its local route slot 1
-    // would call Node.connect("1@127.0.0.1:9000"), then Node.lookup("counter")
-    // and message the returned RemotePid. The PID carries NodeId, actor slot,
-    // and durable session incarnation, so a same-key restart fences the old
-    // value.
+    // A remote deployment can register this name for discovery, but the
+    // returned Location is not callable. The issuer must offer `counter` over
+    // an authenticated PeerSession, and the client must receive the service
+    // before calling its #[wire] `increment` handler.
     Node.shutdown();
     println("Counter node demo complete");
 }

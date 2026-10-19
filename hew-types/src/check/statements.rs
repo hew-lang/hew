@@ -1016,7 +1016,6 @@ impl Checker {
 
     pub(super) fn check_stmt(&mut self, stmt: &Stmt, span: &Span) {
         self.check_stmt_inner(stmt, span);
-        self.record_statement_effect_binding(stmt);
     }
 
     #[expect(
@@ -2231,7 +2230,9 @@ impl Checker {
                     Ty::Never => Ty::Never,
                     _ => {
                         if let Some(item_ty) = self.iterator_trait_item_ty(&iter_ty, &iterable.1) {
-                            self.record_iteration_effect(&iterable.1, &iter_ty);
+                            let candidates =
+                                self.callable_candidates_for_expr(&iterable.0, &iterable.1);
+                            self.record_iteration_effect(&iterable.1, &iter_ty, candidates);
                             item_ty
                         } else {
                             self.report_error(

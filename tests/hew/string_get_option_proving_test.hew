@@ -7,9 +7,8 @@
 //! payload is an independent value by construction; the receiver is borrowed,
 //! not consumed, and stays usable after `get`.
 //!
-//! `get` is the `Index` spelling of `char_at` and binds the same export,
-//! `hew_string_char_at`: codepoint-indexed, `-1` for a negative or
-//! out-of-bounds index.
+//! `get` uses the scalar-indexed runtime operation, with `None` for a negative
+//! or out-of-bounds index.
 
 #[test]
 fn test_string_get_some_and_oob_none() {
@@ -35,7 +34,7 @@ fn test_string_get_some_and_oob_none() {
 #[test]
 fn test_string_get_negative_index_is_none() {
     let s = "hi";
-    // `hew_string_char_at` rejects a negative index outright and returns its
+    // `hew_string_get` rejects a negative index outright and returns its
     // `-1` absent sentinel, which codegen wraps as `None` rather than trapping.
     match s.get(0 - 1) {
         .Some(_) => assert(false),

@@ -17,8 +17,8 @@ mod catalog_inventory_gate;
 mod checker_boundary_violation;
 #[path = "gates/clone_not_yet_supported.rs"]
 mod clone_not_yet_supported;
-#[path = "gates/record_layout_missing.rs"]
-mod record_layout_missing;
+#[path = "gates/record_expression_type.rs"]
+mod record_expression_type;
 #[path = "gates/root_item_ids_excludes_builtins.rs"]
 mod root_item_ids_excludes_builtins;
 #[path = "gates/target_gates.rs"]

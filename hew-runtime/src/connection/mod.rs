@@ -27,10 +27,7 @@
 //! - [`hew_connmgr_free`] — Destroy a connection manager.
 //! - [`hew_connmgr_add`] — Add a connection (spawns reader thread).
 //! - [`hew_connmgr_remove`] — Remove and close a connection.
-//! - [`hew_connmgr_send`] — Send a message over a connection.
-//! - [`hew_connmgr_set_outbound_capacity`] — Legacy API (returns error).
 //! - [`hew_connmgr_count`] — Number of active connections.
-//! - [`hew_connmgr_broadcast`] — Send to all connections.
 #![allow(
     unsafe_op_in_unsafe_fn,
     reason = "FFI entry-point module; SAFETY documented at fn signature."
@@ -282,10 +279,9 @@ pub struct HewConnMgr {
     /// Admitted inbound asks and reverse-link setup owners for this manager.
     pub(crate) inbound_ask_active: Arc<AtomicUsize>,
     pub(crate) inbound_asks: Arc<crate::hew_node::InboundAsks>,
+    pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
-    /// Deferred reverse-link setup workers, joined before manager teardown.
-    reverse_link_workers: PoisonSafe<Vec<JoinHandle<()>>>,
     /// Counts every spawned reader until its thread function fully returns.
     ///
     /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected
@@ -296,6 +292,8 @@ pub struct HewConnMgr {
     reader_lifecycle: Arc<ReaderLifecycle>,
     /// Monotonic token generator for connection-lifecycle publications.
     next_publication_token: AtomicU64,
+    gossip_in: AtomicU64,
+    gossip_out: Arc<AtomicU64>,
     /// The node ID advertised in the handshake for this manager's node.
     /// Stored explicitly so multi-node tests (two nodes in one process) get the
     /// correct ID in their outgoing handshake even when `LOCAL_NODE_ID` refers
@@ -334,6 +332,32 @@ pub struct HewConnMgr {
     /// Fast-path mirror of `pending_registry_flush.len()` so the per-frame
     /// reader check is one atomic load when nothing is parked.
     pending_registry_flush_count: AtomicUsize,
+}
+
+impl HewConnMgr {
+    pub(crate) fn observe_counts(&self) -> (u64, u64, u64) {
+        let peers = self
+            .claims
+            .0
+            .lock_or_recover()
+            .values()
+            .filter(|claim| {
+                claim.state == crate::peer_binding::ClaimState::Published
+                    && claim.credential.is_some()
+            })
+            .count() as u64;
+        (
+            peers,
+            self.gossip_in.load(Ordering::Relaxed),
+            self.gossip_out.load(Ordering::Relaxed),
+        )
+    }
+
+    fn record_gossip_received(&self) {
+        if crate::observe::observe_hot_tier_enabled() {
+            self.gossip_in.fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 /// A parked registry-gossip flush awaiting retry (see
@@ -509,7 +533,9 @@ type InboundRouter = unsafe extern "C" fn(
     *mut HewConnMgr,
     crate::node_identity::HewNodeId,
     u64, // authenticated connection publication
+    u64, // service grant id, zero for ordinary location requests
     i64, // absolute local request deadline, -1 when absent
+    u8,  // validated request kind and admission policy
 );
 
 // SAFETY: HewConnMgr is only accessed through C ABI functions that

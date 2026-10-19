@@ -72,7 +72,13 @@ pub(crate) fn json_output_active() -> bool {
 }
 
 /// Append a structured diagnostic to the per-thread JSON accumulator.
-pub(crate) fn push_json_diagnostic(diagnostic: JsonDiagnostic) {
+pub(crate) fn push_json_diagnostic(mut diagnostic: JsonDiagnostic) {
+    diagnostic.file = crate::diagnostic::display_filename(&diagnostic.file);
+    let paths = hew_compile::source_path_policy();
+    diagnostic.message = paths.display_text(&diagnostic.message);
+    for note in &mut diagnostic.notes {
+        note.message = paths.display_text(&note.message);
+    }
     JSON_DIAGNOSTICS.with(|d| d.borrow_mut().push(diagnostic));
 }
 

@@ -1,0 +1,82 @@
+actor Rejecting {
+    mailbox 1 overflow fail;
+    let newest: bool;
+
+    receive fn run() {
+        mailbox(self, on_full: .Reject).filler().expect("fill queue");
+        if newest {
+            let _ = mailbox(self, after: 1ms, overdue: 1h, on_full: .DropNewest).tick();
+        } else {
+            let _ = mailbox(self, after: 1ms, overdue: 1h, on_full: .Reject).tick();
+        }
+        sleep(1h);
+        panic("discard did not fault immediately");
+    }
+    receive fn filler() {}
+    receive fn tick() {
+        panic("discarded timer started");
+    }
+    receive fn ping() {}
+
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind {
+            .TimerOverdue => true,
+            _ => false,
+        });
+        println(if newest {
+            "DropNewest overdue"
+        } else {
+            "Reject overdue"
+        });
+        CrashAction.Restart
+    }
+}
+
+actor Latest {
+    mailbox 1 overflow drop_old;
+    receive fn run() {
+        let _ = mailbox(self, after: 0ms, overdue: 1h).tick();
+        sleep(10ms);
+        mailbox(self, on_full: .Reject).filler().expect("replace queued timer");
+        sleep(1h);
+        panic("eviction did not fault immediately");
+    }
+    receive fn filler() {}
+    receive fn tick() {
+        panic("evicted timer started");
+    }
+    receive fn ping() {}
+    #[on(crash)]
+    fn crashed(info: CrashInfo) -> CrashAction {
+        assert(match info.kind {
+            .TimerOverdue => true,
+            _ => false,
+        });
+        println("drop_old overdue");
+        CrashAction.Restart
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child reject: Rejecting { newest: false };
+    child newest: Rejecting { newest: true };
+    child latest: Latest;
+}
+
+fn main() {
+    let app = spawn App;
+    assert(app.reject.run().is_err());
+    restarted(app.reject);
+    app.reject.ping().expect("reject restarted");
+    assert(app.newest.run().is_err());
+    restarted(app.newest);
+    app.newest.ping().expect("newest restarted");
+    assert(app.latest.run().is_err());
+    restarted(app.latest);
+    app.latest.ping().expect("latest restarted");
+    stop(app);
+    stopped(app);
+}

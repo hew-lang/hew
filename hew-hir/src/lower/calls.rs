@@ -318,14 +318,8 @@ impl LowerCtx {
     /// The resulting `BindingRef.name` is shared by HIR verification, MIR and
     /// code generation.
     ///
-    /// A direct call to an imported GENERIC free fn needs the per-instantiation
-    /// monomorphisation registered here — the same authority the bare-identifier
-    /// callee feeds through `record_monomorphisation` — or MIR's `Call` arm
-    /// finds neither a `call_site_type_args` entry nor the mangled name in
-    /// `module_fn_names`, and the callee falls through to the function-call NYI.
-    /// The helper seeds `call_site_type_args` with the checker-recorded args and
-    /// inserts the `MonoKey` whose `origin_name == symbol`. No-op for
-    /// non-generic callees, so safe to call unconditionally.
+    /// Imported generic calls retain their checker-selected declaration and
+    /// call-site type arguments, like bare-identifier calls.
     pub(super) fn lower_module_qualified_direct_call_lowered(
         &mut self,
         target: CallTarget,
@@ -376,7 +370,7 @@ impl LowerCtx {
             CallTarget::Runtime(_) | CallTarget::Builtin { .. } => None,
             _ => unreachable!("direct-call target shape was validated above"),
         };
-        self.register_free_fn_monomorphisation(&symbol, selected_declaration, span, site);
+        self.record_free_fn_call_type_args(&symbol, selected_declaration, span, site);
         let key = self.mk_key(span);
         let ret_ty = self
             .expr_types
@@ -513,8 +507,8 @@ impl LowerCtx {
         // recorded a `RewriteModuleQualifiedToFunction` on this call span (the
         // same rewrite the dot form `module.fn(args)` records via the
         // method-call path). Route through the identical direct-call lowering so
-        // the callee resolves to the qualified registry symbol and the
-        // per-instantiation monomorphisation is registered — without it the
+        // the callee resolves to the qualified registry symbol and retains its
+        // checked type arguments — without this rewrite the
         // `FieldAccess` callee lowers to an unresolved binding.
         let rewrite_key = self.mk_key(span);
         if let Some(MethodCallRewrite::RewriteModuleQualifiedToFunction {
@@ -634,13 +628,13 @@ impl LowerCtx {
             );
         }
         let callee = self.lower_expr(function, IntentKind::Read);
-        // Record the per-instantiation monomorphisation if the callee is a
+        // Record type arguments if the callee is a
         // generic top-level user fn. Direct-name callees only;
-        // `record_monomorphisation` filters out non-generic callees, non-
+        // `record_direct_call_type_args` filters out non-generic callees, non-
         // `fn_registry` callees (builtins, runtime symbols, local bindings),
         // and callsites the checker did not record. Fail-closed on poisoned
-        // entries and on registry-cap exhaustion.
-        self.record_monomorphisation(function, span, site);
+        // entries.
+        self.record_direct_call_type_args(function, span, site);
         // Checker authority takes precedence: consult expr_types at the full
         // call-expression span. The checker records the call result type here
         // for checker-registered builtins that have no AST `fn` item and
@@ -837,6 +831,15 @@ impl LowerCtx {
         site: SiteId,
         intent: IntentKind,
     ) -> Result<(HirExprKind, ResolvedTy), Box<HirExpr>> {
+        if let Expr::FieldAccess { object, field } = &function.0 {
+            let key = self.mk_key(&span);
+            if self.method_call_rewrites.get(&key).is_some_and(|rewrite| {
+                matches!(rewrite, MethodCallRewrite::RewriteToFunction { .. })
+            }) {
+                return Ok(self.lower_method_call(object, field.0.name.as_str(), args, span, site));
+            }
+        }
+
         let lowered = {
             let rewrite_key = self.mk_key(&span);
             // `handle(msg)` on a lambda actor is a completion call, not a

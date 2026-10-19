@@ -1646,19 +1646,16 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn coverage_text_unicode_surface() {
-        let source = "import std.text.unicode;\n\
-                      fn probe(cp: i64) {\n\
-                      \x20   let up = unicode.is_upper(cp);\n\
-                      }\n";
+    fn coverage_char_unicode_surface() {
+        let source = "fn probe(cp: char) { let up = cp.is_upper(); }";
         let doc = analyze_repo_rooted("lsp_cov_unicode", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);
-        let sig = surface_sighelp(&doc, source, "unicode.is_upper");
+        let sig = surface_sighelp(&doc, source, "cp.is_upper");
         assert!(
             sig.iter()
                 .any(|s| s.contains("is_upper(") && s.contains("bool")),
-            "signature help should label unicode.is_upper -> bool, got: {sig:?}",
+            "signature help should label cp.is_upper -> bool, got: {sig:?}",
         );
         assert!(
             surface_inlays(&doc).iter().any(|l| l.contains("bool")),
@@ -1743,34 +1740,35 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn coverage_remote_ask_surface() {
-        let source = "#[wire]\ntype Job {\n    n: i32 @1;\n}\n\nactor Worker {\n    receive fn run(job: Job) -> i64 {\n        21\n    }\n}\n\nimpl ActorMsg for Worker {\n    type Msg = Job;\n    type Reply = i64;\n}\n\nactor Caller {\n    receive fn run(peer: RemotePid<Worker>) {\n        let result = peer.ask(Job { n: 9 }, 250);\n    }\n}\n";
-        let doc = analyze_repo_rooted("lsp_cov_remote_ask", source);
-
+    fn coverage_actor_completion_surface() {
+        let source = "#[wire]\ntype Job {\n    n: i32 @1;\n}\n\nactor Worker {\n    #[wire]\n    receive fn run(job: Job) -> i64 {\n        21\n    }\n    receive fn notify(job: Job) {}\n}\n\nactor Caller {\n    receive fn inspect(peer: Worker) {\n        let result = peer.run(Job { n: 9 });\n        let inbox = mailbox(peer, on_full: .Reject);\n        let submission = inbox.notify(Job { n: 10 });\n    }\n}\n";
+        let doc = analyze_repo_rooted("lsp_cov_actor_completion", source);
         assert_eq!(hard_type_diagnostic(&doc), None);
-        let hover = surface_hover(&doc, source, "peer.ask");
+        let hover = surface_hover(&doc, source, "peer.run");
         assert!(
             hover.contains("Result<i64,") && hover.contains("ActorError"),
-            "hover over RemotePid.ask should report Result<i64, ActorError>, got: {hover}",
+            "actor completion hover must expose its typed outcome: {hover}",
         );
-        let sig = surface_sighelp(&doc, source, "peer.ask");
+        let sig = surface_sighelp(&doc, source, "peer.run");
         assert!(
-            sig.iter()
-                .any(|s| s.contains("ask(") && s.contains("Result<Worker::Reply, ActorError<Never, Never>>")),
-            "signature help should label ask(...) -> Result<Worker::Reply, ActorError<Never, Never>>, got: {sig:?}",
+            sig.iter().any(|s| s.contains("run(") && s.contains("Job") && s.contains("Result<i64,") && s.contains("ActorError")),
+            "actor completion signature must expose its handler, payload and typed outcome: {sig:?}",
         );
-        let completions = surface_completions(&doc, source, "peer.ask");
-        for expected in ["ask", "send"] {
-            assert!(
-                completions.contains(&expected.to_string()),
-                "completion on RemotePid<Worker> should include `{expected}`, got: {completions:?}",
-            );
-        }
+        let submission_sig = surface_sighelp(&doc, source, "inbox.notify");
+        assert!(
+            submission_sig.iter().any(|s| s.contains("notify(")
+                && s.contains("Job")
+                && s.contains("Result<Delivery,")
+                && s.contains("ActorError")),
+            "mailbox signature must expose its checked submission result: {submission_sig:?}",
+        );
+        let completions = surface_completions(&doc, source, "peer.run");
+        assert!(completions.contains(&"run".to_string()), "{completions:?}");
         assert!(
             surface_inlays(&doc)
                 .iter()
                 .any(|l| l.contains("Result<i64,") && l.contains("ActorError")),
-            "inlay hint for `result` should show Result<i64, ActorError>",
+            "actor completion inlay must expose its typed outcome",
         );
     }
 

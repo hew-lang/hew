@@ -261,7 +261,21 @@ impl Checker {
                 }
             }
         }
-        found
+        let self_ty = self
+            .scopes
+            .declaration_parameters(param.owner)
+            .into_iter()
+            .find(|head| head.id == param)
+            .map(Ty::param);
+        let mut applied = Vec::new();
+        for bound in found {
+            for parent in self.applied_trait_closure(&bound, self_ty.as_ref()) {
+                if !applied.contains(&parent) {
+                    applied.push(parent);
+                }
+            }
+        }
+        applied
     }
 
     /// Every bound in force here, for a check replayed later in another
@@ -316,20 +330,66 @@ impl Checker {
             .then_some(MarkerTrait::Display)
     }
 
+    pub(in crate::check) fn applied_trait_closure(
+        &self,
+        bound: &TraitRef,
+        self_ty: Option<&Ty>,
+    ) -> Vec<TraitRef> {
+        let mut pending = vec![(bound.clone(), Vec::new())];
+        let mut applied = Vec::new();
+        while let Some((bound, mut path)) = pending.pop() {
+            if path.contains(&bound.trait_id) || applied.contains(&bound) {
+                continue;
+            }
+            path.push(bound.trait_id);
+            let mut substitutions: HashMap<_, _> = self
+                .trait_info(bound.trait_id)
+                .into_iter()
+                .flat_map(|info| info.type_params.iter().copied())
+                .zip(bound.args.iter().cloned())
+                .collect();
+            if let Some(self_ty) = self_ty {
+                substitutions.insert(crate::ParamHead::receiver(bound.trait_id), self_ty.clone());
+            }
+            for parent in self.trait_super.get(&bound.trait_id).into_iter().flatten() {
+                pending.push((
+                    TraitRef {
+                        trait_id: parent.trait_id,
+                        args: parent
+                            .args
+                            .iter()
+                            .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                            .collect(),
+                        assoc: parent
+                            .assoc
+                            .iter()
+                            .map(|(name, ty)| {
+                                (*name, ty.substitute_type_params_parallel(&substitutions))
+                            })
+                            .collect(),
+                    },
+                    path.clone(),
+                ));
+            }
+            applied.push(bound);
+        }
+        applied
+    }
+
     /// Whether `child` transitively extends `parent`.
     pub(in crate::check) fn trait_extends(
         &self,
         child: crate::DefId,
         parent: crate::DefId,
     ) -> bool {
-        let mut stack = self.trait_supers(child).to_vec();
+        let mut stack = self.trait_supers(child).collect::<Vec<_>>();
         let mut visited = HashSet::new();
         while let Some(current) = stack.pop() {
             if current == parent {
                 return true;
             }
             if visited.insert(current) {
-                stack.extend_from_slice(self.trait_supers(current));
+                stack.extend(self.trait_supers(current));
             }
         }
         false
@@ -340,7 +400,7 @@ impl Checker {
         let mut out = vec![trait_id];
         let mut index = 0;
         while let Some(&current) = out.get(index) {
-            for &parent in self.trait_supers(current) {
+            for parent in self.trait_supers(current) {
                 if !out.contains(&parent) {
                     out.push(parent);
                 }
@@ -662,8 +722,7 @@ impl Checker {
             }
             Ty::Named { head, .. } => {
                 if self.type_implements_trait_ref(ty, bound)
-                    || (bound.args.is_empty()
-                        && self.type_structurally_satisfies(ty, bound.trait_id))
+                    || self.type_structurally_satisfies_bound(ty, bound)
                 {
                     return true;
                 }
@@ -711,10 +770,20 @@ impl Checker {
     /// boundary asks this of the predicate itself, never of a trait spelled
     /// `Send` (R2).
     pub(in crate::check) fn type_is_send(&self, ty: &Ty) -> bool {
+        self.type_has_marker(ty, MarkerTrait::Send)
+    }
+
+    pub(in crate::check) fn type_has_marker(&self, ty: &Ty, requested: MarkerTrait) -> bool {
+        fn bound_type(checker: &Checker, ty: &Ty) -> Ty {
+            checker.bound_parameter(ty).map_or_else(
+                || ty.map_children_pub(&|child| bound_type(checker, child)),
+                Ty::param,
+            )
+        }
+        let ty = bound_type(self, ty);
         self.registry
-            .implements_marker_with_bounds(ty, MarkerTrait::Send, &|param, marker| {
-                marker == MarkerTrait::Send
-                    && self.param_carries_marker(param.id, MarkerTrait::Send)
+            .implements_marker_with_bounds(&ty, requested, &|param, marker| {
+                self.param_carries_marker(param.id, marker)
             })
     }
 
@@ -784,29 +853,6 @@ impl Checker {
         let path = hew_parser::ast::Path::single(Ident::new(spelling), 0..0);
         self.resolve_trait_path(&path)
             .filter(|trait_id| self.trait_info(*trait_id).is_some())
-    }
-
-    /// The bounds a module registry signature spells, resolved in the
-    /// importing file.
-    ///
-    /// TRANSITION(A1c4): WHY the registry mirrors a std module's signatures as
-    /// spellings before its source registers. WHEN the registry reads the
-    /// checker's signatures, the source declaration's resolved bounds are the
-    /// only ones. WHAT: delete the registry signature mirror.
-    pub(in crate::check) fn registry_bounds(
-        &mut self,
-        type_params: &[crate::ParamHead],
-        spelled: &HashMap<String, Vec<String>>,
-    ) -> ParamBounds {
-        let mut bounds = ParamBounds::default();
-        for param in type_params {
-            for spelling in spelled.get(param.spelling.as_str()).into_iter().flatten() {
-                if let Some(trait_id) = self.trait_spelled_here(spelling) {
-                    bounds.push(param.id, TraitRef::bare(trait_id));
-                }
-            }
-        }
-        bounds
     }
 
     /// Record the active impl block's conformance: `trait_ref` for its

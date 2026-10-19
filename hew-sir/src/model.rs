@@ -107,6 +107,11 @@ pub enum CallableInstance {
         supervisor: crate::SupervisorId,
         child: u32,
     },
+    /// Construction-time pool count evaluated against borrowed config.
+    SupervisorPoolCount {
+        supervisor: crate::SupervisorId,
+        child: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -322,6 +327,46 @@ impl SemFunction {
         self.bindings
             .iter()
             .find(|binding| binding.target == BindingTarget::Place(place))
+    }
+}
+
+/// The checked entry used by a prepared invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InvocationCallee {
+    Direct(CallableId),
+    Mutable {
+        target: CallableId,
+        receiver: BoundaryOperand,
+        update: hew_types::ReceiverUpdate,
+    },
+    Dyn {
+        receiver: BoundaryOperand,
+        slot: u32,
+        method: hew_types::DefId,
+    },
+    Indirect {
+        receiver: BoundaryOperand,
+        specialization: Option<crate::CallableSpecializationId>,
+    },
+}
+
+impl InvocationCallee {
+    #[must_use]
+    pub fn receiver(&self) -> Option<&BoundaryOperand> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(receiver),
+        }
+    }
+    pub fn receiver_mut(&mut self) -> Option<&mut BoundaryOperand> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Indirect { receiver, .. }
+            | Self::Mutable { receiver, .. }
+            | Self::Dyn { receiver, .. } => Some(receiver),
+        }
     }
 }
 
@@ -636,6 +681,11 @@ pub struct SemVariantShape {
 /// cannot become a runtime result through a spelling collision.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeVariantRole {
+    CrashKindFault,
+    CrashKindHeapExceeded,
+    CrashKindPartitionDetected,
+    CrashKindHandlerFailed,
+    CrashKindTimerOverdue,
     OptionSome,
     OptionNone,
     ResultOk,
@@ -664,6 +714,9 @@ pub enum RuntimeVariantRole {
     SendErrorVersionMismatch,
     SendErrorBackpressure,
     SendErrorDead,
+    SendErrorUnauthorized,
+    SendErrorInvalidMessage,
+    SendErrorTimedOut,
     SendErrorWriteTimedOut,
     DeliveryAccepted,
     DeliveryDiscarded,
@@ -1201,7 +1254,7 @@ pub fn collection_value_dependencies(
             })?;
         // A bit-copyable component carries no ownership obligation, so there
         // is nothing to describe. This covers the fixed-width compiler
-        // carriers (`ChildRef<A>`, `NodeId`) whose source fields are not
+        // carriers (`NodeId`, `Location`) whose source fields are not
         // constructible and so have no aggregate shape.
         if fact.class == hew_types::ValueClass::BitCopy {
             continue;
@@ -1227,7 +1280,7 @@ pub fn collection_value_dependencies(
             continue;
         }
         if crate::is_identity_carrier(&ty) {
-            // A node identity, location or remote pid is fixed-width words
+            // A node identity or location is fixed-width words
             // with no owned fields: a bit copy is its complete recipe.
             continue;
         }
@@ -1330,6 +1383,13 @@ pub enum SemOpKind {
     TaskSpawn {
         scope: crate::TaskScopeId,
         callable: Operand,
+    },
+    /// Start a call whose argument storage is retained by its select scope.
+    TaskInvoke {
+        scope: crate::TaskScopeId,
+        callee: InvocationCallee,
+        args: Vec<BoundaryOperand>,
+        signature: SemSignature,
     },
     TaskRace {
         scope: crate::TaskScopeId,
@@ -1580,6 +1640,19 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands(&self, mut visit: impl FnMut(OperandSlot, &Operand)) {
         match self {
+            Self::TaskInvoke { callee, args, .. } => {
+                if let Some(receiver) = callee.receiver() {
+                    visit(OperandSlot(0), &receiver.operand);
+                }
+                for (index, argument) in args.iter().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index + 1).expect("call operand count exceeds u32"),
+                        ),
+                        &argument.operand,
+                    );
+                }
+            }
             Self::TaskScopeEnter { duration, .. } => {
                 if let Some(duration) = duration {
                     visit(OperandSlot(0), duration);
@@ -1676,6 +1749,19 @@ impl SemOpKind {
     /// module-local `u32` operand-slot range can represent.
     pub fn visit_operands_mut(&mut self, mut visit: impl FnMut(OperandSlot, &mut Operand)) {
         match self {
+            Self::TaskInvoke { callee, args, .. } => {
+                if let Some(receiver) = callee.receiver_mut() {
+                    visit(OperandSlot(0), &mut receiver.operand);
+                }
+                for (index, argument) in args.iter_mut().enumerate() {
+                    visit(
+                        OperandSlot(
+                            u32::try_from(index + 1).expect("call operand count exceeds u32"),
+                        ),
+                        &mut argument.operand,
+                    );
+                }
+            }
             Self::TaskScopeEnter { duration, .. } => {
                 if let Some(duration) = duration {
                     visit(OperandSlot(0), duration);
@@ -1781,6 +1867,7 @@ impl SemOpKind {
             | Self::TaskScopeEnter { .. }
             | Self::TaskScopeClose { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskInvoke { .. }
             | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
@@ -1856,6 +1943,7 @@ impl SemOpKind {
             | Self::TaskScopeClose { .. }
             | Self::RegisterDefer { .. }
             | Self::TaskSpawn { .. }
+            | Self::TaskInvoke { .. }
             | Self::TaskRace { .. }
             | Self::GeneratorMake { .. }
             | Self::StreamPipe { .. }
@@ -1918,6 +2006,7 @@ impl SemOpKind {
                 | Self::TaskScopeClose { .. }
                 | Self::RegisterDefer { .. }
                 | Self::TaskSpawn { .. }
+                | Self::TaskInvoke { .. }
                 | Self::TaskRace { .. }
                 | Self::GeneratorMake { .. }
                 | Self::StreamPipe { .. }

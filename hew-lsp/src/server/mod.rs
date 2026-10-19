@@ -1472,11 +1472,9 @@ mod tests {
     #[test]
     fn dot_completions_for_actor_handle_surface_its_receive_handlers() {
         // An actor is the type of its handle, so a dot on a handle offers the
-        // actor's declared receive handlers. There is no handle wrapper with
-        // its own impl block any more: `send` was a method on the retired
-        // `LocalPid<T>` and the checker refuses `.send` on a handle whose actor
-        // declares no `receive fn send`, so offering it would teach a call that
-        // does not compile. Internal state fields stay hidden.
+        // actor's declared receive handlers. A `send` completion is valid only
+        // when the actor declares `receive fn send`; internal state fields
+        // stay hidden.
         let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .unwrap()
@@ -7706,12 +7704,12 @@ fn label(colour: Colour) -> string {
             "string_methods_probe",
             &["string_methods_probe"],
         );
-        let hover_offset = source.find("text.slice").expect("slice call");
+        let hover_offset = source.find("text[0..1]").expect("range index");
         assert_v05_hover_contains("v05_string_methods", source, hover_offset, "string");
     }
 
     #[test]
-    fn v05_string_methods_completion_includes_full_l2_surface() {
+    fn v05_string_methods_completion_includes_current_surface() {
         let source = include_str!("../../tests/fixtures/v05_string_methods.hew");
         let doc = make_typed_doc(source);
         assert_no_hard_type_errors("v05_string_methods", &doc);
@@ -7724,19 +7722,35 @@ fn label(colour: Colour) -> string {
         );
         let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
         let expected = [
-            "slice",
+            "get",
+            "first",
+            "last",
+            "iter",
+            "push",
+            "clear",
             "replace",
             "find",
+            "find_from",
             "split",
             "lines",
             "repeat",
+            "clone",
+        ];
+        for retired in [
+            "slice",
             "char_at",
             "chars",
+            "char_count_utf8",
+            "codepoint_at_utf8",
             "is_digit",
             "is_alpha",
             "is_alphanumeric",
-            "clone",
-        ];
+        ] {
+            assert!(
+                !labels.contains(&retired),
+                "string completion must not advertise retired method {retired}"
+            );
+        }
         let missing: Vec<_> = expected
             .iter()
             .copied()
@@ -7745,7 +7759,7 @@ fn label(colour: Colour) -> string {
         assert_eq!(
             missing.as_slice(),
             &[] as &[&str],
-            "string method completion should include all L2-wired methods; missing {missing:?}, got {labels:?}"
+            "string method completion should include the current scalar API; missing {missing:?}, got {labels:?}"
         );
     }
 

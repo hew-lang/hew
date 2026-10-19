@@ -12,48 +12,12 @@ fn swap<A, B>(consume first: A, consume second: B, n: i64) {
 fn main() { swap(1, "second", 2); }
 "#;
     assert_call_effect(source, "swap(1, \"second\", 2)", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_scalar_cleanup_keeps_plain_callable_boundaries() {
-    let source = r"
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow<Vec<T>>(Vec.new(), n - 1); }
-}
-fn scalar() { grow(1, 2); }
-fn main() { let callback: fn() -> () = scalar; callback(); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
-    assert_call_effect(source, "callback()", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_scalar_array_cleanup_remains_synchronous() {
-    let source = r"
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow([value], n - 1); }
-}
-fn scalar() { grow(1, 2); }
-fn main() { let callback: fn() -> () = scalar; callback(); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::Never);
-}
-
-#[test]
-fn growing_resource_close_keeps_its_suspension_effect() {
-    let source = r"
-#[resource]
-type Wrapper<T> { value: T; }
-impl<T> Wrapper<T> {
-    fn close(consume self) { sleep(1ms); discard(self.value); }
-}
-fn discard<T>(consume value: T) {}
-fn grow<T>(consume value: T, n: i64) {
-    if n > 0 { grow(Wrapper { value: value }, n - 1); }
-}
-fn main() { grow(1, 2); }
-";
-    assert_call_effect(source, "grow(1, 2)", SuspensionEffect::MaySuspend);
+    let resource = source.replace("fn main() { swap(1, \"second\", 2); }", "#[resource] type Ticket {} impl Ticket { fn close(consume self) { sleep(1ms); } } fn main() { swap(Ticket {}, 7, 2); }");
+    assert_call_effect(
+        &resource,
+        "swap(Ticket {}, 7, 2)",
+        SuspensionEffect::MaySuspend,
+    );
 }
 
 #[test]
@@ -703,6 +667,60 @@ fn effect_graph_shared_descendants_remain_synchronous() {
 }
 
 #[test]
+fn effect_graph_ignores_opaque_data_origins_in_shared_cleanup_calls() {
+    let mut source = String::from(
+        "#[opaque] type Data {}\n#[resource] type Guard {}\nimpl Guard { fn close(consume self) {} }\nfn fresh(value: Data) -> Data { value }\nfn f0(value: Data) { let guard = Guard {}; }\n",
+    );
+    // Distinct call sites share descendants. Data provenance cannot change
+    // Guard's close effect, so these calls must not multiply effect instances.
+    for level in 1..=22 {
+        let child = level - 1;
+        writeln!(
+            source,
+            "fn f{level}(value: Data) {{ f{child}(fresh(value)); f{child}(fresh(value)); }}"
+        )
+        .unwrap();
+    }
+    source.push_str("fn main() {}\n");
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(output
+        .suspension_effects
+        .calls
+        .values()
+        .all(|effect| *effect == SuspensionEffect::Never));
+}
+
+#[test]
+fn effect_origins_follow_callables_extracted_from_linear_values() {
+    let source = r"
+#[resource] type Ticket { id: i64; }
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+#[linear] type Pack<T> { callback: T; }
+impl<T> Pack<T> { fn take(consume self) -> T { let Pack { callback } = self; callback } }
+fn discard(consume pack: Pack<fn() -> i64>) { let callback = pack.take(); }
+fn pure() -> i64 { 1 }
+fn synchronous() { discard(Pack { callback: pure }); }
+fn main() {
+    let ticket = Ticket { id: 1 };
+    let capturing = move || ticket.id;
+    synchronous();
+    discard(Pack { callback: capturing });
+}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        call_effects(&output, source, "discard(Pack { callback: pure })"),
+        vec![SuspensionEffect::Never]
+    );
+    assert_eq!(
+        call_effects(&output, source, "discard(Pack { callback: capturing })"),
+        vec![SuspensionEffect::MaySuspend]
+    );
+}
+
+#[test]
 fn effect_graph_ignores_irrelevant_growing_generic_arguments() {
     let source = r"
 fn recurse<T>(n: i64) {
@@ -1299,4 +1317,26 @@ fn the_trait_object_layout_publishes_closure_slots_and_effects() {
         ]
     );
     assert_eq!(layout.slot_of(layout.slots[1].method), Some(1));
+}
+
+#[test]
+fn inline_recursive_cleanup_preserves_the_source_diagnostic() {
+    let source = r"
+type Grow<T> {
+    tag: i64;
+    sub: Grow<Grow<i64>>;
+}
+fn main() {
+    let value: Grow<i64> = Grow { tag: 1, sub: missing };
+}
+";
+    let output = check_source(source);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("undefined variable `missing`")),
+        "{:?}",
+        output.errors
+    );
 }

@@ -1,13 +1,13 @@
 //! Remote actor call operations.
 
 use super::{
-    quarantine_blocks_send, release_request, remote_reply_data_to_ptr, reply_table,
-    with_current_node_read, AskError, ConnectionKey, HewNode, InboundRequest, PendingReply,
-    PendingReplyKind, ReplyOutcome, ReplyStatus, NODE_STATE_RUNNING,
+    quarantine_blocks_send, remote_reply_data_to_ptr, reply_table, with_current_node_read,
+    AskError, ConnectionKey, HewNode, PendingReply, PendingReplyKind, ReplyOutcome, ReplyStatus,
+    NODE_STATE_RUNNING,
 };
 use crate::connection;
 use crate::envelope::encode_envelope_frame_from_raw_parts;
-use crate::node_identity::{HewRemotePid, Location};
+use crate::node_identity::Location;
 use crate::request_deadline::RequestDeadline;
 use crate::routing;
 use crate::set_last_error;
@@ -18,8 +18,6 @@ use std::sync::Arc;
 
 enum RemoteAskSetupResult {
     Ok((Arc<PendingReply>, Location, u64)),
-    /// This node owns the target actor.
-    Local(u64),
     Error(AskError),
 }
 
@@ -30,12 +28,16 @@ enum RemoteAskSetupResult {
 ///
 /// # Safety
 ///
-/// - `pid` must be a valid remote actor PID.
+/// - `target` and `grant` identify an authenticated recipient-bound actor grant.
 /// - `data` must point to at least `size` readable bytes, or be null when
 ///   `size` is 0.
 #[allow(
     clippy::too_many_lines,
     reason = "function orchestrates end-to-end remote ask setup across encoding, auth, and parking"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the owned request retains its exact grant and deadline"
 )]
 fn setup_remote_ask(
     target: Location,
@@ -45,6 +47,8 @@ fn setup_remote_ask(
     size: usize,
     waker: crate::wake::OwnedWaker,
     deadline: RequestDeadline,
+    grant: u64,
+    kind: crate::request_state::RequestKind,
 ) -> RemoteAskSetupResult {
     if deadline.expired() {
         return RemoteAskSetupResult::Error(AskError::Timeout);
@@ -73,8 +77,8 @@ fn setup_remote_ask(
             routing::LocationRoute::StaleRef => {
                 return RemoteAskSetupResult::Error(AskError::StaleRef);
             }
-            routing::LocationRoute::Local { actor_id } => {
-                return RemoteAskSetupResult::Local(actor_id);
+            routing::LocationRoute::Local { .. } => {
+                return RemoteAskSetupResult::Error(AskError::Unauthorized);
             }
         };
 
@@ -136,8 +140,11 @@ fn setup_remote_ask(
         };
 
         let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
-        let (request_id, pending) =
-            reply_table().register_with_waker(connection, Some(waker), PendingReplyKind::Ask);
+        let (request_id, pending) = reply_table().register_with_waker(
+            connection,
+            Some(waker),
+            PendingReplyKind::Ask(send_claim.publication_token),
+        );
 
         // SAFETY: the running node owns a live connection manager.
         let manager = unsafe { &*node.conn_mgr };
@@ -167,7 +174,7 @@ fn setup_remote_ask(
                 }
                 let remaining = deadline.remaining();
                 if remaining.is_some_and(|budget| budget <= 0) {
-                    table.fail(request_id, AskError::Timeout);
+                    table.refuse(request_id, AskError::Timeout);
                     return None;
                 }
                 // SAFETY: the job owns the serialized request through preparation.
@@ -175,7 +182,11 @@ fn setup_remote_ask(
                     encode_envelope_frame_from_raw_parts(
                         Some(target),
                         source,
-                        crate::envelope::EnvelopeMessage::Handler(codec.identity.to_owned()),
+                        crate::envelope::EnvelopeMessage::Service {
+                            handler: codec.identity.to_owned(),
+                            grant_id: grant,
+                            kind,
+                        },
                         request.as_ptr(),
                         request.len(),
                         request_id,
@@ -184,8 +195,8 @@ fn setup_remote_ask(
                 } {
                     Ok(bytes) => Some(bytes),
                     Err(error) => {
-                        set_last_error(format!("hew_node_api_ask: {error}"));
-                        table.fail(request_id, AskError::EncodeFailed);
+                        set_last_error(format!("granted actor call: {error}"));
+                        table.refuse(request_id, AskError::EncodeFailed);
                         None
                     }
                 }
@@ -197,7 +208,7 @@ fn setup_remote_ask(
             },
         );
         if !submitted {
-            reply_table().fail(request_id, AskError::SendFailed);
+            reply_table().refuse(request_id, AskError::SendFailed);
         }
         RemoteAskSetupResult::Ok((pending, target, publication))
     })
@@ -211,7 +222,7 @@ fn remote_reply_value(
     reply_size: usize,
     reply: &ReplyOutcome,
 ) -> Result<*mut c_void, AskError> {
-    if reply.status == ReplyStatus::Failed {
+    if reply.status != ReplyStatus::Success {
         return Err(reply.ask_error);
     }
     // Void ask (reply_size == 0) or empty reply: there is no value to
@@ -247,9 +258,17 @@ fn remote_reply_value(
 /// Where a remote call's reply comes from.
 pub(super) enum RemoteCallRoute {
     /// A peer owns the target: the pending registration of the encoded ask.
-    Wire(Arc<PendingReply>, Location, u64),
-    /// This node owns the target: the local actor call carrying the request.
-    Local(*mut crate::actor_call_native::HewActorCall),
+    Wire(
+        Arc<PendingReply>,
+        Location,
+        u64,
+        crate::request_state::RequestKind,
+    ),
+    Offer(Arc<PendingReply>, Option<super::service::ExportLease>),
+    Import(
+        Arc<PendingReply>,
+        std::sync::Weak<super::service::ServiceExports>,
+    ),
     Failed(AskError),
 }
 
@@ -270,13 +289,15 @@ pub struct HewRemoteCall {
 }
 
 impl HewRemoteCall {
+    pub(crate) fn has_deadline(&self) -> bool {
+        self.deadline.raw() >= 0
+    }
+
     fn ready(&mut self) -> bool {
         let pending = match &self.route {
-            RemoteCallRoute::Wire(pending, _, _) => pending,
-            RemoteCallRoute::Local(call) => {
-                // SAFETY: the operation exclusively drives its live local call.
-                return unsafe { crate::actor_call_native::hew_actor_call_poll(*call) } != -1;
-            }
+            RemoteCallRoute::Wire(pending, _, _, _)
+            | RemoteCallRoute::Offer(pending, _)
+            | RemoteCallRoute::Import(pending, _) => pending,
             RemoteCallRoute::Failed(_) => return true,
         };
         if self.timed_out
@@ -288,8 +309,10 @@ impl HewRemoteCall {
         {
             return true;
         }
-        // SAFETY: this wire call uniquely owns its timer. A failed timer must
-        // retain the existing fail-closed outcome instead of parking forever.
+        if self.deadline.raw() < 0 {
+            return false;
+        }
+        // SAFETY: this operation uniquely owns its timer.
         let timer_status = unsafe { crate::coro_sleep::hew_coro_sleep_status(self.timer) };
         if !self.deadline.expired() && timer_status == 0 {
             return false;
@@ -304,19 +327,78 @@ impl HewRemoteCall {
     }
 }
 
+/// Start an authenticated call while its actor operation retains the original
+/// request. Encoding borrows its fields; no byte or field loan escapes setup.
+///
+/// # Safety
+/// The request and waker remain live through this synchronous encoding step.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one exact granted request contract"
+)]
+pub(super) unsafe fn start_granted_call(
+    target: Result<(Location, u64), AskError>,
+    dispatch: *const c_void,
+    message: i32,
+    request: *mut c_void,
+    request_size: usize,
+    reply_size: usize,
+    deadline_ns: i64,
+    waker: *const crate::wake::HewWaker,
+    kind: crate::request_state::RequestKind,
+) -> *mut HewRemoteCall {
+    let deadline = RequestDeadline::from_raw(deadline_ns);
+    let setup = match target {
+        Ok((target, grant)) => {
+            // SAFETY: the caller retains the live descriptor through setup.
+            let wake = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
+            setup_remote_ask(
+                target,
+                dispatch,
+                message,
+                request,
+                request_size,
+                wake,
+                deadline,
+                grant,
+                kind,
+            )
+        }
+        Err(error) => RemoteAskSetupResult::Error(error),
+    };
+    let route = match setup {
+        RemoteAskSetupResult::Ok((pending, target, publication)) => {
+            RemoteCallRoute::Wire(pending, target, publication, kind)
+        }
+        RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
+    };
+    Box::into_raw(Box::new(HewRemoteCall {
+        route,
+        timer: if deadline_ns >= 0 {
+            // SAFETY: the deadline operation retains the caller's live waker.
+            unsafe { crate::coro_sleep::hew_coro_sleep_until_new(deadline_ns, waker) }
+        } else {
+            ptr::null_mut()
+        },
+        timed_out: false,
+        deadline,
+        dispatch,
+        msg_type: message,
+        reply_size,
+    }))
+}
+
 impl Drop for HewRemoteCall {
     fn drop(&mut self) {
         match &self.route {
             // A late reply finds no registration and is dropped.
-            RemoteCallRoute::Wire(pending, _, _) => {
+            RemoteCallRoute::Wire(pending, _, _, _)
+            | RemoteCallRoute::Offer(pending, _)
+            | RemoteCallRoute::Import(pending, _) => {
                 if reply_table().remove(pending.request_id).is_some() {
                     withdraw_remote(&self.route);
                 }
             }
-            // SAFETY: generated code drained the call's cleanup before freeing.
-            RemoteCallRoute::Local(call) => unsafe {
-                crate::actor_call_native::hew_actor_call_free(*call);
-            },
             RemoteCallRoute::Failed(_) => {}
         }
         // SAFETY: the operation uniquely owns its timer, released once here.
@@ -326,7 +408,7 @@ impl Drop for HewRemoteCall {
 
 /// Best-effort withdrawal is bound to the same authenticated connection publication.
 fn withdraw_remote(route: &RemoteCallRoute) {
-    let RemoteCallRoute::Wire(pending, target, publication) = route else {
+    let RemoteCallRoute::Wire(pending, target, publication, _) = route else {
         return;
     };
     with_current_node_read(|guard| {
@@ -364,173 +446,11 @@ fn withdraw_remote(route: &RemoteCallRoute) {
     });
 }
 
-/// Submit `request` to the actor at `target`, consuming its fields. A peer
-/// receives the bytes of the target actor's registered codec; an actor on this
-/// node receives the fields through the local call path, as the peer's inbound
-/// ask would deliver them. Setup failures are latched as the call's outcome,
-/// so the caller always polls, takes, drains and frees the operation.
-///
-/// # Safety
-///
-/// - `target` must be null or a readable carried location.
-/// - `request` must hold `request_size` readable bytes of the member's message
-///   wrapper; its fields transfer to this call and the caller keeps the bytes.
-/// - `waker` must be a live descriptor.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_call_new(
-    target: *const HewRemotePid,
-    dispatch: *const c_void,
-    msg_type: i32,
-    request: *mut c_void,
-    request_size: usize,
-    reply_size: usize,
-    timeout_ms: u64,
-    inherited_deadline_ns: i64,
-    waker: *const crate::wake::HewWaker,
-) -> *mut HewRemoteCall {
-    // SAFETY: the caller supplies a live descriptor.
-    let owned = unsafe { crate::wake::OwnedWaker::retain(&*waker) };
-    let duration_ns = i64::try_from(u128::from(timeout_ms) * 1_000_000).unwrap_or(i64::MAX);
-    let deadline = RequestDeadline::after(duration_ns)
-        .earlier(RequestDeadline::from_raw(inherited_deadline_ns));
-    // SAFETY: caller guarantees `target` is null or readable.
-    let setup = match unsafe { target.as_ref() }.map(|target| Location::try_from(*target)) {
-        Some(Ok(target)) => setup_remote_ask(
-            target,
-            dispatch,
-            msg_type,
-            request,
-            request_size,
-            owned,
-            deadline,
-        ),
-        _ => RemoteAskSetupResult::Error(AskError::StaleRef),
-    };
-    let route = match setup {
-        RemoteAskSetupResult::Ok((pending, target, publication)) => {
-            RemoteCallRoute::Wire(pending, target, publication)
-        }
-        RemoteAskSetupResult::Error(error) => RemoteCallRoute::Failed(error),
-        RemoteAskSetupResult::Local(actor_id) => {
-            // SAFETY: forwards the request and waker contracts.
-            return unsafe {
-                start_local_call(
-                    actor_id,
-                    dispatch,
-                    msg_type,
-                    request,
-                    request_size,
-                    reply_size,
-                    deadline.raw(),
-                    waker,
-                )
-            };
-        }
-    };
-    // The peer holds the encoded bytes; the fields are released here.
-    // SAFETY: the caller transferred the request's fields.
-    unsafe { release_request(dispatch, msg_type, request) };
-    Box::into_raw(Box::new(HewRemoteCall {
-        route,
-        // SAFETY: the descriptor is live; the timer retains its own reference.
-        timer: unsafe { crate::coro_sleep::hew_coro_sleep_until_new(deadline.raw(), waker) },
-        timed_out: false,
-        deadline,
-        dispatch,
-        msg_type,
-        reply_size,
-    }))
-}
-
-/// Start the call to an actor this node owns on the local call path, with the
-/// admission a peer gives an inbound ask: a full mailbox refuses the request
-/// and a missing actor has stopped. The local call carries the deadline.
-///
-/// # Safety
-/// As [`hew_remote_call_new`].
-#[expect(
-    clippy::too_many_arguments,
-    reason = "forwards the complete remote call contract"
-)]
-unsafe fn start_local_call(
-    actor_id: u64,
-    dispatch: *const c_void,
-    msg_type: i32,
-    request: *mut c_void,
-    request_size: usize,
-    reply_size: usize,
-    deadline_ns: i64,
-    waker: *const crate::wake::HewWaker,
-) -> *mut HewRemoteCall {
-    let operation = |route| {
-        Box::into_raw(Box::new(HewRemoteCall {
-            route,
-            timer: ptr::null_mut(),
-            timed_out: false,
-            deadline: RequestDeadline::from_raw(deadline_ns),
-            dispatch,
-            msg_type,
-            reply_size,
-        }))
-    };
-    // A name lookup alone does not prove the caller's concrete payload layout.
-    let target_dispatch = crate::lifetime::live_actors::dispatch_ptr_by_id(actor_id);
-    if !target_dispatch
-        .is_some_and(|target| super::local_request_matches(dispatch, target, msg_type))
-    {
-        // SAFETY: the fields have not moved into the target actor.
-        unsafe { release_request(dispatch, msg_type, request) };
-        let error = if target_dispatch.is_some() {
-            AskError::DecodeFailure
-        } else {
-            AskError::ActorStopped
-        };
-        return operation(RemoteCallRoute::Failed(error));
-    }
-    let reply_drop = crate::xnode_serial::lookup_reply(dispatch, msg_type).map(|codec| codec.drop);
-    // SAFETY: the request is the member's wrapper (caller contract).
-    let adopted = crate::xnode_serial::lookup_request(dispatch, msg_type)
-        .and_then(|codec| unsafe { InboundRequest::adopt(codec, request, request_size) });
-    let Some(adopted) = adopted else {
-        // SAFETY: the fields did not move.
-        unsafe { release_request(dispatch, msg_type, request) };
-        return operation(RemoteCallRoute::Failed(AskError::DecodeFailure));
-    };
-    let Some(reply_drop) = reply_drop else {
-        return operation(RemoteCallRoute::Failed(AskError::DecodeFailure));
-    };
-    let request = adopted;
-    let Some((_runtime, token)) = InboundRequest::target(actor_id) else {
-        return operation(RemoteCallRoute::Failed(AskError::ActorStopped));
-    };
-    let (wrapper, size, drop) = (request.wrapper, request.size, request.drop);
-    std::mem::forget(request);
-    // SAFETY: the call owns the wrapper and its fields on every outcome, and
-    // the waker descriptor is live.
-    let call = unsafe {
-        crate::actor_call_native::hew_actor_call_new(
-            token,
-            msg_type,
-            wrapper,
-            size,
-            drop,
-            reply_size,
-            reply_drop,
-            waker,
-            deadline_ns,
-            1,
-            None,
-            None,
-        )
-    };
-    operation(RemoteCallRoute::Local(call))
-}
-
 /// Observe a remote call without taking its outcome: `-1` while the reply is
 /// outstanding and the deadline has not passed, `0` once it can be taken.
 ///
 /// # Safety
-/// `operation` is a live call from [`hew_remote_call_new`].
+/// `operation` is a live call from [`HewRemoteCall`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_remote_call_poll(operation: *mut HewRemoteCall) -> i32 {
     // SAFETY: the caller exclusively drives this live operation.
@@ -553,12 +473,18 @@ pub unsafe extern "C" fn hew_remote_call_take(
 ) -> i32 {
     // SAFETY: the caller exclusively drives this live operation.
     let operation = unsafe { &mut *operation };
+    if matches!(
+        operation.route,
+        RemoteCallRoute::Offer(..) | RemoteCallRoute::Import(..)
+    ) {
+        // SAFETY: the acquisition uses the same ready-once operation contract.
+        return unsafe { super::service_api::take_acquisition(operation, output) };
+    }
     let pending = match &operation.route {
         RemoteCallRoute::Wire(..) if operation.timed_out => return AskError::Timeout as i32,
-        RemoteCallRoute::Wire(pending, _, _) => pending,
-        // SAFETY: the local call is ready and `output` holds its reply.
-        RemoteCallRoute::Local(call) => return unsafe { take_local_call(*call, output) },
+        RemoteCallRoute::Wire(pending, _, _, _) => pending,
         RemoteCallRoute::Failed(error) => return *error as i32,
+        RemoteCallRoute::Offer(..) | RemoteCallRoute::Import(..) => unreachable!(),
     };
     let Some(reply) = pending
         .outcome
@@ -568,11 +494,20 @@ pub unsafe extern "C" fn hew_remote_call_take(
     else {
         return AskError::ConnectionDropped as i32;
     };
+    // SAFETY: the ready operation and output retain the declared reply layout.
+    unsafe { write_remote_reply(operation, &reply, output) }
+}
+
+unsafe fn write_remote_reply(
+    operation: &HewRemoteCall,
+    reply: &ReplyOutcome,
+    output: *mut c_void,
+) -> i32 {
     match remote_reply_value(
         operation.dispatch,
         operation.msg_type,
         operation.reply_size,
-        &reply,
+        reply,
     ) {
         Ok(value) => {
             if operation.reply_size > 0 {
@@ -593,71 +528,48 @@ pub unsafe extern "C" fn hew_remote_call_take(
     }
 }
 
-/// Take a ready local call's reply into `output`. A refused request comes back
-/// as its envelope, whose release drops its fields.
-///
+/// Consume an imported request's ready outcome, retaining non-admission proof.
 /// # Safety
-/// `call` is ready and untaken; `output` is writable for its reply.
-unsafe fn take_local_call(
-    call: *mut crate::actor_call_native::HewActorCall,
+/// The operation is a ready imported request taken once; output holds its reply.
+pub(crate) unsafe fn take_imported_request(
+    operation: *mut HewRemoteCall,
     output: *mut c_void,
-) -> i32 {
-    // SAFETY: the caller exclusively drives the ready call.
-    let status = unsafe { crate::actor_call_native::hew_actor_call_poll(call) };
-    if status < 0 {
-        return AskError::ActorStopped as i32;
-    }
-    let output = if output.is_null() {
-        ptr::NonNull::<u8>::dangling().as_ptr().cast()
-    } else {
-        output
+) -> crate::request_state::RequestOutcome {
+    use crate::request_state::{RequestKind, RequestOutcome};
+    // SAFETY: the caller exclusively owns this ready operation.
+    let operation = unsafe { &mut *operation };
+    let (pending, kind) = match &operation.route {
+        RemoteCallRoute::Failed(error) => return RequestOutcome::Refused(*error),
+        RemoteCallRoute::Wire(..) if operation.timed_out => {
+            return RequestOutcome::Completed(AskError::Timeout as i32)
+        }
+        RemoteCallRoute::Wire(pending, _, _, kind) => (pending, *kind),
+        _ => return RequestOutcome::Completed(AskError::DecodeFailure as i32),
     };
-    let mut rejected = ptr::null_mut();
-    // SAFETY: the call is ready and untaken; the output holds its reply.
-    let status =
-        unsafe { crate::actor_call_native::hew_actor_call_take(call, output, &raw mut rejected) };
-    if !rejected.is_null() {
-        // SAFETY: the refused envelope is released once with its fields.
-        unsafe { crate::mailbox::hew_msg_envelope_release(rejected) };
-    }
-    status
-}
-
-/// Drain the owners a completed or cancelled local call abandoned; a call a
-/// peer answers has none. As [`crate::actor_call_native::hew_actor_call_cleanup_poll`].
-///
-/// # Safety
-/// The operation and parent invocation remain live until this returns complete.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_call_cleanup_poll(
-    operation: *mut HewRemoteCall,
-    parent: *mut crate::coro_state::HewCoroState,
-) -> i32 {
-    // SAFETY: generated cleanup exclusively owns this live operation.
-    match unsafe { &(*operation).route } {
-        // SAFETY: forwards the cleanup contract to the local call.
-        RemoteCallRoute::Local(call) => unsafe {
-            crate::actor_call_native::hew_actor_call_cleanup_poll(*call, parent)
+    let Some(reply) = pending
+        .outcome
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .take()
+    else {
+        return RequestOutcome::Completed(AskError::ConnectionDropped as i32);
+    };
+    match reply.status {
+        ReplyStatus::Refused => RequestOutcome::Refused(reply.ask_error),
+        ReplyStatus::Failed => RequestOutcome::Completed(reply.ask_error as i32),
+        ReplyStatus::Success => match kind {
+            RequestKind::CallWait | RequestKind::CallReject => {
+                // SAFETY: the original checked completion protocol owns this output.
+                RequestOutcome::Completed(unsafe { write_remote_reply(operation, &reply, output) })
+            }
+            RequestKind::SendWait | RequestKind::SendReject | RequestKind::SendDropNewest => {
+                match reply.data.as_slice() {
+                    [0] => RequestOutcome::Submitted { discarded: false },
+                    [1] => RequestOutcome::Submitted { discarded: true },
+                    _ => RequestOutcome::Completed(AskError::DecodeFailure as i32),
+                }
+            }
         },
-        RemoteCallRoute::Wire(..) | RemoteCallRoute::Failed(_) => 1,
-    }
-}
-
-/// Transfer the completed cleanup diagnostic, if any.
-///
-/// # Safety
-/// The operation's cleanup has completed and this fault is taken at most once.
-#[no_mangle]
-pub unsafe extern "C" fn hew_remote_call_cleanup_fault(
-    operation: *mut HewRemoteCall,
-) -> *mut crate::fault::HewFault {
-    // SAFETY: generated cleanup exclusively owns this live operation.
-    match unsafe { &(*operation).route } {
-        // SAFETY: forwards the cleanup contract to the local call.
-        RemoteCallRoute::Local(call) => unsafe {
-            crate::actor_call_native::hew_actor_call_cleanup_fault(*call)
-        },
-        RemoteCallRoute::Wire(..) | RemoteCallRoute::Failed(_) => ptr::null_mut(),
     }
 }
 

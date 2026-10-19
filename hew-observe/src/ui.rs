@@ -67,7 +67,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(" hew-observe "),
+                .title(" hew observe "),
         )
         .select(tab_idx)
         .style(Style::default().fg(theme::TEXT_PRIMARY))
@@ -199,12 +199,12 @@ fn draw_waiting_splash(f: &mut Frame, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
-            "    hew-observe --addr localhost:6060",
+            "    hew observe --addr localhost:6060",
             theme::key_style(),
         )),
         Line::from(""),
         Line::from(Span::styled(
-            "  Run  hew-observe --list  to see active profilers.",
+            "  Run  hew observe --list  to see active profilers.",
             theme::dim_style(),
         )),
         Line::from(""),
@@ -248,9 +248,20 @@ fn core_pane_block(app: &App, title: &str) -> Block<'static> {
 fn draw_cluster(f: &mut Frame, app: &App, area: Rect) {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(44), Constraint::Min(0)])
+        .constraints([
+            Constraint::Percentage(35),
+            Constraint::Min(0),
+            Constraint::Length(14),
+        ])
         .split(area);
     draw_cluster_topology(f, app, vertical[0]);
+    draw_runtime_metrics(
+        f,
+        app,
+        &["node.", "swim.", "registry."],
+        "Node metrics",
+        vertical[2],
+    );
 
     let lower = Layout::default()
         .direction(Direction::Horizontal)
@@ -1052,12 +1063,49 @@ fn draw_overview(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(8),  // stats
             Constraint::Length(10), // sparklines
             Constraint::Min(0),     // top actors bar chart
+            Constraint::Length(6),
         ])
         .split(area);
 
     draw_overview_stats(f, app, chunks[0]);
     draw_overview_sparklines(f, app, chunks[1]);
     draw_overview_top_actors(f, app, chunks[2]);
+    draw_runtime_metrics(f, app, &["mailbox."], "Mailbox metrics", chunks[3]);
+}
+
+fn draw_runtime_metrics(f: &mut Frame, app: &App, prefixes: &[&str], title: &str, area: Rect) {
+    let Some(series) = &app.metrics.runtime_series else {
+        f.render_widget(
+            Paragraph::new("Granular metrics unavailable from this producer")
+                .block(core_pane_block(app, title)),
+            area,
+        );
+        return;
+    };
+    let rows = series
+        .iter()
+        .filter(|metric| {
+            prefixes
+                .iter()
+                .any(|prefix| metric.name.starts_with(prefix))
+        })
+        .map(|metric| {
+            Row::new([
+                metric.name.clone(),
+                metric.kind.clone(),
+                metric.value.to_string(),
+            ])
+        });
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Min(24),
+            Constraint::Length(9),
+            Constraint::Length(20),
+        ],
+    )
+    .block(core_pane_block(app, title));
+    f.render_widget(table, area);
 }
 
 #[expect(clippy::too_many_lines, reason = "Stats layout is one cohesive block")]
@@ -1369,6 +1417,61 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
         return;
     }
 
+    let chunks = Layout::vertical([Constraint::Min(5), Constraint::Length(8)]).split(area);
+    let details = app
+        .tree_rows
+        .get(app.tree_selected)
+        .and_then(|row| row.details.as_ref());
+    let text = if let Some(details) = details {
+        let actor = details.actor.as_ref().map_or_else(
+            || "unavailable".to_owned(),
+            |actor| {
+                let serial = actor
+                    .spawn_serial
+                    .map_or_else(|| "unavailable".to_owned(), |serial| serial.to_string());
+                format!("{} / incarnation {serial}", actor.actor_id)
+            },
+        );
+        let mailbox = details
+            .actor
+            .as_ref()
+            .and_then(|identity| {
+                app.actors.iter().find(|actor| {
+                    actor.origin.as_ref().is_some_and(|origin| {
+                        origin.producer_instance_id == details.producer_instance_id
+                            && origin.identity.actor_id == identity.actor_id
+                            && origin.identity.spawn_serial == identity.spawn_serial
+                    })
+                })
+            })
+            .and_then(|actor| actor.mailbox.as_ref());
+        let loss = mailbox.map_or_else(
+            || "Mailbox details unavailable".to_owned(),
+            |mailbox| {
+                format!(
+                    "Mailbox capacity {} / {}: dropped new {}, old {}, coalesced {}, stopped {}",
+                    mailbox.capacity,
+                    mailbox.policy,
+                    mailbox.dropped_new,
+                    mailbox.dropped_old,
+                    mailbox.coalesced,
+                    mailbox.dropped_on_stop
+                )
+            },
+        );
+        let restarts = details
+            .restarts
+            .map_or_else(|| "not applicable".to_owned(), |count| count.to_string());
+        let role = details.role.as_deref().unwrap_or(&details.kind);
+        format!("Role: {role}  Strategy: {}  Restarts: {restarts}\nActor: {actor}\n{loss}\nEnter: view actor or owning supervisor events", details.strategy)
+    } else {
+        "Structured details unavailable from this producer.".to_owned()
+    };
+    f.render_widget(
+        Paragraph::new(text).block(core_pane_block(app, "Selected role")),
+        chunks[1],
+    );
+
     let rows: Vec<Row> = app
         .tree_rows
         .iter()
@@ -1397,7 +1500,7 @@ fn draw_supervisors(f: &mut Frame, app: &App, area: Rect) {
     let table = Table::new(rows, [Constraint::Min(40), Constraint::Length(15)])
         .header(Row::new(vec!["Tree", "State"]).style(theme::header_style()))
         .block(core_pane_block(app, "Supervision Tree"));
-    f.render_widget(table, area);
+    f.render_widget(table, chunks[0]);
 }
 
 fn draw_crashes(f: &mut Frame, app: &App, area: Rect) {

@@ -660,7 +660,7 @@ pub(super) fn builtin_callable_impl_program() -> Option<Program> {
     })
 }
 
-pub(super) fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
+pub(super) fn is_builtin_iterator_impl(item: &Item) -> bool {
     let Item::Impl(impl_decl) = item else {
         return false;
     };
@@ -681,9 +681,11 @@ pub(super) fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
     let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
     matches!(
         (trait_name.as_str(), name.as_str()),
-        ("Iterator", "VecIter" | "HashMapIter" | "Generator")
-            | ("DoubleEndedIterator", "VecIter")
-            | ("IntoIterator", "Vec")
+        (
+            "Iterator",
+            "VecIter" | "StringIter" | "HashMapIter" | "Generator"
+        ) | ("DoubleEndedIterator", "VecIter" | "StringIter")
+            | ("IntoIterator", "Vec" | "string")
     )
 }
 
@@ -695,6 +697,7 @@ pub(super) fn is_builtin_vec_iterator_impl(item: &Item) -> bool {
 pub(super) fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
     match source_name {
         "VecIter" => "std.builtins.VecIter",
+        "StringIter" => "std.builtins.StringIter",
         "HashMapIter" => "std.builtins.HashMapIter",
         "ActorRequestOwner" => "std.builtins.ActorRequestOwner",
         _ => source_name,
@@ -713,14 +716,12 @@ pub(super) fn is_builtin_source_body_impl(item: &Item) -> bool {
         && matches!(&decl.target_type.0, TypeExpr::Named { type_args: None, .. })
         && !decl.methods.is_empty()
         && decl.methods.iter().all(|method| {
-            method.body.stmts.is_empty()
-                && method.body.trailing_expr.is_some()
-                && !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
+            !method.attributes.iter().any(|attr| attr.name == "extern_symbol")
         }))
 }
 
 pub(super) fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_vec_iterator_impl(item)
+    is_builtin_iterator_impl(item)
         || is_builtin_source_body_impl(item)
         || is_builtin_request_owner_impl(item)
 }

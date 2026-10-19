@@ -21,13 +21,13 @@ fn label_of(value: machine_defs.PayloadLifecycle) -> string {
 fn main() -> i64 {
     var i: i64 = 0;
     while i < 50 {
-        let outbound = machine_defs.make(string.repeat("caller", 16));
+        let outbound = machine_defs.make(("caller").repeat(16));
         let returned = machine_defs.bounce(outbound);
         let envelope = Envelope { value: returned, marker: i };
         if label_of(envelope.value).len() != 96 {
             return 71;
         }
-        let inbound = machine_defs.make(string.repeat("callee", 16));
+        let inbound = machine_defs.make(("callee").repeat(16));
         let carried = local_bounce(inbound);
         if label_of(carried).len() != 96 {
             return 72;

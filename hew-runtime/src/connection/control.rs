@@ -3,8 +3,6 @@
 use std::ffi::c_int;
 use std::sync::atomic::Ordering;
 
-// Used by both plain and encryption-enabled envelope send paths.
-use crate::envelope::encode_envelope_frame_from_raw_parts;
 use crate::envelope::{
     decode_link_down_payload, decode_link_req_payload, decode_monitor_down_payload,
     decode_monitor_req_payload, decode_registry_gossip_payload, decode_setup_result_payload,
@@ -15,7 +13,6 @@ use crate::envelope::{
     REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, SETUP_STATUS_ACCEPTED,
     SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
-use crate::mailbox_envelope::validate_cross_node_send_params;
 use crate::node_identity::Location;
 use crate::set_last_error;
 
@@ -24,38 +21,6 @@ use super::peer::wait_authenticated_peer_node_id_for_conn;
 use super::send::hew_connmgr_send_preencoded_claimed;
 use super::swim::handle_swim_control_frame;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
-
-// Used by both plain and encryption-enabled send paths in `hew_connmgr_send`.
-pub(super) unsafe fn encode_envelope(
-    target: Location,
-    identity: &str,
-    payload: *mut u8,
-    payload_len: usize,
-    payload_class: u8,
-    cancel_token_handle: u64,
-) -> Option<Vec<u8>> {
-    // Cross-node send gates (Gate 1 before Gate 2; fail-closed in all build
-    // profiles via set_last_error + return None, not debug_assert).
-    validate_cross_node_send_params(payload_class, cancel_token_handle)?;
-    // SAFETY: caller guarantees `payload` is valid for `payload_len` bytes.
-    match unsafe {
-        encode_envelope_frame_from_raw_parts(
-            Some(target),
-            None,
-            crate::envelope::EnvelopeMessage::Handler(identity.to_owned()),
-            payload.cast_const(),
-            payload_len,
-            0,
-            None,
-        )
-    } {
-        Ok(bytes) => Some(bytes),
-        Err(err) => {
-            set_last_error(format!("hew_connmgr_send: {err}"));
-            None
-        }
-    }
-}
 
 pub(super) fn encode_registry_gossip_control(
     name: &str,
@@ -105,22 +70,23 @@ pub(super) fn handle_control_frame(
     control: &ControlFrame,
 ) {
     match control.ctrl_kind {
-        CTRL_REGISTRY_GOSSIP => {}
+        crate::envelope::CTRL_SERVICE_OFFER | crate::envelope::CTRL_SERVICE_OFFER_RESULT => {
+            handle_service_frame(mgr, conn_id, claim_token, control);
+        }
+        CTRL_REGISTRY_GOSSIP => {
+            handle_registry_gossip(mgr, peer_feature_flags, conn_id, claim_token, control);
+        }
         CTRL_SWIM => {
             handle_swim_control_frame(mgr, peer_feature_flags, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_REQ => {
             handle_monitor_req_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_DEMONITOR => {
             handle_demonitor_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_DOWN => {
             handle_monitor_down_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_MONITOR_SETUP_RESULT => {
             handle_setup_result_frame(
@@ -130,19 +96,15 @@ pub(super) fn handle_control_frame(
                 control,
                 crate::hew_node::RemoteSetupKind::Monitor,
             );
-            return;
         }
         CTRL_LINK_REQ => {
             handle_link_req_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_UNLINK => {
             handle_unlink_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_LINK_DOWN => {
             handle_link_down_frame(mgr, conn_id, claim_token, control);
-            return;
         }
         CTRL_LINK_SETUP_RESULT => {
             handle_setup_result_frame(
@@ -152,15 +114,22 @@ pub(super) fn handle_control_frame(
                 control,
                 crate::hew_node::RemoteSetupKind::Link,
             );
-            return;
         }
         other => {
             set_last_error(format!(
                 "connection reader unknown control frame kind {other}"
             ));
-            return;
         }
     }
+}
+
+fn handle_registry_gossip(
+    mgr: *mut HewConnMgr,
+    peer_feature_flags: u32,
+    conn_id: c_int,
+    claim_token: u64,
+    control: &ControlFrame,
+) {
     if !supports_gossip(peer_feature_flags) {
         set_last_error("connection reader rejected registry gossip from non-gossip peer");
         return;
@@ -206,6 +175,7 @@ pub(super) fn handle_control_frame(
         set_last_error("registry gossip rejected a Location not owned by the authenticated peer");
         return;
     }
+    mgr_ref.record_gossip_received();
     // SAFETY: cluster pointer is owned by the live node/manager and remains
     // valid while the reader thread is running.
     unsafe {
@@ -369,14 +339,53 @@ fn handle_monitor_req_frame(
         crate::hew_node::RemoteSetupKind::Monitor,
         target_actor_id,
     );
-    let status =
-        match rt
-            .monitors
-            .register_remote_watcher(target_actor_id, payload.watcher, payload.ref_id)
-        {
-            crate::monitor::RemoteWatcherSetup::Registered => SETUP_STATUS_ACCEPTED,
-            crate::monitor::RemoteWatcherSetup::TargetGone => SETUP_STATUS_TARGET_GONE,
-        };
+    let target = crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+        // SAFETY: the send pin retains this exact incarnation.
+        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
+    });
+    let status = target
+        .ok_or(crate::internal::types::AskError::StaleRef)
+        .and_then(|target| {
+            crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
+                .ok_or(crate::internal::types::AskError::Unauthorized)
+                .and_then(|claim| {
+                    mgr_ref.service_exports.claim_observation(
+                        target,
+                        peer_identity,
+                        payload.grant_id,
+                        &claim.publication_removed(),
+                        || match rt.monitors.register_admitted_watcher(
+                            target_actor_id,
+                            payload.watcher,
+                            payload.ref_id,
+                            false,
+                            claim_token,
+                            0,
+                        ) {
+                            crate::monitor::RemoteWatcherSetup::Registered => SETUP_STATUS_ACCEPTED,
+                            crate::monitor::RemoteWatcherSetup::Terminal(reason) => {
+                                crate::hew_node::monitor_link::send_terminal_setup_notice(
+                                    mgr,
+                                    conn_id,
+                                    claim_token,
+                                    payload.ref_id,
+                                    payload.target,
+                                    reason,
+                                    false,
+                                );
+                                SETUP_STATUS_ACCEPTED
+                            }
+                            crate::monitor::RemoteWatcherSetup::Refused => {
+                                crate::envelope::SETUP_STATUS_REFUSED
+                            }
+                            crate::monitor::RemoteWatcherSetup::TargetGone => {
+                                SETUP_STATUS_TARGET_GONE
+                            }
+                        },
+                    )
+                })
+        })
+        .unwrap_or(crate::envelope::SETUP_STATUS_REFUSED);
     send_setup_result_frame(
         mgr,
         conn_id,
@@ -425,8 +434,12 @@ fn handle_demonitor_frame(
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.monitors
-        .remove_remote_watcher(payload.target.slot(), payload.watcher, payload.ref_id);
+    rt.monitors.retract_admitted_watcher(
+        payload.target.slot(),
+        payload.watcher,
+        payload.ref_id,
+        claim_token,
+    );
 }
 
 fn handle_setup_result_frame(
@@ -505,11 +518,20 @@ fn handle_monitor_down_frame(
         set_last_error("connection reader monitor down invalid terminal reason");
         return;
     }
-    if !(0..=2).contains(&payload.crash_kind) || (!crashed && payload.crash_kind != 0) {
+    if !(crate::internal::types::CrashKind::Crashed.tag()
+        ..=crate::internal::types::CrashKind::TimerOverdue.tag())
+        .contains(&payload.crash_kind)
+        || (!crashed && payload.crash_kind != 0)
+    {
         set_last_error("connection reader monitor down invalid crash kind");
         return;
     }
-    crate::hew_node::handle_inbound_monitor_down(&payload);
+    if crate::runtime::rt_current_opt().is_some_and(|rt| {
+        rt.monitors
+            .permits_terminal(payload.ref_id, payload.target, claim_token)
+    }) {
+        crate::hew_node::handle_inbound_monitor_down(&payload);
+    }
 }
 
 /// Handle an inbound `CTRL_LINK_REQ`: a remote node is linking one of our local
@@ -555,13 +577,48 @@ fn handle_link_req_frame(
             target_actor_id,
         );
     }
-    if let Some(status) = crate::hew_node::handle_inbound_link_req(
-        &payload,
-        target_actor_id,
-        mgr,
-        conn_id,
-        claim_token,
-    ) {
+    let status = if payload.reciprocate == 0 {
+        crate::hew_node::handle_inbound_link_req(
+            &payload,
+            target_actor_id,
+            mgr,
+            conn_id,
+            claim_token,
+        )
+    } else if payload.reciprocate == 1 && payload.reciprocal_ref == 0 {
+        let target =
+            crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
+                // SAFETY: the send pin retains this exact incarnation.
+                unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
+            });
+        target
+            .ok_or(crate::internal::types::AskError::StaleRef)
+            .and_then(|target| {
+                crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
+                    .ok_or(crate::internal::types::AskError::Unauthorized)
+                    .and_then(|claim| {
+                        mgr_ref.service_exports.claim_observation(
+                            target,
+                            peer_identity,
+                            payload.grant_id,
+                            &claim.publication_removed(),
+                            || {
+                                crate::hew_node::handle_inbound_link_req(
+                                    &payload,
+                                    target_actor_id,
+                                    mgr,
+                                    conn_id,
+                                    claim_token,
+                                )
+                            },
+                        )
+                    })
+            })
+            .unwrap_or(Some(crate::envelope::SETUP_STATUS_REFUSED))
+    } else {
+        Some(crate::envelope::SETUP_STATUS_REFUSED)
+    };
+    if let Some(status) = status {
         send_setup_result_frame(
             mgr,
             conn_id,
@@ -606,7 +663,14 @@ fn handle_unlink_frame(
         set_last_error("connection reader unlink Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_unlink(&payload);
+    if let Some(rt) = crate::runtime::rt_current_opt() {
+        rt.monitors.retract_admitted_watcher(
+            payload.target.slot(),
+            payload.linker,
+            payload.ref_id,
+            claim_token,
+        );
+    }
 }
 
 /// Handle an inbound `CTRL_LINK_DOWN`: the node owning an actor we LINK
@@ -655,5 +719,76 @@ pub(super) fn handle_link_down_frame(
         set_last_error("connection reader link down target Location mismatch");
         return;
     }
-    crate::hew_node::handle_inbound_link_down(payload.ref_id, payload.target, payload.reason);
+    if !crate::runtime::rt_current_opt().is_some_and(|rt| {
+        rt.monitors
+            .permits_terminal(payload.ref_id, payload.target, claim_token)
+    }) {
+        return;
+    }
+    crate::hew_node::handle_inbound_link_down(
+        payload.ref_id,
+        payload.target,
+        payload.reason,
+        payload.crash_kind,
+    );
+}
+
+fn handle_service_frame(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    publication: u64,
+    control: &ControlFrame,
+) {
+    let Some((_, peer)) = authenticated_peer_identity(mgr, conn_id, publication, "service") else {
+        return;
+    };
+    // SAFETY: authentication retained the reader's manager publication.
+    let manager = unsafe { &*mgr };
+    if control.ctrl_kind == crate::envelope::CTRL_SERVICE_OFFER_RESULT {
+        if let Ok(result) = decode_setup_result_payload(&control.payload) {
+            manager.service_exports.acknowledge(
+                crate::hew_node::ConnectionKey::new(mgr, conn_id),
+                peer,
+                publication,
+                &result,
+            );
+        }
+        return;
+    }
+    let Ok(offer) = crate::envelope::decode_service_offer_payload(&control.payload) else {
+        return;
+    };
+    let Some(local) = manager
+        .auth
+        .node_identity()
+        .zip(manager.auth.session_incarnation())
+    else {
+        return;
+    };
+    if !location_matches_node_session(offer.target, peer)
+        || offer.recipient
+            != (crate::envelope::NodeSessionIdentity {
+                node_id: local.0,
+                session_incarnation: local.1,
+            })
+    {
+        return;
+    }
+    let result = SetupResultPayload {
+        setup_id: offer.request_id,
+        ref_id: offer.grant_id,
+        target: offer.target,
+        status: if manager.service_exports.offer(offer, publication).is_ok() {
+            SETUP_STATUS_ACCEPTED
+        } else {
+            crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
+        },
+    };
+    send_setup_result_frame(
+        mgr,
+        conn_id,
+        publication,
+        crate::envelope::CTRL_SERVICE_OFFER_RESULT,
+        &result,
+    );
 }

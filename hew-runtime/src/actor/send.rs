@@ -6,9 +6,8 @@
 use super::*;
 
 // ── Send ────────────────────────────────────────────────────────────────
-// Standard send functions use the native mailbox/scheduler. WASM standard
-// sends go through bridge lowering; wire sends also expose a direct runtime
-// entrypoint so encoded actor messages can use the same deterministic path.
+// Local host sends use the native mailbox and scheduler. Checked actor
+// operations, including imported actors, use the shared request ingress.
 
 /// Send a message to an actor (fire-and-forget).
 ///
@@ -31,33 +30,6 @@ pub unsafe extern "C" fn hew_actor_send(
     unsafe { actor_send_internal(actor, msg_type, data, size) };
 }
 
-/// Send a wire-encoded message to an actor.
-///
-/// Extracts raw bytes from the `HewVec` (bytes type), deep-copies them
-/// into the actor's mailbox, and frees the `HewVec`.
-///
-/// # Safety
-///
-/// - `actor` must be a valid pointer returned by a spawn function.
-/// - `bytes` must be a valid `HewVec*` (bytes type) or null.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_actor_send_wire(
-    actor: *mut HewActor,
-    msg_type: i32,
-    bytes: *mut crate::vec::HewVec,
-) {
-    if bytes.is_null() || actor.is_null() {
-        return;
-    }
-    // SAFETY: bytes is a valid HewVec. Extract raw byte data.
-    let data = unsafe { crate::vec::hwvec_to_u8(bytes) };
-    // SAFETY: actor is valid, data slice is valid.
-    unsafe { actor_send_internal(actor, msg_type, data.as_ptr() as *mut c_void, data.len()) };
-    // SAFETY: bytes was allocated by hew_vec and is no longer needed.
-    unsafe { crate::vec::hew_vec_free(bytes) };
-}
-
 /// Send a message to an actor by actor ID.
 ///
 /// Returns `0` ([`HewError::Ok`]) on success — including a declared bounded
@@ -66,19 +38,13 @@ pub unsafe extern "C" fn hew_actor_send_wire(
 /// [`HewError`] code: `-1` (`ErrMailboxFull`) for a `Fail`-policy rejection,
 /// `-2` (`ErrActorStopped`) if the actor is gone (not tracked locally,
 /// stopped, or crashed), `-5` (`ErrOom`) on allocation failure, `-6`
-/// (`ErrForeignRuntime`) for a cross-runtime pointer, or a remote-send error
-/// code if the PID belongs to another node. Callers must trap on any
+/// (`ErrForeignRuntime`) for a cross-runtime pointer. Callers must trap on any
 /// non-zero result rather than special-casing `-1` — see
 /// `hew_mailbox_send_fire_and_forget` for why the two failure shapes are no
 /// longer conflated.
 ///
-/// `dispatch` is the TARGET actor TYPE's dispatch function pointer
-/// (`__hew_actor_dispatch_<Actor>`), supplied by codegen at the remote-send
-/// site (it knows the target type statically from `RemotePid<T>`). It keys the
-/// cross-node serialize codec `(dispatch, msg_type)` so a colliding `msg_type`
-/// on another actor type cannot select the wrong serializer for the value being
-/// shipped. It is unused on the LOCAL send path (the local mailbox copies the
-/// in-memory value directly); local-only callers may pass null.
+/// `dispatch` is reserved and unused. This host entry point accepts local actor
+/// ids only; checked actor operations retain their own target authority.
 ///
 /// # Safety
 ///
@@ -122,12 +88,10 @@ pub unsafe extern "C" fn hew_actor_send_by_id(
         return code;
     }
 
-    // Actor not tracked locally. If the PID belongs to a remote node, route
-    // through the distributed node infrastructure (which serializes the
-    // payload under the `(dispatch, msg_type)` codec key).
+    // Actor ids are local host handles, never authority to contact a peer.
     if crate::pid::hew_pid_is_local(actor_id) == 0 {
         crate::set_last_error(
-            "hew_actor_send_by_id accepts local actor ids only; remote sends require an exact Location",
+            "hew_actor_send_by_id accepts local actor ids only; peer requests require an authenticated actor grant",
         );
         return -1;
     }
@@ -407,6 +371,13 @@ pub(crate) unsafe fn hew_actor_request_stop(actor: *mut HewActor) {
         // SAFETY: the mailbox remains live with this actor.
         unsafe { mailbox::mailbox_close(mb) };
     }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
+    }
     if a.actor_state
         .compare_exchange(
             HewActorState::Idle as i32,
@@ -434,6 +405,13 @@ pub unsafe extern "C" fn hew_actor_stop(actor: *mut HewActor) {
     if !mb.is_null() {
         // SAFETY: the mailbox belongs to the actor.
         unsafe { mailbox::mailbox_close(mb) };
+    }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
     }
     // SAFETY: actor and mailbox are one live allocation.
     if unsafe { try_terminalize_idle_actor(actor, a, mb, true) } {
@@ -485,6 +463,13 @@ pub unsafe extern "C" fn hew_actor_terminate(actor: *mut HewActor) {
         unsafe { mailbox::mailbox_request_terminate(mb) };
         // SAFETY: the flag is a nonallocating out-of-band cancellation request.
         unsafe { mailbox::mailbox_request_stop(mb) };
+    }
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
+    if a.native_completion
+        .as_ref()
+        .is_some_and(|completion| completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED))
+    {
+        return;
     }
     crate::actor_native::cleanup::cancel_stop_hook(a);
 

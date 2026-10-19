@@ -1,0 +1,19 @@
+fn nested_literal_sum() -> i64 {
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
+    sums[0] + sums[1]
+}
+
+fn nested_contextual_sum() -> i64 {
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| -> i64 {
+        row.iter().fold(0, |a: i64, b: i64| a + b)
+    }).collect();
+    sums[0] + sums[1]
+}
+
+fn main() -> i64 {
+    let inferred: fn() -> i64 = nested_literal_sum;
+    let contextual: fn() -> i64 = nested_contextual_sum;
+    if inferred() == 10 && contextual() == 10 { 0 } else { 1 }
+}

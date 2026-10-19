@@ -1,0 +1,11 @@
+[[case]]
+id = "nested-collect-literal-effects"
+intent = "Collecting a map of pure folds remains non-suspending with inferred numeric defaults and explicit callback result types."
+source = "cases/nested-collect-literal-effects.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

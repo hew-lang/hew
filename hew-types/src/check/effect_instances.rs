@@ -83,7 +83,11 @@ impl Checker {
                 let receiver_ty = self
                     .subst
                     .resolve(call.receiver.as_ref()?)
-                    .substitute_type_params_parallel(actuals);
+                    .substitute_type_params_parallel(actuals)
+                    .materialize_literal_defaults();
+                // Invocation receivers retain their inference-time types.
+                // Apply the settled numeric defaults before crossing the
+                // resolved-type boundary, just as finalized call arguments do.
                 let receiver = crate::ResolvedTy::from_ty(&receiver_ty).ok()?;
                 let trait_args: Vec<_> = self
                     .effect_trait_args(site)?
@@ -92,6 +96,7 @@ impl Checker {
                         self.subst
                             .resolve(ty)
                             .substitute_type_params_parallel(actuals)
+                            .materialize_literal_defaults()
                     })
                     .collect();
                 let instantiate = |declaration| {

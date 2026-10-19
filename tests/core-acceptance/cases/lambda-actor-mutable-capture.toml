@@ -1,0 +1,11 @@
+[[case]]
+id = "lambda-actor-mutable-capture"
+intent = "A mutable captured value persists in a lambda actor's private state across messages, while the outer value remains unchanged for ordinary and move captures."
+source = "cases/lambda-actor-mutable-capture.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

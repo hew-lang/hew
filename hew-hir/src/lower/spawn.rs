@@ -220,6 +220,7 @@ impl LowerCtx {
         params: Vec<HirBinding>,
         body: HirExpr,
         captures: &[HirLambdaCapture],
+        writable_captures: &HashSet<BindingId>,
         handle_ty: &ResolvedTy,
     ) {
         // The handle carries the protocol: `actor(Msg) -> Reply`.
@@ -233,7 +234,7 @@ impl LowerCtx {
                 name: capture.name.clone(),
                 ty: capture.ty.clone(),
                 default: None,
-                is_mutable: false,
+                is_mutable: writable_captures.contains(&capture.binding),
                 deferred: false,
                 span: span.clone(),
             })
@@ -247,7 +248,7 @@ impl LowerCtx {
                 id: capture.binding,
                 name: capture.name.clone(),
                 ty: capture.ty.clone(),
-                mutable: false,
+                mutable: writable_captures.contains(&capture.binding),
                 span: span.clone(),
                 is_consume: false,
             })
@@ -306,6 +307,59 @@ impl LowerCtx {
             lambda_handle_ty: Some(Box::new(handle_ty.clone())),
             span: span.clone(),
         });
+    }
+
+    /// Match the actor's state fields to the checker's exact captured lexical
+    /// bindings. A captured `var` remains mutable only inside this private
+    /// actor state; the enclosing binding is still an independent snapshot.
+    fn checked_lambda_capture_access(
+        &mut self,
+        span: &Span,
+        captures: &[HirLambdaCapture],
+    ) -> Option<HashSet<BindingId>> {
+        let checked = (|| -> Result<HashSet<BindingId>, String> {
+            let facts = self
+                .closure_capture_facts
+                .get(&self.mk_key(span))
+                .ok_or("missing checker capture facts")?;
+            let mut remaining = captures
+                .iter()
+                .map(|capture| (capture.binding, capture))
+                .collect::<HashMap<_, _>>();
+            let mut writable = HashSet::new();
+            for fact in facts {
+                let (binding, _) = self.lookup_checked(fact.binding_id).ok_or_else(|| {
+                    format!("capture `{}` has no HIR binding identity", fact.name)
+                })?;
+                let capture = remaining.remove(&binding).ok_or_else(|| {
+                    format!("checker capture `{}` has no unique HIR use", fact.name)
+                })?;
+                if capture.name != fact.name {
+                    return Err(format!("capture `{}` changed its checked name", fact.name));
+                }
+                if fact.access == hew_types::ClosureCaptureAccess::Var {
+                    writable.insert(binding);
+                }
+            }
+            if !remaining.is_empty() {
+                return Err("HIR actor body has captures without checker access facts".into());
+            }
+            Ok(writable)
+        })();
+        match checked {
+            Ok(writable) => Some(writable),
+            Err(reason) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "lambda actor captures".into(),
+                        reason,
+                    },
+                    span.clone(),
+                    "actor lambda capture metadata and HIR body disagree",
+                ));
+                None
+            }
+        }
     }
 
     /// Lower `handle(msg)` on a lambda actor to the completion call it is.
@@ -459,7 +513,22 @@ impl LowerCtx {
             return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
         }
 
-        self.push_lambda_actor_declaration(span, &identity, params, body, &captures, &handle_ty);
+        let Some(writable_captures) = self.checked_lambda_capture_access(span, &captures) else {
+            return (
+                HirExprKind::Unsupported("actor lambda capture facts are incomplete".into()),
+                handle_ty,
+            );
+        };
+
+        self.push_lambda_actor_declaration(
+            span,
+            &identity,
+            params,
+            body,
+            &captures,
+            &writable_captures,
+            &handle_ty,
+        );
 
         // The spawn supplies the captured environment as the actor's state,
         // field by field, exactly as a named actor's spawn supplies its own.

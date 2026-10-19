@@ -369,6 +369,7 @@ impl Checker {
         is_move: bool,
         span: &Span,
         is_fork_body: bool,
+        is_actor_body: bool,
     ) -> Vec<ClosureCaptureFact> {
         let mut seen = HashSet::new();
         let mut captures = Vec::new();
@@ -390,7 +391,12 @@ impl Checker {
             } else {
                 ClosureCaptureAcquisition::Snapshot
             };
-            fact.access = if private.contains(&fact.binding_id) {
+            fact.access = if private.contains(&fact.binding_id)
+                || (is_actor_body
+                    && body
+                        .binding_by_id(fact.binding_id)
+                        .is_some_and(|binding| binding.is_mutable))
+            {
                 ClosureCaptureAccess::Var
             } else {
                 ClosureCaptureAccess::Read

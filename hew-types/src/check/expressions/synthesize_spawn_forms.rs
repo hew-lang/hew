@@ -1052,7 +1052,8 @@ impl Checker {
         }
 
         let body_environment = std::mem::replace(&mut self.env, outer_environment);
-        self.env.merge_closure_reads(&body_environment);
+        self.env
+            .merge_closure_reads(&body_environment, is_actor_body);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
         // Acquisition happens in the enclosing scope, not in the new closure.
         self.lambda_capture_depth = prev_capture_depth;
@@ -1063,6 +1064,7 @@ impl Checker {
             is_move,
             span,
             is_fork_body,
+            is_actor_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
         self.record_once_capture_cleanup(

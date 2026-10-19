@@ -881,6 +881,8 @@ pub(crate) struct InstallMode {
 /// With a `native_target`, registry packages with a `[native]` Rust crate
 /// also select their signed prebuilt for that target and pin it in
 /// `hew.lock`; publish passes `None` because it never links native code.
+/// Returns canonical installed roots mapped to their resolved local sources,
+/// including copies on platforms that do not materialize packages as links.
 ///
 /// # Errors
 ///
@@ -897,7 +899,7 @@ pub(crate) fn install_dependencies(
     registry_name: Option<&str>,
     mode: InstallMode,
     native_target: Option<&str>,
-) -> Result<(), String> {
+) -> Result<BTreeMap<PathBuf, PathBuf>, String> {
     let lock_path = root.join(crate::project::LOCK_FILE);
     // Native pins carry forward only where this install selects prebuilts.
     let previous_lockfile = native_target
@@ -942,7 +944,7 @@ pub(crate) fn install_dependencies(
             }
             println!("Nothing to install.");
         }
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
 
     if mode.offline {
@@ -1038,6 +1040,8 @@ pub(crate) fn install_dependencies(
     if mode.write_lock {
         ensure_gitignore_entry(root, ".hew/");
     }
+
+    let mut local_sources = BTreeMap::new();
 
     // Build lockfile entries from resolved versions.
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
@@ -1173,6 +1177,10 @@ pub(crate) fn install_dependencies(
         };
         let materialization = materialization
             .map_err(|e| format!("cannot materialize project package for {name}: {e}"))?;
+        if let resolver::PackageSource::Path(source) = &package.source {
+            let installed = link.canonicalize().map_err(|error| error.to_string())?;
+            local_sources.insert(installed, source.clone());
+        }
         println!("  {} {name}@{version}", materialization.verb());
     }
 
@@ -1202,7 +1210,7 @@ pub(crate) fn install_dependencies(
             println!("Wrote hew.lock");
         }
     }
-    Ok(())
+    Ok(local_sources)
 }
 
 #[derive(Debug)]
@@ -1899,24 +1907,57 @@ fn cmd_publish(
         offline: flags.local,
         write_lock: false,
     };
-    let packages: Vec<publish::PackedPackage> = members
-        .iter()
-        .map(|member| {
-            install_dependencies(
-                &member.dir,
-                &member.manifest,
-                registry,
-                &sources,
-                registry_name,
-                install,
-                None,
-            )
-            .map_err(|error| format!("{}: {error}", member.name()))
-            .unwrap_or_else(|error| fail(&error));
-            publish::check_and_pack(&member.dir, member.manifest.clone(), check_generation)
-                .unwrap_or_else(|error| fail(&error))
-        })
-        .collect();
+    let mut packages: Vec<publish::PackedPackage> = Vec::new();
+    // Selected dependencies have already been packed in topological order.
+    // A single-member publish also checks unselected siblings with the same packer.
+    let mut sibling_archives = BTreeMap::new();
+    for member in &members {
+        let local_sources = install_dependencies(
+            &member.dir,
+            &member.manifest,
+            registry,
+            &sources,
+            registry_name,
+            install,
+            None,
+        )
+        .map_err(|error| format!("{}: {error}", member.name()))
+        .unwrap_or_else(|error| fail(&error));
+        let package = publish::check_and_pack_with_dependencies(
+            &member.dir,
+            member.manifest.clone(),
+            check_generation,
+            &mut |input, dependency_root| {
+                let Some(source) = local_sources.get(dependency_root) else {
+                    return Ok(());
+                };
+                let Some(sibling) = workspace.members.iter().find(|item| &item.dir == source) else {
+                    return Ok(());
+                };
+                let archive = if let Some(package) = packages.iter().find(|p| p.name() == sibling.name()) {
+                    &package.archive
+                } else {
+                    match sibling_archives.entry(source.clone()) {
+                        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            check_generation(source)?;
+                            entry.insert(publish::pack(source, &sibling.manifest).map_err(|error| error.to_string())?)
+                        }
+                    }
+                };
+                let relative = input.strip_prefix(dependency_root).map_err(|error| error.to_string())?;
+                if !archive.files.iter().any(|file| file == relative) {
+                    return Err(format!(
+                        "E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from workspace dependency `{}`",
+                        relative.display(), sibling.name()
+                    ));
+                }
+                Ok(())
+            },
+        )
+        .unwrap_or_else(|error| fail(&error));
+        packages.push(package);
+    }
 
     if flags.local {
         publish_local_packages(registry, &packages, flags.dry_run).unwrap_or_else(|e| fail(&e));

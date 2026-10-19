@@ -1695,6 +1695,67 @@ fn single_member_publish_resolves_siblings_locally() {
     assert_eq!(mock.log(), ["GET /api/v1/packages/acme.b/1.0.0"]);
 }
 
+#[test]
+fn publish_checks_the_archive_membership_of_workspace_dependencies() {
+    for whole_workspace in [false, true] {
+        let mock = MockRegistry::start();
+        let root = tempfile::tempdir().unwrap();
+        write_workspace(
+            root.path(),
+            &[
+                ("a", "acme.a", "1.0.0", "", "pub fn one() -> i64 { 1 }\n"),
+                (
+                    "b",
+                    "acme.b",
+                    "1.0.0",
+                    "\"acme.a\" = \"1.0.0\"\n",
+                    "import acme.a.extra;\npub fn two() -> i64 { extra.value() }\n",
+                ),
+            ],
+        );
+        fs::write(
+            root.path().join("a/extra.hew"),
+            "pub fn value() -> i64 { 2 }\n",
+        )
+        .unwrap();
+        let hew_home = tempfile::tempdir().unwrap();
+        let cwd = if whole_workspace {
+            root.path().to_path_buf()
+        } else {
+            root.path().join("b")
+        };
+        let flags: &[&str] = if whole_workspace {
+            &["--workspace", "--dry-run"]
+        } else {
+            &["--dry-run"]
+        };
+        let included = hew_publish(&mock, &cwd, hew_home.path(), flags);
+        assert!(included.status.success(), "{included:?}");
+        let requests_before = mock.log();
+        let manifest = root.path().join("a/hew.toml");
+        let contents = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            contents.replace("[package]", "[package]\nexclude = [\"extra.hew\"]"),
+        )
+        .unwrap();
+
+        let excluded = hew_publish(&mock, &cwd, hew_home.path(), flags);
+        let stderr = String::from_utf8_lossy(&excluded.stderr);
+        assert!(!excluded.status.success(), "{excluded:?}");
+        assert!(stderr.contains("E_PUBLISH_MISSING_INPUT"), "{stderr}");
+        assert!(
+            stderr.contains("extra.hew") && stderr.contains("acme.a"),
+            "{stderr}"
+        );
+        assert_eq!(
+            mock.log(),
+            requests_before,
+            "invalid archives must fail before querying the registry"
+        );
+    }
+}
+
 // ── Trusted publishing ──────────────────────────────────────────────────────
 
 /// `hew publish --workspace --auth github-actions` with the runner's OIDC

@@ -260,6 +260,15 @@ pub fn check_and_pack(
     m: manifest::HewManifest,
     check_generation: &impl Fn(&Path) -> Result<(), String>,
 ) -> Result<PackedPackage, PublishError> {
+    check_and_pack_with_dependencies(root, m, check_generation, &mut |_, _| Ok(()))
+}
+
+pub(crate) fn check_and_pack_with_dependencies(
+    root: &Path,
+    m: manifest::HewManifest,
+    check_generation: &impl Fn(&Path) -> Result<(), String>,
+    check_dependency: &mut impl FnMut(&Path, &Path) -> Result<(), String>,
+) -> Result<PackedPackage, PublishError> {
     check_generation(root).map_err(PublishError::Invalid)?;
 
     let entry = m.package.main.as_ref().map_or_else(
@@ -299,11 +308,7 @@ pub fn check_and_pack(
         PublishError::Invalid(message)
     })?;
 
-    let mut exclude = m.package.exclude.clone().unwrap_or_default();
-    exclude.push(crate::project::LOCK_FILE.to_string());
-    let include = m.package.include.as_deref().unwrap_or_default();
-    let archive = tarball::pack(root, &exclude, include)
-        .map_err(|error| PublishError::Invalid(error.to_string()))?;
+    let archive = pack(root, &m)?;
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     for step in &m.generate {
         let generated = crate::generate::output_files(&canonical_root.join(&step.outputs))
@@ -318,12 +323,10 @@ pub fn check_and_pack(
             }
         }
     }
-    for input in checked
-        .inputs
-        .iter()
-        .filter(|input| input.sha256.is_some() && input.dependency_root.is_none())
-    {
-        if let Ok(relative) = input.path.strip_prefix(&canonical_root) {
+    for input in checked.inputs.iter().filter(|input| input.sha256.is_some()) {
+        if let Some(dependency_root) = &input.dependency_root {
+            check_dependency(&input.path, dependency_root).map_err(PublishError::Invalid)?;
+        } else if let Ok(relative) = input.path.strip_prefix(&canonical_root) {
             if !archive.files.iter().any(|file| file == relative) {
                 return Err(PublishError::Invalid(format!(
                     "E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from the package",
@@ -337,6 +340,17 @@ pub fn check_and_pack(
         manifest: m,
         archive,
     })
+}
+
+/// Pack the same source membership used by publish checks and uploads.
+pub(crate) fn pack(
+    root: &Path,
+    m: &manifest::HewManifest,
+) -> Result<tarball::PackResult, PublishError> {
+    let mut exclude = m.package.exclude.clone().unwrap_or_default();
+    exclude.push(crate::project::LOCK_FILE.to_string());
+    let include = m.package.include.as_deref().unwrap_or_default();
+    tarball::pack(root, &exclude, include).map_err(|error| PublishError::Invalid(error.to_string()))
 }
 
 /// The publish request the registry receives for `package`.

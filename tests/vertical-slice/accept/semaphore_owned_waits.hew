@@ -20,8 +20,21 @@ fn queued_clone_wait() {
     waiting.close();
 }
 
+fn cloned_wrapper_cleanup() {
+    let original = semaphore.new(1);
+    scope {
+        let copy = original.clone();
+        copy.acquire();
+        assert(copy.count() == 0);
+    };
+    original.release();
+    assert(original.count() == 1);
+    original.close();
+}
+
 fn main() {
     queued_clone_wait();
+    cloned_wrapper_cleanup();
     let sem = semaphore.new(1);
     sem.acquire();
     assert(sem.count() == 0);

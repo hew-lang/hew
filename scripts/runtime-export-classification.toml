@@ -3510,11 +3510,8 @@ discharge-depth = "none"
 symbol = "hew_semaphore_clone"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.semaphore.SemaphoreHandle"
 release-symbol = "hew_semaphore_free"
 discharge-depth = "shallow"
-result-retention = "resource-transfer"
-result-retention-basis = "cloning the Arc backing creates a separate Box<HewSemaphore>; the caller alone owns that Box and frees it independently of the source handle"
 
 [[ownership.contracts]]
 symbol = "hew_semaphore_count"

@@ -97,3 +97,34 @@ fn checked_for_loops_refuse_a_missing_bound_without_boundary_diagnostics() {
         .any(|error| error.message == "type is not iterable"));
     assert!(checked.for_loop_plans.is_empty());
 }
+
+#[test]
+fn checked_for_loops_diagnose_unresolved_plan_types() {
+    for role in ["cursor", "item", "call result", "trait argument"] {
+        let (parsed, mut checked) = support::checker_pipeline::typecheck_source(
+            "fn total<I>(input: I) -> i64 where I: IntoIterator<Item = i64> { \
+             var sum = 0; for value in input { sum += value; } sum }",
+        );
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        let plan = checked.for_loop_plans.values_mut().next().unwrap();
+        let unresolved = hew_types::Ty::Var(hew_types::ty::TypeVar::fresh());
+        match role {
+            "cursor" => plan.cursor_type = unresolved,
+            "item" => plan.item_type = unresolved,
+            "call result" => plan.into_iter.as_mut().unwrap().return_type = unresolved,
+            "trait argument" => plan.into_iter.as_mut().unwrap().trait_args.push(unresolved),
+            _ => unreachable!("all checked loop boundary roles are listed"),
+        }
+        let lowered =
+            hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
+        assert!(
+            lowered.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                hew_hir::HirDiagnosticKind::CheckerBoundaryViolation { name, .. }
+                    if name == &format!("for loop {role}")
+            )),
+            "{role}: {:?}",
+            lowered.diagnostics,
+        );
+    }
+}

@@ -2,16 +2,6 @@
 
 use super::*;
 
-/// Walk each monomorphisation's origin fn body, substitute the
-/// per-monomorphisation type-arg map into every inner Call site's
-/// recorded type arguments, and add any newly-discovered concrete
-/// `(origin_fn, Vec<ResolvedTy>)` pairs to the registry. Iterates to a
-/// fixed point.
-///
-/// Emits `MonomorphisationCapExceeded` (at most once) when the cap is
-/// hit. Skips inner calls whose substituted args still contain any
-/// abstract type-parameter symbol (no monomorphisation is possible
-/// without a concrete instantiation).
 /// The base range plus resolved iteration adapters peeled from a for-loop
 /// iterable by [`LowerCtx::peel_range_adapter_chain`].  Borrows the AST
 /// sub-expressions; lowered into a single `HirExprKind::ForRange`.
@@ -92,6 +82,23 @@ impl LowerCtx {
         }
     }
 
+    fn checked_for_type(&mut self, ty: &Ty, role: &str, span: &Span) -> Option<ResolvedTy> {
+        match ResolvedTy::from_ty(ty) {
+            Ok(resolved) => Some(resolved),
+            Err(error) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("for loop {role}"),
+                        reason: error.to_string(),
+                    },
+                    span.clone(),
+                    "checked iterator type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
     /// Lower the checker's selected implicit call without replaying lookup or
     /// attaching a synthetic call to an authored expression span.
     fn lower_checked_for_call(
@@ -100,7 +107,7 @@ impl LowerCtx {
         mut receiver: HirExpr,
         span: &Span,
     ) -> Option<HirExpr> {
-        let ret_ty = ResolvedTy::from_ty(&call.return_type).ok()?;
+        let ret_ty = self.checked_for_type(&call.return_type, "call result", span)?;
         receiver.intent = if call.requires_mutable_receiver || call.consumes_receiver {
             IntentKind::Consume
         } else {
@@ -110,9 +117,8 @@ impl LowerCtx {
         let trait_args = call
             .trait_args
             .iter()
-            .map(ResolvedTy::from_ty)
-            .collect::<Result<Vec<_>, _>>()
-            .ok()?;
+            .map(|ty| self.checked_for_type(ty, "trait argument", span))
+            .collect::<Option<Vec<_>>>()?;
         let kind = if let Some(receiver_type_param) = call.receiver_parameter {
             if call.requires_mutable_receiver {
                 HirExprKind::VarSelfMethodCall {
@@ -1052,8 +1058,9 @@ impl LowerCtx {
             other => {
                 let plan = self.for_loop_plans.get(&self.mk_key(&iterable.1)).cloned();
                 let shape = plan.and_then(|plan| {
-                    let cursor_ty = ResolvedTy::from_ty(&plan.cursor_type).ok()?;
-                    let elem_ty = ResolvedTy::from_ty(&plan.item_type).ok()?;
+                    let cursor_ty =
+                        self.checked_for_type(&plan.cursor_type, "cursor", &iterable.1)?;
+                    let elem_ty = self.checked_for_type(&plan.item_type, "item", &iterable.1)?;
                     let init = if let Some(call) = plan.into_iter {
                         self.lower_checked_for_call(&call, lowered_iterable.clone(), &iterable.1)?
                     } else {

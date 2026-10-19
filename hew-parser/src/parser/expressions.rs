@@ -401,22 +401,25 @@ impl Parser<'_> {
                 continue;
             }
 
+            // A block-opened match- or select-arm body ends at its closing `}`.
+            // An arm pattern that opens with a token which would otherwise
+            // continue the expression belongs to the next arm: `.Ok(v)` (member
+            // access), `(a, b)` (call) and `-1` (subtraction). Reading any of
+            // them as a continuation of the block swallows the pattern and
+            // reports "expected pattern, found `=>`".
+            if block_arm_body
+                && Self::is_block_expr(&lhs.0)
+                && matches!(
+                    self.peek(),
+                    Some(Token::Dot | Token::LeftParen | Token::Minus)
+                )
+                && self.is_match_arm_pattern_start()
+            {
+                break;
+            }
+
             // Try postfix first (highest precedence)
             match self.peek() {
-                // A block-opened match-arm body ends at its closing `}`. A `.`
-                // followed by an identifier there is the next arm's pattern
-                // (`.Ok(v) => …`), which is the only spelling of a contextual
-                // variant pattern — the same `Dot`+identifier pair
-                // `is_match_arm_pattern_start` already reads as an arm start.
-                // Reading it as member access on the block would swallow the
-                // pattern and report "expected pattern, found `=>`".
-                Some(Token::Dot)
-                    if block_arm_body
-                        && Self::is_block_expr(&lhs.0)
-                        && matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
-                {
-                    break;
-                }
                 Some(Token::Dot) => {
                     lhs = self.parse_dot_postfix(lhs)?;
                     continue;

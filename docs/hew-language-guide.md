@@ -368,7 +368,7 @@ fn classify(n: i64) -> string {
 }
 ```
 
-Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` still needs a trailing comma after `}`. Guards do not contribute to exhaustiveness — keep a `_` or unguarded fallback.
+Bind with a name then guard: `x if cond =>`. A block-bodied arm `=> { ... }` ends at its closing `}` and takes no comma; the next arm may open with any pattern, including a tuple `(a, b)` or a negative literal `-1`. Guards do not contribute to exhaustiveness — keep a `_` or unguarded fallback.
 
 ### match on enum variants binding payloads
 

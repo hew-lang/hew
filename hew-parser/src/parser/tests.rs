@@ -954,6 +954,82 @@ fn block_expression_inside_a_match_arm_keeps_dot_postfix() {
     );
 }
 
+fn trailing_match_arms(result: &ParseResult) -> &[MatchArm] {
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    arms
+}
+
+/// A tuple pattern after a block-bodied arm opens the next arm rather than
+/// reading as a call on the block.
+#[test]
+fn parse_match_block_arm_precedes_tuple_pattern() {
+    let result =
+        parse("fn main() { match t { (1, _) => { a } (_, 2) => { b } (.None, .Some(x)) => { x } _ => { c } } }");
+    let arms = trailing_match_arms(&result);
+    assert_eq!(arms.len(), 4, "each tuple pattern must open its own arm");
+    for arm in &arms[..3] {
+        assert!(
+            matches!(arm.pattern.0, Pattern::Tuple(_)),
+            "expected tuple pattern, got {:?}",
+            arm.pattern.0
+        );
+        assert!(matches!(arm.body.0, Expr::Block(_)), "got {:?}", arm.body.0);
+    }
+    assert!(matches!(arms[3].pattern.0, Pattern::Wildcard));
+}
+
+/// A negative literal pattern after a block-bodied arm opens the next arm
+/// rather than reading as subtraction from the block.
+#[test]
+fn parse_match_block_arm_precedes_negative_literal_pattern() {
+    let result = parse("fn main() { match n { 1 => { a } -1 => { b } -2.5 => { c } _ => { d } } }");
+    let arms = trailing_match_arms(&result);
+    assert_eq!(arms.len(), 4, "each negative literal must open its own arm");
+    assert!(arms[..3]
+        .iter()
+        .all(|arm| matches!(arm.pattern.0, Pattern::Literal(_))));
+}
+
+/// Negative control: the arm-start rule covers only the arm body itself. A
+/// block inside the body still takes a call or subtraction.
+#[test]
+fn block_expression_inside_a_match_arm_keeps_call_and_subtraction() {
+    let result = parse(
+        "fn main() { match n { 1 => { let a = { f }(1); let b = { a } - 1; b } _ => { 0 } } }",
+    );
+    let arms = trailing_match_arms(&result);
+    assert_eq!(arms.len(), 2);
+    let Expr::Block(block) = &arms[0].body.0 else {
+        panic!("expected a block arm body, got {:?}", arms[0].body.0);
+    };
+    let values: Vec<_> = block
+        .stmts
+        .iter()
+        .map(|stmt| match &stmt.0 {
+            Stmt::Let {
+                value: Some(value), ..
+            } => &value.0,
+            other => panic!("expected a `let` statement, got {other:?}"),
+        })
+        .collect();
+    assert!(
+        matches!(values[0], Expr::Call { function, .. } if matches!(function.0, Expr::Block(_))),
+        "the inner block must still take a call, got {:?}",
+        values[0]
+    );
+    assert!(
+        matches!(values[1], Expr::Binary { left, .. } if matches!(left.0, Expr::Block(_))),
+        "the inner block must still take subtraction, got {:?}",
+        values[1]
+    );
+}
+
 #[test]
 fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
     let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";

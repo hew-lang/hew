@@ -1,0 +1,19 @@
+[[case]]
+id = "receive_gen_fn_state_write"
+intent = "A receive gen fn reads a snapshot of actor state, so an assignment or mutating call on a state field inside it is refused instead of being silently discarded."
+source = "../vertical-slice/reject/receive_gen_fn_state_write.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 10
+column = 13
+message = "state field `next` is a snapshot inside a `receive gen fn`"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 11
+column = 13
+message = "state field `issued` is a snapshot inside a `receive gen fn`"

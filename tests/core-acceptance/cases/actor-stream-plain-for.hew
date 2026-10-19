@@ -2,8 +2,7 @@ actor Producer {
     var label: string = "tick";
     var served: i64 = 0;
     receive gen fn ticks(count: i64) -> string {
-        for index in 0 .. count {
-            served = served + 1;
+        for _ in 0 .. count {
             yield label;
         }
     }

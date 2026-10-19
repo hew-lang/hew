@@ -269,7 +269,6 @@ const STREAM: &str = r"actor Source {
     var base: i64 = 10;
     receive gen fn items(count: i64) -> i64 {
         for index in 0 .. count {
-            base = base + 1;
             yield base + index;
         }
     }
@@ -332,7 +331,25 @@ fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
     assert_eq!(inputs[0].decision, BoundaryDecision::Borrow);
     assert_eq!(inputs[0].operand.value, body.params.last().unwrap().value);
     assert_eq!(inputs[1].decision, BoundaryDecision::Move);
-    // The body writes `base` through a local snapshot, never the state seat.
+    // The body reads `base` through a snapshot copied once at entry and
+    // never writes the state seat.
+    let state_reads = body
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .filter(|op| {
+            matches!(
+                op.kind,
+                hew_sir::SemOpKind::LoadCopy { place }
+                    if body.places.iter().any(|declaration| declaration.id == place
+                        && matches!(declaration.origin, hew_sir::PlaceOrigin::ActorState { .. }))
+            )
+        })
+        .count();
+    assert_eq!(
+        state_reads, 1,
+        "the snapshot is the producer's only state read"
+    );
     assert!(body
         .blocks
         .iter()

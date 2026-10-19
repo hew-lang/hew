@@ -2182,3 +2182,59 @@ fn main() {
         "the unshadowed case still asks for `var`; got: {error:#?}"
     );
 }
+
+#[test]
+fn stream_producer_refuses_state_field_writes() {
+    let output = check_source(
+        "actor Issuer {
+    var next: i64 = 0;
+    var log: Vec<i64> = [];
+    receive gen fn issue(count: i64) -> i64 {
+        for _ in 0..count {
+            next += 1;
+            log.push(next);
+            yield next;
+        }
+    }
+}
+fn main() {}
+",
+    );
+    let snapshots: Vec<_> = output
+        .errors
+        .iter()
+        .filter(|error| {
+            matches!(error.kind, TypeErrorKind::MutabilityError)
+                && error
+                    .message
+                    .contains("is a snapshot inside a `receive gen fn`")
+        })
+        .map(|error| error.span.start)
+        .collect();
+    assert_eq!(
+        snapshots.len(),
+        2,
+        "both the assignment and the mutating call are refused; got: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn stream_producer_reads_state_and_writes_locals() {
+    let output = check_source(
+        "actor Feed {
+    var base: i64 = 10;
+    receive gen fn run(count: i64) -> i64 {
+        var i = 0;
+        while i < count {
+            yield base + i;
+            i += 1;
+        }
+    }
+    receive fn set(value: i64) { base = value; }
+}
+fn main() {}
+",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

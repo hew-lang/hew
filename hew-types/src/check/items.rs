@@ -1484,7 +1484,7 @@ impl Checker {
 
             if hook_attrs.is_empty() {
                 self.env.push_scope();
-                self.bind_actor_fields(&ad.fields);
+                self.bind_actor_fields(&ad.fields, true);
                 let qualified = format!("{identity}::{}", method.name);
                 self.check_function_as(method, &qualified);
                 self.reject_unplugged_actor_state_fields(
@@ -1635,10 +1635,11 @@ impl Checker {
     /// `var` fields are writable, `let` and bare fields are read-only.
     /// Handler, method, and lifecycle-hook bodies use this binding so that
     /// assignment to an immutable field is rejected at the assignment site.
-    pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl]) {
+    pub(super) fn bind_actor_fields(&mut self, fields: &[FieldDecl], writable: bool) {
         for (index, field) in fields.iter().enumerate() {
             let field_ty = self.resolve_type_expr(&field.ty);
-            self.env.define(field.name, field_ty, field.is_mutable);
+            self.env
+                .define(field.name, field_ty, writable && field.is_mutable);
             self.record_actor_field_binding(field, index);
         }
     }
@@ -2102,7 +2103,7 @@ impl Checker {
 
         // Bind actor fields directly in scope as bare names with their
         // declared mutability (`var` writable, `let` read-only).
-        self.bind_actor_fields(fields);
+        self.bind_actor_fields(fields, true);
 
         self.current_return_type = Some(Ty::Unit);
         self.check_block(&hook.body, None);
@@ -2273,7 +2274,7 @@ impl Checker {
         // `info` parameter on top of them.  Field-shadowing by the param
         // name is intentionally permitted — same precedent as `init` and
         // receive fn parameters (HEW-SPEC-2026 §9.1.1).
-        self.bind_actor_fields(fields);
+        self.bind_actor_fields(fields, true);
         self.crash_hook_consumed_fields = fields
             .iter()
             .filter(|field| {
@@ -2391,7 +2392,7 @@ impl Checker {
         self.current_function = Some(qualified_name.clone());
         let previous_effect_body = self.enter_named_effect_body(&qualified_name);
 
-        self.bind_actor_fields(fields);
+        self.bind_actor_fields(fields, true);
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
@@ -2472,7 +2473,7 @@ impl Checker {
         let prev_function = self.current_function.take();
         self.current_function = Some(qualified_name.clone());
         let previous_effect_body = self.enter_named_effect_body(&qualified_name);
-        self.bind_actor_fields(fields);
+        self.bind_actor_fields(fields, true);
         if let Some(p) = hook.params.first() {
             let pty = self.resolve_type_expr(&p.ty);
             self.env
@@ -2722,8 +2723,10 @@ impl Checker {
             self.generic_ctx.push(generic_bindings);
         }
 
-        // Bind actor fields directly in scope (bare field access).
-        self.bind_actor_fields(fields);
+        // Bind actor fields directly in scope (bare field access). A stream
+        // producer reads a snapshot of each field (§4.12), so none is
+        // writable there.
+        self.bind_actor_fields(fields, !rf.is_generator);
 
         // Push a separate scope for parameters so shadowing checks can
         // detect collisions with actor field names in the outer scope.

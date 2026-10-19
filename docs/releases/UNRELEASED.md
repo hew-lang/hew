@@ -13,3 +13,10 @@ Slow subscribers receive explicit lag, and owner closure drains retained
 notices before end-of-stream. Subscription cleanup detaches pending waits and
 releases capacity. The wrapper uses the ordinary machine evaluator and actor
 services.
+
+A `var self` method can insert into and remove from `HashMap` and `HashSet`
+fields in place: a fault from a key's `Hash` or `Eq` now leaves the collection
+with its owner instead of releasing it. A lambda actor that captures a `var`
+binding can assign and mutate it as state across messages. A `receive gen fn`
+that writes one of its actor's state fields is refused at check time; such a
+write previously landed on the stream's snapshot and was silently lost.

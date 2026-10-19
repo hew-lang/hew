@@ -655,6 +655,13 @@ impl Checker {
         span: &Span,
     ) -> Option<TypeError> {
         let name = name.lexical_key();
+        if self.in_receive_fn && self.in_generator && self.lambda_capture_depth.is_none() {
+            let binding = self.env.lookup_ref(name)?;
+            if self.actor_field_binding_ids.contains_key(&binding.id) {
+                return Some(TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
+                    format!("state field `{name}` is a snapshot inside a `receive gen fn`, so this write would never reach the actor; update `{name}` in a `receive fn` instead")));
+            }
+        }
         let depth = self.lambda_capture_depth?;
         let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
         if binding_depth >= depth || binding.is_mutable || self.in_lambda_actor_body {

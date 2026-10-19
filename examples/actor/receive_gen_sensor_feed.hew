@@ -5,7 +5,8 @@
 //
 // A stream's reads of actor state are a snapshot taken when the stream
 // starts, not a live view — later state changes never leak into an
-// already-open stream.
+// already-open stream. The producer cannot write a state field for the same
+// reason; `calibrate` below is where state changes.
 //
 // Draining is cooperative: holding a stream open without draining it blocks
 // the actor's mailbox once its internal buffer fills up, so a consumer that

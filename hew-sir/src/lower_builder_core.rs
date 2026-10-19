@@ -372,8 +372,8 @@ impl<'hir, 'service> Builder<'hir, 'service> {
     }
 
     /// A stream producer reads a snapshot of every state field it captures
-    /// (§4.12): the copy is a mutable local of this turn, and the actor's own
-    /// seat is untouched.
+    /// (§4.12): the copy is a local of this turn, and the actor's own seat is
+    /// untouched. The checker refuses a write to a state field here.
     pub(super) fn snapshot_stream_captures(
         &mut self,
         captures: &[hew_hir::HirGenCapture],

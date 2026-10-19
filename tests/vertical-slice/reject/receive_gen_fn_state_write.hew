@@ -1,0 +1,22 @@
+// A `receive gen fn` reads a snapshot of its actor's state (§4.12), so a
+// write to a state field inside the producer would never reach the actor.
+// Both an assignment and a mutating method call are refused at check time.
+actor Issuer {
+    var next: i64 = 0;
+    var issued: Vec<i64> = [];
+
+    receive gen fn issue(count: i64) -> i64 {
+        for _ in 0..count {
+            next += 1;
+            issued.push(next);
+            yield next;
+        }
+    }
+}
+
+fn main() {
+    let issuer = spawn Issuer;
+    for id in issuer.issue(2) {
+        println(id);
+    }
+}

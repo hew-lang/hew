@@ -21,10 +21,11 @@ fn offload_errors(output: &crate::TypeCheckOutput) -> Vec<&str> {
 fn canonical_io_declarations_publish_suspension_without_symbol_alias_authority() {
     let source = "extern \"C\" { fn hew_stdin_read_line() -> bytes; } pub fn read() -> bytes { unsafe { hew_stdin_read_line() } }";
     let module = ["std".to_string(), "io".to_string()];
-    let output = super::check_source_in_canonical_std_module(source, &module);
+    let (output, module_idx) =
+        super::check_source_in_canonical_std_module_with_index(source, &module);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(
-        super::root_values(&output.direct_call_targets).any(|target| matches!(
+        super::module_values(&output.direct_call_targets, module_idx).any(|target| matches!(
             target,
             crate::CallTarget::Runtime(crate::RuntimeCallFamily::AsyncIo(
                 crate::runtime_call::AsyncIoOp::StdinReadLine

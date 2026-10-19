@@ -357,23 +357,6 @@ impl Checker {
             }
             Expr::Race(branches) => self.synthesize_race(branches, span),
             Expr::GenBlock { body } => {
-                // A98 / Q98: generator blocks inside actor receive handlers are
-                // permanently forbidden.  The scheduler holds the actor-state lock
-                // for the entire handler invocation; there is no safe point to
-                // yield mid-handler.  This is a typed compile error, not a runtime
-                // trap.
-                if self.in_actor_handler_context {
-                    self.report_error(
-                        TypeErrorKind::GenBlockInActorReceive,
-                        span,
-                        "`gen { }` blocks are forbidden inside \
-                         actor receive handlers — the scheduler holds the actor-state lock for \
-                         the entire handler invocation; use a named generator function outside \
-                         the handler instead"
-                            .to_string(),
-                    );
-                    return Ty::Error;
-                }
                 // Typed gen{} checking.
                 //
                 // Two fresh type-variables seed independent inference:

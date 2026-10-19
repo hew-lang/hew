@@ -2018,61 +2018,16 @@ fn main() {}
         );
     }
 
-    // ── gen{} in actor receive handler (A98 / Q98) ─────────────────────────
-
-    /// A `gen { }` block inside an actor receive handler must produce
-    /// `GenBlockInActorReceive`, not a generic `InvalidOperation`.
     #[test]
-    fn genblock_inside_actor_receive_handler_is_rejected() {
+    fn genblock_inside_actor_receive_has_private_state() {
         let output = check_source(
             r"actor Counter {
-    let count: i32;
-    receive fn tick() {
-        let _g = gen { count = count + 1; };
-    }
-}
-
-fn main() {}
-",
+            var count: i32 = 0;
+            receive fn tick() { let g = gen { count += 1; yield count; }; }
+        }
+        fn main() {}",
         );
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
-            "gen{{}} inside actor receive handler must emit GenBlockInActorReceive; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// A `gen { }` block in a plain function (not an actor handler) must emit
-    /// `EmptyGenerator` — never `GenBlockInActorReceive`.
-    #[test]
-    fn genblock_outside_actor_receive_handler_is_not_rejected_with_actor_error() {
-        let output = check_source(
-            r"
-            fn main() {
-                let _g = gen { };
-            }
-            ",
-        );
-        assert!(
-            !output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
-            "gen{{}} outside actor handler must not emit GenBlockInActorReceive; got: {:?}",
-            output.errors
-        );
-        // Empty gen{} fails with EmptyGenerator (no yield expressions to infer from).
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
-            "empty gen{{}} must emit EmptyGenerator; got: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 
     // ── gen{} typed checking ────────────────────────────────────────────────
@@ -2116,35 +2071,20 @@ fn main() {}
         );
     }
 
-    /// `gen { }` inside an actor receive handler must emit `GenBlockInActorReceive`
-    /// and must NOT emit `EmptyGenerator` — the actor guard fires first.
     #[test]
-    fn genblock_in_actor_receive_is_rejected_not_empty_generator() {
+    fn empty_genblock_in_actor_receive_is_rejected() {
         let output = check_source(
             r"actor Counter {
-    let count: i32;
-    receive fn tick() {
-        let _g = gen {};
-    }
-}
-
-fn main() {}
-",
+            receive fn tick() { let g = gen {}; }
+        }
+        fn main() {}",
         );
         assert!(
             output
                 .errors
                 .iter()
-                .any(|e| e.kind == TypeErrorKind::GenBlockInActorReceive),
-            "gen{{}} inside actor receive must emit GenBlockInActorReceive; got: {:?}",
-            output.errors
-        );
-        assert!(
-            !output
-                .errors
-                .iter()
                 .any(|e| e.kind == TypeErrorKind::EmptyGenerator),
-            "gen{{}} inside actor receive must not emit EmptyGenerator (actor guard fires first); got: {:?}",
+            "{:?}",
             output.errors
         );
     }

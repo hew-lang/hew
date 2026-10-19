@@ -122,6 +122,11 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     "semaphore.acquired",
                 )
                 .llvm_ctx("read semaphore acquisition result")?;
+            let bool_ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?.into_int_type();
+            let acquired = self
+                .builder
+                .build_int_z_extend(acquired, bool_ty, "semaphore.acquired.value")
+                .llvm_ctx("store semaphore acquisition result")?;
             self.store(result, acquired.into())?;
         } else {
             let ty = llvm_type(self.ctx, &self.storage(result)?.layout.repr)?;

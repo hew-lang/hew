@@ -129,21 +129,10 @@ impl LowerCtx {
         Some(head.registry_key())
     }
 
-    /// Lower an `Expr::SpawnLambdaActor` to an
-    /// `HirExprKind::SpawnLambdaActor` with a resolved capture set.
+    /// Lower a lambda actor to an ordinary actor declaration and spawn.
     ///
-    /// The lambda body lowers inside a fresh scope so the parameter
-    /// bindings shadow outer names; after the body is built the
-    /// `current_actor_self` field tells us whether the body lives
-    /// under a `let <name> = actor |..| { .. }` forward-bind. The
-    /// capture walker then collects every `BindingRef { resolved:
-    /// Binding(id) }` whose `id` refers to a binding from an outer
-    /// scope (not a parameter introduced by this lambda) and
-    /// classifies the strength: `id == current_actor_self.0` → Weak
-    /// (recursive self-dispatch, §5.9 ratification 2), else → Strong.
-    ///
-    /// The HIR `expr.ty` is the `ActorFn` handle type (`actor(Msg) -> Reply`),
-    /// whose drop releases the runtime wrapper.
+    /// Checker capture identities select the enclosing spawn inputs. Fresh
+    /// state bindings shadow those identities while lowering the handler body.
     pub(super) fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
@@ -177,19 +166,71 @@ impl LowerCtx {
                 );
             }
         };
-        // Lower params + body inside a new scope. Track the parameter
-        // BindingIds so the capture walker can exclude them (params
-        // are intra-lambda bindings, not captures from the enclosing
-        // scope).
+        let Some(facts) = self.closure_capture_facts.get(&self.mk_key(span)).cloned() else {
+            self.unsupported(
+                span.clone(),
+                "missing lambda actor capture facts",
+                "hir-lowering",
+            );
+            return (
+                HirExprKind::Unsupported("missing lambda actor capture facts".into()),
+                actor_ty,
+            );
+        };
+        let mut captures = Vec::with_capacity(facts.len());
+        for fact in &facts {
+            let Some((binding, ty)) = self.lookup_checked(fact.binding_id) else {
+                self.unsupported(
+                    span.clone(),
+                    "missing lambda actor capture binding",
+                    "hir-lowering",
+                );
+                return (
+                    HirExprKind::Unsupported("missing lambda actor capture binding".into()),
+                    actor_ty,
+                );
+            };
+            captures.push(HirLambdaCapture {
+                binding,
+                name: fact.name.clone(),
+                ty,
+                kind: if self
+                    .current_actor_self
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == binding)
+                {
+                    HirCaptureKind::Weak
+                } else {
+                    HirCaptureKind::Strong
+                },
+            });
+        }
         self.push_scope();
+        let mut state_bindings = Vec::with_capacity(captures.len());
+        for (capture, fact) in captures.iter().zip(&facts) {
+            let binding = self.bind(
+                capture.name.clone(),
+                capture.ty.clone(),
+                fact.access == hew_types::ClosureCaptureAccess::Var,
+                fact.def_span.clone().unwrap_or_else(|| span.clone()),
+            );
+            self.checked_scopes
+                .last_mut()
+                .expect("lambda actor scope")
+                .insert(
+                    fact.binding_id,
+                    (binding.id, binding.ty.clone(), binding.span.clone()),
+                );
+            state_bindings.push(binding);
+        }
         let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
-        let mut param_ids: std::collections::HashSet<BindingId> =
-            std::collections::HashSet::with_capacity(params.len());
         for (param, ty) in params.iter().zip(param_tys) {
-            let binding =
-                self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone());
-            param_ids.insert(binding.id);
-            hir_params.push(binding);
+            hir_params.push(self.bind_checked(
+                param.name.to_string(),
+                ty,
+                false,
+                param.name_span.clone(),
+            ));
         }
         // Lexically scope `current_actor_self` to THIS lambda body. If the
         // caller (`lower_stmt`'s let-pre-bind path) set it before invoking
@@ -199,17 +240,21 @@ impl LowerCtx {
         // nested actor-lambda lowered from within `body` does not inherit
         // it — nested anonymous lambdas would otherwise misclassify
         // captures of THIS lambda's enclosing-scope bindings as Weak.
-        // Restored before `collect_lambda_captures` so the capture-strength
-        // classifier sees the correct self-id, and restored to the caller's
-        // prior value on exit.
+        // Restore the caller's binding after lowering this body.
         let my_self_id = self.current_actor_self.take();
         let lowered_body = self.with_current_return_type(reply_ty.clone(), |ctx| {
             ctx.lower_expr_with_tail_coercion(body, IntentKind::Read)
         });
         self.current_actor_self = my_self_id;
         self.pop_scope();
-        let captures = self.collect_lambda_captures(&lowered_body, &param_ids);
-        self.synthesize_lambda_actor(span, hir_params, lowered_body, captures, actor_ty)
+        self.synthesize_lambda_actor(
+            span,
+            hir_params,
+            lowered_body,
+            captures,
+            state_bindings,
+            actor_ty,
+        )
     }
 
     /// Build and record the actor declaration one lambda actor lowers to.
@@ -220,7 +265,7 @@ impl LowerCtx {
         params: Vec<HirBinding>,
         body: HirExpr,
         captures: &[HirLambdaCapture],
-        writable_captures: &HashSet<BindingId>,
+        state_bindings: Vec<HirBinding>,
         handle_ty: &ResolvedTy,
     ) {
         // The handle carries the protocol: `actor(Msg) -> Reply`.
@@ -230,30 +275,16 @@ impl LowerCtx {
         };
         let state_fields: Vec<HirField> = captures
             .iter()
-            .map(|capture| HirField {
+            .zip(&state_bindings)
+            .map(|(capture, state)| HirField {
                 name: capture.name.clone(),
                 ty: capture.ty.clone(),
                 default: None,
-                is_mutable: writable_captures.contains(&capture.binding),
+                is_mutable: state.mutable,
                 deferred: false,
                 span: span.clone(),
             })
             .collect();
-        // The body already refers to each capture by its original binding id;
-        // binding the state seat to those same ids is what makes the captured
-        // environment and the actor's state one thing.
-        let state_bindings: Vec<HirBinding> = captures
-            .iter()
-            .map(|capture| HirBinding {
-                id: capture.binding,
-                name: capture.name.clone(),
-                ty: capture.ty.clone(),
-                mutable: writable_captures.contains(&capture.binding),
-                span: span.clone(),
-                is_consume: false,
-            })
-            .collect();
-
         let param_tys: Vec<ResolvedTy> = params.iter().map(|param| param.ty.clone()).collect();
         let handler_name = LAMBDA_ACTOR_HANDLER.to_string();
         let protocol_descriptor = hew_types::ActorProtocolDescriptor::from_handlers(
@@ -307,59 +338,6 @@ impl LowerCtx {
             lambda_handle_ty: Some(Box::new(handle_ty.clone())),
             span: span.clone(),
         });
-    }
-
-    /// Match the actor's state fields to the checker's exact captured lexical
-    /// bindings. A captured `var` remains mutable only inside this private
-    /// actor state; the enclosing binding is still an independent snapshot.
-    fn checked_lambda_capture_access(
-        &mut self,
-        span: &Span,
-        captures: &[HirLambdaCapture],
-    ) -> Option<HashSet<BindingId>> {
-        let checked = (|| -> Result<HashSet<BindingId>, String> {
-            let facts = self
-                .closure_capture_facts
-                .get(&self.mk_key(span))
-                .ok_or("missing checker capture facts")?;
-            let mut remaining = captures
-                .iter()
-                .map(|capture| (capture.binding, capture))
-                .collect::<HashMap<_, _>>();
-            let mut writable = HashSet::new();
-            for fact in facts {
-                let (binding, _) = self.lookup_checked(fact.binding_id).ok_or_else(|| {
-                    format!("capture `{}` has no HIR binding identity", fact.name)
-                })?;
-                let capture = remaining.remove(&binding).ok_or_else(|| {
-                    format!("checker capture `{}` has no unique HIR use", fact.name)
-                })?;
-                if capture.name != fact.name {
-                    return Err(format!("capture `{}` changed its checked name", fact.name));
-                }
-                if fact.access == hew_types::ClosureCaptureAccess::Var {
-                    writable.insert(binding);
-                }
-            }
-            if !remaining.is_empty() {
-                return Err("HIR actor body has captures without checker access facts".into());
-            }
-            Ok(writable)
-        })();
-        match checked {
-            Ok(writable) => Some(writable),
-            Err(reason) => {
-                self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::CheckerBoundaryViolation {
-                        name: "lambda actor captures".into(),
-                        reason,
-                    },
-                    span.clone(),
-                    "actor lambda capture metadata and HIR body disagree",
-                ));
-                None
-            }
-        }
     }
 
     /// Lower `handle(msg)` on a lambda actor to the completion call it is.
@@ -466,17 +444,15 @@ impl LowerCtx {
     /// Turn one lowered lambda actor into an ordinary actor declaration plus
     /// the spawn that starts it.
     ///
-    /// The captures become the actor's state fields in capture order, and the
-    /// body becomes its single receive handler. The handler's state bindings
-    /// carry the captures' original `BindingId`s, so every reference the body
-    /// already lowered resolves to the state seat with no rewriting: a
-    /// capture and an actor state field are the same thing to the body.
+    /// Captured inputs initialize distinct handler state bindings; checker
+    /// identities resolve directly to those bindings inside the handler.
     pub(super) fn synthesize_lambda_actor(
         &mut self,
         span: &Span,
         params: Vec<HirBinding>,
         body: HirExpr,
         captures: Vec<HirLambdaCapture>,
+        state_bindings: Vec<HirBinding>,
         handle_ty: ResolvedTy,
     ) -> (HirExprKind, ResolvedTy) {
         let Some(identity) = self
@@ -513,20 +489,13 @@ impl LowerCtx {
             return (HirExprKind::Literal(HirLiteral::Unit), handle_ty);
         }
 
-        let Some(writable_captures) = self.checked_lambda_capture_access(span, &captures) else {
-            return (
-                HirExprKind::Unsupported("actor lambda capture facts are incomplete".into()),
-                handle_ty,
-            );
-        };
-
         self.push_lambda_actor_declaration(
             span,
             &identity,
             params,
             body,
             &captures,
-            &writable_captures,
+            state_bindings,
             &handle_ty,
         );
 
@@ -561,27 +530,5 @@ impl LowerCtx {
             },
             handle_ty,
         )
-    }
-
-    /// Walk a lowered lambda body collecting `BindingRef`s that resolve
-    /// to bindings from the enclosing scope. A reference is a capture
-    /// when its resolved binding id is not in `param_ids` (the lambda's
-    /// own parameters). Each unique binding is classified Weak when
-    /// its id matches `current_actor_self.0` (the let-name pre-bound
-    /// before body lowering) and Strong otherwise.
-    ///
-    /// Duplicate references to the same binding produce a single
-    /// capture entry — codegen needs the runtime to register the
-    /// captured handle once per binding, not once per use site.
-    pub(super) fn collect_lambda_captures(
-        &self,
-        body: &HirExpr,
-        param_ids: &std::collections::HashSet<BindingId>,
-    ) -> Vec<HirLambdaCapture> {
-        let mut seen: std::collections::HashSet<BindingId> = std::collections::HashSet::new();
-        let mut captures: Vec<HirLambdaCapture> = Vec::new();
-        let self_id = self.current_actor_self.as_ref().map(|(id, _)| *id);
-        collect_captures_walk(body, param_ids, &mut seen, &mut captures, self_id);
-        captures
     }
 }

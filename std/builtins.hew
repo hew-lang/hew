@@ -1114,7 +1114,7 @@ impl Display for duration {
 ///     println(true);
 /// }
 /// ```
-pub fn println(value: dyn Display) {}
+pub fn println<T: Display>(value: T) {}
 
 /// Print a value without a trailing newline.
 ///
@@ -1125,7 +1125,7 @@ pub fn println(value: dyn Display) {}
 ///     print("Enter name: ");
 /// }
 /// ```
-pub fn print(value: dyn Display) {}
+pub fn print<T: Display>(value: T) {}
 
 // ---------------------------------------------------------------------------
 // Assertions
@@ -1170,7 +1170,7 @@ pub fn assert(condition: bool) {}
 ///     let u = to_string('x');    // "x"
 /// }
 /// ```
-pub fn to_string(value: dyn Display) -> string {
+pub fn to_string<T: Display>(value: T) -> string {
     ""
 }
 

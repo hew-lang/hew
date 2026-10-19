@@ -36,7 +36,7 @@ fi
 # execute the native binary it produced. The fixture's `main` returns 42.
 FIXTURE="$REPO_ROOT/examples/v05/hello_int.hew"
 EXPECTED_EXIT=42
-WORK_DIR="$(mktemp -d /tmp/hew-release-smoke-XXXXXX)"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hew-release-smoke-XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
 cp "$FIXTURE" "$WORK_DIR/hello_int.hew"

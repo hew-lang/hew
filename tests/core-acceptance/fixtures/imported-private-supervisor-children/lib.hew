@@ -1,0 +1,23 @@
+actor Worker {
+    receive fn ping() -> i64 {
+        7
+    }
+}
+
+supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 3 within 10s;
+    pool workers: Worker count: 2;
+}
+
+pub fn first_ping() -> i64 {
+    let pool = spawn Pool;
+    let answer = pool.workers[0].ping() handle _ { -1 };
+    stop(pool);
+    stopped(pool);
+    answer
+}
+
+fn main() {
+    println(first_ping());
+}

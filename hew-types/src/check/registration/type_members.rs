@@ -227,6 +227,14 @@ impl Checker {
                             // spans here would cause false duplicate-definition
                             // errors when the import path later registers the same
                             // machine. Idempotency guard matches `pre_register_type_decl`.
+                            //
+                            // A private supervisor is never published to an
+                            // importer, but the module's own bodies still spawn
+                            // it and read its children.
+                            Item::Supervisor(sd) if !sd.visibility.is_pub() => {
+                                let identity = self.declaration_identity(sd.name);
+                                self.register_supervisor_decl_as(sd, &identity);
+                            }
                             _ => {}
                         }
                     }

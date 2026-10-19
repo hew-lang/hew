@@ -89,10 +89,14 @@ pub fn build(
             &toolchain.target,
             toolchain.lockfile.as_deref(),
         )?;
-        let artifact = if let Some(prebuilt) = prebuilt {
+        let (artifact, label) = if let Some(prebuilt) = prebuilt {
             let artifact = prebuilt.path().to_path_buf();
+            let label = format!(
+                "native prebuilt `{}`",
+                artifact.file_name().unwrap_or_default().display()
+            );
             out.prebuilts.push(std::sync::Arc::new(prebuilt));
-            artifact
+            (artifact, label)
         } else {
             out.source = stage_registry_source(root, manifest)?;
             let source = out.source.as_ref().map_or(root, |source| source.path());
@@ -108,15 +112,16 @@ pub fn build(
                 };
                 paths.insert(source, &display);
             }
-            build_rust_crate(
+            let (artifact, lib) = build_rust_crate(
                 source,
                 &rust,
                 &embedded_rustc_identity(),
                 &toolchain.target,
                 &paths,
-            )?
+            )?;
+            (artifact, format!("Rust crate `{lib}`"))
         };
-        refuse_reserved_symbols(&artifact, &format!("Rust crate `{}`", rust.lib), package)?;
+        refuse_reserved_symbols(&artifact, &label, package)?;
         out.dependencies.push(artifact.clone());
         out.dependencies.extend(
             cargo_dep_info(&artifact.with_extension("d"))
@@ -766,26 +771,145 @@ fn crate_rustc_identity(
         .ok_or_else(|| format!("could not parse `rustc -vV` output:\n{text}"))
 }
 
-/// Platform-specific file name for a built library of the given `kind`.
-pub(crate) fn artifact_file_name(lib: &str, kind: &str, target: &str) -> String {
-    if kind == "cdylib" {
-        if target.contains("-apple-darwin") {
-            format!("lib{lib}.dylib")
-        } else if target.contains("-windows-") {
-            format!("{lib}.dll")
-        } else {
-            format!("lib{lib}.so")
-        }
-    } else if target.contains("-windows-") {
-        // staticlib
-        format!("{lib}.lib")
+/// Library crate types a `[native]` Rust crate may build, in the order the
+/// build prefers them. Cargo.toml's `[lib] crate-type` decides which it has.
+const LINKABLE_CRATE_TYPES: [&str; 2] = ["staticlib", "cdylib"];
+
+/// Check that the `[native]` Rust crate of the package at `root`, if it
+/// declares one, builds a linkable library: its library target's crate types
+/// include `staticlib` or `cdylib`. Reads `cargo metadata` without building,
+/// so `hew check` and `hew publish` refuse an unlinkable crate up front.
+///
+/// # Errors
+///
+/// Returns an `E_INVALID_NATIVE` diagnostic when the crate has no
+/// `Cargo.toml`, `cargo metadata` fails, or no target builds a linkable type.
+pub fn check_crate_shape(root: &Path, manifest: &HewManifest) -> Result<(), String> {
+    let Some(rust) = manifest
+        .native
+        .as_ref()
+        .and_then(crate::manifest::NativeLib::rust_crate)
+    else {
+        return Ok(());
+    };
+    let cargo_toml = crate_manifest(root, &rust)?;
+    let out = Command::new("cargo")
+        .args([
+            "metadata",
+            "--no-deps",
+            "--offline",
+            "--format-version",
+            "1",
+            "--manifest-path",
+        ])
+        .arg(&cargo_toml)
+        .current_dir(cargo_toml.parent().unwrap_or_else(|| Path::new(".")))
+        .output()
+        .map_err(|e| format!("E_INVALID_NATIVE: failed to run cargo metadata: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "E_INVALID_NATIVE: cargo metadata failed for [native] crate {}:\n{}",
+            cargo_toml.display(),
+            String::from_utf8_lossy(&out.stderr).trim_end()
+        ));
+    }
+    let metadata: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("E_INVALID_NATIVE: invalid cargo metadata: {e}"))?;
+    let package = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|package| {
+            package["manifest_path"]
+                .as_str()
+                .is_some_and(|path| same_file(Path::new(path), &cargo_toml))
+        })
+        .ok_or_else(|| {
+            format!(
+                "E_INVALID_NATIVE: cargo metadata does not describe {}",
+                cargo_toml.display()
+            )
+        })?;
+    let linkable = package["targets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .any(|target| linkable_crate_type(target).is_some());
+    if linkable {
+        Ok(())
     } else {
-        format!("lib{lib}.a")
+        Err(format!(
+            "E_INVALID_NATIVE: [native] crate {} builds no linkable library; add \
+             `crate-type = [\"staticlib\"]` (or `\"cdylib\"`) to its [lib] table",
+            cargo_toml.display()
+        ))
+    }
+}
+
+/// The preferred linkable crate type of a Cargo target description (from
+/// `cargo metadata` or a `compiler-artifact` message), if it has one.
+fn linkable_crate_type(target: &serde_json::Value) -> Option<&'static str> {
+    let types: Vec<&str> = target["crate_types"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    LINKABLE_CRATE_TYPES
+        .into_iter()
+        .find(|linkable| types.contains(linkable))
+}
+
+/// The crate's `Cargo.toml`, which must exist.
+fn crate_manifest(root: &Path, rust: &RustCrate<'_>) -> Result<PathBuf, String> {
+    let crate_dir = root.join(rust.dir);
+    let cargo_toml = crate_dir.join("Cargo.toml");
+    if cargo_toml.is_file() {
+        Ok(cargo_toml)
+    } else {
+        Err(format!(
+            "E_INVALID_NATIVE: [native] crate at {} has no Cargo.toml",
+            crate_dir.display()
+        ))
+    }
+}
+
+/// Whether two paths name the same file, comparing canonical forms when both
+/// exist.
+fn same_file(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Whether `file` is the library Cargo produced for `crate_type`: the archive
+/// for `staticlib`, the shared library for `cdylib`, never an import library.
+pub(crate) fn is_library_file(file: &Path, crate_type: &str) -> bool {
+    let extension = |path: &Path| {
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+    };
+    // `foo.dll.lib` and `foo.dll.a` link against `foo.dll`; they are not it.
+    let import_library = file
+        .file_stem()
+        .and_then(|stem| extension(Path::new(stem)))
+        .is_some_and(|stem_extension| stem_extension == "dll");
+    match (crate_type, extension(file).as_deref()) {
+        ("staticlib", Some("a" | "lib")) => !import_library,
+        ("cdylib", Some("so" | "dylib" | "dll")) => true,
+        _ => false,
     }
 }
 
 /// Build a `[native]` Rust crate with Cargo's non-LTO `release-lib` profile
-/// and return the produced library.
+/// and return the produced library and its target name.
+///
+/// The artifact is the one Cargo reports: the `compiler-artifact` message for
+/// the crate's own library target, its `staticlib` file if it builds one,
+/// otherwise its `cdylib`. Cargo.toml is the one authority on the library's
+/// name and type.
 ///
 /// `expected` is the rustc identity `libhew.a` was built with: production
 /// passes [`embedded_rustc_identity`]; tests pass a deliberately mismatching
@@ -796,15 +920,9 @@ pub(crate) fn build_rust_crate(
     expected: &RustcIdentity,
     target: &str,
     paths: &hew_compile::SourcePathPolicy,
-) -> Result<PathBuf, String> {
+) -> Result<(PathBuf, String), String> {
+    let cargo_toml = crate_manifest(root, rust)?;
     let crate_dir = root.join(rust.dir);
-    let cargo_toml = crate_dir.join("Cargo.toml");
-    if !cargo_toml.exists() {
-        return Err(format!(
-            "[native] crate at {} has no Cargo.toml",
-            crate_dir.display()
-        ));
-    }
 
     // Refuse before cargo builds a static library with an incompatible libstd.
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
@@ -831,7 +949,8 @@ pub(crate) fn build_rust_crate(
     // dedups `rust_eh_personality`; a mismatched toolchain re-introduces a
     // duplicate-symbol link failure. Define `release-lib` on the Cargo
     // command line so standalone packages inherit their own release settings
-    // while always disabling LTO for a consumer-linkable archive.
+    // while always disabling LTO for a consumer-linkable archive. Stdout
+    // carries Cargo's JSON messages; rendered diagnostics arrive on stderr.
     let mut command = Command::new("cargo");
     command
         .env("RUSTC", &rustc)
@@ -844,11 +963,13 @@ pub(crate) fn build_rust_crate(
             r#"profile.release-lib.inherits="release""#,
             "--config",
             "profile.release-lib.lto=false",
+            "--message-format=json-render-diagnostics",
             "--manifest-path",
         ])
         .arg(&cargo_toml)
         .args(["--target", target])
-        .current_dir(&crate_dir);
+        .current_dir(&crate_dir)
+        .stdin(std::process::Stdio::null());
     if paths.prefixes().next().is_some() {
         // Cargo's effective flags include environment, target and hierarchical
         // config precedence. Preserve them before adding dependency-wide remaps.
@@ -878,10 +999,6 @@ pub(crate) fn build_rust_crate(
     let output = command
         .output()
         .map_err(|e| format!("failed to run cargo: {e}"))?;
-    print!(
-        "{}",
-        paths.display_text(&String::from_utf8_lossy(&output.stdout))
-    );
     eprint!(
         "{}",
         paths.display_text(&String::from_utf8_lossy(&output.stderr))
@@ -892,74 +1009,134 @@ pub(crate) fn build_rust_crate(
             crate_dir.display()
         ));
     }
-
-    let target_dir = cargo_target_dir(&cargo_toml)?;
-    let file_name = artifact_file_name(rust.lib, rust.kind, target);
-    let artifact = target_dir.join(target).join("release-lib").join(&file_name);
-    if !artifact.exists() {
-        return Err(format!(
-            "[native] crate built but artifact not found: {} (expected lib name `{}`, kind `{}`)",
-            artifact.display(),
-            rust.lib,
-            rust.kind
-        ));
-    }
-    Ok(artifact)
+    built_library(&output.stdout, &cargo_toml).ok_or_else(|| {
+        format!(
+            "E_INVALID_NATIVE: [native] crate {} built no staticlib or cdylib; set \
+             `crate-type` in its [lib] table",
+            cargo_toml.display()
+        )
+    })
 }
 
-/// Query the Cargo `target_directory` for a crate via `cargo metadata`.
-fn cargo_target_dir(cargo_toml: &Path) -> Result<PathBuf, String> {
-    let out = Command::new("cargo")
-        .args([
-            "metadata",
-            "--no-deps",
-            "--format-version",
-            "1",
-            "--manifest-path",
-        ])
-        .arg(cargo_toml)
-        .current_dir(cargo_toml.parent().unwrap_or_else(|| Path::new(".")))
-        .output()
-        .map_err(|e| format!("failed to run cargo metadata: {e}"))?;
-    if !out.status.success() {
-        return Err("cargo metadata failed".to_string());
-    }
-    let json: serde_json::Value =
-        serde_json::from_slice(&out.stdout).map_err(|e| format!("invalid cargo metadata: {e}"))?;
-    json.get("target_directory")
-        .and_then(serde_json::Value::as_str)
-        .map(PathBuf::from)
-        .ok_or_else(|| "cargo metadata missing target_directory".to_string())
+/// The library file and target name from Cargo's JSON messages for the crate
+/// whose manifest is `cargo_toml`.
+fn built_library(messages: &[u8], cargo_toml: &Path) -> Option<(PathBuf, String)> {
+    String::from_utf8_lossy(messages)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| {
+            message["reason"] == "compiler-artifact"
+                && message["manifest_path"]
+                    .as_str()
+                    .is_some_and(|path| same_file(Path::new(path), cargo_toml))
+        })
+        .find_map(|message| {
+            let crate_type = linkable_crate_type(&message["target"])?;
+            let file = message["filenames"]
+                .as_array()?
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .find(|file| is_library_file(file, crate_type))?;
+            let name = message["target"]["name"].as_str()?.to_string();
+            Some((file, name))
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn staticlib_artifact_name() {
-        let name = artifact_file_name(
-            "hew_hew_db_sqlite",
-            "staticlib",
-            &embedded_rustc_identity().host,
-        );
-        if cfg!(target_os = "windows") {
-            assert_eq!(name, "hew_hew_db_sqlite.lib");
-        } else {
-            assert_eq!(name, "libhew_hew_db_sqlite.a");
-        }
+    fn crate_with_types(crate_types: &str) -> (tempfile::TempDir, HewManifest) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("native/src")).unwrap();
+        std::fs::write(
+            dir.path().join("native/Cargo.toml"),
+            format!(
+                "[workspace]\n\n[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\
+                 [lib]\nname = \"p_native\"\ncrate-type = [{crate_types}]\n"
+            ),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("native/src/lib.rs"), "").unwrap();
+        let manifest: HewManifest = toml::from_str(
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\n\n[native]\ncrate = \"native\"\n",
+        )
+        .unwrap();
+        (dir, manifest)
     }
 
     #[test]
-    fn cdylib_artifact_name() {
-        let name = artifact_file_name("foo", "cdylib", &embedded_rustc_identity().host);
-        if cfg!(target_os = "macos") {
-            assert_eq!(name, "libfoo.dylib");
-        } else if cfg!(target_os = "windows") {
-            assert_eq!(name, "foo.dll");
-        } else {
-            assert_eq!(name, "libfoo.so");
+    fn crate_shape_requires_a_linkable_library() {
+        for linkable in ["\"staticlib\"", "\"cdylib\"", "\"rlib\", \"staticlib\""] {
+            let (dir, manifest) = crate_with_types(linkable);
+            check_crate_shape(dir.path(), &manifest).unwrap_or_else(|e| panic!("{linkable}: {e}"));
         }
+        let (dir, manifest) = crate_with_types("\"rlib\"");
+        let error = check_crate_shape(dir.path(), &manifest).unwrap_err();
+        assert!(error.starts_with("E_INVALID_NATIVE"), "{error}");
+        assert!(error.contains("builds no linkable library"), "{error}");
+        assert!(!dir.path().join("native/target").exists(), "metadata only");
+
+        std::fs::remove_file(dir.path().join("native/Cargo.toml")).unwrap();
+        let error = check_crate_shape(dir.path(), &manifest).unwrap_err();
+        assert!(error.contains("has no Cargo.toml"), "{error}");
+    }
+
+    #[test]
+    fn built_library_is_the_crate_s_own_linkable_artifact() {
+        let dir = tempfile::tempdir().unwrap();
+        let cargo_toml = dir.path().join("Cargo.toml");
+        std::fs::write(&cargo_toml, "").unwrap();
+        let other = dir.path().join("dep/Cargo.toml");
+        let message = |manifest: &Path, name: &str, types: &[&str], files: &[&str]| {
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "manifest_path": manifest,
+                "target": { "name": name, "crate_types": types },
+                "filenames": files,
+            })
+            .to_string()
+        };
+        let messages = [
+            r#"{"reason":"build-script-executed"}"#.to_string(),
+            message(&other, "dep", &["staticlib"], &["/t/libdep.a"]),
+            message(
+                &cargo_toml,
+                "foo_native",
+                &["rlib", "cdylib", "staticlib"],
+                &[
+                    "/t/libfoo_native.rlib",
+                    "/t/foo_native.dll",
+                    "/t/foo_native.dll.lib",
+                    "/t/foo_native.lib",
+                ],
+            ),
+        ]
+        .join("\n");
+        assert_eq!(
+            built_library(messages.as_bytes(), &cargo_toml),
+            Some((PathBuf::from("/t/foo_native.lib"), "foo_native".to_string()))
+        );
+
+        let cdylib = message(
+            &cargo_toml,
+            "foo_native",
+            &["cdylib"],
+            &["/t/foo_native.dll.lib", "/t/foo_native.dll"],
+        );
+        assert_eq!(
+            built_library(cdylib.as_bytes(), &cargo_toml),
+            Some((PathBuf::from("/t/foo_native.dll"), "foo_native".to_string()))
+        );
+
+        let rlib_only = message(
+            &cargo_toml,
+            "foo_native",
+            &["rlib"],
+            &["/t/libfoo_native.rlib"],
+        );
+        assert_eq!(built_library(rlib_only.as_bytes(), &cargo_toml), None);
     }
 
     #[test]
@@ -1006,11 +1183,7 @@ mod tests {
             release: "0.0.0-does-not-exist".to_string(),
             host: "nowhere".to_string(),
         };
-        let rust = RustCrate {
-            dir: "native",
-            lib: "p_native",
-            kind: "staticlib",
-        };
+        let rust = RustCrate { dir: "native" };
         let error = build_rust_crate(
             dir.path(),
             &rust,

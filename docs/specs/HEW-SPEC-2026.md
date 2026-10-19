@@ -20,8 +20,11 @@ Hew tracks **two version axes** that move independently:
 - **Compiler version** is SemVer on the binary (`hew --version` → `hew
   0.6.1`). During the 0.6 series, patch releases may add compatible language
   and standard-library features as well as correctness and performance fixes.
-  Packages using an addition declare the minimum compiler version through
-  `hew` in `hew.toml`. The major release is the v1.0 stability event.
+  Packages using an addition declare the compiler versions they support as a
+  SemVer range through `hew` in `hew.toml`; compiling, `hew check` and
+  `hew publish` refuse a compiler outside it, and `hew install` skips package
+  versions whose range excludes the running compiler. The major release is the
+  v1.0 stability event.
 - **Spec edition** is a year-shaped identifier declared once per package in
   `hew.toml` as `edition = "2026"`. **2026** is the edition being developed;
   it has not yet stabilized. Editions are cadence-free: the next edition lands when
@@ -4149,6 +4152,14 @@ consumers name its objects or libraries on the command line. Sources compile
 with the C driver that links the program, for the same target and at the same
 optimization level. Native code cannot join a WebAssembly module; a wasm build
 of a program that compiles a `[native]` package is refused.
+
+A Rust crate is declared by its directory, `crate = "<dir>"`. Its library name
+and crate type are read from the crate's own `Cargo.toml`, never restated in
+`hew.toml`; the build links the `staticlib`, or else the `cdylib`, that Cargo
+reports building. A crate whose library target builds neither is refused with
+`E_INVALID_NATIVE` by `hew check` and `hew publish` before anything builds,
+and a `[native]` section that still names `lib` or `kind` is refused with
+`E_INVALID_NATIVE` and the line to delete.
 
 Package native code defines its symbols under the package's own prefix, never
 `hew_` (§3.9.1); only packages in the `hew.` namespace may define `hew_`

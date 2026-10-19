@@ -309,7 +309,7 @@ fn native_prerequisite_failure_stops_the_build() {
         dir.path(),
         "withnative",
         "main.hew",
-        "\n[native]\nlib = \"withnative\"\ncrate = \"native\"\n",
+        "\n[native]\ncrate = \"native\"\n",
     );
 
     let output = Command::new(hew_binary())
@@ -343,7 +343,7 @@ fn native_prerequisite_with_matching_toolchain_builds_and_links() {
         dir.path(),
         "withnativeok",
         "main.hew",
-        "\n[native]\nlib = \"withnativeok_native\"\ncrate = \"native\"\n",
+        "\n[native]\ncrate = \"native\"\n",
     );
     let native_dir = dir.path().join("native");
     std::fs::create_dir_all(native_dir.join("src")).expect("create native crate dir");

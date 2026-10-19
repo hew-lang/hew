@@ -2279,6 +2279,19 @@ fn parse_import_type_decl_keyword_path_segments() {
 }
 
 #[test]
+fn import_path_segment_text_agrees_with_import_parsing() {
+    for segment in ["three_d", "type", "actor", "after", "_private"] {
+        assert!(is_import_path_segment(segment), "{segment}");
+        let result = parse(&format!("import acme.{segment};"));
+        assert!(result.errors.is_empty(), "{segment}: {:?}", result.errors);
+    }
+    for segment in ["3d", "", "a b", " a", "a.b", "a-b", "a//"] {
+        assert!(!is_import_path_segment(segment), "{segment:?}");
+    }
+    assert!(!parse("import acme.3d;").errors.is_empty());
+}
+
+#[test]
 fn machine_qualifier_in_type_position_rejected() {
     // The import-path carve-out does not extend to qualifier position:
     // `machine.Machine` as a type annotation stays reserved.

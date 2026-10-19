@@ -14,10 +14,13 @@ pub mod manifest;
 pub mod native;
 pub mod native_prebuilt;
 pub mod project;
+pub mod publish;
 pub mod registry;
 pub mod resolver;
 pub mod signing;
 pub mod tarball;
+pub mod trusted;
+pub mod workspace;
 
 pub mod cli;
 

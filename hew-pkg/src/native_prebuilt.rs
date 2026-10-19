@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::atomic_fs::{PinnedDir, StagedDir};
 use crate::client::{ApiError, RegistryClient};
 use crate::manifest::HewManifest;
-use crate::native::{artifact_file_name, build_rust_crate, embedded_rustc_identity};
+use crate::native::{build_rust_crate, embedded_rustc_identity, is_library_file};
 use crate::registry::Registry;
 
 const DESCRIPTOR: &str = "native.json";
@@ -115,22 +115,48 @@ fn validate_descriptor(
     source_checksum: &str,
     identity: &NativeIdentity,
 ) -> Result<PathBuf, String> {
-    let rust = manifest
+    if manifest
         .native
         .as_ref()
         .and_then(crate::manifest::NativeLib::rust_crate)
-        .ok_or_else(|| "native artifact requires a Rust staticlib package".to_string())?;
+        .is_none()
+    {
+        return Err("native artifact requires a Rust staticlib package".to_string());
+    }
+    let descriptor = descriptor(root)?;
+    // Cargo named the library when the archive was built; the signed
+    // descriptor carries that name. It must be one plain static library file.
+    let library = Path::new(&descriptor.library);
+    let plain_file = library.components().count() == 1
+        && matches!(
+            library.components().next(),
+            Some(std::path::Component::Normal(_))
+        );
     let expected = NativeDescriptor {
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
         source_checksum: source_checksum.to_string(),
         identity: identity.clone(),
-        library: artifact_file_name(rust.lib, rust.kind, &identity.target),
+        library: descriptor.library.clone(),
     };
-    if rust.kind != "staticlib" || descriptor(root)? != expected {
+    // Rust names a staticlib `<name>.lib` for MSVC targets and `lib<name>.a`
+    // for every other target.
+    let extension = if identity.target.ends_with("-msvc") {
+        "lib"
+    } else {
+        "a"
+    };
+    let for_target = library
+        .extension()
+        .is_some_and(|actual| actual.eq_ignore_ascii_case(extension));
+    if !plain_file
+        || !for_target
+        || !is_library_file(library, "staticlib")
+        || descriptor != expected
+    {
         return Err("native artifact package, source or runtime ABI identity mismatch".to_string());
     }
-    let library = root.join(&expected.library);
+    let library = root.join(library);
     if !library.is_file() {
         return Err("native artifact is missing its static library".to_string());
     }
@@ -365,9 +391,6 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
         .as_ref()
         .and_then(crate::manifest::NativeLib::rust_crate)
         .ok_or_else(|| "package has no [native] Rust crate".to_string())?;
-    if rust.kind != "staticlib" {
-        return Err("native prebuilts require kind = staticlib".to_string());
-    }
     let (source_archive, source_checksum) = if let Some((_, checksum, archive)) =
         crate::registry::source_provenance(root, &manifest)?
     {
@@ -390,19 +413,36 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
         .join(&manifest.package.version);
     paths.insert(root, &display);
     paths.insert(staged.path(), &display);
-    let artifact = build_rust_crate(
+    let (artifact, _) = build_rust_crate(
         staged.path(),
         &rust,
         &embedded_rustc_identity(),
         target,
         &paths,
     )?;
+    if !is_library_file(&artifact, "staticlib") {
+        return Err(
+            "native prebuilts require a staticlib; add `\"staticlib\"` to the crate's \
+             [lib] crate-type"
+                .to_string(),
+        );
+    }
+    let library = artifact
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "native library {} has no UTF-8 file name",
+                artifact.display()
+            )
+        })?
+        .to_string();
     let descriptor = NativeDescriptor {
         name: manifest.package.name.clone(),
         version: manifest.package.version.clone(),
         source_checksum,
         identity: NativeIdentity::current(target),
-        library: artifact_file_name(rust.lib, rust.kind, target),
+        library,
     };
     let files = [
         crate::package_fs::PackageFile {
@@ -496,7 +536,7 @@ mod tests {
         std::fs::create_dir(source.path().join("native")).unwrap();
         std::fs::write(
             source.path().join("hew.toml"),
-            "[package]\nname = \"acme.provenance\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[native]\nlib = \"provenance_probe\"\ncrate = \"native\"\n",
+            "[package]\nname = \"acme.provenance\"\nversion = \"0.1.0\"\nedition = \"2026\"\n[native]\ncrate = \"native\"\n",
         ).unwrap();
         std::fs::write(
             source.path().join("native/Cargo.toml"),

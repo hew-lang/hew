@@ -165,6 +165,18 @@ pub enum ResolveError {
         /// Each unresolved package along with all active requirements.
         failures: Vec<UnresolvedDep>,
     },
+    /// A requirement on a workspace member does not admit its version.
+    WorkspaceRequirement(crate::workspace::WorkspaceError),
+    /// Every registry version matching the requirements declares a compiler
+    /// range that excludes the running compiler.
+    CompilerRange {
+        /// The requested package.
+        package: String,
+        /// The requirements the excluded versions matched.
+        requirements: Vec<String>,
+        /// Each excluded `(version, hew range)`.
+        excluded: Vec<(String, String)>,
+    },
     /// A resolver pass repeated without changing its accumulated state.
     NoProgress,
     /// Resolution exceeded its finite pass limit.
@@ -280,6 +292,24 @@ impl fmt::Display for ResolveError {
                 }
                 Ok(())
             }
+            Self::WorkspaceRequirement(error) => error.fmt(f),
+            Self::CompilerRange {
+                package,
+                requirements,
+                excluded,
+            } => {
+                write!(
+                    f,
+                    "E_PKG_COMPILER_RANGE: every version of `{package}` matching [{}] excludes \
+                     this compiler ({}):",
+                    requirements.join(", "),
+                    hew_compile::COMPILER_VERSION
+                )?;
+                for (version, range) in excluded {
+                    write!(f, "\n  {package}@{version} requires hew `{range}`")?;
+                }
+                Ok(())
+            }
             Self::NoProgress => {
                 f.write_str("dependency resolution repeated without making progress")
             }
@@ -309,6 +339,8 @@ impl std::error::Error for ResolveError {
             | Self::UnknownRegistry { .. }
             | Self::CircularDependency { .. }
             | Self::UnresolvableDeps { .. }
+            | Self::CompilerRange { .. }
+            | Self::WorkspaceRequirement(_)
             | Self::NoProgress
             | Self::ProgressLimitExceeded { .. } => None,
         }
@@ -421,12 +453,23 @@ struct CachedManifest {
     root: PathBuf,
 }
 
-/// Registry identities available while resolving one dependency graph.
+/// Registry identities available while resolving one dependency graph, plus
+/// the workspace members that stand in for registry packages of their name.
 #[derive(Debug, Clone)]
 pub struct RegistrySources {
     default_registry: String,
     default_selector: Option<String>,
     named: BTreeMap<String, String>,
+    workspace_members: BTreeMap<String, WorkspaceMember>,
+}
+
+/// A workspace member as the resolver sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkspaceMember {
+    /// Canonical member directory.
+    pub dir: PathBuf,
+    /// The member's version.
+    pub version: String,
 }
 
 impl RegistrySources {
@@ -442,7 +485,45 @@ impl RegistrySources {
             default_registry,
             default_selector,
             named,
+            workspace_members: BTreeMap::new(),
         }
+    }
+
+    /// Resolve a plain requirement on a member of `workspace` to that
+    /// member's directory instead of a registry. An explicit `path` or
+    /// `registry` keeps its declared source.
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: &crate::workspace::Workspace) -> Self {
+        self.workspace_members = workspace
+            .members
+            .iter()
+            .map(|member| {
+                (
+                    member.name().to_string(),
+                    WorkspaceMember {
+                        dir: member.dir.clone(),
+                        version: member.version().to_string(),
+                    },
+                )
+            })
+            .collect();
+        self
+    }
+
+    /// The workspace member named `name`, if this graph has one.
+    #[must_use]
+    pub fn workspace_member(&self, name: &str) -> Option<&WorkspaceMember> {
+        self.workspace_members.get(name)
+    }
+
+    /// Each workspace member's name and the path a lockfile in `project_root`
+    /// records for it.
+    #[must_use]
+    pub fn workspace_lock_paths(&self, project_root: &Path) -> BTreeMap<String, String> {
+        self.workspace_members
+            .iter()
+            .map(|(name, member)| (name.clone(), workspace_lock_path(project_root, &member.dir)))
+            .collect()
     }
 
     /// Construct the compiled-in default source without named registries.
@@ -512,6 +593,8 @@ struct ResolverPass<'a> {
     registry: &'a Registry,
     registry_sources: &'a RegistrySources,
     root: &'a Path,
+    /// The root package's name, the requester of its direct dependencies.
+    root_name: &'a str,
     allow_legacy_default: bool,
     pinned_registry_paths: Option<&'a BTreeMap<(String, String, String), PathBuf>>,
     available_versions: BTreeMap<(String, String), Vec<semver::Version>>,
@@ -523,10 +606,15 @@ struct ResolverPass<'a> {
 }
 
 impl<'a> ResolverPass<'a> {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is an independent input of one resolver pass"
+    )]
     fn with_seed(
         registry: &'a Registry,
         registry_sources: &'a RegistrySources,
         root: &'a Path,
+        root_name: &'a str,
         allow_legacy_default: bool,
         confirmed_versions: Option<&'a BTreeMap<(String, String), BTreeSet<String>>>,
         pinned_registry_paths: Option<&'a BTreeMap<(String, String, String), PathBuf>>,
@@ -558,6 +646,7 @@ impl<'a> ResolverPass<'a> {
             registry,
             registry_sources,
             root,
+            root_name,
             allow_legacy_default,
             pinned_registry_paths,
             available_versions,
@@ -629,6 +718,8 @@ impl<'a> ResolverPass<'a> {
             cycle.push(request.name.clone());
             return Err(ResolveError::CircularDependency { cycle });
         }
+
+        let request = self.bind_workspace_member(request, path)?;
 
         let request_source = request.source.clone();
         let (requirements, requested_features, use_default_features) = {
@@ -723,6 +814,31 @@ impl<'a> ResolverPass<'a> {
         }
 
         Ok(VisitControl::Continue)
+    }
+
+    /// Check a request that resolved to a workspace member against the
+    /// member's version, and record the member's lockfile path.
+    fn bind_workspace_member(
+        &self,
+        mut request: DepRequest,
+        path: &[String],
+    ) -> Result<DepRequest, ResolveError> {
+        if let Some(member) = self.registry_sources.workspace_member(&request.name) {
+            if request.source == PackageSource::Path(member.dir.clone()) {
+                let requester = path.last().map_or(self.root_name, String::as_str);
+                crate::workspace::member_satisfies(
+                    requester,
+                    &request.name,
+                    &request.requirement,
+                    &member.version,
+                )
+                .map_err(ResolveError::WorkspaceRequirement)?;
+                request
+                    .direct_path
+                    .get_or_insert_with(|| workspace_lock_path(self.root, &member.dir));
+            }
+        }
+        Ok(request)
     }
 
     fn select_version(
@@ -1014,6 +1130,11 @@ fn dependency_source(
         });
     }
     let Some(path) = path else {
+        if selector.is_none() {
+            if let Some(member) = sources.workspace_member(package) {
+                return Ok((PackageSource::Path(member.dir.clone()), None));
+            }
+        }
         let (registry, registry_selector) = sources.resolve(selector.as_deref(), inherited)?;
         return Ok((PackageSource::Registry { registry }, registry_selector));
     };
@@ -1216,23 +1337,34 @@ pub fn resolve_version(
 /// Returns [`ResolveError`] when the dependency requirement is invalid, no
 /// registry version matches, or a path dependency is missing or malformed.
 pub fn resolve_dependency_from_root(
+    root_name: &str,
     package_name: &str,
     spec: &DepSpec,
     root: &Path,
     registry: &Registry,
+    sources: &RegistrySources,
 ) -> Result<String, ResolveError> {
     validate_package_name(package_name)?;
-    let sources = RegistrySources::default_source();
-    let (source, _) = dependency_source(package_name, spec, root, None, &sources, None)?;
+    let (source, _) = dependency_source(package_name, spec, root, None, sources, None)?;
     match source {
         PackageSource::Registry { .. } => {
             resolve_version(package_name, spec.version_req(), registry)
         }
         PackageSource::Path(path) => {
+            if let Some(member) = sources.workspace_member(package_name) {
+                crate::workspace::member_satisfies(
+                    root_name,
+                    package_name,
+                    spec.version_req(),
+                    &member.version,
+                )
+                .map_err(ResolveError::WorkspaceRequirement)?;
+            }
             let mut resolver = ResolverPass::with_seed(
                 registry,
-                &sources,
+                sources,
                 root,
+                root_name,
                 true,
                 None,
                 None,
@@ -1240,6 +1372,34 @@ pub fn resolve_dependency_from_root(
             );
             resolver.load_path_manifest(package_name, &path, &[spec.version_req().to_string()])
         }
+    }
+}
+
+/// The path a lockfile in `project_root` records for the workspace member at
+/// `member_dir`: relative and `/`-separated, so the lockfile does not depend
+/// on where the checkout lives.
+#[must_use]
+pub fn workspace_lock_path(project_root: &Path, member_dir: &Path) -> String {
+    let from = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let from: Vec<_> = from.components().collect();
+    let to: Vec<_> = member_dir.components().collect();
+    let common = from
+        .iter()
+        .zip(&to)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut parts: Vec<String> = vec!["..".to_string(); from.len() - common];
+    parts.extend(
+        to[common..]
+            .iter()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+    );
+    if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
     }
 }
 
@@ -1291,13 +1451,16 @@ pub struct ResolvedEntry {
     pub published_at: Option<String>,
 }
 
+/// The highest non-yanked entry matching every requirement whose compiler
+/// range admits the running compiler. An entry whose `hew` range does not
+/// parse is skipped too: its compatibility cannot be confirmed.
 fn best_matching_entry<'a>(
     entries: &'a [IndexEntry],
     requirements: &[String],
 ) -> Result<Option<(semver::Version, &'a IndexEntry)>, ResolveError> {
     let reqs = parse_requirements(requirements)?;
 
-    let mut matching: Vec<_> = entries
+    let (mut matching, excluded): (Vec<_>, Vec<_>) = entries
         .iter()
         .filter(|entry| !entry.yanked.is_yanked())
         .filter_map(|entry| {
@@ -1306,7 +1469,24 @@ fn best_matching_entry<'a>(
                 .filter(|version| reqs.iter().all(|req| req.matches(version)))
                 .map(|version| (version, entry))
         })
-        .collect();
+        .partition(|(_, entry)| {
+            entry
+                .hew
+                .as_deref()
+                .is_none_or(|range| hew_compile::compiler_supports(range).unwrap_or(false))
+        });
+    if matching.is_empty() && !excluded.is_empty() {
+        return Err(ResolveError::CompilerRange {
+            package: entries[0].name.clone(),
+            requirements: requirements.to_vec(),
+            excluded: excluded
+                .into_iter()
+                .map(|(version, entry)| {
+                    (version.to_string(), entry.hew.clone().unwrap_or_default())
+                })
+                .collect(),
+        });
+    }
 
     matching.sort_by(|(left, _), (right, _)| left.cmp(right));
     Ok(matching.pop())
@@ -1525,6 +1705,7 @@ fn resolve_all_inner(
             registry,
             registry_sources,
             root,
+            &manifest.package.name,
             allow_legacy_default,
             confirmed_versions,
             pinned_registry_paths,
@@ -2367,6 +2548,133 @@ mod tests {
         drop(registry_dir);
     }
 
+    /// A workspace at `root` with members `a` (1.0.0), and `app` depending on
+    /// `a` with `requirement`; returns the loaded workspace and app manifest.
+    fn workspace_with_app(
+        root: &Path,
+        requirement: &str,
+    ) -> (crate::workspace::Workspace, HewManifest) {
+        for (dir, manifest) in [
+            (
+                "libs/a",
+                "[package]\nname = \"a\"\nversion = \"1.0.0\"\n".to_string(),
+            ),
+            (
+                "apps/app",
+                format!(
+                    "[package]\nname = \"app\"\nversion = \"0.1.0\"\n\n[dependencies]\n\
+                     \"a\" = \"{requirement}\"\n"
+                ),
+            ),
+        ] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+            std::fs::write(root.join(dir).join("hew.toml"), manifest).unwrap();
+        }
+        std::fs::write(
+            root.join("hew.toml"),
+            "[workspace]\nmembers = [\"libs/a\", \"apps/app\"]\n",
+        )
+        .unwrap();
+        let workspace = crate::workspace::load(root).unwrap();
+        let app = manifest::parse_manifest(&root.join("apps/app/hew.toml")).unwrap();
+        (workspace, app)
+    }
+
+    #[test]
+    fn workspace_member_resolves_from_its_directory() {
+        let (_registry_dir, registry) = test_registry();
+        // A registry copy of `a` must not be chosen over the member.
+        install_fake(&registry, "a", "1.0.0");
+        let root = tempfile::tempdir().unwrap();
+        let (workspace, app) = workspace_with_app(root.path(), "1.0.0");
+        let sources = RegistrySources::default_source().with_workspace(&workspace);
+        let app_root = root.path().join("apps/app");
+
+        let resolved =
+            resolve_all_from_root_with_sources(&app, &app_root, &registry, &sources, true).unwrap();
+
+        let member_dir = root.path().join("libs/a").canonicalize().unwrap();
+        assert_eq!(resolved["a"].source, PackageSource::Path(member_dir));
+        assert_eq!(resolved["a"].direct_path.as_deref(), Some("../../libs/a"));
+    }
+
+    #[test]
+    fn workspace_member_requirement_mismatch_is_refused_not_fetched() {
+        let (_registry_dir, registry) = test_registry();
+        install_fake(&registry, "a", "0.3.0");
+        let root = tempfile::tempdir().unwrap();
+        let (workspace, app) = workspace_with_app(root.path(), "0.3.0");
+        let sources = RegistrySources::default_source().with_workspace(&workspace);
+
+        let error = resolve_all_from_root_with_sources(
+            &app,
+            &root.path().join("apps/app"),
+            &registry,
+            &sources,
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "E_WORKSPACE_REQUIREMENT: app requires a `0.3.0`, but the workspace member a is 1.0.0"
+        );
+    }
+
+    #[test]
+    fn registry_package_depending_on_a_member_name_gets_the_member() {
+        let (_registry_dir, registry) = test_registry();
+        install_fake_package(
+            &registry,
+            "outside",
+            "1.0.0",
+            &[FakeDep {
+                name: "a",
+                version: "1.0.0",
+                optional: false,
+                features: &[],
+                default_features: true,
+            }],
+            &[],
+        );
+        let root = tempfile::tempdir().unwrap();
+        let (workspace, mut app) = workspace_with_app(root.path(), "1.0.0");
+        app.dependencies.clear();
+        app.dependencies
+            .insert("outside".to_string(), DepSpec::Version("1.0.0".to_string()));
+        let sources = RegistrySources::default_source().with_workspace(&workspace);
+
+        let resolved = resolve_all_from_root_with_sources(
+            &app,
+            &root.path().join("apps/app"),
+            &registry,
+            &sources,
+            true,
+        )
+        .unwrap();
+
+        let member_dir = root.path().join("libs/a").canonicalize().unwrap();
+        assert_eq!(resolved["a"].source, PackageSource::Path(member_dir));
+        assert!(matches!(
+            resolved["outside"].source,
+            PackageSource::Registry { .. }
+        ));
+    }
+
+    #[test]
+    fn workspace_lock_paths_are_relative() {
+        let root = tempfile::tempdir().unwrap();
+        let a = root.path().join("db/sql");
+        let b = root.path().join("db/sqlite");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert_eq!(
+            workspace_lock_path(&b, &a.canonicalize().unwrap()),
+            "../sql"
+        );
+        assert_eq!(workspace_lock_path(&a, &a.canonicalize().unwrap()), ".");
+    }
+
     #[test]
     fn registry_manifest_rejects_every_path_dependency_spelling() {
         for (index, path) in ["relative", "../../escape", "/absolute/escape"]
@@ -2678,6 +2986,44 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(resolved.version, "1.8.0");
+    }
+
+    #[test]
+    fn from_entries_skip_versions_whose_compiler_range_excludes_this_compiler() {
+        let mut newer = sample_entry("pkg", "2.0.0");
+        newer.hew = Some(">=9.0.0".to_string());
+        let mut older = sample_entry("pkg", "1.0.0");
+        older.hew = Some("<9.0.0".to_string());
+        let resolved = resolve_version_from_entries(&[older.clone(), newer.clone()], "*")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.version, "1.0.0");
+
+        // Negative control: without the bound the highest version wins.
+        newer.hew = None;
+        let resolved = resolve_version_from_entries(&[older, newer], "*")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.version, "2.0.0");
+    }
+
+    #[test]
+    fn from_entries_name_the_range_when_every_match_is_excluded() {
+        let mut only = sample_entry("pkg", "2.0.0");
+        only.hew = Some(">=9.0.0".to_string());
+        let mut garbled = sample_entry("pkg", "2.1.0");
+        garbled.hew = Some("not a range".to_string());
+        let error = resolve_version_from_entries(&[only, garbled], "^2").unwrap_err();
+        let message = error.to_string();
+        assert!(message.starts_with("E_PKG_COMPILER_RANGE"), "{message}");
+        assert!(
+            message.contains("pkg@2.0.0 requires hew `>=9.0.0`"),
+            "{message}"
+        );
+        assert!(
+            message.contains("pkg@2.1.0 requires hew `not a range`"),
+            "{message}"
+        );
     }
 
     #[test]

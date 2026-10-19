@@ -299,16 +299,20 @@ pub fn is_lock_stale(lockfile: &LockFile, manifest: &HewManifest) -> bool {
         manifest,
         &crate::config::default_registry_identity(),
         &std::collections::BTreeMap::new(),
+        &std::collections::BTreeMap::new(),
     )
 }
 
 /// Compare direct requirements together with their canonical source identities.
+/// A plain requirement on a workspace member is expected locked at the path
+/// `workspace_members` gives for it.
 #[must_use]
 pub fn is_lock_stale_for_registries(
     lockfile: &LockFile,
     manifest: &HewManifest,
     default_registry: &str,
     named_registries: &std::collections::BTreeMap<String, String>,
+    workspace_members: &std::collections::BTreeMap<String, String>,
 ) -> bool {
     type RequirementIdentity<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
     type RequirementMap<'a> = std::collections::BTreeMap<&'a str, RequirementIdentity<'a>>;
@@ -341,6 +345,14 @@ pub fn is_lock_stale_for_registries(
             };
             if path.is_some() && selector.is_some() {
                 return None;
+            }
+            if path.is_none() && selector.is_none() {
+                if let Some(member_path) = workspace_members.get(name) {
+                    return Some((
+                        name.as_str(),
+                        (dep_spec.version_req(), Some(member_path.as_str()), None),
+                    ));
+                }
             }
             let registry = if path.is_some() {
                 None
@@ -824,6 +836,49 @@ mod tests {
     }
 
     #[test]
+    fn workspace_member_requirement_is_fresh_when_locked_at_its_path() {
+        let registry = "https://registry-a.example/api/v1";
+        let locked_at = |path: Option<&str>| LockFile {
+            packages: vec![LockedPackage {
+                name: "foo".to_string(),
+                requirement: Some("1.0.0".to_string()),
+                version: "1.0.0".to_string(),
+                checksum: None,
+                signature: None,
+                native: Vec::new(),
+                source: "path".to_string(),
+                registry: None,
+                path: path.map(ToString::to_string),
+            }],
+        };
+        let manifest = make_manifest(&[("foo", "1.0.0")]);
+        let members = BTreeMap::from([("foo".to_string(), "../foo".to_string())]);
+
+        assert!(!is_lock_stale_for_registries(
+            &locked_at(Some("../foo")),
+            &manifest,
+            registry,
+            &BTreeMap::new(),
+            &members,
+        ));
+        assert!(is_lock_stale_for_registries(
+            &locked_at(Some("../elsewhere")),
+            &manifest,
+            registry,
+            &BTreeMap::new(),
+            &members,
+        ));
+        // Outside the workspace the same lock is stale: foo is a registry package.
+        assert!(is_lock_stale_for_registries(
+            &locked_at(Some("../foo")),
+            &manifest,
+            registry,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        ));
+    }
+
+    #[test]
     fn changing_default_registry_identity_stales_lock() {
         let first = "https://registry-a.example/api/v1";
         let second = "https://registry-b.example/api/v1";
@@ -847,11 +902,13 @@ mod tests {
             &manifest,
             first,
             &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
         ));
         assert!(is_lock_stale_for_registries(
             &lockfile,
             &manifest,
             second,
+            &std::collections::BTreeMap::new(),
             &std::collections::BTreeMap::new(),
         ));
     }

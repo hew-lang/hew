@@ -73,6 +73,7 @@ pub(crate) fn frontend_options(target: &TargetSpec, options: &CompileOptions) ->
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        ignore_lockfile: false,
         documents: hew_compile::SourceSet::new(),
     }
 }
@@ -97,6 +98,7 @@ pub(crate) fn frontend_options_for_check(options: &CompileOptions) -> FrontendOp
         companion: options.companion.clone(),
         repl_fragment: options.repl_fragment,
         lint_levels: options.lint_levels.clone(),
+        ignore_lockfile: false,
         documents: hew_compile::SourceSet::new(),
     }
 }

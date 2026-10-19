@@ -104,6 +104,11 @@ pub struct FrontendOptions {
     /// The sole deterministic production peer for a selected `_test.hew`
     /// root. Arbitrary sibling discovery is intentionally not supported.
     pub companion: Option<PathBuf>,
+    /// Resolve imports without the project's `hew.lock`. `hew publish`
+    /// checks a package against the dependencies it has just installed,
+    /// which the package's own lock does not govern and which consumers never
+    /// see.
+    pub ignore_lockfile: bool,
     /// Open editor buffers that override on-disk content for this run.
     ///
     /// Every source read the frontend performs consults this set first, so an
@@ -1564,7 +1569,11 @@ fn load_project_context(
         project_dir: project_dir.clone(),
         manifest_deps,
         package_name,
-        locked_versions: load_lockfile_from(&project_dir, documents)?,
+        locked_versions: if options.is_some_and(|options| options.ignore_lockfile) {
+            None
+        } else {
+            load_lockfile_from(&project_dir, documents)?
+        },
     })
 }
 
@@ -1599,7 +1608,11 @@ fn project_context_for_program(
                 project_dir: dir.clone(),
                 manifest_deps,
                 package_name,
-                locked_versions: load_lockfile_from(dir, &options.documents)?,
+                locked_versions: if options.ignore_lockfile {
+                    None
+                } else {
+                    load_lockfile_from(dir, &options.documents)?
+                },
             })
         }
         None => Ok(ProjectContext {
@@ -2405,7 +2418,11 @@ pub fn resolve_module_import(
     });
     let (manifest_deps, package_name) =
         load_manifest_metadata_from(&project_dir, &options.documents).ok()?;
-    let locked_versions = load_lockfile_from(&project_dir, &options.documents).ok()?;
+    let locked_versions = if options.ignore_lockfile {
+        None
+    } else {
+        load_lockfile_from(&project_dir, &options.documents).ok()?
+    };
     let ctx = ImportResolutionContext {
         in_progress_imports: HashSet::new(),
         resolved_imports: HashMap::new(),
@@ -4429,6 +4446,28 @@ pub fn check_file_with_state(
     Ok((output, state))
 }
 
+/// The running compiler's release version, the version `hew --version`
+/// prints. Every crate in the workspace shares it.
+pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Whether a `[package] hew` compiler range admits this compiler. The one
+/// reader of that range: the frontend, `hew publish`, `hew check` and the
+/// package resolver all ask it.
+///
+/// # Errors
+///
+/// Returns the parse error when `range` is not a semver range.
+///
+/// # Panics
+///
+/// Never: [`COMPILER_VERSION`] is the workspace's semver version.
+pub fn compiler_supports(range: &str) -> Result<bool, semver::Error> {
+    let range = semver::VersionReq::parse(range)?;
+    let compiler =
+        semver::Version::parse(COMPILER_VERSION).expect("the workspace version is semver");
+    Ok(range.matches(&compiler))
+}
+
 /// Hew language editions the compiler accepts. Sources in a package whose
 /// `hew.toml` names an edition outside this set are rejected before parsing.
 const SUPPORTED_EDITIONS: &[&str] = &["2026"];
@@ -4558,7 +4597,7 @@ fn load_manifest_from(
     if let Some(m) = &manifest {
         if let Some(package) = &m.package {
             if let Some(requirement) = &package.hew {
-                let requirement = semver::VersionReq::parse(requirement).map_err(|error| {
+                let supported = compiler_supports(requirement).map_err(|error| {
                     FrontendFailure::coded_message(
                         "E_COMPILER_VERSION",
                         format!(
@@ -4567,13 +4606,12 @@ fn load_manifest_from(
                         ),
                     )
                 })?;
-                let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
-                    .expect("Cargo package version is valid");
-                if !requirement.matches(&current) {
+                if !supported {
                     return Err(FrontendFailure::coded_message(
                         "E_COMPILER_VERSION",
                         format!(
-                            "{} requires Hew {requirement}; this compiler implements Hew {current}",
+                            "{} requires Hew {requirement}; this compiler implements Hew \
+                             {COMPILER_VERSION}",
                             path.display()
                         ),
                     ));

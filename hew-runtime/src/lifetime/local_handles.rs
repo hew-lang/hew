@@ -883,25 +883,50 @@ impl LocalHandles {
         runtime_id: RuntimeId,
         token: HewLocalPidId,
     ) -> Option<SupervisorPin> {
-        let (root, path) = self.state.access(|state| {
+        let mut path = self.pin_supervisor_path(runtime_id, token);
+        if path.resolved() {
+            path.pins.pop()
+        } else {
+            None
+        }
+    }
+
+    /// Pin each current incarnation from the root down to `token`, stopping
+    /// at the first level that has no current incarnation.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pin_supervisor_path(
+        &self,
+        runtime_id: RuntimeId,
+        token: HewLocalPidId,
+    ) -> SupervisorPath {
+        let (root, mut slots) = self.state.access(|state| {
             let mut current = token;
-            let mut path = Vec::new();
+            let mut slots = Vec::new();
             while let Some(role) = state.supervisor_roles.get(&current) {
                 if role.kind != SupervisorRoleKind::Supervisor {
                     return (HewLocalPidId::INVALID, Vec::new());
                 }
-                path.push(role.slot);
+                slots.push(role.slot);
                 current = role.owner;
             }
-            (current, path)
+            (current, slots)
         });
-        let mut pin = self.pin_direct_supervisor(runtime_id, root)?;
-        for slot in path.into_iter().rev() {
-            let child = crate::supervisor::nested_child_token(pin.supervisor(), slot)?;
-            let child_pin = self.pin_direct_supervisor(runtime_id, child)?;
-            pin = child_pin;
+        slots.reverse();
+        let mut pins = Vec::with_capacity(slots.len() + 1);
+        let Some(mut pin) = self.pin_direct_supervisor(runtime_id, root) else {
+            return SupervisorPath { pins, slots };
+        };
+        for &slot in &slots {
+            let child = crate::supervisor::nested_child_token(pin.supervisor(), slot)
+                .and_then(|child| self.pin_direct_supervisor(runtime_id, child));
+            pins.push(pin);
+            let Some(child) = child else {
+                return SupervisorPath { pins, slots };
+            };
+            pin = child;
         }
-        Some(pin)
+        pins.push(pin);
+        SupervisorPath { pins, slots }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1361,6 +1386,35 @@ pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorP
     runtime
         .local_handles
         .pin_supervisor(runtime.runtime_id(), token)
+}
+
+/// The current incarnations along a nested supervisor role, root first.
+///
+/// `slots[i]` selects `pins[i + 1]` inside `pins[i]`. A path that stops short
+/// ends at the deepest supervisor whose next slot has no current incarnation;
+/// an empty `pins` means the root itself is gone.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct SupervisorPath {
+    pub(crate) pins: Vec<SupervisorPin>,
+    pub(crate) slots: Vec<u32>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SupervisorPath {
+    /// Whether every level, the role's own supervisor included, is pinned.
+    pub(crate) fn resolved(&self) -> bool {
+        self.pins.len() == self.slots.len() + 1
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn pin_current_supervisor_path(token: HewLocalPidId) -> Option<SupervisorPath> {
+    let runtime = crate::runtime::rt_current_opt()?;
+    Some(
+        runtime
+            .local_handles
+            .pin_supervisor_path(runtime.runtime_id(), token),
+    )
 }
 
 #[cfg(not(target_arch = "wasm32"))]

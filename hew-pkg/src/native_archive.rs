@@ -489,8 +489,6 @@ name = "test.client"
 version = "1.0.0"
 [native]
 crate = "."
-lib = "client"
-kind = "staticlib"
 "#,
         );
         write(

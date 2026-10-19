@@ -359,4 +359,36 @@ mod tests {
             "expected NotADirectory, got {error:?}"
         );
     }
+
+    #[test]
+    fn a_workspace_root_is_not_a_package() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_package(dir.path(), "[workspace]\nmembers = []\n", Some("main.hew"));
+
+        let error = resolve_package(dir.path()).expect_err("workspace root");
+
+        assert!(
+            error.to_string().ends_with(
+                "is a workspace root, not a package; run in a member or use `--workspace`"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_manifest_cannot_be_package_and_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        write_package(
+            dir.path(),
+            &format!("{BASIC}\n[workspace]\nmembers = []\n"),
+            Some("main.hew"),
+        );
+
+        let error = resolve_package(dir.path()).expect_err("both tables");
+
+        assert!(
+            error.to_string().contains("E_WORKSPACE_MANIFEST"),
+            "{error}"
+        );
+    }
 }

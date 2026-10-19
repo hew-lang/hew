@@ -278,7 +278,7 @@ fn assert_remapped_debug_source(dir: &Path, roots: &[PathBuf; 2]) {
 fn assert_trimmed_rust_package(root: &Path) {
     write(
         &root.join("hew.toml"),
-        "[package]\nname = \"acme.paths\"\nversion = \"0.1.0\"\nedition = \"2026\"\ninclude = [\"hew.toml\", \"main.hew\", \"native/Cargo.toml\", \"native/Cargo.lock\", \"native/src/**\", \"native/.cargo/**\", \"dependency/**\"]\n[native]\nlib = \"rustbridge\"\ncrate = \"native\"\n",
+        "[package]\nname = \"acme.paths\"\nversion = \"0.1.0\"\nedition = \"2026\"\ninclude = [\"hew.toml\", \"main.hew\", \"native/Cargo.toml\", \"native/Cargo.lock\", \"native/src/**\", \"native/.cargo/**\", \"dependency/**\"]\n[native]\ncrate = \"native\"\n",
     );
     write(&root.join("native/Cargo.toml"), "[workspace]\n[package]\nname = \"rustbridge\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\ncrate-type = [\"staticlib\"]\n[dependencies]\npath_dep = { path = \"../dependency\" }\n[profile.release]\ndebug = 1\n");
     write(&root.join("native/.cargo/config.toml"), "[build]\nrustflags = [\"--cfg\", \"hew_native_trim_flags\", \"--check-cfg=cfg(hew_native_trim_flags)\"]\n");
@@ -930,7 +930,7 @@ fn a_read_only_package_directory_still_builds_its_native_code() {
 fn write_rust_package(root: &Path, name: &str) {
     write(
         &root.join("hew.toml"),
-        &manifest(name, "lib = \"rustbridge\"\ncrate = \"native\"\n"),
+        &manifest(name, "crate = \"native\"\n"),
     );
     write(
         &root.join("native/Cargo.toml"),
@@ -1123,4 +1123,77 @@ fn assembly_path_package_runs_and_rebuilds_included_inputs() {
     let run = hew(&app, &["run", "main.hew"]);
     assert_ok(&run, "explicit raw mode for uppercase assembly");
     assert_eq!(stdout(&run), "44\n");
+}
+
+/// A package whose Rust crate's Cargo package, `[lib]` name and Hew package
+/// name all differ, with `crate_types` as its `[lib] crate-type`.
+fn write_named_rust_crate(root: &Path, crate_types: &str) {
+    write(
+        &root.join("hew.toml"),
+        &manifest("acme.bridge", "crate = \"native\"\n"),
+    );
+    write(
+        &root.join("native/Cargo.toml"),
+        &format!(
+            "[workspace]\n\n[package]\nname = \"bridge-crate\"\nversion = \"0.1.0\"\n\
+             edition = \"2021\"\n\n[lib]\nname = \"foo_native\"\ncrate-type = [{crate_types}]\n\n\
+             [profile.release]\npanic = \"abort\"\n"
+        ),
+    );
+    write(
+        &root.join("native/src/lib.rs"),
+        "#[no_mangle]\npub extern \"C\" fn acme_bridge_value() -> i32 {\n    23\n}\n",
+    );
+    write(
+        &root.join("main.hew"),
+        "extern \"C\" {\n    fn acme_bridge_value() -> i32;\n}\n\n\
+         fn main() {\n    println(unsafe { acme_bridge_value() });\n}\n",
+    );
+}
+
+#[test]
+fn the_library_identity_comes_from_cargo() {
+    require_codegen();
+    let dir = workspace();
+    write_named_rust_crate(dir.path(), "\"staticlib\"");
+    let check = hew(dir.path(), &["check"]);
+    assert_ok(&check, "hew check of a staticlib crate");
+    let run = hew(dir.path(), &["run", "main.hew"]);
+    assert_ok(&run, "hew run linking foo_native");
+    assert_eq!(stdout(&run), "23\n");
+}
+
+#[test]
+fn a_crate_without_a_linkable_library_is_refused_before_building() {
+    require_codegen();
+    let dir = workspace();
+    write_named_rust_crate(dir.path(), "\"rlib\"");
+    let check = hew(dir.path(), &["check"]);
+    assert!(!check.status.success(), "{}", describe_output(&check));
+    let text = stderr(&check);
+    assert!(text.contains("E_INVALID_NATIVE"), "{text}");
+    assert!(text.contains("builds no linkable library"), "{text}");
+    assert!(
+        !dir.path().join("native/target").exists(),
+        "the check must not build the crate"
+    );
+}
+
+#[test]
+fn a_manifest_naming_lib_or_kind_is_refused_with_the_line() {
+    require_codegen();
+    let dir = workspace();
+    write_named_rust_crate(dir.path(), "\"staticlib\"");
+    write(
+        &dir.path().join("hew.toml"),
+        &manifest("acme.bridge", "crate = \"native\"\nlib = \"foo_native\"\n"),
+    );
+    let build = hew(dir.path(), &["build", "main.hew", "-o", "never"]);
+    assert!(!build.status.success(), "{}", describe_output(&build));
+    let text = stderr(&build);
+    assert!(
+        text.contains("E_INVALID_NATIVE: line 8: [native] `lib` is no longer read"),
+        "{text}"
+    );
+    assert!(text.contains("remove them"), "{text}");
 }

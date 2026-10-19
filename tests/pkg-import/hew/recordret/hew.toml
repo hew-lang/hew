@@ -7,5 +7,3 @@ license = "MIT OR Apache-2.0"
 
 [native]
 crate = "."
-lib = "hew_hew_recordret"
-kind = "staticlib"

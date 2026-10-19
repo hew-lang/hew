@@ -71,6 +71,37 @@ pub(crate) fn is_valid(name: &str) -> bool {
     true
 }
 
+/// The first segment of a valid name that an import path cannot spell, if
+/// any. A published package must be importable by its whole name, so publish
+/// and `hew check` refuse such a name; [`is_valid`] alone keeps governing wire
+/// and lockfile identity, so names already on a registry still resolve.
+///
+/// The parser's import-segment predicate is the authority: `acme.type` is
+/// importable, `acme.3d` is not.
+#[must_use]
+pub(crate) fn unimportable_segment(name: &str) -> Option<&str> {
+    name.split('.')
+        .find(|segment| !hew_parser::is_import_path_segment(segment))
+}
+
+/// Check that `name` is a valid package name that an import can spell.
+///
+/// # Errors
+///
+/// Returns the diagnostic for the first rule `name` breaks.
+pub(crate) fn check_importable(name: &str) -> Result<(), String> {
+    if !is_valid(name) {
+        return Err(invalid_message(name));
+    }
+    match unimportable_segment(name) {
+        Some(segment) => Err(format!(
+            "invalid package name `{name}`: segment `{segment}` cannot be written in an import \
+             path (`import {name};` does not parse); each segment must start with a letter or `_`"
+        )),
+        None => Ok(()),
+    }
+}
+
 #[must_use]
 pub(crate) fn invalid_message(name: &str) -> String {
     format!("invalid package name `{name}`: {PACKAGE_NAME_RULES}")
@@ -119,6 +150,47 @@ mod tests {
         }
         assert!(from_wire("hew.math.stats", WireNames::Slash).is_err());
         assert!(from_wire("hew/math/stats", WireNames::Dotted).is_err());
+    }
+
+    #[test]
+    fn importable_names_follow_the_parser() {
+        for name in ["acme.three_d", "acme.type", "acme.actor", "mypackage"] {
+            assert!(check_importable(name).is_ok(), "{name}");
+        }
+        for name in ["acme.3d", "3d", "pkg123.v2.9x"] {
+            let error = check_importable(name).unwrap_err();
+            assert!(
+                error.contains("cannot be written in an import path"),
+                "{error}"
+            );
+        }
+        assert!(check_importable("Acme.x")
+            .unwrap_err()
+            .contains("only lowercase"));
+    }
+
+    #[test]
+    fn every_ecosystem_package_name_is_importable() {
+        for name in [
+            "hew.auth.oauth",
+            "hew.dag",
+            "hew.db.mongodb",
+            "hew.db.mysql",
+            "hew.db.postgres",
+            "hew.db.redis",
+            "hew.db.sql",
+            "hew.db.sqlite",
+            "hew.image.magick",
+            "hew.math.stats",
+            "hew.metrics",
+            "hew.net.http",
+            "hew.queue.mqtt",
+            "hew.queue.nats",
+            "hew.storage.s3",
+            "hew.template",
+        ] {
+            assert!(check_importable(name).is_ok(), "{name}");
+        }
     }
 
     #[test]

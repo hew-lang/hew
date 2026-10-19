@@ -64,6 +64,19 @@ pub(crate) use statements::BreakValuePosition;
 // consumes `#[...]` attributes.
 pub(crate) use attributes::AttrPosition;
 
+/// Whether `text` is exactly one import-path segment, so `import a.<text>;`
+/// parses. Package names are checked against this, so every published name
+/// can be imported.
+#[must_use]
+pub fn is_import_path_segment(text: &str) -> bool {
+    match hew_lexer::lex(text).as_slice() {
+        [(token, span)] => {
+            span.start == 0 && span.end == text.len() && Parser::is_import_path_segment_token(token)
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

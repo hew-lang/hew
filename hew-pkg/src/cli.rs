@@ -11,8 +11,8 @@ use crate::package_name::{
     invalid_message as invalid_package_name_message, is_valid as is_valid_package_name,
 };
 use crate::{
-    checksum, client, config, credentials, index, lockfile, manifest, package_fs, registry,
-    resolver, signing, tarball,
+    checksum, client, config, credentials, index, lockfile, manifest, package_fs, publish,
+    registry, resolver, signing, tarball,
 };
 
 /// Package-manager subcommands, flattened into the `hew` CLI's top-level
@@ -51,7 +51,7 @@ pub enum PkgCommand {
         #[arg(long, conflicts_with = "registry")]
         offline: bool,
     },
-    /// Publish this package to the registry
+    /// Publish this package, or every workspace member, to the registry
     Publish {
         /// Use a named registry from config
         #[arg(long, short = 'r')]
@@ -63,6 +63,13 @@ pub enum PkgCommand {
         /// Build and validate the archive without uploading it
         #[arg(long)]
         dry_run: bool,
+        /// Publish every member of the enclosing workspace, in dependency
+        /// order
+        #[arg(long)]
+        workspace: bool,
+        /// Where upload credentials come from
+        #[arg(long, value_enum, default_value_t = PublishAuth::Credentials, conflicts_with = "local")]
+        auth: PublishAuth,
     },
     /// Build or publish release-qualified native package archives
     Native {
@@ -159,6 +166,16 @@ pub enum PkgCommand {
     },
 }
 
+/// `hew publish --auth`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum PublishAuth {
+    /// The token from `hew login` and the key from `hew key generate`.
+    Credentials,
+    /// Trusted publishing: exchange the workflow's OIDC token for a grant
+    /// bound to a key that exists only in this process.
+    GithubActions,
+}
+
 fn init_follow_up_hint(template: manifest::ManifestTemplate, package_name: &str) -> String {
     let source = template.scaffold_source(package_name);
     match template {
@@ -247,6 +264,10 @@ pub enum NativeAction {
 
 /// Execute a package-manager subcommand dispatched from the `hew` CLI.
 /// `native_target` is the canonical target selected by the compiler driver.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per subcommand reads clearest in one place"
+)]
 pub fn dispatch(
     cmd: &PkgCommand,
     native_target: &str,
@@ -285,11 +306,17 @@ pub fn dispatch(
             registry: reg,
             local,
             dry_run,
+            workspace,
+            auth,
         } => cmd_publish(
             &registry,
             reg.as_deref(),
-            *local,
-            *dry_run,
+            PublishFlags {
+                local: *local,
+                dry_run: *dry_run,
+                workspace: *workspace,
+                auth: *auth,
+            },
             &check_generation,
         ),
         PkgCommand::List => cmd_list(&registry),
@@ -415,7 +442,8 @@ pub fn manifest_issues(root: &Path) -> Result<Vec<String>, String> {
     let manifest_path = root.join(crate::project::MANIFEST_FILE);
     let m = manifest::parse_manifest(&manifest_path)
         .map_err(|e| format!("cannot load {}: {e}", manifest_path.display()))?;
-    Ok(collect_manifest_issues(&m, root, &registry))
+    let sources = workspace_sources(resolver::RegistrySources::default_source(), root)?;
+    Ok(collect_manifest_issues(&m, root, &registry, &sources))
 }
 
 /// Scaffold a manifest-first Hew project in `dir` — the `hew init` back end.
@@ -493,6 +521,24 @@ fn registry_sources_or_exit(
         default_registry,
         default_selector,
         config::named_registry_identities(cfg),
+    )
+}
+
+/// Let `sources` resolve the members of the workspace enclosing the package
+/// at `package_root`, if there is one, from their directories.
+///
+/// # Errors
+///
+/// Returns the rendered workspace error when that workspace cannot be loaded.
+fn workspace_sources(
+    sources: resolver::RegistrySources,
+    package_root: &Path,
+) -> Result<resolver::RegistrySources, String> {
+    Ok(
+        match crate::workspace::find_enclosing(package_root).map_err(|e| e.to_string())? {
+            Some(workspace) => sources.with_workspace(&workspace),
+            None => sources,
+        },
     )
 }
 
@@ -772,10 +818,6 @@ fn cmd_add(
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "install has many sequential steps that are clearest in one function"
-)]
 fn cmd_install(
     locked: bool,
     offline: bool,
@@ -797,48 +839,93 @@ fn cmd_install(
             std::process::exit(1);
         }
     };
-    let registry_sources = registry_sources_or_exit(cfg, registry_name);
-
-    let lock_path = cwd.join(crate::project::LOCK_FILE);
-    let previous_lockfile = lockfile::read_lockfile(&lock_path)
-        .ok()
-        .filter(|lockfile| lockfile::validate_lockfile(lockfile).is_ok());
-
-    let (locked_lockfile, pinned_locked_registry) = if locked {
-        // --locked: read existing lock and validate against manifest.
-        let lf = match lockfile::read_lockfile(&lock_path) {
-            Ok(lf) => lf,
-            Err(lockfile::LockError::Missing) => {
-                eprintln!("hew install: --locked requires an hew.lock file, but none was found");
-                std::process::exit(1);
-            }
-            Err(e) => {
-                eprintln!("hew install: {e}");
-                std::process::exit(1);
-            }
-        };
-        if let Err(error) = lockfile::validate_lockfile(&lf) {
+    let registry_sources = workspace_sources(registry_sources_or_exit(cfg, registry_name), &cwd)
+        .unwrap_or_else(|error| {
             eprintln!("hew install: {error}");
             std::process::exit(1);
-        }
+        });
+    let mode = InstallMode {
+        locked,
+        offline,
+        write_lock: true,
+    };
+    if let Err(error) = install_dependencies(
+        &cwd,
+        &m,
+        registry,
+        &registry_sources,
+        registry_name,
+        mode,
+        Some(native_target),
+    ) {
+        eprintln!("hew install: {error}");
+        std::process::exit(1);
+    }
+}
+
+/// How [`install_dependencies`] resolves and what it writes.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct InstallMode {
+    /// Require and follow an up-to-date `hew.lock`.
+    pub locked: bool,
+    /// Resolve exclusively from the local package cache.
+    pub offline: bool,
+    /// Write `hew.lock` and add `.hew/` to `.gitignore`. Publish installs
+    /// only into `.hew/packages`, so the packed tree stays as authored.
+    pub write_lock: bool,
+}
+
+/// Resolve the dependencies of the package `m` rooted at `root` and
+/// materialize them in its `.hew/packages`. Workspace members in `sources`
+/// link from their directories; registry packages are fetched and verified.
+/// With a `native_target`, registry packages with a `[native]` Rust crate
+/// also select their signed prebuilt for that target and pin it in
+/// `hew.lock`; publish passes `None` because it never links native code.
+///
+/// # Errors
+///
+/// Returns the rendered diagnostic of the first step that fails.
+#[expect(
+    clippy::too_many_lines,
+    reason = "install has many sequential steps that are clearest in one function"
+)]
+pub(crate) fn install_dependencies(
+    root: &Path,
+    m: &manifest::HewManifest,
+    registry: &registry::Registry,
+    registry_sources: &resolver::RegistrySources,
+    registry_name: Option<&str>,
+    mode: InstallMode,
+    native_target: Option<&str>,
+) -> Result<(), String> {
+    let lock_path = root.join(crate::project::LOCK_FILE);
+    // Native pins carry forward only where this install selects prebuilts.
+    let previous_lockfile = native_target
+        .and_then(|_| lockfile::read_lockfile(&lock_path).ok())
+        .filter(|lockfile| lockfile::validate_lockfile(lockfile).is_ok());
+
+    let (locked_lockfile, pinned_locked_registry) = if mode.locked {
+        // --locked: read existing lock and validate against manifest.
+        let lf = lockfile::read_lockfile(&lock_path).map_err(|error| match error {
+            lockfile::LockError::Missing => {
+                "--locked requires an hew.lock file, but none was found".to_string()
+            }
+            error => error.to_string(),
+        })?;
+        lockfile::validate_lockfile(&lf).map_err(|error| error.to_string())?;
         if lockfile::is_lock_stale_for_registries(
             &lf,
-            &m,
+            m,
             registry_sources.default_registry(),
             registry_sources.named(),
+            &registry_sources.workspace_lock_paths(root),
         ) {
-            let err = lockfile::LockError::Stale;
-            eprintln!("hew install: {err}");
-            eprintln!("Run `hew install` without --locked to update it.");
-            std::process::exit(1);
+            return Err(format!(
+                "{}\nRun `hew install` without --locked to update it.",
+                lockfile::LockError::Stale
+            ));
         }
-        let pinned = match verify_locked_registry_packages(&lf, registry) {
-            Ok(pinned) => pinned,
-            Err(error) => {
-                eprintln!("hew install: {error}");
-                std::process::exit(1);
-            }
-        };
+        let pinned = verify_locked_registry_packages(&lf, registry)?;
         (Some(lf), pinned)
     } else {
         (None, BTreeMap::new())
@@ -849,14 +936,16 @@ fn cmd_install(
         let lf = lockfile::LockFile {
             packages: Vec::new(),
         };
-        if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-            eprintln!("hew install: cannot write hew.lock: {e}");
+        if mode.write_lock {
+            if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
+                eprintln!("hew install: cannot write hew.lock: {e}");
+            }
+            println!("Nothing to install.");
         }
-        println!("Nothing to install.");
-        return;
+        return Ok(());
     }
 
-    if offline {
+    if mode.offline {
         eprintln!(
             "Offline mode: using cached packages from {}; the registry will not be contacted.",
             registry.root().display()
@@ -870,14 +959,8 @@ fn cmd_install(
         .iter()
         .map(|(identity, package)| (identity.clone(), package.path().to_path_buf()))
         .collect();
-    let offline_registry = if offline && locked_lockfile.is_none() {
-        match pin_offline_registry_packages(registry, &registry_sources, registry_name.is_none()) {
-            Ok(packages) => packages,
-            Err(error) => {
-                eprintln!("hew install: {error}");
-                std::process::exit(1);
-            }
-        }
+    let offline_registry = if mode.offline && locked_lockfile.is_none() {
+        pin_offline_registry_packages(registry, registry_sources, registry_name.is_none())?
     } else {
         BTreeMap::new()
     };
@@ -888,95 +971,80 @@ fn cmd_install(
     let resolved = loop {
         let result = if locked_lockfile.is_some() {
             resolver::resolve_all_pinned_with_sources(
-                &m,
-                &cwd,
+                m,
+                root,
                 registry,
-                &registry_sources,
+                registry_sources,
                 &pinned_locked_paths,
             )
-        } else if offline {
+        } else if mode.offline {
             resolver::resolve_all_pinned_with_sources(
-                &m,
-                &cwd,
+                m,
+                root,
                 registry,
-                &registry_sources,
+                registry_sources,
                 &offline_paths,
             )
         } else {
             let pinned_online_paths = pinned_registry_paths(&confirmed_registry);
             resolver::resolve_all_pinned_with_sources(
-                &m,
-                &cwd,
+                m,
+                root,
                 registry,
-                &registry_sources,
+                registry_sources,
                 &pinned_online_paths,
             )
         };
         match result {
             Ok(resolved) => break resolved,
             Err(resolver::ResolveError::UnresolvableDeps { failures })
-                if offline || locked_lockfile.is_some() =>
+                if mode.offline || locked_lockfile.is_some() =>
             {
-                let mode = if locked {
-                    "locked graph"
+                use std::fmt::Write as _;
+                let mut message = if mode.locked {
+                    "locked graph could not resolve:".to_string()
                 } else {
-                    "offline cache"
+                    "offline cache could not resolve:".to_string()
                 };
-                eprintln!("hew install: {mode} could not resolve:");
                 for failure in failures {
-                    eprintln!(
-                        "  {} [{}] in {}",
+                    let _ = write!(
+                        message,
+                        "\n  {} [{}] in {}",
                         failure.package,
                         failure.requirements.join(", "),
                         registry.root().display()
                     );
                 }
-                std::process::exit(1);
+                return Err(message);
             }
             Err(resolver::ResolveError::UnresolvableDeps { failures }) => {
-                if let Err(error) = fetch_progress.begin_round(&failures) {
-                    eprintln!("hew install: {error}");
-                    std::process::exit(1);
-                }
+                fetch_progress.begin_round(&failures)?;
                 let confirmed_before = confirmed_registry.len();
-                if let Err(error) =
-                    fetch_missing_packages(&failures, registry, &mut confirmed_registry)
-                {
-                    eprintln!("hew install: {error}");
-                    std::process::exit(1);
-                }
+                fetch_missing_packages(&failures, registry, &mut confirmed_registry)?;
                 if confirmed_registry.len() <= confirmed_before {
-                    eprintln!("hew install: registry fetch completed without making progress");
-                    std::process::exit(1);
+                    return Err("registry fetch completed without making progress".to_string());
                 }
             }
-            Err(e) => {
-                eprintln!("hew install: {e}");
-                std::process::exit(1);
-            }
+            Err(e) => return Err(e.to_string()),
         }
     };
 
     if let Some(lockfile) = &locked_lockfile {
-        if let Err(error) = validate_locked_resolution(lockfile, &resolved) {
-            eprintln!("hew install: {error}");
-            std::process::exit(1);
-        }
+        validate_locked_resolution(lockfile, &resolved)?;
     }
-    let local_packages = project_packages_path(&cwd);
-    if let Err(e) = std::fs::create_dir_all(&local_packages) {
-        eprintln!("hew install: cannot create .hew/packages/: {e}");
-        std::process::exit(1);
+    let local_packages = project_packages_path(root);
+    std::fs::create_dir_all(&local_packages)
+        .map_err(|e| format!("cannot create .hew/packages/: {e}"))?;
+    if mode.write_lock {
+        ensure_gitignore_entry(root, ".hew/");
     }
-    ensure_gitignore_entry(&cwd, ".hew/");
 
     // Build lockfile entries from resolved versions.
     let mut lock_packages: Vec<lockfile::LockedPackage> = Vec::new();
 
     for (name, package) in &resolved {
         if !is_valid_package_name(name) {
-            eprintln!("hew install: {}", invalid_package_name_message(name));
-            std::process::exit(1);
+            return Err(invalid_package_name_message(name));
         }
         let version = &package.version;
         let (target, source, locked_path, locked_registry, pkg_checksum) = match &package.source {
@@ -994,7 +1062,7 @@ fn cmd_install(
                         Some(registry_id.clone()),
                         Some(pinned.checksum.clone()),
                     )
-                } else if offline {
+                } else if mode.offline {
                     let pinned = offline_registry
                         .get(&(registry_id.clone(), name.clone(), version.clone()))
                         .expect("offline registry resolution must retain its pinned path");
@@ -1045,31 +1113,27 @@ fn cmd_install(
             })
             .map(|entry| entry.native.clone())
             .unwrap_or_default();
-        if source == "registry" && !offline {
-            let manifest =
-                manifest::parse_manifest(&target.join("hew.toml")).unwrap_or_else(|error| {
-                    eprintln!("hew install: {error}");
-                    std::process::exit(1);
-                });
+        if let Some(native_target) = native_target.filter(|_| source == "registry" && !mode.offline)
+        {
+            let manifest = manifest::parse_manifest(&target.join("hew.toml"))
+                .map_err(|error| error.to_string())?;
             if manifest
                 .native
                 .as_ref()
                 .and_then(manifest::NativeLib::rust_crate)
                 .is_some()
             {
-                let artifact = crate::native_prebuilt::install(&target, &manifest, native_target)
-                    .unwrap_or_else(|error| {
-                        eprintln!("hew install: {error}");
-                        std::process::exit(1);
-                    });
+                let artifact = crate::native_prebuilt::install(&target, &manifest, native_target)?;
                 let identity = crate::native_prebuilt::NativeIdentity::current(native_target);
                 let selected = artifact
                     .as_ref()
                     .map(crate::native_prebuilt::PrebuiltArtifact::lock_pin);
                 let previous = native.iter().find(|pin| pin.identity == identity);
-                if locked && previous != selected.as_ref() {
-                    eprintln!("hew install: native artifact does not match hew.lock; run without --locked to update it");
-                    std::process::exit(1);
+                if mode.locked && previous != selected.as_ref() {
+                    return Err(
+                        "native artifact does not match hew.lock; run without --locked to update it"
+                            .to_string(),
+                    );
                 }
                 native.retain(|pin| pin.identity != identity);
                 native.extend(selected);
@@ -1090,18 +1154,10 @@ fn cmd_install(
         });
 
         // Build the local symlink path: replace :: with / separators.
-        let link = match crate::paths::package_link(&local_packages, name) {
-            Ok(link) => link,
-            Err(e) => {
-                eprintln!("hew install: {e}");
-                std::process::exit(1);
-            }
-        };
+        let link = crate::paths::package_link(&local_packages, name)?;
         if let Some(parent) = link.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                eprintln!("hew install: cannot create {}: {e}", parent.display());
-                std::process::exit(1);
-            }
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         }
         let materialization = match &package.source {
             resolver::PackageSource::Registry { .. } => replace_registry_package_copy_verified(
@@ -1115,18 +1171,14 @@ fn cmd_install(
                 replace_local_package_materialization(&link, &target)
             }
         };
-        match materialization {
-            Ok(materialization) => println!("  {} {name}@{version}", materialization.verb()),
-            Err(e) => {
-                eprintln!("hew install: cannot materialize project package for {name}: {e}");
-                std::process::exit(1);
-            }
-        }
+        let materialization = materialization
+            .map_err(|e| format!("cannot materialize project package for {name}: {e}"))?;
+        println!("  {} {name}@{version}", materialization.verb());
     }
 
     if locked_lockfile.is_some() {
         println!("Used locked dependency graph");
-    } else {
+    } else if mode.write_lock {
         // Skip the write when the resolved graph didn't change: `hew
         // install` (online or `--offline`) always resolves fresh, but
         // rewriting an already-current hew.lock on every run makes it look
@@ -1145,12 +1197,12 @@ fn cmd_install(
         if unchanged {
             println!("hew.lock is already up to date");
         } else if let Err(e) = lockfile::write_lockfile(&lock_path, &lf) {
-            eprintln!("hew install: cannot write hew.lock: {e}");
-            std::process::exit(1);
+            return Err(format!("cannot write hew.lock: {e}"));
         } else {
             println!("Wrote hew.lock");
         }
     }
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -1686,7 +1738,7 @@ fn validate_downloaded_registry_manifest(data: &[u8], package: &str) -> Result<(
     }
     let text = manifest_text
         .ok_or_else(|| format!("registry archive for `{package}` is missing hew.toml"))?;
-    let parsed: manifest::HewManifest = toml::from_str(&text)
+    let parsed = manifest::parse_manifest_text(&text)
         .map_err(|error| format!("invalid registry manifest for `{package}`: {error}"))?;
     resolver::validate_registry_manifest(package, &parsed).map_err(|error| error.to_string())
 }
@@ -1702,7 +1754,7 @@ fn validate_registry_identity(name: &str, version: &str) -> Result<(), String> {
 
 /// Verify an Ed25519 signature over a checksum by fetching the public key
 /// from the registry.
-fn verify_supplied_package_signatures(
+pub(crate) fn verify_supplied_package_signatures(
     api_client: &client::RegistryClient,
     name: &str,
     entry: &resolver::ResolvedEntry,
@@ -1812,354 +1864,260 @@ pub(crate) fn verify_registry_message(
         .map_err(|e| format!("registry signature invalid: {e}"))
 }
 
-/// Publish a packed archive into the local registry only, under the same
-/// namespaced cache slot that `--locked` and `--offline` resolution read
-/// from (`Registry::package_slot_for`). `--local` never combines with
-/// `--registry` (`conflicts_with` in [`PkgCommand::Publish`]), so every local
-/// publish targets the default registry's identity — see hew-lang/hew#3233.
-/// Refuses, rather than silently overwrites, when that slot already holds a
-/// *verified* registry fetch (one `write_cache_metadata` populated) whose
-/// tree checksum differs: a local test build must never shadow a package a
-/// real registry actually served at the same name and version. When the
-/// incoming content matches the verified fetch exactly, this is a no-op that
-/// leaves the existing generation (and its cache metadata and retained
-/// archive) untouched, rather than restaging an identical tree.
-fn publish_local_package(
-    registry: &registry::Registry,
-    name: &str,
-    version: &str,
-    archive: &[u8],
-) -> std::io::Result<crate::atomic_fs::PinnedDir> {
-    let dest = registry.package_slot_for(&config::default_registry_identity(), name, version);
-    let incoming_checksum = crate::tarball::unpacked_tree_checksum(archive)
-        .map_err(|error| std::io::Error::other(format!("cannot checksum archive: {error}")))?;
-    if let Ok(Some(existing)) =
-        registry.pin_package_dir_for_if_present(&config::default_registry_identity(), name, version)
-    {
-        if let Some(verified_checksum) = registry::Registry::verified_tree_checksum(existing.path())
-        {
-            if verified_checksum != incoming_checksum {
-                return Err(std::io::Error::other(format!(
-                    "{name}@{version} is already cached from a verified registry fetch with a \
-                     different tree checksum; a local publish must not shadow it (bump the \
-                     version to publish a different build)"
-                )));
-            }
-            // Identical content: leave the verified generation in place rather
-            // than restaging it. `StagedDir::publish_pinned` always swaps in a
-            // fresh generation holding only the unpacked tree, which would
-            // drop this generation's cache metadata and retained archive even
-            // though nothing actually changed — silently turning the next
-            // publish (any content) into an unverified, unguarded overwrite.
-            return Ok(existing);
-        }
-    }
-    let staged = crate::atomic_fs::StagedDir::new(&dest)?;
-    tarball::unpack(archive, staged.path()).map_err(std::io::Error::other)?;
-    staged.publish_pinned(&dest)
-}
-
-#[expect(
-    clippy::too_many_lines,
-    reason = "CLI command handler requires many steps"
-)]
 fn cmd_publish(
     registry: &registry::Registry,
     registry_name: Option<&str>,
-    local: bool,
-    dry_run: bool,
+    flags: PublishFlags,
     check_generation: &impl Fn(&Path) -> Result<(), String>,
 ) {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let manifest_path = cwd.join("hew.toml");
-    if !manifest_path.exists() {
-        eprintln!("hew publish: no hew.toml found in current directory");
-        std::process::exit(1);
-    }
-    let m = match manifest::parse_manifest(&manifest_path) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("hew publish: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if let Err(error) = check_generation(&cwd) {
+    let fail = |error: &dyn std::fmt::Display| -> ! {
         eprintln!("hew publish: {error}");
         std::process::exit(1);
-    }
-
-    // Validate required fields for publishing.
-    let missing = manifest::validate_for_publish(&m);
-    if !missing.is_empty() {
-        eprintln!("hew publish: missing required fields:");
-        for field in &missing {
-            eprintln!("  - {field}");
-        }
-        std::process::exit(1);
-    }
-
-    // Validate package name format.
-    if !is_valid_package_name(&m.package.name) {
-        eprintln!(
-            "hew publish: invalid package name `{}`: only lowercase alphanumeric, `_`, and dotted segments allowed",
-            m.package.name
-        );
-        std::process::exit(1);
-    }
-
-    // Validate version is semver.
-    if semver::Version::parse(&m.package.version).is_err() {
-        eprintln!(
-            "hew publish: invalid version `{}`: must be valid semver (e.g. 1.0.0)",
-            m.package.version
-        );
-        std::process::exit(1);
-    }
-
-    // Load signing key.
-    let key_dir = signing::default_key_dir();
-    let keypair = match signing::load_keypair(&key_dir) {
-        Ok(kp) => kp,
-        Err(signing::SignError::NoKey) => {
-            eprintln!("hew publish: no signing key found");
-            eprintln!("Run `hew key generate` to create one.");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("hew publish: {e}");
-            std::process::exit(1);
-        }
     };
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
 
-    // Resolve the remote token up front, before packing, so a logged-out
-    // publish never packs a tarball it cannot use. `--local` and
-    // `--dry-run` never read credentials: neither ever uploads.
-    let token = if local || dry_run {
-        None
-    } else {
-        // Validate a named registry before touching credentials at all, so
-        // a typo'd `--registry NAME` gets `make_client`'s precise
-        // unknown-registry diagnostic instead of being misreported as
-        // "not logged in" (no stored token is ever found for a registry
-        // name that doesn't exist).
-        if let Some(name) = registry_name {
-            resolve_named_registry_or_exit(name);
-        }
-        let cred_path = credentials::credentials_path();
-        Some(
-            resolve_registry_token(&cred_path, registry_name).unwrap_or_else(|err| {
-                match err {
-                    credentials::CredentialError::NotLoggedIn => {
-                        eprintln!(
-                            "hew publish: not logged in; run `hew login` to publish to a remote registry"
-                        );
-                        eprintln!(
-                            "Use `hew publish --local` to install this package into the local registry only."
-                        );
-                    }
-                    credentials::CredentialError::Parse(_) | credentials::CredentialError::Io(_) => {
-                        eprintln!("hew publish: {err}");
-                    }
-                }
-                std::process::exit(1);
-            }),
-        )
-    };
-
-    let entry = m.package.main.as_ref().map_or_else(
-        || {
-            let library = cwd.join(crate::manifest::package_root_source(&m.package.name));
-            if library.is_file() {
-                library
-            } else {
-                cwd.join(m.package.main_source())
-            }
-        },
-        |main| cwd.join(main),
-    );
-    let checked = match hew_compile::check_file(
-        &entry.to_string_lossy(),
-        &hew_compile::FrontendOptions::default(),
-    ) {
-        Ok(checked) => checked,
-        Err(failure) => {
-            eprintln!("hew publish: {}", failure.message);
-            for diagnostic in failure.diagnostics {
-                let message = match diagnostic.kind {
-                    hew_compile::FrontendDiagnosticKind::Message(error) => error.message,
-                    hew_compile::FrontendDiagnosticKind::Parse(error) => error.message,
-                    hew_compile::FrontendDiagnosticKind::Type(error) => error.message,
-                    hew_compile::FrontendDiagnosticKind::Hir(error) => error.note,
-                };
-                eprintln!(
-                    "{}: {message}",
-                    diagnostic.filename.as_deref().unwrap_or("package")
-                );
-            }
-            std::process::exit(1);
-        }
-    };
-
-    // Pack tarball.
-    let exclude = m.package.exclude.as_deref().unwrap_or_default();
-    let include = m.package.include.as_deref().unwrap_or_default();
-    let pack_result = match tarball::pack(&cwd, exclude, include) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("hew publish: {e}");
-            std::process::exit(1);
-        }
-    };
-    let root = cwd.canonicalize().unwrap_or_else(|_| cwd.clone());
-    for step in &m.generate {
-        let generated =
-            crate::generate::output_files(&root.join(&step.outputs)).unwrap_or_else(|error| {
-                eprintln!("hew publish: {error}");
-                std::process::exit(1);
-            });
-        for path in generated.keys() {
-            let relative = Path::new(&step.outputs).join(path);
-            if !pack_result.files.iter().any(|file| file == &relative) {
-                eprintln!("hew publish: E_PUBLISH_MISSING_GENERATED: generated source `{}` is excluded from the package", relative.display());
-                std::process::exit(1);
-            }
-        }
-    }
-    for input in checked
-        .inputs
-        .iter()
-        .filter(|input| input.sha256.is_some() && input.dependency_root.is_none())
-    {
-        if let Ok(relative) = input.path.strip_prefix(&root) {
-            if !pack_result.files.iter().any(|file| file == relative) {
-                eprintln!("hew publish: E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from the package", relative.display());
-                std::process::exit(1);
-            }
-        }
-    }
-
-    // Sign the checksum.
-    let signature = keypair.sign(pack_result.checksum.as_bytes());
-    let fingerprint = keypair.fingerprint();
-
-    // `--dry-run`: the archive is built and validated above (manifest
-    // fields, name, version, packing, checksum, signature); stop before
-    // either the local archive installation or the remote upload.
-    if dry_run {
+    // Phase 1, offline: every member validates before anything is checked.
+    let (workspace, selected) =
+        publish_selection(&cwd, flags.workspace).unwrap_or_else(|e| fail(&e));
+    let selected: Vec<&Path> = selected.iter().map(PathBuf::as_path).collect();
+    let members = publish::plan(&workspace, &selected).unwrap_or_else(|error| fail(&error));
+    if flags.workspace {
         println!(
-            "Would publish {}@{} ({} bytes)",
-            m.package.name,
-            m.package.version,
-            pack_result.data.len()
+            "workspace {}: {} package{}",
+            workspace.root.display(),
+            members.len(),
+            if members.len() == 1 { "" } else { "s" }
         );
-        println!("Checksum: {}", pack_result.checksum);
-        println!("Signature: {signature}");
-        return;
     }
 
-    // Build deps list for the index entry.
-    let deps: Vec<index::IndexDep> = m
-        .dependencies
+    // Phase 2: install each member's dependencies (members from their
+    // directories), then check and pack it.
+    let cfg = load_config_or_exit();
+    let sources = registry_sources_or_exit(&cfg, registry_name).with_workspace(&workspace);
+    let install = InstallMode {
+        locked: false,
+        offline: flags.local,
+        write_lock: false,
+    };
+    let packages: Vec<publish::PackedPackage> = members
         .iter()
-        .map(|(name, spec)| {
-            let (optional, features, default_features, dep_registry) = match spec {
-                manifest::DepSpec::Version(_) => (false, vec![], true, None),
-                manifest::DepSpec::Table(t) => (
-                    t.optional.unwrap_or(false),
-                    t.features.clone().unwrap_or_default(),
-                    t.default_features.unwrap_or(true),
-                    t.registry.clone(),
-                ),
-            };
-            index::IndexDep {
-                name: name.clone(),
-                req: spec.version_req().to_string(),
-                features,
-                optional,
-                default_features,
-                registry: dep_registry,
-            }
+        .map(|member| {
+            install_dependencies(
+                &member.dir,
+                &member.manifest,
+                registry,
+                &sources,
+                registry_name,
+                install,
+                None,
+            )
+            .map_err(|error| format!("{}: {error}", member.name()))
+            .unwrap_or_else(|error| fail(&error));
+            publish::check_and_pack(&member.dir, member.manifest.clone(), check_generation)
+                .unwrap_or_else(|error| fail(&error))
         })
         .collect();
 
-    if local {
-        let published = publish_local_package(
-            registry,
-            &m.package.name,
-            &m.package.version,
-            &pack_result.data,
-        )
-        .unwrap_or_else(|error| {
-            eprintln!("hew publish: {error}");
-            std::process::exit(1);
-        });
-        println!(
-            "Published {}@{} to {} (local registry only — not published to a remote registry)",
-            m.package.name,
-            m.package.version,
-            published.path().display()
-        );
-        println!("Checksum: {}", pack_result.checksum);
-        println!("Signature: {signature}");
-        println!("Key: {fingerprint}");
+    if flags.local {
+        publish_local_packages(registry, &packages, flags.dry_run).unwrap_or_else(|e| fail(&e));
         return;
     }
 
-    // `local` is false here, so `token` was resolved above (or the process
-    // already exited). Remote publish either completes or the command exits
-    // nonzero — there is no local-copy fallback.
-    let api_client = {
-        let mut c = make_client(registry_name);
-        if registry_name.is_none() {
-            if let Some(token) = token {
-                c = c.with_token(token);
+    // Phases 3 to 5: query, authenticate if anything uploads, then upload and
+    // read back in order. `make_client` validates a named registry first, so a
+    // typo'd `--registry NAME` gets the unknown-registry diagnostic rather
+    // than "not logged in".
+    let mut credentials = publish::Fixed(Some(|| {
+        let token = resolve_registry_token(&credentials::credentials_path(), registry_name)
+            .map_err(|error| {
+                publish::PublishError::Auth(match error {
+                    credentials::CredentialError::NotLoggedIn => {
+                        "not logged in; run `hew login` to publish to a remote registry\n\
+                         Use `hew publish --local` to install this package into the local \
+                         registry only."
+                            .to_string()
+                    }
+                    credentials::CredentialError::Parse(_)
+                    | credentials::CredentialError::Io(_) => error.to_string(),
+                })
+            })?;
+        Ok(publish::Signer {
+            keypair: load_publish_keypair()?,
+            token,
+        })
+    }));
+    let mut github_actions;
+    let auth: &mut dyn publish::Auth = match flags.auth {
+        PublishAuth::Credentials => &mut credentials,
+        PublishAuth::GithubActions => {
+            github_actions = crate::trusted::GithubActions::new(
+                make_client(registry_name),
+                crate::trusted::OidcEndpoint::from_env(),
+            );
+            &mut github_actions
+        }
+    };
+    let mut tally = PublishTally::default();
+    let result = publish::publish_all(
+        make_client(registry_name),
+        &packages,
+        flags.dry_run,
+        auth,
+        &std::thread::sleep,
+        &mut |package, outcome| tally.report(package, outcome),
+    );
+    if flags.workspace {
+        tally.summarize(flags.dry_run);
+    }
+    result.unwrap_or_else(|error| fail(&error));
+}
+
+/// `hew publish` switches that shape the run.
+#[derive(Debug, Clone, Copy)]
+struct PublishFlags {
+    local: bool,
+    dry_run: bool,
+    workspace: bool,
+    auth: PublishAuth,
+}
+
+/// The workspace a publish runs against and the member directories it
+/// publishes: every member with `--workspace`, otherwise the package in
+/// `cwd`, inside its enclosing workspace if it has one.
+fn publish_selection(
+    cwd: &Path,
+    whole_workspace: bool,
+) -> Result<(crate::workspace::Workspace, Vec<PathBuf>), String> {
+    if whole_workspace {
+        let root = crate::workspace::find_root(cwd).ok_or_else(|| {
+            format!(
+                "no hew.toml declaring [workspace] in {} or any parent directory",
+                cwd.display()
+            )
+        })?;
+        let workspace = crate::workspace::load(&root).map_err(|e| e.to_string())?;
+        let selected = workspace.members.iter().map(|m| m.dir.clone()).collect();
+        return Ok((workspace, selected));
+    }
+    let manifest_path = cwd.join(crate::project::MANIFEST_FILE);
+    if !manifest_path.exists() {
+        return Err("no hew.toml found in current directory".to_string());
+    }
+    manifest::parse_manifest(&manifest_path).map_err(|e| e.to_string())?;
+    let workspace = match crate::workspace::find_enclosing(cwd).map_err(|e| e.to_string())? {
+        Some(workspace) => workspace,
+        None => crate::workspace::Workspace::single(cwd).map_err(|e| e.to_string())?,
+    };
+    let dir = cwd
+        .canonicalize()
+        .map_err(|e| format!("{}: {e}", cwd.display()))?;
+    Ok((workspace, vec![dir]))
+}
+
+/// `--local`: install each package into the local registry only.
+fn publish_local_packages(
+    registry: &registry::Registry,
+    packages: &[publish::PackedPackage],
+    dry_run: bool,
+) -> Result<(), publish::PublishError> {
+    if dry_run {
+        for package in packages {
+            print_would_publish(package);
+        }
+        return Ok(());
+    }
+    let keypair = load_publish_keypair()?;
+    for package in packages {
+        let published = publish::publish_local_package(
+            registry,
+            package.name(),
+            package.version(),
+            &package.archive.data,
+        )
+        .map_err(|error| publish::PublishError::Invalid(error.to_string()))?;
+        println!(
+            "Published {}@{} to {} (local registry only — not published to a remote registry)",
+            package.name(),
+            package.version(),
+            published.path().display()
+        );
+        println!("Checksum: {}", package.archive.checksum);
+        println!(
+            "Signature: {}",
+            keypair.sign(package.archive.checksum.as_bytes())
+        );
+        println!("Key: {}", keypair.fingerprint());
+    }
+    Ok(())
+}
+
+fn print_would_publish(package: &publish::PackedPackage) {
+    println!(
+        "Would publish {}@{} ({} bytes)",
+        package.name(),
+        package.version(),
+        package.archive.data.len()
+    );
+    println!("Checksum: {}", package.archive.checksum);
+}
+
+/// Prints each remote outcome as it is decided and counts them.
+#[derive(Debug, Default)]
+struct PublishTally {
+    published: usize,
+    skipped: usize,
+}
+
+impl PublishTally {
+    fn report(&mut self, package: &publish::PackedPackage, outcome: &publish::Outcome) {
+        match outcome {
+            publish::Outcome::WouldPublish => {
+                self.published += 1;
+                print_would_publish(package);
+            }
+            publish::Outcome::Skipped(skip) => {
+                self.skipped += 1;
+                println!("Skipped {}@{}: {skip}", package.name(), package.version());
+            }
+            publish::Outcome::Published {
+                signature,
+                key_fingerprint,
+            } => {
+                self.published += 1;
+                println!(
+                    "Published {}@{} to registry",
+                    package.name(),
+                    package.version()
+                );
+                println!("Checksum: {}", package.archive.checksum);
+                println!("Signature: {signature}");
+                println!("Key: {key_fingerprint}");
+                println!(
+                    "Verified: stored record, publisher and registry signatures, and served archive"
+                );
             }
         }
-        c
-    };
-    let request = client::PublishRequest {
-        metadata: client::PublishMetadata {
-            name: m.package.name.clone(),
-            vers: m.package.version.clone(),
-            description: m.package.description.clone().unwrap_or_default(),
-            license: m.package.license.clone().unwrap_or_default(),
-            authors: m.package.authors.clone().unwrap_or_default(),
-            deps: deps.clone(),
-            features: m.features.clone(),
-            edition: Some(m.package.edition.clone()),
-            hew: m.package.hew.clone(),
-            keywords: m.package.keywords.clone(),
-            categories: m.package.categories.clone(),
-            homepage: m.package.homepage.clone(),
-            repository: m.package.repository.clone(),
-            documentation: m.package.documentation.clone(),
-        },
-        checksum: pack_result.checksum.clone(),
-        signature: signature.clone(),
-        key_fingerprint: fingerprint.clone(),
-    };
-
-    match api_client.publish(
-        &m.package.name,
-        &m.package.version,
-        &pack_result.data,
-        &request,
-    ) {
-        Ok(()) => {
-            println!(
-                "Published {}@{} to registry",
-                m.package.name, m.package.version
-            );
-            println!("Checksum: {}", pack_result.checksum);
-            println!("Signature: {signature}");
-        }
-        Err(e) => {
-            eprintln!("hew publish: remote publish failed: {e}");
-            eprintln!("Nothing was published; no local copy was written.");
-            std::process::exit(1);
-        }
     }
+
+    fn summarize(&self, dry_run: bool) {
+        let verb = if dry_run {
+            "would publish"
+        } else {
+            "published"
+        };
+        println!("{verb} {}, skipped {}", self.published, self.skipped);
+    }
+}
+
+fn load_publish_keypair() -> Result<signing::KeyPair, publish::PublishError> {
+    signing::load_keypair(&signing::default_key_dir()).map_err(|error| {
+        publish::PublishError::Auth(match error {
+            signing::SignError::NoKey => {
+                "no signing key found\nRun `hew key generate` to create one.".to_string()
+            }
+            error => error.to_string(),
+        })
+    })
 }
 
 fn cmd_list(registry: &registry::Registry) {
@@ -2527,11 +2485,12 @@ fn collect_manifest_issues(
     m: &manifest::HewManifest,
     root: &Path,
     registry: &registry::Registry,
+    sources: &resolver::RegistrySources,
 ) -> Vec<String> {
     let mut issues = Vec::new();
 
-    if !is_valid_package_name(&m.package.name) {
-        issues.push(invalid_package_name_message(&m.package.name));
+    if let Err(issue) = crate::package_name::check_importable(&m.package.name) {
+        issues.push(issue);
     }
 
     if semver::Version::parse(&m.package.version).is_err() {
@@ -2541,9 +2500,24 @@ fn collect_manifest_issues(
         ));
     }
 
+    if let Err(issue) = manifest::check_compiler_range(&m.package) {
+        issues.push(issue);
+    }
+
+    if let Err(issue) = crate::native::check_crate_shape(root, m) {
+        issues.push(issue);
+    }
+
     for (name, spec) in &m.dependencies {
         let req = spec.version_req();
-        if let Err(e) = resolver::resolve_dependency_from_root(name, spec, root, registry) {
+        if let Err(e) = resolver::resolve_dependency_from_root(
+            &m.package.name,
+            name,
+            spec,
+            root,
+            registry,
+            sources,
+        ) {
             issues.push(format!("dependency {name}@{req}: {e}"));
         }
     }
@@ -3371,6 +3345,7 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::publish::publish_local_package;
 
     #[test]
     fn fetch_progress_rejects_repeated_non_progress() {
@@ -4497,16 +4472,85 @@ mod tests {
     // ── check command tests ────────────────────────────────────────────
 
     #[test]
-    fn check_detects_invalid_name_in_manifest() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("hew.toml");
+    fn downloaded_manifest_naming_native_lib_gets_the_removal_hint() {
+        let manifest = "[package]\nname = \"acme.old\"\nversion = \"0.3.0\"\n\n\
+                        [native]\ncrate = \".\"\nlib = \"acme_old\"\nkind = \"staticlib\"\n";
+        let mut tar = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(manifest.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "hew.toml", manifest.as_bytes())
+            .unwrap();
+        let archive = zstd::encode_all(tar.into_inner().unwrap().as_slice(), 3).unwrap();
+
+        let error = validate_downloaded_registry_manifest(&archive, "acme.old").unwrap_err();
+
+        assert!(
+            error.contains("E_INVALID_NATIVE: line 7: [native] `lib` is no longer read"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn check_resolves_workspace_siblings_from_their_directories() {
+        let (_registry_dir, registry) = setup_registry();
+        let root = tempfile::tempdir().unwrap();
+        for (dir, manifest) in [
+            ("a", "[package]\nname = \"a\"\nversion = \"1.0.0\"\n"),
+            (
+                "b",
+                "[package]\nname = \"b\"\nversion = \"1.0.0\"\n[dependencies]\n\"a\" = \"1.0.0\"\n",
+            ),
+        ] {
+            std::fs::create_dir_all(root.path().join(dir)).unwrap();
+            std::fs::write(root.path().join(dir).join("hew.toml"), manifest).unwrap();
+        }
         std::fs::write(
-            &path,
-            "[package]\nname = \"bad name!\"\nversion = \"1.0.0\"\n\n[dependencies]\n",
+            root.path().join("hew.toml"),
+            "[workspace]\nmembers = [\"a\", \"b\"]\n",
         )
         .unwrap();
-        let m = manifest::parse_manifest(&path).unwrap();
-        assert!(!is_valid_package_name(&m.package.name));
+        let member = root.path().join("b");
+        let m = manifest::parse_manifest(&member.join("hew.toml")).unwrap();
+
+        let sources =
+            workspace_sources(resolver::RegistrySources::default_source(), &member).unwrap();
+        assert!(collect_manifest_issues(&m, &member, &registry, &sources).is_empty());
+
+        // Negative control: outside the workspace, `a` is an unpublished registry package.
+        let issues = collect_manifest_issues(
+            &m,
+            &member,
+            &registry,
+            &resolver::RegistrySources::default_source(),
+        );
+        assert_eq!(issues.len(), 1, "{issues:?}");
+    }
+
+    #[test]
+    fn check_detects_invalid_and_unimportable_names_in_manifest() {
+        let (_registry_dir, registry) = setup_registry();
+        let issues_for = |name: &str| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("hew.toml");
+            std::fs::write(
+                &path,
+                format!("[package]\nname = \"{name}\"\nversion = \"1.0.0\"\n"),
+            )
+            .unwrap();
+            let m = manifest::parse_manifest(&path).unwrap();
+            collect_manifest_issues(
+                &m,
+                dir.path(),
+                &registry,
+                &resolver::RegistrySources::default_source(),
+            )
+        };
+        assert!(issues_for("bad name!")[0].contains("only lowercase"));
+        assert!(issues_for("acme.3d")[0].contains("segment `3d` cannot be written"));
+        assert!(issues_for("acme.type").is_empty());
+        assert!(issues_for("acme.three_d").is_empty());
     }
 
     #[test]

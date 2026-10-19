@@ -139,6 +139,10 @@ pub enum ManifestError {
     InvalidNative(String),
     /// A generation step has invalid or conflicting paths.
     InvalidGenerate(String),
+    /// The manifest is a virtual workspace root, not a package.
+    WorkspaceRoot,
+    /// The manifest declares both `[package]` and `[workspace]`.
+    PackageAndWorkspace,
 }
 
 impl fmt::Display for ManifestError {
@@ -156,6 +160,14 @@ impl fmt::Display for ManifestError {
             ),
             Self::InvalidNative(msg) => write!(f, "E_INVALID_NATIVE: {msg}"),
             Self::InvalidGenerate(msg) => write!(f, "E_INVALID_GENERATE: {msg}"),
+            Self::WorkspaceRoot => f.write_str(
+                "this hew.toml is a workspace root, not a package; run in a member or use \
+                 `--workspace`",
+            ),
+            Self::PackageAndWorkspace => f.write_str(
+                "E_WORKSPACE_MANIFEST: a hew.toml declares either [package] or [workspace], not \
+                 both; a workspace root is a separate manifest that lists its members",
+            ),
         }
     }
 }
@@ -166,9 +178,11 @@ impl std::error::Error for ManifestError {
             Self::Io(e) => Some(e),
             Self::Parse(e) => Some(e),
             Self::Serialize(e) => Some(e),
-            Self::UnsupportedEdition { .. } | Self::InvalidNative(_) | Self::InvalidGenerate(_) => {
-                None
-            }
+            Self::UnsupportedEdition { .. }
+            | Self::InvalidNative(_)
+            | Self::InvalidGenerate(_)
+            | Self::WorkspaceRoot
+            | Self::PackageAndWorkspace => None,
         }
     }
 }
@@ -192,7 +206,7 @@ impl From<toml::ser::Error> for ManifestError {
 }
 
 /// The `[package]` section of a `hew.toml` manifest.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Package {
     /// Package name (required).
@@ -236,7 +250,8 @@ pub struct Package {
     /// when absent from `hew.toml`; a future release will require it explicitly.
     #[serde(default = "default_edition")]
     pub edition: String,
-    /// Minimum Hew compiler version required (e.g. `">=0.8.0"`).
+    /// The compiler versions the package supports, as a semver range
+    /// (e.g. `">=0.6.1, <0.7.0"`). See [`hew_compile::compiler_supports`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hew: Option<String>,
     /// Entry-point source file, relative to the directory holding `hew.toml`.
@@ -305,7 +320,7 @@ pub fn package_root_source(package_name: &str) -> String {
 }
 
 /// A parsed `hew.toml` manifest.
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HewManifest {
     /// `[package]` metadata.
@@ -394,13 +409,63 @@ struct NativeProbe {
     _native: Option<NativeLib>,
 }
 
-fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestError> {
+/// The `[native]` fields that Cargo.toml now owns, with their positions, so
+/// an old manifest is refused with the line to delete.
+#[derive(Deserialize)]
+struct RemovedNativeProbe {
+    native: Option<RemovedNativeFields>,
+}
+
+#[derive(Deserialize)]
+struct RemovedNativeFields {
+    lib: Option<toml::Spanned<toml::Value>>,
+    kind: Option<toml::Spanned<toml::Value>>,
+}
+
+/// Refuse `[native] lib` and `kind`, naming the first one's line.
+fn refuse_removed_native_fields(text: &str) -> Result<(), ManifestError> {
+    let Ok(RemovedNativeProbe {
+        native: Some(native),
+    }) = toml::from_str::<RemovedNativeProbe>(text)
+    else {
+        return Ok(());
+    };
+    let first = [("lib", native.lib), ("kind", native.kind)]
+        .into_iter()
+        .filter_map(|(field, value)| value.map(|value| (value.span().start, field)))
+        .min();
+    match first {
+        Some((offset, field)) => {
+            let line = text[..offset].matches('\n').count() + 1;
+            Err(ManifestError::InvalidNative(format!(
+                "line {line}: [native] `{field}` is no longer read: `lib`/`kind` are read from \
+                 Cargo.toml; remove them"
+            )))
+        }
+        None => Ok(()),
+    }
+}
+
+/// Parse manifest text with every check [`parse_manifest`] applies.
+///
+/// # Errors
+///
+/// Returns [`ManifestError`] when the text is not a valid package manifest.
+pub(crate) fn parse_manifest_text(text: &str) -> Result<HewManifest, ManifestError> {
     // Read `[native]` on its own first, so every way it can be malformed
     // (a wrong type, an unknown field, an unknown OS table) carries
     // `E_INVALID_NATIVE`, with the source line, instead of a bare serde
     // message. Malformed TOML stays a plain parse error.
     let table: toml::Table = toml::from_str(text)?;
+    if crate::workspace::declares_workspace(&table) {
+        return Err(if table.contains_key("package") {
+            ManifestError::PackageAndWorkspace
+        } else {
+            ManifestError::WorkspaceRoot
+        });
+    }
     if table.contains_key("native") {
+        refuse_removed_native_fields(text)?;
         toml::from_str::<NativeProbe>(text)
             .map_err(|e| ManifestError::InvalidNative(e.to_string()))?;
     }
@@ -520,6 +585,30 @@ pub fn add_path_dependency(
     save_manifest(path, &manifest)
 }
 
+/// Check a package's `[package] hew` range against the running compiler.
+/// A package without a range supports every compiler.
+///
+/// # Errors
+///
+/// Returns an `E_PKG_COMPILER_RANGE` diagnostic when the range does not
+/// parse or excludes the running compiler.
+pub fn check_compiler_range(package: &Package) -> Result<(), String> {
+    let Some(range) = package.hew.as_deref() else {
+        return Ok(());
+    };
+    match hew_compile::compiler_supports(range) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "E_PKG_COMPILER_RANGE: {} requires hew `{range}`, but this compiler is {}",
+            package.name,
+            hew_compile::COMPILER_VERSION
+        )),
+        Err(error) => Err(format!(
+            "E_PKG_COMPILER_RANGE: `[package] hew = \"{range}\"` is not a semver range: {error}"
+        )),
+    }
+}
+
 /// Validate that a manifest has all required fields for publishing.
 ///
 /// Returns a list of missing field names. An empty list means the manifest is
@@ -622,49 +711,49 @@ mod tests {
     }
 
     #[test]
-    fn parse_native_section_with_defaults() {
+    fn parse_native_section_with_a_crate() {
         let f = write_temp(
-            "[package]\nname = \"hew::db::sqlite\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"hew_hew_db_sqlite\"\nlink-libs = [\"sqlite3\"]\n",
+            "[package]\nname = \"hew::db::sqlite\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\ncrate = \".\"\nlink-libs = [\"sqlite3\"]\n",
         );
         let m = parse_manifest(f.path()).unwrap();
         let n = m.native.expect("native section");
-        let rust = n.rust_crate().expect("rust crate");
-        assert_eq!(rust.lib, "hew_hew_db_sqlite");
-        assert_eq!(rust.dir, ".");
-        assert_eq!(rust.kind, "staticlib");
+        assert_eq!(n.rust_crate().expect("rust crate").dir, ".");
         assert_eq!(n.inputs_for(NativeOs::Linux).link_libs, ["sqlite3"]);
     }
 
     #[test]
-    fn native_invalid_kind_is_error() {
-        let f = write_temp(
-            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"foo\"\nkind = \"bogus\"\n",
-        );
-        let err = parse_manifest(f.path()).unwrap_err();
-        assert!(matches!(err, ManifestError::InvalidNative(_)), "{err}");
-    }
-
-    #[test]
-    fn native_empty_lib_is_error() {
-        let f = write_temp(
-            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\nlib = \"\"\n",
-        );
-        assert!(matches!(
-            parse_manifest(f.path()).unwrap_err(),
-            ManifestError::InvalidNative(_)
-        ));
+    fn native_lib_and_kind_are_refused_with_their_line() {
+        for (fields, line, field) in [
+            ("crate = \".\"\nlib = \"x\"\n", 8, "lib"),
+            ("kind = \"staticlib\"\ncrate = \".\"\n", 7, "kind"),
+            ("crate = \".\"\nkind = \"cdylib\"\nlib = \"x\"\n", 8, "kind"),
+        ] {
+            let f = write_temp(&format!(
+                "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\n{fields}"
+            ));
+            let error = parse_manifest(f.path()).unwrap_err().to_string();
+            assert!(
+                error.starts_with(&format!(
+                    "E_INVALID_NATIVE: line {line}: [native] `{field}` is no longer read"
+                )),
+                "{fields}: {error}"
+            );
+            assert!(
+                error.contains("read from Cargo.toml; remove them"),
+                "{error}"
+            );
+        }
     }
 
     #[test]
     fn native_roundtrips_through_serialize() {
         let f = write_temp(
-            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\ncrate = \"native\"\nlib = \"foo\"\nkind = \"cdylib\"\n",
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2026\"\n\n[native]\ncrate = \"native\"\n",
         );
         let m = parse_manifest(f.path()).unwrap();
         let serialized = toml::to_string(&m).unwrap();
         assert!(serialized.contains("[native]"), "{serialized}");
         assert!(serialized.contains("crate = \"native\""), "{serialized}");
-        assert!(serialized.contains("kind = \"cdylib\""), "{serialized}");
     }
 
     #[test]
@@ -1038,7 +1127,7 @@ mod tests {
             "version = \"0.1.0\"\n",
             "edition = \"2026\"\n",
             "\n[native]\n",
-            "lib = \"foo\"\n",
+            "crate = \".\"\n",
             "typo = \"oops\"\n",
         ));
         let error = parse_manifest(f.path()).expect_err("unknown native field must be rejected");

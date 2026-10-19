@@ -326,6 +326,21 @@ impl<'a> Formatter<'a> {
         self.tokens.partition_point(|(_, span)| span.start < pos)
     }
 
+    /// The first source token of a method: its first attribute, or the
+    /// `pub`/`package` visibility in front of `fn`, which `fn_span` does not
+    /// cover.
+    fn method_start(&self, method: &FnDecl) -> usize {
+        let before_fn = self
+            .token_at_or_after(method.fn_span.start)
+            .checked_sub(1)
+            .and_then(|index| self.tokens.get(index));
+        let start = match before_fn {
+            Some((hew_lexer::Token::Pub | hew_lexer::Token::Package, span)) => span.start,
+            _ => method.fn_span.start,
+        };
+        member_start(&method.attributes, start)
+    }
+
     /// Start of the first source token at or after `from` and before `to`
     /// that satisfies `wanted`.
     fn find_token(
@@ -1512,7 +1527,7 @@ impl<'a> Formatter<'a> {
                     self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                 }
                 TypeBodyItem::Method(f) => {
-                    self.begin_member(member_start(&f.attributes, f.fn_span.start), false);
+                    self.begin_member(self.method_start(f), false);
                     let has_consuming_self =
                         decl.consuming_methods.iter().any(|name| name == &f.name);
                     self.format_type_body_method(f, f.fn_span.end, has_consuming_self);
@@ -1898,11 +1913,7 @@ impl<'a> Formatter<'a> {
             .type_aliases
             .iter()
             .map(|alias| (alias.span.start, Ok(alias)))
-            .chain(
-                decl.methods
-                    .iter()
-                    .map(|m| (member_start(&m.attributes, m.fn_span.start), Err(m))),
-            )
+            .chain(decl.methods.iter().map(|m| (self.method_start(m), Err(m))))
             .collect();
         members.sort_by_key(|(start, _)| *start);
         for (i, (start, member)) in members.iter().enumerate() {
@@ -2036,12 +2047,11 @@ impl<'a> Formatter<'a> {
                 ActorMember::Receive(r),
             )
         }));
-        members.extend(decl.methods.iter().map(|m| {
-            (
-                member_start(&m.attributes, m.fn_span.start),
-                ActorMember::Method(m),
-            )
-        }));
+        members.extend(
+            decl.methods
+                .iter()
+                .map(|m| (self.method_start(m), ActorMember::Method(m))),
+        );
         members.sort_by_key(|(start, _)| *start);
 
         let mut previous_was_field = false;
@@ -2861,12 +2871,11 @@ impl<'a> Formatter<'a> {
                 .iter()
                 .map(|child| (child.span.start, Member::Child(child))),
         );
-        clauses.extend(decl.methods.iter().map(|method| {
-            (
-                member_start(&method.attributes, method.fn_span.start),
-                Member::Method(method),
-            )
-        }));
+        clauses.extend(
+            decl.methods
+                .iter()
+                .map(|method| (self.method_start(method), Member::Method(method))),
+        );
         clauses.sort_by_key(|(start, _)| *start);
 
         let mut previous_was_body = false;
@@ -7391,6 +7400,37 @@ id_type!(UserId)
 /// third
 fn main() {
     println(one!());
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// The blank line in front of a `pub` or `package` impl member is kept like
+    /// the one in front of a private member; the visibility keyword opens the
+    /// member.
+    #[test]
+    fn blank_line_before_visible_impl_member_is_kept() {
+        let src = "\
+impl Counter {
+    fn a(self) -> i64 {
+        self.count
+    }
+
+    pub fn b(self) -> i64 {
+        self.count + 1
+    }
+
+    package fn c(self) -> i64 {
+        self.count + 2
+    }
+    pub fn d(self) -> i64 {
+        self.count + 3
+    }
+
+    #[inline]
+    pub fn e(self) -> i64 {
+        self.count + 4
+    }
 }
 ";
         assert_eq!(roundtrip_source(src), src);

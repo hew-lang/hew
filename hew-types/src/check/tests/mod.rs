@@ -58,6 +58,16 @@ mod wire;
 
 // Shared test helpers used across multiple submodules.
 
+/// Facts belonging to the authored single-module fixture, excluding prelude bodies.
+pub(super) fn root_values<T>(
+    facts: &std::collections::HashMap<SpanKey, T>,
+) -> impl Iterator<Item = &T> {
+    facts
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .map(|(_, value)| value)
+}
+
 /// Build a single-module program whose one module has the given dotted path
 /// (e.g. `["std", "math"]`) and contains `source`'s items.
 pub(super) fn check_source_in_module(source: &str, module_path: Vec<String>) -> TypeCheckOutput {

@@ -3335,16 +3335,13 @@ fn assert_primitive_trait_dispatch_records_metadata(
         "expected clean type check for source:\n{source}\n\nbut got: {:?}",
         output.errors
     );
-    let any = output
-        .method_call_receiver_kinds
-        .values()
-        .any(|kind| match kind {
-            MethodCallReceiverKind::PrimitiveTraitImpl {
-                trait_name,
-                canonical_receiver,
-            } => trait_name == expected_trait && canonical_receiver == expected_canonical,
-            _ => false,
-        });
+    let any = super::root_values(&output.method_call_receiver_kinds).any(|kind| match kind {
+        MethodCallReceiverKind::PrimitiveTraitImpl {
+            trait_name,
+            canonical_receiver,
+        } => trait_name == expected_trait && canonical_receiver == expected_canonical,
+        _ => false,
+    });
     assert!(
         any,
         "expected PrimitiveTraitImpl{{trait_name={expected_trait}, canonical_receiver={expected_canonical}}} \
@@ -3585,15 +3582,13 @@ fn main() {
         "user `pub type` + impl Display dispatch regressed: {:?}",
         output.errors
     );
-    let dispatched_via_named = output.method_call_receiver_kinds.values().any(|kind| {
+    let dispatched_via_named = super::root_values(&output.method_call_receiver_kinds).any(|kind| {
         matches!(
             kind,
             MethodCallReceiverKind::NamedTypeInstance { type_name } if type_name == "Foo"
         )
     });
-    let leaked_into_primitive_table = output
-        .method_call_receiver_kinds
-        .values()
+    let leaked_into_primitive_table = super::root_values(&output.method_call_receiver_kinds)
         .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
     assert!(
         dispatched_via_named,
@@ -3664,9 +3659,7 @@ fn main() {
         "unexpected errors for UserDisplay on pub type: {:?}",
         output.errors
     );
-    let leaked_primitive_meta = output
-        .method_call_receiver_kinds
-        .values()
+    let leaked_primitive_meta = super::root_values(&output.method_call_receiver_kinds)
         .any(|kind| matches!(kind, MethodCallReceiverKind::PrimitiveTraitImpl { .. }));
     assert!(
         !leaked_primitive_meta,
@@ -3864,7 +3857,7 @@ fn primitive_trait_dispatch_records_rewrite_for_builtin_fmt() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "i64::fmt"
         )),

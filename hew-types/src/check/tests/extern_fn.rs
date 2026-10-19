@@ -438,9 +438,7 @@ fn open_extern_method_keeps_signature_identity_separate_from_endpoint() {
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let identities: Vec<_> = output
-        .method_call_rewrites
-        .values()
+    let identities: Vec<_> = super::root_values(&output.method_call_rewrites)
         .filter_map(|rewrite| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
@@ -471,10 +469,8 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
     let output = checker.check_program(&parsed.program);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 
-    let (_, descriptor) = output
-        .method_call_rewrites
-        .iter()
-        .find_map(|(span, rewrite)| match rewrite {
+    let descriptor = super::root_values(&output.method_call_rewrites)
+        .find_map(|rewrite| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 c_symbol,
                 target:
@@ -483,7 +479,7 @@ fn compiled_stdlib_extern_method_uses_exact_contract_for_fresh_result() {
                     ),
                 descriptor: Some(descriptor),
                 ..
-            } if c_symbol == "hew_string_to_bytes" => Some((span, descriptor)),
+            } if c_symbol == "hew_string_to_bytes" => Some(descriptor),
             _ => None,
         })
         .expect("canonical string.to_bytes must carry its typed runtime family");
@@ -513,15 +509,17 @@ fn use_encoder(value: Encoder) -> bytes {
 "#,
     );
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
-    assert!(output.method_call_rewrites.values().any(|rewrite| matches!(
-        rewrite,
-        MethodCallRewrite::RewriteToFunction {
-            c_symbol,
-            target: crate::check::CallTarget::Extern { .. },
-            descriptor: None,
-            ..
-        } if c_symbol == "hew_string_to_bytes"
-    )));
+    assert!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction {
+                c_symbol,
+                target: crate::check::CallTarget::Extern { .. },
+                descriptor: None,
+                ..
+            } if c_symbol == "hew_string_to_bytes"
+        ))
+    );
 }
 
 /// Extern fns without `#[extern_symbol]` carry `None` (regression

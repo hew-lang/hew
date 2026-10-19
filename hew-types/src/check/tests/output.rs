@@ -24,7 +24,8 @@ fn indirect_calls_publish_local_closure_and_formal_origins() {
             .direct_call_targets
             .iter()
             .find(|(key, target)| {
-                key.start == start
+                key.module_idx == 0
+                    && key.start == start
                     && matches!(
                         target,
                         crate::check::dispatch::CallTarget::IndirectFunctionValue
@@ -132,7 +133,8 @@ fn indirect_branch_keeps_known_closure_and_opaque_parameter() {
         .direct_call_targets
         .iter()
         .find(|(key, target)| {
-            key.start == call_start
+            key.module_idx == 0
+                && key.start == call_start
                 && matches!(
                     target,
                     crate::check::dispatch::CallTarget::IndirectFunctionValue
@@ -458,7 +460,7 @@ fn lazy_map_collect_preserves_symbolic_callback_field_origin() {
     let map_call = output
         .direct_call_targets
         .keys()
-        .find(|key| key.start == map_call_start)
+        .find(|key| key.module_idx == 0 && key.start == map_call_start)
         .expect("selected map call");
     let collect_start = source.rfind("collect(map(").unwrap();
     let collect_flow = output
@@ -532,7 +534,7 @@ fn reassigned_function_value_keeps_the_current_closure() {
     let call = output
         .direct_call_targets
         .keys()
-        .find(|key| key.start == call_start)
+        .find(|key| key.module_idx == 0 && key.start == call_start)
         .expect("checked indirect call");
     assert_eq!(
         output.indirect_call_candidates.get(call),
@@ -1582,7 +1584,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "std.fs.exists"
@@ -1616,7 +1618,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteModuleQualifiedToFunction { c_symbol, .. }
                 if c_symbol == "std.path.dirname"

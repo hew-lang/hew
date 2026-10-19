@@ -5,9 +5,7 @@
 pub(super) use super::*;
 
 fn codec_rewrites(output: &TypeCheckOutput) -> Vec<(Codec, String)> {
-    let mut found: Vec<(Codec, String)> = output
-        .method_call_rewrites
-        .values()
+    let mut found: Vec<(Codec, String)> = super::root_values(&output.method_call_rewrites)
         .filter_map(|rewrite| match rewrite {
             MethodCallRewrite::Codec { codec, value_ty } => {
                 Some((*codec, value_ty.user_facing().to_string()))

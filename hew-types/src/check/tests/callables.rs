@@ -1008,7 +1008,7 @@ fn generic_function_values_instantiate_each_reference() {
                 .values()
                 .any(|args| args == &[Ty::I64])
         );
-        assert!(output.direct_call_targets.values().any(|target|
+        assert!(super::root_values(&output.direct_call_targets).any(|target|
             matches!(target, crate::CallTarget::User(declaration) if output.defs.path(*declaration) == "id")));
     }
 }

@@ -73,6 +73,7 @@ fn attach_controlling_terminal(command: &mut Command) -> File {
     assert_eq!(result, 0, "create pseudo-terminal");
     // SAFETY: openpty returned two new, independently owned descriptors.
     let master = unsafe { File::from_raw_fd(master) };
+    // SAFETY: openpty returned a separate owned slave descriptor.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
     command.stdin(Stdio::from(slave));
     // SAFETY: only async-signal-safe session/terminal operations run after
@@ -132,7 +133,7 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
         let _ = sender.send((result, line));
     });
     let (read, line) = receiver
-        .recv_timeout(Duration::from_secs(60))
+        .recv_timeout(Duration::from_mins(1))
         .expect("program startup handshake");
     read.expect("read program PID");
     let pid = line.trim().parse::<i32>().expect("numeric program PID");
@@ -148,11 +149,8 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
     assert_eq!(status.code(), Some(1), "signal exit policy: {status}");
     // ESRCH proves both termination and reaping; a zombie still passes kill(0).
     // SAFETY: signal zero only queries the fixture PID without changing it.
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
-        "program survived hew run"
-    );
+    let child_liveness = unsafe { libc::kill(pid, 0) };
+    assert_eq!(child_liveness, -1, "program survived hew run");
     assert_eq!(
         std::io::Error::last_os_error().raw_os_error(),
         Some(libc::ESRCH)
@@ -218,7 +216,7 @@ fn run_wasi_foreground_stdin_is_readable() {
         let _ = output_sender.send(read.map(|_| output));
     });
     let ready = ready_receiver
-        .recv_timeout(Duration::from_secs(60))
+        .recv_timeout(Duration::from_mins(1))
         .expect("WASI program startup")
         .expect("read WASI startup line");
     assert_eq!(ready, "ready\n");

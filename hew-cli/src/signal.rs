@@ -47,6 +47,10 @@ impl RunSignals {
         Ok(guard)
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "request reads require an installed signal guard"
+    )]
     pub(crate) fn requested(&self) -> Option<libc::c_int> {
         match RUN_SIGNAL.load(Ordering::SeqCst) {
             0 => None,

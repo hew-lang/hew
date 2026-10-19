@@ -445,9 +445,10 @@ impl Checker {
                     self.effect_graph.current_body,
                     Some(super::effects::EffectBody::Declaration(_))
                 ));
+        let targets_self = matches!(&receiver.0, Expr::Ident(name) if name.name.as_str() == "self");
         if !through_view
             && owns_actor_turn
-            && matches!(&receiver.0, Expr::Ident(name) if name.name.as_str() == "self")
+            && targets_self
             && !self.suspension_operands.contains(&key)
         {
             self.report_error(
@@ -495,7 +496,7 @@ impl Checker {
                     completion_policy,
                     &payload,
                 );
-                self.record_completion_call_edge(method, span);
+                self.record_completion_call_edge(method, targets_self, span);
                 self.actor_method_dispatch.insert(
                     key,
                     ActorMethodKind::Ask {
@@ -518,7 +519,7 @@ impl Checker {
                 completion_policy,
                 &payload,
             );
-            self.record_completion_call_edge(method, span);
+            self.record_completion_call_edge(method, targets_self, span);
             self.actor_method_dispatch.insert(
                 key,
                 ActorMethodKind::Ask {
@@ -549,7 +550,18 @@ impl Checker {
     /// Record one handler-to-handler completion call. A completion call waits
     /// for the callee's handler to finish, so a cycle among these edges is a
     /// deadlock: every actor in the ring is blocked on the next.
-    fn record_completion_call_edge(&mut self, callee: crate::DefId, span: &Span) {
+    ///
+    /// The edges are per actor type, so a call from one actor to another of
+    /// its own type is a ring only when the target is `self`. Through any
+    /// other handle it may reach a different instance — a chain of `Stage`s
+    /// whose last one has no successor — and is left to the runtime's
+    /// wait-cycle detection.
+    fn record_completion_call_edge(
+        &mut self,
+        callee: crate::DefId,
+        targets_self: bool,
+        span: &Span,
+    ) {
         if !self.in_receive_fn {
             return;
         }
@@ -559,6 +571,9 @@ impl Checker {
             return;
         };
         if !self.actor_receive_methods.contains(&enclosing) {
+            return;
+        }
+        if !targets_self && self.defs.owner(enclosing) == self.defs.owner(callee) {
             return;
         }
         self.completion_call_edges

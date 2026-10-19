@@ -2164,6 +2164,27 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
+Capturing a `var` binding gives the actor a mutable state field, so a lambda
+actor can keep a running total. The enclosing `var` keeps its own value; the
+actor's copy is the one that changes.
+
+```hew
+fn main() {
+    var total: i64 = 0;
+    let add = actor |n: i64| -> i64 {
+        total += n;
+        total
+    };
+    let _ = add(5);
+    match add(7) {
+        .Ok(sum) => println(sum), // 12
+        .Err(_) => println("the call failed"),
+    }
+    stop(add);
+    stopped(add);
+}
+```
+
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is
 borrowed, and the call addresses the actor through the borrow without taking

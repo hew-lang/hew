@@ -233,7 +233,7 @@ impl LowerCtx {
                 name: capture.name.clone(),
                 ty: capture.ty.clone(),
                 default: None,
-                is_mutable: false,
+                is_mutable: capture.mutable,
                 deferred: false,
                 span: span.clone(),
             })
@@ -247,7 +247,7 @@ impl LowerCtx {
                 id: capture.binding,
                 name: capture.name.clone(),
                 ty: capture.ty.clone(),
-                mutable: false,
+                mutable: capture.mutable,
                 span: span.clone(),
                 is_consume: false,
             })
@@ -513,6 +513,12 @@ impl LowerCtx {
         let mut captures: Vec<HirLambdaCapture> = Vec::new();
         let self_id = self.current_actor_self.as_ref().map(|(id, _)| *id);
         collect_captures_walk(body, param_ids, &mut seen, &mut captures, self_id);
+        let outer = self.visible_outer_bindings();
+        for capture in &mut captures {
+            capture.mutable = outer
+                .get(&capture.binding)
+                .is_some_and(|(_, _, _, mutable)| *mutable);
+        }
         captures
     }
 }

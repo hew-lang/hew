@@ -37,7 +37,7 @@ impl LowerCtx {
         self.binding_scopes
             .iter()
             .flat_map(|scope| scope.iter())
-            .map(|(id, (name, ty, span))| (*id, (name.clone(), ty.clone(), span.clone())))
+            .map(|(id, binding)| (*id, binding.clone()))
             .collect()
     }
 
@@ -77,7 +77,7 @@ impl LowerCtx {
             .filter_map(|(binding, name, _span)| {
                 outer_bindings
                     .get(&binding)
-                    .map(|(_, ty, _)| HirGenCapture {
+                    .map(|(_, ty, _, _)| HirGenCapture {
                         binding,
                         name,
                         ty: ty.clone(),

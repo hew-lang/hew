@@ -2228,6 +2228,9 @@ pub struct HirLambdaCapture {
     pub ty: ResolvedTy,
     /// Capture-strength discriminator.
     pub kind: HirCaptureKind,
+    /// The captured binding was declared `var`: the synthesized actor's state
+    /// field is mutable, so the handler may assign it like any `var` field.
+    pub mutable: bool,
 }
 
 /// One captured binding inside a general closure environment.

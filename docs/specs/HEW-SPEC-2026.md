@@ -654,6 +654,11 @@ Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
 
+A capture of a `var` binding is a mutable state field: the handler may assign
+it or call mutating methods on it, and each message observes the writes of
+earlier ones. The enclosing binding keeps its own independent value. A capture
+of a `let` binding is immutable.
+
 **Operations:**
 
 ```hew

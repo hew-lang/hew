@@ -245,7 +245,9 @@ impl TargetArch {
 }
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
-type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
+/// An enclosing binding a capture can name: its name, type, declaration span
+/// and whether it was declared `var`.
+type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>, bool);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
 

@@ -65,6 +65,7 @@ pub(super) fn collect_captures_walk(
                 name: name.clone(),
                 ty: expr.ty.clone(),
                 kind,
+                mutable: false,
             });
         }
         // Empty-body terminals: nothing to walk.
@@ -305,7 +306,7 @@ pub(super) fn collect_general_closure_captures_walk(
             if seen.insert(*id) {
                 let span = outer_bindings
                     .get(id)
-                    .map(|(_, _, span)| span.clone())
+                    .map(|(_, _, span, _)| span.clone())
                     .unwrap_or_default();
                 captures.push((*id, name.clone(), span));
             }
@@ -317,7 +318,7 @@ pub(super) fn collect_general_closure_captures_walk(
                 if outer_bindings.contains_key(&capture.binding) && seen.insert(capture.binding) {
                     let span = outer_bindings
                         .get(&capture.binding)
-                        .map(|(_, _, span)| span.clone())
+                        .map(|(_, _, span, _)| span.clone())
                         .unwrap_or_default();
                     captures.push((capture.binding, capture.name.clone(), span));
                 }

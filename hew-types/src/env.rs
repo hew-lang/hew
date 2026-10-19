@@ -1141,10 +1141,20 @@ impl TypeEnv {
 
     /// Preserve reads and fresh identities from a checked body without applying
     /// its private mutations or invocation-time moves to the enclosing scope.
-    pub(crate) fn merge_closure_reads(&mut self, body: &Self) {
+    ///
+    /// A lambda actor's `var` capture becomes a mutable state field, so a
+    /// write in its body is what the declaration's `var` is for: the binding
+    /// counts as written and observed, never as a `var` that could be `let`.
+    pub(crate) fn merge_closure_reads(&mut self, body: &Self, actor_body: bool) {
         self.next_binding_id = body.next_binding_id;
         for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
             if let Some(checked) = body.binding_by_id(binding.id) {
+                if actor_body
+                    && checked.is_written()
+                    && binding.mutation == MutationState::Unwritten
+                {
+                    binding.mutation = MutationState::Observed;
+                }
                 binding.read_count = binding.read_count.max(checked.read_count);
                 // A closure that reads the binding observes whatever the
                 // enclosing body wrote into it, whenever the closure runs.

@@ -21,7 +21,7 @@ impl LowerCtx {
     ) -> HirBinding {
         let id = self.ids.binding();
         if let Some(scope) = self.binding_scopes.last_mut() {
-            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
+            scope.insert(id, (name.clone(), ty.clone(), span.clone(), mutable));
         }
         HirBinding {
             id,
@@ -150,13 +150,13 @@ impl LowerCtx {
         id: BindingId,
         name: String,
         ty: ResolvedTy,
-        _mutable: bool,
+        mutable: bool,
         span: std::ops::Range<usize>,
     ) {
         let key = self.mk_key(&span);
         let source = self.resolutions.get(&key).copied();
         if let Some(scope) = self.binding_scopes.last_mut() {
-            scope.insert(id, (name.clone(), ty.clone(), span.clone()));
+            scope.insert(id, (name.clone(), ty.clone(), span.clone(), mutable));
         }
         match source {
             Some(Resolution::Local(source)) => {

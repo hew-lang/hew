@@ -1276,7 +1276,13 @@ impl<'a> Formatter<'a> {
             }
         }
         for (i, item) in program.items.iter().enumerate() {
-            self.flush_comments_and_separate(item.1.start, i > 0);
+            // Consecutive imports stay packed unless the author separated
+            // them with a blank line; every other pair of items is separated.
+            let separate = i > 0
+                && !(matches!(item.0, Item::Import(_))
+                    && matches!(program.items[i - 1].0, Item::Import(_))
+                    && !blank_line_before(self.source, item.1.start));
+            self.flush_comments_and_separate(item.1.start, separate);
             self.prev_source_pos = item.1.start;
             self.format_item(&item.0, item.1.start, item.1.end);
             // Only advance if format_item didn't already advance past the item
@@ -7484,5 +7490,35 @@ type Split {
 }
 ";
         assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// Consecutive imports stay packed; a blank line the author left between
+    /// two imports is kept, and the item after the imports is separated.
+    #[test]
+    fn consecutive_imports_keep_source_grouping() {
+        let packed = "\
+import std.fs;
+import std.string;
+import std.math;
+
+fn main() {}
+";
+        assert_eq!(roundtrip_source(packed), packed);
+
+        let grouped = "\
+import std.fs;
+
+import std.string;
+import std.math;
+
+fn main() {}
+";
+        assert_eq!(roundtrip_source(grouped), grouped);
+
+        let unseparated = "import std.fs;\nfn main() {}\n";
+        assert_eq!(
+            roundtrip_source(unseparated),
+            "import std.fs;\n\nfn main() {}\n"
+        );
     }
 }

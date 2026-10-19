@@ -772,19 +772,17 @@ fn main() {
 }
 
 #[test]
-fn actor_termination_fault_reaches_waiter_recovery() {
+fn actor_termination_wait_does_not_raise_the_original_crash() {
     run_actor(
         r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); sleep(1ms); panic("receiver-failed"); } }
 fn main() {
     let broken = spawn Broken;
     let _ = mailbox(broken, on_full: .Reject).fail();
-    let result = scope { stopped(broken); "unexpected clean termination" } handle failure {
-        match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
-    };
-    println(result);
+    stopped(broken);
+    println("observed termination");
 }
 "#,
-        "receiver-cleanup\nobserved fault\n",
+        "receiver-cleanup\nobserved termination\n",
         1,
         "actor crash",
     );

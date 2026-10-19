@@ -2878,12 +2878,13 @@ pub(crate) fn notify_monitors_on_death(
     state: i32,
     reason: u32,
     end: crate::internal::types::ActorEndReason,
+    close_fault: Option<(i32, String)>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
-    crate::monitor::notify_monitors_on_end(actor_id, state, reason, end);
+    crate::monitor::notify_monitors_on_end(actor_id, state, reason, end, close_fault);
     #[cfg(target_arch = "wasm32")]
     {
-        let _ = (actor_id, state, reason, end);
+        let _ = (actor_id, state, reason, end, close_fault);
     }
 }
 
@@ -3092,7 +3093,7 @@ unsafe impl Send for TerminalNotification {}
 
 impl TerminalNotification {
     /// Publish after cleanup while the actor still retains its supervisor.
-    pub(crate) unsafe fn publish_terminal_notification(self) {
+    pub(crate) unsafe fn publish_terminal_notification(self, close_fault: Option<(i32, String)>) {
         let Self {
             actor_id,
             terminal,
@@ -3129,7 +3130,7 @@ impl TerminalNotification {
         } else {
             0
         };
-        notify_monitors_on_death(actor_id, terminal, crash_kind, end_reason);
+        notify_monitors_on_death(actor_id, terminal, crash_kind, end_reason, close_fault);
 
         // Wake any actor group condvars waiting on this actor.
         crate::actor_group::notify_actor_death(actor_id);
@@ -3402,7 +3403,7 @@ pub(crate) unsafe fn hew_actor_trap_inner(
     if let Some(notice) = notice {
         // SAFETY: legacy terminal publication retains the same supervisor
         // lifetime through this tail as the original trap activation.
-        unsafe { notice.publish_terminal_notification() };
+        unsafe { notice.publish_terminal_notification(None) };
     }
 }
 

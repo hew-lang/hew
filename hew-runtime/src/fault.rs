@@ -94,6 +94,50 @@ impl HewFault {
         Self::new(code, Some(message.into_boxed_str()))
     }
 
+    /// Snapshot terminal cleanup diagnostics for the authenticated observation wire.
+    /// The primary code remains separate from the bounded application message.
+    pub(crate) fn remote_payload(&self) -> (i32, String) {
+        let mut message = self
+            .primary
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .to_owned();
+        for diagnostic in &self.secondary {
+            let mut line = Vec::new();
+            let _ = write_diagnostic(diagnostic, true, &mut line);
+            message.push('\n');
+            message.push_str(
+                std::str::from_utf8(&line)
+                    .expect("fault diagnostics are UTF-8")
+                    .trim_end_matches('\n'),
+            );
+        }
+        let limit = crate::envelope::MAX_TERMINAL_FAULT_MESSAGE_BYTES;
+        if message.len() > limit {
+            const SUFFIX: &str = " [truncated]";
+            let mut end = limit - SUFFIX.len();
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
+            message.push_str(SUFFIX);
+        }
+        (self.code(), message)
+    }
+
+    /// The originating node already reported this terminal cleanup diagnostic.
+    /// Recovery still owns its text, but propagation must not print it again.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn from_remote(code: i32, message: String) -> Self {
+        let fault = Self::new(
+            code,
+            (!message.is_empty()).then(|| message.into_boxed_str()),
+        );
+        *fault.primary.reported.lock_or_recover() = true;
+        fault
+    }
+
     pub(crate) fn code(&self) -> i32 {
         self.primary.code
     }
@@ -839,6 +883,26 @@ mod tests {
             // SAFETY: the test transfers its sole fault and message owner.
             unsafe { hew_fault_drop(fault) };
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn remote_cleanup_diagnostic_is_bounded_and_already_reported() {
+        let text = "雪".repeat(crate::envelope::MAX_TERMINAL_FAULT_MESSAGE_BYTES);
+        let local = HewFault::with_message(212, text);
+        let (code, message) = local.remote_payload();
+        assert_eq!(code, 212);
+        assert!(message.len() <= crate::envelope::MAX_TERMINAL_FAULT_MESSAGE_BYTES);
+        assert!(message.ends_with(" [truncated]"));
+        let remote = HewFault::from_remote(code, message.clone());
+        let mut output = Vec::new();
+        write_unreported(&remote, &mut output).unwrap();
+        assert!(
+            output.is_empty(),
+            "the origin already printed this diagnostic"
+        );
+        write_report(&remote, &mut output).unwrap();
+        assert!(std::str::from_utf8(&output).unwrap().contains(&message));
     }
 
     #[test]

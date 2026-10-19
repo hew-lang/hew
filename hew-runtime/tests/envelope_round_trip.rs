@@ -19,8 +19,8 @@ use hew_runtime::envelope::{
     CTRL_MONITOR_REQ, CTRL_MONITOR_SETUP_RESULT, CTRL_REGISTRY_GOSSIP, CTRL_UNLINK,
     FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, MAX_LINK_PAYLOAD_BYTES, MAX_MONITOR_PAYLOAD_BYTES,
     MAX_REGISTRY_GOSSIP_NAME_BYTES, MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES, MAX_SWIM_GOSSIP_ENTRIES,
-    MAX_SWIM_PAYLOAD_BYTES, REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE,
-    SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
+    MAX_SWIM_PAYLOAD_BYTES, MAX_TERMINAL_FAULT_MESSAGE_BYTES, MAX_TERMINAL_PAYLOAD_BYTES,
+    REGISTRY_GOSSIP_OP_ADD, REGISTRY_GOSSIP_OP_REMOVE, SETUP_STATUS_TARGET_GONE, WIRE_VERSION,
 };
 use hew_runtime::node_identity::{Location, NodeId};
 
@@ -213,8 +213,19 @@ fn envelope_frame(
     }
 }
 
+fn assert_published_schema(rule: &str, bytes: &[u8]) {
+    let schema = format!(
+        "start = {rule}\n{}",
+        include_str!("../schemas/envelope.cddl")
+    );
+    cddl::validate_cbor_from_slice(&schema, bytes, None).unwrap_or_else(|error| {
+        panic!("encoded {rule} does not conform to the published schema: {error:?}")
+    });
+}
+
 fn cddl_control_shape(frame: &ControlFrame) {
     let bytes = to_cbor(frame);
+    assert_published_schema("control-frame", &bytes);
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
     assert_eq!(entries.len(), 4);
@@ -227,6 +238,7 @@ fn cddl_control_shape(frame: &ControlFrame) {
 
 fn cddl_envelope_shape(frame: &EnvelopeFrame) {
     let bytes = encode_envelope_frame(frame).expect("envelope should encode");
+    assert_published_schema("envelope-frame", &bytes);
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
     assert_eq!(entries.len(), 8);
@@ -885,7 +897,7 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x07, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x08, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
@@ -894,7 +906,7 @@ fn same_envelope_produces_same_bytes() {
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa8, 0x01, 0x07, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x08, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
             0x01, 0x04, 0xf6, 0x05, 0xa3, 0x01, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41,
             0x63, 0x74, 0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x02, 0x01, 0x03,
@@ -1477,6 +1489,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
         reason: 5,
         end_reason: 2,
         crash_kind: 1,
+        close_fault: None,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
@@ -1484,8 +1497,8 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
 
     let value = decode_value(&bytes);
     let entries = map_entries(&value);
-    assert_eq!(entries.len(), 5);
-    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5]);
+    assert_eq!(entries.len(), 6);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4, 5, 6]);
     assert_integer_value(find_field(entries, 1), 4242);
     assert_location_value(find_field(entries, 2), original.target);
     let reason = map_entries(find_field(entries, 3));
@@ -1495,6 +1508,7 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
     assert_integer_value(find_field(reason, 2), 5);
     assert_integer_value(find_field(entries, 4), 1);
     assert_integer_value(find_field(entries, 5), 2);
+    assert_eq!(find_field(entries, 6), &Value::Null);
 }
 
 #[test]
@@ -1508,6 +1522,7 @@ fn monitor_down_payload_carries_negative_sentinel_reason() {
         reason: -1,
         end_reason: 3,
         crash_kind: 0,
+        close_fault: None,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
@@ -1523,6 +1538,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(3u64), down_reason_value(5)),
         (int(4u64), int(0i32)),
         (int(5u64), int(2u8)),
+        (int(6u64), Value::Null),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&malformed_target)),
@@ -1535,6 +1551,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         (int(3u64), int(5i32)),
         (int(4u64), int(0i32)),
         (int(5u64), int(2u8)),
+        (int(6u64), Value::Null),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&untyped_reason)),
@@ -1550,11 +1567,125 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
         ),
         (int(4u64), int(0i32)),
         (int(5u64), int(2u8)),
+        (int(6u64), Value::Null),
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&unknown_reason_tag)),
         Err(MonitorPayloadError::MalformedField { key: 3, .. })
     ));
+}
+
+#[test]
+fn monitor_and_link_down_preserve_cleanup_fault_separately() {
+    for code in [i32::MIN, -1, 1, i32::MAX] {
+        let original = MonitorDownPayload {
+            ref_id: 42,
+            target: location(52, 101, 193),
+            reason: 6,
+            end_reason: 0,
+            crash_kind: 0,
+            close_fault: Some((code, "cleanup failed: café\0雪".to_owned())),
+        };
+        let bytes = encode_monitor_down_payload(&original).unwrap();
+        assert_published_schema("monitor-down-payload", &bytes);
+        assert_eq!(decode_monitor_down_payload(&bytes).unwrap(), original);
+        assert_eq!(decode_link_down_payload(&bytes).unwrap(), original);
+        assert_eq!(encode_link_down_payload(&original).unwrap(), bytes);
+        let value = decode_value(&bytes);
+        let fault = map_entries(find_field(map_entries(&value), 6));
+        assert_integer_keys_and_order(fault, &[1, 2]);
+        assert_integer_value(find_field(fault, 1), i128::from(code));
+        assert_eq!(
+            find_field(fault, 2),
+            &Value::Text("cleanup failed: café\0雪".to_owned())
+        );
+    }
+}
+
+#[test]
+fn monitor_down_rejects_incomplete_or_malformed_cleanup_faults() {
+    let original = MonitorDownPayload {
+        ref_id: 42,
+        target: location(52, 101, 193),
+        reason: 6,
+        end_reason: 0,
+        crash_kind: 0,
+        close_fault: None,
+    };
+    let bytes = encode_monitor_down_payload(&original).unwrap();
+    let Value::Map(fields) = decode_value(&bytes) else {
+        panic!("map")
+    };
+    let text = Value::Text("cleanup failed".to_owned());
+    let malformed = [
+        int(1u8),
+        Value::Map(vec![]),
+        Value::Map(vec![(int(1u8), int(1i32))]),
+        Value::Map(vec![(int(2u8), text.clone())]),
+        Value::Map(vec![(int(1u8), int(0i32)), (int(2u8), text.clone())]),
+        Value::Map(vec![
+            (int(1u8), int(i64::from(i32::MAX) + 1)),
+            (int(2u8), text.clone()),
+        ]),
+        Value::Map(vec![
+            (int(1u8), int(i64::from(i32::MIN) - 1)),
+            (int(2u8), text.clone()),
+        ]),
+        Value::Map(vec![(int(1u8), text.clone()), (int(2u8), text.clone())]),
+        Value::Map(vec![(int(1u8), int(1i32)), (int(2u8), Value::Null)]),
+        Value::Map(vec![
+            (int(1u8), int(1i32)),
+            (int(2u8), text.clone()),
+            (int(2u8), text.clone()),
+        ]),
+        Value::Map(vec![
+            (int(1u8), int(1i32)),
+            (int(2u8), text.clone()),
+            (int(3u8), text),
+        ]),
+    ];
+    for fault in malformed {
+        let mut invalid = fields.clone();
+        invalid[5].1 = fault;
+        let bytes = value_to_cbor(&Value::Map(invalid));
+        assert!(decode_monitor_down_payload(&bytes).is_err());
+        assert!(decode_link_down_payload(&bytes).is_err());
+    }
+    let mut missing = fields.clone();
+    missing.pop();
+    let mut duplicate = fields.clone();
+    duplicate.push(fields[5].clone());
+    let mut unknown = fields;
+    unknown.push((int(7u8), Value::Null));
+    for invalid in [missing, duplicate, unknown] {
+        assert!(decode_monitor_down_payload(&value_to_cbor(&Value::Map(invalid))).is_err());
+    }
+    let mut trailing = bytes;
+    trailing.push(0xf6);
+    assert!(decode_monitor_down_payload(&trailing).is_err());
+    assert!(decode_link_down_payload(&trailing).is_err());
+    let zero_code = MonitorDownPayload {
+        close_fault: Some((0, String::new())),
+        ..original.clone()
+    };
+    assert!(encode_monitor_down_payload(&zero_code).is_err());
+    let oversized = MonitorDownPayload {
+        close_fault: Some((1, "é".repeat(MAX_TERMINAL_FAULT_MESSAGE_BYTES / 2))),
+        ..original
+    };
+    let boundary = encode_monitor_down_payload(&oversized).unwrap();
+    assert_eq!(decode_monitor_down_payload(&boundary).unwrap(), oversized);
+    let mut too_long = oversized;
+    too_long.close_fault.as_mut().unwrap().1.push('x');
+    assert!(encode_monitor_down_payload(&too_long).is_err());
+    let Value::Map(mut fields) = decode_value(&boundary) else {
+        panic!("map")
+    };
+    fields[5].1 = Value::Map(vec![
+        (int(1u8), int(1i32)),
+        (int(2u8), Value::Text(too_long.close_fault.unwrap().1)),
+    ]);
+    assert!(decode_monitor_down_payload(&value_to_cbor(&Value::Map(fields))).is_err());
 }
 
 #[test]
@@ -1645,6 +1776,7 @@ fn monitor_payload_rejects_oversized_input() {
         decode_monitor_req_payload(&oversized),
         Err(MonitorPayloadError::PayloadTooLarge { .. })
     ));
+    let oversized = vec![0u8; MAX_TERMINAL_PAYLOAD_BYTES + 1];
     assert!(matches!(
         decode_monitor_down_payload(&oversized),
         Err(MonitorPayloadError::PayloadTooLarge { .. })
@@ -1674,6 +1806,7 @@ fn monitor_payload_truncated_cbor_returns_error() {
         reason: 6,
         end_reason: 0,
         crash_kind: 0,
+        close_fault: None,
     };
     let down_bytes = encode_monitor_down_payload(&down).expect("down should encode");
     for cut in 1..down_bytes.len() {
@@ -1765,6 +1898,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         reason: 5,
         end_reason: 2,
         crash_kind: 0,
+        close_fault: None,
     };
     let bytes = encode_link_down_payload(&original).expect("link down should encode");
     let decoded = decode_link_down_payload(&bytes).expect("link down should decode");
@@ -1776,6 +1910,7 @@ fn link_down_payload_reuses_monitor_down_shape() {
         reason: -1,
         end_reason: 3,
         crash_kind: 0,
+        close_fault: None,
     };
     let pbytes = encode_link_down_payload(&partition).expect("link down should encode");
     assert_eq!(decode_link_down_payload(&pbytes).unwrap().reason, -1);

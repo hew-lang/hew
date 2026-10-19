@@ -572,6 +572,78 @@ actor InboundResults {
     }
 }
 
+// Hold terminal cleanup until the observer has registered on the authenticated
+// connection. This makes the first stopped call live and the next one late.
+#[resource]
+type RemoteCloseState {
+    directory: string;
+    fail_close: bool;
+}
+
+impl RemoteCloseState {
+    fn close(consume self) {
+        publish_atomic(self.directory, "close.entered", "1");
+        assert(wait_for_file(f"{self.directory}/close.release") == "1");
+        if self.fail_close {
+            panic("remote secondary cleanup fault");
+        }
+    }
+}
+
+actor RemoteClosingActor {
+    let state: RemoteCloseState;
+
+    #[wire]
+    receive fn crash() {
+        panic("remote original handler fault");
+    }
+}
+
+fn scenario_server_remote_stopped(kx: string, fail_close: bool) {
+    let target = spawn RemoteClosingActor {
+        state: RemoteCloseState { directory: kx, fail_close: fail_close }
+    };
+    let peer = fixture_peer();
+    let export = peer.export(target).expect("terminal observation grant");
+    assert(wait_for_file(f"{kx}/close.entered") == "1");
+    var attempts = 0;
+    while (unsafe { hew_dist_monitor_remote_watcher_count() }) == 0 {
+        attempts = attempts + 1;
+        assert(attempts < 600);
+        sleep(10ms);
+    }
+    publish_atomic(kx, "close.release", "1");
+    // Keep both the export grant and authenticated connection alive until the
+    // client has consumed the live result and registered after completion.
+    assert(wait_for_file(f"{kx}/close.observed") == "1");
+}
+
+fn scenario_remote_stopped(kx: string, fail_close: bool) -> i64 {
+    let peer = fixture_peer();
+    let target = peer.receive_service<RemoteClosingActor>().expect("terminal observation service");
+    mailbox(target).crash().expect("crash request admitted");
+    assert(wait_for_file(f"{kx}/close.entered") == "1");
+    for pass in 0..2 {
+        let cleanup_failed = scope within 10s {
+            stopped(target);
+            false
+        } handle failure {
+            match failure {
+                .Fault { message } => {
+                    assert(message.contains("remote secondary cleanup fault"));
+                    assert(!message.contains("remote original handler fault"));
+                    true
+                }
+                .Deadline { message } => panic(message),
+            }
+        };
+        assert(cleanup_failed == fail_close);
+        println(f"PASS remote_stopped pass={pass} cleanup={cleanup_failed}");
+    }
+    publish_atomic(kx, "close.observed", "1");
+    0
+}
+
 actor KeyValue {
     var store: HashMap<string, string>;
     #[wire]
@@ -1487,6 +1559,11 @@ fn run_server(scenario: string) {
     } else {
         fixture_peer()
     };
+    if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
+        scenario_server_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault");
+        Node.shutdown();
+        return;
+    }
     if scenario == "service_grants" {
         scenario_server_service_grants(kx);
         Node.shutdown();
@@ -2863,6 +2940,8 @@ fn run_client(scenario: string) -> i64 {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()
+    } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
+        scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
     } else if scenario == "service_grants" {
         scenario_service_grants(kx, port)
     } else {

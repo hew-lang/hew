@@ -435,6 +435,7 @@ pub(crate) fn fan_out_remote_monitor_down(
     reason: i32,
     crash_kind: u32,
     end: crate::internal::types::ActorEndReason,
+    close_fault: Option<(i32, String)>,
 ) {
     if watchers.is_empty() {
         return;
@@ -460,6 +461,7 @@ pub(crate) fn fan_out_remote_monitor_down(
                 reason,
                 end_reason: end as u8,
                 crash_kind: crash_kind.cast_signed(),
+                close_fault: close_fault.clone(),
             };
             // A LINK watcher receives a link down (its node crashes the local
             // linked actor via the mailbox EXIT cascade); a MONITOR watcher
@@ -514,14 +516,16 @@ pub(crate) fn send_terminal_setup_notice(
     publication: u64,
     ref_id: u64,
     target: Location,
-    reason: crate::monitor::TerminalMonitorReason,
+    terminal: crate::monitor::RemoteTerminal,
     link: bool,
 ) {
+    let reason = terminal.reason;
     let payload = crate::envelope::MonitorDownPayload {
         ref_id,
         target,
         reason: reason.state,
         end_reason: reason.end as u8,
+        close_fault: terminal.close_fault,
         crash_kind: if reason.end == crate::internal::types::ActorEndReason::Crashed {
             reason.crash_kind.cast_signed()
         } else {
@@ -1049,8 +1053,12 @@ pub(crate) fn handle_inbound_monitor_down(payload: &crate::envelope::MonitorDown
         .monitors
         .deliver_monitor_to_ref(payload.ref_id, payload.target)
     {
-        rt.monitors
-            .enqueue_terminal(down, payload.crash_kind.cast_unsigned(), payload.end_reason);
+        rt.monitors.enqueue_terminal(
+            down,
+            payload.crash_kind.cast_unsigned(),
+            payload.end_reason,
+            payload.close_fault.clone(),
+        );
     }
 }
 
@@ -1077,6 +1085,8 @@ pub(crate) fn handle_inbound_link_down(
         set_last_error("handle_inbound_link_down: no runtime installed");
         return;
     };
+    // Links retain the original terminal classification. The separate cleanup
+    // diagnostic is consumed only by completion observers (`stopped`).
     if let Some(down) = rt
         .monitors
         .deliver_link_down_to_ref(ref_id, target, reason, crash_kind)

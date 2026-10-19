@@ -146,10 +146,18 @@ pub(crate) struct RemoteWatcherTarget {
     pub is_link: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Snapshot for one late remote subscription. Diagnostic ownership stays with
+/// the pinned actor completion, never the scalar terminal-history table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteTerminal {
+    pub(crate) reason: TerminalMonitorReason,
+    pub(crate) close_fault: Option<(i32, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteWatcherSetup {
     Registered,
-    Terminal(TerminalMonitorReason),
+    Terminal(RemoteTerminal),
     Refused,
     TargetGone,
 }
@@ -363,11 +371,17 @@ impl MonitorState {
         selected
     }
 
-    pub(crate) fn enqueue_terminal(&self, down: MonitorDown, crash_kind: u32, end_reason: u8) {
+    pub(crate) fn enqueue_terminal(
+        &self,
+        down: MonitorDown,
+        crash_kind: u32,
+        end_reason: u8,
+        close_fault: Option<(i32, String)>,
+    ) {
         if let Some(completion) = down.completion {
-            // An imported actor's crash is reported on its own node; the
-            // waiter observes the ended actor as it would a local crash.
-            completion.finish(0);
+            // The original crash stays on its owning node. Only a distinct
+            // cleanup fault transfers to this completion observer.
+            completion.finish_remote(close_fault);
         } else {
             self.enqueue_down(
                 down.watcher_actor_id,
@@ -682,26 +696,41 @@ impl MonitorState {
                 {
                     return RemoteWatcherSetup::Refused;
                 }
-                if let Some(reason) = shard.terminal_reasons.get(&target_actor_id) {
-                    return RemoteWatcherSetup::Terminal(*reason);
-                }
-                let state = actor.actor_state.load(Ordering::Acquire);
-                if terminal_monitor_reason(state).is_some()
-                    && actor
-                        .native_completion
-                        .as_ref()
-                        .is_none_or(|completion| completion.is_finished())
-                {
-                    return RemoteWatcherSetup::Terminal(TerminalMonitorReason {
-                        state,
-                        crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
-                            actor.error_code.load(Ordering::Acquire),
-                        )
-                        .cast_unsigned(),
-                        // SAFETY: the send pin retains this actor and mailbox.
-                        end: crate::internal::types::ActorEndReason::from_terminal(state, unsafe {
-                            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
-                        }),
+                let terminal = shard
+                    .terminal_reasons
+                    .get(&target_actor_id)
+                    .copied()
+                    .or_else(|| {
+                        let state = actor.actor_state.load(Ordering::Acquire);
+                        (terminal_monitor_reason(state).is_some()
+                            && actor
+                                .native_completion
+                                .as_ref()
+                                .is_none_or(|completion| completion.is_finished()))
+                        .then(|| TerminalMonitorReason {
+                            state,
+                            crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
+                                actor.error_code.load(Ordering::Acquire),
+                            )
+                            .cast_unsigned(),
+                            // SAFETY: the send pin retains this actor and mailbox.
+                            end: crate::internal::types::ActorEndReason::from_terminal(
+                                state,
+                                unsafe {
+                                    crate::mailbox::mailbox_terminate_requested(
+                                        actor.mailbox.cast(),
+                                    )
+                                },
+                            ),
+                        })
+                    });
+                if let Some(reason) = terminal {
+                    return RemoteWatcherSetup::Terminal(RemoteTerminal {
+                        reason,
+                        close_fault: actor
+                            .native_completion
+                            .as_ref()
+                            .and_then(|completion| completion.close_fault_payload()),
                     });
                 }
                 let target_serial = crate::pid::hew_pid_serial(target_actor_id);
@@ -1552,6 +1581,7 @@ pub(crate) fn notify_monitors_on_end(
     reason: i32,
     crash_kind: u32,
     end: crate::internal::types::ActorEndReason,
+    close_fault: Option<(i32, String)>,
 ) {
     let shard_index = get_shard_index(actor_id);
     // No runtime → no per-runtime monitor table → no monitors to notify. This
@@ -1636,6 +1666,7 @@ pub(crate) fn notify_monitors_on_end(
         reason,
         crash_kind,
         end,
+        close_fault,
     );
 }
 
@@ -1646,6 +1677,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
         reason,
         crash_kind,
         crate::internal::types::ActorEndReason::from_terminal(reason, false),
+        None,
     );
 }
 
@@ -2731,6 +2763,7 @@ mod tests {
             reason: HewActorState::Stopped as i32,
             end_reason: crate::internal::types::ActorEndReason::Terminated as u8,
             crash_kind: 0,
+            close_fault: None,
         };
         let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
         let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
@@ -2868,6 +2901,7 @@ mod tests {
                 reason: HewActorState::Crashed as i32,
                 end_reason: crate::internal::types::ActorEndReason::Crashed as u8,
                 crash_kind: crate::internal::types::CrashKind::HeapExceeded.tag(),
+                close_fault: None,
             };
             let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
             let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
@@ -3030,14 +3064,34 @@ mod tests {
                 RemoteWatcherSetup::Registered
             );
             state.remove_remote_watcher(crate::pid::hew_pid_serial((*actor).id), watcher, 1);
-            completion.finish(0);
-            assert!(matches!(
-                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
-                RemoteWatcherSetup::Terminal(TerminalMonitorReason {
-                    end: crate::internal::types::ActorEndReason::Stopped,
-                    ..
-                })
+            completion.record_close_fault(crate::fault::HewFault::with_message(
+                212,
+                "late cleanup failure".into(),
             ));
+            completion.finish(212);
+            let expected = RemoteTerminal {
+                reason: TerminalMonitorReason {
+                    state: HewActorState::Stopped as i32,
+                    crash_kind: 0,
+                    end: crate::internal::types::ActorEndReason::Stopped,
+                },
+                close_fault: Some((212, "late cleanup failure".into())),
+            };
+            assert_eq!(
+                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
+                RemoteWatcherSetup::Terminal(expected.clone()),
+            );
+            notify_monitors_on_end(
+                (*actor).id,
+                expected.reason.state,
+                expected.reason.crash_kind,
+                expected.reason.end,
+                expected.close_fault.clone(),
+            );
+            assert_eq!(
+                state.register_admitted_watcher((*actor).id, watcher, 3, false, 17, 0),
+                RemoteWatcherSetup::Terminal(expected),
+            );
             crate::actor::hew_actor_free(actor);
         }
     }

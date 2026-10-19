@@ -1416,6 +1416,7 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                         // SAFETY: this terminal actor still owns its mailbox.
                         unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
                     ),
+                    None,
                 );
             }
             crate::actor_group::notify_actor_death(a.id);
@@ -1956,6 +1957,7 @@ fn settle_after_activation(actor: *mut HewActor, msgs_processed: u32) {
                         // SAFETY: this terminal actor still owns its mailbox.
                         unsafe { crate::mailbox::mailbox_terminate_requested(a.mailbox.cast()) },
                     ),
+                    None,
                 );
             }
             crate::actor_group::notify_actor_death(a.id);

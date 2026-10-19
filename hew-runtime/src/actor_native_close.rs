@@ -108,6 +108,21 @@ impl NativeActorCompletion {
         code
     }
 
+    pub(crate) fn close_fault_payload(&self) -> Option<(i32, String)> {
+        self.close_fault
+            .lock_or_recover()
+            .as_ref()
+            .map(crate::fault::HewFault::remote_payload)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn finish_remote(&self, close_fault: Option<(i32, String)>) {
+        let code = close_fault.as_ref().map_or(0, |(code, _)| *code);
+        *self.close_fault.lock_or_recover() =
+            close_fault.map(|(code, message)| crate::fault::HewFault::from_remote(code, message));
+        self.finish(code);
+    }
+
     /// Wake `waker` when this incarnation's terminal cleanup finishes. The
     /// registration is weak, and one made after the finish never fires, so the
     /// caller keeps the waker and checks [`Self::is_finished`] afterwards.
@@ -207,7 +222,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
     completion.phase.store(3, Ordering::Release);
     if let Some(notice) = notice {
         // SAFETY: terminal ownership retains the supervisor across publication.
-        unsafe { notice.publish_terminal_notification() };
+        unsafe { notice.publish_terminal_notification(completion.close_fault_payload()) };
     } else if state == HewActorState::Stopped as i32 {
         crate::actor::notify_monitors_on_death(
             actor_id,
@@ -218,6 +233,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
                 // SAFETY: terminal publication retains the actor and mailbox.
                 unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) },
             ),
+            completion.close_fault_payload(),
         );
         #[cfg(not(target_arch = "wasm32"))]
         if !actor.supervisor.is_null() {
@@ -658,6 +674,52 @@ mod tests {
             let completed = hew_actor_wait_new(token, wake.descriptor());
             assert_eq!(hew_actor_wait_poll(completed), 1);
             hew_actor_wait_free(completed);
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn remote_completion_observes_only_cleanup_faults() {
+        for close_fault in [None, Some((213, "remote state close failed".to_owned()))] {
+            let completion = Arc::new(NativeActorCompletion::default());
+            let payload = crate::envelope::MonitorDownPayload {
+                ref_id: 7,
+                target: crate::node_identity::Location::new(
+                    crate::node_identity::NodeId::from_bytes([1; 16]),
+                    1,
+                    1,
+                )
+                .unwrap(),
+                reason: HewActorState::Crashed as i32,
+                end_reason: crate::internal::types::ActorEndReason::Crashed as u8,
+                crash_kind: crate::internal::types::CrashKind::Crashed.tag(),
+                close_fault: close_fault.clone(),
+            };
+            let encoded = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
+            let decoded = crate::envelope::decode_monitor_down_payload(&encoded).unwrap();
+            completion.finish_remote(decoded.close_fault);
+            let (_, waker) = crate::wake::blocking::Readiness::new();
+            let wait = Box::into_raw(Box::new(HewNativeActorWait {
+                completion: Some(completion),
+                imported: None,
+                target: live_actors::ActorIncarnation::NONE,
+                _waker: Arc::new(waker),
+            }));
+            // SAFETY: this test owns its completed observation until final release.
+            unsafe {
+                assert_eq!(
+                    hew_actor_wait_poll(wait),
+                    if close_fault.is_some() { 2 } else { 1 }
+                );
+                if let Some((code, message)) = close_fault {
+                    let fault = hew_actor_wait_take_fault(wait);
+                    assert_eq!(crate::fault::hew_fault_code(fault), code);
+                    let text = crate::fault::hew_fault_take_message(fault);
+                    assert!(hew_cabi::string::string_as_str(text).contains(&message));
+                    hew_cabi::string::string_release(text);
+                }
+                hew_actor_wait_free(wait);
+            }
         }
     }
 

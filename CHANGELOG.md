@@ -8,6 +8,9 @@
 - Use an actor's own type for local, supervised and authenticated imported
   references. Preserve stable supervised roles across restart and distinguish
   definite mailbox rejection from uncertain remote admission.
+- Let `stopped` finish after an actor's original crash without raising it again,
+  while preserving distinct cleanup faults for local and remote waiters. Wire
+  protocol 8 carries those diagnostics; communicating peers must upgrade together.
 - Add revocable actor service grants, actor-owned timers, typed crash notices
   and configured supervisor pools. Allow crash hooks to suspend within the
   child's stop budget, with restart fallback after failure or deadline expiry.

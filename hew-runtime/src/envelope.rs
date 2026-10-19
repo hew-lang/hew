@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 7;
+pub const WIRE_VERSION: u8 = 8;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
@@ -116,21 +116,24 @@ pub const CTRL_SERVICE_OFFER_RESULT: u64 = 12;
 pub const MAX_SERVICE_HANDLERS: usize = 256;
 pub const MAX_SERVICE_OFFER_BYTES: usize = 65_536;
 
-/// Maximum accepted cross-node link control payload size, in bytes.
+/// Maximum accepted cross-node link request/unlink payload size, in bytes.
 ///
-/// A link request payload is a fixed small CBOR map of bounded integers (two
-/// node ids, two serials, a ref id, a policy tag); a link DOWN reuses the
-/// monitor DOWN shape. 256 bytes is far more than any conformant payload needs
-/// and bounds a malicious peer's allocation — a HIGHER-stakes bound than
-/// monitor because a fabricated `CTRL_LINK_DOWN` would crash a REAL actor.
+/// Link setup carries a fixed map of actor identities, authorization and policy.
+/// Terminal notifications use their separate diagnostic bound.
 pub const MAX_LINK_PAYLOAD_BYTES: usize = 256;
 
-/// Maximum accepted cross-node monitor control payload size, in bytes.
+/// Maximum accepted cross-node monitor request/demonitor payload size, in bytes.
 ///
-/// A monitor request / down / demonitor payload is a fixed small CBOR map of
+/// A monitor request / demonitor payload is a fixed small CBOR map of
 /// bounded integers (node id, ref id, serial / reason). 256 bytes is far more
 /// than any conformant payload needs and bounds a malicious peer's allocation.
 pub const MAX_MONITOR_PAYLOAD_BYTES: usize = 256;
+
+/// Maximum accepted monitor/link terminal payload size, including diagnostic text.
+pub const MAX_TERMINAL_PAYLOAD_BYTES: usize = 8192;
+
+/// Maximum UTF-8 byte length of a terminal cleanup fault diagnostic.
+pub const MAX_TERMINAL_FAULT_MESSAGE_BYTES: usize = 4096;
 
 /// Maximum accepted SWIM control payload size, in bytes.
 ///
@@ -413,7 +416,7 @@ pub struct MonitorReqPayload {
 
 /// Bounded cross-node monitor DOWN control payload.
 ///
-/// Encoded as a definite CBOR map `{1: ref_id, 2: reason}`. Sent from the node
+/// Encoded as a definite CBOR map with keys 1 through 6. Sent from the node
 /// owning the monitored actor back to the watcher node when the target reaches
 /// a terminal state.
 ///
@@ -433,6 +436,8 @@ pub struct MonitorDownPayload {
     pub end_reason: u8,
     /// `CrashKind` discriminant when `reason` is crashed, otherwise zero.
     pub crash_kind: i32,
+    /// Cleanup fault code and diagnostic, distinct from the actor end reason.
+    pub close_fault: Option<(i32, String)>,
 }
 
 /// Bounded cross-node link REQUEST / UNLINK control payload.
@@ -794,7 +799,7 @@ impl From<DecodeError> for SwimPayloadError {
 /// Errors returned by the bounded cross-node monitor payload codecs.
 #[derive(Debug)]
 pub enum MonitorPayloadError {
-    /// Encoded payload exceeded [`MAX_MONITOR_PAYLOAD_BYTES`].
+    /// Encoded payload exceeded its control-message size limit.
     PayloadTooLarge { len: usize, max: usize },
     /// Payload CBOR was malformed or truncated.
     CborDecode(ciborium::de::Error<std::io::Error>),
@@ -1505,10 +1510,30 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
 /// # Errors
 ///
 /// Returns [`MonitorPayloadError`] if CBOR serialisation fails or the encoded
-/// payload exceeds [`MAX_MONITOR_PAYLOAD_BYTES`].
+/// payload exceeds [`MAX_TERMINAL_PAYLOAD_BYTES`], or its cleanup fault has a
+/// zero code or diagnostic exceeding [`MAX_TERMINAL_FAULT_MESSAGE_BYTES`].
 pub fn encode_monitor_down_payload(
     payload: &MonitorDownPayload,
 ) -> Result<Vec<u8>, MonitorPayloadError> {
+    let close_fault = match &payload.close_fault {
+        None => Value::Null,
+        Some((0, _)) => {
+            return Err(MonitorPayloadError::MalformedField {
+                key: 6,
+                expected: "a nonzero cleanup fault code",
+            });
+        }
+        Some((_, message)) if message.len() > MAX_TERMINAL_FAULT_MESSAGE_BYTES => {
+            return Err(MonitorPayloadError::MalformedField {
+                key: 6,
+                expected: "cleanup fault diagnostic of at most 4096 UTF-8 bytes",
+            });
+        }
+        Some((code, message)) => Value::Map(vec![
+            (Value::Integer(1u64.into()), Value::Integer((*code).into())),
+            (Value::Integer(2u64.into()), Value::Text(message.clone())),
+        ]),
+    };
     let value = Value::Map(vec![
         (
             Value::Integer(Integer::from(1u64)),
@@ -1530,13 +1555,14 @@ pub fn encode_monitor_down_payload(
             Value::Integer(Integer::from(5u64)),
             Value::Integer(Integer::from(payload.end_reason)),
         ),
+        (Value::Integer(6u64.into()), close_fault),
     ]);
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
-    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+    if bytes.len() > MAX_TERMINAL_PAYLOAD_BYTES {
         return Err(MonitorPayloadError::PayloadTooLarge {
             len: bytes.len(),
-            max: MAX_MONITOR_PAYLOAD_BYTES,
+            max: MAX_TERMINAL_PAYLOAD_BYTES,
         });
     }
     Ok(bytes)
@@ -1551,15 +1577,22 @@ pub fn encode_monitor_down_payload(
 pub fn decode_monitor_down_payload(
     bytes: &[u8],
 ) -> Result<MonitorDownPayload, MonitorPayloadError> {
-    if bytes.len() > MAX_MONITOR_PAYLOAD_BYTES {
+    if bytes.len() > MAX_TERMINAL_PAYLOAD_BYTES {
         return Err(MonitorPayloadError::PayloadTooLarge {
             len: bytes.len(),
-            max: MAX_MONITOR_PAYLOAD_BYTES,
+            max: MAX_TERMINAL_PAYLOAD_BYTES,
         });
     }
-    let value: Value = ciborium::de::from_reader(bytes).map_err(MonitorPayloadError::CborDecode)?;
+    let mut cursor = std::io::Cursor::new(bytes);
+    let value: Value =
+        ciborium::de::from_reader(&mut cursor).map_err(MonitorPayloadError::CborDecode)?;
+    if cursor.position() != bytes.len() as u64 {
+        return Err(MonitorPayloadError::MalformedPayload {
+            reason: "monitor DOWN has trailing bytes",
+        });
+    }
     let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
     let end_reason = value_to_u8(required(&map, 5)?, 5)?;
     if end_reason > 4 {
         return Err(DecodeError::MalformedField {
@@ -1568,12 +1601,40 @@ pub fn decode_monitor_down_payload(
         }
         .into());
     }
+    let close_fault = match required(&map, 6)? {
+        Value::Null => None,
+        value => {
+            let fault = collect_map(value)?;
+            ensure_exact_keys(&fault, &[1, 2])?;
+            let code = value_to_i32(required(&fault, 1)?, 1)?;
+            if code == 0 {
+                return Err(MonitorPayloadError::MalformedField {
+                    key: 6,
+                    expected: "a nonzero cleanup fault code",
+                });
+            }
+            let Value::Text(message) = required(&fault, 2)? else {
+                return Err(MonitorPayloadError::MalformedField {
+                    key: 6,
+                    expected: "cleanup fault diagnostic text",
+                });
+            };
+            if message.len() > MAX_TERMINAL_FAULT_MESSAGE_BYTES {
+                return Err(MonitorPayloadError::MalformedField {
+                    key: 6,
+                    expected: "cleanup fault diagnostic of at most 4096 UTF-8 bytes",
+                });
+            }
+            Some((code, message.clone()))
+        }
+    };
     Ok(MonitorDownPayload {
         ref_id: value_to_u64(required(&map, 1)?, 1)?,
         target: value_to_location(required(&map, 2)?, 2)?,
         reason: value_to_down_reason(required(&map, 3)?, 3)?,
         crash_kind: value_to_i32(required(&map, 4)?, 4)?,
         end_reason,
+        close_fault,
     })
 }
 
@@ -1732,10 +1793,10 @@ pub fn decode_setup_result_payload(
 
 /// Encode a bounded cross-node link DOWN payload.
 ///
-/// The DOWN shape is identical to the monitor DOWN (`{1: ref_id, 2: reason}`);
+/// The DOWN shape is identical to the monitor DOWN;
 /// the divergence is in the receiver's HANDLING (mailbox-EXIT crash, not a recv
 /// slot), not the wire shape. Reuses [`encode_monitor_down_payload`] under the
-/// [`MAX_LINK_PAYLOAD_BYTES`] bound.
+/// [`MAX_TERMINAL_PAYLOAD_BYTES`] bound.
 ///
 /// # Errors
 ///
@@ -1746,8 +1807,7 @@ pub fn encode_link_down_payload(
     encode_monitor_down_payload(payload)
 }
 
-/// Decode a bounded cross-node link DOWN payload. Same `{ref_id,
-/// reason}` shape as the monitor DOWN.
+/// Decode a bounded cross-node link DOWN payload with the monitor DOWN shape.
 ///
 /// # Errors
 ///

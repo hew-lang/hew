@@ -1,0 +1,5 @@
+import "shapes.hew";
+
+fn main() {
+    println(area(4, 5));
+}

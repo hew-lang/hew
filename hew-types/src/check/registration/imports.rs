@@ -313,7 +313,7 @@ impl Checker {
     pub(in crate::check) fn reresolve_member_types_after_imports(&mut self, program: &Program) {
         let errors_before = self.errors.len();
         let warnings_before = self.warnings.len();
-        let preferred_modules = collision_preferred_package_module_ids(program, &HashSet::new());
+        let preferred_modules = collision_preferred_package_module_ids(program);
         // Member re-resolution is a secondary fix-up pass (it overwrites the
         // member types computed during `collect_types` once imports are
         // visible) and runs with `type_decls_registered` already true. Suppress
@@ -626,14 +626,6 @@ impl Checker {
                 self.defs.mint_source_file_module(&owner, source);
             }
             self.assign_module_packages();
-            // A file import (`import "helper.hew";`, empty path) flattens its
-            // items into the root's namespace, so its nominals answer bare as
-            // well as under their own file. A module import
-            // (`import pkg.alpha;`) does not: its nominals stay qualified by
-            // the owning module, so two modules exporting the same leaf keep
-            // distinct declarations.
-            let namespace =
-                crate::check::NominalNamespace::for_import(decl.path.segments.is_empty());
             if self.defs.module_has_source_declarations(primary) {
                 let mut files: Vec<crate::ModuleId> = decl
                     .resolved_item_source_paths
@@ -653,7 +645,7 @@ impl Checker {
                     self.mint_item_declaration_identities(
                         Some(module),
                         Some(primary),
-                        namespace,
+                        crate::check::NominalNamespace::Owned,
                         index,
                         item,
                         span,
@@ -1300,16 +1292,9 @@ impl Checker {
                     self.publish_file_import_type_name(owner, &format!("{}.Event", md.name));
                 }
                 Item::Trait(tr) => {
-                    // A file import is flattened into the root program before
-                    // HIR, so its items share the root's flat namespace: the
-                    // importer can already write `impl <Trait> for <RootType>`
-                    // against a non-pub imported trait and call its required
-                    // methods. Only the `trait_defs` entry was gated on `pub`,
-                    // which left the impl with no view of the trait's DEFAULT
-                    // method bodies (and silently skipped method-set
-                    // validation) — `x.default_method()` failed with
-                    // "no method". Register the declaration for every imported
-                    // trait; `pub` still governs the namespace claim below.
+                    // Register the declaration for every imported trait so the
+                    // declaring file's own impls see its default method bodies;
+                    // `pub` still governs the namespace claim below.
                     let info = self.trait_info_from_decl(
                         tr,
                         self.current_module.clone(),
@@ -1587,11 +1572,7 @@ impl Checker {
         let Some(mg) = program.module_graph.as_ref() else {
             return HashSet::new();
         };
-        // Empty file-import exclusion: a file-import module counts as a
-        // declaring scope — the mixed file-import + package same-bare-name shape
-        // #2208 depends on — matching the HIR lowering's collision set exactly.
-        let no_file_exclusion: HashSet<hew_parser::module::ModulePath> = HashSet::new();
-        let preferred = collision_preferred_package_module_ids(program, &no_file_exclusion);
+        let preferred = collision_preferred_package_module_ids(program);
         let mut colliding: HashSet<String> = HashSet::new();
         for module in mg.modules.values() {
             for (item, _) in &module.items {
@@ -1603,12 +1584,7 @@ impl Checker {
                 if colliding.contains(name.name.as_str()) {
                     continue;
                 }
-                if collision_imported_type_name_collides(
-                    program,
-                    &no_file_exclusion,
-                    &preferred,
-                    name.name.as_str(),
-                ) {
+                if collision_imported_type_name_collides(program, &preferred, name.name.as_str()) {
                     colliding.insert(name.to_string());
                 }
             }

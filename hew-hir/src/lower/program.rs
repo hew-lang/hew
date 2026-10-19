@@ -21,11 +21,6 @@ pub fn lower_program(
         .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, target_arch);
     let entry_exit_plan = type_check_output.entry_exit_plan.clone();
-    let file_import_module_idx = file_import_item_module_indices(program);
-    // Source items flattened from a file import still belong to that file's
-    // declaration namespace.  Compute the checker-aligned module-name carrier
-    // once and use it in every HIR pass that creates declaration identity,
-    // not only while lowering executable bodies in the third pass.
     // Every index a module owns — one per source file, so a directory module's
     // peers all carry their assembled module's name.
     let span_indices = program
@@ -117,86 +112,20 @@ pub fn lower_program(
             .insert(u32::MAX, module);
     }
 
-    // Root-authored declarations only: items spliced into `program.items` by
-    // `flatten_file_import_items` keep their defining file's module identity
-    // (`file_import_module_idx`), so they must not claim the root bare
-    // namespace here. Their layouts key by `qualified_name()`; leaving the
-    // spliced short name in this set made a root annotation resolve bare and
-    // miss the qualified MIR field-order/value-class entries. The
-    // bare-spelling route for these declarations is
-    // `file_import_root_type_aliases` below.
-    ctx.root_visible_source_type_short_names.extend(
-        program
-            .items
-            .iter()
-            .enumerate()
-            .filter(|(item_idx, _)| !file_import_module_idx.contains_key(item_idx))
-            .filter_map(|(_, (item, _))| match item {
-                Item::TypeDecl(decl) => Some(decl.name.to_string()),
-                Item::Record(decl) => Some(decl.name.to_string()),
-                Item::Actor(decl) => Some(decl.name.to_string()),
-                Item::Supervisor(decl) => Some(decl.name.to_string()),
-                _ => None,
-            }),
-    );
-    // Flat-file imports share the root bare namespace (the checker enforces
-    // uniqueness there), but their declaration identity is the defining
-    // module's qualified name. Publish the bare→qualified projection so an
-    // annotation written at root (`fn f(w: WorkflowState)`) resolves to the
-    // same identity the layout registries key by.
-    for (item_idx, (item, _)) in program.items.iter().enumerate() {
-        let Some(module_idx) = file_import_module_idx.get(&item_idx) else {
-            continue;
-        };
-        let Some(module_full_path) = span_indices.module_name(*module_idx) else {
-            continue;
-        };
-        match item {
-            Item::TypeDecl(decl) => {
-                ctx.file_import_root_type_aliases.insert(
-                    decl.name.to_string(),
-                    format!("{module_full_path}.{}", decl.name),
-                );
-            }
-            Item::Record(decl) => {
-                ctx.file_import_root_type_aliases.insert(
-                    decl.name.to_string(),
-                    format!("{module_full_path}.{}", decl.name),
-                );
-            }
-            Item::Machine(decl) => {
-                ctx.file_import_root_type_aliases.insert(
-                    decl.name.to_string(),
-                    format!("{module_full_path}.{}", decl.name),
-                );
-                let event = machine_event_surface_type(decl.name.name.as_str());
-                ctx.file_import_root_type_aliases
-                    .insert(event.clone(), format!("{module_full_path}.{event}"));
-            }
-            Item::Actor(decl) => {
-                ctx.file_import_root_type_aliases.insert(
-                    decl.name.to_string(),
-                    format!("{module_full_path}.{}", decl.name),
-                );
-            }
-            _ => {}
-        }
-    }
+    ctx.root_visible_source_type_short_names
+        .extend(program.items.iter().filter_map(|(item, _)| match item {
+            Item::TypeDecl(decl) => Some(decl.name.to_string()),
+            Item::Record(decl) => Some(decl.name.to_string()),
+            Item::Actor(decl) => Some(decl.name.to_string()),
+            Item::Supervisor(decl) => Some(decl.name.to_string()),
+            _ => None,
+        }));
     if let Some(builtins) = builtin_program {
         for (item, _) in &builtins.items {
             if let Item::TypeDecl(decl) = item {
                 let canonical = format!("std.builtins.{}", decl.name);
                 ctx.source_type_identities.insert(canonical.clone());
-                ctx.canonical_std_source_type_identities
-                    .insert(canonical.clone());
-                if SOURCE_PRELUDE_TYPES.contains(&decl.name.name.as_str())
-                    || hew_types::actor_delivery::DECLARATIONS
-                        .iter()
-                        .any(|known| known.path() == canonical)
-                {
-                    ctx.file_import_root_type_aliases
-                        .insert(decl.name.to_string(), canonical);
-                }
+                ctx.canonical_std_source_type_identities.insert(canonical);
             }
         }
     }
@@ -261,10 +190,6 @@ pub fn lower_program(
     // in the second pass, which is where canonical diagnostics are emitted.
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
-        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-        ctx.current_module_name = span_indices
-            .module_name(ctx.current_module_idx)
-            .map(str::to_string);
         match item {
             Item::Function(func) => {
                 let item = ctx.register_declared_fn_entry(func.name.name.as_str(), func, span);
@@ -374,8 +299,6 @@ pub fn lower_program(
             | Item::Supervisor(_) => {}
         }
     }
-    ctx.current_module_idx = 0;
-    ctx.current_module_name = None;
     // Pre-pass: register user-module pub fn signatures under their qualified,
     // native-symbol-safe key (e.g. `greeting$hello`) so that HIR's
     // `RewriteModuleQualifiedToFunction` arm can resolve the callee `ItemId`
@@ -385,57 +308,26 @@ pub fn lower_program(
     // This walk runs AFTER the root-item pre-pass above so that any name
     // clash between a qualified key and a root-level function is caught by
     // the duplicate-short-module diagnostic in the frontend before HIR ingest.
-    let file_import_modules = file_import_module_ids(program);
-    let preferred_modules = preferred_package_module_ids(program, &file_import_modules);
-    let colliding_imported_record_names: HashSet<String> = program
+    let preferred_modules = preferred_package_module_ids(program);
+    // Bare record/type-decl names declared by more than one module, the
+    // root included. Re-exports are deduplicated through
+    // `preferred_package_module_ids`, so a stdlib module reached through two
+    // paths (`std::net::http` and `std::net::http::http_client` both surfacing
+    // `http.Response`) is not counted twice. A name unique to one owner keeps
+    // its bare identity (#2208).
+    ctx.cross_module_colliding_record_names = program
         .module_graph
         .as_ref()
         .into_iter()
-        .flat_map(|module_graph| module_graph.modules.values())
+        .flat_map(|mg| mg.modules.values())
         .flat_map(|module| module.items.iter())
         .filter_map(|(item, _)| match item {
             Item::TypeDecl(decl) => Some(decl.name.to_string()),
             Item::Record(decl) => Some(decl.name.to_string()),
             _ => None,
         })
-        .filter(|name| {
-            imported_type_name_collides(program, &file_import_modules, &preferred_modules, name)
-        })
+        .filter(|name| imported_type_name_collides(program, &preferred_modules, name))
         .collect();
-    ctx.colliding_imported_record_names
-        .clone_from(&colliding_imported_record_names);
-    ctx.file_import_module_names = file_import_modules
-        .iter()
-        .map(hew_parser::module::ModulePath::dotted)
-        .collect();
-    // Bare record/type-decl names that genuinely collide across modules,
-    // INCLUDING a file-import vs package collision (the shape the actor-ask
-    // identity coupling needs). Reuses `imported_type_name_collides` — which
-    // already dedups re-exports via `preferred_package_module_ids` subsumption,
-    // so a stdlib module re-imported through two paths (e.g. `std::net::http`
-    // and `std::net::http::http_client` both surfacing `http.Response`) is NOT
-    // counted twice — but with an EMPTY file-import exclusion so a file-import
-    // module counts as a colliding declarant. A name unique to one owner is
-    // absent and never owner-qualified (#2208).
-    ctx.cross_module_colliding_record_names = {
-        let no_file_exclusion: HashSet<hew_parser::module::ModulePath> = HashSet::new();
-        let preferred_all = preferred_package_module_ids(program, &no_file_exclusion);
-        program
-            .module_graph
-            .as_ref()
-            .into_iter()
-            .flat_map(|mg| mg.modules.values())
-            .flat_map(|module| module.items.iter())
-            .filter_map(|(item, _)| match item {
-                Item::TypeDecl(decl) => Some(decl.name.to_string()),
-                Item::Record(decl) => Some(decl.name.to_string()),
-                _ => None,
-            })
-            .filter(|name| {
-                imported_type_name_collides(program, &no_file_exclusion, &preferred_all, name)
-            })
-            .collect()
-    };
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
             if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
@@ -462,14 +354,6 @@ pub fn lower_program(
                         Item::Function(func)
                             if func.visibility.is_pub() || private_closure.contains(&item_idx) =>
                         {
-                            // File imports are already flattened into the root
-                            // item stream. Their source declaration was bound
-                            // to that emitted ItemId in the first pass; a
-                            // second qualified registration here would replace
-                            // it with an entry whose body is never emitted.
-                            if file_import_modules.contains(mod_id) {
-                                continue;
-                            }
                             if item_is_duplicated_in_distinct_leaf_module(
                                 program,
                                 &preferred_modules,
@@ -705,13 +589,6 @@ pub fn lower_program(
     // the producer half of the record-layout registry.
     for (item_idx, (item, item_span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
-        ctx.current_module_idx = file_import_module_idx
-            .get(&item_idx)
-            .copied()
-            .unwrap_or_default();
-        ctx.current_module_name = span_indices
-            .module_name(ctx.current_module_idx)
-            .map(str::to_string);
         match item {
             Item::TypeDecl(decl) => {
                 let id = ctx.ids.item();
@@ -1271,18 +1148,7 @@ pub fn lower_program(
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
         if let Item::TypeDecl(decl) = item {
-            ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-            ctx.current_module_name = span_indices
-                .module_name(ctx.current_module_idx)
-                .map(str::to_string);
-            let diag_start = ctx.diagnostics.len();
-            let lowered = if let Some(module) = ctx.current_module_name.clone() {
-                ctx.lower_imported_type_decl(decl, span.clone(), &module)
-            } else {
-                ctx.lower_type_decl(decl, span.clone())
-            };
-            ctx.tag_spliced_diagnostics(diag_start);
-            let Some(hir_decl) = lowered else {
+            let Some(hir_decl) = ctx.lower_type_decl(decl, span.clone()) else {
                 continue;
             };
             let marker = hir_decl.marker;
@@ -1355,13 +1221,6 @@ pub fn lower_program(
     ctx.current_module_name = None;
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
-        ctx.current_module_idx = file_import_module_idx
-            .get(&item_idx)
-            .copied()
-            .unwrap_or_default();
-        ctx.current_module_name = span_indices
-            .module_name(ctx.current_module_idx)
-            .map(str::to_string);
         if let Item::Machine(machine) = item {
             ctx.register_machine_ctor_variant_metadata(None, machine, span);
         }
@@ -1370,10 +1229,7 @@ pub fn lower_program(
     ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root
-                || file_import_modules.contains(mod_id)
-                || selected_builtin_graph_module == Some(mod_id)
-            {
+            if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -1438,10 +1294,7 @@ pub fn lower_program(
 
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root
-                || file_import_modules.contains(mod_id)
-                || selected_builtin_graph_module == Some(mod_id)
-            {
+            if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -1673,15 +1526,13 @@ pub fn lower_program(
     }
 
     // Establish every executable impl body before lowering any source body.
-    // In particular, a root function can call a flattened file-import or a
-    // package method whose HIR function is emitted later in the fourth pass.
+    // In particular, a root function can call an imported module's
+    // method whose HIR function is emitted later in the fourth pass.
     // This plan is declaration-keyed and uses the same imported-body skip
     // authority as that fourth pass; `fn_registry` never serves as proof.
     plan_imported_impl_bodies(
         &mut ctx,
         program,
-        &file_import_module_idx,
-        &file_import_modules,
         &preferred_modules,
         &span_indices,
         selected_builtin_graph_module,
@@ -1689,19 +1540,6 @@ pub fn lower_program(
 
     // Third pass: emit all items in source order now that both fn signatures
     // and type markers are fully resolved.
-    //
-    // Spliced file-import items (flattened into the tail of `program.items` by
-    // `flatten_file_import_items`) were validated by the checker under their
-    // originating module's non-root `current_module_idx`, so their bodies must
-    // be lowered under that same index for every `mk_key` lookup (actor-state
-    // guards, closure facts, await reads, range bounds, channel/stream
-    // rewrites, expr types) to resolve to the checker's facts. Genuine root
-    // items stay at index 0. See `file_import_item_module_indices`.
-    // Companion table: module_idx (1-based topo order) → FULL dotted module name
-    // (e.g. "subpkg.helper"). Used alongside `file_import_module_idx` to set
-    // `current_module_name` when lowering file-import items, mirroring the
-    // checker's `Checker::current_module` (`mod_id.dotted()`). Keying by
-    // the full path keeps source attribution aligned with checker facts.
     // Prelude declarations must precede lazy body checking, independently of
     // whether their executable methods are needed or have checked successfully.
     let actor_intercept_types = ctx.lower_actor_intercept_types();
@@ -1773,11 +1611,6 @@ pub fn lower_program(
     let mut items: Vec<HirItem> = Vec::new();
     for (item_idx, (item, span)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
-        ctx.current_module_idx = file_import_module_idx.get(&item_idx).copied().unwrap_or(0);
-        ctx.current_module_name = span_indices
-            .module_name(ctx.current_module_idx)
-            .map(str::to_string);
-        let diag_start = ctx.diagnostics.len();
         match item {
             Item::TypeDecl(decl) => {
                 // Retrieve the already-lowered decl so diagnostics are not
@@ -1816,10 +1649,6 @@ pub fn lower_program(
                     // typed substrate stub that must match an existing catalog entry.
                 } else {
                     let Some(mut hir_fn) = ctx.lower_fn(func, span.clone()) else {
-                        // A refused body already pushed its diagnostics; this
-                        // is the one path out of the loop that skips the tag
-                        // below.
-                        ctx.tag_spliced_diagnostics(diag_start);
                         continue;
                     };
                     // The process adapter owns the external `main` symbol. If
@@ -1845,26 +1674,7 @@ pub fn lower_program(
                 }
             }
             Item::Impl(impl_decl) => {
-                let imported_symbol_self_name = ctx.current_module_name.as_ref().and_then(|_| {
-                    ctx.impl_body_plan
-                        .symbol_self_names
-                        .get(&(impl_decl as *const _))
-                        .cloned()
-                });
-                let skip_methods = HashSet::new();
-                let imported = imported_symbol_self_name
-                    .as_deref()
-                    .map(|symbol_self_name| ImportedImplLowering {
-                        skip_methods: &skip_methods,
-                        symbol_self_name: Some(symbol_self_name),
-                    });
-                ctx.lower_impl_block(
-                    impl_decl,
-                    span.clone(),
-                    &mut items,
-                    false,
-                    imported.as_ref(),
-                );
+                ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
             }
             Item::Actor(actor) => {
                 // P0.1: Fail-closed gate: actors require the actor runtime ABI.
@@ -1936,12 +1746,10 @@ pub fn lower_program(
                 // The checker normalizes every machine into ordinary enum,
                 // report and impl declarations before HIR, so no machine
                 // declaration reaches lowering.
-                // Imports are frontend-resolved: module-path imports
-                // (`import greeting;`) are lowered from `program.module_graph`
-                // below under their qualified mangled name (e.g. `greeting$hello`).
-                // File-path imports (`import "util.hew";`) are still flattened
-                // into `program.items` by `flatten_import_items` and lowered in
-                // the loop above.  The residual `Item::Import` stub is kept in
+                // Imports are frontend-resolved: every imported module, by
+                // path or by quoted file, is lowered from `program.module_graph`
+                // below under its qualified mangled name (e.g. `greeting$hello`).
+                // The residual `Item::Import` stub is kept in
                 // `program.items` for diagnostic source-map attribution (removing
                 // it would require auditing every span consumer — out of scope).
                 // Type aliases likewise have no runtime artifact: checker and
@@ -2004,10 +1812,8 @@ pub fn lower_program(
                         param_tys,
                         param_consume,
                         return_ty,
-                        // Defining-module provenance from the SAME current-module
-                        // authority this pass sets per item (line ~3355): `None`
-                        // is the genuine root compilation unit (module index 0),
-                        // `Some(dotted)` a file-import module. Threaded to MIR so
+                        // Defining-module provenance: this pass lowers only the
+                        // root compilation unit, so `None`. Threaded to MIR so
                         // C-ABI string-return ownership is classified from a proven
                         // fact, not `diagnostic_source_modules` absence.
                         provenance,
@@ -2018,21 +1824,13 @@ pub fn lower_program(
                 }
             }
         }
-        ctx.tag_spliced_diagnostics(diag_start);
     }
-    // Restore the root index after the file-import-aware third pass so any
-    // subsequent root-context reads default to 0 before the module-graph walk
-    // re-assigns it per non-root module.
-    ctx.current_module_idx = 0;
-    ctx.current_module_name = None;
 
     // Fourth pass: lower pub fn bodies from non-root modules under their
     // qualified, native-symbol-safe names (e.g. `greeting$hello`).
     //
-    // Module-path imports (`import greeting;`) are NOT flattened into
-    // `program.items` (see `flatten_import_items` restriction in
-    // `hew-compile`), so the bodies would otherwise be absent from the
-    // emitted `HirModule`.  Walking `module_graph` here ensures each
+    // Imported modules' items are not part of `program.items`, so the bodies
+    // would otherwise be absent from the emitted `HirModule`.  Walking `module_graph` here ensures each
     // imported user module contributes exactly one `HirFn` per pub fn,
     // keyed by the same mangled name registered in the pre-pass above.
     //
@@ -2040,23 +1838,8 @@ pub fn lower_program(
     // record types must appear as `HirItem::TypeDecl` so SIR can derive exact
     // semantic shapes for demanded values, including callback payloads.
     if let Some(ref mg) = program.module_graph {
-        // A file-imported module's declarations are lowered by the source-order
-        // third pass: `flatten_file_import_items` splices them into
-        // `program.items` under the declaring file's module index, and that pass
-        // owns every kind they can carry. The same modules are also in
-        // `mg.topo_order`, so this walk skips them by identity — lowering an
-        // item twice emits two `HirItem`s for one declaration, which downstream
-        // reads as two realizations of one identity (duplicate
-        // `<SelfType>::<method>` symbols and LLVM verifier failures for impls,
-        // a doubled HIR refusal for an extern or type declaration, two
-        // lifecycle admissions for one `#[resource]` record).
-        //
-        // The discriminator is module ORIGIN, never a bare type/trait name:
-        // Hew permits distinct modules to declare same-named types and impls,
-        // so a name-keyed skip could silently drop a package-import declaration
-        // that merely shares a name. `file_import_module_ids` holds exactly the
-        // root's spliced file-import chain; package modules are never in it and
-        // are lowered here exactly once.
+        // A file import (`import "x.hew";`) is a module like any other and is
+        // lowered here, once, under its own module identity.
         //
         // Prefer a source-specific package module's impl over a byte-identical
         // copy absorbed by a directory superset. Unique impls in the superset
@@ -2067,10 +1850,7 @@ pub fn lower_program(
         // another file's entry and byte-offset collisions across files are
         // misread as same-file types.
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root
-                || file_import_modules.contains(mod_id)
-                || selected_builtin_graph_module == Some(mod_id)
-            {
+            if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -2266,9 +2046,6 @@ pub fn lower_program(
                         // A missing body fact skips that exact declaration;
                         // a call to it later fails at the callable-set boundary.
                         Item::Impl(impl_decl) => {
-                            // Skip impl blocks of FILE-import modules: their
-                            // items were spliced into `program.items` and
-                            // already lowered by the source-order third pass.
                             // A directory module may absorb the same impl that a
                             // source-specific submodule also contributes. Keep
                             // the source-specific copy so its qualified type and
@@ -2713,13 +2490,6 @@ pub fn lower_program(
         diagnostics: ctx.diagnostics,
     }
 }
-
-const SOURCE_PRELUDE_TYPES: &[&str] = &[
-    "ScopeFailure",
-    "NodeTransport",
-    "MachineDisposition",
-    "MachineStepInfo",
-];
 
 pub(super) fn finalize_user_record_value_classes(
     record_registry: &HashMap<String, RecordEntry>,

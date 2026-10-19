@@ -2565,15 +2565,9 @@ fn clone_on_unsupported_scalar_fails_closed() {
 
 /// Regression for ecosystem Blocker 2 (file-import half): an actor defined in a
 /// sibling file pulled in with `import "counter.hew";` must spawn and answer
-/// `ask` calls exactly like a local actor. File imports flatten the imported
-/// items into the root program under their bare names, so the unqualified
-/// `spawn Counter` is the correct surface.
-///
-/// This also guards the dedup path in the imported-module HIR walk: the
-/// file-import actor is already emitted by the source-order pass, and the walk
-/// must NOT emit a second `HirItem::Actor`. Before the dedup guard the
-/// duplicate collided at MIR (`ActorHandlerSymbolCollision`, the bare actor
-/// name keys the handler layout).
+/// `ask` calls exactly like a local actor. A file import binds the imported
+/// file's public items unqualified, so `spawn Counter` is the correct surface,
+/// and the actor is lowered once, under its own module.
 #[test]
 fn run_file_imported_actor_spawns_and_calls() {
     require_codegen();
@@ -2742,16 +2736,11 @@ fn run_string_path_imported_record_annotated_param_field_access() {
 /// lowering — a closure literal (`closure_capture_facts` / `closure_escape_facts`)
 /// and a `for i in 0..n` range loop (`deferred_range_bounds`).
 ///
-/// File-import flattening splices the imported actor into the root program AFTER
-/// type-checking, so the checker validated the body under its originating
-/// module's non-root `current_module_idx` (stamping every fact at index N) while
-/// HIR formerly lowered the spliced item at the default root index 0. Every
-/// `mk_key` lookup then missed and the fail-closed contracts fired
-/// (`ActorStateGuardMissing` at the spawn, and — had the body reached closure /
-/// range lowering — `ClosureCaptureModeUnresolved` / range-bound diagnostics).
-/// The fix makes HIR lower spliced file-import items under the same module index
-/// the checker used, so all body-level facts resolve. This guards the closure
-/// and range-bound facts on the file-import path specifically.
+/// HIR must lower the imported body under the same file index the checker
+/// stamped its facts with; otherwise every `mk_key` lookup misses and the
+/// fail-closed contracts fire (`ActorStateGuardMissing`,
+/// `ClosureCaptureModeUnresolved`, range-bound diagnostics). This guards the
+/// closure and range-bound facts on the file-import path specifically.
 #[test]
 fn run_file_imported_actor_closure_and_range_body_runs() {
     require_codegen();

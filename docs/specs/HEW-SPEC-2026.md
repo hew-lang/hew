@@ -1851,6 +1851,13 @@ import std.net.{Connection, connect};  // Import multiple
 Glob imports are rejected. Import the specific symbols required by the module
 instead.
 
+A quoted path (`import "helpers.hew";`) imports a source file named relative to
+the importing file. The file is its own module: its `pub` items are bound
+unqualified in the importing file, under the same collision rules as a
+selective import, and its private items stay private to it. A `fn main` in an
+imported file is one of those private items; only the root file's `main` is the
+program entry.
+
 **Module dot-syntax for standard library:**
 
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:

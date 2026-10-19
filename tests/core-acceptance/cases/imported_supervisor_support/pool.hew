@@ -1,0 +1,42 @@
+// A file whose own functions take and spawn its supervisors. The root file
+// imports it, so these bodies are checked in the imported file's module.
+pub actor Renderer {
+    receive fn render(row: i64) -> i64 {
+        row * 2
+    }
+}
+
+pub supervisor RenderPool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 10s;
+
+    pool workers: Renderer count: 2;
+}
+
+// Private: only this file's own functions name it.
+supervisor Backup {
+    strategy: one_for_one;
+    intensity: 1 within 10s;
+
+    child spare: Renderer;
+}
+
+pub fn first(pool: RenderPool) -> i64 {
+    pool.workers[0].render(5).expect("the pool worker is running")
+}
+
+pub fn backup_render(row: i64) -> i64 {
+    let backup = spawn Backup;
+    let rendered = backup.spare.render(row).expect("the spare is running");
+    stop(backup);
+    stopped(backup);
+    rendered
+}
+
+pub fn spawn_and_render() -> i64 {
+    let pool = spawn RenderPool;
+    let rendered = first(pool);
+    stop(pool);
+    stopped(pool);
+    rendered
+}

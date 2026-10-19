@@ -3309,16 +3309,6 @@ pub struct Checker {
     /// and later import publication can encounter the same declaration; this
     /// keeps that one source error from being emitted twice.
     pub(super) protected_prelude_declaration_collisions: HashSet<(Option<String>, String)>,
-    /// Whether the module currently undergoing signature registration came
-    /// from a file-path import. Those items are flattened into the root program
-    /// before HIR lowering, so their declaration IDs are root-owned even though
-    /// their checker spans retain the source module index.
-    pub(super) registration_is_flat_file_import: bool,
-    /// Dotted module names whose items were flattened into the root program by
-    /// a file-path import. Root's bare namespace IS these modules' namespace
-    /// (#2208): a bare root reference to a leaf they declare resolves to their
-    /// owner-qualified identity even when the leaf shadows a builtin name.
-    pub(super) flat_file_import_module_names: HashSet<String>,
     /// Checker-side accumulator for
     /// [`TypeCheckOutput::actor_self_state_fields`].
     pub(super) actor_self_state_fields: HashSet<SpanKey>,
@@ -4429,8 +4419,6 @@ impl Checker {
             file_type_decls: HashMap::new(),
             canonical_std_root_sources: HashSet::new(),
             protected_prelude_declaration_collisions: HashSet::new(),
-            registration_is_flat_file_import: false,
-            flat_file_import_module_names: HashSet::new(),
             actor_self_state_fields: HashSet::new(),
             actor_deferred_field_decls: HashSet::new(),
             first_stores: HashSet::new(),

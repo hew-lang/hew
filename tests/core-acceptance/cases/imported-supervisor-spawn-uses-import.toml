@@ -1,0 +1,7 @@
+[[case]]
+id = "imported-supervisor-spawn-uses-import"
+intent = "Spawning an imported supervisor by its bare name counts as a use of the import: no unused-import warning."
+source = "fixtures/imported-private-actor-private-helper/pool_only.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"

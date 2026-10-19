@@ -1,0 +1,10 @@
+[[case]]
+id = "imported-private-supervisor-children"
+intent = "An imported module spawns its own private supervisor and reads the pool's children."
+source = "fixtures/imported-private-supervisor-children/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "7\n"
+exit = 0

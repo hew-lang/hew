@@ -1,0 +1,9 @@
+const WIDTH: i64 = 20;
+
+fn helper() -> i64 {
+    2
+}
+
+pub fn two() -> i64 {
+    helper() + WIDTH
+}

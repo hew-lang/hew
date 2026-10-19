@@ -1135,28 +1135,10 @@ struct LowerCtx {
     /// is provably FFI-backed as a `BitCopy` handle stand-in while a bare
     /// `type Empty {}` stays fail-closed uninferred.
     extern_backed_record_names: HashSet<String>,
-    /// Bare imported record names that have distinct definitions in more than
-    /// one canonical module and therefore require module-qualified identities.
-    colliding_imported_record_names: HashSet<String>,
-    /// Dotted paths of module-graph modules whose items were spliced into the
-    /// root program by `flatten_file_import_items` (file imports). A file
-    /// import publishes its types into the ROOT namespace with bare identity —
-    /// root constructs and dispatches them bare — so a bare self-record
-    /// reference inside a file-import module must NOT be owner-qualified the
-    /// way a genuine package-module reference is (#2208). Package modules are
-    /// absent from this set and DO owner-qualify.
-    file_import_module_names: HashSet<String>,
-    /// Bare record/type-decl names declared by more than one declaring scope
-    /// across the whole program (any two of: a package module, a file-import
-    /// module, or the root). ONLY these genuinely-colliding names are
-    /// owner-qualified inside their declaring package module: a name unique to
-    /// one module (e.g. stdlib `xml.Node`) keeps its bare identity, byte-
-    /// identical to the pre-#2208 behaviour, so the qualification never touches
-    /// records that have no cross-module ambiguity. Unlike
-    /// `colliding_imported_record_names` (which counts only 2+ PACKAGE modules,
-    /// per `imported_type_name_collides`), this set ALSO counts a file-import /
-    /// root declaration as a colliding scope — the mixed file-import + package
-    /// same-bare-name shape the actor-ask coupling depends on.
+    /// Bare record/type-decl names declared by more than one module, the root
+    /// included. ONLY these genuinely-colliding names are owner-qualified
+    /// inside their declaring module: a name unique to one module (e.g.
+    /// stdlib `xml.Node`) keeps its bare identity (#2208).
     cross_module_colliding_record_names: HashSet<String>,
     enum_type_params: HashMap<String, Vec<hew_types::ParamHead>>,
     /// Checker-authoritative mapping from qualified function name to the
@@ -1295,13 +1277,6 @@ struct LowerCtx {
     /// considered before the compiler-only `Task`, `Unit`, and
     /// `CancellationToken` fallbacks, including for generic source types.
     root_visible_source_type_short_names: HashSet<String>,
-    /// Bare→qualified identity projection for declarations reaching root
-    /// through a flat file import (`import "x.hew";`). The spliced items share
-    /// the root bare namespace at the source surface, but their declaration
-    /// identity — and every layout registry key derived from it — is the
-    /// defining file's `{module}.{name}`. Root annotations resolve through
-    /// this table so binding types and layout keys agree.
-    file_import_root_type_aliases: HashMap<String, String>,
     /// Exact `{module_owner}.{type}` identities declared by non-root modules.
     /// This lets the three compiler-special spellings retain their source
     /// identity inside a declaring module and through named imports without

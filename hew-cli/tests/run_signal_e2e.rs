@@ -5,7 +5,7 @@
 mod support;
 
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
@@ -181,4 +181,55 @@ fn run_escalates_ignored_termination_and_reaps_child() {
     for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
         exercise(signal, false, false, true);
     }
+}
+
+#[test]
+fn run_wasi_foreground_stdin_is_readable() {
+    support::require_wasi_runner();
+    let dir = support::tempdir();
+    let source = dir.path().join("stdin.hew");
+    std::fs::write(
+        &source,
+        "import std.io;\nfn main() { println(\"ready\"); println(io.read_line() ?? \"eof\"); }\n",
+    )
+    .unwrap();
+    let mut command = Command::new(support::hew_binary());
+    command
+        .args(["run", "--target", "wasm32-wasi", "--timeout", "10s"])
+        .arg(&source)
+        .current_dir(dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit());
+    let mut master = attach_controlling_terminal(&mut command);
+    let mut run = OwnedRun {
+        cli: command.spawn().expect("spawn WASI hew run"),
+        program_pid: None,
+    };
+    let stdout = run.cli.stdout.take().unwrap();
+    let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
+    let (output_sender, output_receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut stdout = BufReader::new(stdout);
+        let mut ready = String::new();
+        let read = stdout.read_line(&mut ready);
+        let _ = ready_sender.send(read.map(|_| ready));
+        let mut output = String::new();
+        let read = stdout.read_to_string(&mut output);
+        let _ = output_sender.send(read.map(|_| output));
+    });
+    let ready = ready_receiver
+        .recv_timeout(Duration::from_secs(60))
+        .expect("WASI program startup")
+        .expect("read WASI startup line");
+    assert_eq!(ready, "ready\n");
+    master
+        .write_all(b"foreground input\n")
+        .expect("type terminal input");
+    let status = run.wait();
+    assert!(status.success(), "WASI terminal reader failed: {status}");
+    let output = output_receiver
+        .recv_timeout(Duration::from_secs(3))
+        .expect("WASI terminal reader output")
+        .expect("read WASI output");
+    assert_eq!(output, "foreground input\n");
 }

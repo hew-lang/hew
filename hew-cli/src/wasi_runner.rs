@@ -44,7 +44,9 @@ pub(crate) fn run_module(
     command.arg(module_path);
     command.args(program_args);
 
-    let outcome = crate::process::run_command_interactive(&mut command, timeout)?;
+    // Keep wasmtime in the terminal's foreground group so stdin remains
+    // readable. The CLI owns only its direct process in this mode.
+    let outcome = crate::process::run_command_interactive(&mut command, timeout, true)?;
 
     match outcome {
         crate::process::ChildWaitOutcome::Exited(status) => Ok(WasiRunOutcome::Exited(status)),

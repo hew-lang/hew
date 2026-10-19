@@ -1044,7 +1044,23 @@ impl<'src> Parser<'src> {
     /// arrow. This disambiguates a pattern after a block-bodied arm from a
     /// postfix or infix continuation of that block (`(...)` or `-value`).
     pub(crate) fn match_arm_pattern_followed_by_arrow(&self) -> bool {
-        let mut cursor = self.pos;
+        let Some(mut cursor) = self.match_pattern_atom_end(self.pos) else {
+            return false;
+        };
+        while self.peek_at(cursor) == Some(&Token::Pipe) {
+            let Some(next) = self.match_pattern_atom_end(cursor + 1) else {
+                return false;
+            };
+            cursor = next;
+        }
+        if self.peek_at(cursor) == Some(&Token::FatArrow) {
+            return true;
+        }
+        if self.peek_at(cursor) != Some(&Token::If) {
+            return false;
+        }
+
+        cursor += 1;
         let mut depth = 0usize;
         while let Some(token) = self.peek_at(cursor) {
             match token {
@@ -1062,6 +1078,76 @@ impl<'src> Parser<'src> {
             cursor += 1;
         }
         false
+    }
+
+    /// End of one syntactically possible pattern atom, without parsing or
+    /// reporting diagnostics. The caller uses this only to distinguish an
+    /// arm followed by `=>` from a block-expression continuation.
+    fn match_pattern_atom_end(&self, mut cursor: usize) -> Option<usize> {
+        let token = self.peek_at(cursor)?;
+        match token {
+            Token::Minus
+                if matches!(
+                    self.peek_at(cursor + 1),
+                    Some(Token::Integer(_) | Token::Float(_))
+                ) =>
+            {
+                cursor += 2;
+                return Some(cursor);
+            }
+            Token::LeftParen | Token::LeftBrace => {
+                cursor = self.skip_pattern_group(cursor)?;
+                return Some(cursor);
+            }
+            Token::Dot if matches!(self.peek_at(cursor + 1), Some(Token::Identifier(_))) => {
+                cursor += 2;
+            }
+            Token::Identifier(_)
+            | Token::Integer(_)
+            | Token::Float(_)
+            | Token::StringLit(_)
+            | Token::CharLit(_)
+            | Token::RawString(_)
+            | Token::RegexLiteral(_)
+            | Token::True
+            | Token::False => cursor += 1,
+            tok if Self::contextual_keyword_name(tok).is_some() => cursor += 1,
+            _ => return None,
+        }
+
+        // Nominal paths and variants may carry tuple or record payloads.
+        while self.peek_at(cursor) == Some(&Token::Dot)
+            && matches!(self.peek_at(cursor + 1), Some(Token::Identifier(_)))
+        {
+            cursor += 2;
+        }
+        if matches!(
+            self.peek_at(cursor),
+            Some(Token::LeftParen | Token::LeftBrace)
+        ) {
+            cursor = self.skip_pattern_group(cursor)?;
+        }
+        Some(cursor)
+    }
+
+    /// Skip one balanced parenthesized or braced pattern group.
+    fn skip_pattern_group(&self, start: usize) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut cursor = start;
+        while let Some(token) = self.peek_at(cursor) {
+            match token {
+                Token::LeftParen | Token::LeftBrace | Token::LeftBracket => depth += 1,
+                Token::RightParen | Token::RightBrace | Token::RightBracket => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(cursor + 1);
+                    }
+                }
+                _ => {}
+            }
+            cursor += 1;
+        }
+        None
     }
 
     /// Recover after a malformed match arm by consuming the bad arm, then

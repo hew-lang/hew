@@ -1279,8 +1279,8 @@ impl<'a> Formatter<'a> {
         match item {
             Item::Macro(_) | Item::MacroCall(_) => {
                 self.write_indent();
-                let token_end = self
-                    .tokens
+                let token_start = self.token_at_or_after(span_start);
+                let token_end = self.tokens[token_start..]
                     .iter()
                     .take_while(|(_, span)| span.start < span_end)
                     .filter(|(token, _)| {

@@ -942,6 +942,22 @@ fn block_match_arm_stops_before_tuple_and_negative_patterns() {
 }
 
 #[test]
+fn block_match_arm_continuations_keep_calls_subtraction_and_members() {
+    for source in [
+        "fn main() { match value { 0 => { || 1 }() _ => 0 } }",
+        "fn main() { match value { 0 => { 3 } - 1 _ => 0 } }",
+        "fn main() { match value { 0 => { record }.field _ => 0 } }",
+    ] {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "errors: {:?}\n{source}",
+            result.errors
+        );
+    }
+}
+
+#[test]
 fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
     let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";
     let result = parse(source);

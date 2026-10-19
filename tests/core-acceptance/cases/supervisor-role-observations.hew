@@ -1,0 +1,109 @@
+// `monitor` and `link` on a supervised role subscribe to the incarnation the
+// role holds when the call is made, exactly as they do for a direct handle.
+import std.link_monitor.{DownNotification, DownReason, MonitorRef};
+
+import std.failure.{CrashNotification};
+
+actor Backend {
+    receive fn ping() -> string {
+        "pong"
+    }
+
+    receive fn fail() {
+        panic("backend failed");
+    }
+}
+
+supervisor Cluster {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child east: Backend;
+    child west: Backend;
+}
+
+supervisor Spares {
+    strategy: simple_one_for_one;
+    intensity: 3 within 60s;
+
+    pool members: Backend count: 2;
+}
+
+supervisor Region {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child spares: Spares;
+}
+
+actor Watcher {
+    var watch: Option<MonitorRef> = .None;
+    var downs: i64 = 0;
+    var exits: i64 = 0;
+
+    receive fn monitor_role(backend: Backend) -> string {
+        let reply = backend.ping() handle e { f"{e}" };
+        watch = .Some(monitor(backend).expect("watcher is an actor"));
+        reply
+    }
+
+    receive fn link_role(backend: Backend) -> string {
+        let reply = backend.ping() handle e { f"{e}" };
+        link(backend).expect("watcher is an actor");
+        reply
+    }
+
+    receive fn seen() -> i64 {
+        downs + exits
+    }
+
+    #[on(down)]
+    fn down(note: DownNotification) {
+        match note.reason {
+            .Crashed(_) => {
+                downs += 1;
+                println("monitored role crashed");
+            }
+            _ => panic("wrong end reason"),
+        }
+    }
+
+    #[on(link)]
+    fn peer_exit(note: CrashNotification) {
+        exits += 1;
+        println("linked role exited");
+    }
+}
+
+fn main() {
+    let cluster = spawn Cluster;
+    let watcher = spawn Watcher;
+    println(f"monitor: {watcher.monitor_role(cluster.east):?}");
+    let _ = cluster.east.fail();
+    restarted(cluster.east);
+    while watcher.seen().expect("watcher is running") < 1 {
+        sleep(1ms);
+    }
+    println(f"link: {watcher.link_role(cluster.west):?}");
+    let _ = cluster.west.fail();
+    restarted(cluster.west);
+    while watcher.seen().expect("watcher is running") < 2 {
+        sleep(1ms);
+    }
+    println(f"replacement: {cluster.east.ping():?}");
+
+    // A pool member inside a nested supervisor is a role as well.
+    let region = spawn Region;
+    println(f"pool monitor: {watcher.monitor_role(region.spares.members[1]):?}");
+    let _ = region.spares.members[1].fail();
+    restarted(region.spares.members[1]);
+    while watcher.seen().expect("watcher is running") < 3 {
+        sleep(1ms);
+    }
+    stop(region);
+    stopped(region);
+    stop(watcher);
+    stopped(watcher);
+    stop(cluster);
+    stopped(cluster);
+}

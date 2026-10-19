@@ -49,7 +49,9 @@ fn main() {
         panic("empty semaphore unexpectedly acquired");
     } handle failure {
         match failure {
-            .Deadline { message } => { cancelled = true; },
+            .Deadline { message } => {
+                cancelled = true;
+            }
             .Fault { message } => panic(message),
         }
     };

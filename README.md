@@ -306,7 +306,7 @@ Full documentation at **[hew.sh/docs](https://hew.sh/docs)**
 
 - Observability guide: [`docs/observe.md`](docs/observe.md)
 - Local troubleshooting guide: [`docs/troubleshooting.md`](docs/troubleshooting.md)
-- Website source: **[github.com/hew-lang/hew.sh](https://github.com/hew-lang/hew.sh)**
+- Questions and documentation feedback: **[GitHub Discussions](https://github.com/orgs/hew-lang/discussions)**
 
 ## Building from Source
 
@@ -384,7 +384,7 @@ The browser runtime provides deterministic execution within its documented
 program's declared operations before execution and reports unsupported host or
 runtime capabilities.
 
-This repo carries the analysis-side browser tooling (`hew-wasm`) plus the sandbox bytecode emission crate (`hew-sandbox-wasm`); the downstream browser app and the `hew-sandbox-vm` TypeScript worker are in `hew-lang/playground`.
+This repo carries the analysis-side browser tooling (`hew-wasm`), the sandbox bytecode emission crate (`hew-sandbox-wasm`), and the TypeScript sandbox runtime ([`hew-sandbox-vm/`](hew-sandbox-vm/)). Try them in the [browser playground](https://hew.sh/playground/).
 
 ```bash
 make baselines                  # regenerate deterministic generated metadata
@@ -394,7 +394,7 @@ make playground-wasi-check      # focused manifest-driven WASI runtime preflight
 make sandbox-parity             # full Node VM plus Rust native/sandbox parity suite
 ```
 
-Use `make playground-manifest-check` to confirm the checked-in manifest is current. Use `make playground-check` for curated `hew-wasm` analysis smoke and the browser diagnostics build. In codegen-capable environments, `make playground-wasi-check` compiles and executes every curated WASI example. `make sandbox-parity` runs the native and browser-sandbox programs side by side. The downstream browser app and TypeScript worker live in `hew-lang/playground`.
+Use `make playground-manifest-check` to confirm the checked-in manifest is current. Use `make playground-check` for curated `hew-wasm` analysis smoke and the browser diagnostics build. In codegen-capable environments, `make playground-wasi-check` compiles and executes every curated WASI example. `make sandbox-parity` runs the native and browser-sandbox programs side by side. For browser runtime changes, start with [`hew-sandbox-vm/`](hew-sandbox-vm/) and the [sandbox boundaries](docs/sandbox-vm-divergences.md).
 
 ### Development tools
 

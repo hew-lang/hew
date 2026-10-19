@@ -18,7 +18,10 @@ Downstream repositories should copy one of these supplied sources and record thi
 | `hew-bluejay-dark.svg` | `f5de06f04558aef179eb70dcaa8d82290aaf20b022d6ba9510b0d4a0b7557933` |
 | `hew-bluejay-four-colour.svg` | `bb1a4a0c43857c305010e42f79ce457ce557cb886caa3d00e5c17904db3680b6` |
 | `hew-bluejay-app-icon.svg` | `a69c394f6fa239c2187951cf45c928b93afface73cb188b32da07a27032f8c56` |
+| `social-preview.png` | `eab4be0ae8c61528d45e6e296482e82ea17921fde39f98eb33167364f6f54ef0` |
 
 The SVG files are the editable sources. Raster exports are delivery artifacts and must be checked visually at their actual target size.
 
 `social-preview.png` is a ready-to-upload 1200 × 630 repository preview. GitHub does not discover that file automatically; a repository administrator must upload it in the repository's social-preview settings.
+
+The preview is copied from `hew-lang/hew.sh` at commit `0808ef296287560b2c3c296f494cc47c9c503c23`, file `src/assets/og-default.png`. Its composition uses the supplied dark-surface blue jay and the website's brand fonts.

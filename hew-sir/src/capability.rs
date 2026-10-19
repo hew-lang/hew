@@ -47,6 +47,8 @@ pub fn derived_capability_components(
         ResolvedTy::Tuple(fields) => Ok(fields.clone()),
         // A node identity or location is its fixed-width words.
         _ if is_identity_carrier(ty) => Ok(Vec::new()),
+        // An actor reference compares by identity, exactly as `is` does.
+        _ if is_actor_reference(ty) => Ok(Vec::new()),
         _ => {
             if let Some((_, arguments)) = hew_types::runtime_call::collection_type_arguments(ty) {
                 return Ok(arguments.to_vec());
@@ -68,6 +70,18 @@ pub fn derived_capability_components(
             ))
         }
     }
+}
+
+/// An actor reference: its equality is handle identity, never its state.
+#[must_use]
+pub fn is_actor_reference(ty: &ResolvedTy) -> bool {
+    matches!(
+        ty,
+        ResolvedTy::Named {
+            head: hew_types::TypeHead::Actor(_),
+            ..
+        }
+    )
 }
 
 /// The node identity carriers compare and hash by their carried words.

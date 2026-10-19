@@ -1246,8 +1246,12 @@ impl TypeFactService {
                 }
                 Ok(Some(args.clone()))
             }
+            // An actor reference compares by identity, exactly as `is` does;
+            // its state is never compared.
             ResolvedTy::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location),
+                head:
+                    crate::TypeHead::Builtin(BuiltinType::NodeId | BuiltinType::Location)
+                    | crate::TypeHead::Actor(_),
                 ..
             } => Ok(Some(Vec::new())),
             ResolvedTy::Named {

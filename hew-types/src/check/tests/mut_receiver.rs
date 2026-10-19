@@ -547,6 +547,39 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
 /// receiver field moved out and not yet restored is refused at every
 /// operation that can fail, naming the field and the operation.
 #[test]
+fn var_self_receiver_remains_whole_for_both_custom_display_forms() {
+    for suffix in ["", ":?"] {
+        let source = format!(
+            r#"
+#[resource]
+type Conn {{ fd: i64; }}
+impl Conn {{ fn close(consume self) {{}} }}
+type Caption {{}}
+impl Display for Caption {{ fn fmt(self) -> string {{ "caption" }} }}
+type Holder {{ conn: Conn; }}
+impl Holder {{
+    fn render(var self, caption: Caption) -> string {{
+        let conn = self.conn;
+        let label = f"{{caption{suffix}}}";
+        self.conn = conn;
+        label
+    }}
+}}
+"#
+        );
+        let output = check_source(&source);
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::OwnPartialConsume
+                    && error.message.contains("this interpolation")
+            }),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn var_self_receiver_stays_whole_wherever_it_can_fail() {
     let declarations = r"#[resource]
 type Conn {
@@ -651,6 +684,7 @@ trait Touch {
         // A runtime operation fails only where its contract says so.
         "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
         "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
+        "let conn = self.conn; let label = f\"{divisor:?}\"; self.count = label.len(); self.conn = conn; 0",
         "let spare = self.spare.is_some(); let conn = self.conn; self.conn = conn; if spare { 1 } else { 0 }",
         "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
     ] {

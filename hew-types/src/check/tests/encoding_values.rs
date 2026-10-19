@@ -447,7 +447,7 @@ fn encoding_extern_calls_require_the_exact_shipped_declaration_and_signature() {
             EncodingOp::Eq,
         ] {
             assert!(
-                canonical.direct_call_targets.values().any(|target| {
+                super::root_values(&canonical.direct_call_targets).any(|target| {
                     *target
                         == CallTarget::Runtime(RuntimeCallFamily::Encoding {
                             format: encoding,
@@ -460,13 +460,12 @@ fn encoding_extern_calls_require_the_exact_shipped_declaration_and_signature() {
         }
         let lookalike = check_source_in_module(&source, module);
         assert!(lookalike.errors.is_empty(), "{:?}", lookalike.errors);
-        assert!(lookalike
-            .direct_call_targets
-            .values()
-            .all(|target| !matches!(
+        assert!(
+            super::root_values(&lookalike.direct_call_targets).all(|target| !matches!(
                 target,
                 CallTarget::Runtime(RuntimeCallFamily::Encoding { .. })
-            )));
+            ))
+        );
 
         // A real source path cannot repair a malformed extern ABI. The value
         // identity still resolves, but its endpoint receives no runtime family.
@@ -478,11 +477,13 @@ fn encoding_extern_calls_require_the_exact_shipped_declaration_and_signature() {
             &["std".into(), "encoding".into(), format.into()],
         );
         assert!(wrong.errors.is_empty(), "{:?}", wrong.errors);
-        assert!(!wrong.direct_call_targets.values().any(|target| *target
-            == CallTarget::Runtime(RuntimeCallFamily::Encoding {
-                format: encoding,
-                op: EncodingOp::GetInt
-            })));
+        assert!(
+            !super::root_values(&wrong.direct_call_targets).any(|target| *target
+                == CallTarget::Runtime(RuntimeCallFamily::Encoding {
+                    format: encoding,
+                    op: EncodingOp::GetInt
+                }))
+        );
     }
 }
 
@@ -505,12 +506,14 @@ fn user_extern_with_canonical_value_arguments_never_gains_encoding_authority() {
     ));
     let output = check_items(items);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert!(output.direct_call_targets.values().any(|target| matches!(target,
+    assert!(super::root_values(&output.direct_call_targets).any(|target| matches!(target,
         CallTarget::Extern { endpoint, trusted_compiled_stdlib: false, .. } if endpoint == "hew_json_get_int")));
-    assert!(output.direct_call_targets.values().all(|target| !matches!(
-        target,
-        CallTarget::Runtime(crate::RuntimeCallFamily::Encoding { .. })
-    )));
+    assert!(
+        super::root_values(&output.direct_call_targets).all(|target| !matches!(
+            target,
+            CallTarget::Runtime(crate::RuntimeCallFamily::Encoding { .. })
+        ))
+    );
 }
 
 #[test]

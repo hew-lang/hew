@@ -16,6 +16,27 @@ use crate::error::TypeErrorKind;
 use crate::Ty;
 
 impl Checker {
+    fn interpolation_display_can_fail(&self, span: &Span) -> bool {
+        let Some(ty) = self
+            .interpolation_display_types
+            .get(&SpanKey::in_module(span, self.current_module_idx))
+        else {
+            return false;
+        };
+        let Ok(resolved) = crate::ResolvedTy::from_ty(&self.subst.resolve(ty)) else {
+            return true;
+        };
+        crate::type_facts::select_builtin_display_plan(
+            &resolved,
+            &self.defs,
+            &self.trait_impl_method_declaration_ids,
+            self.lang_items
+                .display_method_identity()
+                .map(|(_, method)| method),
+        )
+        .is_none_or(|plan| plan.can_fail())
+    }
+
     /// The receiver binding of the `var self` method whose body is being
     /// checked, or `None` outside one. A lambda or generator body is its own
     /// callable: its failures do not unwind this method.
@@ -85,9 +106,8 @@ impl Checker {
             // A user `Display` implementation is an ordinary call.
             Expr::InterpolatedString(parts)
                 if parts.iter().any(|part| {
-                    matches!(part, StringPart::Expr(value)
-                        if self.interpolation_display_types.contains_key(
-                            &SpanKey::in_module(&value.1, self.current_module_idx)))
+                    matches!(part, StringPart::Expr(value) | StringPart::StructuralExpr(value)
+                        if self.interpolation_display_can_fail(&value.1))
                 }) =>
             {
                 "this interpolation".to_string()

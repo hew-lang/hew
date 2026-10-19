@@ -61,7 +61,7 @@ fn user_supervisor_stop_shadow_keeps_user_target() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::User(id)
                 if output.defs.path(*id) == "supervisor_stop"
@@ -70,7 +70,7 @@ fn user_supervisor_stop_shadow_keeps_user_target() {
         output.direct_call_targets
     );
     assert!(
-        !output.direct_call_targets.values().any(|target| matches!(
+        !super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::SupervisorStop
@@ -98,7 +98,7 @@ fn instant_now_publishes_typed_runtime_target() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::InstantNow

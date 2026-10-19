@@ -23,19 +23,23 @@ fn canonical_io_declarations_publish_suspension_without_symbol_alias_authority()
     let module = ["std".to_string(), "io".to_string()];
     let output = super::check_source_in_canonical_std_module(source, &module);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert!(output.direct_call_targets.values().any(|target| matches!(
-        target,
-        crate::CallTarget::Runtime(crate::RuntimeCallFamily::AsyncIo(
-            crate::runtime_call::AsyncIoOp::StdinReadLine
+    assert!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
+            target,
+            crate::CallTarget::Runtime(crate::RuntimeCallFamily::AsyncIo(
+                crate::runtime_call::AsyncIoOp::StdinReadLine
+            ))
         ))
-    )));
+    );
     assert!(suspends(&output, "std.io.read"));
     let user = check_source(source);
     assert!(user.errors.is_empty(), "{:?}", user.errors);
-    assert!(user.direct_call_targets.values().all(|target| !matches!(
-        target,
-        crate::CallTarget::Runtime(crate::RuntimeCallFamily::AsyncIo(_))
-    )));
+    assert!(
+        super::root_values(&user.direct_call_targets).all(|target| !matches!(
+            target,
+            crate::CallTarget::Runtime(crate::RuntimeCallFamily::AsyncIo(_))
+        ))
+    );
 }
 
 #[test]
@@ -53,9 +57,7 @@ fn main() {}
 "#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let offloaded: Vec<_> = output
-        .direct_call_targets
-        .values()
+    let offloaded: Vec<_> = super::root_values(&output.direct_call_targets)
         .filter_map(|target| match target {
             crate::CallTarget::Extern { declaration, .. } => {
                 Some(output.extern_contracts.is_offload(*declaration))

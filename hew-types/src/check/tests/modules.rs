@@ -1555,6 +1555,7 @@ mod module_body_diagnostic_envelope {
         let _recv_span = output
             .method_call_rewrites
             .iter()
+            .filter(|(span, _)| span.module_idx == 0)
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                     if c_symbol == "hew_stream_next_layout" =>
@@ -1567,6 +1568,7 @@ mod module_body_diagnostic_envelope {
         let _send_span = output
             .method_call_rewrites
             .iter()
+            .filter(|(span, _)| span.module_idx == 0)
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                     if c_symbol == "hew_stream_send_layout" =>

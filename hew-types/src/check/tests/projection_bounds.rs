@@ -1,4 +1,4 @@
-use super::{check_source, TypeErrorKind};
+use super::{check_source, root_values, TypeErrorKind};
 
 #[test]
 fn inherited_associated_bound_preserves_trait_arguments_and_item_equality() {
@@ -320,15 +320,13 @@ fn main() {
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(
-        output.interpolation_display_types.len(),
+        root_values(&output.interpolation_display_types).count(),
         1,
         "only the alias has an authored Display implementation: {:?}",
         output.interpolation_display_types
     );
     assert_eq!(
-        output
-            .interpolation_display_types
-            .values()
+        root_values(&output.interpolation_display_types)
             .next()
             .unwrap()
             .user_facing()
@@ -352,7 +350,7 @@ fn main() {
 "#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert_eq!(output.interpolation_display_types.len(), 1);
+    assert_eq!(root_values(&output.interpolation_display_types).count(), 1);
 }
 
 #[test]
@@ -378,7 +376,9 @@ fn main() {{
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         assert_eq!(
-            !output.interpolation_display_types.is_empty(),
+            root_values(&output.interpolation_display_types)
+                .next()
+                .is_some(),
             selected,
             "conditional alias Display selection for {item}: {:?}",
             output.interpolation_display_types
@@ -409,7 +409,9 @@ fn main() {{
         let output = check_source(&source);
         assert!(output.errors.is_empty(), "{:?}", output.errors);
         assert_eq!(
-            !output.interpolation_display_types.is_empty(),
+            root_values(&output.interpolation_display_types)
+                .next()
+                .is_some(),
             selected,
             "alias-owned obligation for {item}: {:?}",
             output.interpolation_display_types
@@ -443,7 +445,9 @@ fn main() {{
             let output = check_source(&source);
             assert!(output.errors.is_empty(), "{:?}", output.errors);
             assert_eq!(
-                !output.interpolation_display_types.is_empty(),
+                root_values(&output.interpolation_display_types)
+                    .next()
+                    .is_some(),
                 selected,
                 "mixed receiver alias obligation for {item}, {pattern}/{count}: {:?}",
                 output.interpolation_display_types

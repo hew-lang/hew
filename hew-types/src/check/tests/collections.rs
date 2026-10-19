@@ -2205,9 +2205,7 @@ fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
         output.errors
     );
     assert!(
-        output
-            .method_call_rewrites
-            .values()
+        super::root_values(&output.method_call_rewrites)
             .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
         "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
         output.method_call_rewrites
@@ -2686,7 +2684,7 @@ fn main() {
     // The colliding user method must NOT be recorded as a dispatch rewrite —
     // that is the ill-typed call codegen-front would reject.
     assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
+        !super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::free"
         )),
@@ -2747,9 +2745,7 @@ fn main() {
     );
     // The `is_ok` call must dispatch to the std.result declaration, never
     // the user `Result::is_ok` body: that call would be ill-typed downstream.
-    let is_ok_targets: Vec<&str> = output
-        .method_call_rewrites
-        .values()
+    let is_ok_targets: Vec<&str> = super::root_values(&output.method_call_rewrites)
         .filter_map(|rewrite| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
@@ -2791,6 +2787,7 @@ fn builtin_option_extractors_consume_the_receiver() {
         let key = output
             .method_call_rewrites
             .iter()
+            .filter(|(key, _)| key.module_idx == 0)
             .find_map(|(key, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction {
                     target: CallTarget::ImplMethod(declaration),
@@ -2892,7 +2889,7 @@ fn main() {
         output.errors
     );
     assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
+        !super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
@@ -3518,7 +3515,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::VecNew
@@ -3556,7 +3553,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::VecNew
@@ -3596,7 +3593,7 @@ fn annotated_map_and_set_constructors_publish_their_runtime_targets() {
         crate::runtime_call::RuntimeCallFamily::HashSetNew,
     ] {
         assert!(
-            output.direct_call_targets.values().any(|target| matches!(
+            super::root_values(&output.direct_call_targets).any(|target| matches!(
                 target,
                 crate::check::dispatch::CallTarget::Runtime(published) if *published == family
             )),
@@ -3634,7 +3631,7 @@ fn main() {
         crate::runtime_call::RuntimeCallFamily::HashSetNew,
     ] {
         assert!(
-            output.direct_call_targets.values().any(|target| matches!(
+            super::root_values(&output.direct_call_targets).any(|target| matches!(
                 target,
                 crate::check::dispatch::CallTarget::Runtime(published) if *published == family
             )),
@@ -3663,7 +3660,7 @@ fn map_constructor_against_a_non_map_expectation_is_rejected() {
         "a map constructor assigned to a `Vec` binding must be rejected"
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::HashMapNew

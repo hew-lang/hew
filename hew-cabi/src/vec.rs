@@ -1,4 +1,4 @@
-//! `HewVec` type definition and byte-conversion helpers.
+//! Shared `HewVec` type definitions and runtime ABI declarations.
 //!
 //! This module re-declares the `HewVec` struct and `ElemKind` enum so that
 //! native package crates can reference them without depending on the full
@@ -10,7 +10,6 @@ pub use crate::value::{
     HewTypeOwnershipKind, HewValueCloneThunk, HewValueDropThunk, HewValueLayout,
 };
 use core::ffi::c_void;
-use core::mem;
 
 /// Runtime-visible layout descriptor for a plain Hew value type.
 ///
@@ -180,7 +179,6 @@ extern "C" {
     pub fn hew_vec_get_u8(v: *mut HewVec, index: i64) -> u8;
     pub fn hew_vec_get_i16(v: *mut HewVec, index: i64) -> i16;
     pub fn hew_vec_get_u16(v: *mut HewVec, index: i64) -> u16;
-    #[cfg(not(test))]
     pub fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32;
     pub fn hew_vec_get_i64(v: *mut HewVec, index: i64) -> i64;
     pub fn hew_vec_get_f32(v: *mut HewVec, index: i64) -> f32;
@@ -246,7 +244,6 @@ extern "C" {
     pub fn hew_vec_pop_owned(v: *mut HewVec, out: *mut c_void) -> i32;
 
     // Queries
-    #[cfg(not(test))]
     pub fn hew_vec_len(v: *mut HewVec) -> i64;
     pub fn hew_vec_is_empty(v: *mut HewVec) -> bool;
 
@@ -310,163 +307,6 @@ extern "C" {
     pub fn hew_vec_remove_at_layout(v: *mut HewVec, index: i64, layout: *const HewTypeLayout);
 }
 
-#[cfg(test)]
-#[no_mangle]
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    reason = "test stub mirrors the runtime ABI export"
-)]
-pub extern "C" fn hew_vec_len(v: *mut HewVec) -> i64 {
-    if v.is_null() {
-        return 0;
-    }
-    #[expect(
-        clippy::cast_possible_wrap,
-        reason = "test stub mirrors platform-sized len in i64 space"
-    )]
-    // SAFETY: the test stub only dereferences the caller-provided `HewVec`.
-    unsafe {
-        (*v).len as i64
-    }
-}
-
-#[cfg(test)]
-#[no_mangle]
-#[expect(
-    clippy::not_unsafe_ptr_arg_deref,
-    clippy::cast_ptr_alignment,
-    clippy::missing_panics_doc,
-    reason = "test stub mirrors the runtime ABI export"
-)]
-pub extern "C" fn hew_vec_get_i32(v: *mut HewVec, index: i64) -> i32 {
-    assert!(!v.is_null(), "test stub requires a non-null HewVec");
-    let index: usize = index
-        .try_into()
-        .expect("test stub index must be non-negative");
-    // SAFETY: the null check above ensures `v` is safe to inspect here.
-    assert!(index < unsafe { (*v).len }, "test stub index out of bounds");
-    // SAFETY: the null check above ensures `v` is safe to inspect here.
-    let data = unsafe { (*v).data.cast::<i32>() };
-    // SAFETY: the bounds check above ensures `index` addresses initialized data.
-    unsafe { *data.add(index) }
-}
-
-// ---------------------------------------------------------------------------
-// bytes <-> HewVec helpers (used by codec wrappers in native packages)
-// ---------------------------------------------------------------------------
-
-/// Extract raw bytes from a `bytes`-typed `HewVec` (i32 elements, one byte per slot).
-///
-/// Copies the payload bytes into a fresh `Vec<u8>`; does not consume or free
-/// the `HewVec` header — ownership stays with the caller.
-///
-/// # Safety
-///
-/// `v` must be a valid, non-null pointer to a `HewVec` with i32 element size.
-///
-/// # Panics
-///
-/// Panics if `v` is null, has non-plain elements, has the wrong element size,
-/// or contains values outside the byte range `0..=255`.
-pub unsafe fn hwvec_to_u8(v: *mut HewVec) -> Vec<u8> {
-    assert!(!v.is_null(), "hwvec_to_u8: null HewVec pointer");
-    // SAFETY: the caller promises `v` points to a valid HewVec.
-    let vec = unsafe { &*v };
-    assert!(
-        vec.elem_kind == ElemKind::Plain,
-        "hwvec_to_u8: expected plain elements, got {:?}",
-        vec.elem_kind
-    );
-    assert!(
-        vec.elem_size == mem::size_of::<i32>(),
-        "hwvec_to_u8: expected elem_size {}, got {}",
-        mem::size_of::<i32>(),
-        vec.elem_size
-    );
-    // SAFETY: caller guarantees v is a valid HewVec.
-    #[cfg(test)]
-    let len = hew_vec_len(v);
-    #[cfg(not(test))]
-    // SAFETY: caller guarantees `v` points to a valid HewVec.
-    let len = unsafe { hew_vec_len(v) };
-    (0..len)
-        .map(|i| {
-            #[cfg(test)]
-            let raw = hew_vec_get_i32(v, i);
-            #[cfg(not(test))]
-            // SAFETY: `i < len`, so the read is in-bounds for the caller-provided HewVec.
-            let raw = unsafe { hew_vec_get_i32(v, i) };
-            u8::try_from(raw).expect("hwvec_to_u8: element out of byte range")
-        })
-        .collect()
-}
-
-/// Non-panicking variant of [`hwvec_to_u8`].
-///
-/// Copies the payload bytes into a fresh `Vec<u8>` and returns `Some(Vec<u8>)`
-/// on success.  Returns `None` if `v` is null, has the wrong element shape
-/// (`elem_kind` != `Plain` or `elem_size` != `size_of::<i32>()`), or contains
-/// a value outside the byte range `0..=255`, or reports a negative length.
-/// Does not consume or free the `HewVec` header — ownership stays with the
-/// caller.
-///
-/// This is the correct choice for any call site that must be fail-closed rather
-/// than abort-on-bad-input (e.g. FFI wrappers that return a sentinel on error).
-///
-/// # Safety
-///
-/// If `v` is non-null it must point to a valid, live `HewVec`.  Calling with a
-/// dangling (but non-null) pointer is undefined behaviour.
-pub unsafe fn try_hwvec_to_u8(v: *mut HewVec) -> Option<Vec<u8>> {
-    if v.is_null() {
-        return None;
-    }
-    // SAFETY: the caller promises `v` is a valid, live HewVec when non-null.
-    let vec = unsafe { &*v };
-    if vec.elem_kind != ElemKind::Plain || vec.elem_size != mem::size_of::<i32>() {
-        return None;
-    }
-    // SAFETY: caller guarantees v is a valid HewVec.
-    #[cfg(test)]
-    let len = hew_vec_len(v);
-    #[cfg(not(test))]
-    // SAFETY: caller guarantees `v` points to a valid HewVec.
-    let len = unsafe { hew_vec_len(v) };
-    if len < 0 {
-        return None;
-    }
-    let len_usize = usize::try_from(len).ok()?;
-    let mut out = Vec::with_capacity(len_usize);
-    for i in 0..len {
-        #[cfg(test)]
-        let raw = hew_vec_get_i32(v, i);
-        #[cfg(not(test))]
-        // SAFETY: `i < len`, so the read is in-bounds for the caller-provided HewVec.
-        let raw = unsafe { hew_vec_get_i32(v, i) };
-        match u8::try_from(raw) {
-            Ok(b) => out.push(b),
-            Err(_) => return None,
-        }
-    }
-    Some(out)
-}
-
-/// Create a new bytes-typed `HewVec` (i32 elements) from a raw u8 slice.
-///
-/// # Safety
-///
-/// None — all memory is managed by the runtime allocator.
-#[must_use]
-pub unsafe fn u8_to_hwvec(data: &[u8]) -> *mut HewVec {
-    // SAFETY: hew_vec_new allocates a valid HewVec.
-    let v = unsafe { hew_vec_new() };
-    for &b in data {
-        // SAFETY: v is non-null (hew_vec_new aborts on OOM).
-        unsafe { hew_vec_push_i32(v, i32::from(b)) };
-    }
-    v
-}
-
 // ---------------------------------------------------------------------------
 // Tests — struct layout and discriminant values
 // ---------------------------------------------------------------------------
@@ -525,147 +365,5 @@ mod tests {
             size > 5 * std::mem::size_of::<usize>(),
             "HewVec too small: {size}"
         );
-    }
-
-    #[test]
-    fn hwvec_to_u8_rejects_null_pointer() {
-        // SAFETY: this test intentionally exercises the null-pointer panic path.
-        let panic = std::panic::catch_unwind(|| unsafe {
-            let _ = hwvec_to_u8(std::ptr::null_mut());
-        })
-        .expect_err("null vectors must panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("<non-string panic>");
-        assert!(message.contains("null HewVec pointer"));
-    }
-
-    #[test]
-    fn hwvec_to_u8_rejects_non_byte_shape() {
-        // SAFETY: layout is null so layout_storage is never read.
-        let mut vec = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: mem::size_of::<i64>(),
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let vec_ptr = &raw mut vec;
-        // SAFETY: this test intentionally exercises the invalid-shape panic path.
-        let panic = std::panic::catch_unwind(move || unsafe {
-            let _ = hwvec_to_u8(vec_ptr);
-        })
-        .expect_err("non-byte vectors must panic");
-        let message = panic
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| panic.downcast_ref::<&str>().copied())
-            .unwrap_or("<non-string panic>");
-        assert!(message.contains("expected elem_size"));
-    }
-
-    // ── try_hwvec_to_u8 (non-panicking variant) ─────────────────────────
-
-    #[test]
-    fn try_hwvec_to_u8_returns_none_for_null() {
-        // SAFETY: null is the explicitly tested path.
-        let result = unsafe { try_hwvec_to_u8(std::ptr::null_mut()) };
-        assert!(result.is_none(), "null pointer must return None");
-    }
-
-    #[test]
-    fn try_hwvec_to_u8_returns_none_for_wrong_elem_size() {
-        // SAFETY: layout is null so layout_storage is never read.
-        let mut vec = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: mem::size_of::<i64>(), // i64, not i32
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let vec_ptr = &raw mut vec;
-        // SAFETY: vec is a valid live HewVec on the stack.
-        let result = unsafe { try_hwvec_to_u8(vec_ptr) };
-        assert!(result.is_none(), "wrong elem_size must return None");
-    }
-
-    #[test]
-    fn try_hwvec_to_u8_returns_none_for_wrong_elem_kind() {
-        // SAFETY: layout is null so layout_storage is never read.
-        let mut vec = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: mem::size_of::<i32>(),
-                elem_kind: ElemKind::String, // not Plain
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let vec_ptr = &raw mut vec;
-        // SAFETY: vec is a valid live HewVec on the stack.
-        let result = unsafe { try_hwvec_to_u8(vec_ptr) };
-        assert!(result.is_none(), "non-Plain elem_kind must return None");
-    }
-
-    #[test]
-    fn try_hwvec_to_u8_returns_some_for_empty_valid_vec() {
-        // SAFETY: layout is null so layout_storage is never read; empty vec
-        // so `data` is never dereferenced.
-        let mut vec = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: 0,
-                cap: 0,
-                elem_size: mem::size_of::<i32>(),
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let vec_ptr = &raw mut vec;
-        // SAFETY: vec is a valid live HewVec on the stack.
-        let result = unsafe { try_hwvec_to_u8(vec_ptr) };
-        assert_eq!(
-            result,
-            Some(vec![]),
-            "empty plain HewVec must return Some([])"
-        );
-    }
-
-    #[cfg(target_pointer_width = "64")]
-    #[test]
-    fn try_hwvec_to_u8_returns_none_for_negative_length() {
-        // The test-only length export converts the platform-sized `len` to
-        // i64, making this malformed header report -1. Rejection happens before
-        // the null data pointer can be inspected.
-        // SAFETY: layout is null so layout_storage is never read.
-        let mut vec = unsafe {
-            HewVec {
-                data: std::ptr::null_mut(),
-                len: usize::MAX,
-                cap: usize::MAX,
-                elem_size: mem::size_of::<i32>(),
-                elem_kind: ElemKind::Plain,
-                layout: std::ptr::null(),
-                layout_storage: core::mem::zeroed(),
-            }
-        };
-        let vec_ptr = &raw mut vec;
-        // SAFETY: the test passes a live header and asserts the malformed
-        // signed length is rejected before any element access.
-        let result = unsafe { try_hwvec_to_u8(vec_ptr) };
-        assert!(result.is_none(), "negative length must return None");
     }
 }

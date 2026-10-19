@@ -33,6 +33,8 @@ mod let_wildcard_discard;
 mod loop_break_continue_lower;
 #[path = "lowering_core/m3_surface_pid_lower.rs"]
 mod m3_surface_pid_lower;
+#[path = "lowering_core/machine_source_provenance.rs"]
+mod machine_source_provenance;
 #[path = "lowering_core/nested_match_payload_lower.rs"]
 mod nested_match_payload_lower;
 #[path = "lowering_core/numeric_cast_lowering.rs"]
@@ -75,3 +77,6 @@ mod scope_recovery;
 
 #[path = "lowering_core/checked_await.rs"]
 mod checked_await;
+
+#[path = "lowering_core/checked_for_loops.rs"]
+mod checked_for_loops;

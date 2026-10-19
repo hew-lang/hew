@@ -158,14 +158,20 @@ fn main() {
         output.errors
     );
     assert_eq!(
-        output.call_type_args.len(),
+        output
+            .call_type_args
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         2,
         "expected one entry per method call"
     );
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::I64]),
         "expected one call to infer T=i64, got {:?}",
         output.call_type_args
@@ -173,7 +179,9 @@ fn main() {
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::Bool]),
         "expected one call to infer T=bool, got {:?}",
         output.call_type_args
@@ -222,7 +230,11 @@ fn main() {
         output.errors
     );
     assert_eq!(
-        output.call_type_args.len(),
+        output
+            .call_type_args
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         2,
         "expected one entry per method call"
     );
@@ -322,7 +334,9 @@ fn multi_param_turbofish_records_all_call_type_args() {
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![Ty::I64, Ty::Bool]),
         "turbofish `make_pair<i64, bool>` must record [i64, bool]; got {:?}",
         output.call_type_args
@@ -541,14 +555,20 @@ fn run<T: Transform>(item: T) {
         output.errors
     );
     assert_eq!(
-        output.call_type_args.len(),
+        output
+            .call_type_args
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         2,
         "expected one entry per trait-bound method call"
     );
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::I64]),
         "expected one trait-bound call to infer U=i64, got {:?}",
         output.call_type_args
@@ -556,7 +576,9 @@ fn run<T: Transform>(item: T) {
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::Bool]),
         "expected one trait-bound call to infer U=bool, got {:?}",
         output.call_type_args
@@ -802,7 +824,11 @@ fn run<T: Transform + Label>(item: T) {
     // tag<V=string>) + 3 println builtins now registered with Display bounds.  Each
     // call site produces one entry keyed by span, so the total is deterministic.
     assert_eq!(
-        output.call_type_args.len(),
+        output
+            .call_type_args
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         6,
         "expected 3 generic-method calls + 3 println Display-bound calls, got {:?}",
         output.call_type_args
@@ -810,7 +836,9 @@ fn run<T: Transform + Label>(item: T) {
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::Bool]),
         "expected one Transform call to infer U=bool, got {:?}",
         output.call_type_args
@@ -818,7 +846,9 @@ fn run<T: Transform + Label>(item: T) {
     assert!(
         output
             .call_type_args
-            .values()
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+            .map(|(_, args)| args)
             .any(|args| args == &vec![crate::ty::Ty::I64]),
         "expected one Label call to infer V=i64, got {:?}",
         output.call_type_args
@@ -836,7 +866,9 @@ fn run<T: Transform + Label>(item: T) {
     // tag<V=string> + println<T=string> × 2 = 3.
     let bool_count = output
         .call_type_args
-        .values()
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .map(|(_, args)| args)
         .filter(|args| args.as_slice() == [crate::ty::Ty::Bool])
         .count();
     assert_eq!(
@@ -846,7 +878,9 @@ fn run<T: Transform + Label>(item: T) {
     );
     let int_count = output
         .call_type_args
-        .values()
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .map(|(_, args)| args)
         .filter(|args| args.as_slice() == [crate::ty::Ty::I64])
         .count();
     assert_eq!(
@@ -856,7 +890,9 @@ fn run<T: Transform + Label>(item: T) {
     );
     let string_count = output
         .call_type_args
-        .values()
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .map(|(_, args)| args)
         .filter(|args| args.as_slice() == [crate::ty::Ty::String])
         .count();
     assert_eq!(
@@ -3043,7 +3079,11 @@ fn struct_init_explicit_type_arg_on_enum_variant_synthesize_seeds_correctly() {
 // function calls (`record_concrete_call_type_args`).
 
 fn collect_record_init_args(tco: &TypeCheckOutput) -> Vec<Vec<Ty>> {
-    let mut entries: Vec<_> = tco.record_init_type_args.iter().collect();
+    let mut entries: Vec<_> = tco
+        .record_init_type_args
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .collect();
     // Stable ordering by span start for deterministic assertions.
     entries.sort_by_key(|(k, _)| k.start);
     entries.into_iter().map(|(_, v)| v.clone()).collect()
@@ -3181,7 +3221,9 @@ fn main() {
     let tco = check_source(source);
     assert!(tco.errors.is_empty(), "errors: {:?}", tco.errors);
     assert!(
-        tco.record_init_type_args.is_empty(),
+        tco.record_init_type_args
+            .keys()
+            .all(|key| key.module_idx != 0),
         "monomorphic record-init should not emit a side-table entry, got: {:?}",
         tco.record_init_type_args
     );
@@ -3278,7 +3320,9 @@ fn main() {
     // The source emits an InferenceFailed error for `_x` (E unresolved) — we
     // assert the side-table did not leak a partial entry.
     assert!(
-        tco.record_init_type_args.is_empty(),
+        tco.record_init_type_args
+            .keys()
+            .all(|key| key.module_idx != 0),
         "partial inference must not leak: {:?}",
         tco.record_init_type_args
     );
@@ -3308,7 +3352,9 @@ fn main() {
     // entry's resolved arg is still Ty::Var and the contract validator drops
     // it. record_init_type_args must therefore be empty.
     assert!(
-        tco.record_init_type_args.is_empty(),
+        tco.record_init_type_args
+            .keys()
+            .all(|key| key.module_idx != 0),
         "unknown-field init should not leak a side-table entry: {:?}",
         tco.record_init_type_args
     );
@@ -5068,6 +5114,24 @@ fn selected_eq_demand_does_not_walk_an_unrelated_branch_of_the_same_root() {
     ",
     );
     let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_demand_does_not_make_unrelated_polymorphic_recursion_relevant() {
+    let output = check_source(
+        r"
+        fn unrelated_growth<T>(n: i64) {
+            if n > 0 { unrelated_growth<Vec<T>>(n - 1); }
+        }
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn branches<T>(left: T, right: T) -> bool {
+            unrelated_growth<T>(1);
+            same(left, right)
+        }
+        fn main() { let result = branches(1, 1); }
+    ",
+    );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 

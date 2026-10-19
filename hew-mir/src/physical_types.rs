@@ -1419,7 +1419,9 @@ pub struct PhysicalModule {
     /// native frame per level, and whether it can raise a fault the enclosing
     /// frame must own.
     pub releases: ReleaseEffects,
-    /// Retained semantic authority for verification, never a physical classifier.
+    /// Checker-owned semantic facts retained to verify physical recipes.
+    /// Lowering derives recipes from the SIR module's facts; consumers execute
+    /// those explicit recipes rather than reclassifying types.
     pub(crate) type_facts: BTreeMap<TypeInstanceKey, hew_types::TypeFacts>,
     pub callables: Vec<PhysicalCallable>,
     pub functions: Vec<PhysicalFunction>,

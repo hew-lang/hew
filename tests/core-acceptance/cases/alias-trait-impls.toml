@@ -1,0 +1,10 @@
+[[case]]
+id = "alias-trait-impls"
+intent = "Preserve alias-owned conditional trait evidence without leaking its implementation onto the underlying type, and fall back to a target implementation when the alias has none."
+source = "cases/alias-trait-impls.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "alias traits preserved\n"
+exit = 0

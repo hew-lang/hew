@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1651u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -227,16 +227,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_free",
      "{\"native\": \"fn hew_actor_free( *mut HewActor) -> c_int\"}", "native",
      "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_gen_sink_complete",
-     "{\"native\": \"fn hew_actor_gen_sink_complete( *mut HewActor, *mut "
-     "HewSink, )\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_gen_sink_register",
-     "{\"native\": \"fn hew_actor_gen_sink_register( *mut HewActor, *mut "
-     "HewSink, )\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_get_budget",
      "{\"native\": \"fn hew_actor_get_budget( *const HewActor) -> u32\", "
@@ -6186,11 +6176,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_sink_is_valid",
      "{\"native\": \"fn hew_sink_is_valid( *const HewSink) -> i32\", "
      "\"wasm32-wasip1\": \"fn hew_sink_is_valid( *const HewSink) -> i32\"}",
-     "native,wasm32-wasip1", "stable", "not-applicable",
-     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_sink_peer_closed",
-     "{\"native\": \"fn hew_sink_peer_closed( *mut HewSink) -> i32\", "
-     "\"wasm32-wasip1\": \"fn hew_sink_peer_closed( *mut HewSink) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_sink_release_begin",

@@ -153,7 +153,7 @@ fn compiler_iterator_impls_retain_their_typed_receiver_identities() {
 }
 
 #[test]
-fn user_hashmap_iter_shadow_cannot_capture_the_compiler_cursor_impl() {
+fn user_hashmap_iter_shadow_cannot_capture_the_std_cursor_impl() {
     let output = std_iter_output(
         r"type HashMapIter<T> {
     value: Option<T>;
@@ -199,7 +199,7 @@ fn main() -> i64 {
     )
     .unwrap_or_else(|| {
         panic!(
-            "the compiler cursor keeps its exact std impl; keys: {:#?}",
+            "the std cursor keeps its exact impl; keys: {:#?}",
             index.keys().collect::<Vec<_>>()
         )
     });

@@ -273,14 +273,6 @@ pub enum RuntimeCallFamily {
     // the Stream note below); `try_send` is its non-parking peer.
     SinkClone,
     SinkClose,
-    /// `hew_sink_peer_closed(sink) -> i32` — a `receive gen fn` pump's
-    /// per-iteration peer-closed check (decision 6): 1 once the
-    /// consumer stream has closed/detached, so the pump breaks its loop
-    /// WITHOUT resuming the generator further (cancellation; an infinite
-    /// generator plus a consumer `break` must not livelock the actor).
-    /// Emitted only by `build_stream_producer_pump`; pre-staged like
-    /// `SinkClose`.
-    SinkPeerClosed,
 
     // --- Stream<T> ---------------------------------------------------------
     // recv/try_recv/send/try_send ride the element-layout-witness `*_layout`

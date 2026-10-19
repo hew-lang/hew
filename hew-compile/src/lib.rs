@@ -2839,9 +2839,10 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 
 /// Methods on builtin types are always available, like `.len()`: the
 /// standard-library modules that own them join every program as ordinary
-/// modules unless the program already imports them. The builtins prelude is
-/// loaded out of band, so only its Display impls take this path; its other
-/// declarations retain their compiler-owned registration.
+/// modules unless the program already imports them. A filesystem-selected
+/// builtins source enters the graph in full, allowing the checker and HIR to
+/// share its declaration occurrences. When analysis uses compiled-in sources,
+/// the checker's embedded builtin registration already owns those declarations.
 fn add_prelude_std_modules(
     graph: &mut hew_parser::module::ModuleGraph,
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
@@ -2853,6 +2854,9 @@ fn add_prelude_std_modules(
             continue;
         }
         let (path, source) = source_for(name)?;
+        if name == "builtins" && path.is_none() {
+            continue;
+        }
         let filename = path
             .as_ref()
             .map_or_else(|| format!("std/{name}.hew"), |path| display_path(path));
@@ -2871,23 +2875,10 @@ fn add_prelude_std_modules(
                     .collect(),
             ));
         }
-        let items = parsed
-            .program
-            .items
-            .into_iter()
-            .filter(|(item, _)| {
-                name != "builtins"
-                    || matches!(item, Item::Impl(decl) if decl
-                        .trait_bound
-                        .as_ref()
-                        .is_some_and(|bound| bound.path.to_string() == "Display"))
-                // TRANSITION(P1): deleted by A1 commit 2
-            })
-            .collect();
         graph
             .add_module(Module {
                 id: id.clone(),
-                items,
+                items: parsed.program.items,
                 imports: Vec::new(),
                 source_paths: path.into_iter().collect(),
                 doc: None,
@@ -4733,6 +4724,22 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
+
+    #[test]
+    fn embedded_prelude_lowers_vector_get_and_println_once() {
+        let mut parsed = hew_parser::parse(
+            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); }",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        super::attach_prelude_std_modules(&mut parsed.program);
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+        let facts = checker.check_program(&parsed.program);
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+        let lowered =
+            hew_hir::lower_program_host_target(&parsed.program, &facts, &hew_hir::ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    }
 
     fn write_toml(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.toml")).expect("create hew.toml");
@@ -8998,6 +9005,37 @@ mod source_analysis_batch_tests {
         assert_eq!(checked_resolutions(fresh), checked_resolutions(checked));
         assert_eq!(finalized_facts(fresh), finalized_facts(checked));
         shared
+    }
+
+    #[test]
+    fn cached_builtin_iterator_effects_match_the_complete_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let source = r#"
+fn cached_consumer_first<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
+    match it.next() { .Some(value) => value, .None => 0 }
+}
+fn cached_consumer_ready() -> i64 {
+    let row: Vec<i64> = [1, 2];
+    cached_consumer_first(row.iter())
+}
+fn main() {
+    let callback: fn() -> i64 = cached_consumer_ready;
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
+    println(f"{callback()}");
+    println(f"{sums[0] + sums[1]}");
+}
+"#;
+        for name in ["first.hew", "second.hew"] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+        }
+        assert_eq!(batch.reused_roots(), 2);
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.dependency_cache_hits(), 1);
     }
 
     #[test]

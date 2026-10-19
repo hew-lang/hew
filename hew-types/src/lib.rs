@@ -63,15 +63,15 @@ pub use builtin_type::{
 pub use check::{
     builtin_function_names, directive_suppresses, ActorMethodKind, ActorStateGuard, ArmResolution,
     AssignTargetKind, AssignTargetShape, AssociatedTypeSchemas, BinderTraitCall, Bound,
-    CallAbiHint, CallTarget, CallableArgumentFlow, CallableCandidate, CallableFieldFlow, Checker,
-    ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind,
-    ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion, DynMethodCall, DynReceiver,
-    DynSlot, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
-    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodSignature, FnSig,
-    HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry, IndirectCallCandidates, LintId,
-    LintLevel, LintLevels, LintSources, LookupError, MachineMethodKind, MathGenericOp,
-    MethodCallReceiverKind, MethodCallRewrite, MethodTarget, MethodTargetFamily,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    CallAbiHint, CallTarget, CallableArgumentFlow, CallableCandidate, CallableFieldFlow,
+    CheckedForLoop, CheckedForMethod, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat,
+    DynCoercion, DynMethodCall, DynReceiver, DynSlot, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
+    ExternMethodSignature, FnSig, HashMapMethod, HashSetMethod, ImplDef, ImplId, ImplRegistry,
+    IndirectCallCandidates, LintId, LintLevel, LintLevels, LintSources, LookupError,
+    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, MethodTarget,
+    MethodTargetFamily, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, PatternKind, PatternPlan,
     PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
     PoolAccessorKind, RcIntrinsicOp, ReceiverUpdate, ResolvedCall, ResolvedTraitDefault,
@@ -112,9 +112,9 @@ pub use runtime_call::{
 pub use runtime_calling_convention::RuntimeCallingConvention;
 pub use stdlib_authority::{
     authority as stdlib_authority, AuthorityBinding, AuthorityDeclarationKind, AuthorityError,
-    AuthorityErrorKind, AuthoritySource, DiagnosticItem, EnumVariantOrder, ExternAbiEntry,
-    ExternAbiFact, ExternRuntimeCapability, ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup,
-    PreludeExport, StdlibAuthority, StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
+    AuthorityErrorKind, AuthoritySource, EnumVariantOrder, ExternRuntimeCapability,
+    ExternRuntimeCapabilityEntry, Intrinsic, OverloadGroup, PreludeExport, StdlibAuthority,
+    StdlibRoot, STDLIB_AUTHORITY, SUBSTRATE_SOURCES,
 };
 pub use ty::{NominalHead, ParamHead, TraitObjectBound, TraitRef, Ty, TypeHead};
 pub use type_descriptor::TypeDescriptor;

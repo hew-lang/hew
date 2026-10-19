@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn machine_interpolation_distinguishes_intrinsics_from_custom_display() {
+    for suffix in ["", ":?"] {
+        for (value, custom) in [("7", false), ("Label { value: 7 }", true)] {
+            let source = format!(
+                r#"
+type Label {{ value: i64; }}
+impl Display for Label {{ fn fmt(self) -> string {{ "label" }} }}
+machine Labels {{
+    events {{ Show; }}
+    state Idle;
+    on Show: Idle => Idle {{
+        let value = {value};
+        let label = f"{{value{suffix}}}";
+        Idle
+    }}
+}}
+fn main() {{}}
+"#
+            );
+            let output = check_source(&source);
+            if custom {
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.message.contains("cannot call a custom Display")),
+                    "{source}: {:?}",
+                    output.errors
+                );
+            } else {
+                assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+            }
+        }
+    }
+}
+
+#[test]
 fn machine_event_type_is_an_owned_member() {
     let source = "machine Tank {\n    events {\n        Tick;\n    }\n    state Idle;\n    on Tick: Idle => Idle;\n}\n\nfn feed(event: Tank.Event) -> i64 {\n    1\n}\n";
     let parsed = hew_parser::parse(source);

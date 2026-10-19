@@ -5633,15 +5633,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::SinkPeerClosed => RuntimeOpRow {
-                authority: RuntimeAuthority::Service,
-                symbol: "hew_sink_peer_closed",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::StreamClose => RuntimeOpRow {
                 authority: RuntimeAuthority::Service,
                 symbol: "hew_stream_close",

@@ -1,4 +1,4 @@
-fn visit<T>(values: Vec<T>) {
+fn visit<T: Clone>(values: Vec<T>) {
     values.at(0);
 }
 

@@ -12,8 +12,6 @@ pub enum BuiltinClass {
     ClassB,
 }
 
-pub use hew_types::runtime_call::PrintKind;
-
 #[must_use]
 pub fn generic_math_intrinsic_callee(
     op: MathGenericOp,
@@ -45,17 +43,10 @@ pub enum BuiltinLinkage {
     RuntimeFfiShim {
         symbol: &'static str,
     },
-    // NOTE: `PrintIntercept` and `ToStringShim` below are retained as transitional
-    // linkage variants. The L3 Display + f-strings work routes interpolants
-    // through the lang-item registry and user `impl Display for T` methods,
-    // making these shims redundant at the surface level — but their actual
-    // retirement (and the print-macro rewrites that depend on it) belongs to
-    // the Phase-2/3 codegen-rs lane (#340γ follow-on). Deletion is intentionally
-    // deferred to that work to keep this revision boundary surgical.
+    /// Print surface whose typed runtime-call descriptor owns execution.
+    /// Its ABI endpoint supports Display linkage and export classification.
     PrintIntercept {
         runtime_symbol: &'static str,
-        kind: PrintKind,
-        newline: bool,
     },
     ToStringShim {
         symbol: &'static str,
@@ -456,7 +447,7 @@ const fn overload(
 }
 
 macro_rules! print_entry {
-    ($name:literal, $of:literal, $params:expr, $kind:ident, $newline:expr) => {
+    ($name:literal, $of:literal, $params:expr) => {
         overload(
             $name,
             $of,
@@ -464,8 +455,6 @@ macro_rules! print_entry {
             BuiltinTy::Unit,
             BuiltinLinkage::PrintIntercept {
                 runtime_symbol: PRINT_RUNTIME,
-                kind: PrintKind::$kind,
-                newline: $newline,
             },
         )
     };
@@ -614,22 +603,22 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // Class A: monomorphic print/println overloads.
-    print_entry!("println_i32", "println", I32, I32, true),
-    print_entry!("println_i64", "println", I64, I64, true),
-    print_entry!("println_u8", "println", U8, U8, true),
-    print_entry!("println_u32", "println", U32, U32, true),
-    print_entry!("println_u64", "println", U64, U64, true),
-    print_entry!("println_f64", "println", F64, F64, true),
-    print_entry!("println_bool", "println", BOOL, Bool, true),
-    print_entry!("println_str", "println", STRING, Str, true),
-    print_entry!("print_i32", "print", I32, I32, false),
-    print_entry!("print_i64", "print", I64, I64, false),
-    print_entry!("print_u8", "print", U8, U8, false),
-    print_entry!("print_u32", "print", U32, U32, false),
-    print_entry!("print_u64", "print", U64, U64, false),
-    print_entry!("print_f64", "print", F64, F64, false),
-    print_entry!("print_bool", "print", BOOL, Bool, false),
-    print_entry!("print_str", "print", STRING, Str, false),
+    print_entry!("println_i32", "println", I32),
+    print_entry!("println_i64", "println", I64),
+    print_entry!("println_u8", "println", U8),
+    print_entry!("println_u32", "println", U32),
+    print_entry!("println_u64", "println", U64),
+    print_entry!("println_f64", "println", F64),
+    print_entry!("println_bool", "println", BOOL),
+    print_entry!("println_str", "println", STRING),
+    print_entry!("print_i32", "print", I32),
+    print_entry!("print_i64", "print", I64),
+    print_entry!("print_u8", "print", U8),
+    print_entry!("print_u32", "print", U32),
+    print_entry!("print_u64", "print", U64),
+    print_entry!("print_f64", "print", F64),
+    print_entry!("print_bool", "print", BOOL),
+    print_entry!("print_str", "print", STRING),
     // Class A: monomorphic to_string overloads.
     tostring_entry!("to_string_i32", I32, "hew_int_to_string"),
     tostring_entry!("to_string_i64", I64, "hew_i64_to_string"),

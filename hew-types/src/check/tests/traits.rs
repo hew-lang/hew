@@ -51,7 +51,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::StaticTraitDispatch {
                 consumes_receiver: true,
@@ -62,7 +62,12 @@ fn main() {
         "generic trait dispatch must carry both receiver ownership facts"
     );
     assert!(
-        output.method_call_preserves_receiver_identity.len() >= 3,
+        output
+            .method_call_preserves_receiver_identity
+            .iter()
+            .filter(|key| key.module_idx == 0)
+            .count()
+            >= 3,
         "statement-position identity calls must carry an explicit preservation fact"
     );
 }
@@ -342,7 +347,7 @@ fn main() {
                     if head.is_param() && head.spelling() == "T" && args.is_empty())
     ));
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction {
                 consumes_receiver: true,
@@ -412,19 +417,16 @@ fn rejected_trait_receiver_identity_never_reaches_dispatch_metadata() {
         output.errors
     );
     assert!(
-        output
-            .method_call_rewrites
-            .values()
-            .all(|rewrite| !matches!(
-                rewrite,
-                MethodCallRewrite::RewriteToFunction {
-                    returns_receiver_identity: true,
-                    ..
-                } | MethodCallRewrite::StaticTraitDispatch {
-                    returns_receiver_identity: true,
-                    ..
-                }
-            )),
+        super::root_values(&output.method_call_rewrites).all(|rewrite| !matches!(
+            rewrite,
+            MethodCallRewrite::RewriteToFunction {
+                returns_receiver_identity: true,
+                ..
+            } | MethodCallRewrite::StaticTraitDispatch {
+                returns_receiver_identity: true,
+                ..
+            }
+        )),
         "rejected receiver identity must fail closed before generic dispatch metadata: {:#?}",
         output.method_call_rewrites
     );
@@ -2682,7 +2684,12 @@ fn cyclic_trait_hierarchy_bound_check_surfaces_diagnostic() {
         .trait_super
         .insert(trait_b, vec![TraitRef::bare(trait_a)]);
     let thing = checker.test_named("Thing", vec![]);
-    checker.record_trait_impl(&thing, &crate::check::TraitRef::bare(trait_a), Vec::new());
+    checker.record_trait_impl(
+        &thing,
+        &crate::check::TraitRef::bare(trait_a),
+        Vec::new(),
+        crate::check::ParamBounds::default(),
+    );
 
     let param = crate::ParamHead::for_test("T");
     let mut bounds = crate::check::ParamBounds::default();

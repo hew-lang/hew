@@ -197,15 +197,6 @@ impl LowerCtx {
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
         let key = self.mk_key(&span);
-        if let Some((id, ty)) = self.synthetic_binding_uses.get(&key).cloned() {
-            return (
-                HirExprKind::BindingRef {
-                    name: name.to_string(),
-                    resolved: ResolvedRef::Binding(id),
-                },
-                ty,
-            );
-        }
         if let Some(Resolution::Def(declaration)) = self.resolutions.get(&key).copied() {
             if matches!(
                 self.defs.kind(declaration),

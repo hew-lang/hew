@@ -1,18 +1,7 @@
 //! Iterator shapes, `for` loop desugaring and range adapters.
 
 use super::*;
-use hew_parser::ast::Ident;
 
-/// Walk each monomorphisation's origin fn body, substitute the
-/// per-monomorphisation type-arg map into every inner Call site's
-/// recorded type arguments, and add any newly-discovered concrete
-/// `(origin_fn, Vec<ResolvedTy>)` pairs to the registry. Iterates to a
-/// fixed point.
-///
-/// Emits `MonomorphisationCapExceeded` (at most once) when the cap is
-/// hit. Skips inner calls whose substituted args still contain any
-/// abstract type-parameter symbol (no monomorphisation is possible
-/// without a concrete instantiation).
 /// The base range plus resolved iteration adapters peeled from a for-loop
 /// iterable by [`LowerCtx::peel_range_adapter_chain`].  Borrows the AST
 /// sub-expressions; lowered into a single `HirExprKind::ForRange`.
@@ -39,123 +28,6 @@ pub(super) struct RangeAdapterChain<'a> {
 }
 
 impl LowerCtx {
-    pub(super) fn resolved_option_elem_ty(ty: &ResolvedTy) -> Option<ResolvedTy> {
-        let ResolvedTy::Named {
-            args,
-            head: hew_types::TypeHead::Builtin(BuiltinType::Option),
-            ..
-        } = ty
-        else {
-            return None;
-        };
-        if args.len() == 1 {
-            Some(args[0].clone())
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn direct_method_return_ty(
-        &mut self,
-        callee: &str,
-        receiver_args: &[ResolvedTy],
-        span: &Span,
-        context: &str,
-    ) -> Option<ResolvedTy> {
-        let Some(sig) = self.signatures().get(callee).cloned() else {
-            self.unsupported(
-                span.clone(),
-                format!("{context} requires lowered method symbol `{callee}`"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        let Ok(mut ret_ty) = ResolvedTy::from_ty(&sig.return_type) else {
-            self.unsupported(
-                span.clone(),
-                format!("{context} method `{callee}` has a non-boundary return type"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        if receiver_args.len() != sig.type_params.len() {
-            self.unsupported(
-                span.clone(),
-                format!(
-                    "{context} method `{callee}` has {} type parameter(s), but the receiver supplies {} type argument(s)",
-                    sig.type_params.len(),
-                    receiver_args.len()
-                ),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        }
-        if !sig.type_params.is_empty() {
-            ret_ty = substitute_type_params(&ret_ty, &sig.type_params, receiver_args);
-        }
-        Some(ret_ty)
-    }
-
-    pub(super) fn generic_iterator_next_shape(
-        &mut self,
-        iter_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<ResolvedTy> {
-        let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = iter_ty
-        else {
-            return None;
-        };
-        let name = head.registry_key();
-        let callee = crate::node::HirImplBlock::method_symbol(name, "next");
-        let sig = self.signatures().get(&callee).cloned()?;
-        if !sig.requires_mutable_receiver {
-            self.unsupported(
-                span.clone(),
-                format!("generic for-in requires iterator method `{callee}` to take `var self`"),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        }
-        let ret_ty = self.direct_method_return_ty(&callee, args, span, "generic for-in next")?;
-        let Some(elem_ty) = Self::resolved_option_elem_ty(&ret_ty) else {
-            self.unsupported(
-                span.clone(),
-                format!(
-                    "generic for-in requires iterator method `{callee}` to return `Option<T>`, got `{ret_ty}`"
-                ),
-                "iterator-runtime-dispatch",
-            );
-            return None;
-        };
-        Some(elem_ty)
-    }
-
-    pub(super) fn for_iter_next_call_for_ty(
-        &mut self,
-        iter_ty: &ResolvedTy,
-        span: &Span,
-    ) -> Option<(ResolvedTy, ForIterNextCall)> {
-        if let ResolvedTy::Named {
-            args,
-            head: hew_types::TypeHead::Builtin(BuiltinType::VecIter),
-            ..
-        } = iter_ty
-        {
-            if args.len() == 1 {
-                return Some((args[0].clone(), ForIterNextCall::BuiltinVecIter));
-            }
-        }
-        self.generic_iterator_next_shape(iter_ty, span)
-            .map(|elem_ty| (elem_ty, ForIterNextCall::VarSelf))
-    }
-
     pub(super) fn make_direct_method_call(
         &mut self,
         callee_name: String,
@@ -210,36 +82,118 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn generic_into_iter_init(
+    fn checked_for_type(&mut self, ty: &Ty, role: &str, span: &Span) -> Option<ResolvedTy> {
+        match ResolvedTy::from_ty(ty) {
+            Ok(resolved) => Some(resolved),
+            Err(error) => {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: format!("for loop {role}"),
+                        reason: error.to_string(),
+                    },
+                    span.clone(),
+                    "checked iterator type failed boundary conversion",
+                ));
+                None
+            }
+        }
+    }
+
+    /// Lower the checker's selected implicit call without replaying lookup or
+    /// attaching a synthetic call to an authored expression span.
+    fn lower_checked_for_call(
         &mut self,
-        iterable: HirExpr,
+        call: &hew_types::CheckedForMethod,
+        mut receiver: HirExpr,
         span: &Span,
-    ) -> Option<(HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall)> {
-        let ResolvedTy::Named {
-            head:
-                head @ (hew_types::TypeHead::Nominal(_)
-                | hew_types::TypeHead::Param(_)
-                | hew_types::TypeHead::Unresolved(_)),
-            args,
-            ..
-        } = &iterable.ty
-        else {
-            return None;
+    ) -> Option<HirExpr> {
+        let ret_ty = self.checked_for_type(&call.return_type, "call result", span)?;
+        receiver.intent = if call.requires_mutable_receiver || call.consumes_receiver {
+            IntentKind::Consume
+        } else {
+            IntentKind::Read
         };
-        let name = head.registry_key();
-        let callee = crate::node::HirImplBlock::method_symbol(name, "into_iter");
-        if !self.signatures().contains(&callee) {
-            return None;
+        let receiver_ty = receiver.ty.clone();
+        let trait_args = call
+            .trait_args
+            .iter()
+            .map(|ty| self.checked_for_type(ty, "trait argument", span))
+            .collect::<Option<Vec<_>>>()?;
+        let kind = if let Some(receiver_type_param) = call.receiver_parameter {
+            if call.requires_mutable_receiver {
+                HirExprKind::VarSelfMethodCall {
+                    receiver_update: call.receiver_update,
+                    receiver: Box::new(receiver),
+                    call_target: call.target.clone(),
+                    target: HirVarSelfMethodTarget::StaticTrait {
+                        receiver_type_param,
+                        trait_args,
+                    },
+                    args: Vec::new(),
+                    evaluation_order: Vec::new(),
+                    ret_ty: ret_ty.clone(),
+                    receiver_ty: receiver_ty.clone(),
+                }
+            } else {
+                self.make_static_trait_dispatch_call(
+                    crate::StaticTraitSelf::Receiver(Box::new(receiver)),
+                    trait_args,
+                    call.target.clone(),
+                    receiver_type_param,
+                    LoweredCallArgs {
+                        args: Vec::new(),
+                        evaluation_order: Vec::new(),
+                    },
+                    ret_ty.clone(),
+                    span,
+                )
+            }
+        } else {
+            let hew_types::CallTarget::ImplMethod(declaration) = call.target else {
+                return None;
+            };
+            let symbol = self.registered_impl_method_symbol(declaration)?;
+            if call.requires_mutable_receiver {
+                HirExprKind::VarSelfMethodCall {
+                    receiver_update: call.receiver_update,
+                    receiver: Box::new(receiver),
+                    call_target: call.target.clone(),
+                    target: HirVarSelfMethodTarget::Direct,
+                    args: Vec::new(),
+                    evaluation_order: Vec::new(),
+                    ret_ty: ret_ty.clone(),
+                    receiver_ty: receiver_ty.clone(),
+                }
+            } else {
+                let mut direct =
+                    self.make_direct_method_call(symbol.clone(), receiver, &ret_ty, span.clone());
+                if let HirExprKind::Call { target, .. } = &mut direct.kind {
+                    *target = call.target.clone();
+                }
+                self.record_method_call_type_args(
+                    &symbol,
+                    &call.target,
+                    &receiver_ty,
+                    span,
+                    None,
+                    direct.site,
+                );
+                return Some(direct);
+            }
+        };
+        let result = self.make_expr(kind, ret_ty, IntentKind::Read, span.clone());
+        if let hew_types::CallTarget::ImplMethod(declaration) = call.target {
+            let symbol = self.registered_impl_method_symbol(declaration)?;
+            self.record_method_call_type_args(
+                &symbol,
+                &call.target,
+                &receiver_ty,
+                span,
+                None,
+                result.site,
+            );
         }
-        let receiver_ty = iterable.ty.clone();
-        let ret_ty =
-            self.direct_method_return_ty(&callee, args, span, "generic for-in into_iter")?;
-        let (elem_ty, next_call) = self.for_iter_next_call_for_ty(&ret_ty, span)?;
-        let call = self.make_direct_method_call(callee.clone(), iterable, &ret_ty, span.clone());
-        if let HirExprKind::Call { target, .. } = &call.kind {
-            self.record_method_call_type_args(&callee, target, &receiver_ty, span, call.site);
-        }
-        Some((call, ret_ty, elem_ty, next_call))
+        Some(result)
     }
 
     pub(super) fn make_option_ctor(
@@ -291,135 +245,6 @@ impl LowerCtx {
         let receiver_hir = self.lower_expr(receiver, IntentKind::Read);
         let iter_expr = self.make_vec_iter_init(receiver_hir, elem_ty, span);
         (iter_expr.kind, iter_expr.ty)
-    }
-
-    /// Expand `m.into_iter()` over a `HashMap<K, V>` into the same
-    /// `HashMapIter<K, V> { ks: m.keys(), vs: m.values(), idx: 0 }` cursor the
-    /// `for (k, v) in m` desugar builds — the map twin of
-    /// `lower_builtin_vec_into_iter`. The `keys()` / `values()` projections are
-    /// spanned at the call's start/end offsets (zero-width, distinct from each
-    /// other and every real span), reproduced byte-for-byte from the checker's
-    /// `BuiltinHashMapIntoIter` recording so the span-keyed resolved-call facts
-    /// resolve. The projections clone every key/value into fresh owned `Vec`s,
-    /// so each yielded `(K, V)` is independently droppable and the source map
-    /// stays live.
-    ///
-    /// A place receiver (identifier/field/index) is re-read once per projection
-    /// — the proven drop-safe path: each read borrows its owner, no second owner
-    /// of the map handle. A non-place rvalue (`make_map().into_iter()`) is bound
-    /// to one temp so the source runs EXACTLY once; both projections borrow the
-    /// temp. This mirrors the `HashMap` for-in single-eval temp; recording
-    /// `keys()` AND `values()` against the same cloned AST would otherwise
-    /// evaluate a side-effectful producer twice.
-    pub(super) fn lower_builtin_hashmap_into_iter(
-        &mut self,
-        receiver: &Spanned<Expr>,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
-        span: Span,
-    ) -> (HirExprKind, ResolvedTy) {
-        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-
-        if Self::for_in_iterable_is_place(&receiver.0) {
-            // Place source: re-read directly per projection (single owner, drop-safe).
-            let init = self.make_hashmap_iter_init(
-                receiver.clone(),
-                key_ty,
-                val_ty,
-                iter_ty.clone(),
-                &span,
-            );
-            return (init.kind, iter_ty);
-        }
-        // Non-place rvalue: bind to one temp so the source evaluates once.
-        let block_scope = self.ids.scope();
-        self.push_scope();
-        let temp_name = format!("__hew_into_iter_src_{}", self.ids.binding().0);
-        let src_ty = ResolvedTy::Named {
-            args: vec![key_ty.clone(), val_ty.clone()],
-            head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
-            is_opaque: false,
-        };
-        let temp_binding = self.bind(temp_name.clone(), src_ty, false, span.clone());
-        let recv_hir = self.lower_expr(receiver, IntentKind::Consume);
-        let init_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(temp_binding.clone(), Some(recv_hir)),
-            span: span.clone(),
-        };
-        let tail = self.with_synthetic_binding_use(&span, &temp_binding, |ctx| {
-            ctx.make_hashmap_iter_init(
-                (Expr::Ident(Ident::new(&temp_name)), span.clone()),
-                key_ty,
-                val_ty,
-                iter_ty.clone(),
-                &span,
-            )
-        });
-        self.pop_scope();
-        (
-            HirExprKind::Block(HirBlock {
-                node: self.ids.node(),
-                scope: block_scope,
-                statements: vec![init_stmt],
-                tail: Some(Box::new(tail)),
-                ty: iter_ty.clone(),
-                span,
-            }),
-            iter_ty,
-        )
-    }
-
-    /// Build the `HashMapIter<K, V> { ks: recv.keys(), vs: recv.values(), idx: 0 }`
-    /// `StructInit` from a projection receiver. `keys()`/`values()` are spanned at
-    /// the call span's start/end offsets, matching the checker's
-    /// `BuiltinHashMapIntoIter` recording so the span-keyed projection facts
-    /// resolve. The receiver keeps its own original span and is either re-read
-    /// (place) or the single-eval temp.
-    pub(super) fn make_hashmap_iter_init(
-        &mut self,
-        receiver: Spanned<Expr>,
-        key_ty: &ResolvedTy,
-        val_ty: &ResolvedTy,
-        iter_ty: ResolvedTy,
-        span: &Span,
-    ) -> HirExpr {
-        let keys_span = span.start..span.start;
-        let values_span = span.end..span.end;
-        let keys_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("keys"), keys_span.clone()),
-                args: Vec::new(),
-            },
-            keys_span,
-        );
-        let values_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver),
-                method: (Ident::new("values"), values_span.clone()),
-                args: Vec::new(),
-            },
-            values_span,
-        );
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
-        let idx = self.make_i64_literal(0, span.clone());
-        self.make_expr(
-            HirExprKind::StructInit {
-                name: "HashMapIter".to_string(),
-                type_args: vec![key_ty.clone(), val_ty.clone()],
-                fields: vec![
-                    ("ks".to_string(), keys_hir),
-                    ("vs".to_string(), values_hir),
-                    ("idx".to_string(), idx),
-                ],
-                base: None,
-            },
-            iter_ty,
-            IntentKind::Read,
-            span.clone(),
-        )
     }
 
     pub(super) fn make_vec_iter_init(
@@ -497,17 +322,6 @@ impl LowerCtx {
     /// read more than once with no observable side effect and no extra
     /// evaluation cost (an identifier, or a field/index projection rooted in a
     /// place).
-    ///
-    /// `HashMap` for-in takes two projections (`keys()`, `values()`) and
-    /// `HashSet` for-in takes one (`to_vec()`), each lowered as a `MethodCall` on
-    /// the iterable. For a place the receiver is re-lowered directly per
-    /// projection — the proven drop-safe path: a field/index read borrows its
-    /// owner, yields a fresh owned `Vec`, and leaves the source owner live (no
-    /// second owner of the collection handle, so no double-free at scope exit).
-    /// For a non-place rvalue (a call, a method call, …) re-lowering would
-    /// *re-evaluate* the source once per projection — `for x in make_set()` would
-    /// call `make_set()` twice — so those bind the value to a single-eval temp
-    /// instead ([`Self::bind_for_in_source`]).
     pub(super) fn for_in_iterable_is_place(expr: &Expr) -> bool {
         match expr {
             Expr::Ident(_) => true,
@@ -516,124 +330,6 @@ impl LowerCtx {
             }
             _ => false,
         }
-    }
-
-    /// Bind a for-in iterable's already-lowered value to a synthetic temp so a
-    /// non-place `HashMap`/`HashSet` source is evaluated exactly once.
-    ///
-    /// Only used for non-place rvalue sources (see
-    /// [`Self::for_in_iterable_is_place`]); place sources re-lower their
-    /// projection receivers directly. The temp owns the collection and its
-    /// scope-exit drop frees it exactly once; the projections borrow the temp
-    /// (Read), so the temp stays the sole owner. Returns the exact temp binding
-    /// and the `Let` statement to prepend
-    /// to the for-in's outer block.
-    pub(super) fn bind_for_in_source(
-        &mut self,
-        lowered_iterable: HirExpr,
-        source_ty: ResolvedTy,
-        span: &Span,
-    ) -> (HirBinding, HirStmt) {
-        let src_name = format!("__hew_for_src_{}", self.ids.binding().0);
-        let src_binding = self.bind(src_name.clone(), source_ty, false, span.clone());
-        let src_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(src_binding.clone(), Some(lowered_iterable)),
-            span: span.clone(),
-        };
-        (src_binding, src_stmt)
-    }
-
-    /// Build the for-in shape for `for (k, v) in m` over a `HashMap<K, V>`.
-    ///
-    /// Synthesizes a `HashMapIter<K, V> { ks: src.keys(), vs: src.values(), idx: 0 }`
-    /// constructor as AST and lowers it through the normal `StructInit` path so
-    /// the cursor's per-`(K, V)` layout monomorphises exactly like any user
-    /// record. `receiver` is the spanned projection receiver — the iterable AST
-    /// with its original span for a place source (re-read per projection,
-    /// drop-safe), or an `Expr::Ident` for the single-eval temp of a
-    /// non-place rvalue source.
-    /// The `keys()`/`values()` calls are spanned at two synthetic zero-width
-    /// spans (`iterable.start..start`, `iterable.end..end`) the checker recorded
-    /// the `keys`/`values` resolved-call facts at (`resolved_calls` is keyed by
-    /// span, so the two projections must not share one, and neither may share the
-    /// iterable's real span — that would clobber `expr_types[iterable_span]` and
-    /// mis-route non-identifier sources to the Vec arm). Iteration then drives
-    /// `HashMapIter::next` via the same `VarSelf` direct-call shape user iterator
-    /// types use.
-    pub(super) fn lower_hashmap_for_in_init(
-        &mut self,
-        iterable: &Spanned<Expr>,
-        receiver: &Spanned<Expr>,
-        key_ty: ResolvedTy,
-        val_ty: ResolvedTy,
-    ) -> (HirExpr, ResolvedTy, ResolvedTy, ForIterNextCall) {
-        let iterable_span = &iterable.1;
-        let elem_ty = ResolvedTy::Tuple(vec![key_ty.clone(), val_ty.clone()]);
-        let iter_ty = Self::resolved_hashmap_iter_ty(key_ty.clone(), val_ty.clone());
-        // `keys()` and `values()` are taken from the single-eval `src` temp
-        // (NOT a re-lowered clone of the iterable AST — that would evaluate a
-        // side-effectful source twice). Each call is spanned at its own
-        // synthetic zero-width span: `keys()` at `iterable.start..start`,
-        // `values()` at `iterable.end..end`. Their receiver keeps its original
-        // iterable span; otherwise a field/tuple projection reads the
-        // projection's `Vec` result type from `expr_types` instead of the
-        // receiver's `HashMap` type. The call-span derivation MUST match
-        // `Checker::hashmap_for_in_keys_span`/`..values_span` (hew-types)
-        // byte-for-byte — `resolved_calls`/`expr_types` are span-keyed, so a
-        // drift here would miss the checker's facts and trip the HIR boundary's
-        // totality contract. Neither span is the iterable's real span, so
-        // `expr_types[iterable_span]` keeps the map's true type and routing of
-        // non-identifier sources (field/call/index) stays correct. Each
-        // projection is lowered as a real `MethodCall` so it picks up the
-        // checker's `keys`/`values` resolved-call fact (→ the
-        // `hew_hashmap_keys_layout`/`values_layout` runtime symbols and their
-        // clone-on-read discipline). The receiver (`receiver`) is borrowed (Read)
-        // inside the resolved-impl-call lowering, so a place source's owner — or
-        // the single-eval temp — stays the sole owner and drops once.
-        let keys_span = iterable_span.start..iterable_span.start;
-        let values_span = iterable_span.end..iterable_span.end;
-        let keys_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("keys"), keys_span.clone()),
-                args: Vec::new(),
-            },
-            keys_span,
-        );
-        let values_call = (
-            Expr::MethodCall {
-                receiver: Box::new(receiver.clone()),
-                method: (Ident::new("values"), values_span.clone()),
-                args: Vec::new(),
-            },
-            values_span,
-        );
-        // The projections produce fresh owned Vecs; the StructInit consumes
-        // them into the cursor.
-        let keys_hir = self.lower_expr(&keys_call, IntentKind::Consume);
-        let values_hir = self.lower_expr(&values_call, IntentKind::Consume);
-        let idx = self.make_i64_literal(0, iterable_span.clone());
-        // Build the `HashMapIter<K, V>` StructInit HIR directly (carrying its
-        // `type_args` so MIR mangles the concrete layout), mirroring
-        // `make_vec_iter_init`; the layout + Option payload were registered
-        // above.
-        let iter_init = self.make_expr(
-            HirExprKind::StructInit {
-                name: "HashMapIter".to_string(),
-                type_args: vec![key_ty, val_ty],
-                fields: vec![
-                    ("ks".to_string(), keys_hir),
-                    ("vs".to_string(), values_hir),
-                    ("idx".to_string(), idx),
-                ],
-                base: None,
-            },
-            iter_ty.clone(),
-            IntentKind::Read,
-            iterable_span.clone(),
-        );
-        (iter_init, iter_ty, elem_ty, ForIterNextCall::VarSelf)
     }
 
     pub(super) fn lower_builtin_vec_iter_next(
@@ -1183,8 +879,7 @@ impl LowerCtx {
 
     #[expect(
         clippy::too_many_lines,
-        clippy::if_not_else,
-        reason = "the desugar keeps diagnostic recovery before the executable iterator branch"
+        reason = "the desugar preserves the specialized collection, stream and checked trait paths"
     )]
     pub(super) fn lower_for_iter_desugar(
         &mut self,
@@ -1287,10 +982,6 @@ impl LowerCtx {
             }
         }
 
-        // Statements that must run before the iterator-cursor `Let` in the
-        // for-in's outer block. The HashMap/HashSet arms push a single-eval
-        // source temp here so a side-effectful iterable is evaluated once.
-        let mut source_prelude: Vec<HirStmt> = Vec::new();
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
             ResolvedTy::Named {
                 args,
@@ -1302,113 +993,6 @@ impl LowerCtx {
                 // end before the cursor loop and must not become loop-carried values.
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
-                    Self::resolved_vec_iter_ty(elem_ty.clone()),
-                    elem_ty,
-                    ForIterNextCall::BuiltinVecIter,
-                )
-            }
-            ResolvedTy::Named {
-                args,
-                head: hew_types::TypeHead::Builtin(BuiltinType::HashMap),
-                ..
-            } if args.len() >= 2 => {
-                // `for (k, v) in m` over a HashMap builds a `HashMapIter`
-                // cursor at this concrete site from the map's `keys()` and
-                // `values()` projections (the checker recorded the resolved
-                // calls at two synthetic spans — see the HashMap arm in
-                // statements.rs `Stmt::For`). The map is a refcounted handle;
-                // like Vec for-in, sharing it (Capture) leaves the source
-                // binding Live after the loop, and the projections each clone
-                // every key/value into a fresh owned `Vec`, so every yielded
-                // `(K, V)` is independently droppable and the cursor never
-                // co-owns a yielded pair with the source map.
-                //
-                // A place source (identifier/field/index) is re-read directly
-                // per projection — the proven drop-safe path (the read borrows
-                // its owner; no second owner of the map handle). A non-place
-                // rvalue (`for (k, v) in next_map()`) would re-evaluate the
-                // source once per projection, so it is bound to a single-eval
-                // temp and both projections borrow the temp.
-                lowered_iterable.intent = IntentKind::Capture;
-                let key_ty = args[0].clone();
-                let val_ty = args[1].clone();
-                if Self::for_in_iterable_is_place(&iterable.0) {
-                    self.lower_hashmap_for_in_init(iterable, iterable, key_ty, val_ty)
-                } else {
-                    let source_ty = lowered_iterable.ty.clone();
-                    let (src_binding, src_stmt) =
-                        self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
-                    source_prelude.push(src_stmt);
-                    let receiver = (
-                        Expr::Ident(Ident::new(&src_binding.name)),
-                        iterable.1.clone(),
-                    );
-                    self.with_synthetic_binding_use(&iterable.1, &src_binding, |ctx| {
-                        ctx.lower_hashmap_for_in_init(iterable, &receiver, key_ty, val_ty)
-                    })
-                }
-            }
-            ResolvedTy::Named {
-                args,
-                head: hew_types::TypeHead::Builtin(BuiltinType::HashSet),
-                ..
-            } if !args.is_empty() => {
-                // `for x in s` over a HashSet snapshots the set's elements into
-                // an owned `Vec<T>` via `to_vec()` (the checker recorded the
-                // resolved call at a synthetic zero-width span — see the HashSet
-                // arm in statements.rs `Stmt::For`) and iterates that Vec through
-                // the proven `VecIter` cursor — each element is a fresh clone, so
-                // it is independently droppable; the set is shared (Capture) and
-                // stays live after the loop. A place source is re-read directly
-                // (drop-safe); a non-place rvalue (`for x in make_set()`) binds
-                // a single-eval temp so the source runs once, and `to_vec()`
-                // borrows the temp.
-                lowered_iterable.intent = IntentKind::Capture;
-                let elem_ty = args[0].clone();
-                // `to_vec()` is spanned at `iterable.start..start` (synthetic
-                // zero-width, matching `Checker::hashset_for_in_to_vec_span`
-                // byte-for-byte), NOT the iterable's real span — that span keeps
-                // the set's true type so non-identifier sources route here, not
-                // to the Vec arm. Only the CALL uses the synthetic span: its
-                // receiver keeps the real iterable span so a field/tuple
-                // projection reads its HashSet type rather than the call's Vec
-                // result type.
-                let to_vec_span = iterable.1.start..iterable.1.start;
-                let (to_vec_receiver, synthetic_source) =
-                    if Self::for_in_iterable_is_place(&iterable.0) {
-                        (iterable.clone(), None)
-                    } else {
-                        let source_ty = lowered_iterable.ty.clone();
-                        let (src_binding, src_stmt) =
-                            self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
-                        source_prelude.push(src_stmt);
-                        (
-                            (
-                                Expr::Ident(Ident::new(&src_binding.name)),
-                                iterable.1.clone(),
-                            ),
-                            Some(src_binding),
-                        )
-                    };
-                let to_vec_call = (
-                    Expr::MethodCall {
-                        receiver: Box::new(to_vec_receiver),
-                        method: (Ident::new("to_vec"), to_vec_span.clone()),
-                        args: Vec::new(),
-                    },
-                    to_vec_span,
-                );
-                let vec_hir = if let Some(binding) = synthetic_source {
-                    self.with_synthetic_binding_use(&iterable.1, &binding, |ctx| {
-                        ctx.lower_expr(&to_vec_call, IntentKind::Consume)
-                    })
-                } else {
-                    self.lower_expr(&to_vec_call, IntentKind::Consume)
-                };
-                let iter_init =
-                    self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
-                (
-                    iter_init,
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
                     elem_ty,
                     ForIterNextCall::BuiltinVecIter,
@@ -1472,24 +1056,31 @@ impl LowerCtx {
                 )
             }
             other => {
-                // Generic IntoIterator/Iterator: the into_iter() call consumes
-                // the source, or a plain Iterator binding is drained.
-                lowered_iterable.intent = IntentKind::Consume;
-                if let Some(shape) =
-                    self.generic_into_iter_init(lowered_iterable.clone(), &iterable.1)
-                {
+                let plan = self.for_loop_plans.get(&self.mk_key(&iterable.1)).cloned();
+                let shape = plan.and_then(|plan| {
+                    let cursor_ty =
+                        self.checked_for_type(&plan.cursor_type, "cursor", &iterable.1)?;
+                    let elem_ty = self.checked_for_type(&plan.item_type, "item", &iterable.1)?;
+                    let init = if let Some(call) = plan.into_iter {
+                        self.lower_checked_for_call(&call, lowered_iterable.clone(), &iterable.1)?
+                    } else {
+                        lowered_iterable.clone()
+                    };
+                    Some((
+                        init,
+                        cursor_ty,
+                        elem_ty,
+                        ForIterNextCall::Checked(Box::new(plan.next)),
+                    ))
+                });
+                if let Some(shape) = shape {
                     shape
-                } else if let Some(elem_ty) = self.generic_iterator_next_shape(&other, &iterable.1)
-                {
-                    (lowered_iterable, other, elem_ty, ForIterNextCall::VarSelf)
                 } else {
                     self.unsupported(
-                    iterable.1.clone(),
-                    format!(
-                        "for-in over non-Range iterable `{other}`; the Rust MIR pipeline currently supports Vec<T>, VecIter<T>, and concrete Iterator/IntoIterator impls"
-                    ),
-                    "iterator-runtime-dispatch",
-                );
+                        iterable.1.clone(),
+                        format!("for-in iterable `{other}` has no checked iterator call plan"),
+                        "iterator-runtime-dispatch",
+                    );
                     self.push_scope();
                     let _ = self.lower_block(body, &ResolvedTy::Unit);
                     self.pop_scope();
@@ -1521,84 +1112,25 @@ impl LowerCtx {
                 );
                 self.make_expr(next_kind, next_ty, IntentKind::Read, iterable.1.clone())
             }
-            ForIterNextCall::VarSelf => {
-                let option_ty = Self::resolved_option_ty(elem_ty.clone());
-
-                let target_label = match &iter_ty {
-                    ResolvedTy::Named {
-                        head:
-                            hew_types::TypeHead::Builtin(
-                                builtin @ (BuiltinType::VecIter | BuiltinType::HashMapIter),
+            ForIterNextCall::Checked(call) => {
+                let receiver = self.make_binding_ref(
+                    iter_name.clone(),
+                    iter_binding.id,
+                    iter_ty.clone(),
+                    IntentKind::Consume,
+                    iterable.1.clone(),
+                );
+                self.lower_checked_for_call(&call, receiver, &iterable.1)
+                    .unwrap_or_else(|| {
+                        self.make_expr(
+                            HirExprKind::Unsupported(
+                                "checked iterator call is not representable".into(),
                             ),
-                        ..
-                    } => crate::node::HirImplBlock::method_symbol(
-                        injected_builtin_impl_symbol_owner(builtin.canonical_name()),
-                        "next",
-                    ),
-                    ResolvedTy::Named { head, .. } => {
-                        let name = head.registry_key();
-                        crate::node::HirImplBlock::method_symbol(name, "next")
-                    }
-                    _ => String::new(),
-                };
-                let call_target = self.registered_symbol_target(&target_label);
-                if !self.ensure_executable_target(&call_target, &target_label, &iterable.1) {
-                    self.make_expr(
-                        HirExprKind::Unsupported(
-                            "synthetic iterator var-self call has no checker target".to_string(),
-                        ),
-                        option_ty,
-                        IntentKind::Read,
-                        iterable.1.clone(),
-                    )
-                } else {
-                    let lowered_receiver = self.make_binding_ref(
-                        iter_name.clone(),
-                        iter_binding.id,
-                        iter_ty.clone(),
-                        IntentKind::Consume,
-                        iterable.1.clone(),
-                    );
-                    let receiver_ty = iter_ty.clone();
-                    let next = self.make_expr(
-                        HirExprKind::VarSelfMethodCall {
-                            receiver_update: hew_types::ReceiverUpdate::Replace,
-                            receiver: Box::new(lowered_receiver),
-                            call_target,
-                            target: HirVarSelfMethodTarget::Direct,
-                            args: Vec::new(),
-                            evaluation_order: Vec::new(),
-                            ret_ty: option_ty.clone(),
-                            receiver_ty,
-                        },
-                        option_ty,
-                        IntentKind::Read,
-                        iterable.1.clone(),
-                    );
-                    // Key the instantiation on the CALL's site, not the
-                    // receiver's: SIR resolves a var-self direct call from the
-                    // call expression's own site (`hew-sir/src/lower_var_self.rs`),
-                    // so a generic iterator's `next` is otherwise reported as
-                    // missing its checker-resolved type arguments.
-                    if let HirExprKind::VarSelfMethodCall { call_target, .. } = &next.kind {
-                        self.record_method_call_type_args(
-                            &target_label,
-                            call_target,
-                            &iter_ty,
-                            &iterable.1,
-                            next.site,
-                        );
-                    }
-                    // This call root is compiler-generated and therefore has
-                    // no authored checker span. Keep its fact in the disjoint
-                    // generated-site domain. The closed builtin cursors clone
-                    // or move an independently owned element into the returned
-                    // Option; user/static iterators remain provisional until
-                    // the declaration-keyed verifier resolves their return
-                    // summary.
-
-                    next
-                }
+                            Self::resolved_option_ty(elem_ty.clone()),
+                            IntentKind::Read,
+                            iterable.1.clone(),
+                        )
+                    })
             }
             ForIterNextCall::StreamRecv => {
                 // Borrow the stream binding (Read) and emit the layout-witness
@@ -1778,16 +1310,10 @@ impl LowerCtx {
         };
         self.pop_scope();
 
-        // The single-eval source temp (`__hew_for_src_N`, pushed by the
-        // HashMap/HashSet arms) must define before the iterator-cursor `Let`,
-        // which builds its projections by borrowing the temp.
-        let mut statements = source_prelude;
-        statements.push(iter_stmt);
-        statements.push(loop_stmt);
         HirExprKind::Block(HirBlock {
             node: self.ids.node(),
             scope: block_scope,
-            statements,
+            statements: vec![iter_stmt, loop_stmt],
             tail: None,
             ty: ResolvedTy::Unit,
             span,

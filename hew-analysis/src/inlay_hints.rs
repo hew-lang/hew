@@ -896,10 +896,16 @@ fn main() {
         let tc = type_check(&pr);
         let hints = build_inlay_hints(source, &pr, &tc);
         let type_hints = binding_type_hint_labels(&hints);
-        // Assertions outside the guard — test fails if expr_types is empty
+        let literal_start = source.find("42").expect("integer literal is in source");
+        let literal_key = SpanKey {
+            start: literal_start,
+            end: literal_start + "42".len(),
+            module_idx: 0,
+        };
         assert!(
-            !tc.expr_types.is_empty(),
-            "type checker should populate expr_types for integer literal"
+            tc.expr_types.get(&literal_key) == Some(&Ty::I64),
+            "type checker should infer the root integer literal as i64; got {:?}",
+            tc.expr_types.get(&literal_key)
         );
         assert!(
             !type_hints.is_empty(),

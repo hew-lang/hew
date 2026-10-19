@@ -639,6 +639,9 @@ impl Checker {
         span: &Span,
     ) {
         for bound in bounds {
+            if self.bound_associated_types_agree(resolved_arg, bound) {
+                continue;
+            }
             for (assoc_name, expected_ty) in &bound.assoc {
                 if !self.type_satisfies_trait(resolved_arg, bound.trait_id) {
                     continue;
@@ -991,6 +994,10 @@ impl Checker {
                 return false;
             };
 
+            if !self.structural_method_receiver_applies(&concrete_ty, &type_sig) {
+                return false;
+            }
+
             // Arity check: non-receiver param counts must match.
             if trait_sig.params.len() != type_sig.params.len() {
                 return false;
@@ -1028,6 +1035,66 @@ impl Checker {
 
         self.record_structural_witnesses(trait_id, &concrete_ty, &required);
         true
+    }
+
+    fn structural_method_receiver_applies(&mut self, receiver: &Ty, sig: &FnSig) -> bool {
+        let Some(origin) = &sig.impl_method else {
+            return true;
+        };
+        let args = match receiver {
+            Ty::Named { args, .. } => args.as_slice(),
+            _ => &[],
+        };
+        let Some(mut substitutions) = crate::method_resolution::impl_receiver_substitution(
+            &origin.receiver_parameters,
+            &origin.receiver_args,
+            args,
+        ) else {
+            return false;
+        };
+        if let Some((trait_id, _)) = origin.trait_method {
+            substitutions.insert(crate::ParamHead::receiver(trait_id), receiver.clone());
+        }
+        let Some(original) = self.fn_sigs.get(&origin.declaration).cloned() else {
+            return false;
+        };
+        let snapshot = self.subst.snapshot();
+        let applies = if origin.is_inherent {
+            true
+        } else if let Some(implemented) = self
+            .impl_method_binders
+            .get(&origin.declaration)
+            .and_then(|binders| binders.implemented_trait.clone())
+        {
+            let implemented = TraitRef {
+                trait_id: implemented.trait_id,
+                args: implemented
+                    .args
+                    .iter()
+                    .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                    .collect(),
+                assoc: implemented
+                    .assoc
+                    .iter()
+                    .map(|(name, ty)| (*name, ty.substitute_type_params_parallel(&substitutions)))
+                    .collect(),
+            };
+            self.type_implements_trait_ref(receiver, &implemented)
+        } else {
+            false
+        } && original
+            .bounds
+            .map_types(|ty| ty.substitute_type_params_parallel(&substitutions))
+            .iter()
+            .all(|(subject, condition)| {
+                let Some(argument) = self.impl_bound_subject(*subject, &substitutions) else {
+                    return true;
+                };
+                self.type_satisfies_bound(&argument, condition)
+                    && self.bound_associated_types_agree(&argument, condition)
+            });
+        self.subst.restore(snapshot);
+        applies
     }
 
     #[cfg(test)]

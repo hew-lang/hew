@@ -49,7 +49,9 @@ fn call_effects(
         .suspension_effects
         .calls
         .iter()
-        .filter(|(key, _)| source[key.start..key.end].trim_end() == expression)
+        .filter(|(key, _)| {
+            key.module_idx == 0 && source[key.start..key.end].trim_end() == expression
+        })
         .map(|(_, effect)| *effect)
         .collect();
     assert!(!effects.is_empty(), "missing call: {expression}");
@@ -128,14 +130,7 @@ fn main() {
         ("values.next()", SuspensionEffect::MaySuspend),
         ("consume()", SuspensionEffect::MaySuspend),
     ] {
-        let effects: Vec<_> = output
-            .suspension_effects
-            .calls
-            .iter()
-            .filter(|(key, _)| source[key.start..key.end].trim_end() == expression)
-            .map(|(_, effect)| *effect)
-            .collect();
-        assert!(!effects.is_empty(), "missing call: {expression}");
+        let effects = call_effects(&output, source, expression);
         assert!(
             effects.iter().all(|effect| *effect == expected),
             "{expression}: {effects:?}"
@@ -294,7 +289,7 @@ fn main() {
         .suspension_effects
         .fork_transfers
         .iter()
-        .filter(|(key, _)| &source[key.start..key.end] == "worker")
+        .filter(|(key, _)| key.module_idx == 0 && &source[key.start..key.end] == "worker")
         .collect();
     assert_eq!(captures.len(), 6);
     for (_, fact) in captures {
@@ -312,7 +307,8 @@ fn fork_task_boundary_moves_nominal_resources_and_rejects_borrowed_views() {
         .suspension_effects
         .fork_transfers
         .iter()
-        .any(|(key, fact)| &source[key.start..key.end] == "socket"
+        .any(|(key, fact)| key.module_idx == 0
+            && &source[key.start..key.end] == "socket"
             && fact.acquisition == crate::ClosureCaptureAcquisition::Move
             && fact.is_send));
     for (source, expected) in [
@@ -362,7 +358,8 @@ fn main() {
             .suspension_effects
             .fork_transfers
             .iter()
-            .any(|(key, fact)| &source[key.start..key.end] == name
+            .any(|(key, fact)| key.module_idx == 0
+                && &source[key.start..key.end] == name
                 && fact.acquisition == crate::ClosureCaptureAcquisition::Move));
     }
     let source = source.replace("worker.read(third)", "worker.read(second)");
@@ -535,7 +532,8 @@ fn fork_promotes_borrowed_value_parameters_into_owning_captures() {
         .suspension_effects
         .fork_transfers
         .iter()
-        .any(|(key, fact)| source[key.start..key.end].trim() == "value"
+        .any(|(key, fact)| key.module_idx == 0
+            && source[key.start..key.end].trim() == "value"
             && fact.is_send
             && fact.is_sync
             && fact.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
@@ -571,7 +569,7 @@ fn ordinary_fork_operands_snapshot_owned_values_and_reusable_closures() {
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     for (key, fact) in &output.suspension_effects.fork_transfers {
-        if matches!(source[key.start..key.end].trim(), "text" | "callback") {
+        if key.module_idx == 0 && matches!(source[key.start..key.end].trim(), "text" | "callback") {
             assert_eq!(fact.acquisition, crate::ClosureCaptureAcquisition::Snapshot);
         }
     }
@@ -593,7 +591,8 @@ fn consuming_fork_arguments_still_transfer_the_original_owner() {
         .suspension_effects
         .fork_transfers
         .iter()
-        .any(|(key, fact)| source[key.start..key.end].trim() == "text"
+        .any(|(key, fact)| key.module_idx == 0
+            && source[key.start..key.end].trim() == "text"
             && fact.acquisition == crate::ClosureCaptureAcquisition::Move));
 }
 
@@ -658,12 +657,21 @@ fn effect_graph_shared_descendants_remain_synchronous() {
     source.push_str("fn main() { let _ = f26(); }\n");
     let output = check_source(&source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert_eq!(output.suspension_effects.calls.len(), 53);
+    assert_eq!(
+        output
+            .suspension_effects
+            .calls
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
+        53
+    );
     assert!(output
         .suspension_effects
         .calls
-        .values()
-        .all(|effect| *effect == SuspensionEffect::Never));
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .all(|(_, effect)| *effect == SuspensionEffect::Never));
 }
 
 #[test]
@@ -687,8 +695,9 @@ fn effect_graph_ignores_opaque_data_origins_in_shared_cleanup_calls() {
     assert!(output
         .suspension_effects
         .calls
-        .values()
-        .all(|effect| *effect == SuspensionEffect::Never));
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .all(|(_, effect)| *effect == SuspensionEffect::Never));
 }
 
 #[test]
@@ -851,8 +860,9 @@ fn pure_closure_calls_stay_synchronous() {
     assert!(output
         .suspension_effects
         .calls
-        .values()
-        .all(|effect| *effect == SuspensionEffect::Never));
+        .iter()
+        .filter(|(key, _)| key.module_idx == 0)
+        .all(|(_, effect)| *effect == SuspensionEffect::Never));
 }
 
 #[test]
@@ -1224,6 +1234,59 @@ fn ok_coerced_tails_keep_the_written_callable_contract() {
 }
 
 const DYN_TICKER: &str = "trait Ticker {\n    fn tick(self) -> i64;\n}\n\ntype Clock {\n    n: i64;\n}\n\nimpl Ticker for Clock {\n    fn tick(self) -> i64 {\n        self.n\n    }\n}\n\nfn run(t: dyn Ticker) {\n    defer {\n        println(t.tick());\n    }\n    println(t.tick());\n}\n\nfn main() {\n    run(Clock { n: 1 });\n}\n";
+
+const DYN_GENERIC_CLEANUP: &str = r"
+trait Finish { fn finish(consume self); }
+type Parcel<T> { value: T; }
+impl<T> Finish for Parcel<T> {
+    fn finish(consume self) {
+        let Parcel { value } = self;
+        discard(value);
+    }
+}
+fn discard<T>(consume value: T) {}
+fn erase<U>(consume value: Parcel<U>) -> dyn Finish { value }
+#[resource]
+type Ticket {}
+impl Ticket { fn close(consume self) { sleep(1ms); } }
+";
+
+#[test]
+fn pure_dyn_filler_does_not_erase_generic_cleanup_effect() {
+    let source = format!(
+        "{DYN_GENERIC_CLEANUP}\nfn main() {{ let value = erase(Parcel {{ value: 7 }}); value.finish(); }}"
+    );
+    let output = check_source(&source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert!(
+        output
+            .suspension_effects
+            .bodies
+            .iter()
+            .any(|(body, effect)| {
+                matches!(body, crate::check::effects::EffectBody::Declaration(id)
+            if output.defs.path(*id) == "Parcel::<impl Finish for Parcel<T>>::finish")
+                    && *effect == SuspensionEffect::MaySuspend
+            }),
+        "a pure concrete filler must not overwrite the generic body's effect"
+    );
+}
+
+#[test]
+fn dyn_filler_keeps_suspending_cleanup_in_a_generic_erasure() {
+    for calls in [
+        "let plain = erase(Parcel { value: 7 }); let slow = erase(Parcel { value: Ticket {} });",
+        "let slow = erase(Parcel { value: Ticket {} }); let plain = erase(Parcel { value: 7 });",
+    ] {
+        let source = format!("{DYN_GENERIC_CLEANUP}\nfn main() {{ {calls} }}");
+        let output = check_source(&source);
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        let error = &output.errors[0];
+        assert!(error.message.contains("E_DYN_SLOT_SUSPENDS"), "{error:?}");
+        let rejected = &source[error.span.clone()];
+        assert!(rejected.contains("Ticket {}"), "{rejected}: {error:?}");
+    }
+}
 
 #[test]
 fn dyn_slot_effect_follows_the_trait_method_declaration() {

@@ -1,7 +1,6 @@
 use hew_types::check::dispatch::{
-    bound_diagnostic_strings, resolve_method_call, Bound, CallAbiHint, HashMapMethod,
-    HashSetMethod, ImplDef, ImplId, ImplRegistry, LookupError, MethodTarget, MethodTargetFamily,
-    RuntimeAbi, TyPattern,
+    resolve_method_call, Bound, CallAbiHint, HashMapMethod, HashSetMethod, ImplDef, ImplId,
+    ImplRegistry, LookupError, MethodTarget, MethodTargetFamily, RuntimeAbi, TyPattern,
 };
 use hew_types::traits::MarkerTrait;
 
@@ -129,7 +128,7 @@ fn hashset_i64_resolves_at_unit_level_without_checker_admission() {
 }
 
 #[test]
-fn hashmap_f64_key_reports_bound_form_diagnostic_strings() {
+fn hashmap_f64_key_reports_unsatisfied_bounds() {
     let (registry, map_id, _) = seed_registry();
     let err = resolve_method_call(
         &registry,
@@ -152,13 +151,4 @@ fn hashmap_f64_key_reports_bound_form_diagnostic_strings() {
         }
         other => panic!("expected BoundsNotSatisfied, got {other:?}"),
     }
-
-    let messages = bound_diagnostic_strings(&err);
-    assert_eq!(
-        messages,
-        vec![
-            "f64 does not implement Hash".to_string(),
-            "f64 does not implement Eq".to_string(),
-        ]
-    );
 }

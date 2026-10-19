@@ -277,7 +277,7 @@ fn canonical_utf8_functions_publish_exact_runtime_targets() {
         crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
     ] {
         assert!(
-            output.method_call_rewrites.values().any(|rewrite| matches!(
+            super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
                 rewrite,
                 MethodCallRewrite::RewriteModuleQualifiedToFunction {
                     target: crate::check::dispatch::CallTarget::Runtime(family),
@@ -304,17 +304,13 @@ fn ordinary_decode_lookalike_remains_a_user_call() {
         output.errors
     );
     assert!(
-        output
-            .direct_call_targets
-            .values()
+        super::root_values(&output.direct_call_targets)
             .any(|target| matches!(target, crate::check::dispatch::CallTarget::User(_))),
         "ordinary same-leaf function must retain user declaration identity: {:#?}",
         output.direct_call_targets
     );
     assert!(
-        !output
-            .direct_call_targets
-            .values()
+        !super::root_values(&output.direct_call_targets)
             .any(|target| matches!(target, crate::check::dispatch::CallTarget::Runtime(_))),
         "ordinary same-leaf function must never acquire runtime authority"
     );
@@ -381,9 +377,9 @@ fn utf8_import_aliases_preserve_runtime_targets_and_nominal_result() {
             crate::runtime_call::RuntimeCallFamily::BytesDecodeUtf8Lossy,
         ] {
             assert!(
-                output.direct_call_targets.values().any(|target| matches!(
+                super::root_values(&output.direct_call_targets).any(|target| matches!(
                     target, crate::check::dispatch::CallTarget::Runtime(actual) if *actual == family
-                )) || output.method_call_rewrites.values().any(|rewrite| matches!(
+                )) || super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
                     rewrite, MethodCallRewrite::RewriteModuleQualifiedToFunction {
                         target: crate::check::dispatch::CallTarget::Runtime(actual), ..
                     } if *actual == family

@@ -79,6 +79,8 @@ pub(super) fn validate(
             })
             .collect();
     }
+    let mut facts =
+        TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone());
     let mut summaries = HashMap::new();
     let mut release_cache = ReleaseCache::new();
     for (declaration, body) in &bodies {
@@ -88,6 +90,7 @@ pub(super) fn validate(
             module_idx: body.module_idx,
             summary: Summary::default(),
             release_cache: &mut release_cache,
+            facts: &facts,
         };
         if body.function.is_generator
             || body.function.intrinsic.is_some()
@@ -105,8 +108,6 @@ pub(super) fn validate(
         lints::walk_body(&body.function.body, &mut visitor);
         summaries.insert(*declaration, visitor.summary);
     }
-    let mut facts =
-        TypeFactService::new(output.type_fact_context.clone(), output.type_facts.clone());
     let mut errors = Vec::new();
     for (declaration, shape) in machines {
         let source_module = bodies
@@ -629,6 +630,7 @@ struct EffectVisitor<'a> {
     module_idx: u32,
     summary: Summary,
     release_cache: &'a mut ReleaseCache,
+    facts: &'a TypeFactService,
 }
 
 impl EffectVisitor<'_> {
@@ -789,16 +791,21 @@ impl NodeVisitor for EffectVisitor<'_> {
             }
             Expr::InterpolatedString(parts) => {
                 for part in parts {
-                    if let StringPart::Expr(value) = part {
-                        if self
+                    if let StringPart::Expr(value) | StringPart::StructuralExpr(value) = part {
+                        if let Some(ty) = self
                             .output
                             .interpolation_display_types
-                            .contains_key(&SpanKey::in_module(&value.1, self.module_idx))
+                            .get(&SpanKey::in_module(&value.1, self.module_idx))
                         {
-                            self.refuse(
-                                &value.1,
-                                "machine evaluation cannot call a custom Display implementation",
-                            );
+                            let intrinsic = ResolvedTy::from_ty(ty)
+                                .ok()
+                                .and_then(|ty| self.facts.builtin_display_plan(&ty));
+                            if intrinsic.is_none_or(|plan| plan.can_fail()) {
+                                self.refuse(
+                                    &value.1,
+                                    "machine evaluation cannot call a custom Display implementation",
+                                );
+                            }
                         }
                     }
                 }

@@ -3594,7 +3594,10 @@ fn explicit_generic_module_path_obeys_lexical_value_precedence() {
         "a parameter named `m` must block explicit generic module dispatch"
     );
     assert!(
-        output.method_call_rewrites.is_empty(),
+        output
+            .method_call_rewrites
+            .keys()
+            .all(|key| key.module_idx != 0),
         "a shadowed explicit generic path must publish no executable rewrite: {:?}",
         output.method_call_rewrites
     );

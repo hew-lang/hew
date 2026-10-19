@@ -763,6 +763,10 @@ fn indexed_unicode_values_preserve_scalar_operations_and_snapshots() {
 fn structural_display_preserves_checked_nested_and_alias_selections() {
     for (source, expected) in [
         (
+            include_str!("../../tests/core-acceptance/cases/alias-trait-impls.hew"),
+            "alias traits preserved\n",
+        ),
+        (
             include_str!("../../tests/core-acceptance/cases/structural-rendering-display.hew"),
             "Report { current: west=3C, history: [Some(west=3C), None], tagged: reviewed:9 }\n(west=3C, archived:kept)\n[Circle { radius: 3 }, Square(1), Sample { reading: west=3C }, Missing]\n{latest: west=3C}\nwest=3C\nwest\n",
         ),

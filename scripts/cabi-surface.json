@@ -479,32 +479,6 @@
     },
     {
       "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_gen_sink_complete( *mut HewActor, *mut HewSink, )"
-      },
-      "symbol": "hew_actor_gen_sink_complete"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_actor_gen_sink_register( *mut HewActor, *mut HewSink, )"
-      },
-      "symbol": "hew_actor_gen_sink_register"
-    },
-    {
-      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -16475,21 +16449,6 @@
         "wasm32-wasip1": "fn hew_sink_is_valid( *const HewSink) -> i32"
       },
       "symbol": "hew_sink_is_valid"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_sink_peer_closed( *mut HewSink) -> i32",
-        "wasm32-wasip1": "fn hew_sink_peer_closed( *mut HewSink) -> i32"
-      },
-      "symbol": "hew_sink_peer_closed"
     },
     {
       "availability": [

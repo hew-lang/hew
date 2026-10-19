@@ -293,9 +293,6 @@ pub(super) fn plan_impl_block_symbols(
     base_symbol_self_name: &str,
     skip_methods: &HashSet<hew_types::DefId>,
 ) {
-    if impl_decl.where_clause.is_some() && classify_unsupported_where_clause(impl_decl).is_some() {
-        return;
-    }
     let TypeExpr::Named { path: _, type_args } = &impl_decl.target_type.0 else {
         return;
     };
@@ -441,7 +438,7 @@ pub(super) fn plan_imported_impl_bodies(
     file_import_modules: &HashSet<hew_parser::module::ModulePath>,
     preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     span_indices: &hew_parser::module::FileSpanIndices,
-    skip_imported_builtin_impls: bool,
+    selected_builtin_graph_module: Option<&hew_parser::module::ModulePath>,
 ) {
     let empty_skips = HashSet::new();
     // Source-order bodies include root declarations and flattened file imports.
@@ -487,7 +484,7 @@ pub(super) fn plan_imported_impl_bodies(
         }
         let module = &module_graph.modules[module_id];
         let source_module = module_id.dotted();
-        if skip_imported_builtin_impls && source_module == "std.builtins" {
+        if selected_builtin_graph_module == Some(module_id) {
             continue;
         }
         let previous_module = ctx.current_module_name.replace(source_module.clone());
@@ -631,69 +628,136 @@ pub(super) fn render_type_expr(ty: &TypeExpr) -> String {
     }
 }
 
-pub(super) fn builtin_callable_impl_program() -> Option<Program> {
-    let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
-    debug_assert!(
-        parsed.errors.is_empty(),
-        "std/builtins.hew failed to parse: {:?}",
-        parsed.errors
-    );
-    if !parsed.errors.is_empty() {
-        return None;
-    }
-    let items = parsed
-        .program
-        .items
-        .into_iter()
-        .filter(|(item, _)| {
-            matches!(
-                item,
-                Item::Trait(_) | Item::TypeDecl(_) | Item::ExternBlock(_)
-            ) || is_builtin_callable_impl(item)
-        })
-        .collect();
-    Some(Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        items,
-        module_doc: None,
-        module_graph: None,
-    })
+/// Executable method availability follows checked declaration demands. A
+/// static trait slot retains every matching receiver candidate until SIR
+/// substitutes its receiver; a direct call names only its selected body.
+#[derive(Default)]
+pub(super) struct BuiltinMethodDemands {
+    direct: HashSet<hew_types::DefId>,
+    slots: HashSet<(hew_types::DefId, hew_types::DefId)>,
 }
 
-pub(super) fn is_builtin_iterator_impl(item: &Item) -> bool {
-    let Item::Impl(impl_decl) = item else {
-        return false;
-    };
-    let Some(trait_name) = impl_decl
-        .trait_bound
-        .as_ref()
-        .map(|bound| bound.path.to_string())
-    // TRANSITION(P1): deleted by A1 commit 2
-    else {
-        return false;
-    };
-    let TypeExpr::Named {
-        path: named_path, ..
-    } = &impl_decl.target_type.0
-    else {
-        return false;
-    };
-    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-    matches!(
-        (trait_name.as_str(), name.as_str()),
-        (
-            "Iterator",
-            "VecIter" | "StringIter" | "HashMapIter" | "Generator"
-        ) | ("DoubleEndedIterator", "VecIter" | "StringIter")
-            | ("IntoIterator", "Vec" | "string")
-    )
+impl BuiltinMethodDemands {
+    fn add(&mut self, target: &hew_types::CallTarget) {
+        match target {
+            hew_types::CallTarget::ImplMethod(declaration) => {
+                self.direct.insert(*declaration);
+            }
+            hew_types::CallTarget::StaticTraitMethod {
+                declaring_trait,
+                method,
+            } => {
+                self.slots.insert((*declaring_trait, *method));
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn selects(&self, signature: &hew_types::check::FnSig) -> bool {
+        signature.impl_method.as_ref().is_some_and(|method| {
+            self.direct.contains(&method.declaration)
+                || method
+                    .trait_method
+                    .is_some_and(|slot| self.slots.contains(&slot))
+        })
+    }
+
+    fn add_output(&mut self, output: &TypeCheckOutput, owner: Option<hew_types::DefId>) {
+        let mut bodies = HashSet::new();
+        if let Some(owner) = owner {
+            let mut pending = vec![hew_types::ty::EffectBody::Declaration(owner)];
+            while let Some(body) = pending.pop() {
+                if !bodies.insert(body.clone()) {
+                    continue;
+                }
+                pending.extend(
+                    output
+                        .suspension_effects
+                        .constructed_bodies
+                        .get(&body)
+                        .into_iter()
+                        .flatten()
+                        .cloned(),
+                );
+            }
+        }
+        let admits = |key: &SpanKey| {
+            owner.is_none()
+                || output
+                    .suspension_effects
+                    .call_owners
+                    .get(key)
+                    .is_some_and(|body| bodies.contains(body))
+        };
+        for (key, target) in &output.direct_call_targets {
+            if admits(key) {
+                self.add(target);
+            }
+        }
+        for (key, rewrite) in &output.method_call_rewrites {
+            if !admits(key) {
+                continue;
+            }
+            match rewrite {
+                hew_types::MethodCallRewrite::RewriteToFunction { target, .. }
+                | hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target, ..
+                }
+                | hew_types::MethodCallRewrite::StaticTraitDispatch { target, .. } => {
+                    self.add(target);
+                }
+                _ => {}
+            }
+        }
+        for (key, plan) in &output.for_loop_plans {
+            if !admits(key) {
+                continue;
+            }
+            for call in plan.into_iter.iter().chain(std::iter::once(&plan.next)) {
+                self.add(&call.target);
+            }
+        }
+        // An f-string calls Display implicitly. In a generic body such as
+        // `Result<T, E: Display>::expect`, the concrete receiver is chosen at
+        // monomorphisation, so retain every implementation of the checked
+        // trait slot instead of looking for a source method-call rewrite.
+        if !output.interpolation_display_types.is_empty() {
+            if let Some(slot) = output.lang_items.display_method_identity() {
+                self.slots.insert(slot);
+            }
+        }
+    }
+
+    pub(super) fn for_program(source: &TypeCheckOutput) -> Self {
+        let mut demands = Self::default();
+        demands.add_output(source, None);
+        let mut expanded = HashSet::new();
+        loop {
+            let pending: Vec<_> = source
+                .fn_sigs
+                .iter()
+                .filter(|(declaration, signature)| {
+                    !expanded.contains(*declaration) && demands.selects(signature)
+                })
+                .map(|(declaration, _)| *declaration)
+                .collect();
+            if pending.is_empty() {
+                break;
+            }
+            for declaration in pending {
+                expanded.insert(declaration);
+                demands.add_output(source, Some(declaration));
+            }
+        }
+        demands
+    }
 }
 
 /// Linker/metadata owner for one compiler-injected builtin impl target.
 /// Synthetic cursors use their canonical std owner so a root user nominal
 /// with the same leaf can emit an independent impl and method body. The input
-/// comes only from the parsed `BUILTINS_HEW_SOURCE` program; ordinary source
-/// declarations never call this projection.
+/// comes only from the checker's selected trusted builtin program; ordinary
+/// source declarations never call this projection.
 pub(super) fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
     match source_name {
         "VecIter" => "std.builtins.VecIter",
@@ -721,9 +785,7 @@ pub(super) fn is_builtin_source_body_impl(item: &Item) -> bool {
 }
 
 pub(super) fn is_builtin_receiver_impl(item: &Item) -> bool {
-    is_builtin_iterator_impl(item)
-        || is_builtin_source_body_impl(item)
-        || is_builtin_request_owner_impl(item)
+    is_builtin_source_body_impl(item) || is_builtin_request_owner_impl(item)
 }
 
 pub(super) fn is_builtin_request_owner_impl(item: &Item) -> bool {
@@ -745,46 +807,4 @@ pub(super) fn impl_type_parameters(
         &decl.target_type.1,
         decl.type_params.as_ref().map_or(0, Vec::len),
     )
-}
-
-pub(super) fn check_builtin_callable_impl_program(
-    program: &Program,
-    defs: &hew_types::DefTable,
-) -> Result<TypeCheckOutput, Box<HirDiagnostic>> {
-    // Externs retain their canonical registration. The run's root is the
-    // `std.builtins` module of the compilation's table, so the source's bare
-    // spellings resolve through `Scope` to the declarations the compilation
-    // already minted.
-    let mut checker_program = program.clone();
-    checker_program
-        .items
-        .retain(|(item, _)| !matches!(item, Item::ExternBlock(_)));
-    let mut checker =
-        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-    // The run mints into a fork of the compilation's table, so every id its
-    // facts carry indexes that table (TRANSITION(P2): see
-    // `DefTable::fork_for_embedded_builtins`).
-    let output = checker.check_embedded_builtins(&checker_program, defs);
-    assert!(
-        output.defs.extends(defs),
-        "the embedded builtin check must only append to the compilation's table"
-    );
-    if output.errors.is_empty() {
-        return Ok(output);
-    }
-
-    let reason = output
-        .errors
-        .iter()
-        .map(|error| error.message.as_str())
-        .collect::<Vec<_>>()
-        .join("; ");
-    Err(Box::new(HirDiagnostic::new(
-        HirDiagnosticKind::CheckerBoundaryViolation {
-            name: "std/builtins.hew callable impls".to_string(),
-            reason: reason.clone(),
-        },
-        0..0,
-        format!("compiler-injected callable impls were not lowered: {reason}"),
-    )))
 }

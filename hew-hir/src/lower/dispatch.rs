@@ -276,10 +276,6 @@ impl LowerCtx {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "display lowering keeps all fail-closed dispatch cases in one authority"
-    )]
     pub(super) fn lower_display_dispatch_for_type(
         &mut self,
         value: HirExpr,
@@ -333,25 +329,13 @@ impl LowerCtx {
         };
         let display_target = hew_types::CallTarget::static_trait(display_trait, display_method);
         let ty = dispatch_ty;
+        if let Some(plan) = self.display_facts.builtin_display_plan(&ty) {
+            return self.lower_builtin_display(value, plan, span);
+        }
         if self.display_facts.has_explicit_display_impl(&ty) {
             return self.dispatch_display_to_named_impl(&ty, value, span);
         }
         match &ty {
-            ResolvedTy::String => value,
-            ResolvedTy::I8
-            | ResolvedTy::I16
-            | ResolvedTy::I32
-            | ResolvedTy::I64
-            | ResolvedTy::U8
-            | ResolvedTy::U16
-            | ResolvedTy::U32
-            | ResolvedTy::U64
-            | ResolvedTy::Isize
-            | ResolvedTy::Usize
-            | ResolvedTy::F32
-            | ResolvedTy::F64
-            | ResolvedTy::Bool
-            | ResolvedTy::Char => self.lower_scalar_display(value, &ty, span),
             // `duration` has a pure-Hew `impl Display for duration` in
             // `std/builtins.hew`, discovered and lowered like any imported
             // module's impl (see `insert_builtins_display_module`), so
@@ -360,14 +344,6 @@ impl LowerCtx {
             // would otherwise reject it (checker–HIR contract violation)
             // even though the checker admitted it.
             ResolvedTy::Duration => self.dispatch_display_to_named_impl(&ty, value, span),
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(BuiltinType::NodeId),
-                ..
-            } => self.build_catalog_call("hew_node_id_display", vec![value], span),
-            ResolvedTy::Named {
-                head: hew_types::TypeHead::Builtin(BuiltinType::Location),
-                ..
-            } => self.build_catalog_call("hew_location_display", vec![value], span),
             ResolvedTy::Named { head, .. } => {
                 // An abstract type parameter `T: Display` (the checker lowers
                 // `T` to a bare `Named`) defers to per-monomorphisation static
@@ -413,6 +389,15 @@ impl LowerCtx {
     }
 
     pub(super) fn build_structural_format_call(&mut self, value: HirExpr, span: Span) -> HirExpr {
+        self.build_runtime_format_call(hew_types::RuntimeCallFamily::StructuralFormat, value, span)
+    }
+
+    fn build_runtime_format_call(
+        &mut self,
+        family: hew_types::RuntimeCallFamily,
+        value: HirExpr,
+        span: Span,
+    ) -> HirExpr {
         let fn_ty = ResolvedTy::Function {
             capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
             params: vec![value.ty.clone()],
@@ -432,9 +417,7 @@ impl LowerCtx {
             ty: ResolvedTy::String,
             intent: IntentKind::Read,
             kind: HirExprKind::Call {
-                target: hew_types::CallTarget::Runtime(
-                    hew_types::runtime_call::RuntimeCallFamily::StructuralFormat,
-                ),
+                target: hew_types::CallTarget::Runtime(family),
                 callee: Box::new(callee),
                 args: vec![value],
                 evaluation_order: Vec::new(),
@@ -443,35 +426,38 @@ impl LowerCtx {
         }
     }
 
-    /// Render one scalar through its `to_string_*` catalog builtin, widening
-    /// first when the scalar is narrower than the conversion's ABI type
-    /// (`f32`/`i8`/`i16`/`u16`/`isize`/`usize`). The runtime exports one entry
-    /// per canonical width, so the cast is what lets the narrow widths share
-    /// it, and it keeps the argument type equal to the runtime contract's.
-    pub(super) fn lower_scalar_display(
+    /// Emit the checked intrinsic conversion with its exact ABI argument type.
+    fn lower_builtin_display(
         &mut self,
         value: HirExpr,
-        ty: &ResolvedTy,
+        plan: hew_types::type_facts::BuiltinDisplayPlan,
         span: Span,
     ) -> HirExpr {
-        let (builtin, abi_ty) = scalar_display_builtin(ty);
-        let argument = if *ty == abi_ty {
+        let hew_types::type_facts::BuiltinDisplayPlan::Runtime {
+            family,
+            argument_ty,
+        } = plan
+        else {
+            return value;
+        };
+        let from_ty = value.ty.clone();
+        let argument = if value.ty == argument_ty {
             value
         } else {
             HirExpr {
                 node: self.ids.node(),
                 site: self.ids.site(),
-                ty: abi_ty.clone(),
+                ty: argument_ty.clone(),
                 intent: IntentKind::Read,
                 kind: HirExprKind::NumericCast {
                     value: Box::new(value),
-                    from_ty: ty.clone(),
-                    to_ty: abi_ty,
+                    from_ty,
+                    to_ty: argument_ty,
                 },
                 span: span.clone(),
             }
         };
-        self.build_catalog_call(builtin, vec![argument], span)
+        self.build_runtime_format_call(family, argument, span)
     }
 
     pub(super) fn dispatch_display_to_named_impl(
@@ -579,7 +565,7 @@ impl LowerCtx {
         // only condition worth testing: `lower_display_dispatch` already has a
         // working arm for every shape a `Display` value can take — `string`,
         // every scalar (incl. `char` and the narrow ints via
-        // `scalar_display_builtin`), `duration`, named-`instant`, identity
+        // the typed builtin Display plan), `duration`, named-`instant`, identity
         // aggregates, concrete named `impl Display` types, and abstract type
         // parameters `T: Display` — and fails closed on anything else.
         // Enumerating a subset of those shapes here only re-hid the rest behind
@@ -918,29 +904,17 @@ impl LowerCtx {
             }
             // A string already is its rendering, and a scalar renders
             // through its `to_string_*` builtin as it does everywhere.
-            None if value.ty == ResolvedTy::String => value,
-            None if matches!(
-                value.ty,
-                ResolvedTy::I8
-                    | ResolvedTy::I16
-                    | ResolvedTy::I32
-                    | ResolvedTy::I64
-                    | ResolvedTy::U8
-                    | ResolvedTy::U16
-                    | ResolvedTy::U32
-                    | ResolvedTy::U64
-                    | ResolvedTy::Isize
-                    | ResolvedTy::Usize
-                    | ResolvedTy::F32
-                    | ResolvedTy::F64
-                    | ResolvedTy::Bool
-                    | ResolvedTy::Char
-            ) =>
-            {
-                let ty = value.ty.clone();
-                self.lower_scalar_display(value, &ty, span.clone())
+            None => {
+                if value.ty == ResolvedTy::String {
+                    value
+                } else if let Some(plan) =
+                    hew_types::type_facts::BuiltinDisplayPlan::scalar(&value.ty)
+                {
+                    self.lower_builtin_display(value, plan, span.clone())
+                } else {
+                    self.build_structural_format_call(value, span.clone())
+                }
             }
-            None => self.build_structural_format_call(value, span.clone()),
         }
     }
 

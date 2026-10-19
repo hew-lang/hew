@@ -15,21 +15,14 @@ impl LowerCtx {
         self.lower_fn_with_name(func, &name, span)
     }
 
-    /// V0b: lower a top-level `impl [<TypeParams>] [Trait for] TargetType { ... }`
-    /// block. Methods are flattened into per-impl `HirItem::Function` entries
-    /// (named `<SelfType>::<method>`) so the existing MIR / codegen function
-    /// pipeline can pick them up unchanged; a metadata-only [`HirItem::Impl`]
-    /// is also pushed so checker-side reasoning has a single anchor for the
-    /// trait/self pair and the associated-type bindings.
-    ///
-    /// Fail-closed: any shape outside the V0b sufficient surface
-    /// (where-clauses, default-method bodies, non-nominal targets, blanket
-    /// impls) emits a named [`HirDiagnosticKind::ImplBlockShapeNotLowered`]
-    /// rather than falling through to the generic catch-all.
+    /// Lower checked impl methods and their dispatch metadata.
+    /// Compile-time conditions belong to the checker; HIR records the
+    /// trait/receiver identity, associated types and emitted method bodies.
+    /// Unsupported target shapes keep an explicit lowering diagnostic.
     #[allow(
         clippy::too_many_lines,
         reason = "single linear lowering path with a sequence of fail-closed \
-                  shape guards (where-clause / non-nominal / blanket / builtin \
+                  shape guards (non-nominal / blanket / builtin \
                   inherent) followed by the per-method emission loop; splitting \
                   would scatter the guards from the emission they protect"
     )]
@@ -41,18 +34,6 @@ impl LowerCtx {
         pub_only: bool,
         imported: Option<&ImportedImplLowering<'_>>,
     ) {
-        // Pre-flight: classify the impl shape. Bail with a precise diagnostic
-        // on any unsupported variant before lowering bodies.
-        if let Some(shape) = classify_unsupported_where_clause(decl) {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ImplBlockShapeNotLowered { shape },
-                span,
-                "unsupported impl block: only where-clause predicates of the form \
-                 `where T: Bound(s)` on the impl's own type parameters are admitted — \
-                 use a bound on an impl type parameter",
-            ));
-            return;
-        }
         let TypeExpr::Named {
             path: named_path,
             type_args: target_type_args,
@@ -400,17 +381,8 @@ impl LowerCtx {
             if pub_only && !method.visibility.is_pub() {
                 continue;
             }
-            let legacy_symbol = crate::node::HirImplBlock::method_symbol(
-                &symbol_self_name,
-                method.name.name.as_str(),
-            );
-            let declaration = if self.lowering_injected_items {
-                self.impl_method_declaration_ids
-                    .get(&legacy_symbol)
-                    .copied()
-            } else {
-                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
-            };
+            let declaration =
+                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0);
             let Some(declaration) = declaration else {
                 continue;
             };
@@ -873,14 +845,37 @@ impl LowerCtx {
             self.source_declaration(&span, hew_types::DeclarationKind::Function, 0)?
         };
 
-        let mut type_parameters = impl_type_params.to_vec();
-        type_parameters.extend(
-            self.declaration_type_parameters
-                .get(&declaration)
-                .into_iter()
-                .flat_map(|(_, _, parameters)| parameters.iter())
-                .copied(),
-        );
+        let mut type_parameters = if matches!(
+            self.defs.kind(declaration),
+            hew_types::DeclarationKind::ImplMethod | hew_types::DeclarationKind::DefaultImplMethod
+        ) {
+            let Some(parameters) = self
+                .display_facts
+                .context()
+                .impl_method_type_parameters(declaration)
+            else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: self.defs.path(declaration).to_string(),
+                        reason: "implementation body has no checked binder schema".to_string(),
+                    },
+                    span,
+                    "cannot lower an implementation body without its checked type parameters",
+                ));
+                return None;
+            };
+            parameters
+        } else {
+            let mut parameters = impl_type_params.to_vec();
+            parameters.extend(
+                self.declaration_type_parameters
+                    .get(&declaration)
+                    .into_iter()
+                    .flat_map(|(_, _, parameters)| parameters.iter())
+                    .copied(),
+            );
+            parameters
+        };
         self.push_scope();
         // Track this function's declared type parameters for the duration of
         // its body so lowering can recognise abstract-`T` operands (the

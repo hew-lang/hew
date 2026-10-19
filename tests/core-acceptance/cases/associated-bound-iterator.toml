@@ -1,0 +1,11 @@
+[[case]]
+id = "associated-bound-iterator"
+intent = "Generic associated bounds drive explicit cursors and for loops for built-in and authored collections, preserving item equality, inherited bounds and owned early-exit cleanup."
+source = "cases/associated-bound-iterator.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

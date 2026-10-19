@@ -404,7 +404,7 @@ fn hashset_clear_no_args_typechecks() {
 }
 
 #[test]
-fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
+fn hashset_for_in_preserves_receiver_types_across_place_shapes() {
     let source = r"type SetBox {
     s: HashSet<i64>;
 }
@@ -486,29 +486,6 @@ fn tuple_field(pair: (HashSet<i64>, i64)) {
                 Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::HashSet), .. } if args == &[Ty::I64]
             ),
             "`{function_name}` real iterable span must remain HashSet<i64>, got {iterable_ty:?}"
-        );
-
-        let projection_span = iterable_span.start..iterable_span.start;
-        let projection_key = SpanKey::from(&projection_span);
-        let projection_ty = output
-            .expr_types
-            .get(&projection_key)
-            .unwrap_or_else(|| panic!("missing synthetic to_vec type for `{function_name}`"));
-        assert!(
-            matches!(
-                projection_ty,
-                Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::Vec), .. } if args == &[Ty::I64]
-            ),
-            "`{function_name}` synthetic projection must be Vec<i64>, got {projection_ty:?}"
-        );
-        let resolved_call = output
-            .resolved_calls
-            .get(&projection_key)
-            .unwrap_or_else(|| panic!("missing synthetic to_vec call for `{function_name}`"));
-        assert_eq!(resolved_call.method_name, "to_vec");
-        assert_eq!(
-            resolved_call.method_target.symbol_name,
-            "hew_hashset_to_vec_layout"
         );
     }
 }
@@ -2228,9 +2205,7 @@ fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
         output.errors
     );
     assert!(
-        output
-            .method_call_rewrites
-            .values()
+        super::root_values(&output.method_call_rewrites)
             .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
         "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
         output.method_call_rewrites
@@ -2709,7 +2684,7 @@ fn main() {
     // The colliding user method must NOT be recorded as a dispatch rewrite —
     // that is the ill-typed call codegen-front would reject.
     assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
+        !super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { c_symbol, .. } if c_symbol == "Result::free"
         )),
@@ -2770,9 +2745,7 @@ fn main() {
     );
     // The `is_ok` call must dispatch to the std.result declaration, never
     // the user `Result::is_ok` body: that call would be ill-typed downstream.
-    let is_ok_targets: Vec<&str> = output
-        .method_call_rewrites
-        .values()
+    let is_ok_targets: Vec<&str> = super::root_values(&output.method_call_rewrites)
         .filter_map(|rewrite| match rewrite {
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
@@ -2814,6 +2787,7 @@ fn builtin_option_extractors_consume_the_receiver() {
         let key = output
             .method_call_rewrites
             .iter()
+            .filter(|(key, _)| key.module_idx == 0)
             .find_map(|(key, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction {
                     target: CallTarget::ImplMethod(declaration),
@@ -2915,7 +2889,7 @@ fn main() {
         output.errors
     );
     assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
+        !super::root_values(&output.method_call_rewrites).any(|rewrite| matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction {
                 target: CallTarget::ImplMethod(declaration),
@@ -3541,7 +3515,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::VecNew
@@ -3579,7 +3553,7 @@ fn main() {
         output.errors
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::VecNew
@@ -3619,7 +3593,7 @@ fn annotated_map_and_set_constructors_publish_their_runtime_targets() {
         crate::runtime_call::RuntimeCallFamily::HashSetNew,
     ] {
         assert!(
-            output.direct_call_targets.values().any(|target| matches!(
+            super::root_values(&output.direct_call_targets).any(|target| matches!(
                 target,
                 crate::check::dispatch::CallTarget::Runtime(published) if *published == family
             )),
@@ -3657,7 +3631,7 @@ fn main() {
         crate::runtime_call::RuntimeCallFamily::HashSetNew,
     ] {
         assert!(
-            output.direct_call_targets.values().any(|target| matches!(
+            super::root_values(&output.direct_call_targets).any(|target| matches!(
                 target,
                 crate::check::dispatch::CallTarget::Runtime(published) if *published == family
             )),
@@ -3686,7 +3660,7 @@ fn map_constructor_against_a_non_map_expectation_is_rejected() {
         "a map constructor assigned to a `Vec` binding must be rejected"
     );
     assert!(
-        output.direct_call_targets.values().any(|target| matches!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
             target,
             crate::check::dispatch::CallTarget::Runtime(
                 crate::runtime_call::RuntimeCallFamily::HashMapNew
@@ -3850,4 +3824,344 @@ fn compound_assignment_takes_only_the_operators_its_target_admits() {
             "cannot apply `|=` to `f64`",
         ]
     );
+}
+
+#[test]
+fn hashmap_snapshot_iteration_requires_cloneable_keys_and_values() {
+    for (key_type, value_type, setup) in [
+        (
+            "string",
+            "Token",
+            "values.insert(\"key\", Token { id: 1 });",
+        ),
+        (
+            "Token",
+            "string",
+            "values.insert(Token { id: 1 }, \"value\");",
+        ),
+    ] {
+        for iteration in [
+            "let _cursor = values.into_iter();",
+            "for _item in values { break; }",
+            "demand(values);",
+        ] {
+            let source = format!(
+                r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+impl Hash for Token {{ fn hash(self) -> i64 {{ self.id }} }}
+impl Eq for Token {{ fn eq(self, other: Token) -> bool {{ self.id == other.id }} }}
+fn demand<I: IntoIterator>(input: I) {{ let _ = input; }}
+fn main() {{
+    var values: HashMap<{key_type}, {value_type}> = HashMap.new();
+    {setup}
+    {iteration}
+}}
+"
+            );
+            let output = check_source_with_stdlib(&source);
+            assert!(
+                !output.errors.is_empty(),
+                "snapshotting an affine element must fail: {source}"
+            );
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Clone")
+                        || error.message.contains("not iterable")
+                        || error.message.contains("IntoIterator")),
+                "snapshot refusal must identify the unavailable contract: {:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn hashset_snapshot_iteration_requires_cloneable_elements() {
+    for (element, value, accepted) in [
+        ("string", "\"entry\"", true),
+        ("Token", "Token { id: 1 }", false),
+    ] {
+        for iteration in [
+            "let _cursor = values.into_iter();",
+            "for _item in values { break; }",
+            "demand(values);",
+        ] {
+            let source = format!(
+                r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+impl Hash for Token {{ fn hash(self) -> i64 {{ self.id }} }}
+impl Eq for Token {{ fn eq(self, other: Token) -> bool {{ self.id == other.id }} }}
+fn demand<I: IntoIterator>(input: I) {{ let _ = input; }}
+fn main() {{
+    var values: HashSet<{element}> = HashSet.new();
+    values.insert({value});
+    {iteration}
+}}
+"
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.message.contains("Clone")
+                            || error.message.contains("not iterable")
+                            || error.message.contains("IntoIterator")),
+                    "snapshotting affine set elements must refuse the unavailable contract: {:?}",
+                    output.errors
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn bounded_builtin_trait_method_keeps_copyable_record_receivers() {
+    let output = check_source_with_stdlib(
+        r#"
+type Label { text: string; }
+trait First { type Item; fn first(self) -> Self.Item; }
+impl<T: Clone> First for Vec<T> {
+    type Item = T;
+    fn first(self) -> T { self[0] }
+}
+fn copy_first<T: Clone>(values: Vec<T>) -> T { values.first() }
+fn main() {
+    let values = [Label { text: "kept" }];
+    let copied = copy_first(values);
+    assert(copied.text == "kept");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn hashmap_iterator_bound_waits_for_receiver_inference() {
+    for (value, accepted) in [("7", true), ("Token { id: 7 }", false)] {
+        let source = format!(
+            r#"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+fn main() {{
+    var values = HashMap.new();
+    let cursor = values.into_iter();
+    values.insert("entry", {value});
+    let _ = cursor;
+}}
+"#,
+        );
+        let output = check_source_with_stdlib(&source);
+        if accepted {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        } else {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("IntoIterator")),
+                "{:?}",
+                output.errors
+            );
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_receiver_bounds_keep_associated_equalities() {
+    for (item, accepted) in [("string", true), ("i64", false)] {
+        for call in ["let _ = rows.label();", "demand(rows);"] {
+            let source = format!(
+                r"
+type Cursor {{ done: bool; }}
+impl Iterator for Cursor {{
+    type Item = {item};
+    fn next(var self) -> Option<{item}> {{ .None }}
+}}
+trait StringRows {{ fn label(self) -> i64; }}
+impl<T: Iterator<Item = string>> StringRows for Vec<T> {{
+    fn label(self) -> i64 {{ 1 }}
+}}
+fn demand<R: StringRows>(rows: R) {{ let _ = rows; }}
+fn main() {{
+    let rows: Vec<Cursor> = [];
+    {call}
+}}
+",
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                let required = if call.contains("label") {
+                    "string"
+                } else {
+                    "StringRows"
+                };
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                            && error.message.contains(required)),
+                    "{:?}",
+                    output.errors
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_exists_independently_of_conditional_methods() {
+    for call_method in [false, true] {
+        let call = if call_method {
+            "let other: Vec<Token> = []; let _ = other.inspect();"
+        } else {
+            ""
+        };
+        let source = format!(
+            r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+trait Inspect<Tag> {{ fn inspect(self) -> i64 where Tag: Clone; }}
+impl<T> Inspect<T> for Vec<T> {{
+    fn inspect(self) -> i64 where T: Clone {{ 0 }}
+}}
+fn accept<X: Inspect<Token>>(consume value: X) {{}}
+fn main() {{
+    let values: Vec<Token> = [];
+    accept(values);
+    {call}
+}}
+",
+        );
+        let output = check_source_with_stdlib(&source);
+        if call_method {
+            assert!(
+                output
+                    .errors
+                    .iter()
+                    .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                        && error.message.contains("Clone")),
+                "{:?}",
+                output.errors
+            );
+            assert!(
+                !output
+                    .errors
+                    .iter()
+                    .any(|error| error.message.contains("Inspect<Token>")),
+                "{:?}",
+                output.errors
+            );
+        } else {
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+        }
+    }
+}
+
+#[test]
+fn builtin_impl_receiver_bounds_check_projected_item_copyability() {
+    for (item, accepted) in [("string", true), ("Token", false)] {
+        for call in ["let _ = rows.count();", "demand(rows);"] {
+            let source = format!(
+                r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+type Cursor {{ done: bool; }}
+impl Iterator for Cursor {{
+    type Item = {item};
+    fn next(var self) -> Option<{item}> {{ .None }}
+}}
+trait CloneItems {{ fn count(self) -> i64; }}
+impl<T: Iterator> CloneItems for Vec<T> where T.Item: Clone {{
+    fn count(self) -> i64 {{ 0 }}
+}}
+fn demand<R: CloneItems>(rows: R) {{ let _ = rows; }}
+fn main() {{
+    let rows: Vec<Cursor> = [];
+    {call}
+}}
+",
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                let required = if call.contains("count") {
+                    "Clone"
+                } else {
+                    "CloneItems"
+                };
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.kind == TypeErrorKind::BoundsNotSatisfied
+                            && error.message.contains(required)),
+                    "{:?}",
+                    output.errors
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn generic_index_owned_results_require_cloneable_collection_elements() {
+    for (container, value) in [
+        ("Vec<Token>", "[Token { id: 1 }]"),
+        ("HashMap<i64, Token>", "HashMap.new()"),
+    ] {
+        let source = format!(
+            r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+fn demand<I: Index<i64>>(input: I) {{ let _ = input; }}
+fn main() {{ let values: {container} = {value}; demand(values); }}
+"
+        );
+        let output = check_source_with_stdlib(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("Index") || error.message.contains("Clone")),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn dyn_vector_iterator_slots_use_concrete_element_cleanup() {
+    let source = r"
+fn erase<T>(consume cursor: VecIter<T>) -> dyn DoubleEndedIterator<Item = T> {
+    cursor
+}
+fn main() {
+    var direct: dyn DoubleEndedIterator<Item = i64> = [1, 2].into_iter();
+    let _ = direct.next();
+    let _ = direct.next_back();
+    var forwarded = erase([3, 4].into_iter());
+    let _ = forwarded.next();
+    let _ = forwarded.next_back();
+}
+";
+    let output = check_source_with_stdlib(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
 }

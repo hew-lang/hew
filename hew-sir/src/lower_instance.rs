@@ -1,15 +1,14 @@
 //! Instance admission: type-fact and shape requests, monomorphization and closure/vtable requests.
 
 use super::{
-    callable_signature, callable_signature_with_substitution, declared_type_parameter,
-    dyn_boundary_passing, dyn_passing_admits, function_source_origin,
-    is_supported_instance_type_arg, project_type_facts, require_aggregate_shape,
-    require_signature_shapes, require_type_shapes, require_variant_shape, AggregateShapeRef,
-    BTreeMap, BTreeSet, BodySource, Builder, BytesLiteralId, CallableId, CallableInstance,
-    CallableState, CallableTable, Cow, DefId, EntryAdapter, EntryExitAction, FunctionSourceOrigin,
-    HashMap, HirExpr, HirExprKind, HirFn, HirModule, InstanceService, LoweringInput, OwnKind,
-    ResolvedTy, SemAbiParam, SemCallConv, SemCallable, SemCallableKind, SemFunction,
-    SemGenericTemplate, SemModule, SemParamPassing, SemSignature, SirInstanceKey,
+    callable_signature, callable_signature_with_substitution, dyn_boundary_passing,
+    dyn_passing_admits, function_source_origin, is_supported_instance_type_arg, project_type_facts,
+    require_aggregate_shape, require_signature_shapes, require_type_shapes, require_variant_shape,
+    AggregateShapeRef, BTreeMap, BTreeSet, BodySource, Builder, BytesLiteralId, CallableId,
+    CallableInstance, CallableState, CallableTable, Cow, DefId, EntryAdapter, EntryExitAction,
+    FunctionSourceOrigin, HashMap, HirExpr, HirExprKind, HirFn, HirModule, InstanceService,
+    LoweringInput, OwnKind, ResolvedTy, SemAbiParam, SemCallConv, SemCallable, SemCallableKind,
+    SemFunction, SemGenericTemplate, SemModule, SemParamPassing, SemSignature, SirInstanceKey,
     SirLoweringStatus, SirRootSelectionError, StringLiteralId, TypeCheckOutput, TypeFactService,
     TypeInstanceKey, TypeSubstitution, VariantShapeId, VecDeque, SIR_GENERIC_INSTANCE_CAP,
 };
@@ -1311,7 +1310,14 @@ impl<'a> InstanceService<'a> {
                 format!("SIR callable {id:?} is absent from its deterministic table")
             });
         }
-        let type_args = self.static_trait_instance_args(&entry, &self_type, site, substitution)?;
+        let type_args = self.static_trait_instance_args(
+            &entry,
+            self_ty,
+            (declaring_trait, method),
+            trait_args,
+            site,
+            substitution,
+        )?;
         let id = self.request_instance(entry.method, type_args)?;
         self.callable(id).cloned().ok_or_else(|| {
             format!(
@@ -1321,102 +1327,42 @@ impl<'a> InstanceService<'a> {
         })
     }
 
-    /// Bind impl parameters from the concrete `Self` and append the method
-    /// parameters selected by the checker at this call site.
-    ///
-    /// `impl<A, B> Trait for Pair<B, A>` spells its self-type arguments in the
-    /// opposite order to its parameter list, so `Self`'s arguments are
-    /// matched against the impl's own target pattern rather than handed to
-    /// the instance positionally. The pattern is the impl's, not a receiver
-    /// parameter's, so associated functions (`make(n) -> Self`) bind too.
+    /// Consume the checker's receiver bindings and expanded body schema for
+    /// the selected implementation, retaining explicit method arguments.
     pub(super) fn static_trait_instance_args(
         &self,
         entry: &hew_hir::dispatch::TraitImplMethodEntry,
-        self_type: &hew_types::NominalInstance,
+        self_type: &ResolvedTy,
+        trait_method: (DefId, DefId),
+        trait_arguments: &[ResolvedTy],
         site: hew_hir::SiteId,
         substitution: &TypeSubstitution,
     ) -> Result<Vec<ResolvedTy>, String> {
-        let method = &entry.method;
-        let function = self
-            .table
-            .templates
-            .get(method)
-            .ok_or_else(|| {
-                format!(
-                    "generic implementation `{}` has no SIR template admission record",
-                    self.module.defs.path(*method)
-                )
-            })?
-            .function;
-        let impl_param_count = entry.impl_type_params.len();
-        if !function.type_params.starts_with(&entry.impl_type_params) {
-            return Err(format!(
-                "generic implementation `{}` has inconsistent impl parameter declarations",
-                self.module.defs.path(*method)
-            ));
-        }
-        let method_param_count = function.type_params.len() - impl_param_count;
-        let method_args = self.module.call_site_type_args.get(&site);
-        if method_args.map_or(0, Vec::len) != method_param_count {
-            return Err(format!(
-                "static trait call to `{}` requires {method_param_count} checker-resolved method type argument(s) at SIR site {}, found {}",
-                self.module.defs.path(*method),
-                site.0,
-                method_args.map_or(0, Vec::len),
-            ));
-        }
-        let method_args = method_args
+        let method_args: Vec<_> = self
+            .module
+            .call_site_type_args
+            .get(&site)
             .into_iter()
             .flatten()
-            .map(|argument| substitution.apply(argument));
-        if impl_param_count == 0 {
-            return Ok(method_args.collect());
-        }
-        let pattern_args = &entry.self_type_args;
-        if pattern_args.len() != self_type.args.len() {
-            return Err(format!(
-                "generic implementation `{}` declares {} receiver argument(s), the concrete receiver carries {}",
-                self.module.defs.path(*method),
-                pattern_args.len(),
-                self_type.args.len()
-            ));
-        }
-        let mut bindings: HashMap<hew_types::ParamHead, &ResolvedTy> = HashMap::new();
-        for (pattern, concrete) in pattern_args.iter().zip(&self_type.args) {
-            let name = declared_type_parameter(pattern, &entry.impl_type_params).ok_or_else(|| {
+            .map(|argument| substitution.apply(argument))
+            .collect();
+        self.checked_facts
+            .context()
+            .trait_method_instance_arguments(
+                entry.method,
+                self_type,
+                trait_method,
+                trait_arguments,
+                &method_args,
+                &self.module.structural_witnesses,
+            )
+            .map_err(|reason| {
                 format!(
-                    "generic implementation `{}` receives `{}` in a position SIR cannot bind to a type parameter",
-                    self.module.defs.path(*method),
-                    pattern.user_facing()
-                )
-            })?;
-            if bindings
-                .insert(name, concrete)
-                .is_some_and(|prior| prior != concrete)
-            {
-                return Err(format!(
-                    "generic implementation `{}` binds type parameter `{name}` to two different types",
-                    self.module.defs.path(*method)
-                ));
-            }
-        }
-        let mut arguments = entry
-            .impl_type_params
-            .iter()
-            .map(|param| {
-                bindings.get(param).map_or_else(
-                    || {
-                        Err(format!(
-                            "generic implementation `{}` leaves type parameter `{param}` unbound by its receiver",
-                            self.module.defs.path(*method)
-                        ))
-                    },
-                    |ty| Ok((*ty).clone()),
+                    "static trait call to `{}` at SIR site {}: {reason}",
+                    self.module.defs.path(entry.method),
+                    site.0,
                 )
             })
-            .collect::<Result<Vec<_>, _>>()?;
-        arguments.extend(method_args);
-        Ok(arguments)
     }
 
     pub(super) fn request_closure(

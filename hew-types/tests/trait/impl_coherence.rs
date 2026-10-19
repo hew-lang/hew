@@ -103,9 +103,38 @@ fn a_prelude_override_does_not_allow_a_second_source_impl() {
 fn imported_prelude_revisits_keep_the_override_provenance() {
     let source = "import std.builtins;\n\
                   impl Display for string { fn fmt(self) -> string { \"override\" } }\n\
-                  fn main() { println(f\"{\"value\"}\"); }";
+                  fn main() { println(f\"{\"value\"}\"); builtins.to_string(1); }";
     let output = common::typecheck(source);
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let start = source.find("builtins.to_string(1)").unwrap();
+    let site =
+        hew_types::check::SpanKey::in_module(&(start..start + "builtins.to_string(1)".len()), 0);
+    assert!(
+        matches!(
+            output.method_call_rewrites.get(&site),
+            Some(hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: hew_types::check::CallTarget::Builtin { endpoint }, ..
+            }) if endpoint == "to_string"
+        ),
+        "{:?}",
+        output.method_call_rewrites.get(&site)
+    );
+}
+
+#[test]
+fn imported_builtin_endpoint_does_not_replace_a_source_shadow() {
+    let source = "import std.builtins;\n\
+                  fn to_string(value: i64) -> string { \"source\" }\n\
+                  fn main() { to_string(1); }";
+    let output = common::typecheck(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let start = source.rfind("to_string(1)").unwrap();
+    let site = hew_types::check::SpanKey::in_module(&(start..start + "to_string(1)".len()), 0);
+    assert!(matches!(
+        output.direct_call_targets.get(&site),
+        Some(hew_types::check::CallTarget::User(declaration))
+            if output.defs.module(*declaration) == output.defs.root_module()
+    ));
 }
 
 #[test]

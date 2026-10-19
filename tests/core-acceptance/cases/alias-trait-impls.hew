@@ -1,0 +1,38 @@
+trait Ready {
+    fn ready(self) -> i64;
+}
+
+type Plain {}
+type ReadyAlias = Plain;
+type Count = i64;
+
+impl Ready for ReadyAlias {
+    fn ready(self) -> i64 { 42 }
+}
+
+type Measurement<T, U> { value: T; count: U; }
+type Reading<T, U> = Measurement<T, U>;
+
+impl<T: Ready> Display for Reading<T, i64> {
+    fn fmt(self) -> string { "ready reading" }
+}
+
+type Label { value: i64; }
+type LabelAlias = Label;
+
+impl Display for Label {
+    fn fmt(self) -> string { "label" }
+}
+
+fn main() {
+    let ready: Reading<ReadyAlias, Count> = Measurement { value: Plain {}, count: 7 };
+    let plain: Reading<Plain, Count> = Measurement { value: Plain {}, count: 7 };
+    let underlying = Measurement { value: Plain {}, count: 7 };
+    let label: LabelAlias = Label { value: 7 };
+
+    assert(f"{ready:?}" == "ready reading");
+    assert(f"{plain:?}" != "ready reading");
+    assert(f"{underlying:?}" != "ready reading");
+    assert(f"{label:?}" == "label");
+    println("alias traits preserved");
+}

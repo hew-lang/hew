@@ -3,10 +3,6 @@
 use super::*;
 
 impl LowerCtx {
-    pub(super) fn signatures(&self) -> hew_types::check::FnSigView<'_> {
-        hew_types::check::FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs)
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "initializes the complete checker-to-HIR typed context atomically"
@@ -22,7 +18,6 @@ impl LowerCtx {
             checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
-            synthetic_binding_uses: HashMap::new(),
             checked_field_scopes: Vec::new(),
             resolutions: tc_output.resolutions.clone(),
             current_actor_nominal: None,
@@ -40,8 +35,6 @@ impl LowerCtx {
             // identity comes only from `tc_output.defs`; HIR must never
             // manufacture a second canonical-string namespace here.
             fn_sigs: tc_output.fn_sigs.clone(),
-            fn_sig_keys: tc_output.fn_sig_keys.clone(),
-            builtin_fn_sigs: tc_output.builtin_fn_sigs.clone(),
             direct_call_targets: tc_output.direct_call_targets.clone(),
             impl_method_declaration_ids: tc_output.impl_method_declaration_ids.clone(),
             imported_impl_body_facts: tc_output.imported_impl_body_facts.clone(),
@@ -58,7 +51,6 @@ impl LowerCtx {
             try_width_cast_lowerings: tc_output.try_width_cast_lowerings.clone(),
             actor_method_dispatch: tc_output.actor_method_dispatch.clone(),
             actor_delivery_calls: tc_output.actor_delivery_calls.clone(),
-            machine_method_dispatch: tc_output.machine_method_dispatch.clone(),
             tail_ok_coercions: tc_output.tail_ok_coercions.clone(),
             yield_ok_coercions: tc_output.yield_ok_coercions.clone(),
             failing_generators: tc_output.failing_generators.clone(),
@@ -111,6 +103,7 @@ impl LowerCtx {
             actor_deferred_field_decls: tc_output.actor_deferred_field_decls.clone(),
             first_stores: tc_output.first_stores.clone(),
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
+            for_loop_plans: tc_output.for_loop_plans.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
@@ -235,156 +228,6 @@ impl LowerCtx {
             .with_source_module(self.current_module_name.clone()),
         );
         None
-    }
-
-    fn replace_root_declaration_module(
-        &mut self,
-        root: Option<hew_types::ModuleId>,
-    ) -> Option<hew_types::ModuleId> {
-        match root {
-            Some(root) => self.declaration_module_by_file_index.insert(0, root),
-            None => self.declaration_module_by_file_index.remove(&0),
-        }
-    }
-
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one swap per checker fact table; splitting it would scatter the save and restore pairs"
-    )]
-    pub(super) fn with_typecheck_facts<T>(
-        &mut self,
-        tc_output: &TypeCheckOutput,
-        f: impl FnOnce(&mut Self) -> T,
-    ) -> T {
-        let saved_root = self.replace_root_declaration_module(tc_output.defs.root_module());
-        let saved_direct_calls = std::mem::replace(
-            &mut self.direct_call_targets,
-            tc_output.direct_call_targets.clone(),
-        );
-        let saved_resolutions =
-            std::mem::replace(&mut self.resolutions, tc_output.resolutions.clone());
-        let saved_numeric_coercions = std::mem::replace(
-            &mut self.numeric_operand_coercions,
-            tc_output.numeric_operand_coercions.clone(),
-        );
-        // Extern-method signatures accumulate: every module's dispatched
-        // declarations must reach the emitted extern items, not just the pass
-        // that happens to run last.
-        self.extern_method_signatures
-            .extend(tc_output.extern_method_signatures.clone());
-        let saved = (
-            std::mem::replace(
-                &mut self.method_call_rewrites,
-                tc_output.method_call_rewrites.clone(),
-            ),
-            std::mem::replace(
-                &mut self.width_cast_lowerings,
-                tc_output.width_cast_lowerings.clone(),
-            ),
-            std::mem::replace(
-                &mut self.try_width_cast_lowerings,
-                tc_output.try_width_cast_lowerings.clone(),
-            ),
-            std::mem::replace(
-                &mut self.actor_method_dispatch,
-                tc_output.actor_method_dispatch.clone(),
-            ),
-            std::mem::replace(
-                &mut self.actor_delivery_calls,
-                tc_output.actor_delivery_calls.clone(),
-            ),
-            std::mem::replace(
-                &mut self.machine_method_dispatch,
-                tc_output.machine_method_dispatch.clone(),
-            ),
-            std::mem::replace(
-                &mut self.method_call_receiver_kinds,
-                tc_output.method_call_receiver_kinds.clone(),
-            ),
-            std::mem::replace(
-                &mut self.dyn_trait_coercions,
-                tc_output.dyn_trait_coercions.clone(),
-            ),
-            std::mem::replace(
-                &mut self.dyn_trait_method_calls,
-                tc_output.dyn_trait_method_calls.clone(),
-            ),
-            std::mem::replace(
-                &mut self.error_conversions,
-                tc_output.error_conversions.clone(),
-            ),
-            std::mem::replace(&mut self.resolved_calls, tc_output.resolved_calls.clone()),
-            std::mem::replace(&mut self.expr_types, tc_output.expr_types.clone()),
-            std::mem::replace(
-                &mut self.resolved_expr_types,
-                tc_output.resolved_expr_types.clone(),
-            ),
-            std::mem::replace(
-                &mut self.resolved_annotation_types,
-                tc_output.resolved_annotation_types.clone(),
-            ),
-            std::mem::replace(
-                &mut self.declaration_type_parameters,
-                tc_output.declaration_type_parameters.clone(),
-            ),
-            std::mem::replace(
-                &mut self.associated_type_schemas,
-                tc_output.associated_type_schemas.clone(),
-            ),
-            std::mem::replace(&mut self.recovery_kinds, tc_output.recovery_kinds.clone()),
-            std::mem::replace(
-                &mut self.call_argument_slots,
-                tc_output.call_argument_slots.clone(),
-            ),
-            std::mem::replace(
-                &mut self.spawn_argument_slots,
-                tc_output.spawn_argument_slots.clone(),
-            ),
-            std::mem::replace(&mut self.select_sources, tc_output.select_sources.clone()),
-            std::mem::replace(
-                &mut self.checked_fork_transfers,
-                tc_output.suspension_effects.fork_transfers.clone(),
-            ),
-            std::mem::take(&mut self.fork_call_inputs),
-            std::mem::replace(
-                &mut self.checked_call_effects,
-                tc_output.suspension_effects.calls.clone(),
-            ),
-        );
-
-        let result = f(self);
-
-        (
-            self.method_call_rewrites,
-            self.width_cast_lowerings,
-            self.try_width_cast_lowerings,
-            self.actor_method_dispatch,
-            self.actor_delivery_calls,
-            self.machine_method_dispatch,
-            self.method_call_receiver_kinds,
-            self.dyn_trait_coercions,
-            self.dyn_trait_method_calls,
-            self.error_conversions,
-            self.resolved_calls,
-            self.expr_types,
-            self.resolved_expr_types,
-            self.resolved_annotation_types,
-            self.declaration_type_parameters,
-            self.associated_type_schemas,
-            self.recovery_kinds,
-            self.call_argument_slots,
-            self.spawn_argument_slots,
-            self.select_sources,
-            self.checked_fork_transfers,
-            self.fork_call_inputs,
-            self.checked_call_effects,
-        ) = saved;
-        self.direct_call_targets = saved_direct_calls;
-        self.resolutions = saved_resolutions;
-        self.numeric_operand_coercions = saved_numeric_coercions;
-        self.replace_root_declaration_module(saved_root);
-
-        result
     }
 
     /// Materialize a trait default using its declaration-owned receiver binder.

@@ -1,0 +1,13 @@
+[[case]]
+id = "iterator-suspending-into-reject"
+intent = "A suspending implicit into_iter call on a generic factory result refuses a plain callable slot."
+source = "cases/iterator-suspending-into-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 39
+column = 33
+message = "suspends via `IntoIterator.into_iter(...)`; `fn() -> i64` never suspends"

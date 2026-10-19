@@ -1,6 +1,5 @@
-// HashMap::into_iter over a record field uses two synthetic projection calls.
-// Their keys()/values() call spans carry Vec results while both receivers keep
-// the real `holder.m` field span and HashMap type.
+// Iterating a record field leaves the source map usable.
+
 import std.iter;
 
 type MapBox {

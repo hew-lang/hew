@@ -18,6 +18,41 @@ use hew_parser::ast::Ident;
 use hew_parser::ast::WireMetadata;
 
 impl Checker {
+    /// Prefer the resolver-selected canonical source over compiler-embedded
+    /// text. Whitespace changes must not create a second set of declaration
+    /// occurrences under the same builtin owner.
+    pub(in crate::check) fn select_builtin_program(&mut self, program: &Program) {
+        if self.checking_embedded_builtins && self.selected_builtin_program.is_some() {
+            return;
+        }
+        self.selected_builtin_program = program.module_graph.as_ref().and_then(|graph| {
+            let module = graph
+                .modules
+                .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))?;
+            let canonical = module.source_paths.iter().any(|source| {
+                crate::module_registry::is_canonical_stdlib_module_source(source, "std.builtins")
+            });
+            canonical.then(|| {
+                std::sync::Arc::new(Program {
+                    items: module.items.clone(),
+                    module_doc: module.doc.clone(),
+                    module_graph: None,
+                    expansions: program.expansions.clone(),
+                })
+            })
+        });
+    }
+
+    /// Materialize the fallback only when no canonical graph source was
+    /// selected. Standalone registration helpers also enter through here.
+    pub(in crate::check) fn builtin_program(&mut self) -> std::sync::Arc<Program> {
+        std::sync::Arc::clone(self.selected_builtin_program.get_or_insert_with(|| {
+            let parsed = hew_parser::parse(include_str!("../../../../std/builtins.hew"));
+            assert!(parsed.errors.is_empty(), "embedded builtins must parse");
+            std::sync::Arc::new(parsed.program)
+        }))
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "all builtins registered in one place"
@@ -238,6 +273,32 @@ impl Checker {
                 &ret,
             );
         }
+        // Source declarations document these compiler-owned callables. Bind
+        // their canonical signatures to the endpoints already registered above;
+        // an imported declaration must not turn a documentation stub into a body.
+        let source = self.builtin_program();
+        let trusted_owner = self
+            .defs
+            .module_for_path("std.builtins")
+            .is_some_and(|module| {
+                self.defs.module_source(module).is_none_or(|path| {
+                    crate::module_registry::is_canonical_stdlib_module_source(path, "std.builtins")
+                })
+            });
+        if trusted_owner {
+            for (item, _) in &source.items {
+                if let Item::Function(function) = item {
+                    if let Some(target) = self
+                        .builtin_call_targets
+                        .get(function.name.name.as_str())
+                        .cloned()
+                    {
+                        self.builtin_call_targets
+                            .insert(format!("std.builtins.{}", function.name), target);
+                    }
+                }
+            }
+        }
         self.register_builtin_error_prelude_bindings();
         // Crash-hook signatures are an import-free language surface in both
         // inline and on-disk programs. Register only their `CrashInfo` and
@@ -274,30 +335,22 @@ impl Checker {
     /// `(canonical_key, "Display") → { "fmt" → FnSig }` entry in
     /// `primitive_trait_impls`.
     pub(super) fn register_builtins_hew_impls(&mut self) {
-        const BUILTINS_HEW_SOURCE: &str = include_str!("../../../../std/builtins.hew");
-        let parsed = hew_parser::parse(BUILTINS_HEW_SOURCE);
-        // The compiled-in source is part of the build; a parse failure is
-        // a compiler bug, not a user-facing error.  Surface it loudly in
-        // debug builds so contributors notice; in release, fail closed by
-        // skipping registration (the existing "no method `fmt` on int"
-        // diagnostic is the worst-case fallback, which matches today's
-        // pre-fix behaviour).
-        debug_assert!(
-            parsed.errors.is_empty(),
-            "std/builtins.hew failed to parse: {:?}",
-            parsed.errors
-        );
-        if !parsed.errors.is_empty() {
-            return;
-        }
+        let builtin_program = self.builtin_program();
         let builtins_module = self.defs.mint_module("std.builtins", &[]);
+        let builtin_index = self
+            .defs
+            .module_source(builtins_module)
+            .and_then(|source| self.source_file_span_indices.get(source))
+            .copied()
+            .unwrap_or(u32::MAX);
+        let saved_index = std::mem::replace(&mut self.current_module_idx, builtin_index);
         if self.defs.module_source(builtins_module).is_none() {
             self.defs.set_module_package(
                 builtins_module,
                 crate::def_table::PackageOrigin::StandardLibrary,
             );
         }
-        for (item_ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
+        for (item_ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
             self.mint_item_declaration_identities(
                 Some(builtins_module),
                 Some(builtins_module),
@@ -328,7 +381,7 @@ impl Checker {
         // remains keyed independently by canonical receiver kind so the
         // `x.fmt()` dispatch continues to find the builtins-registered
         // impl regardless of which `trait_defs[Display]` shape is current.
-        for (item, span) in &parsed.program.items {
+        for (item, span) in &builtin_program.items {
             match item {
                 Item::Trait(tr) if tr.visibility.is_pub() => {
                     self.pre_register_builtin_trait(tr, span);
@@ -370,14 +423,15 @@ impl Checker {
         // (i8/i16/i32/i64/u8/u16/u32/u64/bool/char) round-trip through
         // `Ty::from_name` → `canonical_lowering_name`, so each lands as a
         // `(canonical_key, "Display") → { "fmt" → FnSig }` entry.
-        self.register_embedded_builtin_externs(&parsed.program);
-        let impl_items: Vec<Spanned<Item>> = parsed
-            .program
+        self.register_embedded_builtin_externs(&builtin_program);
+        let impl_items: Vec<Spanned<Item>> = builtin_program
             .items
-            .into_iter()
+            .iter()
             .filter(|(item, _)| matches!(item, Item::Impl(_)))
+            .cloned()
             .collect();
         if impl_items.is_empty() {
+            self.current_module_idx = saved_index;
             return;
         }
         // Module short name "builtins" matches the on-disk file stem and
@@ -392,6 +446,7 @@ impl Checker {
             &impl_items,
             StdlibBarePublication::Prelude,
         );
+        self.current_module_idx = saved_index;
         self.register_compiled_stdlib_receiver_impls(
             "string",
             include_str!("../../../../std/string.hew"),

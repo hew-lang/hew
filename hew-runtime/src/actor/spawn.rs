@@ -261,7 +261,6 @@ fn build_spawned_actor(
         #[cfg(not(target_arch = "wasm32"))]
         runtime: crate::runtime::rt_current() as *const crate::runtime::RuntimeInner,
         send_pin_count: AtomicU32::new(0),
-        gen_sink: AtomicPtr::new(ptr::null_mut()),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         spawn_serial: identity.serial,
         sys_dispatch: config.sys_dispatch,

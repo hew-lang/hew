@@ -199,8 +199,8 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 #[derive(Debug, Clone)]
 enum ForIterNextCall {
     BuiltinVecIter,
-    /// A concrete iterator's own `next(var self)` impl method.
-    VarSelf,
+    /// A checker-selected ordinary iterator call.
+    Checked(Box<hew_types::CheckedForMethod>),
     /// `for x in stream` over `Stream<T>` — each iteration borrows the
     /// stream binding and emits the layout-witness runtime recv call
     /// (`hew_stream_next_layout`), reusing MIR's existing
@@ -247,7 +247,6 @@ impl TargetArch {
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
-const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
@@ -778,8 +777,6 @@ struct LowerCtx {
     binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,
     /// Checker-owned source binding identities in the current lexical scopes.
     checked_scopes: Vec<HashMap<TypeBindingId, ScopeBinding>>,
-    /// Scoped compiler-generated receiver references with no source row.
-    synthetic_binding_uses: HashMap<SpanKey, (BindingId, ResolvedTy)>,
     /// Stable actor field identities mapped to this handler's physical state seats.
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
     /// Exact source-site resolutions; synthetic expressions have no row.
@@ -833,8 +830,6 @@ struct LowerCtx {
     /// Checker-owned function and method signatures used for iterator dispatch
     /// and concrete call instantiation.
     fn_sigs: HashMap<hew_types::DefId, hew_types::FnSig>,
-    fn_sig_keys: HashMap<String, hew_types::DefId>,
-    builtin_fn_sigs: HashMap<hew_parser::ast::Symbol, hew_types::FnSig>,
     /// Checker-selected targets for ordinary calls, keyed by the call span.
     /// Missing facts lower as an explicit unsupported target; HIR never
     /// guesses from the callee spelling.
@@ -889,7 +884,6 @@ struct LowerCtx {
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
-    machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
     /// Checker-owned function-tail Ok-coercion sites keyed by the tail
     /// expression's span. Each entry marks a `Result<Ok, Err>`-returning
     /// function tail whose value is the `Ok` payload; `lower_expr` wraps the
@@ -1059,6 +1053,7 @@ struct LowerCtx {
     first_stores: HashSet<SpanKey>,
     /// Iterable spans of `for` loops the checker admitted in borrow mode (D432).
     borrowed_element_for_loops: HashSet<SpanKey>,
+    for_loop_plans: HashMap<SpanKey, hew_types::CheckedForLoop>,
     /// `xs[i]` spans the checker admitted as a borrowed element read (D432).
     borrowed_element_index_reads: HashSet<SpanKey>,
     /// `get` sites whose element has no semantic clone: `Some` carries a loan

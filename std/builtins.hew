@@ -601,10 +601,8 @@ impl<T> Vec<T> {
 /// when their type supports cloning; consuming the vector does not promise
 /// clone-free iteration.
 ///
-/// Lives in `std/builtins.hew` rather than `std/vec.hew` so it registers
-/// alongside the Vec `Index` impl through `register_builtins_hew_impls` (the
-/// per-stdlib-module receiver-impl harness only handles a fixed set of
-/// receivers; auto-registration on builtin nominals belongs in builtins).
+/// Lives in `std/builtins.hew` with the built-in collection protocols.
+/// Checked method calls select the authored iterator bodies for emission.
 pub type VecIter<T> {
     vec: Vec<T>;
     front: i64;
@@ -645,10 +643,22 @@ impl<T> IntoIterator for Vec<T> {
     /// The returned iterator shares the receiver's underlying refcounted
     /// storage; mutating the source `Vec` while a `VecIter` is live yields
     /// the same semantics as any other shared-handle aliasing in Hew
-    /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
+    /// without an iterator-invalidation diagnostic.
     fn into_iter(self) -> VecIter<T> {
         let back = self.len();
         VecIter { vec: self, front: 0, back: back }
+    }
+}
+
+// HashSet iteration uses the ordinary IntoIterator contract and Vec cursor.
+impl<K: Hash + Eq + Clone> IntoIterator for HashSet<K> {
+    type Item = K;
+    type IntoIter = VecIter<K>;
+
+    /// Snapshot the elements in unspecified order, leaving the set live.
+    /// Later set mutations cannot change the returned cursor.
+    fn into_iter(self) -> VecIter<K> {
+        self.to_vec().into_iter()
     }
 }
 
@@ -714,30 +724,18 @@ impl IntoIterator for string {
 // ---------------------------------------------------------------------------
 // HashMapIter — concrete IntoIterator impl for HashMap<K, V>
 // ---------------------------------------------------------------------------
-/// Cursor iterator over a `HashMap<K, V>` produced by `map.into_iter()`.
+/// An owned snapshot cursor over a map's paired keys and values.
 ///
-/// `HashMapIter<K, V>` snapshots the map's keys and values into two parallel
-/// `Vec`s at construction (`HashMap.into_iter`) and walks them by a shared
-/// `idx`. The keys and values are taken from the SAME map state in the same
-/// projection order, so `ks[i]` and `vs[i]` are the matching key/value of one
-/// entry. Each yielded `(K, V)` is a FRESH, independently-droppable owner: the
-/// `keys()` / `values()` projections clone every element into the owned `Vec`
-/// (the same clone-on-read discipline as the `Index<K>` accessor), and the
-/// cursor only borrows those snapshot `Vec`s — it never co-owns a yielded pair
-/// with the source map (`drop-allowset-from-value-flow`,
-/// `by-value-heap-params-are-borrows`).
-///
-/// `next` mirrors `VecIter.next`: read `(ks[idx], vs[idx])`, bump `idx` in
-/// place, and return `None` once the cursor passes the snapshot length. The
-/// receiver stays `Live` after exhaustion and drops at scope exit — the
-/// `Iterator` "exhaustion ≠ drop" invariant.
+/// Each yielded pair is independently owned. The source map remains usable,
+/// and later changes to it do not affect this cursor. Iteration order is
+/// unspecified. Exhaustion leaves the cursor live until ordinary scope cleanup.
 pub type HashMapIter<K, V> {
     ks: Vec<K>;
     vs: Vec<V>;
     idx: i64;
 }
 
-impl<K, V> Iterator for HashMapIter<K, V> {
+impl<K: Clone, V: Clone> Iterator for HashMapIter<K, V> {
     type Item = (K, V);
     /// Yield `Some((ks[idx], vs[idx]))` and advance `idx`; `None` at the end.
     fn next(var self) -> Option<(K, V)> {
@@ -752,20 +750,15 @@ impl<K, V> Iterator for HashMapIter<K, V> {
     }
 }
 
-// `for (k, v) in m` over a `HashMap<K, V>` builds a `HashMapIter` cursor from
-// the map's `keys()` and `values()` projections at the concrete iteration site
-// (the HIR for-in desugar synthesizes the constructor, mirroring how `Vec`'s
-// for-in builds a `VecIter` — see `is_builtin_vec_iterator_impl` and the
-// HashMap arm in `lower.rs`). The projections clone every key/value into a
-// fresh owned `Vec`, so each yielded `(K, V)` is independently droppable and
-// the cursor never co-owns a yielded pair with the source map.
-//
-// A standalone `impl IntoIterator for HashMap<K, V>` is intentionally NOT
-// declared here: its body would call `keys()`/`values()` on an abstract
-// `HashMap<K, V>` receiver, which the checker does not admit for unbound type
-// parameters (the projections only lower at concrete instantiations). The
-// concrete-site synthesis keeps the cursor on the proven `keys()`/`values()`
-// clone-on-read path without an abstract method-dispatch hazard.
+impl<K: Hash + Eq + Clone, V: Clone> IntoIterator for HashMap<K, V> {
+    type Item = (K, V);
+    type IntoIter = HashMapIter<K, V>;
+
+    /// Snapshot both projections while leaving the source map usable.
+    fn into_iter(self) -> HashMapIter<K, V> {
+        HashMapIter { ks: self.keys(), vs: self.values(), idx: 0 }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Generator — Iterator impl
@@ -824,9 +817,11 @@ pub trait Index<Idx> {
     fn at(self, index: Idx) -> Self.Output;
 }
 
-impl<T> Index<i64> for Vec<T> {
+impl<T: Clone> Index<i64> for Vec<T> {
     type Output = T;
-    fn get(self, index: i64) -> Option<T> {}
+    fn get(self, index: i64) -> Option<T> {
+        self.get(index)
+    }
     fn at(self, index: i64) -> T {
         self[index]
     }
@@ -846,10 +841,14 @@ impl Index<i64> for string {
     }
 }
 
-impl<K, V> Index<K> for HashMap<K, V> {
+impl<K: Hash + Eq, V: Clone> Index<K> for HashMap<K, V> {
     type Output = V;
-    fn get(self, index: K) -> Option<V> {}
-    fn at(self, index: K) -> V {}
+    fn get(self, index: K) -> Option<V> {
+        self.get(index)
+    }
+    fn at(self, index: K) -> V {
+        self[index]
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1115,7 +1114,7 @@ impl Display for duration {
 ///     println(true);
 /// }
 /// ```
-pub fn println(value: dyn Display) {}
+pub fn println<T: Display>(value: T) {}
 
 /// Print a value without a trailing newline.
 ///
@@ -1126,7 +1125,7 @@ pub fn println(value: dyn Display) {}
 ///     print("Enter name: ");
 /// }
 /// ```
-pub fn print(value: dyn Display) {}
+pub fn print<T: Display>(value: T) {}
 
 // ---------------------------------------------------------------------------
 // Assertions
@@ -1171,7 +1170,7 @@ pub fn assert(condition: bool) {}
 ///     let u = to_string('x');    // "x"
 /// }
 /// ```
-pub fn to_string(value: dyn Display) -> string {
+pub fn to_string<T: Display>(value: T) -> string {
     ""
 }
 

@@ -1,9 +1,8 @@
-//! Build-time authority extracted from the closed stdlib substrate surface.
+//! Named language items, enum variant order, prelude exports and runtime
+//! capabilities extracted from embedded standard-library declarations.
 //!
-//! The compiler binary embeds the substrate sources with [`include_str!`].
-//! [`STDLIB_AUTHORITY`] parses them lazily with `hew_parser`, validates the
-//! compiler-recognised attribute vocabularies, and exposes typed facts without
-//! changing any existing consumer in this foundation lane.
+//! [`STDLIB_AUTHORITY`] parses the substrate sources lazily and validates the
+//! attributes and declaration identities consumed by these shared contracts.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -145,14 +144,7 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
     ),
 ];
 
-const RESERVED_SUBSTRATE_ATTRIBUTES: &[&str] = &[
-    "lang_item",
-    "abi",
-    "intrinsic",
-    "diagnostic_item",
-    "overload",
-    "runtime_capability",
-];
+const RESERVED_SUBSTRATE_ATTRIBUTES: &[&str] = &["lang_item", "runtime_capability"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum AuthorityDeclarationKind {
@@ -303,19 +295,6 @@ impl Intrinsic {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ExternAbiFact {
-    ReturnBytesTriple,
-    BytesParamPointer,
-    CowDropNullTolerant,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExternAbiEntry {
-    pub binding: AuthorityBinding,
-    pub facts: Vec<ExternAbiFact>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExternRuntimeCapabilityEntry {
     pub binding: AuthorityBinding,
@@ -380,29 +359,6 @@ impl OverloadGroup {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DiagnosticItem {
-    Fs,
-    Json,
-}
-
-impl DiagnosticItem {
-    pub const ALL: [Self; 2] = [Self::Fs, Self::Json];
-
-    #[must_use]
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::Fs => "fs",
-            Self::Json => "json",
-        }
-    }
-
-    #[must_use]
-    pub fn from_key(key: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|item| item.key() == key)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnumVariantOrder {
     pub root: StdlibRoot,
@@ -420,11 +376,7 @@ pub struct PreludeExport {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StdlibAuthority {
     lang_items: BTreeMap<LangItem, AuthorityBinding>,
-    intrinsics: BTreeMap<Intrinsic, AuthorityBinding>,
-    extern_abi: BTreeMap<String, ExternAbiEntry>,
     extern_runtime_capabilities: BTreeMap<String, ExternRuntimeCapabilityEntry>,
-    overload_groups: BTreeMap<OverloadGroup, Vec<AuthorityBinding>>,
-    diagnostic_items: BTreeMap<DiagnosticItem, AuthorityBinding>,
     enum_variant_orders: BTreeMap<String, EnumVariantOrder>,
     prelude_exports: Vec<PreludeExport>,
 }
@@ -433,16 +385,6 @@ impl StdlibAuthority {
     #[must_use]
     pub fn lang_items(&self) -> &BTreeMap<LangItem, AuthorityBinding> {
         &self.lang_items
-    }
-
-    #[must_use]
-    pub fn intrinsics(&self) -> &BTreeMap<Intrinsic, AuthorityBinding> {
-        &self.intrinsics
-    }
-
-    #[must_use]
-    pub fn extern_abi(&self) -> &BTreeMap<String, ExternAbiEntry> {
-        &self.extern_abi
     }
 
     #[must_use]
@@ -464,16 +406,6 @@ impl StdlibAuthority {
     }
 
     #[must_use]
-    pub fn overload_groups(&self) -> &BTreeMap<OverloadGroup, Vec<AuthorityBinding>> {
-        &self.overload_groups
-    }
-
-    #[must_use]
-    pub fn diagnostic_items(&self) -> &BTreeMap<DiagnosticItem, AuthorityBinding> {
-        &self.diagnostic_items
-    }
-
-    #[must_use]
     pub fn enum_variant_orders(&self) -> &BTreeMap<String, EnumVariantOrder> {
         &self.enum_variant_orders
     }
@@ -491,12 +423,7 @@ pub enum AuthorityErrorKind {
     InvalidAttributePlacement { attribute: String },
     MalformedAttribute { attribute: String },
     UnknownLangItem { key: String },
-    UnknownIntrinsic { key: String },
-    UnknownAbiKey { key: String },
-    UnknownAbiValue { key: String, value: String },
     UnknownRuntimeCapability { key: String },
-    UnknownOverloadGroup { key: String },
-    UnknownDiagnosticItem { key: String },
     DuplicateBinding { family: String, key: String },
     PreludeModuleImport { module: String },
 }
@@ -532,23 +459,8 @@ impl fmt::Display for AuthorityError {
             AuthorityErrorKind::UnknownLangItem { key } => {
                 write!(f, "unknown `#[lang_item]` key `{key}`")
             }
-            AuthorityErrorKind::UnknownIntrinsic { key } => {
-                write!(f, "unknown `#[intrinsic]` key `{key}`")
-            }
-            AuthorityErrorKind::UnknownAbiKey { key } => {
-                write!(f, "unknown `#[abi]` key `{key}`")
-            }
-            AuthorityErrorKind::UnknownAbiValue { key, value } => {
-                write!(f, "unknown `#[abi]` value `{value}` for key `{key}`")
-            }
             AuthorityErrorKind::UnknownRuntimeCapability { key } => {
                 write!(f, "unknown `#[runtime_capability]` key `{key}`")
-            }
-            AuthorityErrorKind::UnknownOverloadGroup { key } => {
-                write!(f, "unknown `#[overload]` group `{key}`")
-            }
-            AuthorityErrorKind::UnknownDiagnosticItem { key } => {
-                write!(f, "unknown `#[diagnostic_item]` key `{key}`")
             }
             AuthorityErrorKind::PreludeModuleImport { module } => {
                 write!(
@@ -658,7 +570,6 @@ fn load_source(
                             &method,
                             declaration,
                             AuthorityDeclarationKind::Method,
-                            false,
                         )?;
                     }
                 }
@@ -698,7 +609,6 @@ fn load_source(
                         &method,
                         declaration,
                         AuthorityDeclarationKind::Method,
-                        false,
                     )?;
                 }
             }
@@ -710,7 +620,6 @@ fn load_source(
                     &function,
                     declaration.to_string(),
                     AuthorityDeclarationKind::Function,
-                    true,
                 )?;
             }
             Item::ExternBlock(block) => {
@@ -719,30 +628,6 @@ fn load_source(
                     for attr in &function.attributes {
                         ensure_substrate_attribute(source, declaration.name.as_str(), attr)?;
                         match attr.name.as_str() {
-                            "abi" => {
-                                let facts =
-                                    parse_abi_facts(source, declaration.name.as_str(), attr)?;
-                                let binding = make_binding(
-                                    source,
-                                    declaration.to_string(),
-                                    AuthorityDeclarationKind::ExternFunction,
-                                )?;
-                                let key = qualified(source, declaration.name.as_str());
-                                if authority
-                                    .extern_abi
-                                    .insert(key.clone(), ExternAbiEntry { binding, facts })
-                                    .is_some()
-                                {
-                                    return Err(error(
-                                        source,
-                                        Some(declaration.to_string()),
-                                        AuthorityErrorKind::DuplicateBinding {
-                                            family: "extern ABI".to_string(),
-                                            key,
-                                        },
-                                    ));
-                                }
-                            }
                             "runtime_capability" => {
                                 let key = positional_key(source, declaration.name.as_str(), attr)?;
                                 let capability = ExternRuntimeCapability::from_key(key)
@@ -782,7 +667,7 @@ fn load_source(
                                     ));
                                 }
                             }
-                            "lang_item" | "intrinsic" | "diagnostic_item" | "overload" => {
+                            "lang_item" => {
                                 return Err(error(
                                     source,
                                     Some(declaration.to_string()),
@@ -820,7 +705,6 @@ fn load_function_attributes(
     function: &FnDecl,
     declaration: String,
     kind: AuthorityDeclarationKind,
-    top_level: bool,
 ) -> Result<(), AuthorityError> {
     for attr in &function.attributes {
         ensure_substrate_attribute(source, &declaration, attr)?;
@@ -835,75 +719,7 @@ fn load_function_attributes(
                 let key = positional_key(source, &declaration, attr)?;
                 register_lang_item(authority, source, &binding, key)?;
             }
-            "intrinsic" => {
-                if !top_level {
-                    return Err(error(
-                        source,
-                        Some(declaration),
-                        AuthorityErrorKind::InvalidAttributePlacement {
-                            attribute: attr.name.clone(),
-                        },
-                    ));
-                }
-                let key = positional_key(source, &declaration, attr)?;
-                let intrinsic = Intrinsic::from_key(key).ok_or_else(|| {
-                    error(
-                        source,
-                        Some(declaration.clone()),
-                        AuthorityErrorKind::UnknownIntrinsic {
-                            key: key.to_string(),
-                        },
-                    )
-                })?;
-                insert_unique(
-                    &mut authority.intrinsics,
-                    intrinsic,
-                    binding.clone(),
-                    source,
-                    &declaration,
-                    "intrinsic",
-                    key,
-                )?;
-            }
-            "diagnostic_item" => {
-                let key = positional_key(source, &declaration, attr)?;
-                let diagnostic = DiagnosticItem::from_key(key).ok_or_else(|| {
-                    error(
-                        source,
-                        Some(declaration.clone()),
-                        AuthorityErrorKind::UnknownDiagnosticItem {
-                            key: key.to_string(),
-                        },
-                    )
-                })?;
-                insert_unique(
-                    &mut authority.diagnostic_items,
-                    diagnostic,
-                    binding.clone(),
-                    source,
-                    &declaration,
-                    "diagnostic item",
-                    key,
-                )?;
-            }
-            "overload" => {
-                let key = positional_key(source, &declaration, attr)?;
-                let group = OverloadGroup::from_key(key).ok_or_else(|| {
-                    error(
-                        source,
-                        Some(declaration.clone()),
-                        AuthorityErrorKind::UnknownOverloadGroup {
-                            key: key.to_string(),
-                        },
-                    )
-                })?;
-                authority
-                    .overload_groups
-                    .entry(group)
-                    .or_default()
-                    .push(binding.clone());
-            }
-            "abi" | "runtime_capability" => {
+            "runtime_capability" => {
                 return Err(error(
                     source,
                     Some(declaration),
@@ -942,59 +758,6 @@ fn register_lang_item(
         "lang item",
         key,
     )
-}
-
-fn parse_abi_facts(
-    source: AuthoritySource<'_>,
-    declaration: &str,
-    attr: &Attribute,
-) -> Result<Vec<ExternAbiFact>, AuthorityError> {
-    if attr.args.is_empty() {
-        return Err(error(
-            source,
-            Some(declaration.to_string()),
-            AuthorityErrorKind::MalformedAttribute {
-                attribute: attr.name.clone(),
-            },
-        ));
-    }
-
-    let mut facts = Vec::with_capacity(attr.args.len());
-    for arg in &attr.args {
-        let AttributeArg::KeyValue { key, value } = arg else {
-            return Err(error(
-                source,
-                Some(declaration.to_string()),
-                AuthorityErrorKind::MalformedAttribute {
-                    attribute: attr.name.clone(),
-                },
-            ));
-        };
-        let fact = match (key.as_str(), value.as_str()) {
-            ("ret", "bytes_triple") => ExternAbiFact::ReturnBytesTriple,
-            ("bytes_param", "ptr") => ExternAbiFact::BytesParamPointer,
-            ("drop", "cow_null_tolerant") => ExternAbiFact::CowDropNullTolerant,
-            ("ret" | "bytes_param" | "drop", _) => {
-                return Err(error(
-                    source,
-                    Some(declaration.to_string()),
-                    AuthorityErrorKind::UnknownAbiValue {
-                        key: key.clone(),
-                        value: value.clone(),
-                    },
-                ));
-            }
-            _ => {
-                return Err(error(
-                    source,
-                    Some(declaration.to_string()),
-                    AuthorityErrorKind::UnknownAbiKey { key: key.clone() },
-                ));
-            }
-        };
-        facts.push(fact);
-    }
-    Ok(facts)
 }
 
 fn positional_key<'a>(
@@ -1193,7 +956,7 @@ mod tests {
     }
 
     #[test]
-    fn synthetic_sources_populate_every_registry() {
+    fn synthetic_sources_populate_shared_authorities() {
         let sources = [
             AuthoritySource::embedded(
                 StdlibRoot::Builtins,
@@ -1204,19 +967,7 @@ pub enum Maybe<T> {
     None;
 }
 
-#[intrinsic("math.sqrt")]
-pub fn sqrt(x: f64) -> f64 {
-}
-
-#[diagnostic_item("fs")]
-pub fn read_file() {}
-
-#[overload("println")]
-pub fn println_i64(value: i64) {}
-
 extern "C" {
-    #[abi(ret = bytes_triple, bytes_param = ptr, drop = cow_null_tolerant)]
-    fn hew_bytes();
     #[runtime_capability("metrics")]
     fn hew_connect();
 }
@@ -1234,26 +985,6 @@ extern "C" {
         assert_eq!(
             authority.lang_items()[&LangItem::Option].declaration,
             "Maybe"
-        );
-        assert_eq!(
-            authority.intrinsics()[&Intrinsic::MathSqrt].declaration,
-            "sqrt"
-        );
-        assert_eq!(
-            authority.diagnostic_items()[&DiagnosticItem::Fs].declaration,
-            "read_file"
-        );
-        assert_eq!(
-            authority.overload_groups()[&OverloadGroup::Println][0].declaration,
-            "println_i64"
-        );
-        assert_eq!(
-            authority.extern_abi()["builtins::hew_bytes"].facts,
-            vec![
-                ExternAbiFact::ReturnBytesTriple,
-                ExternAbiFact::BytesParamPointer,
-                ExternAbiFact::CowDropNullTolerant,
-            ]
         );
         assert_eq!(
             authority.extern_runtime_capabilities()["builtins::hew_connect"].capability,
@@ -1348,96 +1079,25 @@ extern "C" {
     }
 
     #[test]
-    fn unknown_abi_key_is_a_pointed_build_error() {
-        let source = AuthoritySource::embedded(
-            StdlibRoot::Io,
-            "std/io.hew",
-            r#"
-extern "C" {
-    #[abi(byte_param = ptr)]
-    fn hew_write(data: bytes);
-}
-"#,
-        );
-        let error =
-            load_stdlib_authority(&[source]).expect_err("unknown ABI keys must fail closed");
-
-        assert_eq!(error.declaration.as_deref(), Some("hew_write"));
-        assert_eq!(
-            error.kind,
-            AuthorityErrorKind::UnknownAbiKey {
-                key: "byte_param".to_string(),
-            }
-        );
-        assert!(
-            error.to_string().contains("byte_param"),
-            "build error must name the rejected ABI key: {error}"
-        );
-    }
-
-    #[test]
     fn authority_attribute_outside_std_roots_is_rejected() {
         let source = AuthoritySource::external(
             "src/main.hew",
-            r#"#[diagnostic_item("fs")] pub fn read_file() {}"#,
+            r#"#[lang_item("display_fmt")] pub fn fmt() {}"#,
         );
         let error = load_stdlib_authority(&[source])
             .expect_err("authority attributes outside std roots must fail closed");
 
         assert_eq!(error.source_path, "src/main.hew");
-        assert_eq!(error.declaration.as_deref(), Some("read_file"));
+        assert_eq!(error.declaration.as_deref(), Some("fmt"));
         assert_eq!(
             error.kind,
             AuthorityErrorKind::AttributeOutsideStdRoot {
-                attribute: "diagnostic_item".to_string(),
+                attribute: "lang_item".to_string(),
             }
         );
         assert!(
             error.to_string().contains("substrate-only"),
             "outside-root error must explain the privilege boundary: {error}"
-        );
-    }
-
-    #[test]
-    fn abi_on_non_extern_declaration_is_rejected() {
-        let source = AuthoritySource::embedded(
-            StdlibRoot::Io,
-            "std/io.hew",
-            r"#[abi(ret = bytes_triple)] pub fn hew_bytes() -> bytes {}",
-        );
-        let error = load_stdlib_authority(&[source])
-            .expect_err("ABI facts must only decorate extern declarations");
-
-        assert_eq!(error.declaration.as_deref(), Some("hew_bytes"));
-        assert_eq!(
-            error.kind,
-            AuthorityErrorKind::InvalidAttributePlacement {
-                attribute: "abi".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn abi_outside_std_roots_is_rejected() {
-        let source = AuthoritySource::external(
-            "src/main.hew",
-            r#"
-extern "C" {
-    #[abi(ret = bytes_triple)]
-    fn hew_bytes() -> bytes;
-}
-"#,
-        );
-        let error = load_stdlib_authority(&[source])
-            .expect_err("ABI facts outside std roots must fail closed");
-
-        assert_eq!(error.source_path, "src/main.hew");
-        assert_eq!(error.declaration.as_deref(), Some("hew_bytes"));
-        assert_eq!(
-            error.kind,
-            AuthorityErrorKind::AttributeOutsideStdRoot {
-                attribute: "abi".to_string(),
-            }
         );
     }
 

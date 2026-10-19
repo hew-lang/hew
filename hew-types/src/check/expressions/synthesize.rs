@@ -129,7 +129,14 @@ impl Checker {
                         StringPart::Literal(_) => {}
                         StringPart::Expr((expr, expr_span)) => {
                             let part_ty = self.synthesize(expr, expr_span);
-                            self.require_display_impl(&part_ty, expr_span);
+                            if let Some(display_ty) = self.display_impl_type(&part_ty) {
+                                self.interpolation_display_types.insert(
+                                    SpanKey::in_module(expr_span, self.current_module_idx),
+                                    display_ty,
+                                );
+                            } else {
+                                self.require_display_impl(&part_ty, expr_span);
+                            }
                         }
                         StringPart::StructuralExpr((expr, expr_span)) => {
                             let part_ty = self.synthesize(expr, expr_span);

@@ -131,17 +131,16 @@ struct Inner {
     sink_handles: usize,
     /// The consumer cancelled (`stream.close()` / stream drop).
     stream_closed: bool,
-    /// Terminal FAULT: the producer (a `receive gen fn` pump) crashed
-    /// or was torn down while still registered, instead of reaching a clean
-    /// `sink_closed` EOF. Orthogonal to `sink_closed` — set only by
-    /// [`ChannelCore::fault_close`], never by a normal close edge. Once
+    /// Terminal fault: a producer crashed while owning a sink. Orthogonal to
+    /// `sink_closed` — published by sink cleanup through
+    /// [`ChannelCore::fault_close_take`], never by a normal close edge. Once
     /// every already-queued item drains, every further consumer read must
     /// observe the fault rather than a silent EOF (`pop` / `blocking_recv`
     /// panic; `await_next` reports ready so the bind edge reaches that
     /// panic instead of parking forever).
     sink_fault: bool,
-    /// The id of the actor whose registered sink faulted, recorded once at
-    /// the first [`ChannelCore::fault_close`] call, for the panic message.
+    /// The id of the actor whose sink cleanup published the first fault,
+    /// retained for the panic message.
     fault_actor_id: Option<u64>,
     /// At most one parked consumer (a `Stream<T>` has a single owner).
     consumer: Option<Waiter>,
@@ -881,17 +880,6 @@ impl ChannelCore {
         }
     }
 
-    /// Whether the consumer has closed/detached (`stream.close()` / stream
-    /// drop). Read by `hew_sink_peer_closed` so a `receive gen fn` pump can
-    /// check its peer before every resume and break the loop without
-    /// resuming further once the consumer is gone (cancellation,
-    /// decision 6) — an infinite generator plus a consumer `break` must not
-    /// livelock the actor.
-    #[must_use]
-    pub fn is_stream_closed(&self) -> bool {
-        self.locked().stream_closed
-    }
-
     // ── Close edges ──────────────────────────────────────────────────────────
 
     /// Register one more sink handle (`sink.clone()`): EOF is published only
@@ -969,18 +957,14 @@ impl ChannelCore {
         (layout, discarded)
     }
 
-    /// Mark this pipe permanently FAULTED: the registered producer (a
-    /// `receive gen fn` pump) crashed or was torn down instead of reaching a
-    /// clean EOF. Distinct from [`Self::close_sink`] — set only by the
-    /// runtime's actor-teardown paths, never by a normal producer close.
+    /// Mark this pipe permanently faulted after a producer crashes while
+    /// owning a sink. Distinct from [`Self::close_sink`], which publishes clean
+    /// EOF after the last sink closes.
     /// Wakes a parked consumer so it observes the fault immediately rather
     /// than hanging until some other event arrives. The fault is terminal for
     /// the whole core: every parked producer envelope is dropped without
-    /// delivery and every producer waiter is resolved. Hew sinks are affine,
-    /// but the runtime core also defends against shared FFI callers so a
-    /// core-wide fault cannot strand a non-faulting continuation.
-    /// Idempotent: a second call (e.g. both the crash path and a later free path
-    /// reach an already-faulted core) leaves the FIRST recorded `actor_id`.
+    /// delivery and every producer waiter is resolved, including senders on
+    /// other sink handles. Repeated calls preserve the first `actor_id`.
     ///
     /// Does not touch `sink_closed`/`stream_closed` or the queue — items already
     /// queued before the fault still drain normally. Only producer-held items
@@ -1424,10 +1408,8 @@ mod tests {
             STREAM_AWAIT_SUSPEND
         );
 
-        // A `Sink<T>` is affine in safe Hew, so a receive-gen core normally
-        // has only its pump as producer. The core is nevertheless an FFI
-        // boundary: resolve every published waiter so an aliased foreign
-        // caller cannot remain parked behind a core-wide producer fault.
+        // A core-wide producer fault must resolve every published waiter,
+        // including parked senders on other sink handles.
         core.fault_close(44);
         for slot in [first_slot, second_slot] {
             assert_eq!(

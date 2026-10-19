@@ -2,7 +2,10 @@
 
 use super::super::task_lifetimes::OriginEnvironments;
 use super::super::CallableCandidate;
-use super::{CallTarget, Checker, EffectBody, EffectGraph, Invocation, MethodCallRewrite, SpanKey};
+use super::{
+    CallTarget, Checker, EffectBody, EffectCallSite, EffectGraph, Invocation, MethodCallRewrite,
+    SpanKey,
+};
 use crate::check::cleanup_effects::CleanupTarget;
 use crate::{ParamHead, Ty};
 use std::cell::RefCell;
@@ -124,16 +127,17 @@ fn effect_parameters(
                 .or_insert(demand);
         }
     }
-    for (key, call) in &graph.calls {
+    for (site, call) in &graph.calls {
         let Some(owner) = &call.owner else {
             continue;
         };
         if matches!(
-            checker.call_target(key),
+            checker.effect_call_target(site),
             Some(CallTarget::IndirectFunctionValue | CallTarget::StaticTraitMethod { .. })
-        ) || (checker.call_target(key).is_none()
+        ) || (checker.effect_call_target(site).is_none()
             && matches!(
-                checker.method_call_rewrites.get(key),
+                site.authored_span()
+                    .and_then(|key| checker.method_call_rewrites.get(key)),
                 Some(
                     MethodCallRewrite::RecordFnFieldCall { .. }
                         | MethodCallRewrite::BuiltinVecHigherOrder { .. }
@@ -144,7 +148,7 @@ fn effect_parameters(
         }
         let target = call_parameter_transfer(
             checker,
-            key,
+            site,
             call,
             parameters.entry(owner.clone()).or_default(),
         );
@@ -170,41 +174,40 @@ fn effect_parameters(
 
 fn call_parameter_transfer(
     checker: &Checker,
-    key: &SpanKey,
+    site: &EffectCallSite,
     call: &Invocation,
     parameters: &mut Parameters,
 ) -> Option<(EffectBody, Actuals, bool)> {
     let empty = Actuals::new();
     if matches!(
-        checker.call_target(key),
+        checker.effect_call_target(site),
         Some(CallTarget::StaticTraitMethod { .. })
     ) {
         if let Some(receiver) = &call.receiver {
             type_parameters(&checker.subst.resolve(receiver), parameters, Demand::Exact);
         }
-        if let Some(MethodCallRewrite::StaticTraitDispatch { trait_args, .. }) =
-            checker.method_call_rewrites.get(key)
-        {
+        if let Some(trait_args) = checker.effect_trait_args(site) {
             for ty in trait_args {
                 type_parameters(ty, parameters, Demand::Exact);
             }
         }
     }
-    match checker.call_target(key) {
+    match checker.effect_call_target(site) {
         Some(
             CallTarget::User(id)
             | CallTarget::ImplMethod(id)
             | CallTarget::StaticTraitMethod { method: id, .. },
         ) => Some((
             EffectBody::Declaration(*id),
-            checker.call_cleanup_substitutions(*id, key, call.receiver.as_ref(), &empty),
+            checker.call_cleanup_substitutions(*id, site, call.receiver.as_ref(), &empty),
             false,
         )),
         target
             if matches!(target, Some(CallTarget::IndirectFunctionValue))
                 || (target.is_none()
                     && matches!(
-                        checker.method_call_rewrites.get(key),
+                        site.authored_span()
+                            .and_then(|key| checker.method_call_rewrites.get(key)),
                         Some(
                             MethodCallRewrite::RecordFnFieldCall { .. }
                                 | MethodCallRewrite::BuiltinVecHigherOrder { .. }
@@ -362,7 +365,7 @@ impl Dependencies {
 pub(super) struct EffectSolver<'a> {
     checker: &'a Checker,
     graph: &'a EffectGraph,
-    calls: HashMap<EffectBody, Vec<(&'a SpanKey, &'a Invocation)>>,
+    calls: HashMap<EffectBody, Vec<(&'a EffectCallSite, &'a Invocation)>>,
     releases: HashMap<EffectBody, Vec<&'a super::super::cleanup_effects::CleanupEffect>>,
     parameters: HashMap<EffectBody, Parameters>,
     value_parameters: HashSet<EffectBody>,
@@ -382,17 +385,20 @@ impl<'a> EffectSolver<'a> {
         flows: &HashMap<SpanKey, Vec<super::super::CallableArgumentFlow>>,
     ) -> Self {
         let mut calls: HashMap<_, Vec<_>> = HashMap::new();
-        for (key, invocation) in &graph.calls {
+        for (site, invocation) in &graph.calls {
             if let Some(owner) = &invocation.owner {
                 calls
                     .entry(owner.clone())
                     .or_default()
-                    .push((key, invocation));
+                    .push((site, invocation));
             }
         }
         // Source order makes the selected witness stable across hash seeds.
         for calls in calls.values_mut() {
-            calls.sort_by_key(|(key, _)| (key.module_idx, key.start, key.end));
+            calls.sort_by_key(|(site, _)| {
+                let key = site.diagnostic_span();
+                (key.module_idx, key.start, key.end, site.order())
+            });
         }
         let mut releases: HashMap<_, Vec<_>> = HashMap::new();
         for release in &graph.releases {
@@ -582,10 +588,10 @@ impl<'a> EffectSolver<'a> {
         self.nodes[id].witness.clone()
     }
 
-    pub(super) fn invocation(&mut self, key: &SpanKey, invocation: &Invocation) -> bool {
+    pub(super) fn invocation(&mut self, site: &EffectCallSite, invocation: &Invocation) -> bool {
         let mut dependencies = Dependencies::default();
         self.invocation_dependencies(
-            key,
+            site,
             invocation,
             Application {
                 types: &Actuals::new(),
@@ -616,7 +622,19 @@ impl<'a> EffectSolver<'a> {
             },
         );
         let mut instances = Vec::new();
-        for (actuals, boundary) in contexts {
+        for (mut actuals, boundary) in contexts {
+            if let (
+                EffectBody::Declaration(declaration),
+                super::ObligationSlot::Dyn { receiver, .. },
+            ) = (&obligation.body, &obligation.slot)
+            {
+                let receiver_actuals =
+                    self.checker
+                        .receiver_cleanup_substitutions(*declaration, receiver, &actuals);
+                actuals.extend(receiver_actuals);
+                self.checker
+                    .complete_associated_schema_substitutions(&mut actuals);
+            }
             let body = self.intern(Self::instance(&obligation.body, &actuals, true, false));
             let captures = obligation
                 .once
@@ -696,9 +714,9 @@ impl<'a> EffectSolver<'a> {
             }
         }
         if let Some(calls) = self.calls.get(&instance.body) {
-            for (key, invocation) in calls {
+            for (site, invocation) in calls {
                 self.invocation_dependencies(
-                    key,
+                    site,
                     invocation,
                     Application {
                         types: &actuals,
@@ -859,7 +877,7 @@ impl<'a> EffectSolver<'a> {
 
     fn callee_dependencies(
         &self,
-        key: &SpanKey,
+        site: &EffectCallSite,
         invocation: &Invocation,
         application: Application<'_>,
         result: &mut Dependencies,
@@ -890,7 +908,7 @@ impl<'a> EffectSolver<'a> {
                 let mut instance = Self::instance(&identity, actuals, unknown, false);
                 instance.values = self.checker.callable_environment(
                     &identity,
-                    Some(key),
+                    site.authored_span(),
                     (actuals, values),
                     None,
                     &mut self.values.borrow_mut(),
@@ -908,7 +926,7 @@ impl<'a> EffectSolver<'a> {
 
     fn invocation_dependencies(
         &self,
-        key: &SpanKey,
+        site: &EffectCallSite,
         invocation: &Invocation,
         application: Application<'_>,
         result: &mut Dependencies,
@@ -918,18 +936,21 @@ impl<'a> EffectSolver<'a> {
             values,
             unknown,
         } = application;
-        if let Some(suspends) = self.graph.submission_effects.get(key) {
+        if let Some(suspends) = site
+            .authored_span()
+            .and_then(|key| self.graph.submission_effects.get(key))
+        {
             if *suspends {
                 result.suspends(&invocation.name);
             }
             return;
         }
-        match self.checker.call_target(key) {
+        match self.checker.effect_call_target(site) {
             Some(target) if self.graph.builtin_suspensions.contains(target) => {
                 result.suspends(&invocation.name);
             }
             Some(CallTarget::IndirectFunctionValue) => {
-                self.callee_dependencies(key, invocation, application, result);
+                self.callee_dependencies(site, invocation, application, result);
             }
             Some(
                 CallTarget::User(_)
@@ -938,7 +959,7 @@ impl<'a> EffectSolver<'a> {
             ) => {
                 let Some((id, applied)) = self
                     .checker
-                    .instantiated_effect_target(key, invocation, actuals)
+                    .instantiated_effect_target(site, invocation, actuals)
                 else {
                     result.suspends(&invocation.name);
                     return;
@@ -947,7 +968,7 @@ impl<'a> EffectSolver<'a> {
                 let mut instance = Self::instance(&body, &applied, unknown, false);
                 instance.values = self.checker.callable_environment(
                     &body,
-                    Some(key),
+                    site.authored_span(),
                     (&applied, values),
                     None,
                     &mut self.values.borrow_mut(),
@@ -970,26 +991,29 @@ impl<'a> EffectSolver<'a> {
                 | CallTarget::RuntimeCollection(_),
             ) => {}
             Some(CallTarget::DynamicVtable { .. }) => {
-                if self
-                    .checker
-                    .dyn_trait_method_calls
-                    .get(key)
+                if site
+                    .authored_span()
+                    .and_then(|key| self.checker.dyn_trait_method_calls.get(key))
                     .is_none_or(|call| call.effect == super::super::SlotEffect::Suspends)
                 {
                     result.suspends(&invocation.name);
                 }
             }
             Some(CallTarget::Unsupported { .. }) => result.suspends(&invocation.name),
-            None => match self.checker.method_call_rewrites.get(key) {
+            None => match site
+                .authored_span()
+                .and_then(|key| self.checker.method_call_rewrites.get(key))
+            {
                 Some(
                     MethodCallRewrite::RecordFnFieldCall { .. }
                     | MethodCallRewrite::BuiltinVecHigherOrder { .. },
-                ) => self.callee_dependencies(key, invocation, application, result),
+                ) => self.callee_dependencies(site, invocation, application, result),
                 Some(MethodCallRewrite::GeneratorNext { .. }) => result.suspends(&invocation.name),
                 Some(_) => {}
                 None => {
                     if !matches!(
-                        self.checker.actor_method_dispatch.get(key),
+                        site.authored_span()
+                            .and_then(|key| self.checker.actor_method_dispatch.get(key)),
                         Some(super::super::ActorMethodKind::Message { .. })
                     ) {
                         result.suspends(&invocation.name);

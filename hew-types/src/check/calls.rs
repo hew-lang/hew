@@ -486,7 +486,7 @@ impl Checker {
 
     /// Type every argument of a refused call on its own, so the refusal does
     /// not cascade into positional mismatches.
-    fn synthesize_call_arguments(&mut self, args: &[CallArg]) {
+    pub(in crate::check) fn synthesize_call_arguments(&mut self, args: &[CallArg]) {
         for arg in args {
             let (expr, sp) = arg.expr();
             self.synthesize(expr, sp);
@@ -1518,6 +1518,19 @@ impl Checker {
     }
 
     pub(super) fn source_call_target(&self, declaration: crate::DefId) -> CallTarget {
+        if let Some(module) = self.defs.module(declaration).filter(|module| {
+            self.defs.kind(declaration) == crate::DeclarationKind::Function
+                && self.defs.module_path(*module) == "std.builtins"
+        }) {
+            let qualified = format!(
+                "{}.{}",
+                self.defs.module_path(module),
+                self.defs.name(declaration)
+            );
+            if let Some(target) = self.builtin_call_targets.get(&qualified) {
+                return target.clone();
+            }
+        }
         if self
             .defs
             .declaration_kind_by_path(self.defs.path(declaration))

@@ -1,0 +1,74 @@
+import std.encoding.json;
+
+type Stock {
+    name: string;
+    quantity: i64;
+}
+
+fn stock() -> HashMap<string, Stock> {
+    println("stock");
+    var entries: HashMap<string, Stock> = HashMap.new();
+    entries.insert("bolts", Stock { name: "bolts", quantity: 3 });
+    entries.insert("nuts", Stock { name: "nuts", quantity: 5 });
+    entries
+}
+
+fn opaque_values() {
+    var values: HashMap<string, json.Value> = HashMap.new();
+    values.insert("entry", json.from_string("original"));
+    var snapshot = values.into_iter();
+    values.insert("entry", json.from_string("replacement"));
+    match snapshot.next() {
+        .Some(item) => {
+            let (key, value) = item;
+            assert(key == "entry");
+            assert(value.get_string().expect("string value") == "original");
+        }
+        .None => assert(false),
+    }
+    assert(values["entry"].get_string().expect("string value") == "replacement");
+}
+
+fn main() {
+    opaque_values();
+    var inferred = HashMap.new();
+    var empty_snapshot = inferred.into_iter();
+    inferred.insert("later", "value");
+    assert(empty_snapshot.next().is_none());
+    assert(inferred.len() == 1);
+    var entries = stock();
+    var cursor = entries.into_iter();
+    entries.insert("bolts", Stock { name: "replacement", quantity: 99 });
+    entries.insert("washers", Stock { name: "washers", quantity: 7 });
+    var total = 0;
+    loop {
+        match cursor.next() {
+            .Some(item) => {
+                let (key, value) = item;
+                assert(key == value.name);
+                total += value.quantity;
+            }
+            .None => break,
+        }
+    }
+    assert(total == 8);
+    assert(entries.len() == 3);
+    var direct_total = 0;
+    for (key, value) in entries {
+        direct_total += value.quantity;
+        assert(key == "bolts" || key == value.name);
+    }
+    assert(direct_total == 111);
+    for (key, value) in stock() {
+        assert(key == value.name);
+        break;
+    }
+    var explicit = stock().into_iter();
+    match explicit.next() {
+        .Some(item) => {
+            let (key, value) = item;
+            assert(key == value.name);
+        }
+        .None => assert(false),
+    }
+}

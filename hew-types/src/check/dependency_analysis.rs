@@ -111,6 +111,7 @@ impl DependencyAnalysisCache {
             dependency_checker.has_checked_program = true;
             dependency_checker.prepare_program(&key.program, true);
             dependency_checker.check_dependency_bodies(&key.program);
+            dependency_checker.check_embedded_builtin_impl_bodies(&key.program);
             if !dependency_checker.errors.is_empty() {
                 return checker.check_program(program);
             }

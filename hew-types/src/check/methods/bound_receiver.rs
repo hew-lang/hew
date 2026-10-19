@@ -168,7 +168,7 @@ impl Checker {
         }
         None
     }
-    fn bound_receiver_method_candidates(
+    pub(in crate::check) fn bound_receiver_method_candidates(
         &mut self,
         parameter: crate::ParamHead,
         _receiver_ty: &Ty,

@@ -76,11 +76,6 @@ impl Checker {
             });
             return renders.then_some(resolved);
         }
-        if self.type_implements_trait(&resolved, display)
-            && self.an_impl_head_admits(&resolved, display)
-        {
-            return Some(resolved);
-        }
         // A bare type parameter (e.g. `T` in `fn f<T: Display>(x: T)`)
         // carries no registered impl of its own, but the enclosing item's
         // where-clause may declare a `Display` bound that satisfies the

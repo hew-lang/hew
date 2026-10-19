@@ -1,0 +1,44 @@
+// Terminating a supervisor cancels its active stream producer and releases
+// the sink. The consumer drains accepted values in order and observes EOF.
+// Receiving the first value proves the producer started; no buffer capacity
+// or scheduling delay is assumed. A crash is covered by receive_gen_fn_fault_trap.
+actor Ticker {
+    receive gen fn stream() -> i64 {
+        var i: i64 = 0;
+        loop {
+            yield i;
+            i = i + 1;
+        }
+    }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child ticker: Ticker;
+}
+
+fn main() {
+    let sup = spawn App;
+    let t = sup.ticker;
+    let s = t.stream();
+    match s.recv() {
+        .Some(value) => assert(value == 0),
+        .None => panic("producer did not start"),
+    }
+    println("started");
+    terminate(sup);
+    stopped(sup);
+    var next: i64 = 1;
+    loop {
+        match s.recv() {
+            .Some(value) => {
+                assert(value == next);
+                next = next + 1;
+            }
+            .None => break,
+        }
+    }
+    println("eof");
+}

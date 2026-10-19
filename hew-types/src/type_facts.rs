@@ -138,6 +138,68 @@ pub enum ValueMethodPlan {
 
 type CapabilityResult = Result<Option<ValueMethodPlan>, ClassError>;
 
+/// A Display operation implemented directly by the compiler's runtime ABI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltinDisplayPlan {
+    Identity,
+    Runtime {
+        family: crate::RuntimeCallFamily,
+        argument_ty: ResolvedTy,
+    },
+}
+
+impl BuiltinDisplayPlan {
+    /// The scalar conversion also used when rendering assertion operands.
+    #[must_use]
+    pub fn scalar(ty: &ResolvedTy) -> Option<Self> {
+        use crate::RuntimeCallFamily as F;
+        let (family, argument_ty) = match ty {
+            ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => (F::I32ToString, ResolvedTy::I32),
+            ResolvedTy::I64 | ResolvedTy::Isize => (F::I64ToString, ResolvedTy::I64),
+            ResolvedTy::U8 => (F::U8ToString, ResolvedTy::U8),
+            ResolvedTy::U16 | ResolvedTy::U32 => (F::U32ToString, ResolvedTy::U32),
+            ResolvedTy::U64 | ResolvedTy::Usize => (F::U64ToString, ResolvedTy::U64),
+            ResolvedTy::F32 | ResolvedTy::F64 => (F::F64ToString, ResolvedTy::F64),
+            ResolvedTy::Bool => (F::BoolToString, ResolvedTy::Bool),
+            ResolvedTy::Char => (F::CharToString, ResolvedTy::Char),
+            _ => return None,
+        };
+        Some(Self::Runtime {
+            family,
+            argument_ty,
+        })
+    }
+
+    fn for_type(ty: &ResolvedTy) -> Option<Self> {
+        let family = match ty {
+            ResolvedTy::String => return Some(Self::Identity),
+            ResolvedTy::Named {
+                head: crate::TypeHead::Builtin(BuiltinType::NodeId),
+                ..
+            } => crate::RuntimeCallFamily::NodeIdDisplay,
+            ResolvedTy::Named {
+                head: crate::TypeHead::Builtin(BuiltinType::Location),
+                ..
+            } => crate::RuntimeCallFamily::LocationDisplay,
+            _ => return Self::scalar(ty),
+        };
+        Some(Self::Runtime {
+            family,
+            argument_ty: ty.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn can_fail(&self) -> bool {
+        match self {
+            Self::Identity => false,
+            Self::Runtime { family, .. } => family
+                .semantic_contract()
+                .is_none_or(|contract| !contract.failures.is_empty()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct CapabilityWalk {
     states: HashMap<(ResolvedTy, ValueCapability), CapabilityState>,
@@ -218,6 +280,14 @@ pub(crate) enum ImplMethodObligation {
 }
 
 impl ImplMethodBinders {
+    pub(crate) fn source_parameters(&self) -> Vec<crate::ParamHead> {
+        self.impl_params
+            .iter()
+            .chain(&self.method_params)
+            .copied()
+            .collect()
+    }
+
     pub(crate) fn implementation_arguments(
         &self,
         defs: &crate::DefTable,
@@ -310,6 +380,16 @@ impl ImplMethodBinders {
         method: crate::DefId,
         receiver: &ResolvedTy,
     ) -> Result<Vec<ResolvedTy>, ClassError> {
+        self.bound_arguments(defs, method, receiver, None)
+    }
+
+    fn bound_arguments(
+        &self,
+        defs: &crate::DefTable,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_arguments: Option<(&[crate::Ty], &[ResolvedTy])>,
+    ) -> Result<Vec<ResolvedTy>, ClassError> {
         let variables: Vec<_> = self
             .impl_params
             .iter()
@@ -329,6 +409,19 @@ impl ImplMethodBinders {
                 name: defs.display(method).to_string(),
             }
         })?;
+        if let Some((patterns, arguments)) = trait_arguments {
+            let refusal = || ClassError::UnknownDeclaration {
+                name: defs.display(method).to_string(),
+            };
+            if patterns.len() != arguments.len() {
+                return Err(refusal());
+            }
+            for (pattern, argument) in patterns.iter().zip(arguments) {
+                let pattern = pattern.substitute_type_params_parallel(&replacements);
+                crate::unify::unify_exact(&mut subst, &pattern, &argument.to_ty())
+                    .map_err(|_| refusal())?;
+            }
+        }
         let type_args: Vec<_> = self
             .impl_params
             .iter()
@@ -336,10 +429,13 @@ impl ImplMethodBinders {
             .map(|(name, var)| {
                 let argument = subst.resolve(&crate::Ty::Var(var));
                 // An impl binder is instantiated by a component of the
-                // concrete receiver. Preserve that checked boundary type,
+                // concrete receiver or applied trait. Preserve that boundary type,
                 // including opacity inside nested arguments, rather than
                 // reconstructing it through the lossy Ty round trip.
                 let mut components = vec![receiver.clone()];
+                if let Some((_, arguments)) = trait_arguments {
+                    components.extend_from_slice(arguments);
+                }
                 while let Some(component) = components.pop() {
                     if component.to_ty() == argument {
                         return Ok(component);
@@ -410,6 +506,26 @@ pub(crate) fn selected_impl_method(
         .copied()
 }
 
+fn is_authored_display_method(defs: &crate::DefTable, method: Option<crate::DefId>) -> bool {
+    method
+        .and_then(|method| defs.module(method))
+        .is_some_and(|module| {
+            defs.module_package(module) != &crate::def_table::PackageOrigin::StandardLibrary
+        })
+}
+
+pub(crate) fn select_builtin_display_plan(
+    ty: &ResolvedTy,
+    defs: &crate::DefTable,
+    methods: &HashMap<ImplMethodKey, crate::DefId>,
+    display_method: Option<crate::DefId>,
+) -> Option<BuiltinDisplayPlan> {
+    let plan = BuiltinDisplayPlan::for_type(ty)?;
+    let selected = display_method
+        .and_then(|method| selected_impl_method(methods, ty, ImplMethodSlot::Declared(method)));
+    (!is_authored_display_method(defs, selected)).then_some(plan)
+}
+
 /// Checker-owned declaration context for concrete fact expansion.
 ///
 /// This is an immutable snapshot of the declarations and capability authority
@@ -424,6 +540,8 @@ pub struct TypeFactContext {
     type_defs: HashMap<crate::NominalId, TypeDef>,
     method_ids: HashMap<ImplMethodKey, crate::DefId>,
     method_binders: HashMap<crate::DefId, ImplMethodBinders>,
+    /// Applied supertrait patterns from the checker's substitution authority.
+    method_trait_applications: HashMap<crate::DefId, Vec<crate::check::TraitRef>>,
     /// The declaration table every `DefId` above indexes.
     defs: std::sync::Arc<crate::DefTable>,
     display_method: Option<crate::DefId>,
@@ -489,6 +607,104 @@ impl TypeFactContext {
             .implementation_arguments(&self.defs, method, receiver, trait_args)
     }
 
+    /// Authored impl and method binders in the checked body's source order.
+    /// Materialized defaults retain the original trait method's binder IDs.
+    #[must_use]
+    pub fn impl_method_type_parameters(
+        &self,
+        method: crate::DefId,
+    ) -> Option<Vec<crate::ParamHead>> {
+        self.method_binders
+            .get(&method)
+            .map(ImplMethodBinders::source_parameters)
+    }
+
+    /// Instantiate a selected trait implementation's body schema. Call-site
+    /// arguments contain only authored method binders; associated projections
+    /// are supplied by the checker's registered schema after receiver binding.
+    ///
+    /// # Errors
+    /// Returns an error for absent binder metadata, incorrect method arity or
+    /// receiver/projection arguments that cannot be resolved from checked facts.
+    pub fn trait_method_instance_arguments(
+        &self,
+        method: crate::DefId,
+        receiver: &ResolvedTy,
+        trait_method: (crate::DefId, crate::DefId),
+        trait_arguments: &[ResolvedTy],
+        method_arguments: &[ResolvedTy],
+        structural_witnesses: &[crate::check::StructuralWitness],
+    ) -> Result<Vec<ResolvedTy>, String> {
+        let binders = self.method_binders.get(&method).ok_or_else(|| {
+            format!(
+                "implementation `{}` has no checked binder schema",
+                self.defs.path(method)
+            )
+        })?;
+        if method_arguments.len() != binders.method_params.len() {
+            return Err(format!(
+                "requires {} checker-resolved method type argument(s), found {}",
+                binders.method_params.len(),
+                method_arguments.len()
+            ));
+        }
+        let structurally_selected =
+            receiver
+                .impl_receiver_instance(&self.defs)
+                .is_some_and(|receiver| {
+                    structural_witnesses.iter().any(|witness| {
+                        witness.self_type == receiver.nominal
+                            && (witness.declaring_trait, witness.method) == trait_method
+                            && witness.inherent == method
+                    })
+                });
+        let mut arguments = if structurally_selected {
+            binders
+                .receiver_arguments(&self.defs, method, receiver)
+                .map_err(|error| error.to_string())?
+        } else {
+            let mut candidates = self
+                .method_trait_applications
+                .get(&method)
+                .into_iter()
+                .flatten()
+                .filter(|bound| bound.trait_id == trait_method.0)
+                .filter_map(|bound| {
+                    binders
+                        .bound_arguments(
+                            &self.defs,
+                            method,
+                            receiver,
+                            Some((&bound.args, trait_arguments)),
+                        )
+                        .ok()
+                });
+            let arguments = candidates.next().ok_or_else(|| {
+                format!(
+                    "implementation `{}` cannot bind its receiver and applied trait arguments",
+                    self.defs.path(method),
+                )
+            })?;
+            if candidates.any(|candidate| candidate != arguments) {
+                return Err(format!(
+                    "implementation `{}` has ambiguous applied trait bindings",
+                    self.defs.path(method)
+                ));
+            }
+            arguments
+        };
+        arguments.extend_from_slice(method_arguments);
+        let parameters = binders.source_parameters();
+        self.associated_types
+            .binders(&parameters)
+            .into_iter()
+            .map(|parameter| {
+                self.instantiate_member(&ResolvedTy::param(parameter), &parameters, &arguments)
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
+    }
+
     pub(crate) fn impl_method_arguments(
         &self,
         method: crate::DefId,
@@ -519,6 +735,7 @@ impl TypeFactContext {
             type_defs,
             method_ids: HashMap::new(),
             method_binders: HashMap::new(),
+            method_trait_applications: HashMap::new(),
             defs: std::sync::Arc::default(),
             display_method: None,
             aliases: HashMap::new(),
@@ -562,6 +779,14 @@ impl TypeFactContext {
     ) -> Self {
         self.method_ids = ids;
         self.method_binders = binders;
+        self
+    }
+
+    pub(crate) fn with_method_trait_applications(
+        mut self,
+        applications: HashMap<crate::DefId, Vec<crate::check::TraitRef>>,
+    ) -> Self {
+        self.method_trait_applications = applications;
         self
     }
 
@@ -948,12 +1173,18 @@ impl TypeFactService {
     /// Whether rendering selects an explicit implementation outside the stdlib.
     #[must_use]
     pub fn has_explicit_display_impl(&self, source: &ResolvedTy) -> bool {
-        self.selected_display_method(source)
-            .and_then(|method| self.context.defs.module(method))
-            .is_some_and(|module| {
-                self.context.defs.module_package(module)
-                    != &crate::def_table::PackageOrigin::StandardLibrary
-            })
+        is_authored_display_method(&self.context.defs, self.selected_display_method(source))
+    }
+
+    /// Select the intrinsic path, preserving an authored Display override.
+    #[must_use]
+    pub fn builtin_display_plan(&self, source: &ResolvedTy) -> Option<BuiltinDisplayPlan> {
+        select_builtin_display_plan(
+            source,
+            &self.context.defs,
+            &self.context.method_ids,
+            self.context.display_method,
+        )
     }
 
     fn selected_display_method(&self, source: &ResolvedTy) -> Option<crate::DefId> {

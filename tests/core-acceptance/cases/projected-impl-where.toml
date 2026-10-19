@@ -1,0 +1,11 @@
+[[case]]
+id = "projected-impl-where"
+intent = "A conditional imported impl carries a projected reply capability through generic dispatch to its implementation body."
+source = "cases/projected-impl-where.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "42\n"
+stderr = ""
+exit = 0

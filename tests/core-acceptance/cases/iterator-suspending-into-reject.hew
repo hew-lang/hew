@@ -1,0 +1,41 @@
+type FastCursor { remaining: i64; }
+
+impl Iterator for FastCursor {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        if self.remaining == 0 {
+            .None
+        } else {
+            self.remaining = self.remaining - 1;
+            .Some(1)
+        }
+    }
+}
+
+type SlowIterable { remaining: i64; }
+
+impl IntoIterator for SlowIterable {
+    type Item = i64;
+    type IntoIter = FastCursor;
+
+    fn into_iter(self) -> FastCursor {
+        sleep(1ms);
+        FastCursor { remaining: self.remaining }
+    }
+}
+
+fn make<T>(value: T) -> T { value }
+
+fn run() -> i64 {
+    var count = 0;
+    for value in make(SlowIterable { remaining: 2 }) {
+        count = count + value;
+    }
+    count
+}
+
+fn main() -> i64 {
+    let callback: fn() -> i64 = run;
+    callback()
+}

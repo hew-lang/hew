@@ -1,37 +1,11 @@
-//! Checker-authored dispatch substrate (W4.001 Stage A — foundation).
+//! Checker-authored builtin method dispatch.
 //!
-//! This module introduces the data shapes that will, in subsequent stages,
-//! become the **single source of truth** for "how does this method call
-//! lower." See the type-level docs on [`ResolvedCall`], [`ImplRegistry`],
-//! and [`resolve_method_call`] below for substrate ownership.
+//! [`ImplRegistry`] records builtin implementations and [`resolve_method_call`]
+//! selects a [`ResolvedCall`] or reports a structured [`LookupError`]. The
+//! checker publishes successful calls through `TypeCheckOutput::resolved_calls`;
+//! HIR consumes their targets and lifecycle facts instead of resolving them again.
 //!
-//! # Stage A scope
-//!
-//! Stage A is substrate-only:
-//!
-//! - Define [`ResolvedCall`], [`ImplId`], [`ImplRegistry`], [`ImplDef`],
-//!   [`MethodTarget`], [`CallAbiHint`], [`RuntimeAbi`], [`Bound`],
-//!   [`TyPattern`], and [`LookupError`].
-//! - Provide [`resolve_method_call`] as a fail-closed resolver that returns
-//!   either a [`ResolvedCall`] or a structured [`LookupError`] — never a
-//!   silent `None`.
-//! - Add a parallel `resolved_calls: HashMap<SpanKey, ResolvedCall>` field
-//!   on `TypeCheckOutput` (and the checker's internal state) initialised to
-//!   the empty map.
-//!
-//! Stage A **does not** introduce any production reader of
-//! `resolved_calls`. The field is populated only by the
-//! `resolved_call_registry_lookup` substrate test and (in Stage B) by the
-//! checker's unified resolver. No HIR/MIR/codegen code path reads it. If a
-//! reader is accidentally introduced via a defaulted match arm, the
-//! reviewer should rewrite it as
-//! `unreachable!("hew-types::dispatch invariant: resolved_calls is \
-//! populated by the unified resolver; no production reader exists at \
-//! this stage of the implementation — adding one before the resolver lands \
-//! violates DI-003 fail-closed-by-absence")` rather than silently fall
-//! through.
-//!
-//! # Q281=A data-only discipline
+//! # Registry data
 //!
 //! [`ImplDef`], [`TyPattern`], [`Bound`], and [`MethodTarget`] are **pure
 //! data**: no Rust closures, no `Box<dyn Fn>`, no predicate callbacks.
@@ -40,11 +14,8 @@
 //! `bound_satisfied` argument), **never** by a closure stored inside the
 //! registry.
 //!
-//! This is the non-negotiable invariant that keeps the eventual
-//! `.hew`-source migration of the registry mechanical (the entire point
-//! of Q281=A). It is enforced structurally by the `Eq + Hash` derives on
-//! every type below: a `Box<dyn Fn(...)>` implements neither, so adding one
-//! trips the build.
+//! The registry describes implementations; the checker supplies the bound
+//! policy. `Eq + Hash` derives keep registry entries comparable data.
 
 use crate::traits::MarkerTrait;
 use crate::{DefId, RuntimeCallFamily};
@@ -60,9 +31,8 @@ pub struct ImplId(pub u32);
 /// The runtime calling convention for the receiver-side argument of a
 /// dispatched method.
 ///
-/// Stage A enumerates the conventions used by existing HashMap/HashSet/Vec
-/// callees so Stage E can re-key MIR drop-plan attachment from string-symbol
-/// families onto `ImplId` without changing the set of conventions.
+/// These conventions describe how lowering passes the receiver and transfers
+/// its ownership to the runtime callee.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeAbi {
     /// Receiver is passed by value (e.g. `Copy` primitives).
@@ -160,8 +130,7 @@ pub struct Bound {
 /// Per-method dispatch target: the runtime symbol plus its calling
 /// convention and lifecycle facts.
 ///
-/// Stage A captures the fields Stage B's resolver will populate and Stage
-/// E's MIR/codegen pickup will consume. No production reader exists yet.
+/// The checker records these facts for HIR lowering.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MethodTarget {
     /// Runtime symbol name (e.g. `"hew_hashmap_insert_layout"`).
@@ -189,9 +158,7 @@ pub struct MethodTarget {
     /// How the call is lowered (direct vs runtime shim).
     pub call_hint: CallAbiHint,
     /// Whether the method consumes its receiver. Mirrors
-    /// `MethodSig::consumes_receiver` so Stage E can fold the
-    /// `method_call_consumes_receiver` side table onto [`ResolvedCall`]
-    /// without semantic drift.
+    /// `MethodSig::consumes_receiver` for downstream ownership lowering.
     pub consumes_receiver: bool,
 }
 
@@ -422,12 +389,10 @@ pub struct ImplDef {
     pub methods: Vec<(String, MethodTarget)>,
 }
 
-/// The substrate's unified verdict for one method call site.
+/// The checker's dispatch verdict for one builtin method call site.
 ///
-/// In Stage B the checker will populate
-/// `TypeCheckOutput::resolved_calls: HashMap<SpanKey, ResolvedCall>` from
-/// the resolver. In Stage C, HIR lowering will consult it as the dispatch
-/// authority for HashMap/HashSet. Stage A defines the shape only.
+/// `TypeCheckOutput::resolved_calls` publishes these verdicts by source span.
+/// HIR consumes the selected target and its calling convention.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ResolvedCall {
     /// Identity of the impl that satisfied this call.
@@ -449,9 +414,9 @@ pub struct ResolvedCall {
 
 /// Structured failure verdict from [`resolve_method_call`].
 ///
-/// **No silent `None` swallowing.** Stage A's resolver always commits to
+/// **No silent `None` swallowing.** The resolver always commits to
 /// one of: a `ResolvedCall`, or a `LookupError` that names exactly what
-/// failed. Stage B and C consumers fail closed on a missing
+/// failed. Downstream consumers fail closed on a missing
 /// `resolved_calls` entry (DI-003 fail-closed-by-absence).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum LookupError {
@@ -512,42 +477,12 @@ impl std::fmt::Display for LookupError {
 /// The checker-authored impl registry: many [`ImplDef`]s keyed by
 /// [`ImplId`].
 ///
-/// Stage A seeds this in tests only; Stage B populates it from the
-/// checker's builtin-trait registration sites. The registry stays
+/// The checker populates this from builtin-trait registration. The registry stays
 /// data-only and is the input to [`resolve_method_call`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ImplRegistry {
     impls: HashMap<ImplId, ImplDef>,
     next_id: u32,
-}
-
-/// Render structured bound diagnostics from a resolver failure without
-/// exposing them through the checker yet.
-///
-/// Currently exercised only by tests; production readers will land alongside
-/// the HIR consumer that replaces the legacy HashMap/HashSet allowlists.
-#[must_use]
-pub fn bound_diagnostic_strings(error: &LookupError) -> Vec<String> {
-    match error {
-        LookupError::BoundsNotSatisfied {
-            unsatisfied,
-            witness,
-            ..
-        } => unsatisfied
-            .iter()
-            .map(|bound| format!("{witness} does not implement {}", bound.trait_name))
-            .collect(),
-        LookupError::NoImpl {
-            trait_name,
-            receiver,
-            method,
-        } => vec![format!(
-            "no impl found for `{trait_name}.{method}` on `{receiver}`"
-        )],
-        LookupError::UnknownMethod { impl_id, method } => {
-            vec![format!("impl {impl_id:?} has no method `{method}`")]
-        }
-    }
 }
 
 impl ImplRegistry {
@@ -690,9 +625,7 @@ fn match_into(pat: &TyPattern, concrete: &TyPattern, out: &mut PatternSubst) -> 
 ///    and whose `methods` contains `method` wins.
 /// 3. If no impl satisfies all bounds, return
 ///    [`LookupError::BoundsNotSatisfied`] naming the last partial-match
-///    seen (deterministic enough for diagnostics; Stage B replaces the
-///    iteration order with a stable insertion order when the registry
-///    is seeded from builtin-trait registration).
+///    seen. Registry traversal order does not specify a diagnostic priority.
 /// 4. If no impl matches structurally at all,
 ///    [`LookupError::NoImpl`].
 /// 5. If the impl matches but lacks `method`,

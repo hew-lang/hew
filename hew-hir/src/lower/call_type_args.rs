@@ -9,6 +9,7 @@ impl LowerCtx {
         target: &CallTarget,
         receiver_ty: &ResolvedTy,
         call_span: &std::ops::Range<usize>,
+        authored_type_args_span: Option<&std::ops::Range<usize>>,
         call_site: SiteId,
     ) {
         let CallTarget::ImplMethod(_) = target else {
@@ -32,8 +33,13 @@ impl LowerCtx {
             return;
         };
         let mut type_args = receiver_args.clone();
-        let key = self.mk_key(call_span);
-        if let Some(raw_call_args) = self.call_type_args.get(&key).cloned() {
+        // An implicit protocol call shares its diagnostic span with the
+        // iterable expression, which can itself be a generic authored call.
+        // Only a written method call owns checker method type arguments.
+        if let Some(raw_call_args) = authored_type_args_span
+            .and_then(|span| self.call_type_args.get(&self.mk_key(span)))
+            .cloned()
+        {
             let mut call_args = Vec::with_capacity(raw_call_args.len());
             for ty in &raw_call_args {
                 match ResolvedTy::from_ty(ty) {

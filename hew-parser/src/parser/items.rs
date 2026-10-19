@@ -254,43 +254,16 @@ impl Parser<'_> {
 
     fn validate_authority_attribute_shape(&mut self, attr: &Attribute) {
         match attr.name.as_str() {
-            "lang_item" | "intrinsic" | "diagnostic_item" => {
-                if !matches!(attr.args.as_slice(), [AttributeArg::Positional(value)] if !value.is_empty())
-                {
-                    self.error_at(
-                        format!(
-                            "`#[{}]` requires exactly one string key, for example \
-                             `#[{}(\"key\")]`",
-                            attr.name, attr.name
-                        ),
-                        attr.span.clone(),
-                    );
-                }
-            }
-            "abi" => {
-                if attr.args.is_empty()
-                    || attr
-                        .args
-                        .iter()
-                        .any(|arg| !matches!(arg, AttributeArg::KeyValue { .. }))
-                {
-                    self.error_at(
-                        "`#[abi]` requires one or more `key = value` arguments".to_string(),
-                        attr.span.clone(),
-                    );
-                }
-
-                let mut seen = std::collections::HashSet::new();
-                for arg in &attr.args {
-                    if let AttributeArg::KeyValue { key, .. } = arg {
-                        if !seen.insert(key.as_str()) {
-                            self.error_at(
-                                format!("duplicate `#[abi]` key `{key}`"),
-                                attr.span.clone(),
-                            );
-                        }
-                    }
-                }
+            "lang_item" | "intrinsic" if !matches!(attr.args.as_slice(), [AttributeArg::Positional(value)] if !value.is_empty()) =>
+            {
+                self.error_at(
+                    format!(
+                        "`#[{}]` requires exactly one string key, for example \
+                         `#[{}(\"key\")]`",
+                        attr.name, attr.name
+                    ),
+                    attr.span.clone(),
+                );
             }
             _ => {}
         }

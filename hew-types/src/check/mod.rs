@@ -68,7 +68,7 @@ pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintS
 mod machine_effects;
 mod machine_hierarchy;
 mod machine_normalize;
-pub use machine_normalize::NormalizedProgram;
+pub use machine_normalize::{NormalizedProgram, SourceSpanOrigins};
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
@@ -96,19 +96,19 @@ use self::types::{
     DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
     DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
     IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
-    TraitImplArgs, TraitInfo,
+    TraitImplArgs, TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, BinderTraitCall, CallableArgumentFlow, CallableCandidate,
-    CallableDispatchActual, CallableFieldFlow, CheckedSelectSource, Checker, ChildKind, ChildSlot,
-    ClosureCaptureFact, ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec,
-    CodecDirection, CodecFormat, DynCoercion, DynMethodCall, EntryCallableInstance,
-    EntryDisplayTarget, EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion,
-    ExecutionContextReader, ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView,
-    FromImpl, ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates,
-    MachineMethodKind, MathGenericOp, MethodCallReceiverKind, MethodCallRewrite,
-    OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
+    CallableDispatchActual, CallableFieldFlow, CheckedForLoop, CheckedForMethod,
+    CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
+    ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion,
+    DynMethodCall, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
+    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodCallIdentity,
+    ExternMethodSignature, FnSig, FnSigView, FromImpl, ImplMethodProvenance, ImportedImplBodyFact,
+    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
+    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
     OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
     PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
     PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
@@ -743,6 +743,19 @@ impl Checker {
             );
         }
         let (fact_context, facts) = service.into_parts();
+        let fact_context = fact_context.with_method_trait_applications(
+            self.impl_method_binders
+                .iter()
+                .filter_map(|(method, binders)| {
+                    binders.implemented_trait.as_ref().map(|bound| {
+                        (
+                            *method,
+                            self.applied_trait_closure(bound, Some(&binders.receiver)),
+                        )
+                    })
+                })
+                .collect(),
+        );
         (fact_context, facts, refusals.into_values().collect())
     }
 
@@ -2778,15 +2791,17 @@ impl Checker {
         })
     }
 
-    /// Check the compiler-embedded builtin source under its declaration
-    /// authority, minting into a fork of `base` so the declarations it shares
+    /// Check the selected builtin source under its declaration authority,
+    /// minting into a fork of `base` so the declarations it shares
     /// with the compilation keep their identities. User programs must enter
     /// through [`Self::check_program`].
     pub fn check_embedded_builtins(
         &mut self,
         program: &Program,
         base: &crate::DefTable,
+        selected_builtin_program: std::sync::Arc<Program>,
     ) -> TypeCheckOutput {
+        self.selected_builtin_program = Some(selected_builtin_program);
         self.seed_defs = Some(base.fork_for_embedded_builtins());
         self.checking_embedded_builtins = true;
         let output = self.check_program(program);
@@ -2825,7 +2840,7 @@ impl Checker {
                 }
                 self.collect_function_signatures(
                     &normalized.program,
-                    Some(&normalized.implied_displays),
+                    Some(&normalized.source_origins.implied_displays),
                 );
                 Some(normalized)
             }
@@ -2836,8 +2851,65 @@ impl Checker {
             .map_or(program, |normalized| &normalized.program);
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
+        self.check_embedded_builtin_impl_bodies(program);
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
+    }
+
+    /// Check embedded executable bodies only when the ordinary module walk
+    /// did not own them. Declaration registration and body facts share the
+    /// selected source and its original item ordinals.
+    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
+        if self.checking_embedded_builtins
+            || program.module_graph.as_ref().is_some_and(|graph| {
+                graph
+                    .modules
+                    .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))
+                    .is_some_and(|module| {
+                        module.source_paths.iter().any(|source| {
+                            crate::module_registry::is_canonical_stdlib_module_source(
+                                source,
+                                "std.builtins",
+                            )
+                        })
+                    })
+            })
+        {
+            return;
+        }
+        let builtin_program = self.builtin_program();
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let saved_ordinal = self.current_item_ordinal;
+        let saved_source = self.current_item_source.take();
+        let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
+        for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
+            self.current_item_ordinal = ordinal;
+            if let Item::Function(function) = item {
+                // Retain the declared signature's annotation facts; its
+                // compiler-owned endpoint supplies execution, not the stub.
+                self.register_fn_sig(function);
+            }
+            if let Item::Impl(implementation) = item {
+                // Runtime declarations have documentation stubs, not Hew bodies.
+                let mut implementation = implementation.clone();
+                implementation.methods.retain(|method| {
+                    !method
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name == "extern_symbol")
+                });
+                if !implementation.methods.is_empty() {
+                    self.current_item_ordinal = ordinal;
+                    self.check_impl(&implementation, span);
+                }
+            }
+        }
+        self.current_item_ordinal = saved_ordinal;
+        self.current_item_source = saved_source;
+        self.is_stdlib_source = saved_stdlib;
+        self.current_module_idx = saved_index;
+        self.current_module = saved_module;
     }
 
     /// Deep-copy a sealed dependency-only checkpoint. Callers never copy a
@@ -2897,6 +2969,7 @@ impl Checker {
             actor_deferred_fields: self.actor_deferred_fields.clone(),
             checking_actor_init: self.checking_actor_init.clone(),
             borrowed_element_for_loops: self.borrowed_element_for_loops.clone(),
+            for_loop_plans: self.for_loop_plans.clone(),
             borrowed_element_index_reads: self.borrowed_element_index_reads.clone(),
             owning_take_vec_cursors: self.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: self.borrowed_element_option_reads.clone(),
@@ -3020,6 +3093,8 @@ impl Checker {
             trait_defs: self.trait_defs.clone(),
             trait_super: self.trait_super.clone(),
             trait_impls: self.trait_impls.clone(),
+            active_trait_proofs: self.active_trait_proofs.clone(),
+            trait_proof_limit_reached: self.trait_proof_limit_reached,
             source_impl_declarations: self.source_impl_declarations.clone(),
             rejected_impl_declarations: self.rejected_impl_declarations.clone(),
             reported_unknown_bounds: self.reported_unknown_bounds.clone(),
@@ -3113,6 +3188,7 @@ impl Checker {
             is_stdlib_source: self.is_stdlib_source.clone(),
             in_stdlib_registration: self.in_stdlib_registration.clone(),
             checking_embedded_builtins: self.checking_embedded_builtins.clone(),
+            selected_builtin_program: self.selected_builtin_program.clone(),
             has_checked_program: self.has_checked_program.clone(),
             wasm_warning_spans: self.wasm_warning_spans.clone(),
             wasm_reject_spans: self.wasm_reject_spans.clone(),
@@ -3224,16 +3300,16 @@ impl Checker {
                 }
             }
         }
+        self.select_builtin_program(program);
         self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
-        // `register_builtins` parses the compiler-embedded `std/builtins.hew`
-        // source outside the module graph.  Record that exact producer so
-        // later trait/source identity normalization can relate prelude traits
-        // (notably `Iterator`) to their canonical owner without treating a
-        // user module named `builtins` as authoritative.
+        // Builtin registration consumes the selected canonical source, using
+        // embedded source only when the graph has none. Record that producer
+        // so prelude traits retain their canonical owner without granting a
+        // user module named `builtins` the same authority.
         self.canonical_std_module_sources
             .insert("std.builtins".to_string());
         // Compute the precise cross-module record-name collision set before any
@@ -3956,7 +4032,33 @@ impl Checker {
         let resolutions = self.scopes.take_resolutions();
         let shorthand_field_labels = self.scopes.take_shorthand_labels();
         let contexts = self.scopes.contexts().clone();
+        let for_loop_plans = self
+            .for_loop_plans
+            .iter()
+            .map(|(key, plan)| {
+                let finalize_call = |call: &CheckedForMethod| {
+                    let mut call = call.clone();
+                    call.return_type = self.finalize_type_for_handoff(&call.return_type);
+                    call.trait_args = call
+                        .trait_args
+                        .iter()
+                        .map(|ty| self.finalize_type_for_handoff(ty))
+                        .collect();
+                    call
+                };
+                (
+                    key.clone(),
+                    CheckedForLoop {
+                        into_iter: plan.into_iter.as_ref().map(finalize_call),
+                        next: finalize_call(&plan.next),
+                        cursor_type: self.finalize_type_for_handoff(&plan.cursor_type),
+                        item_type: self.finalize_type_for_handoff(&plan.item_type),
+                    },
+                )
+            })
+            .collect();
         let mut output = TypeCheckOutput {
+            selected_builtin_program: self.selected_builtin_program.clone(),
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
                 .input_provider
@@ -3986,6 +4088,7 @@ impl Checker {
             actor_deferred_field_decls: std::mem::take(&mut self.actor_deferred_field_decls),
             first_stores: std::mem::take(&mut self.first_stores),
             borrowed_element_for_loops: std::mem::take(&mut self.borrowed_element_for_loops),
+            for_loop_plans,
             borrowed_element_index_reads: std::mem::take(&mut self.borrowed_element_index_reads),
             owning_take_vec_cursors: std::mem::take(&mut self.owning_take_vec_cursors),
             borrowed_element_option_reads: std::mem::take(&mut self.borrowed_element_option_reads),
@@ -4008,10 +4111,6 @@ impl Checker {
             pool_accessor_sites: std::mem::take(&mut self.pool_accessor_sites),
             lowering_facts: resolved_lowering_facts,
             method_call_rewrites: std::mem::take(&mut self.method_call_rewrites),
-            // W4.001 Stage A: substrate-only. Field is empty in Stage A
-            // (no production populator); Stage B's resolver fills it.
-            // See `check::dispatch` module docs and
-            // `TypeCheckOutput::resolved_calls`.
             resolved_calls: std::mem::take(&mut self.resolved_calls),
             import_type_name_aliases: std::mem::take(&mut self.import_type_name_aliases),
             module_import_bindings: std::mem::take(&mut self.module_import_bindings),
@@ -4160,7 +4259,11 @@ impl Checker {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
         let mut ambiguous: HashSet<SpanKey> = HashSet::new();
         for (key, ty) in expr_types.iter() {
-            let Some(source) = normalized.source_spans.get(&(key.start..key.end)) else {
+            let Some(source) = normalized
+                .source_origins
+                .source_spans
+                .get(&(key.start..key.end))
+            else {
                 continue;
             };
             let source_key = SpanKey::in_module(source, key.module_idx);
@@ -4202,6 +4305,11 @@ impl Checker {
         let repl_fragment = self.repl_fragment;
         let is_stdlib_source = self.is_stdlib_source;
         let checking_embedded_builtins = self.checking_embedded_builtins;
+        let selected_builtin_program = if checking_embedded_builtins {
+            self.selected_builtin_program.clone()
+        } else {
+            None
+        };
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
@@ -4213,6 +4321,7 @@ impl Checker {
         self.repl_fragment = repl_fragment;
         self.is_stdlib_source = is_stdlib_source;
         self.checking_embedded_builtins = checking_embedded_builtins;
+        self.selected_builtin_program = selected_builtin_program;
         self.has_checked_program = true;
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;

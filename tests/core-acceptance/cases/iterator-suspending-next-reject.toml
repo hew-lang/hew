@@ -1,0 +1,13 @@
+[[case]]
+id = "iterator-suspending-next-reject"
+intent = "A suspending implicit next call in a generic loop refuses a plain callable slot."
+source = "cases/iterator-suspending-next-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidOperation"
+line = 28
+column = 33
+message = "suspends via `total(...)`; `fn() -> i64` never suspends"

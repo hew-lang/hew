@@ -1,0 +1,11 @@
+[[case]]
+id = "iterator-implicit-suspension"
+intent = "Implicit iterator calls propagate suspension through concrete and generic callers while pure instantiations remain callable without suspension."
+source = "cases/iterator-implicit-suspension.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

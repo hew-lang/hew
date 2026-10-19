@@ -34,14 +34,11 @@ pub struct NormalizedProgram {
     pub program: Program,
     /// One checked hierarchy per physical machine declaration, shared by imports.
     pub hierarchies: HashMap<ExpansionKey, Hierarchy>,
-    pub source_spans: HashMap<Span, Span>,
+    pub source_origins: Arc<SourceSpanOrigins>,
     /// Each machine's transitions as `(source state, authored body span)`,
     /// keyed by the declaring module (`(root)` or its dotted path) and the
     /// machine name, so a refusal can name the transition it concerns.
     pub transitions: HashMap<(String, String), Vec<(String, Span)>>,
-    /// Each implied `Display` impl's span range and the type declaration a
-    /// diagnostic inside it is reported at.
-    pub implied_displays: Vec<(Span, Span)>,
     /// The expansion context the implied Display impls name `Display` in.
     pub implied_context: Option<hew_parser::ast::SyntaxContext>,
 }
@@ -56,15 +53,37 @@ impl NormalizedProgram {
         Self {
             program: displays.program,
             hierarchies: machines.map(|m| m.hierarchies.clone()).unwrap_or_default(),
-            source_spans: machines.map(|m| m.source_spans.clone()).unwrap_or_default(),
+            source_origins: Arc::new(SourceSpanOrigins {
+                source_spans: machines
+                    .map(|m| m.source_origins.source_spans.clone())
+                    .unwrap_or_default(),
+                implied_displays: displays.origins,
+            }),
             transitions: machines.map(|m| m.transitions.clone()).unwrap_or_default(),
-            implied_displays: displays.origins,
             implied_context: Some(displays.context),
         }
     }
 
-    /// The source span a diagnostic at `span` in a generated node reports at.
+    /// The authored origin of a generated node.
     pub(super) fn source_span(&self, span: &Span) -> Option<&Span> {
+        self.source_origins.source_span(span)
+    }
+}
+
+/// Authored source attribution for compiler-generated nodes. Semantic span
+/// identities remain unchanged; diagnostics and debug consumers project them
+/// through this shared map only when reporting a source location.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SourceSpanOrigins {
+    pub(super) source_spans: HashMap<Span, Span>,
+    /// Generated impl extents and their authored type declarations.
+    pub(super) implied_displays: Vec<(Span, Span)>,
+}
+
+impl SourceSpanOrigins {
+    /// Resolve a generated span to its authored origin, if it has one.
+    #[must_use]
+    pub fn source_span(&self, span: &Span) -> Option<&Span> {
         self.source_spans.get(span).or_else(|| {
             self.implied_displays
                 .iter()
@@ -160,9 +179,11 @@ pub(super) fn normalize(
     Ok(Some(Arc::new(NormalizedProgram {
         program: normalized,
         hierarchies: builder.hierarchies,
-        source_spans: builder.source_spans,
+        source_origins: Arc::new(SourceSpanOrigins {
+            source_spans: builder.source_spans,
+            implied_displays: Vec::new(),
+        }),
         transitions: builder.transitions,
-        implied_displays: Vec::new(),
         implied_context: None,
     })))
 }

@@ -1555,6 +1555,7 @@ mod module_body_diagnostic_envelope {
         let _recv_span = output
             .method_call_rewrites
             .iter()
+            .filter(|(span, _)| span.module_idx == 0)
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                     if c_symbol == "hew_stream_next_layout" =>
@@ -1567,6 +1568,7 @@ mod module_body_diagnostic_envelope {
         let _send_span = output
             .method_call_rewrites
             .iter()
+            .filter(|(span, _)| span.module_idx == 0)
             .find_map(|(span, rewrite)| match rewrite {
                 MethodCallRewrite::RewriteToFunction { c_symbol, .. }
                     if c_symbol == "hew_stream_send_layout" =>
@@ -2171,10 +2173,7 @@ mod warning_source_attribution {
                     name_span: 0..0,
                     ty: (
                         TypeExpr::Named {
-                            path: hew_parser::ast::Path::single(
-                                hew_parser::ast::Ident::new("Self"),
-                                0..0,
-                            ),
+                            path: hew_parser::ast::Path::single(Ident::new("Self"), 0..0),
                             type_args: None,
                         },
                         0..4,
@@ -2235,7 +2234,12 @@ mod warning_source_attribution {
         let info = checker.trait_info_from_decl(&fake_trait, None, 0);
         let fake = checker.test_trait_def("fakemod.FakeTrait", info);
         let some_type = checker.test_named("SomeType", vec![]);
-        checker.record_trait_impl(&some_type, &crate::check::TraitRef::bare(fake), Vec::new());
+        checker.record_trait_impl(
+            &some_type,
+            &TraitRef::bare(fake),
+            Vec::new(),
+            ParamBounds::default(),
+        );
 
         let output = checker.check_program(&program);
         let unused: Vec<_> = output

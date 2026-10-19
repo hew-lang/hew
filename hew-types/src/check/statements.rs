@@ -272,6 +272,100 @@ impl Checker {
         );
     }
 
+    /// Select an implicit receiver call through the same bound/impl selectors
+    /// ordinary method calls use, without manufacturing an AST call site.
+    fn checked_for_method(
+        &mut self,
+        receiver: &Ty,
+        required_trait: crate::DefId,
+        method: &str,
+    ) -> Option<super::types::CheckedForMethod> {
+        let receiver = self.normalize_for_use(receiver);
+        let (signature, target, parameter, trait_args) =
+            if let Some(parameter) = self.register_projection_bound_subject(&receiver) {
+                let (bounds, hits) = self.bound_receiver_method_candidates(
+                    parameter,
+                    &receiver,
+                    method,
+                    Some(required_trait),
+                );
+                let [(declaring, signature)] = hits.as_slice() else {
+                    return None;
+                };
+                let selected: Vec<_> = bounds
+                    .into_iter()
+                    .filter(|bound| bound.trait_id == *declaring)
+                    .collect();
+                let [bound] = selected.as_slice() else {
+                    return None;
+                };
+                let (signature, _, _) = self.instantiate_bound_method_signature(
+                    receiver.clone(),
+                    *declaring,
+                    signature.clone(),
+                    &selected,
+                );
+                let (declaring_trait, method) = self.trait_method_ids_of(*declaring, method)?;
+                (
+                    signature,
+                    crate::CallTarget::StaticTraitMethod {
+                        declaring_trait,
+                        method,
+                    },
+                    Some(parameter),
+                    bound.args.clone(),
+                )
+            } else if Self::canonical_primitive_or_builtin_key(&receiver).is_some() {
+                let (declaring, signature) = self
+                    .select_primitive_trait_method(&receiver, method, Some(required_trait))
+                    .ok()??;
+                if declaring != required_trait {
+                    return None;
+                }
+                let declaration = signature.impl_method.as_ref()?.declaration;
+                (
+                    signature,
+                    crate::CallTarget::ImplMethod(declaration),
+                    None,
+                    Vec::new(),
+                )
+            } else {
+                let (head, instance) = self.dispatch_receiver(&receiver)?;
+                let super::dispatch_table::MethodSelection::Unique(_, declaration) =
+                    self.dispatch.select_trait(
+                        head,
+                        instance.as_ref(),
+                        required_trait,
+                        crate::Symbol::intern(method),
+                    )
+                else {
+                    return None;
+                };
+                (
+                    self.selected_method_sig(&receiver, declaration)?,
+                    crate::CallTarget::ImplMethod(declaration),
+                    None,
+                    Vec::new(),
+                )
+            };
+        if !signature.params.is_empty() || !signature.type_params.is_empty() {
+            return None;
+        }
+        let return_type = self.project_assoc_types(&signature.return_type);
+        let return_type = self
+            .register_projection_bound_subject(&return_type)
+            .map_or(return_type, Ty::param);
+        Some(super::types::CheckedForMethod {
+            target,
+            receiver_parameter: parameter,
+            trait_args,
+            requires_mutable_receiver: signature.requires_mutable_receiver,
+            consumes_receiver: signature.consumes_receiver,
+            receiver_update: signature.receiver_update,
+            return_type,
+        })
+    }
+
     fn iterator_trait_item_ty(&mut self, iter_ty: &Ty, span: &Span) -> Option<Ty> {
         let resolved = self.subst.resolve(iter_ty);
         let iterator = self.lang_trait(crate::LangItem::Iterator)?;
@@ -298,28 +392,44 @@ impl Checker {
             }
         }
 
-        if let Some(into_iterator) = self
-            .lang_trait(crate::LangItem::IntoIterator)
-            .filter(|into_iterator| self.type_satisfies_trait(&resolved, *into_iterator))
-        {
-            let item_projection = Ty::AssocType {
-                base: Box::new(resolved),
-                trait_name: self.defs.path(into_iterator).into(),
-                assoc_name: "Item".into(),
-            };
-            return Some(self.project_assoc_types(&item_projection));
-        }
-
-        if !self.type_satisfies_trait(&resolved, iterator) {
+        let into_iterator = self.lang_trait(crate::LangItem::IntoIterator)?;
+        let into_iter = if self.type_satisfies_trait(&resolved, into_iterator) {
+            self.defer_inferred_receiver_bound(&resolved, into_iterator, span);
+            Some(self.checked_for_method(&resolved, into_iterator, "into_iter")?)
+        } else {
+            None
+        };
+        let cursor_type = into_iter
+            .as_ref()
+            .map_or_else(|| resolved.clone(), |call| call.return_type.clone());
+        if !self.type_satisfies_trait(&cursor_type, iterator) {
             return None;
         }
-
-        let item_projection = Ty::AssocType {
-            base: Box::new(resolved),
-            trait_name: self.defs.path(iterator).into(),
-            assoc_name: "Item".into(),
+        let next = self.checked_for_method(&cursor_type, iterator, "next")?;
+        if !next.requires_mutable_receiver {
+            return None;
+        }
+        let Ty::Named {
+            head: crate::TypeHead::Builtin(BuiltinType::Option),
+            args,
+        } = &next.return_type
+        else {
+            return None;
         };
-        Some(self.project_assoc_types(&item_projection))
+        let [item_type] = args.as_slice() else {
+            return None;
+        };
+        let item_type = item_type.clone();
+        self.for_loop_plans.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            super::types::CheckedForLoop {
+                into_iter,
+                next,
+                cursor_type,
+                item_type: item_type.clone(),
+            },
+        );
+        Some(item_type)
     }
 
     /// Reassigning a `var` whose type was inferred from a closure literal
@@ -452,48 +562,6 @@ impl Checker {
             Expr::Unary { operand, .. } => Self::numeric_update_reads_binding(&operand.0, binding),
             _ => false,
         }
-    }
-
-    /// The synthetic span the `for (k, v) in m` desugar uses for the `keys()`
-    /// projection call.
-    ///
-    /// `resolved_calls` (and `expr_types`) are keyed by span, so the projection
-    /// calls this for-in synthesizes cannot share a span with each other OR with
-    /// the iterable expression itself. Recording any projection at the iterable's
-    /// real span would clobber `expr_types[iterable_span]` with `Vec<…>`, and HIR
-    /// derives the for-in route from that side-table type for non-identifier
-    /// iterables (a field access / call / index / method-call source reads its
-    /// type exclusively from the checker side-table) — so the loop would
-    /// mis-route to the Vec arm and build a `VecIter` directly over the
-    /// HashMap/HashSet handle (silent type confusion). Every projection therefore
-    /// uses its own zero-width synthetic span, leaving `expr_types[iterable_span]`
-    /// holding the iterable's true `HashMap`/`HashSet` type.
-    ///
-    /// `keys()` anchors at the iterable's start offset; `values()` at the end
-    /// offset. Both are zero-width (start == end), so each is distinct from every
-    /// real expression span (real spans have start < end) and from each other
-    /// (the iterable has start < end, so its start and end offsets differ). The
-    /// derivation is deterministic, so the checker (recording the facts) and HIR
-    /// (emitting the synthetic calls) agree byte-for-byte. Both layers call these
-    /// single helpers; do not inline the derivation.
-    pub(super) fn hashmap_for_in_keys_span(iterable: &Span) -> Span {
-        iterable.start..iterable.start
-    }
-
-    /// The synthetic span the `for (k, v) in m` desugar uses for the `values()`
-    /// projection call. See [`Self::hashmap_for_in_keys_span`] for the
-    /// synthetic-span rationale; `values()` anchors at the iterable's end offset.
-    pub(super) fn hashmap_for_in_values_span(iterable: &Span) -> Span {
-        iterable.end..iterable.end
-    }
-
-    /// The synthetic span the `for x in s` desugar uses for the `HashSet`
-    /// `to_vec()` projection call. See [`Self::hashmap_for_in_keys_span`] for the
-    /// synthetic-span rationale; `to_vec()` anchors at the iterable's start
-    /// offset (a `HashSet` for-in has only this one projection, so it cannot
-    /// collide with `keys()`/`values()`, which only appear in `HashMap` for-in).
-    pub(super) fn hashset_for_in_to_vec_span(iterable: &Span) -> Span {
-        iterable.start..iterable.start
     }
 
     fn stream_source_actor_handler(&mut self, iterable: &Expr) -> Option<crate::DefId> {
@@ -2136,90 +2204,6 @@ impl Checker {
                         let elem = args[0].clone();
                         if self.record_vec_iter_element_mode(&elem, &iterable.1) {
                             elem
-                        } else {
-                            Ty::Error
-                        }
-                    }
-                    Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::HashMap),
-                        args,
-                        ..
-                    } if args.len() >= 2 => {
-                        // `for (k, v) in m` desugars (in HIR) to a `HashMapIter`
-                        // cursor built from `m.keys()` and `m.values()`. Both
-                        // projections must be lowerable for the key/value types,
-                        // and the resolved-call facts (plus matching expr_types,
-                        // the HIR boundary's totality contract) must exist where
-                        // the HIR synthesis emits the two calls. `resolved_calls`
-                        // and `expr_types` are keyed by span, so the projections
-                        // cannot share a span with each other OR with the iterable
-                        // expression: `keys` and `values` are recorded at distinct
-                        // synthetic zero-width spans anchored at the iterable's
-                        // start/end offsets (distinct from every real expression
-                        // span, reproduced byte-for-byte by the HIR desugar via
-                        // `Self::hashmap_for_in_keys_span`/`..values_span`). This
-                        // leaves `expr_types[iterable_span]` holding the iterable's
-                        // true HashMap type so HIR routes non-identifier sources
-                        // (field/call/index) to the HashMap arm, not the Vec arm.
-                        let key_ty = args[0].clone();
-                        let val_ty = args[1].clone();
-                        let keys_span = Self::hashmap_for_in_keys_span(&iterable.1);
-                        let values_span = Self::hashmap_for_in_values_span(&iterable.1);
-                        // The desugar snapshots `values()`, so every value is
-                        // copied out of the map.
-                        if self.validate_hashmap_owned_element_types(&key_ty, &val_ty, &iterable.1)
-                            && self.validate_collection_value_clone_type(
-                                &val_ty,
-                                BuiltinType::HashMap,
-                                "for (k, v) in m",
-                                &iterable.1,
-                            )
-                        {
-                            let key_vec = self.make_vec_type(key_ty.clone(), &keys_span);
-                            let val_vec = self.make_vec_type(val_ty.clone(), &values_span);
-                            self.record_type(&keys_span, &key_vec);
-                            self.record_type(&values_span, &val_vec);
-                            self.record_resolved_hashmap_call("keys", &key_ty, &val_ty, &keys_span);
-                            self.record_resolved_hashmap_call(
-                                "values",
-                                &key_ty,
-                                &val_ty,
-                                &values_span,
-                            );
-                        }
-                        Ty::Tuple(vec![key_ty, val_ty])
-                    }
-                    Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
-                        args,
-                        ..
-                    } if !args.is_empty() => {
-                        // `for x in s` desugars (in HIR) to a `VecIter` over the
-                        // set's `to_vec()` element snapshot. Record the `to_vec`
-                        // resolved-call fact (+ matching expr_type) at a synthetic
-                        // zero-width span (NOT the iterable span — see
-                        // `hashset_for_in_to_vec_span`) so the HIR synthesis
-                        // lowers the projection to `hew_hashset_to_vec_layout`
-                        // while `expr_types[iterable_span]` keeps the iterable's
-                        // true HashSet type. Recording at the iterable span would
-                        // clobber it with `Vec<T>` and mis-route non-identifier
-                        // sources (`for x in self.s`) to the Vec arm — a silent
-                        // wrong-value pass (the VecIter reads the HashSet handle as
-                        // a zero-length Vec).
-                        let elem_ty = args[0].clone();
-                        let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.validate_collection_value_clone_type(
-                            &elem_ty,
-                            BuiltinType::HashSet,
-                            "for value in set",
-                            &iterable.1,
-                        ) && self.record_vec_iter_element_mode(&elem_ty, &iterable.1)
-                            && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
-                        {
-                            let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);
-                            self.record_type(&to_vec_span, &elem_vec);
-                            self.record_resolved_hashset_call("to_vec", &elem_ty, &to_vec_span);
-                            elem_ty
                         } else {
                             Ty::Error
                         }

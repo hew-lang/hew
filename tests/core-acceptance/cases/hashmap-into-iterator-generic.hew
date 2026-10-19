@@ -1,0 +1,38 @@
+fn inventory_total<I, J>(input: I) -> i64 where I: IntoIterator<Item = (string, i64), IntoIter = J>, J: Iterator<Item = (string, i64)> {
+    var cursor = input.into_iter();
+    var total = 0;
+    loop {
+        match cursor.next() {
+            .Some(item) => {
+                let (name, quantity) = item;
+                if name != "reserved" {
+                    total += quantity;
+                }
+            }
+            .None => return total,
+        }
+    }
+}
+
+type Inventory {
+    rows: Vec<(string, i64)>;
+}
+
+impl IntoIterator for Inventory {
+    type Item = (string, i64);
+    type IntoIter = VecIter<(string, i64)>;
+    fn into_iter(self) -> VecIter<(string, i64)> {
+        self.rows.into_iter()
+    }
+}
+
+fn main() {
+    var stock: HashMap<string, i64> = HashMap.new();
+    stock.insert("bolts", 3);
+    stock.insert("nuts", 5);
+    stock.insert("reserved", 9);
+    assert(inventory_total(stock) == 8);
+    let rows: Vec<(string, i64)> = [("bolts", 3), ("nuts", 5), ("reserved", 9)];
+    assert(inventory_total(rows) == 8);
+    assert(inventory_total(Inventory { rows: rows }) == 8);
+}

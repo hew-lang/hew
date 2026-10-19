@@ -278,6 +278,28 @@ pub enum EntryExitAction {
     },
 }
 
+/// A checked, argument-free receiver call made implicitly by a `for` loop.
+/// Its identity is independent of source method-call spans.
+#[derive(Debug, Clone)]
+pub struct CheckedForMethod {
+    pub target: crate::check::dispatch::CallTarget,
+    pub receiver_parameter: Option<crate::ParamHead>,
+    pub trait_args: Vec<Ty>,
+    pub requires_mutable_receiver: bool,
+    pub consumes_receiver: bool,
+    pub receiver_update: ReceiverUpdate,
+    pub return_type: Ty,
+}
+
+/// The ordinary trait calls a checked iterable requires.
+#[derive(Debug, Clone)]
+pub struct CheckedForLoop {
+    pub into_iter: Option<CheckedForMethod>,
+    pub next: CheckedForMethod,
+    pub cursor_type: Ty,
+    pub item_type: Ty,
+}
+
 /// Typed process-entry exit plan keyed by the selected source declaration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EntryExitPlan {
@@ -413,6 +435,10 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    /// Full canonical builtin source selected for this compilation. Registration,
+    /// effect checking and HIR must share its exact declaration occurrences.
+    /// Present after program preparation; absent only in unprepared fixtures.
+    pub selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
     pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub inputs: Vec<crate::compile_time::CompilationInput>,
     pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -435,8 +461,9 @@ pub struct TypeCheckOutput {
     /// supervisor's header parameters.
     pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub expr_types: HashMap<SpanKey, Ty>,
-    /// Interpolation operands whose rendering selected an explicit `Display`
-    /// implementation. The value preserves alias identity for HIR dispatch.
+    /// Interpolation operands checked for `Display` rendering. The value
+    /// preserves alias identity for HIR dispatch, and the sites carry implicit
+    /// trait-slot demand into callable planning.
     pub interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Compared operands of an `assert` whose type has no structural
     /// rendering; the failure report names the type instead of the value.
@@ -476,6 +503,7 @@ pub struct TypeCheckOutput {
     /// The checker decides borrow versus clone once, here; no lowering stage
     /// re-derives it from the element's facts.
     pub borrowed_element_for_loops: HashSet<SpanKey>,
+    pub for_loop_plans: HashMap<SpanKey, CheckedForLoop>,
     /// Spans of `xs[i]` reads over a `Vec<T>` whose element has no clone, so
     /// the read is a loan of the slot the vector still owns (D432).
     pub borrowed_element_index_reads: HashSet<SpanKey>,
@@ -1959,16 +1987,6 @@ pub enum MethodCallRewrite {
     BuiltinVecIntoIter,
     /// Snapshot cursor constructor, with the same ordinary value semantics.
     BuiltinVecIter,
-    /// Builtin `HashMap<K, V>::into_iter()` iterator constructor. HIR expands
-    /// this directly to a `HashMapIter<K, V>` record built from `keys()` /
-    /// `values()` snapshots — the same cursor the `for (k, v) in m` desugar
-    /// synthesises — so the pipeline form (`iter::map(m.into_iter(), ..)`)
-    /// matches `Vec`'s without a generic stdlib `impl IntoIterator for HashMap`
-    /// body (which the checker cannot admit on an abstract receiver).
-    BuiltinHashMapIntoIter {
-        key_ty: crate::resolved_ty::ResolvedTy,
-        val_ty: crate::resolved_ty::ResolvedTy,
-    },
     /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
     /// the call site so the caller's mutable iterator binding observes the
     /// cursor update.
@@ -2938,20 +2956,11 @@ pub(super) struct TraitImplArgs {
     pub(super) target: Ty,
     pub(super) args: Vec<Ty>,
     pub(super) params: Vec<crate::ParamHead>,
+    /// Bounds declared by the impl, independent of any method's constraints.
+    pub(super) bounds: ParamBounds,
 }
 
 impl TraitImplArgs {
-    pub(super) fn matches_receiver(&self, receiver: &Ty) -> bool {
-        let parameters = self
-            .params
-            .iter()
-            .copied()
-            .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
-            .collect();
-        let pattern = self.target.substitute_type_params_parallel(&parameters);
-        crate::unify::unify_exact(&mut Substitution::new(), &pattern, receiver).is_ok()
-    }
-
     pub(super) fn overlaps(&self, other: &Self) -> bool {
         if self.args.len() != other.args.len() {
             return false;
@@ -3040,6 +3049,12 @@ impl TraitRef {
             assoc: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum TraitProofKind {
+    DeclaredImpl,
+    Conformance,
 }
 
 /// The trait bounds of generic binders, by binder.
@@ -3319,6 +3334,7 @@ pub struct Checker {
     pub(super) checking_actor_init: bool,
     /// See [`TypeCheckOutput::borrowed_element_for_loops`].
     pub(super) borrowed_element_for_loops: HashSet<SpanKey>,
+    pub(super) for_loop_plans: HashMap<SpanKey, CheckedForLoop>,
     /// See [`TypeCheckOutput::borrowed_element_index_reads`].
     pub(super) borrowed_element_index_reads: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::owning_take_vec_cursors`].
@@ -3663,10 +3679,14 @@ pub struct Checker {
     /// Declared trait impls: the receiver with its type arguments erased and
     /// the trait, to the trait arguments of each impl.
     pub(super) trait_impls: HashMap<(ResolvedTy, crate::DefId), Vec<TraitImplArgs>>,
+    /// Ordinary trait obligations currently being proven, with applied arguments.
+    pub(super) active_trait_proofs: Vec<(TraitProofKind, Ty, TraitRef)>,
+    /// Abort remaining candidates after this root proof exhausts its budget.
+    pub(super) trait_proof_limit_reached: bool,
     pub(super) source_impl_declarations:
         HashMap<(ResolvedTy, Option<crate::DefId>), Vec<SourceImplDeclaration>>,
     pub(super) rejected_impl_declarations: HashSet<crate::DefId>,
-    /// Bound sites already reported as naming no trait or misapplying one.
+    /// Bound sites already reported with an invalid subject or trait shape.
     pub(super) reported_unknown_bounds: HashSet<SpanKey>,
     /// Method names provided by each trait impl block, keyed like
     /// `trait_impls`. This preserves provenance that is lost when impl
@@ -4139,6 +4159,8 @@ pub struct Checker {
     /// Allows declarations from the compiler-embedded builtin source to
     /// provide names that the prelude protects from user replacement.
     pub(super) checking_embedded_builtins: bool,
+    /// The compilation's one builtin AST, including nested builtin checking.
+    pub(super) selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
     /// Whether this checker has completed its first `check_program` entry.
     /// Caller-seeded configuration remains available to the first program;
     /// every later program starts from structurally fresh program-owned state.
@@ -4415,6 +4437,7 @@ impl Checker {
             actor_deferred_fields: HashMap::new(),
             checking_actor_init: false,
             borrowed_element_for_loops: HashSet::new(),
+            for_loop_plans: HashMap::new(),
             borrowed_element_index_reads: HashSet::new(),
             owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),
@@ -4535,6 +4558,8 @@ impl Checker {
             trait_defs: HashMap::new(),
             trait_super: HashMap::new(),
             trait_impls: HashMap::new(),
+            active_trait_proofs: Vec::new(),
+            trait_proof_limit_reached: false,
             source_impl_declarations: HashMap::new(),
             rejected_impl_declarations: HashSet::new(),
             reported_unknown_bounds: HashSet::new(),
@@ -4628,6 +4653,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            selected_builtin_program: None,
             must_use_types: HashSet::new(),
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),

@@ -836,6 +836,19 @@ impl Checker {
                 Item::Function(fd) => {
                     let qualified =
                         self.canonical_fn_identity(Some(module_full_path), fd.name.name.as_str());
+                    // The shipped builtins file also documents compiler-owned
+                    // callables. Importing those declarations must retain the
+                    // endpoint registered by the compiler, not turn their
+                    // documentation bodies into executable implementations.
+                    if compiler_owned && module_full_path == "std.builtins" {
+                        if let Some(target) = self
+                            .builtin_call_targets
+                            .get(fd.name.name.as_str())
+                            .cloned()
+                        {
+                            self.builtin_call_targets.insert(qualified.clone(), target);
+                        }
+                    }
                     let surface_qualified = format!("{module_short}.{}", fd.name);
                     // Record visibility for all functions in the visibility table.
                     self.fn_visibility

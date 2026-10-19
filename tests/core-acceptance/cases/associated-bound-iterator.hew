@@ -1,0 +1,155 @@
+type Inventory<T> {
+    rows: Vec<T>;
+}
+
+impl<T: Clone> IntoIterator for Inventory<T> {
+    type Item = T;
+    type IntoIter = VecIter<T>;
+
+    fn into_iter(self) -> VecIter<T> {
+        self.rows.into_iter()
+    }
+}
+
+fn inventory_total<I>(input: I) -> i64 where I: IntoIterator<Item = (string, i64)> {
+    var cursor = input.into_iter();
+    var total = 0;
+    loop {
+        match cursor.next() {
+            .Some(item) => {
+                let (name, quantity) = item;
+                if name != "reserved" {
+                    total += quantity;
+                }
+            }
+            .None => return total,
+        }
+    }
+}
+
+fn explicit_total<I>(input: I) -> i64 where I: IntoIterator<Item = (string, i64)>, I.IntoIter: Iterator<Item = (string, i64)> {
+    var cursor = input.into_iter();
+    var total = 0;
+    loop {
+        match cursor.next() {
+            .Some(item) => {
+                let (name, quantity) = item;
+                if name != "reserved" {
+                    total += quantity;
+                }
+            }
+            .None => return total,
+        }
+    }
+}
+
+fn for_total<I>(input: I) -> i64 where I: IntoIterator<Item = (string, i64)> {
+    var total = 0;
+    for (name, quantity) in input {
+        if name != "reserved" { total += quantity; }
+    }
+    total
+}
+
+fn cursor_total<I>(input: I) -> i64 where I: Iterator<Item = (string, i64)> {
+    var total = 0;
+    for (name, quantity) in input {
+        if name != "reserved" { total += quantity; }
+    }
+    total
+}
+
+trait InventorySource: IntoIterator<Item = (string, i64)> {}
+impl InventorySource for Inventory<(string, i64)> {}
+
+fn inherited_total<I: InventorySource>(input: I) -> i64 {
+    var total = 0;
+    for (_, quantity) in input { total += quantity; }
+    total
+}
+
+fn first_name<I>(input: I) -> string where I: IntoIterator<Item = (string, i64)> {
+    for (name, _) in input { return name; }
+    "empty"
+}
+
+fn break_name<I>(input: I) -> string where I: Iterator<Item = (string, i64)> {
+    var selected = "empty";
+    for (name, _) in input { selected = name; break; }
+    selected
+}
+
+fn rows() -> Vec<(string, i64)> {
+    [("bolts", 3), ("nuts", 5), ("reserved", 9)]
+}
+
+type Sequence { end: i64; }
+type Counter { current: i64; end: i64; }
+
+impl IntoIterator for Sequence {
+    type Item = i64;
+    type IntoIter = Counter;
+    fn into_iter(self) -> Counter { Counter { current: 0, end: self.end } }
+}
+
+impl Iterator for Counter {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        if self.current >= self.end { .None } else {
+            let value = self.current;
+            self.current += 1;
+            .Some(value)
+        }
+    }
+}
+
+fn number_total<I: IntoIterator<Item = i64>>(input: I) -> i64 {
+    var total = 0;
+    for value in input { total += value; }
+    total
+}
+
+fn cursor_number_total<I: Iterator<Item = i64>>(input: I) -> i64 {
+    var total = 0;
+    for value in input { total += value; }
+    total
+}
+
+fn concrete_counter_total() -> i64 {
+    var total = 0;
+    for value in Counter { current: 0, end: 4 } { total += value; }
+    total
+}
+
+// Iteration selects the protocol slot before unrelated same-name methods.
+trait OtherIteration { fn into_iter(self) -> i64; }
+impl OtherIteration for HashSet<i64> { fn into_iter(self) -> i64 { 99 } }
+trait OtherNext { fn next(var self) -> i64; }
+impl OtherNext for VecIter<i64> { fn next(var self) -> i64 { 99 } }
+
+fn unambiguous_protocol_slots() -> i64 {
+    var values: HashSet<i64> = HashSet.new();
+    values.insert(3);
+    values.insert(4);
+    var total = 0;
+    for value in values { total += value; }
+    total
+}
+
+fn main() {
+    assert(unambiguous_protocol_slots() == 7);
+    assert(number_total([1, 2, 3]) == 6);
+    assert(number_total(Sequence { end: 4 }) == 6);
+    assert(cursor_number_total(Counter { current: 0, end: 4 }) == 6);
+    assert(concrete_counter_total() == 6);
+    assert(for_total(rows()) == 8);
+    assert(for_total(Inventory { rows: rows() }) == 8);
+    assert(cursor_total(rows().into_iter()) == 8);
+    assert(inherited_total(Inventory { rows: rows() }) == 17);
+    assert(first_name(Inventory { rows: rows() }) == "bolts");
+    assert(break_name(rows().into_iter()) == "bolts");
+    assert(inventory_total(rows()) == 8);
+    assert(explicit_total(rows()) == 8);
+    assert(inventory_total(Inventory { rows: rows() }) == 8);
+    assert(explicit_total(Inventory { rows: rows() }) == 8);
+}

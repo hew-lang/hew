@@ -1,0 +1,5 @@
+import "projection_bound_support/replies.hew";
+
+fn main() {
+    println(code(Pending { message: Ping {  } }));
+}

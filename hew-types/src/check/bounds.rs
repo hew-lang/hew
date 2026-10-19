@@ -33,24 +33,21 @@ impl Checker {
                 }
             }
         }
-        let mut projections = Vec::new();
+        let mut deferred_subjects = Vec::new();
         for predicate in where_clause
             .into_iter()
             .flat_map(|clause| &clause.predicates)
         {
             let TypeExpr::Named { path, type_args } = &predicate.ty.0 else {
-                if matches!(predicate.ty.0, TypeExpr::QualifiedAssocPath(_)) {
-                    projections.push(predicate);
-                }
+                deferred_subjects.push(predicate);
                 continue;
             };
             if type_args.as_ref().is_some_and(|args| !args.is_empty()) {
+                deferred_subjects.push(predicate);
                 continue;
             }
             let Some(super::scope::Resolution::Param(id)) = self.resolve_type_path(path) else {
-                if path.segments.len() > 1 {
-                    projections.push(predicate);
-                }
+                deferred_subjects.push(predicate);
                 continue;
             };
             let Some((name, _)) = path.segments.last() else {
@@ -88,9 +85,13 @@ impl Checker {
         }
         self.current_type_param_bounds.pop();
         self.current_type_param_bounds.push(with_assoc.clone());
-        for predicate in projections {
+        for predicate in deferred_subjects {
             let subject = self.resolve_registered_annotation_ty(&predicate.ty, hole_vars);
+            if subject.contains_error() {
+                continue;
+            }
             let Some(parameter) = self.register_projection_bound_subject(&subject) else {
+                self.report_unsupported_where_subject(&subject, &predicate.ty.1);
                 continue;
             };
             for bound in &predicate.bounds {
@@ -117,6 +118,23 @@ impl Checker {
         }
         self.current_type_param_bounds.pop();
         with_assoc
+    }
+
+    fn report_unsupported_where_subject(&mut self, subject: &Ty, span: &Span) {
+        if !self
+            .reported_unknown_bounds
+            .insert(SpanKey::in_module(span, self.current_module_idx))
+        {
+            return;
+        }
+        self.report_error(
+            TypeErrorKind::InvalidOperation,
+            span,
+            format!(
+                "where-clause subject `{}` must name a type parameter or an associated-type projection of one",
+                subject.user_facing(),
+            ),
+        );
     }
 
     /// The trait and arguments one written bound on `subject` names, or
@@ -261,12 +279,30 @@ impl Checker {
                 }
             }
         }
+        if let Some((base, trait_id, associated)) =
+            self.associated_schema_parameters.projection_for_id(param)
+        {
+            for bound in self.declared_associated_bounds(&Ty::param(base), trait_id, associated) {
+                if !found.contains(&bound) {
+                    found.push(bound);
+                }
+            }
+        }
         let self_ty = self
             .scopes
             .declaration_parameters(param.owner)
             .into_iter()
             .find(|head| head.id == param)
-            .map(Ty::param);
+            .map(Ty::param)
+            .or_else(|| {
+                self.associated_schema_parameters
+                    .projection_for_id(param)
+                    .map(|(base, trait_id, associated)| Ty::AssocType {
+                        base: Box::new(Ty::param(base)),
+                        trait_name: self.defs.path(trait_id).into(),
+                        assoc_name: associated.as_str().into(),
+                    })
+            });
         let mut applied = Vec::new();
         for bound in found {
             for parent in self.applied_trait_closure(&bound, self_ty.as_ref()) {
@@ -276,6 +312,78 @@ impl Checker {
             }
         }
         applied
+    }
+
+    /// Bounds on a receiver, including a projection used before specialization
+    /// has needed to intern its declaration-owned binder.
+    pub(in crate::check) fn active_bounds_for_type(&self, ty: &Ty) -> Vec<TraitRef> {
+        if let Some(parameter) = self.bound_parameter(ty) {
+            return self.active_bounds_of(parameter.id);
+        }
+        let Ty::AssocType {
+            base,
+            trait_name,
+            assoc_name,
+        } = ty
+        else {
+            return Vec::new();
+        };
+        let Some(trait_id) = self.assoc_carrier_trait(trait_name) else {
+            return Vec::new();
+        };
+        self.declared_associated_bounds(base, trait_id, Symbol::intern(assoc_name))
+            .into_iter()
+            .flat_map(|bound| self.applied_trait_closure(&bound, Some(ty)))
+            .collect()
+    }
+
+    fn declared_associated_bounds(
+        &self,
+        base: &Ty,
+        trait_id: crate::DefId,
+        associated: Symbol,
+    ) -> Vec<TraitRef> {
+        let Some(info) = self.trait_info(trait_id) else {
+            return Vec::new();
+        };
+        let Some(member) = info
+            .associated_types
+            .iter()
+            .find(|member| member.name == associated.as_str())
+        else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        for parent in self
+            .active_bounds_for_type(base)
+            .into_iter()
+            .filter(|bound| bound.trait_id == trait_id)
+        {
+            let mut substitutions: HashMap<_, _> =
+                info.type_params.iter().copied().zip(parent.args).collect();
+            substitutions.insert(crate::ParamHead::receiver(trait_id), base.clone());
+            for bound in &member.bounds {
+                let applied = TraitRef {
+                    trait_id: bound.trait_id,
+                    args: bound
+                        .args
+                        .iter()
+                        .map(|ty| ty.substitute_type_params_parallel(&substitutions))
+                        .collect(),
+                    assoc: bound
+                        .assoc
+                        .iter()
+                        .map(|(name, ty)| {
+                            (*name, ty.substitute_type_params_parallel(&substitutions))
+                        })
+                        .collect(),
+                };
+                if !found.contains(&applied) {
+                    found.push(applied);
+                }
+            }
+        }
+        found
     }
 
     /// Every bound in force here, for a check replayed later in another
@@ -509,6 +617,7 @@ impl Checker {
         target: &Ty,
         trait_ref: &TraitRef,
         params: Vec<crate::ParamHead>,
+        bounds: ParamBounds,
     ) {
         let Some(key) = Self::impl_self_key(target) else {
             return;
@@ -517,6 +626,7 @@ impl Checker {
             target: target.clone(),
             args: trait_ref.args.clone(),
             params,
+            bounds,
         };
         let rows = self
             .trait_impls
@@ -548,116 +658,272 @@ impl Checker {
         Self::impl_self_key(ty).is_some_and(|key| self.trait_impls.contains_key(&(key, trait_id)))
     }
 
-    /// Whether `ty` has a declared impl of `trait_id`, directly or through an
-    /// impl of a trait extending it. An alias answers for its target.
-    pub(in crate::check) fn type_implements_trait(&self, ty: &Ty, trait_id: crate::DefId) -> bool {
-        let ty = &ty.materialize_literal_defaults();
-        if let Some(key) = Self::impl_self_key(ty) {
-            if self
-                .trait_impls
-                .get(&(key.clone(), trait_id))
-                .is_some_and(|rows| rows.iter().any(|row| row.matches_receiver(ty)))
-                || self
-                    .trait_impls
-                    .iter()
-                    .any(|((implemented, declared), rows)| {
-                        *implemented == key
-                            && self.trait_extends(*declared, trait_id)
-                            && rows.iter().any(|row| row.matches_receiver(ty))
-                    })
-            {
-                return true;
-            }
-        }
-        let Ty::Named { head, args } = ty else {
-            return false;
-        };
-        self.alias_target_for_instance(*head, args)
-            .is_some_and(|target| self.type_implements_trait(&target, trait_id))
-    }
-
-    /// Whether an impl of `trait_id`, or of a trait extending it, filed
-    /// under `ty`'s head names `ty` itself: `impl Display for Wrap<string>`
-    /// does not render a `Wrap<i64>`. A type with no arguments, or one whose
-    /// head files no impl (an alias answers through its target), is decided
-    /// by the head alone.
-    pub(in crate::check) fn an_impl_head_admits(
+    /// Whether a declared impl, including its conditions, provides this trait.
+    pub(in crate::check) fn type_implements_trait(
         &mut self,
         ty: &Ty,
         trait_id: crate::DefId,
     ) -> bool {
-        let Ty::Named { args, .. } = ty else {
-            return true;
-        };
-        if args.is_empty() {
-            return true;
-        }
-        let Some(key) = Self::impl_self_key(ty) else {
-            return true;
-        };
-        let rows: Vec<TraitImplArgs> = self
-            .trait_impls
-            .iter()
-            .filter(|((implemented, declared), _)| {
-                *implemented == key
-                    && (*declared == trait_id || self.trait_extends(*declared, trait_id))
-            })
-            .flat_map(|(_, rows)| rows.iter().cloned())
-            .collect();
-        if rows.is_empty() {
-            return true;
-        }
-        rows.iter().any(|row| {
-            let opened = std::cell::RefCell::new(HashMap::new());
-            let target = super::coerce::open_type_params(&row.target, &opened);
-            let snapshot = self.subst.snapshot();
-            let matched = self.try_unify_with_owner_identity(&target, ty);
-            self.subst.restore(snapshot);
-            matched
-        })
+        self.type_implements_trait_ref(ty, &TraitRef::bare(trait_id))
     }
 
-    /// Whether `ty` has a declared impl of `bound`'s trait at `bound`'s
-    /// arguments. A generic impl matches with its binders opened.
+    /// Match one complete impl row: receiver, applied trait arguments and every
+    /// declared condition share the same opened binders and inference snapshot.
     pub(in crate::check) fn type_implements_trait_ref(
         &mut self,
         ty: &Ty,
         bound: &TraitRef,
     ) -> bool {
-        if bound.args.is_empty() {
-            return self.type_implements_trait(ty, bound.trait_id);
+        self.with_trait_proof(
+            TraitProofKind::DeclaredImpl,
+            ty,
+            bound,
+            Self::prove_trait_impl_ref,
+        )
+    }
+
+    fn with_trait_proof(
+        &mut self,
+        kind: TraitProofKind,
+        ty: &Ty,
+        bound: &TraitRef,
+        prove: impl FnOnce(&mut Self, &Ty, &TraitRef) -> bool,
+    ) -> bool {
+        // Each ordinary obligation may open both a conformance query and an
+        // impl query. Bound strictly growing chains as well as equal cycles.
+        const MAX_PROOF_QUERIES: usize = 128;
+        if self.active_trait_proofs.is_empty() {
+            self.trait_proof_limit_reached = false;
         }
-        let Some(key) = Self::impl_self_key(ty) else {
+        if self.trait_proof_limit_reached {
             return false;
-        };
-        let rows = self
-            .trait_impls
-            .get(&(key, bound.trait_id))
-            .cloned()
-            .unwrap_or_default();
-        let wanted: Vec<Ty> = bound
-            .args
-            .iter()
-            .map(|arg| self.subst.resolve(arg))
-            .collect();
-        rows.iter().any(|row| {
-            let opened = std::cell::RefCell::new(HashMap::new());
-            let target = super::coerce::open_type_params(&row.target, &opened);
-            let args: Vec<Ty> = row
+        }
+        if self.active_trait_proofs.len() >= MAX_PROOF_QUERIES {
+            self.trait_proof_limit_reached = true;
+            let span = self
+                .checking_declaration
+                .and_then(|id| self.defs.site(id))
+                .map_or(0..0, crate::DeclarationOccurrence::span);
+            let (_, receiver, requested) = &self.active_trait_proofs[0];
+            let message = format!(
+                "trait proof for `{}: {}` exceeded {MAX_PROOF_QUERIES} nested queries; \
+                 the required types may keep growing without a finite proof",
+                receiver.user_facing(),
+                self.trait_ref_display(requested),
+            );
+            self.report_error(TypeErrorKind::InvalidOperation, &span, message);
+            return false;
+        }
+        let receiver = self
+            .normalize_preserving_aliases(ty)
+            .materialize_literal_defaults();
+        let bound = TraitRef {
+            trait_id: bound.trait_id,
+            args: bound
                 .args
                 .iter()
-                .map(|arg| super::coerce::open_type_params(arg, &opened))
+                .map(|ty| self.normalize_for_use(ty))
+                .collect(),
+            assoc: bound
+                .assoc
+                .iter()
+                .map(|(name, ty)| (*name, self.normalize_for_use(ty)))
+                .collect(),
+        };
+        let query = (kind, receiver.clone(), bound.clone());
+        if self.active_trait_proofs.contains(&query) {
+            return false;
+        }
+        self.active_trait_proofs.push(query);
+        let implemented = prove(self, &receiver, &bound);
+        self.active_trait_proofs.pop();
+        implemented
+    }
+
+    fn prove_trait_impl_ref(&mut self, receiver: &Ty, bound: &TraitRef) -> bool {
+        let Some(key) = Self::impl_self_key(receiver) else {
+            return false;
+        };
+        let rows: Vec<_> = self
+            .trait_impls
+            .iter()
+            .filter(|((implemented, declared), _)| {
+                *implemented == key && self.bound_provides(*declared, bound.trait_id)
+            })
+            .flat_map(|((_, declared), rows)| rows.iter().cloned().map(move |row| (*declared, row)))
+            .collect();
+        let implemented = rows.into_iter().any(|(declared, row)| {
+            let substitutions: HashMap<_, _> = row
+                .params
+                .iter()
+                .copied()
+                .map(|parameter| (parameter, Ty::Var(TypeVar::fresh())))
                 .collect();
-            let snapshot = self.subst.snapshot();
-            let matched = self.try_unify_with_owner_identity(&target, ty)
-                && args.len() == wanted.len()
-                && args
+            let target = row.target.substitute_type_params_parallel(&substitutions);
+            let declared_bound = TraitRef {
+                trait_id: declared,
+                args: row
+                    .args
                     .iter()
-                    .zip(&wanted)
-                    .all(|(declared, wanted)| self.try_unify_with_owner_identity(declared, wanted));
+                    .map(|argument| argument.substitute_type_params_parallel(&substitutions))
+                    .collect(),
+                assoc: Vec::new(),
+            };
+            let candidates = self.applied_trait_closure(&declared_bound, Some(receiver));
+            candidates
+                .into_iter()
+                .filter(|candidate| candidate.trait_id == bound.trait_id)
+                .any(|candidate| {
+                    let snapshot = self.subst.snapshot();
+                    let matches = self.impl_receiver_matches(&target, receiver)
+                        && (bound.args.is_empty()
+                            || (candidate.args.len() == bound.args.len()
+                                && candidate.args.iter().zip(&bound.args).all(
+                                    |(actual, expected)| self.bound_types_agree(actual, expected),
+                                )))
+                        && row
+                            .bounds
+                            .map_types(|ty| ty.substitute_type_params_parallel(&substitutions))
+                            .iter()
+                            .all(|(subject, condition)| {
+                                let Some(argument) =
+                                    self.impl_bound_subject(*subject, &substitutions)
+                                else {
+                                    return false;
+                                };
+                                self.type_satisfies_bound(&argument, condition)
+                                    && self.bound_associated_types_agree(&argument, condition)
+                            });
+                    self.subst.restore(snapshot);
+                    matches
+                })
+        });
+        if implemented {
+            return true;
+        }
+        if let Ty::Named { head, args } = receiver {
+            if let Some(target) = self.alias_target_for_instance(*head, args) {
+                return self.type_implements_trait_ref(&target, bound);
+            }
+        }
+        false
+    }
+
+    pub(in crate::check) fn impl_bound_subject(
+        &self,
+        subject: crate::TypeParamId,
+        substitutions: &HashMap<crate::ParamHead, Ty>,
+    ) -> Option<Ty> {
+        if let Some(argument) = substitutions
+            .iter()
+            .find_map(|(parameter, argument)| (parameter.id == subject).then_some(argument))
+        {
+            return Some(self.normalize_preserving_aliases(argument));
+        }
+        let (base, trait_id, associated) = self
+            .associated_schema_parameters
+            .projection_for_id(subject)?;
+        let base = self.impl_bound_subject(base.id, substitutions)?;
+        Some(self.project_associated_type(&base, trait_id, associated))
+    }
+
+    /// Probe associated equalities without committing inference from a candidate.
+    pub(in crate::check) fn bound_associated_types_agree(
+        &mut self,
+        receiver: &Ty,
+        bound: &TraitRef,
+    ) -> bool {
+        let snapshot = self.subst.snapshot();
+        let agree = bound.assoc.iter().all(|(name, expected)| {
+            let actual = self.project_associated_type(receiver, bound.trait_id, *name);
+            self.bound_types_agree(&actual, expected)
+        });
+        self.subst.restore(snapshot);
+        agree
+    }
+
+    /// Keep authored identities when opening the binders used by impl
+    /// obligations; expand aliases only at concrete mismatching subterms.
+    fn impl_receiver_matches(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let snapshot = self.subst.snapshot();
+        let matches = self.impl_receiver_matches_inner(expected, actual, &mut Vec::new());
+        if !matches {
             self.subst.restore(snapshot);
-            matched
-        })
+        }
+        matches
+    }
+
+    fn impl_receiver_matches_inner(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        active_aliases: &mut Vec<(bool, Ty)>,
+    ) -> bool {
+        let expected = self
+            .normalize_preserving_aliases(expected)
+            .materialize_literal_defaults();
+        let actual = self
+            .normalize_preserving_aliases(actual)
+            .materialize_literal_defaults();
+        if matches!(expected, Ty::Var(_)) || matches!(actual, Ty::Var(_)) {
+            return crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok();
+        }
+
+        let mut expected_children = Vec::new();
+        let expected_shape = expected.map_children(&mut |child| {
+            expected_children.push(child.clone());
+            Ty::Unit
+        });
+        let mut actual_children = Vec::new();
+        let actual_shape = actual.map_children(&mut |child| {
+            actual_children.push(child.clone());
+            Ty::Unit
+        });
+        if expected_shape == actual_shape {
+            return expected_children
+                .iter()
+                .zip(&actual_children)
+                .all(|(expected, actual)| {
+                    self.impl_receiver_matches_inner(expected, actual, active_aliases)
+                });
+        }
+
+        let alias_target = |ty: &Ty| match ty {
+            Ty::Named { head, args } => self.alias_target_for_instance(*head, args),
+            _ => None,
+        };
+        let (alias, target, expected_alias) = if let Some(target) = alias_target(&expected) {
+            (&expected, target, true)
+        } else if let Some(target) = alias_target(&actual) {
+            (&actual, target, false)
+        } else {
+            return crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok();
+        };
+        if active_aliases.iter().any(|(expected_side, ancestor)| {
+            *expected_side == expected_alias
+                && (ancestor == alias
+                    || super::admissibility::StructuralTypeWalk::grows_from(ancestor, alias))
+        }) {
+            return false;
+        }
+        active_aliases.push((expected_alias, alias.clone()));
+        let matches = if expected_alias {
+            self.impl_receiver_matches_inner(&target, &actual, active_aliases)
+        } else {
+            self.impl_receiver_matches_inner(&expected, &target, active_aliases)
+        };
+        active_aliases.pop();
+        matches
+    }
+
+    fn bound_types_agree(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let expected = self
+            .normalize_for_use(expected)
+            .materialize_literal_defaults();
+        let actual = self
+            .normalize_for_use(actual)
+            .materialize_literal_defaults();
+        crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok()
     }
 
     /// Whether `ty` satisfies a bound: a compiler predicate by its structural
@@ -708,6 +974,19 @@ impl Checker {
             }
             _ => {}
         }
+        if marker.is_some() {
+            return self.type_satisfies_registered_bound(ty, bound);
+        }
+        self.with_trait_proof(
+            TraitProofKind::Conformance,
+            ty,
+            bound,
+            Self::type_satisfies_registered_bound,
+        )
+    }
+
+    fn type_satisfies_registered_bound(&mut self, ty: &Ty, bound: &TraitRef) -> bool {
+        let marker = self.trait_marker(bound.trait_id);
         match ty {
             // `instant` canonicalises to i64 and satisfies what i64 does.
             Ty::Named {
@@ -873,6 +1152,11 @@ impl Checker {
         );
         let params =
             self.source_parameter_heads(id.type_params.as_deref().unwrap_or_default(), span);
-        self.record_trait_impl(&target, trait_ref, params);
+        let bounds = self.collect_type_param_bounds(
+            id.type_params.as_ref(),
+            id.where_clause.as_ref(),
+            &mut Vec::new(),
+        );
+        self.record_trait_impl(&target, trait_ref, params, bounds);
     }
 }

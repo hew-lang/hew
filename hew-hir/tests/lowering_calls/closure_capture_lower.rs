@@ -441,7 +441,7 @@ fn generic_function_value_requires_complete_checker_facts() {
     let key = checked
         .call_type_args
         .keys()
-        .next()
+        .find(|key| key.module_idx == 0)
         .expect("value instantiation")
         .clone();
     for defect in 0..4 {

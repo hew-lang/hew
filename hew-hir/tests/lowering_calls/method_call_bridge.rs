@@ -594,7 +594,7 @@ fn resolved_impl_call_refuses_missing_or_poisoned_result_facts() {
     let site = checked
         .resolved_calls
         .iter()
-        .find(|(_, call)| call.method_name == "get")
+        .find(|(site, call)| site.module_idx == 0 && call.method_name == "get")
         .expect("checker-selected impl method")
         .0
         .clone();

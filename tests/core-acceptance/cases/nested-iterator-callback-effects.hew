@@ -1,0 +1,21 @@
+trait OtherNext { fn[suspends] next(var self) -> Option<i64>; }
+
+impl OtherNext for VecIter<i64> {
+    fn next(var self) -> Option<i64> { sleep(1ms); .None }
+}
+
+fn first<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
+    match it.next() { .Some(x) => x, .None => 0 }
+}
+
+fn ready() -> i64 {
+    let row: Vec<i64> = [1, 2];
+    first(row.iter())
+}
+
+fn main() -> i64 {
+    let callback: fn() -> i64 = ready;
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
+    if callback() == 1 && sums.len() == 2 && sums[0] == 3 && sums[1] == 7 { 0 } else { 1 }
+}

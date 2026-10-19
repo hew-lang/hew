@@ -2240,26 +2240,71 @@ fn source_contains_regex_literal(source: &str) -> bool {
         .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
+/// A quoted file's identity is relative to the root source directory. Parent
+/// steps and exceptional filesystem components occupy disjoint namespaces,
+/// while ordinary Hew file and directory names remain readable.
 fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModulePath {
-    let without_ext = canonical_path.with_extension("");
-    let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
-    let mut segments = rel
-        .iter()
-        .filter_map(|segment| segment.to_str())
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>();
+    use std::path::Component;
 
-    if segments.is_empty() {
-        segments.push(
-            canonical_path
-                .file_stem()
-                .and_then(|segment| segment.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        );
+    let base: Vec<_> = source_dir.components().collect();
+    let target: Vec<_> = canonical_path.components().collect();
+    // Compare the full filename: stripping its extension here would confuse
+    // a sibling `app.hew` with the root directory named `app`.
+    let shared = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    let mut segments: Vec<String> = if shared == 0 {
+        Vec::new()
+    } else {
+        base[shared..]
+            .iter()
+            .filter(|component| matches!(component, Component::Normal(_)))
+            .map(|_| "super".to_string())
+            .collect()
+    };
+    for (index, component) in target.iter().enumerate().skip(shared) {
+        let segment = match component {
+            Component::Normal(name) if index + 1 == target.len() => {
+                if canonical_path
+                    .extension()
+                    .is_some_and(|extension| extension == "hew")
+                {
+                    file_module_segment(canonical_path.file_stem().expect("source filename"))
+                } else {
+                    escaped_file_module_segment("source", name)
+                }
+            }
+            Component::Normal(name) => file_module_segment(name),
+            Component::Prefix(prefix) => escaped_file_module_segment("volume", prefix.as_os_str()),
+            Component::RootDir => "__hew_file_root".to_string(),
+            Component::ParentDir => "super".to_string(),
+            Component::CurDir => continue,
+        };
+        segments.push(segment);
     }
-
     hew_parser::module::ModulePath::new(segments)
+}
+
+fn file_module_segment(component: &std::ffi::OsStr) -> String {
+    if let Some(name) = component.to_str() {
+        let mut tokens = hew_lexer::Lexer::new(name);
+        if name != "super"
+            && !name.starts_with("__hew_file_")
+            && matches!(tokens.next(), Some((hew_lexer::Token::Identifier(_), span)) if span.start == 0 && span.end == name.len())
+            && tokens.next().is_none()
+        {
+            return name.to_string();
+        }
+    }
+    escaped_file_module_segment("name", component)
+}
+
+fn escaped_file_module_segment(kind: &str, component: &std::ffi::OsStr) -> String {
+    use std::fmt::Write;
+
+    let mut segment = format!("__hew_file_{kind}_");
+    for byte in component.as_encoded_bytes() {
+        write!(segment, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    segment
 }
 
 /// The standard-library roots a run resolves `std.*` from, in the spelling
@@ -4688,6 +4733,84 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
         file.write_all(content.as_bytes()).expect("write hew.lock");
+    }
+
+    /// A quoted import above the root file's directory is named relative to
+    /// it, never by the absolute path of the checkout.
+    #[test]
+    fn file_module_ids_are_relative_to_the_root_directory() {
+        let root = Path::new("/work/project/app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file)).dotted();
+        assert_eq!(id("/work/project/app/main.hew"), "main");
+        assert_eq!(id("/work/project/app/x/util.hew"), "x.util");
+        assert_eq!(id("/work/project/a/util.hew"), "super.a.util");
+        assert_eq!(id("/work/other/b/util.hew"), "super.super.other.b.util");
+    }
+
+    #[test]
+    fn file_module_ids_preserve_exceptional_components_and_relocation() {
+        let root = Path::new("/work/project/app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file));
+        assert_ne!(
+            id("/work/project/util.hew"),
+            id("/work/project/app/super/util.hew")
+        );
+        assert_ne!(
+            id("/work/project/app/super/util.hew"),
+            id("/work/project/app/__hew_file_name_7375706572/util.hew")
+        );
+        assert_ne!(
+            id("/work/project/app/a.b/util.hew"),
+            id("/work/project/app/a/b/util.hew")
+        );
+        assert_ne!(id("/work/project/app.hew"), id("/work/project/app/app.hew"));
+        assert_eq!(id("/work/project/app.hew").dotted(), "super.app");
+        assert_ne!(
+            id("/work/project/app/util.hew"),
+            id("/work/project/app/util.txt")
+        );
+        assert_ne!(
+            id("/work/project/app/util.hew"),
+            id("/work/project/app/util")
+        );
+        assert_eq!(
+            id("/work/project/lib/util.hew"),
+            super::module_id_from_file(
+                Path::new("/another/checkout/app"),
+                Path::new("/another/checkout/lib/util.hew")
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_module_ids_preserve_non_utf8_components() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = Path::new("/work/app");
+        let file = |byte| {
+            root.join(std::ffi::OsString::from_vec(vec![byte]))
+                .join("util.hew")
+        };
+        let first = super::module_id_from_file(root, &file(0xff));
+        assert_ne!(first, super::module_id_from_file(root, &file(0xfe)));
+        assert_ne!(
+            first,
+            super::module_id_from_file(root, &root.join("util.hew"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_module_ids_preserve_windows_volume_and_unc_prefixes() {
+        let root = Path::new(r"C:\work\app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file));
+        assert_ne!(id(r"D:\other\util.hew"), id(r"E:\other\util.hew"));
+        assert_ne!(id(r"\\host\one\util.hew"), id(r"\\host\two\util.hew"));
+        assert_ne!(
+            id(r"D:\other\util.hew"),
+            id(r"C:\work\app\D\other\util.hew")
+        );
+        assert_eq!(id(r"C:\work\lib\util.hew").dotted(), "super.lib.util");
     }
 
     /// A diagnostic label must name the file the way the user did, never

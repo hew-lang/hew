@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-parent-same-stem"
+intent = "Parent imports and a literal super directory keep distinct file identities and private helpers, including equal file stems."
+source = "fixtures/file-import-parent-same-stem/app/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "abcd\n"
+exit = 0

@@ -1,0 +1,7 @@
+fn helper() -> string {
+    "d"
+}
+
+pub fn from_literal_super() -> string {
+    helper()
+}

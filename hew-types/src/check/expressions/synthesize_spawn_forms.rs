@@ -1940,7 +1940,10 @@ impl Checker {
             // silent first-wins.
             Expr::Ident(name) => {
                 match self.resolve_bare_spawn_target_identity(name) {
-                    super::types::BareActorResolution::Resolved(identity) => Some(identity),
+                    super::types::BareActorResolution::Resolved(identity) => {
+                        self.note_import_use(name.name.as_str());
+                        Some(identity)
+                    }
                     super::types::BareActorResolution::Ambiguous(candidate_modules) => {
                         self.report_ambiguous_actor_reference(
                             name.name.as_str(),

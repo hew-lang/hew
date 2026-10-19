@@ -1,0 +1,8 @@
+import lib.{Pool};
+
+fn main() {
+    let pool = spawn Pool;
+    println(pool.workers[0].work(2).expect("tripler"));
+    stop(pool);
+    stopped(pool);
+}

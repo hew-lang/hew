@@ -4,6 +4,26 @@
 )]
 pub(super) use super::*;
 
+/// Return the checker resolution for a specific root-source arm pattern.
+fn root_arm_resolution_at<'a>(
+    output: &'a TypeCheckOutput,
+    source: &str,
+    pattern: &str,
+) -> &'a ArmResolution {
+    let start = source
+        .rfind(pattern)
+        .unwrap_or_else(|| panic!("root pattern {pattern:?} is absent from source"));
+    let key = SpanKey {
+        start,
+        end: start + pattern.len(),
+        module_idx: 0,
+    };
+    output
+        .pattern_resolutions
+        .get(&key)
+        .unwrap_or_else(|| panic!("no root pattern resolution for {pattern:?} at {key:?}"))
+}
+
 #[test]
 fn contextual_dotted_enum_payload_rejects_integer_overflow() {
     let (errors, _) = parse_and_check(
@@ -771,8 +791,7 @@ fn foo(p: Point) -> i64 {
 
     #[test]
     fn record_shorthand_rest_builds_wildcard_plan() {
-        let output = check_source(
-            r"type Point {
+        let source = r"type Point {
     x: i64;
     y: i64;
 }
@@ -781,14 +800,17 @@ fn foo(p: Point) -> i64 {
     let { x, .. } = p;
     x
 }
-",
-        );
+";
+        let output = check_source(source);
         assert!(
             output.errors.is_empty(),
             "shorthand rest should check cleanly: {:#?}",
             output.errors
         );
-        let plan = output.pattern_plans.values().next().unwrap();
+        let plan = root_pattern_plans(&output)
+            .next()
+            .expect("root record pattern publishes a plan")
+            .1;
         assert_eq!(plan.fields.len(), 2);
         assert_eq!(plan.fields[0].sub, PlanSub::Binding(Ident::new("x")));
         assert_eq!(plan.fields[1].sub, PlanSub::Wildcard);
@@ -1316,8 +1338,7 @@ fn main() -> i64 {
 /// `PayloadVariantPattern` in the arm's resolution side-table entry.
 #[test]
 fn constructor_payload_nested_ctor_is_accepted_and_recorded() {
-    let output = check_source(
-        r"enum Color {
+    let source = r"enum Color {
     Red;
     Green;
 }
@@ -1335,18 +1356,15 @@ fn main() -> i64 {
         Shape.Square(_) => 0,
     }
 }
-",
-    );
+";
+    let output = check_source(source);
     assert!(
         output.errors.is_empty(),
         "nested constructor payload subpattern must be accepted; got errors: {:#?}",
         output.errors
     );
-    let nested: Vec<_> = output
-        .pattern_resolutions
-        .values()
-        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
-        .collect();
+    let resolution = root_arm_resolution_at(&output, source, "Shape.Line(Color.Red)");
+    let nested = &resolution.payload_variant_patterns;
     assert_eq!(
         nested.len(),
         1,
@@ -1364,8 +1382,7 @@ fn main() -> i64 {
 /// records the inner binding on the nested pattern, not on the arm.
 #[test]
 fn constructor_payload_nested_ctor_inner_binding_recorded() {
-    let output = check_source(
-        r"
+    let source = r"
 fn doubly() -> Result<Result<i64, string>, string> {
     .Ok(.Ok(42))
 }
@@ -1375,17 +1392,16 @@ fn main() -> i64 {
         .Ok(.Err(e)) => 0 - 1,
         .Err(e) => 0 - 2,
     }
-}",
-    );
+}";
+    let output = check_source(source);
     assert!(
         output.errors.is_empty(),
         "nested Result patterns must be accepted; got errors: {:#?}",
         output.errors
     );
-    let inner_ok = output
-        .pattern_resolutions
-        .values()
-        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+    let inner_ok = root_arm_resolution_at(&output, source, ".Ok(.Ok(v))")
+        .payload_variant_patterns
+        .iter()
         .find(|pvp| pvp.variant_match.variant_name == "Ok")
         .expect("Ok(Ok(v)) arm records a nested Ok pattern");
     assert_eq!(inner_ok.bindings.len(), 1);
@@ -1398,8 +1414,7 @@ fn main() -> i64 {
 /// the element does not also become a plain payload binding.
 #[test]
 fn tuple_element_nested_ctor_is_accepted_and_recorded() {
-    let output = check_source(
-        r"
+    let source = r"
 fn pair() -> (Option<i64>, i64) {
     (.Some(1), 2)
 }
@@ -1408,36 +1423,28 @@ fn main() -> i64 {
         (.Some(n), m) => n + m,
         (_, m) => m,
     }
-}",
-    );
+}";
+    let output = check_source(source);
     assert!(
         output.errors.is_empty(),
         "a variant pattern in a tuple element must be accepted; got errors: {:#?}",
         output.errors
     );
-    let nested: Vec<_> = output
-        .pattern_resolutions
-        .values()
-        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
-        .collect();
+    let resolution = root_arm_resolution_at(&output, source, "(.Some(n), m)");
+    let nested = &resolution.payload_variant_patterns;
     assert_eq!(nested.len(), 1, "one tuple arm carries a nested variant");
     let pvp = nested[0];
     assert_eq!(pvp.field_idx, 0, "element position keys the nested check");
     assert_eq!(pvp.variant_match.variant_name, "Some");
     assert_eq!(pvp.bindings.len(), 1);
     assert_eq!(pvp.bindings[0].binding_name, "n");
-    let tuple_arm = output
-        .pattern_resolutions
-        .values()
-        .find(|resolution| !resolution.payload_variant_patterns.is_empty())
-        .expect("the nested arm has a resolution");
     assert!(
-        tuple_arm
+        resolution
             .payload_bindings
             .iter()
             .all(|binding| binding.field_idx != 0),
         "element 0 is a nested variant, not a payload binding: {:#?}",
-        tuple_arm.payload_bindings
+        resolution.payload_bindings
     );
 }
 
@@ -1445,8 +1452,7 @@ fn main() -> i64 {
 /// field's declaration-order index.
 #[test]
 fn record_field_nested_ctor_is_accepted_and_recorded() {
-    let output = check_source(
-        r"type Slot {
+    let source = r"type Slot {
     tag: i64;
     load: Option<i64>;
 }
@@ -1458,17 +1464,16 @@ fn main() -> i64 {
         Slot { tag: tag, load: _ } => tag,
     }
 }
-",
-    );
+";
+    let output = check_source(source);
     assert!(
         output.errors.is_empty(),
         "a variant pattern in a record field must be accepted; got errors: {:#?}",
         output.errors
     );
-    let pvp = output
-        .pattern_resolutions
-        .values()
-        .flat_map(|resolution| resolution.payload_variant_patterns.iter())
+    let pvp = root_arm_resolution_at(&output, source, "Slot { tag: tag, load: .Some(v) }")
+        .payload_variant_patterns
+        .iter()
         .find(|pvp| pvp.variant_match.variant_name == "Some")
         .expect("the `load: .Some(v)` field records a nested variant");
     assert_eq!(pvp.field_idx, 1, "`load` is the second declared field");

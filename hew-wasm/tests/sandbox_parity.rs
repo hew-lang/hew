@@ -726,6 +726,13 @@ fn implicit_iterator_suspension_matches_native() {
         },
         "",
     );
+    assert_case(
+        &ParityCase {
+            test_name: "nested_iterator_callback_effects",
+            source_rel: "tests/core-acceptance/cases/nested-iterator-callback-effects.hew",
+        },
+        "",
+    );
 }
 
 #[cfg(unix)]

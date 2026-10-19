@@ -634,6 +634,26 @@ pub(crate) unsafe fn finish_claimed_supervisor(
     defer: bool,
 ) -> bool {
     if defer || current_thread_owns_supervisor_tree(sup) {
+        // Under the deterministic driver every unit of work is a participant:
+        // a teardown on a host thread is invisible to it, so the driver would
+        // find nothing runnable while the stop (and the restart waiting on
+        // it) is still in flight. Queue the teardown as a participant; it
+        // runs outside this supervisor's tree, so it completes inline there.
+        if crate::driver::active() {
+            if !root_unregistered {
+                // The queued entry is now the one teardown owner; leave the
+                // shutdown root set first, as a token stop does, so a sweep
+                // cannot also claim it while it waits on the ready list.
+                // SAFETY: `sup` is live and was registered when started.
+                unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+            }
+            crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
+                supervisor: sup,
+                root_unregistered: true,
+                teardown,
+            });
+            return true;
+        }
         if !spawn_owned_deferred_supervisor_stop(sup, teardown.clone()) {
             if root_unregistered {
                 // SAFETY: the failed handoff leaves the top-level allocation

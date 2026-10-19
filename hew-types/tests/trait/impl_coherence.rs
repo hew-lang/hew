@@ -109,10 +109,16 @@ fn imported_prelude_revisits_keep_the_override_provenance() {
     let start = source.find("builtins.to_string(1)").unwrap();
     let site =
         hew_types::check::SpanKey::in_module(&(start..start + "builtins.to_string(1)".len()), 0);
-    assert!(matches!(
-        output.direct_call_targets.get(&site),
-        Some(hew_types::check::CallTarget::Builtin { endpoint }) if endpoint == "to_string"
-    ));
+    assert!(
+        matches!(
+            output.method_call_rewrites.get(&site),
+            Some(hew_types::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                target: hew_types::check::CallTarget::Builtin { endpoint }, ..
+            }) if endpoint == "to_string"
+        ),
+        "{:?}",
+        output.method_call_rewrites.get(&site)
+    );
 }
 
 #[test]

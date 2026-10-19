@@ -5118,6 +5118,24 @@ fn selected_eq_demand_does_not_walk_an_unrelated_branch_of_the_same_root() {
 }
 
 #[test]
+fn selected_eq_demand_does_not_make_unrelated_polymorphic_recursion_relevant() {
+    let output = check_source(
+        r"
+        fn unrelated_growth<T>(n: i64) {
+            if n > 0 { unrelated_growth<Vec<T>>(n - 1); }
+        }
+        fn same<T>(left: T, right: T) -> bool { left == right }
+        fn branches<T>(left: T, right: T) -> bool {
+            unrelated_growth<T>(1);
+            same(left, right)
+        }
+        fn main() { let result = branches(1, 1); }
+    ",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
 fn selected_eq_relevant_polymorphic_recursion_still_fails_closed() {
     let output = check_source(
         r"

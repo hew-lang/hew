@@ -2859,10 +2859,10 @@ impl Checker {
     /// from this source during preparation; checking the selected bodies here
     /// lets generic calls use their actual effects instead of an unknown body.
     fn check_embedded_builtin_trait_impl_bodies(&mut self) {
+        const SOURCE: &str = include_str!("../../../std/builtins.hew");
         if self.checking_embedded_builtins {
             return;
         }
-        const SOURCE: &str = include_str!("../../../std/builtins.hew");
         let parsed = hew_parser::parse(SOURCE);
         assert!(parsed.errors.is_empty(), "embedded builtins must parse");
         let saved_module = self.current_module.replace("std.builtins".to_string());

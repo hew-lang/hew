@@ -848,6 +848,35 @@ impl Checker {
         relevant[root]
     }
 
+    /// Retain the part of the recorded call graph that can reach an obligation.
+    /// An unrelated polymorphic cycle must not become conservatively relevant
+    /// merely because another module contributed a requirement. Concrete
+    /// substitutions still decide relevance within the retained graph.
+    fn retain_generic_requirement_edges(
+        requirements: &HashMap<Option<crate::DefId>, Vec<GenericRequirement>>,
+        edges: &mut HashMap<crate::DefId, Vec<GenericCallEdge>>,
+    ) {
+        let mut callers: HashMap<crate::DefId, Vec<crate::DefId>> = HashMap::new();
+        for (caller, calls) in edges.iter() {
+            for call in calls {
+                callers.entry(call.callee).or_default().push(*caller);
+            }
+        }
+        let mut demanded: HashSet<_> = requirements.keys().filter_map(|owner| *owner).collect();
+        let mut pending_owners: Vec<_> = demanded.iter().copied().collect();
+        while let Some(owner) = pending_owners.pop() {
+            for caller in callers.get(&owner).into_iter().flatten() {
+                if demanded.insert(*caller) {
+                    pending_owners.push(*caller);
+                }
+            }
+        }
+        edges.retain(|caller, calls| {
+            calls.retain(|call| demanded.contains(&call.callee));
+            demanded.contains(caller)
+        });
+    }
+
     /// Discharge concrete demands and the generic type obligations reachable
     /// through the program's instantiation graph.
     ///
@@ -889,7 +918,8 @@ impl Checker {
             self.errors.extend(new_errors);
             return;
         }
-        let (roots, edges) = self.partition_generic_instantiation_sites(sites);
+        let (roots, mut edges) = self.partition_generic_instantiation_sites(sites);
+        Self::retain_generic_requirement_edges(&requirements, &mut edges);
         let mut relevant = HashMap::new();
         let mut seen: HashSet<(GenericInstantiation, usize, Option<String>)> = HashSet::new();
         let mut work: VecDeque<PendingInstantiation> = roots.into();

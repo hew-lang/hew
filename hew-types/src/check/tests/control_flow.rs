@@ -845,11 +845,9 @@ fn main() {
     }
 
     #[test]
-    fn generator_blocks_are_deferred_to_generator_surface_slice() {
+    fn generator_blocks_typecheck_with_inferred_yield_type() {
         // `gen { yield 1; yield 2; }` type-checks as Generator<i32, Unit>.
-        // The checker synthesizes the yield type from yield expressions; HIR/MIR
-        // lowering is still fail-closed on GenBlock but that is a compile-phase
-        // boundary, not a type-check boundary.
+        // The checker infers the item type from the yield expressions.
         let result = hew_parser::parse("fn main() { let g = gen { yield 1; yield 2; }; }");
         assert!(
             result.errors.is_empty(),

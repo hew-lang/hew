@@ -1,0 +1,32 @@
+actor Leaf {
+    receive fn fail() {
+        panic("replace nested owner");
+    }
+
+    receive fn ping() -> i64 {
+        42
+    }
+}
+
+supervisor Inner {
+    intensity: 0 within 60s;
+    child a: Leaf;
+}
+
+supervisor Root {
+    intensity: 3 within 60s;
+    child inner: Inner;
+}
+
+fn main() {
+    let root = spawn Root;
+    let role = root.inner.a;
+    let _ = role.fail();
+    restarted(role);
+    assert(role.ping().expect("replacement leaf") == 42);
+    stop(root);
+    stopped(root);
+    restarted(role);
+    assert(role.ping().is_err());
+    println("nested role follows replacement and terminal close");
+}

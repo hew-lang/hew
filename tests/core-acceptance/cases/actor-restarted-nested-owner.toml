@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-restarted-nested-owner"
+intent = "A stable nested leaf restart wait follows parent supervisor replacement, then terminates after root close."
+source = "cases/actor-restarted-nested-owner.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "nested role follows replacement and terminal close\n"
+stderr = "hew: failure: UserPanic (212): replace nested owner\nhew: actor crash in Leaf.fail (actor 1): UserPanic\n"
+exit = 0

@@ -1134,36 +1134,13 @@ impl DefTable {
         })
     }
 
-    /// Adopt declaration rows appended by embedded checking while preserving
-    /// this compilation's root namespace. The embedded root is a distinct
-    /// module; its temporary bare-name index must not replace source bindings.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `extension` changed an existing declaration identity.
-    pub fn include_embedded(&mut self, extension: &Self) {
-        assert!(
-            extension.extends(self),
-            "embedded declarations must append to their owning table"
-        );
-        let mut combined = extension.clone();
-        combined.root = self.root;
-        combined.by_path.extend(self.by_path.clone());
-        combined.module_by_path.extend(self.module_by_path.clone());
-        combined
-            .module_by_source
-            .extend(self.module_by_source.clone());
-        *self = combined;
-    }
-
     /// The table a second checker run over the embedded builtin source mints
     /// into: every row of `self` keeps its id, so the std.builtins
     /// declarations the run re-declares resolve to the same identities. Its
     /// root is the builtin source module; caller-root names are hidden.
     ///
-    /// TRANSITION(P2): WHY HIR type-checks the injected builtin impls with a
-    /// second `Checker`; WHEN B1 deletes that run; WHAT one `Checker` per
-    /// compilation (identity plan §3.2).
+    /// Standalone checks of trusted declarations can reuse this prefix without
+    /// publishing any of the temporary root's bindings back to the compilation.
     #[must_use]
     pub(crate) fn fork_for_embedded_builtins(&self) -> DefTable {
         let mut fork = self.clone();
@@ -1841,7 +1818,7 @@ mod tests {
                 "std.builtins.Cursor",
             )
             .unwrap();
-        table
+        let source_cursor = table
             .declare(
                 DeclarationOccurrence::new(Some(root), &(0..8), DeclarationKind::Type, 0),
                 Symbol::intern("Cursor"),
@@ -1864,8 +1841,6 @@ mod tests {
             .expect("the same builtin source occurrence reuses its declaration");
         assert_eq!(embedded_cursor, shared);
         assert!(fork.extends(&table));
-        let source_cursor = table.lookup_path("Cursor").unwrap();
-        table.include_embedded(&fork);
         assert_eq!(table.root_module(), Some(root));
         assert_eq!(table.lookup_path("Cursor"), Some(source_cursor));
         assert_eq!(table.module(embedded_cursor), Some(fork_root));

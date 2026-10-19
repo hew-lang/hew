@@ -357,20 +357,19 @@ impl Sample for Broken {
     );
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
 
-    let diagnostic =
-        *check_builtin_callable_impl_program(&parsed.program, &hew_types::DefTable::new())
-            .expect_err("the invalid injected impl must fail closed");
-    let HirDiagnosticKind::CheckerBoundaryViolation { name, reason } = diagnostic.kind else {
-        panic!("expected checker-boundary diagnostic, got {diagnostic:?}");
-    };
-    assert_eq!(name, "std/builtins.hew callable impls");
-    assert!(
-        reason.contains("returns `bool`") && reason.contains("requires `i64`"),
-        "diagnostic must preserve the checker mismatch: {reason}"
+    let mut checker =
+        hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+    let output = checker.check_embedded_builtins(
+        &parsed.program,
+        &hew_types::DefTable::new(),
+        Arc::new(hew_parser::parse(include_str!("../../../std/builtins.hew")).program),
     );
     assert!(
-        diagnostic.note.contains(&reason),
-        "the displayed diagnostic must include its cause"
+        output.errors.iter().any(|error| {
+            error.message.contains("returns `bool`") && error.message.contains("requires `i64`")
+        }),
+        "the owning checker must reject the invalid builtin body: {:?}",
+        output.errors
     );
 }
 

@@ -557,9 +557,7 @@ impl<T> Vec<T> {
     #[extern_symbol(hew_vec_len)]
     fn len(self) -> i64 {}
     #[extern_symbol("hew_vec_get_{T}")]
-    fn get(self, index: i64) -> Option<T> {
-        self.get(index)
-    }
+    fn get(self, index: i64) -> Option<T> {}
     #[extern_symbol("hew_vec_set_{T}")]
     fn set(self, index: i64, value: T) {}
     #[extern_symbol("hew_vec_remove_at_{T}")]

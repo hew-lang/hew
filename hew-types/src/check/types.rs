@@ -435,6 +435,10 @@ pub enum RaceOperandKind {
 /// Result of type-checking a program.
 #[derive(Debug, Clone, Default)]
 pub struct TypeCheckOutput {
+    /// Full canonical builtin source selected for this compilation. Registration,
+    /// effect checking and HIR must share its exact declaration occurrences.
+    /// Present after program preparation; absent only in unprepared fixtures.
+    pub selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
     pub input_references: HashMap<SpanKey, crate::compile_time::InputReference>,
     pub inputs: Vec<crate::compile_time::CompilationInput>,
     pub compile_time_values: HashMap<SpanKey, crate::compile_time::ConstantValue>,
@@ -457,8 +461,9 @@ pub struct TypeCheckOutput {
     /// supervisor's header parameters.
     pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub expr_types: HashMap<SpanKey, Ty>,
-    /// Interpolation operands whose rendering selected an explicit `Display`
-    /// implementation. The value preserves alias identity for HIR dispatch.
+    /// Interpolation operands checked for `Display` rendering. The value
+    /// preserves alias identity for HIR dispatch, and the sites carry implicit
+    /// trait-slot demand into callable planning.
     pub interpolation_display_types: HashMap<SpanKey, Ty>,
     /// Compared operands of an `assert` whose type has no structural
     /// rendering; the failure report names the type instead of the value.
@@ -4154,6 +4159,8 @@ pub struct Checker {
     /// Allows declarations from the compiler-embedded builtin source to
     /// provide names that the prelude protects from user replacement.
     pub(super) checking_embedded_builtins: bool,
+    /// The compilation's one builtin AST, including nested builtin checking.
+    pub(super) selected_builtin_program: Option<std::sync::Arc<hew_parser::ast::Program>>,
     /// Whether this checker has completed its first `check_program` entry.
     /// Caller-seeded configuration remains available to the first program;
     /// every later program starts from structurally fresh program-owned state.
@@ -4646,6 +4653,7 @@ impl Checker {
             is_stdlib_source: false,
             in_stdlib_registration: false,
             checking_embedded_builtins: false,
+            selected_builtin_program: None,
             must_use_types: HashSet::new(),
             has_checked_program: false,
             wasm_warning_spans: HashSet::new(),

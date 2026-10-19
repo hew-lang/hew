@@ -2822,9 +2822,10 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
 
 /// Methods on builtin types are always available, like `.len()`: the
 /// standard-library modules that own them join every program as ordinary
-/// modules unless the program already imports them. The builtins prelude is
-/// loaded out of band, so only its Display impls take this path; its other
-/// declarations retain their compiler-owned registration.
+/// modules unless the program already imports them. A filesystem-selected
+/// builtins source enters the graph in full, allowing the checker and HIR to
+/// share its declaration occurrences. When analysis uses compiled-in sources,
+/// the checker's embedded builtin registration already owns those declarations.
 fn add_prelude_std_modules(
     graph: &mut hew_parser::module::ModuleGraph,
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
@@ -2836,6 +2837,9 @@ fn add_prelude_std_modules(
             continue;
         }
         let (path, source) = source_for(name)?;
+        if name == "builtins" && path.is_none() {
+            continue;
+        }
         let filename = path
             .as_ref()
             .map_or_else(|| format!("std/{name}.hew"), |path| display_path(path));
@@ -2854,23 +2858,10 @@ fn add_prelude_std_modules(
                     .collect(),
             ));
         }
-        let items = parsed
-            .program
-            .items
-            .into_iter()
-            .filter(|(item, _)| {
-                name != "builtins"
-                    || matches!(item, Item::Impl(decl) if decl
-                        .trait_bound
-                        .as_ref()
-                        .is_some_and(|bound| bound.path.to_string() == "Display"))
-                // TRANSITION(P1): deleted by A1 commit 2
-            })
-            .collect();
         graph
             .add_module(Module {
                 id: id.clone(),
-                items,
+                items: parsed.program.items,
                 imports: Vec::new(),
                 source_paths: path.into_iter().collect(),
                 doc: None,
@@ -4695,6 +4686,22 @@ mod tests {
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::Path;
+
+    #[test]
+    fn embedded_prelude_lowers_vector_get_and_println_once() {
+        let mut parsed = hew_parser::parse(
+            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); }",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        super::attach_prelude_std_modules(&mut parsed.program);
+        let mut checker =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
+        let checked = checker.check_program(&parsed.program);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        let lowered =
+            hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
+        assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
+    }
 
     fn write_toml(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.toml")).expect("create hew.toml");

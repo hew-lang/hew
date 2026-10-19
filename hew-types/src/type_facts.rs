@@ -138,6 +138,68 @@ pub enum ValueMethodPlan {
 
 type CapabilityResult = Result<Option<ValueMethodPlan>, ClassError>;
 
+/// A Display operation implemented directly by the compiler's runtime ABI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuiltinDisplayPlan {
+    Identity,
+    Runtime {
+        family: crate::RuntimeCallFamily,
+        argument_ty: ResolvedTy,
+    },
+}
+
+impl BuiltinDisplayPlan {
+    /// The scalar conversion also used when rendering assertion operands.
+    #[must_use]
+    pub fn scalar(ty: &ResolvedTy) -> Option<Self> {
+        use crate::RuntimeCallFamily as F;
+        let (family, argument_ty) = match ty {
+            ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => (F::I32ToString, ResolvedTy::I32),
+            ResolvedTy::I64 | ResolvedTy::Isize => (F::I64ToString, ResolvedTy::I64),
+            ResolvedTy::U8 => (F::U8ToString, ResolvedTy::U8),
+            ResolvedTy::U16 | ResolvedTy::U32 => (F::U32ToString, ResolvedTy::U32),
+            ResolvedTy::U64 | ResolvedTy::Usize => (F::U64ToString, ResolvedTy::U64),
+            ResolvedTy::F32 | ResolvedTy::F64 => (F::F64ToString, ResolvedTy::F64),
+            ResolvedTy::Bool => (F::BoolToString, ResolvedTy::Bool),
+            ResolvedTy::Char => (F::CharToString, ResolvedTy::Char),
+            _ => return None,
+        };
+        Some(Self::Runtime {
+            family,
+            argument_ty,
+        })
+    }
+
+    fn for_type(ty: &ResolvedTy) -> Option<Self> {
+        let family = match ty {
+            ResolvedTy::String => return Some(Self::Identity),
+            ResolvedTy::Named {
+                head: crate::TypeHead::Builtin(BuiltinType::NodeId),
+                ..
+            } => crate::RuntimeCallFamily::NodeIdDisplay,
+            ResolvedTy::Named {
+                head: crate::TypeHead::Builtin(BuiltinType::Location),
+                ..
+            } => crate::RuntimeCallFamily::LocationDisplay,
+            _ => return Self::scalar(ty),
+        };
+        Some(Self::Runtime {
+            family,
+            argument_ty: ty.clone(),
+        })
+    }
+
+    #[must_use]
+    pub fn can_fail(&self) -> bool {
+        match self {
+            Self::Identity => false,
+            Self::Runtime { family, .. } => family
+                .semantic_contract()
+                .is_none_or(|contract| !contract.failures.is_empty()),
+        }
+    }
+}
+
 #[derive(Default)]
 struct CapabilityWalk {
     states: HashMap<(ResolvedTy, ValueCapability), CapabilityState>,
@@ -442,6 +504,26 @@ pub(crate) fn selected_impl_method(
     ids.get(&ImplMethodKey::new(receiver, method, false))
         .or_else(|| ids.get(&ImplMethodKey::new(receiver, method, true)))
         .copied()
+}
+
+fn is_authored_display_method(defs: &crate::DefTable, method: Option<crate::DefId>) -> bool {
+    method
+        .and_then(|method| defs.module(method))
+        .is_some_and(|module| {
+            defs.module_package(module) != &crate::def_table::PackageOrigin::StandardLibrary
+        })
+}
+
+pub(crate) fn select_builtin_display_plan(
+    ty: &ResolvedTy,
+    defs: &crate::DefTable,
+    methods: &HashMap<ImplMethodKey, crate::DefId>,
+    display_method: Option<crate::DefId>,
+) -> Option<BuiltinDisplayPlan> {
+    let plan = BuiltinDisplayPlan::for_type(ty)?;
+    let selected = display_method
+        .and_then(|method| selected_impl_method(methods, ty, ImplMethodSlot::Declared(method)));
+    (!is_authored_display_method(defs, selected)).then_some(plan)
 }
 
 /// Checker-owned declaration context for concrete fact expansion.
@@ -1091,12 +1173,18 @@ impl TypeFactService {
     /// Whether rendering selects an explicit implementation outside the stdlib.
     #[must_use]
     pub fn has_explicit_display_impl(&self, source: &ResolvedTy) -> bool {
-        self.selected_display_method(source)
-            .and_then(|method| self.context.defs.module(method))
-            .is_some_and(|module| {
-                self.context.defs.module_package(module)
-                    != &crate::def_table::PackageOrigin::StandardLibrary
-            })
+        is_authored_display_method(&self.context.defs, self.selected_display_method(source))
+    }
+
+    /// Select the intrinsic path, preserving an authored Display override.
+    #[must_use]
+    pub fn builtin_display_plan(&self, source: &ResolvedTy) -> Option<BuiltinDisplayPlan> {
+        select_builtin_display_plan(
+            source,
+            &self.context.defs,
+            &self.context.method_ids,
+            self.context.display_method,
+        )
     }
 
     fn selected_display_method(&self, source: &ResolvedTy) -> Option<crate::DefId> {

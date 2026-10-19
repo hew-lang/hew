@@ -1907,57 +1907,16 @@ fn cmd_publish(
         offline: flags.local,
         write_lock: false,
     };
-    let mut packages: Vec<publish::PackedPackage> = Vec::new();
-    // Selected dependencies have already been packed in topological order.
-    // A single-member publish also checks unselected siblings with the same packer.
-    let mut sibling_archives = BTreeMap::new();
-    for member in &members {
-        let local_sources = install_dependencies(
-            &member.dir,
-            &member.manifest,
-            registry,
-            &sources,
-            registry_name,
-            install,
-            None,
-        )
-        .map_err(|error| format!("{}: {error}", member.name()))
-        .unwrap_or_else(|error| fail(&error));
-        let package = publish::check_and_pack_with_dependencies(
-            &member.dir,
-            member.manifest.clone(),
-            check_generation,
-            &mut |input, dependency_root| {
-                let Some(source) = local_sources.get(dependency_root) else {
-                    return Ok(());
-                };
-                let Some(sibling) = workspace.members.iter().find(|item| &item.dir == source) else {
-                    return Ok(());
-                };
-                let archive = if let Some(package) = packages.iter().find(|p| p.name() == sibling.name()) {
-                    &package.archive
-                } else {
-                    match sibling_archives.entry(source.clone()) {
-                        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
-                        std::collections::btree_map::Entry::Vacant(entry) => {
-                            check_generation(source)?;
-                            entry.insert(publish::pack(source, &sibling.manifest).map_err(|error| error.to_string())?)
-                        }
-                    }
-                };
-                let relative = input.strip_prefix(dependency_root).map_err(|error| error.to_string())?;
-                if !archive.files.iter().any(|file| file == relative) {
-                    return Err(format!(
-                        "E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from workspace dependency `{}`",
-                        relative.display(), sibling.name()
-                    ));
-                }
-                Ok(())
-            },
-        )
-        .unwrap_or_else(|error| fail(&error));
-        packages.push(package);
-    }
+    let packages = pack_publish_members(
+        &workspace,
+        &members,
+        registry,
+        &sources,
+        registry_name,
+        install,
+        check_generation,
+    )
+    .unwrap_or_else(|error| fail(&error));
 
     if flags.local {
         publish_local_packages(registry, &packages, flags.dry_run).unwrap_or_else(|e| fail(&e));
@@ -2011,6 +1970,68 @@ fn cmd_publish(
         tally.summarize(flags.dry_run);
     }
     result.unwrap_or_else(|error| fail(&error));
+}
+
+fn pack_publish_members(
+    workspace: &crate::workspace::Workspace,
+    members: &[&crate::workspace::Member],
+    registry: &registry::Registry,
+    sources: &resolver::RegistrySources,
+    registry_name: Option<&str>,
+    install: InstallMode,
+    check_generation: &impl Fn(&Path) -> Result<(), String>,
+) -> Result<Vec<publish::PackedPackage>, String> {
+    let mut packages: Vec<publish::PackedPackage> = Vec::new();
+    // Selected dependencies have already been packed in topological order.
+    // A single-member publish also checks unselected siblings with the same packer.
+    let mut sibling_archives = BTreeMap::new();
+    for member in members {
+        let local_sources = install_dependencies(
+            &member.dir,
+            &member.manifest,
+            registry,
+            sources,
+            registry_name,
+            install,
+            None,
+        )
+        .map_err(|error| format!("{}: {error}", member.name()))?;
+        let package = publish::check_and_pack_with_dependencies(
+            &member.dir,
+            member.manifest.clone(),
+            check_generation,
+            &mut |input, dependency_root| {
+                let Some(source) = local_sources.get(dependency_root) else {
+                    return Ok(());
+                };
+                let Some(sibling) = workspace.members.iter().find(|item| &item.dir == source) else {
+                    return Ok(());
+                };
+                let archive = if let Some(package) = packages.iter().find(|p| p.name() == sibling.name()) {
+                    &package.archive
+                } else {
+                    match sibling_archives.entry(source.clone()) {
+                        std::collections::btree_map::Entry::Occupied(entry) => entry.into_mut(),
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            check_generation(source)?;
+                            entry.insert(publish::pack(source, &sibling.manifest).map_err(|error| error.to_string())?)
+                        }
+                    }
+                };
+                let relative = input.strip_prefix(dependency_root).map_err(|error| error.to_string())?;
+                if !archive.files.iter().any(|file| file == relative) {
+                    return Err(format!(
+                        "E_PUBLISH_MISSING_INPUT: compilation input `{}` is excluded from workspace dependency `{}`",
+                        relative.display(), sibling.name()
+                    ));
+                }
+                Ok(())
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        packages.push(package);
+    }
+    Ok(packages)
 }
 
 /// `hew publish` switches that shape the run.

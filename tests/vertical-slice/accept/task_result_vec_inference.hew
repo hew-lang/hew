@@ -1,0 +1,23 @@
+// Pushes constrain the empty vector's element type before the task join.
+actor Worker {
+    receive fn square(n: i64) -> i64 { n * n }
+}
+
+fn main() {
+    let worker = spawn Worker;
+    var tasks = [];
+    for n in 1..4 {
+        tasks.push(fork worker.square(n));
+    }
+
+    let results = await tasks;
+    var total = 0;
+    for result in results {
+        let value = match result {
+            .Ok(value) => value,
+            .Err(_) => 0,
+        };
+        total += value;
+    }
+    println(total);
+}

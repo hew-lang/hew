@@ -709,6 +709,64 @@ mod task_type_surface_rules {
     }
 
     #[test]
+    fn await_vector_infers_task_elements_from_pushes() {
+        for source in [
+            r"actor Worker { receive fn square(n: i64) -> i64 { n * n } }
+               fn main() {
+                   let worker = spawn Worker;
+                   var tasks = [];
+                   tasks.push(fork worker.square(1));
+                   let results = await tasks;
+                   println(results.len());
+               }",
+            r#"actor Worker { receive fn square(n: i64) -> i64 { n * n } }
+               fn main() {
+                   let worker = spawn Worker;
+                   var tasks = [];
+                   for n in 0..3 {
+                       tasks.push(fork worker.square(n));
+                   }
+                   let results = await tasks;
+                   for result in results { println(f"{result:?}"); }
+               }"#,
+        ] {
+            let output = check_source(source);
+            assert!(
+                output.errors.is_empty(),
+                "pushed tasks must constrain an empty Vec before await: {:#?}",
+                output.errors
+            );
+        }
+    }
+
+    #[test]
+    fn await_vector_inference_keeps_non_task_and_mixed_element_refusals() {
+        let empty = check_source("fn main() { var tasks = []; let _result = await tasks; }");
+        assert!(empty
+            .errors
+            .iter()
+            .any(|error| error.message.contains("`await` joins a task")));
+
+        let mixed = check_source(
+            "fn work() -> i64 { 1 } fn main() { var tasks = []; \
+             tasks.push(fork work()); tasks.push(7); let _result = await tasks; }",
+        );
+        assert!(mixed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("type mismatch")));
+
+        let consumed = check_source(
+            "fn work() -> i64 { 1 } fn main() { var tasks = []; \
+             tasks.push(fork work()); let _results = await tasks; let _again = tasks.len(); }",
+        );
+        assert!(consumed
+            .errors
+            .iter()
+            .any(|error| error.message.contains("use of moved value `tasks`")));
+    }
+
+    #[test]
     fn await_vector_of_tasks_consumes_the_vector() {
         // The join consumes the vector and every handle in it, exactly as
         // `await task` consumes a single handle.

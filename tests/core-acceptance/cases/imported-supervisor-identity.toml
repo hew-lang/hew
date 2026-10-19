@@ -1,0 +1,11 @@
+[[case]]
+id = "imported-supervisor-identity"
+intent = "A supervisor declared in an imported file keeps one handle type whether the root or the declaring file spawns it, and the declaring file reads the children of its own private supervisor."
+source = "cases/imported-supervisor-identity.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "10\n10\n8\n"
+stderr = ""
+exit = 0

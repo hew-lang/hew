@@ -141,6 +141,47 @@ type CapabilityResult = Result<Option<ValueMethodPlan>, ClassError>;
 #[derive(Default)]
 struct CapabilityWalk {
     states: HashMap<(ResolvedTy, ValueCapability), CapabilityState>,
+    /// Completed selections in completion order, so a failed selection can
+    /// withdraw every result that assumed it.
+    completed: Vec<(ResolvedTy, ValueCapability)>,
+}
+
+impl CapabilityWalk {
+    /// Whether `ty` repeats a declaration the walk is inside with arguments
+    /// that contain that declaration's own arguments, as `P<T>` holding
+    /// `P<Vec<T>>` does. Such polymorphic recursion reaches a new type at
+    /// every level, so no finite derived operation exists.
+    fn grows(&self, ty: &ResolvedTy) -> bool {
+        let ResolvedTy::Named { head, args, .. } = ty else {
+            return false;
+        };
+        !args.is_empty()
+            && self.states.iter().any(|((active, _), state)| {
+                matches!(state, CapabilityState::Visiting)
+                    && matches!(
+                        active,
+                        ResolvedTy::Named { head: active_head, args: active_args, .. }
+                            if active_head == head
+                                && active_args != args
+                                && active_args.len() == args.len()
+                                && active_args
+                                    .iter()
+                                    .zip(args)
+                                    .all(|(previous, current)| type_contains(current, previous))
+                    )
+            })
+    }
+}
+
+fn type_contains(ty: &ResolvedTy, needle: &ResolvedTy) -> bool {
+    let mut pending = vec![ty.clone()];
+    while let Some(ty) = pending.pop() {
+        if ty == *needle {
+            return true;
+        }
+        push_type_components(&ty, &mut pending);
+    }
+    false
 }
 
 enum CapabilityState {
@@ -1111,14 +1152,27 @@ impl TypeFactService {
         let key = (ty.clone(), capability);
         match walk.states.get(&key) {
             Some(CapabilityState::Complete(result)) => return result.clone(),
-            // Recursive structural operations have no admitted implementation.
-            Some(CapabilityState::Visiting) => return Ok(None),
+            // A type reached again through its own members, such as an enum
+            // holding a `Vec` of itself, is derived exactly when its other
+            // members are. Assume it here; if the type fails, every result
+            // computed under that assumption is withdrawn below.
+            Some(CapabilityState::Visiting) => return Ok(Some(ValueMethodPlan::Derived)),
             None => {}
         }
+        if walk.grows(ty) {
+            return Ok(None);
+        }
         walk.states.insert(key.clone(), CapabilityState::Visiting);
+        let mark = walk.completed.len();
         let result = self.select_capability_uncached(ty, capability, walk, calls);
+        if !matches!(result, Ok(Some(_))) {
+            for assumed in walk.completed.drain(mark..) {
+                walk.states.remove(&assumed);
+            }
+        }
         walk.states
-            .insert(key, CapabilityState::Complete(result.clone()));
+            .insert(key.clone(), CapabilityState::Complete(result.clone()));
+        walk.completed.push(key);
         result
     }
 
@@ -1180,9 +1234,6 @@ impl TypeFactService {
             calls.push((method, type_args.clone()));
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
-        if !crate::check::declaration_walk_terminates(ty, self.context.types()) {
-            return Ok(None);
-        }
         let derived = match capability {
             ValueCapability::Hash => self.derived_hash(ty, walk, calls),
             ValueCapability::Eq => self.derived_eq(ty, walk, calls),
@@ -1214,13 +1265,12 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
     ) -> Result<Option<Vec<ResolvedTy>>, ClassError> {
-        if !crate::check::declaration_walk_terminates(ty, self.context.types())
-            || selected_impl_method(
-                &self.context.method_ids,
-                ty,
-                ImplMethodSlot::Value(ValueCapability::Eq),
-            )
-            .is_some()
+        if selected_impl_method(
+            &self.context.method_ids,
+            ty,
+            ImplMethodSlot::Value(ValueCapability::Eq),
+        )
+        .is_some()
         {
             return Ok(None);
         }

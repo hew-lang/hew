@@ -2379,6 +2379,54 @@ fn selected_eq_admits_independent_owned_vectors() {
 }
 
 #[test]
+fn selected_eq_admits_types_recursive_through_a_vector() {
+    let output = check_source(
+        r#"
+        enum Json { Null; Num(i64); Arr(Vec<Json>); }
+        type Node { kids: Vec<Node>; label: string; }
+        enum List<T> { Nil; Cons(T, Vec<List<T>>); }
+        fn compare(a: Json, b: Json, m: Node, n: Node, xs: Vec<Json>, ys: Vec<Json>) -> bool {
+            let l: List<string> = List.Cons("a", [List.Nil]);
+            a == b && m != n && xs == ys && l == l
+        }
+    "#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn selected_eq_rejects_recursive_types_with_a_member_without_eq() {
+    let source = r"
+        enum Shape { Mark(HashMap<string, i64>); Group(Vec<Shape>); }
+        enum Grow<T> { Leaf(T); Nest(Vec<Grow<Vec<T>>>); }
+        fn compare(a: Shape, b: Shape, c: Grow<i64>, d: Grow<i64>) -> bool {
+            a == b || c == d
+        }
+    ";
+    let output = check_source(source);
+    let refused: Vec<_> = output
+        .errors
+        .iter()
+        .map(|error| (error.message.as_str(), source[error.span.clone()].trim()))
+        .collect();
+    assert_eq!(
+        refused,
+        [
+            (
+                "`Shape` has no selected Eq implementation for equality comparison",
+                "a == b"
+            ),
+            (
+                "`Grow<i64>` has no selected Eq implementation for equality comparison",
+                "c == d"
+            ),
+        ],
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn selected_eq_admits_independent_owned_tuples() {
     let output = check_source(
         r#"

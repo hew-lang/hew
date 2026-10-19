@@ -303,7 +303,14 @@ impl Checker {
         if owner.is_some_and(|id| self.defs.kind(id) == crate::DeclarationKind::Closure) {
             let mentioned_owners = self.generic_obligation_owners(&[ty]);
             if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
-                if let Ok(resolved) = ResolvedTy::from_ty(ty) {
+                // A recursive declaration would expand its members forever;
+                // it keeps the whole demand instead.
+                if let Some(resolved) = ResolvedTy::from_ty(ty).ok().filter(|resolved| {
+                    crate::check::declaration_walk_terminates(
+                        resolved,
+                        crate::check::TypeDefView::new(&self.defs, &self.type_defs),
+                    )
+                }) {
                     let service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
                     if let Ok(Some(members)) = service.derived_eq_members(&resolved) {
                         for member in members {

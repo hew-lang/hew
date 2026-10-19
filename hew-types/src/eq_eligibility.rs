@@ -50,6 +50,9 @@ impl EqEligibilityFailure {
 #[derive(Default)]
 struct EqWalk {
     completed: HashMap<Ty, Option<EqEligibilityFailure>>,
+    /// Completed types in completion order, so a failed type can withdraw
+    /// every result that assumed it.
+    order: Vec<Ty>,
     active: HashSet<Ty>,
     path: Vec<Ty>,
 }
@@ -95,17 +98,30 @@ fn eq_ineligibility(
             }
             _ => false,
         });
-    if growing || !walk.active.insert(ty.clone()) {
+    if growing {
         return Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleUnknown,
             member: String::new(),
         });
     }
+    // A type reached again through its own members is eligible exactly when
+    // its other members are. Assume it here; if the type fails, every result
+    // computed under that assumption is withdrawn below.
+    if !walk.active.insert(ty.clone()) {
+        return None;
+    }
     walk.path.push(ty.clone());
+    let mark = walk.order.len();
     let result = eq_ineligibility_inner(ty, types, walk);
     walk.path.pop();
     walk.active.remove(ty);
+    if result.is_some() {
+        for assumed in walk.order.drain(mark..) {
+            walk.completed.remove(&assumed);
+        }
+    }
     walk.completed.insert(ty.clone(), result.clone());
+    walk.order.push(ty.clone());
     result
 }
 
@@ -352,11 +368,25 @@ mod tests {
     }
 
     #[test]
-    fn equality_recursive_layout_gate_terminates_conservatively() {
-        let output = checked("enum EqNode { Leaf(i64); Branch(Vec<EqNode>); } fn main() {}");
-        let failure = ty_eq_ineligibility(&named(&output, "EqNode", vec![]), output.types())
-            .expect("recursive layout gate remains unproven");
+    fn equality_recursion_through_a_vector_is_eligible_when_its_members_are() {
+        let output = checked(
+            "enum EqNode { Leaf(i64); Branch(Vec<EqNode>); }
+             enum EqManaged { Leaf(bytes); Branch(Vec<EqManaged>); }
+             fn main() {}",
+        );
+        let node = named(&output, "EqNode", vec![]);
+        assert_eq!(ty_eq_ineligibility(&node, output.types()), None);
+        let failure = ty_eq_ineligibility(&named(&output, "EqManaged", vec![]), output.types())
+            .expect("a managed member keeps the recursive type ineligible");
+        assert_eq!(failure.reason, EqEligibility::IneligibleManaged(Ty::Bytes));
+        assert_eq!(failure.member, "Leaf.0");
+    }
+
+    #[test]
+    fn equality_growing_recursion_stays_unknown() {
+        let output = checked("enum EqGrow<T> { Leaf(T); Nest(Vec<EqGrow<Vec<T>>>); } fn main() {}");
+        let failure = ty_eq_ineligibility(&named(&output, "EqGrow", vec![Ty::I64]), output.types())
+            .expect("polymorphic recursion has no finite equality");
         assert_eq!(failure.reason, EqEligibility::IneligibleUnknown);
-        assert!(!failure.member.is_empty());
     }
 }

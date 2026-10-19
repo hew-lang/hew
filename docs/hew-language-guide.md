@@ -4323,7 +4323,8 @@ implementation is needed. Equality is structural: two record values are equal
 when every field is equal, and two enum values are equal when they carry the
 same variant and every payload field is equal. Fields of any equality-eligible
 type participate — integers, `bool`, `char`, `string`, `duration`, nested
-records/enums, and **floating-point** fields (`f64`/`f32`, see below).
+records/enums, and **floating-point** fields (`f64`/`f32`, see below). A type
+that holds a `Vec` of itself, such as a JSON tree, compares the same way.
 
 ```hew
 type Point {

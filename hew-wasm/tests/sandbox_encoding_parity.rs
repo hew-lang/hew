@@ -14,11 +14,7 @@ fn sandbox_outcome(source: &str) -> (bool, Vec<String>) {
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .map(|diagnostic| {
-            diagnostic
-                .get("severity")
-                .map_or_else(String::new, ToString::to_string)
-        })
+        .map(|diagnostic| format!("{}:{}", diagnostic["severity"], diagnostic["kind"]))
         .collect();
     codes.sort();
     (accepted, codes)
@@ -47,4 +43,5 @@ fn toml_values_meet_the_sandbox_boundary_like_json_and_yaml() {
     // Negative control: the oracle distinguishes a refused program.
     let refused = sandbox_outcome(&program("toml", "table").replace("get_int()", "get_u64()"));
     assert!(!refused.0, "{refused:?}");
+    assert_eq!(refused.1, ["\"error\":\"UndefinedMethod\""]);
 }

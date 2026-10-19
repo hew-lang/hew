@@ -1,10 +1,10 @@
 [[case]]
 id = "toml-value-copy-independence"
-intent = "TOML copies, extracted children, inserted children and parse results are independent owners across normal, early-return and cancelled exits, with no lost or duplicated owner."
+intent = "TOML copies, extracted children, inserted children and parse results are independent owners across normal, early-return and actor task-scope exits, with no lost or duplicated owner."
 source = "../vertical-slice/accept/toml_value_copy_independence.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "8\n1\n2\n14\n"
+stdout = "8\n1\n2\n14\nscope done\n"
 exit = 0

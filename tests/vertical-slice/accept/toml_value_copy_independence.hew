@@ -1,6 +1,6 @@
 // TOML values are independent owners: a copy, an extracted child and an
 // inserted child each survive mutation or release of the others, on normal,
-// early-return and cancelled exits.
+// early-return and actor task-scope exits.
 import std.encoding.toml;
 
 fn early_exit(flag: bool) {
@@ -28,6 +28,7 @@ actor TomlCancelDriver {
         scope {
             cancel_exit();
         };
+        println("scope done");
     }
 }
 
@@ -65,4 +66,6 @@ fn main() {
     };
     println(parsed_child.get_int().expect("integer"));
     early_exit(true);
+    let driver = spawn TomlCancelDriver;
+    driver.drive().expect("drive completes");
 }

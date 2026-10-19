@@ -31,3 +31,23 @@ fn test_aliased_and_named_imports_share_one_identity() {
         assert(value.stringify().expect("table root") == "n = 3\n");
     }
 }
+
+fn keep<T>(value: T) -> T {
+    value
+}
+
+#[test]
+fn test_values_pass_through_generics_and_maps_as_independent_copies() {
+    var table = cfg.table();
+    table.set("n", cfg.from_int(1)).expect("table");
+    let kept = keep(table);
+    table.set("n", cfg.from_int(2)).expect("table");
+    assert(kept.get_field("n").expect("table").expect("present").get_int().expect("integer") == 1);
+    var by_name: HashMap<string, Value> = HashMap.new();
+    by_name.insert("first", table);
+    table.set("n", cfg.from_int(3)).expect("table");
+    match by_name.get("first") {
+        .Some(stored) => assert(stored.get_field("n").expect("table").expect("present").get_int().expect("integer") == 2),
+        .None => panic("stored value is present"),
+    }
+}

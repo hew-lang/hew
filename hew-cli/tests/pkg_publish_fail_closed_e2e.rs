@@ -17,8 +17,14 @@
 //!
 //! Production-registry safety: no test here ever writes a `[registry]`
 //! (default-registry) token into `credentials.toml`. Every test that
-//! supplies a token uses a **named** registry pinned to `127.0.0.1`, so a bug
+//! supplies a token uses a **named** registry pinned to `127.0.0.1`, and
+//! every command points `HEW_REGISTRY` at a loopback server, because
+//! `hew publish` queries the registry before it reads credentials. A bug
 //! here can never address `https://registry.hewpkg.com`.
+//!
+//! A successful remote publish, with read-back verification, is covered by
+//! `hew-pkg/tests/test_publish.rs` against a registry that stores real
+//! records.
 mod support;
 
 use std::fs;
@@ -113,12 +119,16 @@ fn local_package_dir(home: &Path) -> PathBuf {
 }
 
 fn publish_command(project: &Path, home: &Path, args: &[&str]) -> Command {
+    // The default registry lacks the package, so publish proceeds to read
+    // credentials, which is what these tests observe.
+    let absent = spawn_canned_response_server("404 Not Found", r#"{"error":"not_found"}"#);
     let mut cmd = support::hew_command();
     cmd.arg("publish")
         .args(args)
         .current_dir(project)
         .env("HOME", home)
-        .env("USERPROFILE", home);
+        .env("USERPROFILE", home)
+        .env("HEW_REGISTRY", format!("http://127.0.0.1:{absent}/api/v1"));
     cmd
 }
 
@@ -214,7 +224,13 @@ fn publish_named_registry_without_token_exits_one() {
     let project = support::tempdir();
     generate_signing_key(home.path());
     write_publishable_manifest(project.path());
-    write_named_registry_config(home.path(), "testreg", "http://127.0.0.1:9/api/v1");
+    // The named registry lacks the package, so publish reaches token lookup.
+    let port = spawn_canned_response_server("404 Not Found", r#"{"error":"not_found"}"#);
+    write_named_registry_config(
+        home.path(),
+        "testreg",
+        &format!("http://127.0.0.1:{port}/api/v1"),
+    );
     // No credentials.toml at all — not even for the default registry.
 
     let output = run_publish(project.path(), home.path(), &["--registry", "testreg"]);
@@ -225,6 +241,11 @@ fn publish_named_registry_without_token_exits_one() {
         "expected exit 1\n{}",
         support::describe_output(&output)
     );
+    let stderr = stderr_of(&output);
+    assert!(
+        stderr.contains("hew publish: not logged in"),
+        "stderr missing not-logged-in diagnostic:\n{stderr}"
+    );
     assert!(
         !local_package_dir(home.path()).exists(),
         "no local copy should be written when the named registry has no token"
@@ -233,8 +254,8 @@ fn publish_named_registry_without_token_exits_one() {
 
 // ── 2b. --registry names a registry absent from config.toml ────────────────
 //
-// Credential resolution runs before `make_client` (test 1's comment above),
-// so a typo'd `--registry` name must still surface `make_client`'s precise
+// `make_client` validates the name before the registry query and credential
+// lookup, so a typo'd `--registry` name must still surface its precise
 // unknown-registry diagnostic rather than being misreported as "not logged
 // in" — no stored token is ever found for a registry name that doesn't
 // exist, so a naive `.Err(_) => not-logged-in` classification would shadow
@@ -276,10 +297,10 @@ fn publish_unknown_registry_name_exits_one_with_precise_diagnostic() {
     );
 }
 
-// ── 3. remote publish returns an error ──────────────────────────────────────
+// ── 3. the registry returns an error ────────────────────────────────────────
 
 #[test]
-fn publish_remote_error_exits_one_and_writes_no_local_copy() {
+fn publish_registry_error_exits_one_and_writes_no_local_copy() {
     let home = support::tempdir();
     let project = support::tempdir();
     generate_signing_key(home.path());
@@ -304,8 +325,8 @@ fn publish_remote_error_exits_one_and_writes_no_local_copy() {
     );
     let stderr = stderr_of(&output);
     assert!(
-        stderr.contains("hew publish: remote publish failed:"),
-        "stderr missing remote-failure prefix:\n{stderr}"
+        stderr.contains("hew publish: registry query failed:"),
+        "stderr missing registry-failure prefix:\n{stderr}"
     );
     assert!(
         !stderr.contains("Falling back"),
@@ -350,42 +371,6 @@ fn publish_unreachable_registry_exits_one() {
     assert!(
         !local_package_dir(home.path()).exists(),
         "no local copy should be written when the registry is unreachable"
-    );
-}
-
-// ── 5. remote publish succeeds (positive control) ───────────────────────────
-
-#[test]
-fn publish_remote_success_exits_zero_and_writes_no_local_copy() {
-    let home = support::tempdir();
-    let project = support::tempdir();
-    generate_signing_key(home.path());
-    write_publishable_manifest(project.path());
-
-    let port = spawn_canned_response_server("201 Created", "{}");
-    write_named_registry_config(
-        home.path(),
-        "testreg",
-        &format!("http://127.0.0.1:{port}/api/v1"),
-    );
-    write_named_registry_token(home.path(), "testreg", "tok_fake");
-
-    let output = run_publish(project.path(), home.path(), &["--registry", "testreg"]);
-
-    assert_eq!(
-        output.status.code(),
-        Some(0),
-        "expected exit 0\n{}",
-        support::describe_output(&output)
-    );
-    let stdout = stdout_of(&output);
-    assert!(
-        stdout.contains("to registry"),
-        "stdout missing remote-success message:\n{stdout}"
-    );
-    assert!(
-        !local_package_dir(home.path()).exists(),
-        "a successful remote publish must not also write a local copy"
     );
 }
 

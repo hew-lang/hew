@@ -29,15 +29,25 @@ lib-dirs = ["C:/Program Files/OpenSSL/lib"]
 
 ## `[package]`
 
-| Field                                                                                                              | Meaning                                                                                      |
-| ------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `name`                                                                                                             | Required. Dotted lowercase segments (`acme.http.router`). The last segment names the binary. |
-| `version`                                                                                                          | Required. A semantic version.                                                                |
-| `edition`                                                                                                          | The language edition, `"2026"`.                                                              |
-| `main`                                                                                                             | The entry file relative to `hew.toml`; defaults to `main.hew`.                               |
-| `description`, `authors`, `license`, `keywords`, `categories`, `homepage`, `repository`, `documentation`, `readme` | Registry metadata.                                                                           |
-| `include`, `exclude`                                                                                               | Glob patterns that select the files `hew publish` packs.                                     |
-| `hew`                                                                                                              | The minimum compiler version, such as `">=0.8.0"`.                                           |
+| Field                                                                                                              | Meaning                                                                                                                                                                                                                                                      |
+| ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `name`                                                                                                             | Required. Dotted lowercase segments (`acme.http.router`). The last segment names the binary. Each segment must be one import-path segment: it starts with a letter or `_` (`acme.three_d`, not `acme.3d`); keywords such as `type` and `actor` are accepted. |
+| `version`                                                                                                          | Required. A semantic version.                                                                                                                                                                                                                                |
+| `edition`                                                                                                          | The language edition, `"2026"`.                                                                                                                                                                                                                              |
+| `main`                                                                                                             | The entry file relative to `hew.toml`; defaults to `main.hew`.                                                                                                                                                                                               |
+| `description`, `authors`, `license`, `keywords`, `categories`, `homepage`, `repository`, `documentation`, `readme` | Registry metadata.                                                                                                                                                                                                                                           |
+| `include`, `exclude`                                                                                               | Glob patterns that select the files `hew publish` packs.                                                                                                                                                                                                     |
+| `hew`                                                                                                              | The compiler versions the package supports, as a semver range such as `">=0.6.1, <0.7.0"`.                                                                                                                                                                   |
+
+`hew check` and `hew publish` refuse a name that an import cannot spell, so
+every published package can be imported by its whole name. Packages already on
+a registry under such a name still install.
+
+`hew` is checked against the running compiler. `hew check` and `hew publish`
+refuse a range that does not parse or that excludes the compiler, with
+`E_PKG_COMPILER_RANGE`. `hew install` skips registry versions whose range
+excludes the compiler and picks the highest version that admits it; when every
+matching version is excluded, the error names each version and its range.
 
 ## Modules in a package
 
@@ -129,11 +139,22 @@ combination. An empty `[native]` is refused.
 
 ### Rust crate
 
-| Field   | Meaning                                                               |
-| ------- | --------------------------------------------------------------------- |
-| `lib`   | The crate's `[lib]` name. Declaring it is what declares a Rust crate. |
-| `crate` | The crate directory relative to `hew.toml`; defaults to `"."`.        |
-| `kind`  | `"staticlib"` (default) or `"cdylib"`.                                |
+| Field   | Meaning                                                                         |
+| ------- | ------------------------------------------------------------------------------- |
+| `crate` | The crate directory relative to `hew.toml`. Declaring it declares a Rust crate. |
+
+```toml
+[native]
+crate = "."
+```
+
+Cargo.toml owns the library's name and crate type. Its `[lib]` table must list
+`"staticlib"` or `"cdylib"` in `crate-type`; `hew check` and `hew publish` read
+`cargo metadata` and refuse a crate that builds neither with
+`E_INVALID_NATIVE`, before anything builds. The build links the `staticlib`
+Cargo reports, or the `cdylib` when the crate builds no `staticlib`. A
+manifest that still names `lib` or `kind` in `[native]` is refused with
+`E_INVALID_NATIVE`, naming the line to delete.
 
 Cargo builds the crate with a non-LTO `release-lib` profile. The crate must be
 built by the same rustc release as the Hew runtime, which a
@@ -143,8 +164,10 @@ built by the same rustc release as the Hew runtime, which a
 ### Native prebuilts
 
 Published Rust `staticlib` packages may provide native prebuilts beside their
-source archives. `hew install` selects the host artifact and `hew build`
-selects the requested native target. Compatibility requires the exact compiler
+source archives. `hew native build` packs the static library Cargo reports
+and names that file in the archive's descriptor; a crate that builds no
+`staticlib` has no prebuilt. `hew install` selects the host artifact and
+`hew build` selects the requested native target. Compatibility requires the exact compiler
 build version and runtime rustc release/host stamp. The Rust compiler host stamp
 is independent of the selected native target, including for cross-built SDKs.
 The package name, version,
@@ -210,7 +233,7 @@ files, list those prerequisites explicitly or use `#include` in `.S` files.
 
 A source listed twice in `sources`, in `[native]` or together with the matching
 `[native.<os>]` table, is refused. Every other malformed `[native]` entry (a
-wrong type, an unknown field, an unknown OS table, `lib` inside
+wrong type, an unknown field, an unknown OS table, `crate` inside
 `[native.linux]`) is refused with `E_INVALID_NATIVE` and the offending line. A
 `hew.toml` without a `[native]` table is not read for native code, so a
 workspace file or a dependency list beside a program never stops it building.
@@ -310,6 +333,97 @@ build/broker: broker_main.hew
 	hew build broker_main.hew --release -o $@ --emit-deps $@.d
 
 -include build/broker.d
+```
+
+## Workspaces
+
+A repository of several packages lists them in a root `hew.toml` that holds
+`[workspace]` and no `[package]`:
+
+```toml
+[workspace]
+members = ["dag", "db/*", "net/http"]
+```
+
+Each entry is a directory relative to the root, written with `/`. A `*`
+segment matches exactly one directory level, skipping hidden directories.
+Every literal entry and every match must hold a package `hew.toml`; otherwise
+`E_WORKSPACE_MEMBER` names the entry. Nothing else is discovered, so
+`.hew/packages`, `target/` and fixtures in nested checkouts never become
+members. Two members with one name are refused with `E_WORKSPACE_MEMBER`, and
+a `hew.toml` that declares both `[package]` and `[workspace]` is refused with
+`E_WORKSPACE_MANIFEST`.
+
+A package belongs to a workspace when the nearest ancestor `hew.toml` that
+declares `[workspace]` lists it. Inside a workspace, a plain requirement on
+another member resolves to that member's directory, for `hew install`,
+`hew check` and `hew publish` alike. The requirement must admit the member's
+version, or `E_WORKSPACE_REQUIREMENT` names both sides; it never falls back
+to a registry copy. A dependency with an explicit `path` or `registry` keeps
+that source. `hew.lock` records a member at a path relative to the package.
+The manifest keeps its version requirement, so the published index entry
+still says `"hew.db.sql" = "0.4.0"`.
+
+`hew build`, `hew run` and the other package commands refuse a workspace
+root; run them in a member.
+
+## Publishing
+
+`hew publish` publishes the package in the current directory.
+`hew publish --workspace` publishes every member of the enclosing workspace.
+Both run the same phases:
+
+1. **Validate**, offline, every member before anything else: the required
+   registry fields, an importable name, a semantic version, a `hew` range
+   that admits this compiler, a `[native]` crate that builds a linkable
+   library (read from `cargo metadata`; publishing never builds native
+   code), and requirements on other members. Members are
+   then ordered so each follows the members it depends on, the lowest name
+   first among those ready; a cycle fails with `E_WORKSPACE_CYCLE`.
+2. **Check and pack**, in that order: install each member's dependencies into
+   its `.hew/packages` (members from their directories, other packages from
+   the registry), run the frontend check, and pack the archive. Publishing
+   writes neither `hew.lock` nor `.gitignore`. A member's own `hew.lock` is
+   ignored by the check and left out of the archive: consumers resolve from
+   the index entry, so a lock left behind by an earlier install can neither
+   fail the publish nor change the archive.
+3. **Query** the registry for every member. A version the registry already
+   holds with the same archive, or with an archive that differs only in
+   compression, is skipped. A version it holds with a different tree fails
+   with `E_PUBLISH_VERSION_DRIFT`; every drifted member is reported and
+   nothing uploads.
+4. **Authenticate**, only when something will upload.
+5. **Upload and read back**, one member at a time in order. The stored record
+   must carry the uploaded checksum, key fingerprint and signature, and both
+   the publisher signature and the registry counter-signature must verify.
+   The served archive must hash to the checksum. A mismatch is
+   `E_PUBLISH_READBACK`, and publishing stops there. A 409 from the upload
+   goes back through the query, so a rerun after a partial failure converges.
+
+`--dry-run` stops after the query. It loads no key, needs no credentials and
+makes only anonymous reads. `--local` installs each package into the local
+package cache instead of a registry.
+
+### Credentials
+
+`--auth credentials`, the default, uses the token `hew login` stored and the
+key `hew key generate` wrote.
+
+`--auth github-actions` is trusted publishing from a GitHub Actions workflow
+with `permissions: id-token: write`. The publish process generates a signing
+key in memory, requests an OIDC token whose audience is the registry's origin,
+and exchanges the token and public key for a short-lived publish grant. The
+grant must name the generated key, or publishing stops with
+`E_AUTH_GRANT_KEY` before any upload. Nothing is read from or written to
+`credentials.toml` or `keys/`. When the grant expires mid-run and the registry
+answers 401, a fresh OIDC token is exchanged for the same key and the upload
+is retried once.
+
+```yaml
+permissions:
+  id-token: write
+steps:
+  - run: hew publish --workspace --auth github-actions
 ```
 
 ## Migrating a Makefile that compiles bridges by hand

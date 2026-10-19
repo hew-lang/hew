@@ -15,6 +15,7 @@ pub use loop_analysis::{
     stmt_leaves_enclosing_loop,
 };
 pub use parser::{
-    parse, parse_duration_ns, parse_fragment, parse_generated, parse_generated_fragment,
-    FragmentParseResult, ParseDiagnosticKind, ParseError, ParseResult, Severity,
+    is_import_path_segment, parse, parse_duration_ns, parse_fragment, parse_generated,
+    parse_generated_fragment, FragmentParseResult, ParseDiagnosticKind, ParseError, ParseResult,
+    Severity,
 };

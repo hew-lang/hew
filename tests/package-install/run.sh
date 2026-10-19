@@ -193,7 +193,8 @@ run_in "${consumer}" check-adder "${HEW}" check main.hew
 assert_output "${consumer}" "42" "run-adder"
 echo "PASS package-install minimal consumer"
 
-run_in "${consumer}" publish-dependent "${HEW}" publish --dry-run
+# `--local` keeps the dry run offline; a remote dry run queries the registry.
+run_in "${consumer}" publish-dependent "${HEW}" publish --local --dry-run
 assert_contains "${TMP}/logs/publish-dependent.log" "Would publish consumer@0.1.0"
 printf 'owned input\n' >"${consumer}/.hew/owned.txt"
 cat >"${consumer}/main.hew" <<'EOF_SOURCE'
@@ -203,7 +204,7 @@ fn main() {
     print(include_str!(".hew/owned.txt"));
 }
 EOF_SOURCE
-if (cd "${consumer}" && "${HEW}" publish --dry-run) >"${TMP}/logs/publish-excluded-input.log" 2>&1; then
+if (cd "${consumer}" && "${HEW}" publish --local --dry-run) >"${TMP}/logs/publish-excluded-input.log" 2>&1; then
     fail "publishing an excluded owned input unexpectedly succeeded"
 fi
 assert_contains "${TMP}/logs/publish-excluded-input.log" "E_PUBLISH_MISSING_INPUT"

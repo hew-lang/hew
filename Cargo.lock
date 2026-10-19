@@ -2067,6 +2067,7 @@ dependencies = [
  "ed25519-dalek",
  "glob",
  "hew-compile",
+ "hew-parser",
  "hew-testutil",
  "libc",
  "object 0.40.0",

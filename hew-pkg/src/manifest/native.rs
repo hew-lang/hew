@@ -3,7 +3,8 @@
 //!
 //! One table describes every native input a package brings to the final link:
 //!
-//! - a Rust crate (`lib`, with optional `crate` and `kind`), built by Cargo;
+//! - a Rust crate (`crate`), built by Cargo, whose library name and crate
+//!   type come from its own `Cargo.toml`;
 //! - C, C++ and assembly `sources`, compiled by the C driver Hew links with,
 //!   with their `include-dirs`, `defines`, `cflags`, `cxxflags` and `asflags`;
 //! - system libraries, discovered with `pkg-config` or named directly with
@@ -16,9 +17,6 @@
 use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-
-/// Library kinds accepted for a `[native]` Rust crate.
-const RUST_KINDS: &[&str] = &["staticlib", "cdylib"];
 
 /// File extensions compiled as C or C++. Assembly is case-sensitive: `.s`/`.S`.
 const C_EXTENSIONS: &[&str] = &["c"];
@@ -280,15 +278,12 @@ fn is_c_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// A `[native]` Rust crate, resolved with its defaults.
+/// A `[native]` Rust crate. Cargo owns its library name and crate type; the
+/// build reads both from Cargo's output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustCrate<'a> {
     /// Crate directory, relative to `hew.toml`.
     pub dir: &'a str,
-    /// The `[lib]` name the crate produces.
-    pub lib: &'a str,
-    /// `"staticlib"` or `"cdylib"`.
-    pub kind: &'a str,
 }
 
 /// `[native]` — the native code that backs this package's `extern` functions.
@@ -302,16 +297,10 @@ pub struct RustCrate<'a> {
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct NativeLib {
-    /// Rust crate directory, relative to `hew.toml` (default `"."`).
+    /// Rust crate directory, relative to `hew.toml`; its presence is what
+    /// declares a Rust crate.
     #[serde(rename = "crate", default, skip_serializing_if = "Option::is_none")]
     pub crate_dir: Option<String>,
-    /// The `[lib]` name the Rust crate produces as `lib<lib>.a`; its presence
-    /// is what declares a Rust crate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lib: Option<String>,
-    /// Rust library kind: `"staticlib"` (default) or `"cdylib"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
     /// See [`NativeInputs::sources`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<String>,
@@ -357,11 +346,7 @@ impl NativeLib {
     /// The Rust crate this section declares, if any.
     #[must_use]
     pub fn rust_crate(&self) -> Option<RustCrate<'_>> {
-        Some(RustCrate {
-            lib: self.lib.as_deref()?,
-            dir: self.crate_dir.as_deref().unwrap_or("."),
-            kind: self.kind.as_deref().unwrap_or("staticlib"),
-        })
+        self.crate_dir.as_deref().map(|dir| RustCrate { dir })
     }
 
     /// The C inputs and system libraries for `os`: the base table followed by
@@ -414,34 +399,19 @@ impl NativeLib {
     ///
     /// Returns the diagnostic text for the first malformed entry.
     pub fn validate(&self) -> Result<(), String> {
-        match &self.lib {
-            Some(lib) if lib.trim().is_empty() => {
-                return Err("[native] lib must be a non-empty library name".to_string());
-            }
-            None if self.crate_dir.is_some() || self.kind.is_some() => {
-                return Err("[native] `crate` and `kind` describe a Rust crate; add \
-                     `lib = \"<the crate's [lib] name>\"` to build it"
-                    .to_string());
-            }
-            Some(_) | None => {}
-        }
-        if let Some(kind) = &self.kind {
-            if !RUST_KINDS.contains(&kind.as_str()) {
-                return Err(format!(
-                    "[native] kind = \"{kind}\" is invalid (expected one of {RUST_KINDS:?})"
-                ));
-            }
+        if let Some(dir) = &self.crate_dir {
+            package_relative("[native]", "crate", dir)?;
         }
         let base = self.base();
         let tables = self.os_tables();
-        if self.lib.is_none()
+        if self.crate_dir.is_none()
             && base.is_empty()
             && tables
                 .iter()
                 .all(|(_, table)| table.is_none_or(NativeInputs::is_empty))
         {
             return Err(
-                "[native] declares nothing: add a Rust crate (`lib`), C or C++ \
+                "[native] declares nothing: add a Rust crate (`crate`), C or C++ \
                  `sources`, or system libraries (`pkg-config`, `link-libs`)"
                     .to_string(),
             );
@@ -473,16 +443,9 @@ mod tests {
     }
 
     #[test]
-    fn rust_crate_defaults_apply_only_when_lib_is_declared() {
-        let native = parse("lib = \"p_native\"\n").unwrap();
-        assert_eq!(
-            native.rust_crate(),
-            Some(RustCrate {
-                dir: ".",
-                lib: "p_native",
-                kind: "staticlib"
-            })
-        );
+    fn crate_declares_the_rust_crate() {
+        let native = parse("crate = \".\"\n").unwrap();
+        assert_eq!(native.rust_crate(), Some(RustCrate { dir: "." }));
         let c_only = parse("sources = [\"src/a.c\"]\n").unwrap();
         assert_eq!(c_only.rust_crate(), None);
     }
@@ -505,8 +468,15 @@ mod tests {
     fn malformed_entries_are_refused_with_the_field_named() {
         for (text, expected) in [
             ("", "declares nothing"),
-            ("crate = \"native\"\n", "add `lib"),
-            ("lib = \"x\"\nkind = \"bogus\"\n", "kind = \"bogus\""),
+            (
+                "crate = \"../shared\"\n",
+                "[native] crate entry \"../shared\"",
+            ),
+            ("lib = \"x\"\ncrate = \".\"\n", "unknown field `lib`"),
+            (
+                "kind = \"staticlib\"\ncrate = \".\"\n",
+                "unknown field `kind`",
+            ),
             (
                 "sources = [\"src/a.rs\"]\n",
                 "not a C, C++ or assembly file",

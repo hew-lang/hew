@@ -951,7 +951,9 @@ impl<'src> Parser<'src> {
         }
     }
 
-    pub(crate) fn is_import_path_segment_token(tok: &Token<'_>) -> bool {
+    /// Whether `tok` can stand as one segment of an import path.
+    #[must_use]
+    pub fn is_import_path_segment_token(tok: &Token<'_>) -> bool {
         matches!(tok, Token::Identifier(_))
             || Self::import_path_segment_keyword(tok).is_some()
             || Self::contextual_keyword_name(tok).is_some()

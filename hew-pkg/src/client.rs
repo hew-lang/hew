@@ -157,6 +157,19 @@ pub struct PublishMetadata {
 
 // ── Client ──────────────────────────────────────────────────────────────────
 
+/// A publish grant from `POST /login/github-actions`.
+#[derive(Debug, Deserialize)]
+pub struct GithubActionsGrant {
+    /// Bearer token for this run's uploads.
+    pub token: String,
+    /// Seconds until the token expires.
+    pub expires_in: u64,
+    /// The registry identity the grant publishes as.
+    pub identity: String,
+    /// Fingerprint of the key the grant registered.
+    pub key_fingerprint: String,
+}
+
 /// A Hew registry API client.
 #[derive(Debug)]
 pub struct RegistryClient {
@@ -369,8 +382,13 @@ impl RegistryClient {
     /// Set the authentication token.
     #[must_use]
     pub fn with_token(mut self, token: String) -> Self {
-        self.token = Some(token);
+        self.set_token(token);
         self
+    }
+
+    /// Replace the authentication token, as after renewing an expired one.
+    pub fn set_token(&mut self, token: String) {
+        self.token = Some(token);
     }
 
     /// Return the registry API URL used to query a package.
@@ -599,24 +617,52 @@ impl RegistryClient {
             }
             let mut versions = std::collections::HashSet::new();
             for entry in &mut record.versions {
-                if entry.name != wire_name
-                    || package_name::from_wire(&entry.name, mode).map_err(ApiError::Parse)? != name
-                {
-                    return Err(ApiError::Parse(
-                        "registry version identity does not match requested package".to_string(),
-                    ));
-                }
-                validate_version(&entry.vers)?;
+                bind_entry_identity(entry, name, &wire_name, mode)?;
                 if !versions.insert(entry.vers.clone()) {
                     return Err(ApiError::Parse(
                         "duplicate version identity in registry response".to_string(),
                     ));
                 }
-                entry.registry_name = Some(entry.name.clone());
-                entry.name = name.to_string();
-                normalize_dependencies(entry)?;
             }
             Ok(record.versions)
+        })
+    }
+
+    /// Get one version of a package from `/packages/{name}/{version}`.
+    ///
+    /// The entry passes the same identity checks as [`Self::get_package`],
+    /// and its version must equal `version`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Server`] with status 404 when the package or the
+    /// version does not exist, and [`ApiError`] on other HTTP or parse
+    /// failures.
+    pub fn get_package_version(&self, name: &str, version: &str) -> Result<IndexEntry, ApiError> {
+        validate_version(version)?;
+        self.try_with_fallback(|base_url, mode| {
+            #[derive(Deserialize)]
+            struct VersionRecord {
+                version: IndexEntry,
+            }
+
+            let wire_name = package_name::to_wire(name, mode).map_err(ApiError::Parse)?;
+            let url = format!("{base_url}/packages/{wire_name}/{version}");
+            let resp = self.agent.get(&url).call().map_err(map_ureq_error)?;
+            if resp.status().as_u16() != 200 {
+                return Err(self.parse_error_response(resp));
+            }
+            let mut record: VersionRecord = resp
+                .into_body()
+                .read_json()
+                .map_err(|e| ApiError::Parse(e.to_string()))?;
+            bind_entry_identity(&mut record.version, name, &wire_name, mode)?;
+            if record.version.vers != version {
+                return Err(ApiError::Parse(
+                    "registry version identity does not match requested version".to_string(),
+                ));
+            }
+            Ok(record.version)
         })
     }
 
@@ -662,6 +708,90 @@ impl RegistryClient {
                 .read_json()
                 .map_err(|e| ApiError::Parse(e.to_string()))
         })
+    }
+
+    /// The origin (`scheme://authority`) of this client's API URL, the
+    /// audience a trusted-publishing OIDC token is minted for.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError::Parse`] when the API URL has no scheme or host.
+    pub fn api_origin(&self) -> Result<String, ApiError> {
+        let uri = self
+            .api_url
+            .parse::<ureq::http::Uri>()
+            .map_err(|e| ApiError::Parse(format!("invalid registry URL {}: {e}", self.api_url)))?;
+        match (uri.scheme_str(), uri.authority()) {
+            (Some(scheme), Some(authority)) => Ok(format!("{scheme}://{authority}")),
+            _ => Err(ApiError::Parse(format!(
+                "registry URL {} has no origin",
+                self.api_url
+            ))),
+        }
+    }
+
+    /// Request a GitHub Actions OIDC token for `audience` from the runner's
+    /// token endpoint (`ACTIONS_ID_TOKEN_REQUEST_URL`, authorized by
+    /// `ACTIONS_ID_TOKEN_REQUEST_TOKEN`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] on HTTP failures or a response without `value`.
+    pub fn github_actions_oidc_token(
+        &self,
+        request_url: &str,
+        request_token: &str,
+        audience: &str,
+    ) -> Result<String, ApiError> {
+        #[derive(Deserialize)]
+        struct OidcResponse {
+            value: String,
+        }
+        let separator = if request_url.contains('?') { '&' } else { '?' };
+        let url = format!(
+            "{request_url}{separator}audience={}",
+            percent_encode(audience)
+        );
+        let resp = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {request_token}"))
+            .call()
+            .map_err(map_ureq_error)?;
+        let body: OidcResponse = resp
+            .into_body()
+            .read_json()
+            .map_err(|e| ApiError::Parse(format!("invalid OIDC token response: {e}")))?;
+        Ok(body.value)
+    }
+
+    /// Exchange a GitHub Actions OIDC token and a signing public key for a
+    /// short-lived publish grant bound to that key.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ApiError`] on HTTP, server or parse failures.
+    pub fn login_github_actions(
+        &self,
+        oidc_token: &str,
+        public_key_b64: &str,
+    ) -> Result<GithubActionsGrant, ApiError> {
+        let url = format!("{}/login/github-actions", self.api_url);
+        let body = serde_json::json!({
+            "oidc_token": oidc_token,
+            "public_key": public_key_b64,
+        });
+        let resp = self
+            .agent
+            .post(&url)
+            .send_json(&body)
+            .map_err(map_ureq_error)?;
+        if resp.status().as_u16() != 200 {
+            return Err(self.parse_error_response(resp));
+        }
+        resp.into_body()
+            .read_json()
+            .map_err(|e| ApiError::Parse(e.to_string()))
     }
 
     /// Register a signing public key.
@@ -996,6 +1126,27 @@ fn metadata_identity_matches(metadata: &str, name: &str, mode: WireNames) -> boo
         return package_name::is_valid(&logical) && logical == name;
     }
     package_name::dependency_from_wire(metadata).is_ok_and(|logical| logical == name)
+}
+
+/// Check that a served entry names exactly the requested package in this
+/// endpoint's wire grammar, then rebind it to the logical identity and keep
+/// the wire name for counter-signature checks.
+fn bind_entry_identity(
+    entry: &mut IndexEntry,
+    name: &str,
+    wire_name: &str,
+    mode: WireNames,
+) -> Result<(), ApiError> {
+    if entry.name != wire_name
+        || package_name::from_wire(&entry.name, mode).map_err(ApiError::Parse)? != name
+    {
+        return Err(ApiError::Parse(
+            "registry version identity does not match requested package".to_string(),
+        ));
+    }
+    validate_version(&entry.vers)?;
+    entry.registry_name = Some(std::mem::replace(&mut entry.name, name.to_string()));
+    normalize_dependencies(entry)
 }
 
 fn validate_version(version: &str) -> Result<(), ApiError> {

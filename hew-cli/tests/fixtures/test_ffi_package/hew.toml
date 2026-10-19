@@ -5,5 +5,3 @@ edition = "2026"
 
 [native]
 crate = "."
-lib = "hew_test_ffi_package"
-kind = "staticlib"

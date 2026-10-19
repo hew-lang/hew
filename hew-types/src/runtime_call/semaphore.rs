@@ -64,6 +64,10 @@ impl SemaphoreOp {
 }
 
 impl RuntimeCallFamily {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each part of the extern declaration is matched independently"
+    )]
     #[must_use]
     pub fn matches_semaphore_extern(
         self,

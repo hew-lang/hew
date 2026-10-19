@@ -2421,15 +2421,11 @@ impl Checker {
 
             self.record_call_edge(&resolved_fn_name);
             // Mark the originating module as used for unqualified imports
-            if self
-                .unqualified_to_module
-                .get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    func_name.clone(),
-                ))
-                .is_some()
-            {
+            if self.unqualified_to_module.contains_key(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                func_name.clone(),
+            )) {
                 self.note_import_use(&func_name);
             }
             // `assert` takes one optional parameter, the failure message.

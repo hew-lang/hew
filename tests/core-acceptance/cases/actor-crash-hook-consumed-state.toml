@@ -9,6 +9,6 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterConsume"
-line = 29
+line = 27
 column = 17
 message = "`#[on(crash)]` hook reads actor state `sock`, which `swap` consumes"

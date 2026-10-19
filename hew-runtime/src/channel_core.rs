@@ -121,6 +121,10 @@ impl NativeRegistration {
     }
 }
 
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "producer closure, reader closure, fault and one-time binding are independent lifecycle facts"
+)]
 struct Inner {
     queue: VecDeque<Vec<u8>>,
     capacity: usize,
@@ -231,20 +235,16 @@ impl ChannelCore {
         &self,
         cancellation: Arc<crate::coro_state::ActorStreamCancellation>,
     ) -> bool {
-        let already_closed;
-        {
-            let mut inner = self.locked();
-            if inner.actor_stream_bound {
-                return false;
-            }
-            inner.actor_stream_bound = true;
-            already_closed = inner.stream_closed;
-            if !already_closed {
-                inner.actor_stream_cancellation = Some(Arc::clone(&cancellation));
-            }
+        let mut inner = self.locked();
+        if inner.actor_stream_bound {
+            return false;
         }
-        if already_closed {
+        inner.actor_stream_bound = true;
+        if inner.stream_closed {
+            drop(inner);
             cancellation.close_reader();
+        } else {
+            inner.actor_stream_cancellation = Some(cancellation);
         }
         true
     }

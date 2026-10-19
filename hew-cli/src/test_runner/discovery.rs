@@ -134,17 +134,20 @@ fn discover_entries(program: &Program, file: &str, benchmark: bool) -> Vec<TestC
 /// # Errors
 ///
 /// Returns an error string if the file cannot be read.
+#[cfg(test)]
 pub fn discover_tests_in_file(path: &str) -> Result<DiscoveredTestFile, String> {
-    discover_entries_in_file(path, false)
+    discover_entries_in_file(path, false, None)
 }
 
 pub(super) fn discover_entries_in_file(
     path: &str,
     benchmark: bool,
+    project_dir: Option<&std::path::Path>,
 ) -> Result<DiscoveredTestFile, String> {
     let source = std::fs::read_to_string(path).map_err(|e| format!("cannot read {path}: {e}"))?;
     let mut options = hew_compile::FrontendOptions {
         companion: test_companion(std::path::Path::new(path)),
+        project_dir: project_dir.map(std::path::Path::to_path_buf),
         ..hew_compile::FrontendOptions::default()
     };
     options.documents.insert(path, source.clone());

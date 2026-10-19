@@ -1061,7 +1061,6 @@ impl Checker {
             is_move,
             span,
             is_fork_body,
-            is_actor_body,
         );
         let capabilities = self.closure_capabilities(&capture_facts);
         self.record_once_capture_cleanup(

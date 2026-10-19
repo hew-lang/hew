@@ -120,18 +120,39 @@ fn semaphore_owned_waits_match_on_native_and_wasi() {
     let source = source.to_str().expect("source path");
     for optimization in ["0", "2"] {
         for target in [None, Some("wasm32-wasi")] {
-            let mut args = vec!["run", source, "--opt-level", optimization];
+            let mut args = vec!["run", source];
             if let Some(target) = target {
                 args.extend(["--target", target]);
             }
-            let output = run_hew_in(repo_root(), &args);
+            let mut command = support::hew_command();
+            command
+                .args(&args)
+                .current_dir(repo_root())
+                .env("HEW_OPT_LEVEL", optimization);
+            let output = support::run_bounded_command(
+                command,
+                format!("semaphore {target:?} O{optimization}"),
+            );
             assert!(
                 output.status.success(),
                 "{target:?} O{optimization}: {}",
                 support::describe_output(&output)
             );
             assert_eq!(output.stdout, b"owned semaphore ok\n");
-            assert!(output.stderr.is_empty());
+            if target.is_none() {
+                assert!(
+                    output.stderr.is_empty(),
+                    "{}",
+                    support::describe_output(&output)
+                );
+            } else {
+                // The delayed release intentionally exercises WASI's cooperative timer.
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stderr.contains("timers are cooperative on wasm32"),
+                    "{stderr}"
+                );
+            }
         }
     }
 }

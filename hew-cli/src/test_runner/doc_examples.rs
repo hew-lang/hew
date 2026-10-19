@@ -59,7 +59,8 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
             std::fs::write(&generated_path, generated_source)
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
             let path = generated_path.display().to_string();
-            let mut discovered = discovery::discover_tests_in_file(&path)?;
+            let mut discovered =
+                discovery::discover_entries_in_file(&path, false, Some(project_dir))?;
             let parse_error = discovered
                 .parse_errors
                 .iter()
@@ -71,7 +72,7 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
                     format!("#[test]\nfn {entry_name}() {{}}\n"),
                 )
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
-                discovered = discovery::discover_tests_in_file(&path)?;
+                discovered = discovery::discover_entries_in_file(&path, false, Some(project_dir))?;
             }
             let mut test = discovered
                 .tests

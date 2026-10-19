@@ -1297,6 +1297,7 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
     else {
         return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
     };
+    // SAFETY: the current activation retains this non-null watcher actor.
     let watcher_id = unsafe { (*watcher).id };
     match target {
         crate::lifetime::local_handles::ObservedActorTarget::Actor(target_id) => {

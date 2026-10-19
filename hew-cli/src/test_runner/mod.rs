@@ -245,7 +245,7 @@ fn cmd_entries(args: &crate::args::TestArgs, benchmark: Option<&crate::args::Ben
             if !seen_files.insert(path.clone()) {
                 continue;
             }
-            match discovery::discover_entries_in_file(path, benchmark.is_some()) {
+            match discovery::discover_entries_in_file(path, benchmark.is_some(), None) {
                 Ok(discovered) => {
                     discovered_files += 1;
                     had_parse_errors |= handle_discovered_file(&discovered);
@@ -263,7 +263,8 @@ fn cmd_entries(args: &crate::args::TestArgs, benchmark: Option<&crate::args::Ben
                         if !seen_files.insert(file.clone()) {
                             continue;
                         }
-                        match discovery::discover_entries_in_file(&file, benchmark.is_some()) {
+                        match discovery::discover_entries_in_file(&file, benchmark.is_some(), None)
+                        {
                             Ok(discovered) => {
                                 discovered_files += 1;
                                 had_parse_errors |= handle_discovered_file(&discovered);

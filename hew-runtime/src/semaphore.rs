@@ -142,9 +142,8 @@ pub unsafe extern "C" fn hew_semaphore_clone(sem: *const HewSemaphore) -> *mut H
         return std::ptr::null_mut();
     }
     // SAFETY: caller holds the live handle while its shared backing is cloned.
-    Box::into_raw(Box::new(HewSemaphore {
-        state: unsafe { &*sem }.state.clone(),
-    }))
+    let state = unsafe { &*sem }.state.clone();
+    Box::into_raw(Box::new(HewSemaphore { state }))
 }
 
 /// Begin acquiring a permit without blocking. A negative timeout means no
@@ -194,7 +193,7 @@ pub unsafe extern "C" fn hew_semaphore_acquire_new(
                 &mut operation,
                 crate::timer_periodic::global_wheel(),
                 expires,
-            )
+            );
         };
     }
     Box::into_raw(Box::new(operation))
@@ -286,20 +285,19 @@ unsafe fn acquire_blocking(sem: *mut HewSemaphore, timeout_ms: i64) -> i32 {
     let result = unsafe { wait_blocking(operation, &ready) };
     drop(waker);
     drop(ready);
-    match result {
-        Ok(result) => result,
-        Err(()) => {
-            let fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
-                crate::internal::types::HEW_TRAP_USER_PANIC,
-                "semaphore acquisition could not register its deadline".into(),
-            )));
-            // SAFETY: cleanup released the operation and all readiness owners;
-            // this transfers one unique fault through the existing trap bridge.
-            unsafe {
-                crate::fault::hew_fault_trap(crate::internal::types::HEW_TRAP_USER_PANIC, fault)
-            };
-            0
-        }
+    if let Ok(result) = result {
+        result
+    } else {
+        let fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
+            crate::internal::types::HEW_TRAP_USER_PANIC,
+            "semaphore acquisition could not register its deadline".into(),
+        )));
+        // SAFETY: cleanup released the operation and all readiness owners;
+        // this transfers one unique fault through the existing trap bridge.
+        unsafe {
+            crate::fault::hew_fault_trap(crate::internal::types::HEW_TRAP_USER_PANIC, fault);
+        };
+        0
     }
 }
 

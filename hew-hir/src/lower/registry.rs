@@ -258,10 +258,10 @@ impl LowerCtx {
                 // but its declaration still belongs to the imported file.
                 // Keep that owner's symbol even when it declares `main` or a
                 // same-spelled private helper from another file.
-                if self.defs.module(declaration) != self.defs.root_module() {
-                    crate::symbol::declaration_symbol(&self.defs, declaration)
-                } else {
+                if self.defs.module(declaration) == self.defs.root_module() {
                     self.defs.linkage_name(declaration, symbol)
+                } else {
+                    crate::symbol::declaration_symbol(&self.defs, declaration)
                 }
             },
         );

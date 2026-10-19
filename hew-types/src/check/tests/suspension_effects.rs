@@ -1057,6 +1057,23 @@ fn a_later_loop_assignment_cannot_hide_suspension() {
 }
 
 #[test]
+fn plain_callable_obligations_inside_a_closure_retain_their_construction_context() {
+    let pure = "fn main() { let outer = || { let inner: fn() -> i64 = || { 1 }; inner() }; println(outer()); }";
+    let output = check_source(pure);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let suspending = pure.replace("|| { 1 }", "|| { sleep(1ms); 1 }");
+    let output = check_source(&suspending);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    let error = &output.errors[0];
+    assert_eq!(&suspending[error.span.clone()], "|| { sleep(1ms); 1 }");
+    assert!(
+        error.message.contains("closure suspends via `sleep(...)`"),
+        "{}",
+        error.message
+    );
+}
+
+#[test]
 fn closure_effects_follow_the_literal_through_bindings_and_joins() {
     let source = "fn main() -> i64 { let call = || 5; let picked = if true { call } else { call }; println(picked()); 0 }";
     assert_call_effect(source, "picked()", SuspensionEffect::Never);

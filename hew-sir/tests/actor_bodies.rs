@@ -286,7 +286,7 @@ fn main() {
 ";
 
 #[test]
-fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
+fn stream_producers_yield_into_the_request_sink_and_update_live_state() {
     let module = lower_source(STREAM);
     let actor = &module.actors[0];
     let handler = &actor.handlers[0];
@@ -332,12 +332,12 @@ fn stream_producers_yield_into_the_request_sink_and_snapshot_state() {
     assert_eq!(inputs[0].decision, BoundaryDecision::Borrow);
     assert_eq!(inputs[0].operand.value, body.params.last().unwrap().value);
     assert_eq!(inputs[1].decision, BoundaryDecision::Move);
-    // The body writes `base` through a local snapshot, never the state seat.
+    // A producer owns the actor turn and writes `base` in the live state.
     assert!(body
         .blocks
         .iter()
         .flat_map(|block| &block.ops)
-        .all(|op| !matches!(
+        .any(|op| matches!(
             op.kind,
             hew_sir::SemOpKind::StoreAssign { place, .. }
                 if body.places.iter().any(|declaration| declaration.id == place

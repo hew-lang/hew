@@ -133,6 +133,10 @@ impl LowerCtx {
     ///
     /// Checker capture identities select the enclosing spawn inputs. Fresh
     /// state bindings shadow those identities while lowering the handler body.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lambda actor lowering keeps capture state and handler scope in one operation"
+    )]
     pub(super) fn lower_spawn_lambda_actor(
         &mut self,
         params: &[LambdaParam],
@@ -258,6 +262,10 @@ impl LowerCtx {
     }
 
     /// Build and record the actor declaration one lambda actor lowers to.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the checked actor identity, handler and capture state form one declaration"
+    )]
     pub(super) fn push_lambda_actor_declaration(
         &mut self,
         span: &Span,

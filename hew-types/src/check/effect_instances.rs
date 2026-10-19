@@ -51,11 +51,9 @@ impl Checker {
                     }
                 }
             }
-            EffectBody::Closure(_) => {
-                for (owner, children) in &graph.constructed_bodies {
-                    if children.contains(body) {
-                        contexts.extend(self.effect_construction_contexts(owner, graph, visiting));
-                    }
+            EffectBody::Closure(span) => {
+                if let Some(owner) = graph.expression_owners.get(span) {
+                    contexts.extend(self.effect_construction_contexts(owner, graph, visiting));
                 }
             }
             _ => contexts.push((Actuals::new(), None)),

@@ -174,6 +174,7 @@ pub unsafe extern "C" fn hew_actor_coro_finish(
     // SAFETY: the generated adapter has returned under its exclusive actor
     // activation, keeping both context and invocation live.
     let context_ref = unsafe { &*context };
+    // SAFETY: the exclusive activation retains its actor through completion.
     let actor = unsafe { &*context_ref.actor };
     // SAFETY: the caller transfers the one optional fault owner.
     let fault = if fault.is_null() {
@@ -802,13 +803,15 @@ mod tests {
         core.close_stream();
 
         assert_eq!(
-            unsafe { crate::coro_state::hew_coro_state_is_cancelled(&*state) },
+            // SAFETY: this test owns the live invocation throughout the query.
+            unsafe { crate::coro_state::hew_coro_state_is_cancelled(&raw const *state) },
             1
         );
         assert!(ready.take_ready());
         let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
         assert!(normalize_actor_stream_cancellation(
             &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
             unsafe { Box::from_raw(cancellation) },
             false,
             false,
@@ -831,6 +834,7 @@ mod tests {
         };
         let preserved = normalize_actor_stream_cancellation(
             &state,
+            // SAFETY: combine returned one unique fault owner, transferred here.
             unsafe { Box::from_raw(combined) },
             false,
             false,
@@ -841,6 +845,7 @@ mod tests {
         let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
         let stopped = normalize_actor_stream_cancellation(
             &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
             unsafe { Box::from_raw(cancellation) },
             false,
             true,
@@ -855,12 +860,13 @@ mod tests {
         let core = Arc::new(crate::channel_core::ChannelCore::new(1));
         let (state, _ready) = stream_invocation(Arc::clone(&core));
         // SAFETY: this test owns the live invocation; stop wins its token CAS.
-        unsafe { crate::coro_state::hew_coro_state_cancel(&*state) };
+        unsafe { crate::coro_state::hew_coro_state_cancel(&raw const *state) };
         core.close_stream();
 
         let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
         let preserved = normalize_actor_stream_cancellation(
             &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
             unsafe { Box::from_raw(cancellation) },
             false,
             false,

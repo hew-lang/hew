@@ -276,10 +276,6 @@ impl LowerCtx {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "display lowering keeps all fail-closed dispatch cases in one authority"
-    )]
     pub(super) fn lower_display_dispatch_for_type(
         &mut self,
         value: HirExpr,

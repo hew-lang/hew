@@ -234,6 +234,10 @@ impl Checker {
         Some(result)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the checker dispatches the complete method-call surface"
+    )]
     pub(super) fn check_method_call_inner(
         &mut self,
         receiver: &Spanned<Expr>,

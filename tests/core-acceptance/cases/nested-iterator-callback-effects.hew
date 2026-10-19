@@ -13,9 +13,15 @@ fn ready() -> i64 {
     first(row.iter())
 }
 
+fn count(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    let xs: Vec<i64> = [n - 1];
+    xs.iter().map(|k: i64| count(k)).fold(0, |a: i64, b: i64| a + b) + 1
+}
+
 fn main() -> i64 {
     let callback: fn() -> i64 = ready;
     let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
     let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
-    if callback() == 1 && sums.len() == 2 && sums[0] == 3 && sums[1] == 7 { 0 } else { 1 }
+    if count(3) == 3 && callback() == 1 && sums.len() == 2 && sums[0] == 3 && sums[1] == 7 { 0 } else { 1 }
 }

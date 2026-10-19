@@ -1,6 +1,6 @@
 [[case]]
 id = "nested-iterator-callback-effects"
-intent = "A pure fold inside a map callback and a generic builtin Iterator.next stay non-suspending, even with a competing suspending trait method on the same receiver."
+intent = "A recursive map callback, a fold nested inside a map callback and a generic builtin Iterator.next stay non-suspending, even with a competing suspending trait method on the same receiver."
 source = "cases/nested-iterator-callback-effects.hew"
 suites = ["acceptance"]
 timeout_seconds = 30

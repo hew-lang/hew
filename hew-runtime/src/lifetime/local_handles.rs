@@ -1519,6 +1519,16 @@ pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<
     current_handles()?.observation_actor(runtime_id, token)
 }
 
+/// Resolve the incarnation a `link` or `monitor` subscribes to: a direct
+/// handle's own incarnation, live or retired, or the occupant a supervised
+/// role holds when the call is made. A role re-resolves on every use (§5.6),
+/// so the subscription follows that incarnation, not later replacements.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn resolve_current_observed_incarnation(token: HewLocalPidId) -> Option<u64> {
+    resolve_current_observation_actor(token)
+        .or_else(|| crate::supervisor::current_actor_role_identity(token).map(|(id, _)| id))
+}
+
 /// Return the direct token registered for an `ActorId` in the current runtime.
 #[allow(
     dead_code,

@@ -1271,7 +1271,8 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
     if watcher.is_null() {
         return HEW_OBSERVATION_NO_CONTEXT;
     }
-    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target_id) =
+        crate::lifetime::local_handles::resolve_current_observed_incarnation(target)
     else {
         return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
     };

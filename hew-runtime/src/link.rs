@@ -170,7 +170,8 @@ pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<
     if current.is_null() {
         return (crate::monitor::HEW_OBSERVATION_NO_CONTEXT, None);
     }
-    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target_id) =
+        crate::lifetime::local_handles::resolve_current_observed_incarnation(target)
     else {
         return (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None);
     };
@@ -215,7 +216,7 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
         }
         return;
     }
-    let Some(target) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target) = crate::lifetime::local_handles::resolve_current_observed_incarnation(target)
     else {
         return;
     };

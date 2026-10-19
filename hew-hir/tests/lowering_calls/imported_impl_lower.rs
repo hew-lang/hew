@@ -783,3 +783,46 @@ fn main() -> i64 {
         "fail-closed diagnostic must explain the missing registered implementation body: {diagnostic:?}"
     );
 }
+
+#[test]
+fn imported_impl_body_with_range_adapter_loops_is_emitted() {
+    let imported_src = r"pub type Foo {
+    n: i64;
+}
+
+impl Foo {
+    pub fn down(self) -> i64 {
+        var t = 0;
+        for i in (0..self.n).rev() {
+            t = t * 10 + i;
+        }
+        t
+    }
+
+    pub fn even(self) -> i64 {
+        var t = 0;
+        for i in (0..self.n).step_by(2) {
+            t = t + i;
+        }
+        t
+    }
+}
+";
+    let root_src = r"
+import shapes;
+
+fn main() -> i64 {
+    let f = shapes.Foo { n: 4 };
+    f.down() + f.even()
+}
+";
+    let program = build_imported_module_program_src(imported_src, root_src);
+    let output = support::checker_pipeline::lower_through_checker_from_program(&program);
+
+    assert!(
+        output.diagnostics.is_empty(),
+        "`(a..b).rev()` and `.step_by(k)` fold into the loop's bounds; they are \
+         not unresolved calls and must not skip the imported method: {:#?}",
+        output.diagnostics
+    );
+}

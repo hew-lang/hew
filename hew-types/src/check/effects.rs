@@ -782,9 +782,9 @@ impl Checker {
             .contains(&SpanKey::in_module(span, self.current_module_idx))
     }
 
-    /// A checked variant constructor is a call-form expression with no
-    /// executable callee. Mark it at the selection site so body eligibility
-    /// does not mistake it for an unresolved function call.
+    /// A checked variant constructor or `Range` adapter is a call-form
+    /// expression with no executable callee. Mark it at the selection site so
+    /// body eligibility does not mistake it for an unresolved function call.
     pub(super) fn record_construct_call(&mut self, span: &Span) {
         self.effect_graph
             .construct_calls

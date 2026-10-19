@@ -1698,6 +1698,10 @@ impl Checker {
                 },
                 "rev" | "step_by",
             ) => {
+                // The adapter folds into the loop's bounds and stride; it has
+                // no executable callee, so body eligibility must not read it
+                // as an unresolved call.
+                self.record_construct_call(span);
                 let elem_ty = range_args.first().cloned().unwrap_or(Ty::I64);
                 let range_ty = Ty::range(elem_ty.clone());
                 if method == "rev" {

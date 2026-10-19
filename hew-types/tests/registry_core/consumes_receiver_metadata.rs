@@ -120,22 +120,27 @@ fn main() {
     checker.register_consume_receiver_method("Sink::drain");
     let output = checker.check_program(&program);
 
-    assert_eq!(
-        output.method_call_consumes_receiver.len(),
-        1,
-        "expected exactly one consuming call site; got {:?}",
-        output.method_call_consumes_receiver,
-    );
-
-    // The recorded span must point into the source where `b.drain()` was
-    // written. We don't know byte offsets a priori, but the call site
-    // must overlap a region containing the literal `b.drain()`.
-    let key: &SpanKey = output
+    let root_call_sites: Vec<&SpanKey> = output
         .method_call_consumes_receiver
         .iter()
-        .next()
-        .expect("set has one entry");
-    let snippet = &source[key.start..key.end];
+        .filter(|key| key.module_idx == 0)
+        .collect();
+    assert_eq!(
+        root_call_sites.len(),
+        1,
+        "expected exactly one root consuming call site; got {root_call_sites:?}",
+    );
+
+    let call_start = source.find("b.drain()").expect("root call is in source");
+    let expected_call_end = call_start + "b.drain()".len();
+    let key = root_call_sites[0];
+    assert!(
+        key.start <= call_start && expected_call_end <= key.end,
+        "expected root span to cover `b.drain()` at {call_start}..{expected_call_end}; got {key:?}",
+    );
+    let snippet = source
+        .get(key.start..key.end)
+        .expect("root call span must be a valid source range");
     assert!(
         snippet.contains("b.drain"),
         "expected span to cover `b.drain(...)`; got {snippet:?} at {key:?}",

@@ -208,6 +208,17 @@ mod pattern_resolution {
             .collect()
     }
 
+    /// Patterns owned by the source under test, excluding plans from builtin
+    /// modules that share the same flat checker result.
+    fn root_pattern_plans(
+        output: &TypeCheckOutput,
+    ) -> impl Iterator<Item = (&SpanKey, &PatternPlan)> {
+        output
+            .pattern_plans
+            .iter()
+            .filter(|(key, _)| key.module_idx == 0)
+    }
+
     // ── wildcard arm ─────────────────────────────────────────────────────────
 
     #[test]
@@ -643,8 +654,8 @@ fn foo(p: Point) -> i64 {
             output.errors
         );
         assert!(
-            output.pattern_plans.is_empty(),
-            "invalid record pattern must not publish a plan"
+            root_pattern_plans(&output).next().is_none(),
+            "invalid record pattern must not publish a root-module plan"
         );
     }
 
@@ -667,8 +678,9 @@ fn foo(p: Point) -> i64 {
             "rest pattern should check cleanly: {:#?}",
             output.errors
         );
-        assert_eq!(output.pattern_plans.len(), 1);
-        let plan = output.pattern_plans.values().next().unwrap();
+        let plans = root_pattern_plans(&output).collect::<Vec<_>>();
+        assert_eq!(plans.len(), 1);
+        let plan = plans[0].1;
         assert_eq!(plan.fields.len(), 2);
         assert_eq!(plan.fields[0].name, "x");
         assert_eq!(plan.fields[0].decl_idx, 0);
@@ -701,8 +713,9 @@ fn label(state: State) -> string {
             "qualified record variant should check cleanly: {:#?}",
             output.errors
         );
-        assert_eq!(output.pattern_plans.len(), 1);
-        let plan = output.pattern_plans.values().next().unwrap();
+        let plans = root_pattern_plans(&output).collect::<Vec<_>>();
+        assert_eq!(plans.len(), 1);
+        let plan = plans[0].1;
         assert_eq!(plan.fields.len(), 1);
         assert_eq!(plan.fields[0].name, "label");
         assert_eq!(plan.fields[0].sub, PlanSub::Binding(Ident::new("label")));
@@ -750,8 +763,8 @@ fn foo(p: Point) -> i64 {
                 output.errors
             );
             assert!(
-                output.pattern_plans.is_empty(),
-                "invalid pattern must not publish a plan"
+                root_pattern_plans(&output).next().is_none(),
+                "invalid pattern must not publish a root-module plan"
             );
         }
     }

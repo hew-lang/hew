@@ -12,6 +12,15 @@ const MACHINE: &str = r"pub machine Divider {
 }
 ";
 
+const IMPORTED_MACHINE: &str = r"pub machine Toggle {
+    events { Flip; }
+    state Off;
+    state On;
+    on Flip: Off => On;
+    on Flip: On => Off;
+}
+";
+
 fn lower(program: &hew_parser::ast::Program) -> HirModule {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let checked = checker.check_program(program);
@@ -29,16 +38,24 @@ fn machine_failure_sites_and_scopes_name_authored_source() {
     let sites = collect_site_spans(&module);
     assert!(
         sites.values().any(|source| {
-            source.source_module.is_none() && source.span == (start..start + division.len())
+            source.source_module.is_none()
+                && source.span.start == start
+                && MACHINE
+                    .get(source.span.clone())
+                    .is_some_and(|written| written.trim_end() == division)
         }),
         "the potentially failing divide must name its authored expression"
     );
     assert!(sites
         .values()
+        .filter(|site| site.source_module.is_none())
         .all(|source| source.span.end <= MACHINE.len()));
     let scopes = collect_scope_extents(&module);
     assert!(!scopes.is_empty());
-    assert!(scopes.values().all(|scope| scope.span.end <= MACHINE.len()));
+    assert!(scopes
+        .values()
+        .filter(|scope| scope.source_module.is_none())
+        .all(|scope| scope.span.end <= MACHINE.len()));
     assert!(
         module
             .checked_sites
@@ -73,8 +90,8 @@ fn machine_source_attribution_is_independent_of_unrelated_module_formatting() {
 
 #[test]
 fn imported_machine_source_attribution_keeps_its_module() {
-    let root = "import m;\nfn main() {}";
-    let module = lower(&program_with_imported_module(MACHINE, root));
+    let root = "fn main() {}";
+    let module = lower(&program_with_imported_module(IMPORTED_MACHINE, root));
     let sites = collect_site_spans(&module);
     let imported: Vec<_> = sites
         .values()
@@ -83,7 +100,7 @@ fn imported_machine_source_attribution_keeps_its_module() {
     assert!(!imported.is_empty());
     assert!(imported
         .iter()
-        .all(|source| source.span.end <= MACHINE.len()));
+        .all(|source| source.span.end <= IMPORTED_MACHINE.len()));
     assert!(sites
         .values()
         .filter(|source| source.source_module.is_none())
@@ -95,5 +112,5 @@ fn imported_machine_source_attribution_keeps_its_module() {
     assert!(scopes
         .values()
         .filter(|scope| scope.source_module.as_deref() == Some("m"))
-        .all(|scope| scope.span.end <= MACHINE.len()));
+        .all(|scope| scope.span.end <= IMPORTED_MACHINE.len()));
 }

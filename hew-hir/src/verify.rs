@@ -54,9 +54,24 @@ pub fn collect_site_spans(module: &HirModule) -> HashMap<SiteId, HirSiteSource> 
 pub fn collect_scope_extents(module: &HirModule) -> HashMap<ScopeId, HirScopeExtent> {
     let mut verifier = Verifier::default();
     verifier.module(module);
-    for extent in verifier.scope_extents.values_mut() {
-        if let Some(origin) = module.source_origins.source_span(&extent.span) {
-            extent.span = origin.clone();
+    for (scope, extent) in &mut verifier.scope_extents {
+        let Some(parts) = verifier.scope_parts.get(scope) else {
+            continue;
+        };
+        // A block extent combines statement and tail spans. Generated machine
+        // bodies can contain many distinct synthetic spans, so the combined
+        // range is not itself an origin-map key. Project each constituent first.
+        let mut projected = parts.iter().map(|span| {
+            module
+                .source_origins
+                .source_span(span)
+                .cloned()
+                .unwrap_or_else(|| span.clone())
+        });
+        if let Some(first) = projected.next() {
+            extent.span = projected.fold(first, |range, part| {
+                range.start.min(part.start)..range.end.max(part.end)
+            });
         }
     }
     verifier.scope_extents
@@ -81,6 +96,7 @@ struct Verifier {
     site_parents: HashMap<SiteId, Option<SiteId>>,
     current_scope: Option<ScopeId>,
     scope_extents: HashMap<ScopeId, HirScopeExtent>,
+    scope_parts: HashMap<ScopeId, Vec<Range<usize>>>,
 }
 
 impl Verifier {
@@ -288,6 +304,14 @@ impl Verifier {
     fn block(&mut self, block: &HirBlock) {
         self.node(block.node, 0..0);
         let enclosing = self.current_scope.replace(block.scope);
+        self.scope_parts.entry(block.scope).or_insert_with(|| {
+            block
+                .statements
+                .iter()
+                .map(|stmt| stmt.span.clone())
+                .chain(block.tail.iter().map(|expr| expr.span.clone()))
+                .collect()
+        });
         self.scope_extents
             .entry(block.scope)
             .or_insert_with(|| HirScopeExtent {

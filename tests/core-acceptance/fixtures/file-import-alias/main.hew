@@ -1,0 +1,10 @@
+import "codecs/huffman.hew" as huffman;
+import "codecs/rle.hew" as rle;
+
+fn main() {
+    println(huffman.encode("ab"));
+    println(rle.encode("ab"));
+    println(f"{huffman.NAME} {rle.NAME}");
+    let code: huffman.Code = huffman.code_of("abc");
+    println(code.bits);
+}

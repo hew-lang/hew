@@ -1899,7 +1899,13 @@ the importing file. The file is its own module: its `pub` items are bound
 unqualified in the importing file, under the same collision rules as a
 selective import, and its private items stay private to it. A `fn main` in an
 imported file is one of those private items; only the root file's `main` is the
-program entry.
+program entry. The file is also reachable as a module named by its file stem
+(`helpers.name`).
+
+An aliased quoted import (`import "codecs/huffman.hew" as huffman;`) binds the
+file only as the module `huffman`, like `import path as alias;`; none of its
+items are bound unqualified. Two files that publish the same name can then be
+imported side by side and reached as `huffman.encode` and `rle.encode`.
 
 **Module dot-syntax for standard library:**
 

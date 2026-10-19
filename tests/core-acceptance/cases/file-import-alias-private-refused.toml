@@ -1,0 +1,14 @@
+[[case]]
+id = "file-import-alias-private-refused"
+intent = "An alias reaches only the file's public items: a private helper stays private."
+source = "fixtures/file-import-alias/private.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "VisibilityViolationPrivate"
+line = 4
+column = 13
+message = "`tag` is private to module `codecs.huffman`"

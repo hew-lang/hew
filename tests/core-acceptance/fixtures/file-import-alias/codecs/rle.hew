@@ -1,0 +1,9 @@
+pub const NAME: string = "rle";
+
+fn tag(s: string) -> string {
+    "r:" + s
+}
+
+pub fn encode(s: string) -> string {
+    tag(s)
+}

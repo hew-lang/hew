@@ -1,0 +1,14 @@
+[[case]]
+id = "file-import-alias-bare-name-refused"
+intent = "An aliased quoted import binds no unqualified names, so a bare `encode` that two aliased files publish is undefined rather than chosen."
+source = "fixtures/file-import-alias/bare.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedFunction"
+line = 6
+column = 13
+message = "undefined function `encode`"

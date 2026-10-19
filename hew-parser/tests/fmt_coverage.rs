@@ -761,6 +761,12 @@ fn fmt_import_whole_module_alias_roundtrip() {
 }
 
 #[test]
+fn fmt_file_import_alias_roundtrip() {
+    exact_roundtrip("import \"codecs/huffman.hew\" as huffman;\n");
+    exact_roundtrip("import \"codecs/rle.hew\";\n");
+}
+
+#[test]
 fn fmt_dotted_import_forms_roundtrip() {
     exact_roundtrip("import app.net.http as transport;\n");
     exact_roundtrip("import app.net.http.{self as transport, Client as C,};\n");

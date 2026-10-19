@@ -1300,7 +1300,7 @@ impl Checker {
         };
         let site = scope::ImportSite::new(file, span);
         let namespace = self.scopes.namespace_of(target);
-        if decl.path.segments.is_empty() {
+        if decl.publishes_file_items() {
             for (name, binding) in self.scopes.items(namespace) {
                 if self.binding_is_importable(file, binding) {
                     self.scopes.bind_import(file, name, binding, site);

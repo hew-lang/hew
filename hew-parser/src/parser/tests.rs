@@ -2676,6 +2676,19 @@ fn parse_import_whole_module_alias() {
 }
 
 #[test]
+fn parse_file_import_alias() {
+    // `import "file.hew" as alias;` keeps the file path and binds the alias.
+    let result = parse(r#"import "codecs/huffman.hew" as huffman;"#);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Import(imp) = &result.program.items[0].0 else {
+        panic!("expected import item");
+    };
+    assert_eq!(imp.file_path.as_deref(), Some("codecs/huffman.hew"));
+    assert_eq!(imp.module_alias, Some(Ident::new("huffman")));
+    assert!(!imp.publishes_file_items());
+}
+
+#[test]
 fn parse_import_no_module_alias_is_none() {
     // A plain whole-module import leaves module_alias unset.
     let source = r"import std.net;";

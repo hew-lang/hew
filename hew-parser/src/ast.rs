@@ -1366,6 +1366,17 @@ pub struct ImportDecl {
     pub resolved_source_paths: Vec<std::path::PathBuf>,
 }
 
+impl ImportDecl {
+    /// Whether this is a quoted file import that binds the file's public
+    /// items unqualified (`import "lib.hew";`). An aliased file import
+    /// (`import "lib.hew" as lib;`) binds only the module, like a whole-module
+    /// path import.
+    #[must_use]
+    pub fn publishes_file_items(&self) -> bool {
+        self.file_path.is_some() && self.module_alias.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportName {
     pub name: Ident,

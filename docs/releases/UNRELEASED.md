@@ -42,3 +42,7 @@ A machine output without fields is emitted by its name alone, `emit Ready;`.
 `hew fmt` no longer refuses files that use that spelling, and `emit Ready {}`
 is now refused with `E_EMPTY_KEY_BRACES`, as an empty `spawn` key list is;
 `hew fmt --migrate` rewrites it.
+
+A quoted import can be aliased: `import "codecs/huffman.hew" as huffman;` binds
+the file as the module `huffman` without publishing its items unqualified, so
+two files that each publish `encode` can be used side by side.

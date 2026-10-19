@@ -452,7 +452,7 @@ impl Checker {
             return candidates;
         }
 
-        if !decl.path.segments.is_empty() {
+        if !decl.publishes_file_items() {
             return candidates;
         }
 
@@ -896,7 +896,7 @@ impl Checker {
 
         // --- User module path ---
         if let Some(ref resolved_items) = decl.resolved_items {
-            if decl.path.segments.is_empty() {
+            if decl.publishes_file_items() {
                 if self.flat_file_import_already_registered(decl) {
                     return target;
                 }

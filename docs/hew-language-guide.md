@@ -4307,7 +4307,20 @@ its `pub` items are bound unqualified in the importing file, while its private
 items, including a `fn main` that lets the file run on its own, stay inside it.
 Two imported files may each keep a private `helper` or `const WIDTH` without
 clashing; two that both publish the same `pub` name are refused as an import
-binding collision.
+binding collision. Alias them to keep both:
+
+```hew,ignore
+import "codecs/huffman.hew" as huffman;
+import "codecs/rle.hew" as rle;
+
+fn main() {
+    println(huffman.encode("aab"));
+    println(rle.encode("aab"));
+}
+```
+
+An aliased file import binds only the module name, so its items are always
+written qualified (`huffman.encode`).
 
 A dotted import names a module by its path: `import a.b.c;` finds
 `a/b/c.hew` beside the importing file or from its package root (never in the

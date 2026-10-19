@@ -1383,13 +1383,13 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
-            // Whole-module alias (`import path as alias;`). The parser only
-            // accepts this for the whole-module form, so it never coexists
-            // with a `::{ }` / `::*` spec.
-            if let Some(alias) = &decl.module_alias {
-                self.write(" as ");
-                self.write_ident(*alias);
-            }
+        }
+        // Whole-module alias (`import path as alias;`, `import "f.hew" as
+        // alias;`). The parser only accepts this for the whole-module and
+        // file forms, so it never coexists with a `.{ }` spec.
+        if let Some(alias) = &decl.module_alias {
+            self.write(" as ");
+            self.write_ident(*alias);
         }
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }

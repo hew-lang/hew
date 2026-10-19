@@ -88,8 +88,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
         // so it is listed as an ordinary attribute rather than folded into
         // `SUBSTRATE_POSITIONS`.
         "returns_receiver" => &[TraitMethod, ImplMethod],
-        "lang_item" | "intrinsic" | "diagnostic_item" | "overload" | "runtime_capability"
-        | "abi" => SUBSTRATE_POSITIONS,
+        "lang_item" | "intrinsic" | "runtime_capability" => SUBSTRATE_POSITIONS,
         _ => return None,
     })
 }

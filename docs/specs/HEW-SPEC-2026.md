@@ -8440,9 +8440,7 @@ free function.
 **Substrate attributes** carry compiler-internal identity and are legal only
 inside `std/`. A program that names one outside the standard library gets
 `E_UNKNOWN_ATTRIBUTE` in the same way an invented name does:
-`#[lang_item(...)]`, `#[intrinsic(...)]`, `#[diagnostic_item(...)]`,
-`#[overload(...)]`, `#[runtime_capability(...)]`, `#[returns_receiver]`,
-`#[abi(...)]`.
+`#[lang_item(...)]`, `#[intrinsic(...)]`, `#[runtime_capability(...)]`.
 
 **Attributes removed in this edition:**
 

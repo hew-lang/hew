@@ -825,6 +825,18 @@ impl Checker {
             }
             Item::Supervisor(supervisor) => {
                 let identity = self.declaration_identity(supervisor.name);
+                // A private module supervisor never passes through the pub-only
+                // import paths, yet its own module spawns it and reads its
+                // children. Register it here exactly as a private module actor
+                // is registered above; the importer's view is still gated by
+                // the visibility recorded for the declaration.
+                if self.current_module.is_some()
+                    && self
+                        .type_def_at(&identity)
+                        .is_none_or(|definition| definition.kind != TypeDefKind::Supervisor)
+                {
+                    self.register_supervisor_decl_as(supervisor, &identity);
+                }
                 let scope = self.enter_primary_sig_scope(&[(Some(&supervisor.type_params), None)]);
                 for method in &supervisor.methods {
                     self.register_fn_sig_with_name(

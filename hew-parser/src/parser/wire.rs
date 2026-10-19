@@ -303,6 +303,7 @@ impl Parser<'_> {
         let mut seen_explicit_numbers = std::collections::HashSet::new();
 
         while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
+            let mut doc_comment = self.collect_doc_comments();
             // Check for `reserved @N, @M, ...;`
             if self.peek() == Some(&Token::Reserved) {
                 self.advance();
@@ -333,6 +334,9 @@ impl Parser<'_> {
             // Parse field: [#[serial(..)]] name: Type [@N] [modifiers];
             let field_start = self.peek_span().start;
             let mut attributes = self.parse_attributes();
+            if doc_comment.is_none() {
+                doc_comment = self.collect_doc_comments();
+            }
             self.validate_attributes_for(&attributes, AttrPosition::Field);
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
@@ -365,7 +369,7 @@ impl Parser<'_> {
                 name: field_name,
                 ty,
                 attributes,
-                doc_comment: None,
+                doc_comment,
                 span: field_start..self.last_token_end,
             });
             field_meta.push((

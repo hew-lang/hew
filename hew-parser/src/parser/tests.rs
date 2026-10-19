@@ -2826,6 +2826,37 @@ fn parse_gen_without_block_emits_diagnostic() {
 }
 
 #[test]
+fn wire_fields_preserve_docs_on_either_side_of_attributes() {
+    let result = parse(
+        "#[wire] type Message {\n\
+         /// Public identifier.\n\
+         #[serial(key = \"id\")] identifier: i64 @1;\n\
+         #[serial(key = \"body\")]\n\
+         /// Message body.\n\
+         body: string @2;\n\
+         }",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+        panic!("expected wire record");
+    };
+    for (item, expected) in decl
+        .body
+        .iter()
+        .zip(["Public identifier.", "Message body."])
+    {
+        let TypeBodyItem::Field { doc_comment, .. } = item else {
+            panic!("expected wire field");
+        };
+        assert_eq!(doc_comment.as_deref(), Some(expected));
+    }
+    let wire = decl.wire.as_ref().expect("wire metadata");
+    assert_eq!(wire.field_meta.len(), 2);
+    assert_eq!(wire.field_meta[0].field_number, 1);
+    assert_eq!(wire.field_meta[1].field_number, 2);
+}
+
+#[test]
 fn parse_wire_struct_preserves_since_modifier() {
     let source = "\
 #[wire]

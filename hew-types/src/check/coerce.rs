@@ -777,7 +777,7 @@ impl Checker {
             };
             fillers.extend(impl_method.map(|impl_method| (slot.method, impl_method)));
         }
-        self.record_dyn_slot_obligations(traits, &fillers, span);
+        self.record_dyn_slot_obligations(traits, &fillers, concrete_type, span);
         let target = self.dyn_coercion_target(traits, span)?;
         Some(DynCoercion {
             target,

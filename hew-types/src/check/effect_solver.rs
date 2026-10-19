@@ -622,7 +622,19 @@ impl<'a> EffectSolver<'a> {
             },
         );
         let mut instances = Vec::new();
-        for (actuals, boundary) in contexts {
+        for (mut actuals, boundary) in contexts {
+            if let (
+                EffectBody::Declaration(declaration),
+                super::ObligationSlot::Dyn { receiver, .. },
+            ) = (&obligation.body, &obligation.slot)
+            {
+                let receiver_actuals =
+                    self.checker
+                        .receiver_cleanup_substitutions(*declaration, receiver, &actuals);
+                actuals.extend(receiver_actuals);
+                self.checker
+                    .complete_associated_schema_substitutions(&mut actuals);
+            }
             let body = self.intern(Self::instance(&obligation.body, &actuals, true, false));
             let captures = obligation
                 .once

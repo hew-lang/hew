@@ -4149,3 +4149,22 @@ fn main() {{ let values: {container} = {value}; demand(values); }}
         );
     }
 }
+
+#[test]
+fn dyn_vector_iterator_slots_use_concrete_element_cleanup() {
+    let source = r"
+fn erase<T>(consume cursor: VecIter<T>) -> dyn DoubleEndedIterator<Item = T> {
+    cursor
+}
+fn main() {
+    var direct: dyn DoubleEndedIterator<Item = i64> = [1, 2].into_iter();
+    let _ = direct.next();
+    let _ = direct.next_back();
+    var forwarded = erase([3, 4].into_iter());
+    let _ = forwarded.next();
+    let _ = forwarded.next_back();
+}
+";
+    let output = check_source_with_stdlib(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}

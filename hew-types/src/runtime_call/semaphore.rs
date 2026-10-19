@@ -40,7 +40,7 @@ impl SemaphoreOp {
     #[must_use]
     pub const fn contract(self) -> RuntimeSemanticContract {
         const HANDLE: RuntimeArgumentContract = RuntimeArgumentContract {
-            ty: RuntimeValueKind::NamedOpaque("std.semaphore.SemaphoreHandle"),
+            ty: RuntimeValueKind::NominalArgument("std.semaphore.SemaphoreHandle"),
             effect: RuntimeArgumentEffect::Borrow,
         };
         RuntimeSemanticContract {

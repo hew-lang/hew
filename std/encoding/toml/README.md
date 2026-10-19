@@ -67,6 +67,13 @@ fn main() {
     server.set("name", toml.from_string("api")).expect("table");
     doc.set("server", server).expect("table");
     println(doc.stringify().expect("table root")); // [server]\nname = "api"\n
+    let original = toml.parse("port = 8000").expect("valid TOML");
+    var edited = original;
+    edited.set("port", toml.from_int(9000)).expect("table");
+    let old_port = original.get_field("port").expect("table").expect("port");
+    let new_port = edited.get_field("port").expect("table").expect("port");
+    assert(old_port.get_int().expect("integer") == 8000);
+    assert(new_port.get_int().expect("integer") == 9000);
 }
 ```
 

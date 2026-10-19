@@ -3,9 +3,17 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 //! Hew runtime: counting semaphore for concurrency control.
+//!
+//! Count transitions and cleanup are shared across targets. Blocking acquire
+//! operations remain native-only; the WASM capability checker rejects them.
 
-use crate::util::{CondvarExt, MutexExt};
-use std::sync::{Condvar, Mutex};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::util::CondvarExt;
+use crate::util::MutexExt;
+#[cfg(not(target_arch = "wasm32"))]
+use std::sync::Condvar;
+use std::sync::Mutex;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 // ── Counting semaphore ──────────────────────────────────────────────────
@@ -14,6 +22,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug)]
 pub struct HewSemaphore {
     count: Mutex<i32>,
+    #[cfg(not(target_arch = "wasm32"))]
     condvar: Condvar,
 }
 
@@ -29,6 +38,7 @@ pub extern "C" fn hew_semaphore_new(initial_count: i32) -> *mut HewSemaphore {
     Box::into_raw(Box::new(HewSemaphore {
         // ALLOCATOR-PAIRING: GlobalAlloc
         count: Mutex::new(initial_count),
+        #[cfg(not(target_arch = "wasm32"))]
         condvar: Condvar::new(),
     }))
 }
@@ -40,6 +50,7 @@ pub extern "C" fn hew_semaphore_new(initial_count: i32) -> *mut HewSemaphore {
 /// # Safety
 ///
 /// `sem` must be a valid pointer returned by [`hew_semaphore_new`].
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_semaphore_acquire(sem: *mut HewSemaphore) {
     if sem.is_null() {
@@ -59,6 +70,7 @@ pub unsafe extern "C" fn hew_semaphore_acquire(sem: *mut HewSemaphore) {
 
 /// How long one native wait for a releasing peer lasts before re-checking the
 /// count; `release` notifies, so this only bounds a missed notification.
+#[cfg(not(target_arch = "wasm32"))]
 const PEER_WAIT: Duration = Duration::from_secs(1);
 
 /// Try to decrement the semaphore count without blocking.
@@ -92,6 +104,7 @@ pub unsafe extern "C" fn hew_semaphore_try_acquire(sem: *mut HewSemaphore) -> i3
 /// # Safety
 ///
 /// `sem` must be a valid pointer returned by [`hew_semaphore_new`].
+#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 #[expect(
     clippy::cast_sign_loss,
@@ -144,6 +157,7 @@ pub unsafe extern "C" fn hew_semaphore_release(sem: *mut HewSemaphore) {
     let mut guard = sem.count.lock_or_recover();
     *guard += 1;
     drop(guard);
+    #[cfg(not(target_arch = "wasm32"))]
     sem.condvar.notify_one();
 }
 
@@ -186,7 +200,7 @@ pub unsafe extern "C" fn hew_semaphore_free(sem: *mut HewSemaphore) {
 
 // ── Tests ───────────────────────────────────────────────────────────────
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use std::thread;

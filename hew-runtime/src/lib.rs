@@ -674,7 +674,6 @@ pub mod request_deadline;
 pub(crate) mod request_state;
 /// Where a runnable actor goes, per target.
 pub(crate) mod resume;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod semaphore;
 
 /// Owned I/O operations behind waiting calls. wasm32 compiles only standard

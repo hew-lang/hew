@@ -90,6 +90,28 @@ fn main() {
     assert_eq!(wasm.stdout, b"hew\n");
 }
 
+/// Nonblocking permits use the same count transitions and resource cleanup on
+/// both targets. Blocking acquire methods retain their WASM diagnostic.
+#[test]
+fn semaphore_nonblocking_operations_run_on_native_and_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let source = repo_root().join("tests/vertical-slice/accept/semaphore_nonblocking.hew");
+    for (target, output) in [
+        ("native", support::run_bounded_hew_run(&source, repo_root())),
+        ("WASI", run_wasi_example(&source)),
+    ] {
+        assert!(
+            output.status.success(),
+            "{target} semaphore failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(output.stdout, b"semaphore ok\n");
+        assert!(output.stderr.is_empty());
+    }
+}
+
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();

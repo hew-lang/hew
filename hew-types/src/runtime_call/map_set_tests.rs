@@ -206,3 +206,22 @@ fn set_updates_return_presence_and_adopt_an_owned_element() {
     ));
     assert!(!elements.invalidates_collection_element_aliases());
 }
+
+#[test]
+fn collection_updates_keep_their_inputs_when_a_key_callback_faults() {
+    // The runtime runs the key's Hash and Eq before it commits anything, so a
+    // callback fault leaves the receiver and every input with the caller.
+    for family in [
+        RuntimeCallFamily::Map(MapValueOp::Insert),
+        RuntimeCallFamily::Map(MapValueOp::Remove),
+        RuntimeCallFamily::Set(SetValueOp::Insert),
+        RuntimeCallFamily::Set(SetValueOp::Remove),
+    ] {
+        let contract = family.semantic_contract().unwrap();
+        assert_eq!(
+            contract.failures,
+            [crate::RuntimeLogicalFailure::CallbackFault]
+        );
+        assert!(contract.preserves_inputs_on_failure(), "{family:?}");
+    }
+}

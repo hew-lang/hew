@@ -1,0 +1,10 @@
+[[case]]
+id = "var-self-map-field-insert"
+intent = "A `var self` method inserts into and removes from HashMap and HashSet fields in place, and the caller observes every update."
+source = "cases/var-self-map-field-insert.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2 1 true\n3\n"
+exit = 0

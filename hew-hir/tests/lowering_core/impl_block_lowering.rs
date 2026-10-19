@@ -316,11 +316,11 @@ fn projected_impl_conditions_lower_local_and_imported_methods() {
     );
     for (label, program) in [("local", local), ("imported", imported)] {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let checked = checker.check_program(&program);
-        assert!(checked.errors.is_empty(), "{label}: {:?}", checked.errors);
+        let typing = checker.check_program(&program);
+        assert!(typing.errors.is_empty(), "{label}: {:?}", typing.errors);
         let output = lower_program(
             &program,
-            &checked,
+            &typing,
             &ResolutionCtx,
             hew_hir::TargetArch::host(),
         );

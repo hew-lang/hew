@@ -1,0 +1,85 @@
+trait Step { fn tick(self); }
+type ReadyStep {}
+type WaitingStep {}
+
+impl Step for ReadyStep { fn tick(self) {} }
+impl Step for WaitingStep { fn tick(self) { sleep(1ms); } }
+
+type Cursor<T> { remaining: i64; step: T; }
+
+impl<T: Step> Iterator for Cursor<T> {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        self.step.tick();
+        if self.remaining == 0 { .None } else {
+            self.remaining -= 1;
+            .Some(1)
+        }
+    }
+}
+
+type ReadyIterable { remaining: i64; }
+type WaitingIterable { remaining: i64; }
+
+impl IntoIterator for ReadyIterable {
+    type Item = i64;
+    type IntoIter = Cursor<ReadyStep>;
+
+    fn into_iter(self) -> Cursor<ReadyStep> {
+        Cursor { remaining: self.remaining, step: ReadyStep {} }
+    }
+}
+
+impl IntoIterator for WaitingIterable {
+    type Item = i64;
+    type IntoIter = Cursor<ReadyStep>;
+
+    fn into_iter(self) -> Cursor<ReadyStep> {
+        sleep(1ms);
+        Cursor { remaining: self.remaining, step: ReadyStep {} }
+    }
+}
+
+fn make<T>(value: T) -> T { value }
+
+fn cursor_total<I>(cursor: I) -> i64 where I: Iterator<Item = i64> {
+    var total = 0;
+    for value in cursor { total += value; }
+    total
+}
+
+fn iterable_total<I>(input: I) -> i64 where I: IntoIterator<Item = i64> {
+    var total = 0;
+    for value in input { total += value; }
+    total
+}
+
+fn ready_cursor_total() -> i64 {
+    cursor_total(Cursor { remaining: 2, step: ReadyStep {} })
+}
+fn waiting_cursor_total() -> i64 {
+    cursor_total(Cursor { remaining: 3, step: WaitingStep {} })
+}
+fn ready_iterable_total() -> i64 { iterable_total(ReadyIterable { remaining: 4 }) }
+fn waiting_iterable_total() -> i64 { iterable_total(WaitingIterable { remaining: 5 }) }
+
+fn factory_iterable_total() -> i64 {
+    var total = 0;
+    for value in make(WaitingIterable { remaining: 6 }) { total += value; }
+    total
+}
+
+fn main() -> i64 {
+    let ready_cursor: fn() -> i64 = ready_cursor_total;
+    let waiting_cursor: fn[suspends]() -> i64 = waiting_cursor_total;
+    let ready_iterable: fn() -> i64 = ready_iterable_total;
+    let waiting_iterable: fn[suspends]() -> i64 = waiting_iterable_total;
+    let factory_iterable: fn[suspends]() -> i64 = factory_iterable_total;
+    if ready_cursor() == 2 && waiting_cursor() == 3 &&
+        ready_iterable() == 4 && waiting_iterable() == 5 && factory_iterable() == 6 {
+        0
+    } else {
+        1
+    }
+}

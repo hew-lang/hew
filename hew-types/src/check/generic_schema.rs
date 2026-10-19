@@ -185,6 +185,36 @@ impl AssociatedTypeSchemas {
 }
 
 impl Checker {
+    /// Complete an effect instance's type actuals with the declaration-owned
+    /// binders for associated projections such as `I.IntoIter`.
+    pub(super) fn complete_associated_schema_substitutions(
+        &self,
+        substitutions: &mut HashMap<crate::ParamHead, Ty>,
+    ) {
+        // A projection can itself be the base of another projection. Each
+        // pass adds only declaration-owned binders not already supplied, so
+        // completion terminates after at most the number of registered keys.
+        loop {
+            let associated = self
+                .associated_schema_parameters
+                .parameters
+                .iter()
+                .filter_map(|((base, trait_id, associated), parameter)| {
+                    if substitutions.contains_key(parameter) {
+                        return None;
+                    }
+                    let actual = substitutions.get(base)?;
+                    let projected = self.project_associated_type(actual, *trait_id, *associated);
+                    Some((*parameter, self.finalize_type_for_handoff(&projected)))
+                })
+                .collect::<Vec<_>>();
+            if associated.is_empty() {
+                break;
+            }
+            substitutions.extend(associated);
+        }
+    }
+
     pub(super) fn prepare_associated_schema_parameters(&mut self) {
         let mut projections = std::collections::BTreeSet::new();
         let saved_module = self.current_module.clone();

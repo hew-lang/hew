@@ -715,6 +715,21 @@ fn checked_for_loops_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn implicit_iterator_suspension_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "implicit_iterator_suspension",
+            source_rel: "tests/core-acceptance/cases/iterator-implicit-suspension.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn hashset_iteration_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

@@ -89,6 +89,38 @@ struct Invocation {
     source_module: Option<String>,
 }
 
+/// A loop performs two distinct calls at one iterable expression. Keep those
+/// calls separate from an authored call at that same span.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum EffectCallSite {
+    Authored(SpanKey),
+    ForIntoIter(SpanKey),
+    ForNext(SpanKey),
+}
+
+impl EffectCallSite {
+    fn diagnostic_span(&self) -> &SpanKey {
+        match self {
+            Self::Authored(key) | Self::ForIntoIter(key) | Self::ForNext(key) => key,
+        }
+    }
+
+    fn authored_span(&self) -> Option<&SpanKey> {
+        match self {
+            Self::Authored(key) => Some(key),
+            Self::ForIntoIter(_) | Self::ForNext(_) => None,
+        }
+    }
+
+    fn order(&self) -> u8 {
+        match self {
+            Self::Authored(_) => 0,
+            Self::ForIntoIter(_) => 1,
+            Self::ForNext(_) => 2,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingForkTransfer {
     required: crate::traits::MarkerTrait,
@@ -137,7 +169,7 @@ pub(super) struct EffectGraph {
     pub bodies: HashMap<EffectBody, bool>,
     /// The construct or call that first made each body suspend.
     witnesses: HashMap<EffectBody, String>,
-    calls: HashMap<SpanKey, Invocation>,
+    calls: HashMap<EffectCallSite, Invocation>,
     /// Every authored call the body checker visited, including unresolved
     /// calls. Imported-body eligibility refuses a body missing a selected
     /// target instead of inferring one from the callee spelling.
@@ -151,6 +183,32 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
+    fn effect_for_method(&self, site: &EffectCallSite) -> Option<&super::types::CheckedForMethod> {
+        let plan = self.for_loop_plans.get(site.diagnostic_span())?;
+        match site {
+            EffectCallSite::ForIntoIter(_) => plan.into_iter.as_ref(),
+            EffectCallSite::ForNext(_) => Some(&plan.next),
+            EffectCallSite::Authored(_) => None,
+        }
+    }
+
+    fn effect_call_target(&self, site: &EffectCallSite) -> Option<&CallTarget> {
+        site.authored_span()
+            .and_then(|key| self.call_target(key))
+            .or_else(|| self.effect_for_method(site).map(|method| &method.target))
+    }
+
+    fn effect_trait_args(&self, site: &EffectCallSite) -> Option<&[Ty]> {
+        if let Some(method) = self.effect_for_method(site) {
+            return Some(&method.trait_args);
+        }
+        let key = site.authored_span()?;
+        match self.method_call_rewrites.get(key)? {
+            MethodCallRewrite::StaticTraitDispatch { trait_args, .. } => Some(trait_args),
+            _ => None,
+        }
+    }
+
     pub(super) fn record_iteration_effect(
         &mut self,
         span: &Span,
@@ -169,6 +227,36 @@ impl Checker {
             SpanKey::in_module(span, self.current_module_idx),
             ty.clone(),
         );
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if let Some(plan) = self.for_loop_plans.get(&key).cloned() {
+            let owner = self.effect_graph.current_body.clone();
+            let deferred = self.deferred_body.is_some();
+            let source_module = self.current_module.clone();
+            if plan.into_iter.is_some() {
+                self.effect_graph.calls.insert(
+                    EffectCallSite::ForIntoIter(key.clone()),
+                    Invocation {
+                        owner: owner.clone(),
+                        receiver: Some(ty.clone()),
+                        callee: None,
+                        name: "IntoIterator.into_iter(...)".to_string(),
+                        deferred,
+                        source_module: source_module.clone(),
+                    },
+                );
+            }
+            self.effect_graph.calls.insert(
+                EffectCallSite::ForNext(key),
+                Invocation {
+                    owner,
+                    receiver: Some(plan.cursor_type),
+                    callee: None,
+                    name: "Iterator.next(...)".to_string(),
+                    deferred,
+                    source_module,
+                },
+            );
+        }
     }
 
     pub(super) fn record_rendering_effect(&mut self, span: &Span, ty: &Ty) {
@@ -738,7 +826,7 @@ impl Checker {
                 _ => (None, "send".to_string()),
             };
             self.effect_graph.calls.insert(
-                key,
+                EffectCallSite::Authored(key),
                 Invocation {
                     owner: self.effect_graph.current_body.clone(),
                     receiver: match expr {
@@ -846,7 +934,10 @@ impl Checker {
             }
         }
         for (key, owner) in &self.effect_graph.seen_calls {
-            if self.effect_graph.calls.contains_key(key)
+            if self
+                .effect_graph
+                .calls
+                .contains_key(&EffectCallSite::Authored(key.clone()))
                 || self.effect_graph.construct_calls.contains(key)
             {
                 continue;
@@ -862,7 +953,9 @@ impl Checker {
             let Some(callees) = result.get_mut(owner) else {
                 continue;
             };
-            if let Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) = self.call_target(key) {
+            if let Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) =
+                self.effect_call_target(key)
+            {
                 callees.push(*id);
             }
         }
@@ -876,7 +969,7 @@ impl Checker {
     fn call_cleanup_substitutions(
         &self,
         declaration: crate::DefId,
-        key: &SpanKey,
+        site: &EffectCallSite,
         receiver: Option<&Ty>,
         enclosing: &HashMap<crate::ParamHead, Ty>,
     ) -> HashMap<crate::ParamHead, Ty> {
@@ -907,20 +1000,22 @@ impl Checker {
             .filter(|parameter| !substitutions.contains_key(parameter))
             .collect();
         substitutions.extend(
-            parameters
-                .into_iter()
-                .zip(
-                    self.call_type_args
-                        .get(key)
-                        .into_iter()
-                        .flatten()
-                        .map(|ty| {
-                            self.subst
-                                .resolve(ty)
-                                .substitute_type_params_parallel(enclosing)
-                        }),
-                ),
+            parameters.into_iter().zip(
+                site.authored_span()
+                    .and_then(|key| self.call_type_args.get(key))
+                    .into_iter()
+                    .flatten()
+                    .map(|ty| {
+                        self.subst
+                            .resolve(ty)
+                            .substitute_type_params_parallel(enclosing)
+                    }),
+            ),
         );
+        // A checked `for` can call `next` on an associated cursor such as
+        // `I.IntoIter`. Its binder belongs to the same generic declaration;
+        // instantiate it from the actual `I` before resolving that call.
+        self.complete_associated_schema_substitutions(&mut substitutions);
         substitutions
     }
 
@@ -1039,7 +1134,10 @@ impl Checker {
                 .seen_calls
                 .iter()
                 .filter(|(key, _)| {
-                    !graph.calls.contains_key(*key) && !graph.construct_calls.contains(*key)
+                    !graph
+                        .calls
+                        .contains_key(&EffectCallSite::Authored((*key).clone()))
+                        && !graph.construct_calls.contains(*key)
                 })
                 .filter_map(|(key, owner)| Some((key.clone(), owner.clone()?)))
                 .collect(),
@@ -1055,11 +1153,14 @@ impl Checker {
                 SuspensionEffect::from_bool(conservative.contains_key(body)),
             );
         }
-        for (key, invocation) in &graph.calls {
-            let suspends = calls[key];
-            output
-                .calls
-                .insert(key.clone(), SuspensionEffect::from_bool(suspends));
+        for (site, invocation) in &graph.calls {
+            let key = site.diagnostic_span();
+            let suspends = calls[site];
+            if let Some(key) = site.authored_span() {
+                output
+                    .calls
+                    .insert(key.clone(), SuspensionEffect::from_bool(suspends));
+            }
             if suspends && invocation.deferred {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidOperation,

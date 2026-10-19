@@ -1,0 +1,30 @@
+type SlowCursor { remaining: i64; }
+
+impl Iterator for SlowCursor {
+    type Item = i64;
+
+    fn next(var self) -> Option<i64> {
+        sleep(1ms);
+        if self.remaining == 0 {
+            .None
+        } else {
+            self.remaining = self.remaining - 1;
+            .Some(1)
+        }
+    }
+}
+
+fn total<I>(cursor: I) -> i64 where I: Iterator<Item = i64> {
+    var count = 0;
+    for value in cursor {
+        count = count + value;
+    }
+    count
+}
+
+fn run() -> i64 { total(SlowCursor { remaining: 2 }) }
+
+fn main() -> i64 {
+    let callback: fn() -> i64 = run;
+    callback()
+}

@@ -169,6 +169,7 @@ impl LowerCtx {
                     &call.target,
                     &receiver_ty,
                     span,
+                    None,
                     direct.site,
                 );
                 return Some(direct);
@@ -182,6 +183,7 @@ impl LowerCtx {
                 &call.target,
                 &receiver_ty,
                 span,
+                None,
                 result.site,
             );
         }

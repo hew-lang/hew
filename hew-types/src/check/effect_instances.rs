@@ -1,7 +1,8 @@
 //! Discharge written callable effects in the constructing generic instance.
 
 use super::{
-    CallTarget, Checker, EffectBody, EffectGraph, HashMap, HashSet, Invocation, SpanKey, Ty,
+    CallTarget, Checker, EffectBody, EffectCallSite, EffectGraph, HashMap, HashSet, Invocation,
+    SpanKey, Ty,
 };
 
 type Actuals = HashMap<crate::ParamHead, Ty>;
@@ -25,8 +26,8 @@ impl Checker {
                     .get(declaration)
                     .is_some_and(|sig| !sig.type_params.is_empty()) =>
             {
-                for (key, call) in &graph.calls {
-                    if !matches!(self.call_target(key), Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) if id == declaration)
+                for (site, call) in &graph.calls {
+                    if !matches!(self.effect_call_target(site), Some(CallTarget::User(id) | CallTarget::ImplMethod(id)) if id == declaration)
                     {
                         continue;
                     }
@@ -37,16 +38,15 @@ impl Checker {
                     for (actuals, boundary) in enclosing {
                         let applied = self.call_cleanup_substitutions(
                             *declaration,
-                            key,
+                            site,
                             call.receiver.as_ref(),
                             &actuals,
                         );
                         contexts.push((
                             applied,
-                            Some(
-                                boundary
-                                    .unwrap_or_else(|| (key.clone(), call.source_module.clone())),
-                            ),
+                            Some(boundary.unwrap_or_else(|| {
+                                (site.diagnostic_span().clone(), call.source_module.clone())
+                            })),
                         ));
                     }
                 }
@@ -66,14 +66,14 @@ impl Checker {
 
     pub(super) fn instantiated_effect_target(
         &self,
-        key: &SpanKey,
+        site: &EffectCallSite,
         call: &Invocation,
         actuals: &Actuals,
     ) -> Option<(crate::DefId, Actuals)> {
-        match self.call_target(key)? {
+        match self.effect_call_target(site)? {
             CallTarget::User(id) | CallTarget::ImplMethod(id) => Some((
                 *id,
-                self.call_cleanup_substitutions(*id, key, call.receiver.as_ref(), actuals),
+                self.call_cleanup_substitutions(*id, site, call.receiver.as_ref(), actuals),
             )),
             CallTarget::StaticTraitMethod {
                 declaring_trait,
@@ -86,12 +86,8 @@ impl Checker {
                     .substitute_type_params_parallel(actuals);
                 let receiver = crate::ResolvedTy::from_ty(&receiver).ok()?;
                 let instance = receiver.impl_receiver_instance(&self.defs)?;
-                let super::MethodCallRewrite::StaticTraitDispatch { trait_args, .. } =
-                    self.method_call_rewrites.get(key)?
-                else {
-                    return None;
-                };
-                let trait_args: Vec<_> = trait_args
+                let trait_args: Vec<_> = self
+                    .effect_trait_args(site)?
                     .iter()
                     .map(|ty| {
                         self.subst
@@ -124,7 +120,7 @@ impl Checker {
                         )?;
                         let mut applied = self.call_cleanup_substitutions(
                             declaration,
-                            key,
+                            site,
                             call.receiver.as_ref(),
                             actuals,
                         );

@@ -905,6 +905,7 @@ impl LowerCtx {
                         &target,
                         &receiver_ty,
                         &span,
+                        Some(&span),
                         site,
                     );
                     let lowered_args = self.lower_call_args(args, &span);
@@ -952,6 +953,7 @@ impl LowerCtx {
                     &target,
                     &lowered_receiver.ty,
                     &span,
+                    Some(&span),
                     site,
                 );
                 let method_args = self.lower_call_args(args, &span);
@@ -1263,6 +1265,7 @@ impl LowerCtx {
                                 // receiver type will be the concrete self type
                                 &self_ty,
                                 &span,
+                                Some(&span),
                                 site,
                             );
                             let preserves_receiver = returns_receiver_identity

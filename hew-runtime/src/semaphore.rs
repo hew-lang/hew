@@ -131,6 +131,22 @@ pub extern "C" fn hew_semaphore_new(initial_count: i32) -> *mut HewSemaphore {
     }))
 }
 
+/// Create a separately owned handle to the same permit count and wait queue.
+/// Release each handle independently with `hew_semaphore_free`.
+///
+/// # Safety
+/// `sem` must be a live semaphore handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_semaphore_clone(sem: *const HewSemaphore) -> *mut HewSemaphore {
+    if sem.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: caller holds the live handle while its shared backing is cloned.
+    Box::into_raw(Box::new(HewSemaphore {
+        state: unsafe { &*sem }.state.clone(),
+    }))
+}
+
 /// Begin acquiring a permit without blocking. A negative timeout means no
 /// deadline; zero still permits an immediate acquisition.
 ///
@@ -400,6 +416,31 @@ pub unsafe extern "C" fn hew_semaphore_free(sem: *mut HewSemaphore) {
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn cloned_handles_share_permits_and_survive_independent_close() {
+        let original = hew_semaphore_new(0);
+        // SAFETY: each returned Box is a distinct owner; the operation keeps
+        // its backing after the original handle closes.
+        unsafe {
+            let waiting = hew_semaphore_clone(original);
+            let releasing = hew_semaphore_clone(original);
+            assert_ne!(waiting, original);
+            assert_ne!(releasing, original);
+            assert_ne!(waiting, releasing);
+            let (ready, waker) = crate::wake::blocking::Readiness::new();
+            let operation = hew_semaphore_acquire_new(waiting, -1, waker.descriptor());
+            assert_eq!(hew_semaphore_acquire_status(operation), PENDING);
+            hew_semaphore_free(original);
+            hew_semaphore_free(waiting);
+            hew_semaphore_release(releasing);
+            assert!(ready.take_ready());
+            assert_eq!(hew_semaphore_acquire_take(operation), 1);
+            hew_semaphore_acquire_free(operation);
+            assert_eq!(hew_semaphore_count(releasing), 0);
+            hew_semaphore_free(releasing);
+        }
+    }
 
     #[test]
     fn release_reserves_one_permit_and_abandonment_hands_it_on() {

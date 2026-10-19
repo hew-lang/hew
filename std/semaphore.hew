@@ -16,6 +16,9 @@
 //!     sem.close();
 //! }
 //! ```
+//!
+//! Call `clone()` explicitly to share one permit count. Each returned handle
+//! closes independently; assigning a semaphore does not create another owner.
 
 /// An opaque counting semaphore handle.
 ///
@@ -87,6 +90,15 @@ impl SemaphoreMethods for Semaphore {
 }
 
 impl Semaphore {
+    /// Create an independently owned handle to this semaphore.
+    ///
+    /// Both handles share one permit count. Close each handle separately.
+    fn clone(self) -> Semaphore {
+        unsafe {
+            Semaphore { handle: hew_semaphore_clone(self.handle) }
+        }
+    }
+
     /// Release this semaphore early.
     fn close(consume self) {
         unsafe {
@@ -119,6 +131,7 @@ pub fn new(count: i64) -> Semaphore {
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
     fn hew_semaphore_new(initial_count: i32) -> SemaphoreHandle;
+    fn hew_semaphore_clone(sem: SemaphoreHandle) -> SemaphoreHandle;
     fn hew_semaphore_acquire(sem: SemaphoreHandle);
     fn hew_semaphore_try_acquire(sem: SemaphoreHandle) -> bool;
     fn hew_semaphore_acquire_timeout(sem: SemaphoreHandle, timeout_ms: i64) -> bool;

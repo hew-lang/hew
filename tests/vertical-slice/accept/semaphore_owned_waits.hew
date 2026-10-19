@@ -1,6 +1,27 @@
 import std.semaphore;
 
+fn release_after_yield(consume sem: semaphore.Semaphore) {
+    sleep(1ms);
+    sem.release();
+    sem.close();
+}
+
+fn queued_clone_wait() {
+    let original = semaphore.new(0);
+    let waiting = original.clone();
+    let releasing = original.clone();
+    scope {
+        let producer = fork release_after_yield(releasing);
+        original.close();
+        waiting.acquire();
+        await producer;
+    };
+    assert(waiting.count() == 0);
+    waiting.close();
+}
+
 fn main() {
+    queued_clone_wait();
     let sem = semaphore.new(1);
     sem.acquire();
     assert(sem.count() == 0);

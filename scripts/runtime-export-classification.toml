@@ -550,6 +550,7 @@ stable = [
   "hew_select_ready_index",
   "hew_semaphore_acquire",
   "hew_semaphore_acquire_timeout",
+  "hew_semaphore_clone",
   "hew_semaphore_count",
   "hew_semaphore_free",
   "hew_semaphore_new",
@@ -3504,6 +3505,16 @@ result = "none"
 params = ["borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_semaphore_clone"
+result = "fresh"
+params = ["borrow"]
+resource-result-type = "std.semaphore.SemaphoreHandle"
+release-symbol = "hew_semaphore_free"
+discharge-depth = "shallow"
+result-retention = "resource-transfer"
+result-retention-basis = "cloning the Arc backing creates a separate Box<HewSemaphore>; the caller alone owns that Box and frees it independently of the source handle"
 
 [[ownership.contracts]]
 symbol = "hew_semaphore_count"

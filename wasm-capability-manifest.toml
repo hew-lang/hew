@@ -216,10 +216,10 @@ categories = ["runtime", "scope"]
 
 [[feature]]
 id = "semaphore-non-blocking"
-label = "`semaphore.new`, `Semaphore.try_acquire/release/count/free`"
+label = "`semaphore.new`, `Semaphore.clone/try_acquire/release/count/close`"
 checker = "pass"
 runtime = "implemented"
-runtime_status = "Shared permit count and automatic cleanup"
+runtime_status = "Explicitly cloned affine handles share a permit count and close independently"
 categories = ["runtime", "semaphore"]
 
 [[feature]]

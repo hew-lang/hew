@@ -44,25 +44,9 @@ pub(crate) fn run_module(
     command.arg(module_path);
     command.args(program_args);
 
-    let mut child = command
-        .spawn()
-        .map_err(|e| format!("cannot launch wasmtime: {e}"))?;
-
-    #[cfg(unix)]
-    crate::signal::forward_signals_to_child(child.id());
-
-    let outcome = match timeout {
-        Some(timeout) => crate::process::wait_for_child_with_timeout(
-            &mut child,
-            timeout,
-            crate::process::TimeoutKillTarget::Child,
-        )?,
-        None => crate::process::ChildWaitOutcome::Exited(
-            child
-                .wait()
-                .map_err(|e| format!("cannot wait for wasmtime: {e}"))?,
-        ),
-    };
+    // Keep wasmtime in the terminal's foreground group so stdin remains
+    // readable. The CLI owns only its direct process in this mode.
+    let outcome = crate::process::run_command_interactive(&mut command, timeout, true)?;
 
     match outcome {
         crate::process::ChildWaitOutcome::Exited(status) => Ok(WasiRunOutcome::Exited(status)),

@@ -551,7 +551,7 @@ impl TemplateNames<'_> {
                             self.bind(*name);
                         }
                     }
-                    for name in &transition.event_bindings {
+                    for (name, _) in &transition.event_bindings {
                         self.bind(*name);
                     }
                     if let Some(guard) = &mut transition.guard {

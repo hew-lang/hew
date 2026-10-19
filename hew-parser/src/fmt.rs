@@ -2338,12 +2338,9 @@ impl<'a> Formatter<'a> {
     fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
         self.write("on ");
         self.write_ident(transition.event_name);
-        // Re-emit the `on E { a, b }:` head binding from the side-list. The
-        // parser splices a `let a = event.a;` prelude into the body for
-        // lowering; we strip that prelude below so it does not double up.
         if !transition.event_bindings.is_empty() {
             self.write(" { ");
-            for (i, name) in transition.event_bindings.iter().enumerate() {
+            for (i, (name, _)) in transition.event_bindings.iter().enumerate() {
                 if i > 0 {
                     self.write(", ");
                 }
@@ -2370,15 +2367,7 @@ impl<'a> Formatter<'a> {
             self.write(" when ");
             self.format_expr(guard);
         }
-        // Head bindings are parser-generated locals, not authored body statements.
-        let stripped_body;
-        let body_expr = if transition.event_bindings.is_empty() {
-            &transition.body.0
-        } else {
-            stripped_body =
-                Self::strip_event_binding_prelude(&transition.body.0, &transition.event_bindings);
-            &stripped_body
-        };
+        let body_expr = &transition.body.0;
         match transition.body_form {
             MachineTransitionBodyForm::Implicit => self.write(";"),
             MachineTransitionBodyForm::PayloadShorthand => {
@@ -2433,53 +2422,6 @@ impl<'a> Formatter<'a> {
                 }
             }
         }
-    }
-
-    /// Strip the leading `let <binding> = event.<binding>;` prelude statements
-    /// the parser splices in for an `on E { bindings }: …` head binding, so the
-    /// formatter can re-emit the head form without the desugar. If, after
-    /// stripping, only a tail expression remains, that tail becomes the body
-    /// (collapsing a one-line `on E { x }: S => T { Body }` back to its head form).
-    fn strip_event_binding_prelude(body: &Expr, bindings: &[Ident]) -> Expr {
-        let Expr::Block(block) = body else {
-            return body.clone();
-        };
-        // Count how many leading statements are the synthesized prelude lets.
-        let mut skip = 0;
-        for (stmt, _) in &block.stmts {
-            if skip >= bindings.len() {
-                break;
-            }
-            let Stmt::Let {
-                pattern: (Pattern::Identifier(name), _),
-                value: Some((Expr::FieldAccess { object, field }, _)),
-                ..
-            } = stmt
-            else {
-                break;
-            };
-            let is_event_field = matches!(&object.0, Expr::Ident(o) if o.name.as_str() == "event");
-            if is_event_field && *name == field.0 && bindings.contains(name) {
-                skip += 1;
-            } else {
-                break;
-            }
-        }
-        if skip == 0 {
-            return body.clone();
-        }
-        let remaining: Vec<Spanned<Stmt>> = block.stmts[skip..].to_vec();
-        // If only a tail expression remains, surface it directly so the body
-        // collapses to the canonical struct-init / identifier shorthand.
-        if remaining.is_empty() {
-            if let Some(tail) = &block.trailing_expr {
-                return tail.0.clone();
-            }
-        }
-        Expr::Block(Block {
-            stmts: remaining,
-            trailing_expr: block.trailing_expr.clone(),
-        })
     }
 
     fn format_machine_state_path(&mut self, path: &[Ident], leaf: Ident) {
@@ -7255,7 +7197,9 @@ supervisor Simple {
     }
 
     #[test]
-    fn transition_body_form_survives_head_binding_desugaring() {
+    fn transition_body_forms_keep_their_shape_under_a_head_binding() {
+        // A head binding changes nothing about how the guard and body print:
+        // each body form prints as it does without one.
         let src = "\
 machine Socket {
     events {
@@ -7265,34 +7209,16 @@ machine Socket {
     state Idle;
     state Active { h: Handle; }
 
-    on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }
-    on Connect { fd }: Active => Active { h: Handle { fd: fd } }
+    on Connect { fd }: Idle => _ when fd > 0 {
+        Socket.Active { h: Handle { fd: fd } }
+    }
+    on Connect { fd }: Active => Active when fd > 0 { h: Handle { fd: fd } }
     on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }
     on Connect { fd }: Active => Idle;
 }
 ";
         let formatted = roundtrip(src);
-        assert!(
-            formatted.contains(
-                "on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }"
-            ),
-            "computed-target block must retain its outer braces; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("on Connect { fd }: Active => Active { h: Handle { fd: fd } }"),
-            "payload shorthand must remain shorthand; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains(
-                "on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }"
-            ),
-            "a transition field list writes its spread base first; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("on Connect { fd }: Active => Idle;"),
-            "implicit transition must remain implicit; got:\n{formatted}"
-        );
-        assert_eq!(roundtrip(&formatted), formatted);
+        assert_eq!(formatted, src);
     }
 
     #[test]

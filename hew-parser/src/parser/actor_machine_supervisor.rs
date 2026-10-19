@@ -508,7 +508,7 @@ impl Parser<'_> {
         &mut self,
         rule_start: usize,
         event_name: Ident,
-    ) -> Option<Vec<Ident>> {
+    ) -> Option<Vec<Spanned<Ident>>> {
         let legacy = self.peek() == Some(&Token::LeftParen);
         let close_token = if legacy {
             Token::RightParen
@@ -519,7 +519,9 @@ impl Parser<'_> {
         self.advance();
         let mut binds = Vec::new();
         while !self.at_end() && self.peek() != Some(&close_token) {
-            binds.push(self.expect_ident()?);
+            let start = self.peek_span().start;
+            let name = self.expect_ident()?;
+            binds.push((name, start..self.last_token_end));
             if !self.eat(&Token::Comma) {
                 break;
             }
@@ -528,7 +530,7 @@ impl Parser<'_> {
         self.expect(&close_token)?;
         let names = binds
             .iter()
-            .map(ToString::to_string)
+            .map(|(name, _)| name.to_string())
             .collect::<Vec<_>>()
             .join(", ");
         if legacy {
@@ -563,9 +565,8 @@ impl Parser<'_> {
         let event_name = self.expect_ident()?;
 
         // Optional head binding: `on E { a, b }: …`. The names alias the
-        // event's payload fields so the body can reference them directly
-        // instead of `event.field`. Threaded into the body as a let-binding
-        // prelude by `apply_event_head_bindings`.
+        // event's payload fields so the guard and body can reference them
+        // directly instead of `event.field`. Machine normalization binds them.
         let head_bindings = match self.peek() {
             Some(Token::LeftBrace | Token::LeftParen) => {
                 self.parse_event_head_bindings(rule_start, event_name)?
@@ -666,17 +667,6 @@ impl Parser<'_> {
         if body_form != MachineTransitionBodyForm::Implicit {
             self.refuse_mark_after_body();
         }
-
-        let body = if head_bindings.is_empty() {
-            body
-        } else {
-            Self::apply_event_head_bindings(
-                &head_bindings,
-                body,
-                body_start..body_end,
-                self.contexts.at(&(rule_start..rule_start + 1)),
-            )
-        };
 
         Some(MachineTransition {
             event_name,
@@ -864,57 +854,6 @@ impl Parser<'_> {
         });
 
         Some(composite_name)
-    }
-
-    /// Rewrite a transition body so the named head bindings (`on E { a, b }: …`)
-    /// are in scope as `let a = event.a; let b = event.b;` prelude statements.
-    /// This lowers identically to writing `event.a` directly — no new HIR kind.
-    pub(crate) fn apply_event_head_bindings(
-        bindings: &[Ident],
-        body: Expr,
-        body_span: Span,
-        context: crate::ast::SyntaxContext,
-    ) -> Expr {
-        let mut stmts: Vec<Spanned<Stmt>> = Vec::with_capacity(bindings.len());
-        for name in bindings {
-            let value = Expr::FieldAccess {
-                object: Box::new((
-                    Expr::Ident(Ident {
-                        name: crate::ast::Symbol::intern("event"),
-                        ctx: context,
-                    }),
-                    0..0,
-                )),
-                field: (*name, 0..0),
-            };
-            stmts.push((
-                Stmt::Let {
-                    pattern: (Pattern::Identifier(*name), 0..0),
-                    ty: None,
-                    value: Some((value, 0..0)),
-                    else_block: None,
-                },
-                0..0,
-            ));
-        }
-        // Splice the prelude in front of the existing body. A bare expression /
-        // struct-init body becomes the block's tail; an existing block has the
-        // prelude prepended to its statements.
-        match body {
-            Expr::Block(mut block) => {
-                let mut all = stmts;
-                all.append(&mut block.stmts);
-                block.stmts = all;
-                Expr::Block(block)
-            }
-            other => Expr::Block(Block {
-                stmts,
-                // Keep the authored body span on the tail expression: the
-                // wrapper is a parser splice, and diagnostics on the body must
-                // still point at the source the author wrote.
-                trailing_expr: Some(Box::new((other, body_span))),
-            }),
-        }
     }
 
     /// Parse a state pattern: `_` (wildcard) or a state name, optionally a

@@ -2562,8 +2562,10 @@ fn main() {
 }
 ```
 
-The head binding `on Add { n }: ...` names the payload fields at the rule site;
-`event.n` is the equivalent spelling without it. The compiler generates a
+The head binding `on Add { n }: ...` names the payload fields for the whole
+rule, so the guard and the body both read `n`:
+`on Add { n }: Seed => Total when n > 0 { sum: n }`. `event.n` is the equivalent
+spelling without it. The compiler generates a
 companion event type `{MachineName}.Event` you can name in signatures and construct
 with `Acc.Event.Add { n: 1 }`.
 

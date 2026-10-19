@@ -453,12 +453,26 @@ fn direct_call_without_checker_target_fails_closed() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let mut tc_output = checker.check_program(&parsed.program);
-    let call_start = source.rfind("helper()").expect("helper call is in source");
-    let call_key = SpanKey {
-        start: call_start,
-        end: call_start + "helper()".len(),
-        module_idx: 0,
+    let main = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| match item {
+            hew_parser::ast::Item::Function(function) if function.name.name.as_str() == "main" => {
+                Some(function)
+            }
+            _ => None,
+        })
+        .expect("root main function");
+    let Some((hew_parser::ast::Expr::Call { function, .. }, call_span)) =
+        main.body.trailing_expr.as_deref()
+    else {
+        panic!("main must return the direct call under test");
     };
+    assert!(
+        matches!(&function.0, hew_parser::ast::Expr::Ident(name) if name.name.as_str() == "helper")
+    );
+    let call_key = SpanKey::from(call_span);
     assert!(
         tc_output.direct_call_targets.contains_key(&call_key),
         "checker must publish an ordinary-call target for helper()"

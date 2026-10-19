@@ -846,7 +846,8 @@ pub unsafe extern "C" fn hew_actor_construct_native(
                 .as_ref()
                 .expect("native completion")
                 .construction
-                .lock_or_recover() = Some(crate::coro_state::ConstructionWake::new(construction));
+                .lock_or_recover() =
+                Some(crate::coro_state::RetainedCancellation::new(construction));
             if mailbox::mailbox_is_closed(actor.mailbox.cast()) {
                 actor
                     .native_completion

@@ -3456,8 +3456,10 @@ mod tests {
             unsafe {
                 let actor = &*(*context).actor;
                 let invocation = actor.checked_invocation.load(Ordering::Acquire);
-                crate::coro_state::hew_coro_state_free(invocation.cast());
-                crate::actor_native::hew_actor_coro_set_fault(crate::fault::hew_fault_new(212));
+                crate::actor_native::hew_actor_coro_finish(
+                    invocation.cast(),
+                    crate::fault::hew_fault_new(212),
+                );
                 (*frame.cast::<crate::coro_exec::test_support::ScratchFrame>()).resume = None;
             }
         }

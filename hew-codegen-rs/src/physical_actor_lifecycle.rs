@@ -923,25 +923,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ramps[&hook],
             &args,
         )?;
-        let free_state = get_or_declare_external(
-            &self.llvm,
-            "hew_coro_state_free",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(free_state, &[child.into()], "")
-            .llvm_ctx("release completed lifecycle hook invocation state")?;
         let returned_fault = builder
             .build_load(ptr, fault, "hook.returned.fault")
             .llvm_ctx("read completed lifecycle hook fault")?;
-        let publish = get_or_declare_external(
+        let finish = get_or_declare_external(
             &self.llvm,
-            "hew_actor_coro_set_fault",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            "hew_actor_coro_finish",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
         builder
-            .build_call(publish, &[returned_fault.into()], "")
-            .llvm_ctx("publish lifecycle hook completion under current activation")?;
+            .build_call(finish, &[child.into(), returned_fault.into()], "")
+            .llvm_ctx("finish lifecycle hook under current activation")?;
         builder
             .build_unconditional_branch(frame.finish)
             .llvm_ctx("finish lifecycle hook frame")?;

@@ -14,6 +14,9 @@ actor Producer {
 
     receive gen fn held(consume gate: Stream<i64>, consume ready: Sink<i64>) -> string {
         total += 1;
+        // A reader-close cancellation must unwind this cleanup before the
+        // actor accepts its next handler.
+        defer { total += 100; }
         yield f"{label} {total}";
         ready.send(1).expect("ready");
         gate.recv().expect("must be cancelled");
@@ -60,7 +63,7 @@ fn main() {
         assert(entered.recv().expect("entered") == 1);
         break;
     }
-    assert(producer.total().expect("after close") == 23);
+    assert(producer.total().expect("after close") == 123);
     keep.close();
     entered.close();
 
@@ -68,7 +71,7 @@ fn main() {
     for value in producer.nested() {
         println(f"nested {value}");
     }
-    assert(producer.total().expect("after snapshot") == 23);
+    assert(producer.total().expect("after snapshot") == 123);
     stop(producer);
     stopped(producer);
     println("closed");

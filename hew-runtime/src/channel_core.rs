@@ -157,6 +157,11 @@ struct Inner {
     native_consumer: Option<NativeRegistration>,
     /// Checked producers parked on a full ring by [`ChannelCore::poll_send_envelope`].
     native_producers: Vec<NativeRegistration>,
+    /// The one checked actor invocation that owns this pipe's producer sink.
+    /// Its registration retains only cancellation and a waker, never a frame.
+    actor_stream_cancellation: Option<Arc<crate::coro_state::ActorStreamCancellation>>,
+    /// A pipe has one actor-stream producer association for its entire lifetime.
+    actor_stream_bound: bool,
 }
 
 /// Shared in-memory pipe state, held by `Arc` from BOTH the stream backing and
@@ -209,11 +214,61 @@ impl ChannelCore {
                 elem_layout: None,
                 native_consumer: None,
                 native_producers: Vec::new(),
+                actor_stream_cancellation: None,
+                actor_stream_bound: false,
             }),
             cv: Condvar::new(),
             #[cfg(test)]
             wait_probe: Mutex::new(None),
         }
+    }
+
+    /// Bind this pipe's unique actor-stream producer to its checked invocation.
+    /// Reader closure can then cancel that invocation even while it awaits on
+    /// an unrelated operation. Cancellation and waker callbacks always run
+    /// after releasing `inner`.
+    pub(crate) fn bind_actor_stream(
+        &self,
+        cancellation: Arc<crate::coro_state::ActorStreamCancellation>,
+    ) -> bool {
+        let already_closed;
+        {
+            let mut inner = self.locked();
+            if inner.actor_stream_bound {
+                return false;
+            }
+            inner.actor_stream_bound = true;
+            already_closed = inner.stream_closed;
+            if !already_closed {
+                inner.actor_stream_cancellation = Some(Arc::clone(&cancellation));
+            }
+        }
+        if already_closed {
+            cancellation.close_reader();
+        }
+        true
+    }
+
+    /// Remove this invocation's cancellation association. A close may already
+    /// have taken it; in either case, dropping the registration occurs outside
+    /// the channel lock.
+    pub(crate) fn unbind_actor_stream(
+        &self,
+        cancellation: &Arc<crate::coro_state::ActorStreamCancellation>,
+    ) {
+        let removed = {
+            let mut inner = self.locked();
+            if inner
+                .actor_stream_cancellation
+                .as_ref()
+                .is_some_and(|current| Arc::ptr_eq(current, cancellation))
+            {
+                inner.actor_stream_cancellation.take()
+            } else {
+                None
+            }
+        };
+        drop(removed);
     }
 
     #[cfg(test)]
@@ -933,18 +988,23 @@ impl ChannelCore {
         let mut discarded: Vec<Vec<u8>> = Vec::new();
         let layout;
         let native_producers;
+        let actor_stream_cancellation;
         {
             let mut inner = self.locked();
             inner.stream_closed = true;
             layout = inner.elem_layout;
             discarded.extend(inner.queue.drain(..));
             native_producers = std::mem::take(&mut inner.native_producers);
+            actor_stream_cancellation = inner.actor_stream_cancellation.take();
             while let Some(mut w) = inner.producers.pop_front() {
                 if let Some(item) = w.item.take() {
                     discarded.push(item);
                 }
                 wakes.push(w);
             }
+        }
+        if let Some(cancellation) = actor_stream_cancellation {
+            cancellation.close_reader();
         }
         Self::wake_native(native_producers);
         for w in wakes {
@@ -1132,6 +1192,78 @@ mod tests {
         hew_read_slot_new, hew_read_slot_status, install_read_slot_free_probe_for_test,
         new_read_slot_free_probe_for_test, read_slot_free_probe_count, read_slot_refs_for_test,
     };
+
+    #[test]
+    fn actor_stream_close_before_registration_cancels_before_body_start() {
+        let core = Arc::new(ChannelCore::new(1));
+        core.close_stream();
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the invocation retains the live descriptor during creation.
+        let state = unsafe {
+            crate::coro_state::hew_coro_state_new(waker.descriptor(), std::ptr::null_mut())
+        };
+        assert!(!state.is_null());
+        // SAFETY: the fixture exclusively owns the new state and binds it before
+        // any generated body can start.
+        assert!(unsafe { (&mut *state).bind_actor_stream(Arc::clone(&core)) });
+        assert_eq!(
+            unsafe { crate::coro_state::hew_coro_state_is_cancelled(state) },
+            1
+        );
+        assert!(ready.take_ready());
+        assert!(!unsafe { (&mut *state).bind_actor_stream(core) });
+        // SAFETY: no generated frame was started for this test invocation.
+        unsafe { crate::coro_state::hew_coro_state_free(state) };
+    }
+
+    #[test]
+    fn actor_stream_close_races_invocation_unbind_without_retaining_state_pointer() {
+        for _ in 0..32 {
+            let core = Arc::new(ChannelCore::new(1));
+            let (_ready, waker) = crate::wake::blocking::Readiness::new();
+            // SAFETY: the invocation retains the live descriptor during creation.
+            let state = unsafe {
+                crate::coro_state::hew_coro_state_new(waker.descriptor(), std::ptr::null_mut())
+            };
+            assert!(!state.is_null());
+            // SAFETY: this thread exclusively owns the new state until the
+            // destroyer thread receives it below.
+            assert!(unsafe { (&mut *state).bind_actor_stream(Arc::clone(&core)) });
+            let state_address = state as usize;
+            let close_core = Arc::clone(&core);
+            let closer = std::thread::spawn(move || close_core.close_stream());
+            let destroyer = std::thread::spawn(move || {
+                // SAFETY: ownership of the unique state pointer moved to this
+                // thread; the close registration contains no state pointer.
+                unsafe {
+                    crate::coro_state::hew_coro_state_free(
+                        state_address as *mut crate::coro_state::HewCoroState,
+                    );
+                }
+            });
+            closer.join().expect("reader close thread");
+            destroyer.join().expect("invocation teardown thread");
+        }
+    }
+
+    #[test]
+    fn completed_actor_stream_unbinds_before_a_later_reader_close() {
+        let core = Arc::new(ChannelCore::new(1));
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the invocation retains the live descriptor during creation.
+        let state = unsafe {
+            crate::coro_state::hew_coro_state_new(waker.descriptor(), std::ptr::null_mut())
+        };
+        assert!(!state.is_null());
+        // SAFETY: the test owns this invocation and its channel association.
+        assert!(unsafe { (&mut *state).bind_actor_stream(Arc::clone(&core)) });
+        // SAFETY: no generated frame was started for this direct runtime probe.
+        unsafe { crate::coro_state::hew_coro_state_free(state) };
+        core.close_stream();
+        assert!(!ready.take_ready());
+        let inner = core.locked();
+        assert!(inner.actor_stream_cancellation.is_none());
+    }
 
     #[test]
     fn select_observation_detaches_without_consuming_or_disarming_a_successor() {

@@ -347,10 +347,25 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_actor_coro_set_fault( *mut HewFault)",
-        "wasm32-wasip1": "fn hew_actor_coro_set_fault( *mut HewFault)"
+        "native": "fn hew_actor_coro_bind_stream( *mut HewCoroState, *mut HewSink, )",
+        "wasm32-wasip1": "fn hew_actor_coro_bind_stream( *mut HewCoroState, *mut HewSink, )"
       },
-      "symbol": "hew_actor_coro_set_fault"
+      "symbol": "hew_actor_coro_bind_stream"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_actor_coro_finish( *mut HewCoroState, *mut HewFault, )",
+        "wasm32-wasip1": "fn hew_actor_coro_finish( *mut HewCoroState, *mut HewFault, )"
+      },
+      "symbol": "hew_actor_coro_finish"
     },
     {
       "availability": [

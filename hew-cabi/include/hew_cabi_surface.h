@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1651u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1652u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -179,9 +179,16 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1651] = {
      "HewReleaseCursor, *mut HewCoroState, ) -> HewLocalPidId\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "length-or-count", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_actor_coro_set_fault",
-     "{\"native\": \"fn hew_actor_coro_set_fault( *mut HewFault)\", "
-     "\"wasm32-wasip1\": \"fn hew_actor_coro_set_fault( *mut HewFault)\"}",
+    {"hew_actor_coro_bind_stream",
+     "{\"native\": \"fn hew_actor_coro_bind_stream( *mut HewCoroState, *mut "
+     "HewSink, )\", \"wasm32-wasip1\": \"fn hew_actor_coro_bind_stream( *mut "
+     "HewCoroState, *mut HewSink, )\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_actor_coro_finish",
+     "{\"native\": \"fn hew_actor_coro_finish( *mut HewCoroState, *mut "
+     "HewFault, )\", \"wasm32-wasip1\": \"fn hew_actor_coro_finish( *mut "
+     "HewCoroState, *mut HewFault, )\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_actor_coro_state_new",

@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 15
 
 [case.expected]
-stdout = "item 1\nitem 11\nitem 12\nitem 22\nitem 23\nnested 1023\nnested 23\nclosed\n"
+stdout = "item 1\nitem 11\nitem 12\nitem 22\nitem 23\nnested 1123\nnested 123\nclosed\n"
 exit = 0

@@ -17,7 +17,7 @@ pub struct NativeActorCompletion {
     pub(crate) cleanup: super::cleanup::Cleanup,
     pub(crate) crash: Option<crate::actor::HewNativeCrashFn>,
     pub(crate) crash_action: AtomicI32,
-    pub(crate) construction: Mutex<Option<crate::coro_state::ConstructionWake>>,
+    pub(crate) construction: Mutex<Option<crate::coro_state::RetainedCancellation>>,
     phase: AtomicU8,
     code: AtomicI32,
     ready: ReadinessRegistrations,

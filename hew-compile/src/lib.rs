@@ -4696,10 +4696,10 @@ mod tests {
         super::attach_prelude_std_modules(&mut parsed.program);
         let mut checker =
             hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(Vec::new()));
-        let checked = checker.check_program(&parsed.program);
-        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        let facts = checker.check_program(&parsed.program);
+        assert!(facts.errors.is_empty(), "{:?}", facts.errors);
         let lowered =
-            hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
+            hew_hir::lower_program_host_target(&parsed.program, &facts, &hew_hir::ResolutionCtx);
         assert!(lowered.diagnostics.is_empty(), "{:?}", lowered.diagnostics);
     }
 

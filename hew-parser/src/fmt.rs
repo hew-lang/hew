@@ -1275,20 +1275,43 @@ impl<'a> Formatter<'a> {
     // Items
     // ------------------------------------------------------------------
 
+    /// The end of the last token of an item printed verbatim from source. An
+    /// item span runs to the next item's first token, so it also covers the
+    /// blank lines and comments in between; those belong to the gap before the
+    /// next item and are emitted by the ordinary comment rules.
+    fn raw_item_end(&self, span_start: usize, span_end: usize) -> usize {
+        let Some(text) = self.source.get(span_start..span_end) else {
+            return span_start;
+        };
+        let mut end = span_start + text.trim_end().len();
+        for comment in self.comments.iter().rev() {
+            if comment.span.start < span_start {
+                break;
+            }
+            if comment.span.start >= end {
+                continue;
+            }
+            if !self.source[comment.span.end.min(end)..end]
+                .trim()
+                .is_empty()
+            {
+                break;
+            }
+            end = span_start + self.source[span_start..comment.span.start].trim_end().len();
+        }
+        end
+    }
+
     fn format_item(&mut self, item: &Item, span_start: usize, span_end: usize) {
         match item {
             Item::Macro(_) | Item::MacroCall(_) => {
+                let end = self.raw_item_end(span_start, span_end);
                 self.write_indent();
-                self.write(
-                    self.source
-                        .get(span_start..span_end)
-                        .unwrap_or_default()
-                        .trim_end(),
-                );
+                self.write(self.source.get(span_start..end).unwrap_or_default());
                 self.newline();
-                self.prev_source_pos = span_end;
+                self.prev_source_pos = end;
                 while self.next_comment < self.comments.len()
-                    && self.comments[self.next_comment].span.start < span_end
+                    && self.comments[self.next_comment].span.start < end
                 {
                     self.next_comment += 1;
                 }
@@ -7317,5 +7340,59 @@ impl Display for Foo {
             "doc comment on an impl block must survive formatting; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
+    }
+
+    /// A comment after a raw macro item belongs to the gap before the next
+    /// item: it keeps its place and blank lines, and takes the item indent.
+    #[test]
+    fn comments_after_macro_items_keep_their_place() {
+        let src = "\
+macro twice {
+    ($value:expr) => expr { $value + $value }
+}
+
+// Second macro.
+macro thrice {
+    ($value:expr) => expr { $value + $value + $value }
+}
+
+// Entry point.
+fn main() {
+    println(twice!(2) + thrice!(1));
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+
+        let misindented = src.replace("// Entry point.", "        // Entry point.");
+        assert_eq!(roundtrip_source(&misindented), src);
+    }
+
+    /// A blank line before a doc comment that follows a macro declaration or
+    /// an item-macro invocation is kept, as between any other items.
+    #[test]
+    fn doc_comment_after_macro_items_keeps_blank_line() {
+        let src = "\
+/// first
+macro one {
+    () => expr { 1 }
+}
+
+/// second
+macro id_type {
+    ($name:ident) => items {
+        type $name {
+            value: i64;
+        }
+    }
+}
+
+id_type!(UserId)
+
+/// third
+fn main() {
+    println(one!());
+}
+";
+        assert_eq!(roundtrip_source(src), src);
     }
 }

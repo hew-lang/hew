@@ -2240,15 +2240,55 @@ fn source_contains_regex_literal(source: &str) -> bool {
         .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
+/// The module id of a quoted-import file: its path relative to the root
+/// file's directory, so the id (and every native symbol derived from it) is
+/// independent of where the checkout lives. Each directory step above the
+/// root's directory is a `super` segment; `super` is a keyword, so no source
+/// directory can produce it. A file on another volume shares nothing with the
+/// root's directory and keeps every component of its path.
 fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModulePath {
-    let without_ext = canonical_path.with_extension("");
-    let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
-    let mut segments = rel
-        .iter()
-        .filter_map(|segment| segment.to_str())
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>();
+    use std::path::Component;
 
+    let without_ext = canonical_path.with_extension("");
+    let base: Vec<Component<'_>> = source_dir.components().collect();
+    let target: Vec<Component<'_>> = without_ext.components().collect();
+    let shared = base
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    if shared == 0 {
+        return module_id_from_components(canonical_path, &target);
+    }
+    let normal = |component: &Component<'_>| match component {
+        Component::Normal(segment) => segment.to_str().map(str::to_string),
+        _ => None,
+    };
+    let segments = base[shared..]
+        .iter()
+        .filter(|component| matches!(component, Component::Normal(_)))
+        .map(|_| "super".to_string())
+        .chain(target[shared..].iter().filter_map(normal))
+        .collect::<Vec<_>>();
+    module_id_from_segments(canonical_path, segments)
+}
+
+fn module_id_from_components(
+    canonical_path: &Path,
+    components: &[std::path::Component<'_>],
+) -> hew_parser::module::ModulePath {
+    let segments = components
+        .iter()
+        .filter_map(|component| component.as_os_str().to_str())
+        .map(str::to_string)
+        .collect();
+    module_id_from_segments(canonical_path, segments)
+}
+
+fn module_id_from_segments(
+    canonical_path: &Path,
+    mut segments: Vec<String>,
+) -> hew_parser::module::ModulePath {
     if segments.is_empty() {
         segments.push(
             canonical_path
@@ -4681,6 +4721,18 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
         file.write_all(content.as_bytes()).expect("write hew.lock");
+    }
+
+    /// A quoted import above the root file's directory is named relative to
+    /// it, never by the absolute path of the checkout.
+    #[test]
+    fn file_module_ids_are_relative_to_the_root_directory() {
+        let root = Path::new("/work/project/app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file)).dotted();
+        assert_eq!(id("/work/project/app/main.hew"), "main");
+        assert_eq!(id("/work/project/app/x/util.hew"), "x.util");
+        assert_eq!(id("/work/project/a/util.hew"), "super.a.util");
+        assert_eq!(id("/work/other/b/util.hew"), "super.super.other.b.util");
     }
 
     /// A diagnostic label must name the file the way the user did, never

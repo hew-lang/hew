@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-parent-same-stem"
+intent = "Two files named util.hew in sibling directories above the importer keep distinct module identities and private helpers."
+source = "fixtures/file-import-parent-same-stem/app/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ab\n"
+exit = 0

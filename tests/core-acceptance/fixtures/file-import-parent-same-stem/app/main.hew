@@ -1,0 +1,6 @@
+import "../a/util.hew";
+import "../b/util.hew";
+
+fn main() {
+    println(from_a() + from_b());
+}

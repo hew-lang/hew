@@ -1,0 +1,49 @@
+// A key's hash faults while inserting into a map held by a resource. The
+// insert opens the owner in place; the fault leaves the map with it, so the
+// owner is closed whole and closes once, with every connection it held.
+#[resource]
+type Conn {
+    fd: i64;
+}
+
+impl Conn {
+    fn close(consume self) {
+        println(f"close conn {self.fd}");
+    }
+}
+
+type Key {
+    label: string;
+    divisor: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.label.len() / self.divisor
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.label == other.label
+    }
+}
+
+#[resource]
+type Registry {
+    conns: HashMap<Key, Conn>;
+}
+
+impl Registry {
+    fn close(consume self) {
+        println(f"close registry {self.conns.len()}");
+    }
+}
+
+fn main() {
+    var registry = Registry { conns: HashMap.new() };
+    registry.conns.insert(Key { label: "a".to_upper(), divisor: 1 }, Conn { fd: 1 });
+    println(registry.conns.len());
+    registry.conns.insert(Key { label: "b".to_upper(), divisor: 0 }, Conn { fd: 2 });
+    println("unreachable");
+}

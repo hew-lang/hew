@@ -1,0 +1,12 @@
+[[case]]
+id = "supervisor-escalation-restarted-role-random-7"
+intent = "On the deterministic random driver (seed 7), a restart wait on a leaf role, or on a nested supervisor's role, resumes only after the parent has replaced the escalated subtree, so the next call reaches a live replacement."
+source = "cases/supervisor-escalation-restarted-role.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_DETERMINISTIC = "schedule=random,seed=7" }
+
+[case.expected]
+stdout = "leaf after escalation: Ok(1)\nsibling after escalation: Ok(1)\nsubtree after escalation: Ok(1)\n"
+stderr = "hew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.fail (actor 5): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.fail (actor 7): UserPanic\nhew: failure: UserPanic (212): worker failed\nhew: actor crash in Worker.fail (actor 9): UserPanic\n"
+exit = 0

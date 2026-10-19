@@ -1,0 +1,50 @@
+// After a nested supervisor spends its budget and escalates, its parent
+// replaces the whole subtree. A wait on a leaf role inside that subtree, or on
+// the nested supervisor's own role, resumes only once the replacement is live.
+actor Worker {
+    var calls: i64 = 0;
+
+    receive fn ping() -> i64 {
+        calls += 1;
+        calls
+    }
+
+    receive fn fail() {
+        panic("worker failed");
+    }
+}
+
+supervisor Inner {
+    strategy: one_for_one;
+    intensity: 1 within 60s;
+
+    child a: Worker;
+    child b: Worker;
+}
+
+supervisor Root {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child inner: Inner;
+}
+
+fn main() {
+    let root = spawn Root;
+    // The first crash is within the inner budget; the second escalates.
+    let _ = root.inner.a.fail();
+    restarted(root.inner.a);
+    let _ = root.inner.a.fail();
+    restarted(root.inner.a);
+    println(f"leaf after escalation: {root.inner.a.ping():?}");
+    println(f"sibling after escalation: {root.inner.b.ping():?}");
+
+    // The same escalation, observed through the nested supervisor's role.
+    let _ = root.inner.b.fail();
+    restarted(root.inner.b);
+    let _ = root.inner.b.fail();
+    restarted(root.inner);
+    println(f"subtree after escalation: {root.inner.b.ping():?}");
+    stop(root);
+    stopped(root);
+}

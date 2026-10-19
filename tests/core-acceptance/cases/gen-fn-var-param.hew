@@ -1,0 +1,48 @@
+// A `gen fn` owns a snapshot of its arguments, so a `var` parameter is a
+// mutable field of the generator: the body may count it down, push to it or
+// drive an iterator it consumed, and the caller's binding keeps its value.
+import std.iter;
+
+gen fn countdown(var n: i64) -> i64 {
+    while n > 0 {
+        yield n;
+        n -= 1;
+    }
+}
+
+gen fn with_extra(var items: Vec<i64>, extra: i64) -> i64 {
+    items.push(extra);
+    for item in items {
+        yield item;
+    }
+}
+
+gen fn naturals() -> i64 {
+    var n = 0;
+    loop {
+        yield n;
+        n += 1;
+    }
+}
+
+gen fn doubled<I: Iterator<Item = i64>>(consume var numbers: I) -> i64 {
+    while let .Some(n) = numbers.next() {
+        yield n * 2;
+    }
+}
+
+fn main() {
+    let start = 3;
+    for v in countdown(start) {
+        println(v);
+    }
+    println(f"start {start}");
+    let base: Vec<i64> = [1, 2];
+    for v in with_extra(base, 9) {
+        println(v);
+    }
+    println(f"base {base.len()}");
+    for n in iter.take(doubled(naturals()), 3) {
+        println(n);
+    }
+}

@@ -1,0 +1,20 @@
+// A `gen { }` block owns a snapshot of every binding it captures (§4.12), so
+// a write to a captured binding would never reach it. Assignments and
+// mutating calls on captures are refused; a local copy inside the block is
+// the mutable form.
+fn main() {
+    var count: i64 = 0;
+    let seen: Vec<i64> = [];
+    let ticks = gen {
+        count += 1;
+        seen.push(count);
+        var local = count;
+        local += 1;
+        yield local;
+    };
+    for tick in ticks {
+        println(tick);
+    }
+    count = 5;
+    println(count);
+}

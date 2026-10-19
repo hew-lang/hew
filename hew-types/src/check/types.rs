@@ -3747,6 +3747,9 @@ pub struct Checker {
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
     pub(super) lambda_capture_depth: Option<usize>,
+    /// Scope depth at which the innermost `gen { }` block began: a binding
+    /// below it is a capture the generator owns only as a snapshot.
+    pub(super) gen_block_capture_depth: Option<usize>,
     /// The receiver binding of the `var self` method being checked (A418).
     pub(super) var_self_receiver: Option<String>,
     /// The machine whose generated body is being checked. Its state names are
@@ -4559,6 +4562,7 @@ impl Checker {
             actor_init_params: HashMap::new(),
             actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
+            gen_block_capture_depth: None,
             var_self_receiver: None,
             machine_body_owner: None,
             var_self_hole_reports: HashSet::new(),

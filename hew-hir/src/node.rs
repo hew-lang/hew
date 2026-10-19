@@ -2281,6 +2281,10 @@ pub struct HirGenCapture {
     /// (a plain local read vs an `ActorStateFieldLoad`) instead of
     /// re-deriving gen-ness from the binding's name or type.
     pub source: HirGenCaptureSource,
+    /// The captured binding was declared `var`. A `gen fn`'s `var` parameter
+    /// is a mutable field of the generator's own snapshot; the checker
+    /// refuses a write to any other capture.
+    pub mutable: bool,
 }
 
 /// Source of an `HirGenCapture`'s value in the enclosing frame.

@@ -20,3 +20,6 @@ with its owner instead of releasing it. A lambda actor that captures a `var`
 binding can assign and mutate it as state across messages. A `receive gen fn`
 that writes one of its actor's state fields is refused at check time; such a
 write previously landed on the stream's snapshot and was silently lost.
+A `gen fn` can mutate its `var` parameters, and a `gen { ... }` block that
+writes a captured binding is refused with a diagnostic instead of failing in
+lowering.

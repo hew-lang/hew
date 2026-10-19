@@ -415,7 +415,14 @@ impl Checker {
                     .or_default();
                 let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
                 self.env.enter_initialization_boundary();
+                // The generator owns a snapshot of each binding it captures
+                // (§4.12), so none of them is writable inside the block.
+                let capture_depth = self.env.depth();
+                let previous_capture_depth = self.gen_block_capture_depth.replace(capture_depth);
+                let frozen = self.env.freeze_mutability_below(capture_depth);
                 let body_ty = self.check_block(body, None);
+                self.env.thaw_mutability(&frozen);
+                self.gen_block_capture_depth = previous_capture_depth;
                 self.env.exit_initialization_boundary();
                 self.effect_graph.current_body = previous_effect_body;
 

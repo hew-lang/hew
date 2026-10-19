@@ -662,6 +662,17 @@ impl Checker {
                     format!("state field `{name}` is a snapshot inside a `receive gen fn`, so this write would never reach the actor; update `{name}` in a `receive fn` instead")));
             }
         }
+        if let Some(depth) = self.gen_block_capture_depth {
+            let (binding_depth, _) = self.env.lookup_ref_with_depth(name)?;
+            if binding_depth < depth
+                && self
+                    .lambda_capture_depth
+                    .is_none_or(|lambda| lambda <= depth)
+            {
+                return Some(TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
+                    format!("capture `{name}` is a snapshot inside a `gen` block, so this write would never reach `{name}`; bind a local copy inside the block to mutate it")));
+            }
+        }
         let depth = self.lambda_capture_depth?;
         let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
         if binding_depth >= depth || binding.is_mutable || self.in_lambda_actor_body {

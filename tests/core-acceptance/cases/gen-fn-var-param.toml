@@ -1,0 +1,10 @@
+[[case]]
+id = "gen-fn-var-param"
+intent = "A gen fn's `var` and `consume var` parameters are mutable fields of the generator's own snapshot, including an iterator a generic generator drives, while the caller's bindings keep their values."
+source = "cases/gen-fn-var-param.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "3\n2\n1\nstart 3\n1\n2\n9\nbase 2\n0\n2\n4\n"
+exit = 0

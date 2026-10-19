@@ -6144,7 +6144,10 @@ are cloned structurally when every reachable leaf has both a total clone and
 the matching inverse drop.
 
 The caller, enclosing closure, or actor state remains the owner of the capture
-source. The generator owns only its snapshot. A `receive gen fn` reads its
+source. The generator owns only its snapshot, so a `gen { ... }` block cannot
+assign a captured binding or call a mutating method on one; it binds a local
+copy to mutate instead. A `gen fn`'s `var` parameter is a mutable field of
+that snapshot, and the caller's argument keeps its value. A `receive gen fn` reads its
 actor's state fields through such a snapshot, so assigning a state field or
 calling a mutating method on one inside the producer is a compile-time error:
 the write could never reach the actor. Update state in a `receive fn`. Destroying a completed,

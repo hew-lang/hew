@@ -3044,6 +3044,7 @@ impl Checker {
             actor_init_params: self.actor_init_params.clone(),
             actor_spawn_args: self.actor_spawn_args.clone(),
             lambda_capture_depth: self.lambda_capture_depth.clone(),
+            gen_block_capture_depth: self.gen_block_capture_depth.clone(),
             var_self_receiver: self.var_self_receiver.clone(),
             machine_body_owner: self.machine_body_owner.clone(),
             var_self_hole_reports: self.var_self_hole_reports.clone(),

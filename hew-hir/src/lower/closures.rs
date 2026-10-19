@@ -77,11 +77,12 @@ impl LowerCtx {
             .filter_map(|(binding, name, _span)| {
                 outer_bindings
                     .get(&binding)
-                    .map(|(_, ty, _, _)| HirGenCapture {
+                    .map(|(_, ty, _, mutable)| HirGenCapture {
                         binding,
                         name,
                         ty: ty.clone(),
                         source: HirGenCaptureSource::Local,
+                        mutable: *mutable,
                     })
             })
             .collect()

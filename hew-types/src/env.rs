@@ -1139,6 +1139,31 @@ impl TypeEnv {
         environment
     }
 
+    /// Make every binding in scopes below `depth` read-only, returning the
+    /// ones that were writable so [`Self::thaw_mutability`] restores them.
+    pub(crate) fn freeze_mutability_below(&mut self, depth: usize) -> Vec<TypeBindingId> {
+        let mut frozen = Vec::new();
+        let depth = depth.min(self.scopes.len());
+        for binding in self.scopes[..depth]
+            .iter_mut()
+            .flat_map(HashMap::values_mut)
+        {
+            if binding.is_mutable {
+                binding.is_mutable = false;
+                frozen.push(binding.id);
+            }
+        }
+        frozen
+    }
+
+    pub(crate) fn thaw_mutability(&mut self, frozen: &[TypeBindingId]) {
+        for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
+            if frozen.contains(&binding.id) {
+                binding.is_mutable = true;
+            }
+        }
+    }
+
     /// Preserve reads and fresh identities from a checked body without applying
     /// its private mutations or invocation-time moves to the enclosing scope.
     ///

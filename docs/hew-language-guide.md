@@ -1348,9 +1348,9 @@ fn main() {
 }
 ```
 
-A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter { count }`), and machine `emit` and transition field lists. It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
+A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter { count }`), and machine `emit` and transition field lists (a transition list needs two fields or an explicit one; see below). It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
 
-Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there.
+Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there. A machine transition body is the same: `=> Failed { why }` is a body block yielding `why`, so a one-field list is written `=> Failed { why: why }`.
 
 ### Spread in literals
 
@@ -2575,8 +2575,10 @@ fn main() {
 }
 ```
 
-The head binding `on Add { n }: ...` names the payload fields at the rule site;
-`event.n` is the equivalent spelling without it. The compiler generates a
+The head binding `on Add { n }: ...` names the payload fields for the whole
+rule, so the guard and the body both read `n`:
+`on Add { n }: Seed => Total when n > 0 { sum: n }`. `event.n` is the equivalent
+spelling without it. The compiler generates a
 companion event type `{MachineName}.Event` you can name in signatures and construct
 with `Acc.Event.Add { n: 1 }`.
 
@@ -2704,7 +2706,10 @@ fn main() {
 
 `_` in the source position matches any state, and `_` in the target position
 lets the body choose, so an `if` returning different states is legal there. An
-explicit cell rule always wins over a wildcard.
+explicit cell rule always wins over a wildcard. Because the target is not known
+until the body runs, a `_` target always leaves and re-enters: the source's
+`exit` and the result's `entry` hooks run even when the body returns the state
+it started in.
 
 ### Driving a machine from a function or an actor
 
@@ -2813,8 +2818,11 @@ position in the file does not matter, only which state the rule names.
 
 The composite's hooks bracket the substates' own. Entering the group runs
 `Live.entry` before the substate's `entry`; leaving it runs the substate's
-`exit` before `Live.exit`. Moving between two substates of the same group runs
-neither, because the group was never left.
+`exit` before `Live.exit`. Moving to a named substate of the same group runs
+neither, because the group was never left. A `_` target is the exception: it
+leaves the whole active branch and re-enters the result, so `on Stay: Active =>
+_ { Active }` runs `Live.exit` and `Live.entry`. Name the target when the group's
+hooks must not run.
 
 The composite is a grouping, not a live state: `state_name()` always reports a
 substate, and the machine flattens before it is checked. `hew machine diagram`

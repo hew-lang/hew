@@ -1,0 +1,24 @@
+// A head binding is one declaration for the whole rule. Reading it in the
+// guard alone, or in the body alone, uses it; only a name neither reads is
+// reported, once, at the head, even when a wildcard-source rule is inlined
+// into every state.
+machine Meter {
+    events {
+        Add { n: i64; cap: i64; }
+    }
+
+    state Idle;
+    state Acc { sum: i64; }
+
+    on Add { n, cap }: Idle => Acc when cap > 0 { sum: n }
+    on Add { n, cap }: Acc => Acc when state.sum + n <= cap { sum: state.sum + n }
+    on Add { cap }: _ => _ {
+        state
+    }
+}
+
+fn main() {
+    var meter: Meter = .Idle;
+    let _ = meter.step(.Add { n: 1, cap: 10 });
+    println(meter.state_name());
+}

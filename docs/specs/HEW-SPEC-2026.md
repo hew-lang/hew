@@ -4810,7 +4810,7 @@ fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
 `on Event: Source => Target`, optionally with a payload head binding
 (`on Open { by }:`), `reenter`, and a `when` guard. The head binding names
 event fields in braces, as the record pattern `.Open { by }` does, and binds
-each to a local of the same name; the retired `on Open(by):` is refused with
+each to a local of the same name in the rule's guard and body; the retired `on Open(by):` is refused with
 `E_EVENT_HEAD_PARENS` and a fix-it.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
@@ -5126,7 +5126,7 @@ companion types:
 
 | Generated item        | Behaviour                                                            |
 | --------------------- | -------------------------------------------------------------------- |
-| `NameEvent`           | Typed input variants from `events`                                   |
+| `Name.Event`          | Typed input variants from `events`                                   |
 | `NameOutput`          | Separate typed output variants from `emits`                          |
 | `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
 | `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |

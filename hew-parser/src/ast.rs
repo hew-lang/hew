@@ -2176,13 +2176,13 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_is_contextual: bool,
     /// Event-payload field names bound in the transition head
-    /// (`on E { a, b }: …`). These alias the event's fields so the body can use
-    /// the bare names instead of `event.field`. The parser splices a
-    /// `let a = event.a;` prelude into `body` for lowering (no new HIR kind);
-    /// this list is retained purely so the formatter can re-emit the head form
-    /// and strip that prelude. Empty when the rule used no head binding.
+    /// (`on E { a, b }: …`), each with its span in the head. They alias the
+    /// event's fields for the whole rule, so the guard and the body can use
+    /// the bare names instead of `event.field`; machine normalization binds
+    /// them. `guard` and `body` hold the authored expressions. Empty when the
+    /// rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_bindings: Vec<Ident>,
+    pub event_bindings: Vec<Spanned<Ident>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,

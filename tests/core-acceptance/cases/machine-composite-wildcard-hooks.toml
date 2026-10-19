@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-composite-wildcard-hooks"
+suites = ["acceptance"]
+intent = "A wildcard target exits and re-enters a shared composite even when the body stays in the group, while a named sibling target runs neither composite hook."
+source = "cases/machine-composite-wildcard-hooks.hew"
+timeout_seconds = 15
+
+[case.expected]
+stdout = "open: 1\n  Live.entry\nnamed sibling: 0\nwildcard same: 2\n  Live.exit\n  Live.entry\nwildcard sibling: 2\n  Live.exit\n  Live.entry\nAuthing\n"
+exit = 0

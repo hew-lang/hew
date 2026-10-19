@@ -1,0 +1,20 @@
+// The guard sees the rule's head bindings and nothing more: a payload field
+// the head does not name is still an unknown variable there.
+machine Meter {
+    events {
+        Add { n: i64; cap: i64; }
+    }
+
+    state Idle;
+    state Acc { sum: i64; }
+
+    on Add { n }: Idle => Acc when cap > 0 { sum: n }
+
+    default { state }
+}
+
+fn main() {
+    var meter: Meter = .Idle;
+    let _ = meter.step(.Add { n: 1, cap: 10 });
+    println(meter.state_name());
+}

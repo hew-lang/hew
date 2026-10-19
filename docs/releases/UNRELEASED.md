@@ -21,3 +21,8 @@ may each keep a private helper of the same name. Range slices inside a
 quoted-imported file lower as they do at the root. A private actor or
 supervisor in an imported module may call the module's private helpers and
 read its own supervisor's children.
+
+A transition head binding now names the payload fields for the whole rule, so
+`on Add { n }: Idle => Acc when n > 0 { sum: n }` reads `n` in its guard. A head
+name that neither the guard nor the body reads is reported once, at the head,
+with a fix that removes it.

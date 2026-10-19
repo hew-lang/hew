@@ -39,6 +39,11 @@ pub struct NormalizedProgram {
     /// keyed by the declaring module (`(root)` or its dotted path) and the
     /// machine name, so a refusal can name the transition it concerns.
     pub transitions: HashMap<(String, String), Vec<(String, Span)>>,
+    /// The generated `let` of every copy of a transition head binding, keyed
+    /// by its pattern span: the binding's identity (one per authored head
+    /// name, shared by the guard and body copies of every rule and arm it is
+    /// flattened and inlined into) and its name.
+    pub head_bindings: HashMap<Span, (usize, Ident)>,
     /// The expansion context the implied Display impls name `Display` in.
     pub implied_context: Option<hew_parser::ast::SyntaxContext>,
 }
@@ -60,11 +65,50 @@ impl NormalizedProgram {
                 implied_displays: displays.origins,
             }),
             transitions: machines.map(|m| m.transitions.clone()).unwrap_or_default(),
+            head_bindings: machines
+                .map(|m| m.head_bindings.clone())
+                .unwrap_or_default(),
             implied_context: Some(displays.context),
         }
     }
 
-    /// The authored origin of a generated node.
+    /// Reduce the unused-variable warnings on head-binding copies to one per
+    /// authored head name that no copy reads. A name the guard reads and the
+    /// body does not (or the reverse) is used.
+    pub(super) fn merge_head_binding_warnings(&self, warnings: &mut Vec<TypeError>) {
+        if self.head_bindings.is_empty() {
+            return;
+        }
+        let mut copies: HashMap<usize, usize> = HashMap::new();
+        for (binding, _) in self.head_bindings.values() {
+            *copies.entry(*binding).or_default() += 1;
+        }
+        let mut unused: HashMap<usize, usize> = HashMap::new();
+        for warning in warnings.iter() {
+            if warning.kind == TypeErrorKind::UnusedVariable {
+                if let Some((binding, _)) = self.head_bindings.get(&warning.span) {
+                    *unused.entry(*binding).or_default() += 1;
+                }
+            }
+        }
+        let mut reported = std::collections::HashSet::new();
+        warnings.retain_mut(|warning| {
+            if warning.kind != TypeErrorKind::UnusedVariable {
+                return true;
+            }
+            let Some((binding, name)) = self.head_bindings.get(&warning.span) else {
+                return true;
+            };
+            if unused.get(binding) != copies.get(binding) || !reported.insert(*binding) {
+                return false;
+            }
+            // A head name must name a payload field, so `_name` is no fix.
+            warning.suggestions = vec![format!("remove `{name}` from the rule head")];
+            true
+        });
+    }
+
+    /// The source span a diagnostic at `span` in a generated node reports at.
     pub(super) fn source_span(&self, span: &Span) -> Option<&Span> {
         self.source_origins.source_span(span)
     }
@@ -118,6 +162,9 @@ pub(super) fn normalize(
         expansions: HashMap::new(),
         transitions: HashMap::new(),
         hierarchies: HashMap::new(),
+        head_bindings: HashMap::new(),
+        head_binding_ids: HashMap::new(),
+        expansion: 0,
     };
     let mut normalized = program.clone();
     let root_sources = program
@@ -184,6 +231,7 @@ pub(super) fn normalize(
             implied_displays: Vec::new(),
         }),
         transitions: builder.transitions,
+        head_bindings: builder.head_bindings,
         implied_context: None,
     })))
 }
@@ -337,6 +385,14 @@ struct Builder {
     expansions: HashMap<ExpansionKey, Vec<Spanned<Item>>>,
     transitions: HashMap<(String, String), Vec<(String, Span)>>,
     hierarchies: HashMap<ExpansionKey, Hierarchy>,
+    /// See [`NormalizedProgram::head_bindings`].
+    head_bindings: HashMap<Span, (usize, Ident)>,
+    /// One identity per authored head name: the expansion it belongs to and
+    /// its span in the head. A wildcard-source rule is several rules after
+    /// flattening, all carrying the same head.
+    head_binding_ids: HashMap<(usize, Span), usize>,
+    /// The machine expansion being built.
+    expansion: usize,
 }
 
 fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
@@ -657,6 +713,7 @@ impl Builder {
         machine_ordinal: usize,
         key: &ExpansionKey,
     ) -> Result<Vec<Spanned<Item>>, TypeError> {
+        self.expansion += 1;
         let mut hierarchy = Hierarchy::check(machine)?;
         let resolved = hierarchy.resolve_relation(machine)?;
         let machine = &resolved;
@@ -1136,7 +1193,7 @@ impl Builder {
                     let rule = &machine.transitions[index];
                     let taken = self.transition(machine, state, event, rule, hierarchy, index)?;
                     selected = if let Some(guard) = &rule.guard {
-                        let guard = self.rewrite(guard, machine, state, event)?;
+                        let guard = self.rewrite_rule_part(guard, index, machine, state, event)?;
                         self.expr(Expr::If {
                             condition: Box::new(guard),
                             then_block: Box::new(taken),
@@ -1270,7 +1327,7 @@ impl Builder {
                 }
             }
         }
-        let body = self.rewrite(&rule.body, machine, state, event)?;
+        let body = self.rewrite_rule_part(&rule.body, index, machine, state, event)?;
         if !run_hooks {
             return Ok(self.block(stmts, body));
         }
@@ -1426,6 +1483,58 @@ impl Builder {
             *value = self.rewrite(value, machine, state, event)?;
         }
         Ok(())
+    }
+
+    /// A rule's guard or body, rewritten with the rule's head bindings in
+    /// scope: `{ let a = event.a; ..; part }`. The guard and the body sit on
+    /// either side of the exit hooks, so each carries its own copy; a hook
+    /// never sees a head name.
+    fn rewrite_rule_part(
+        &mut self,
+        part: &Spanned<Expr>,
+        index: usize,
+        machine: &MachineDecl,
+        state: &MachineState,
+        event: &MachineEvent,
+    ) -> Result<Spanned<Expr>, TypeError> {
+        let rule = &machine.transitions[index];
+        let value = self.rewrite(part, machine, state, event)?;
+        if rule.event_bindings.is_empty() {
+            return Ok(value);
+        }
+        let saved = self.origin.clone();
+        let mut prelude = Vec::with_capacity(rule.event_bindings.len());
+        for (name, head) in &rule.event_bindings {
+            self.origin = head.clone();
+            self.refuse_const_shadow_name(*name, machine)?;
+            let field = Expr::FieldAccess {
+                object: Box::new((
+                    Expr::Ident(Ident {
+                        name: hew_parser::ast::Symbol::intern("event"),
+                        ctx: machine.body_context,
+                    }),
+                    head.clone(),
+                )),
+                field: (*name, head.clone()),
+            };
+            let field = self.rewrite(&(field, head.clone()), machine, state, event)?;
+            let next_id = self.head_binding_ids.len();
+            let id = *self
+                .head_binding_ids
+                .entry((self.expansion, head.clone()))
+                .or_insert(next_id);
+            let binding = self.span();
+            self.head_bindings.insert(binding.clone(), (id, *name));
+            prelude.push(self.stmt(Stmt::Let {
+                pattern: (Pattern::Identifier(*name), binding),
+                ty: None,
+                value: Some(field),
+                else_block: None,
+            }));
+        }
+        let result = self.block(prelude, value);
+        self.origin = saved;
+        Ok(result)
     }
 
     fn rewrite(
@@ -1969,7 +2078,7 @@ fn redundant_target_refusal(
     let Expr::Block(block) = &transition.body.0 else {
         return None;
     };
-    if block.stmts.len() != transition.event_bindings.len() {
+    if !block.stmts.is_empty() {
         return None;
     }
     let trailing = block.trailing_expr.as_deref()?;
@@ -2012,7 +2121,7 @@ fn missing_target_refusal(transition: &MachineTransition, machine: &MachineDecl)
     let lone_field = match &transition.body.0 {
         Expr::Block(block)
             if transition.body_form == MachineTransitionBodyForm::Block
-                && block.stmts.len() == transition.event_bindings.len() =>
+                && block.stmts.is_empty() =>
         {
             match block.trailing_expr.as_deref() {
                 Some((Expr::Ident(name), _)) => Some(*name),

@@ -1,0 +1,14 @@
+[[case]]
+id = "machine-head-binding-unused"
+suites = ["acceptance"]
+intent = "A head binding read only by the guard or only by the body is used; one read by neither is reported once at its head name with a fix that removes it."
+source = "cases/machine-head-binding-unused.hew"
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "warning"
+code = "UnusedVariable"
+line = 15
+column = 14
+message = "unused variable `cap`"

@@ -15581,92 +15581,181 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_acquire( *mut HewSemaphore)"
+        "native": "fn hew_semaphore_acquire( *mut HewSemaphore)",
+        "wasm32-wasip1": "fn hew_semaphore_acquire( *mut HewSemaphore)"
       },
       "symbol": "hew_semaphore_acquire"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_semaphore_acquire_free( *mut HewSemaphoreAcquire)",
+        "wasm32-wasip1": "fn hew_semaphore_acquire_free( *mut HewSemaphoreAcquire)"
+      },
+      "symbol": "hew_semaphore_acquire_free"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_semaphore_acquire_new( *const HewSemaphore, i64, *const HewWaker, ) -> *mut HewSemaphoreAcquire",
+        "wasm32-wasip1": "fn hew_semaphore_acquire_new( *const HewSemaphore, i64, *const HewWaker, ) -> *mut HewSemaphoreAcquire"
+      },
+      "symbol": "hew_semaphore_acquire_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_semaphore_acquire_status( *const HewSemaphoreAcquire, ) -> i32",
+        "wasm32-wasip1": "fn hew_semaphore_acquire_status( *const HewSemaphoreAcquire, ) -> i32"
+      },
+      "symbol": "hew_semaphore_acquire_status"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_semaphore_acquire_take( *const HewSemaphoreAcquire) -> i32",
+        "wasm32-wasip1": "fn hew_semaphore_acquire_take( *const HewSemaphoreAcquire) -> i32"
+      },
+      "symbol": "hew_semaphore_acquire_take"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_acquire_timeout( *mut HewSemaphore, i64, ) -> i32"
+        "native": "fn hew_semaphore_acquire_timeout( *mut HewSemaphore, i64, ) -> i32",
+        "wasm32-wasip1": "fn hew_semaphore_acquire_timeout( *mut HewSemaphore, i64, ) -> i32"
       },
       "symbol": "hew_semaphore_acquire_timeout"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_count( *const HewSemaphore) -> i32"
+        "native": "fn hew_semaphore_clone( *const HewSemaphore) -> *mut HewSemaphore",
+        "wasm32-wasip1": "fn hew_semaphore_clone( *const HewSemaphore) -> *mut HewSemaphore"
+      },
+      "symbol": "hew_semaphore_clone"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_semaphore_count( *const HewSemaphore) -> i32",
+        "wasm32-wasip1": "fn hew_semaphore_count( *const HewSemaphore) -> i32"
       },
       "symbol": "hew_semaphore_count"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_free( *mut HewSemaphore)"
+        "native": "fn hew_semaphore_free( *mut HewSemaphore)",
+        "wasm32-wasip1": "fn hew_semaphore_free( *mut HewSemaphore)"
       },
       "symbol": "hew_semaphore_free"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_new( i32) -> *mut HewSemaphore"
+        "native": "fn hew_semaphore_new( i32) -> *mut HewSemaphore",
+        "wasm32-wasip1": "fn hew_semaphore_new( i32) -> *mut HewSemaphore"
       },
       "symbol": "hew_semaphore_new"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_release( *mut HewSemaphore)"
+        "native": "fn hew_semaphore_release( *mut HewSemaphore)",
+        "wasm32-wasip1": "fn hew_semaphore_release( *mut HewSemaphore)"
       },
       "symbol": "hew_semaphore_release"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_semaphore_try_acquire( *mut HewSemaphore) -> i32"
+        "native": "fn hew_semaphore_try_acquire( *mut HewSemaphore) -> i32",
+        "wasm32-wasip1": "fn hew_semaphore_try_acquire( *mut HewSemaphore) -> i32"
       },
       "symbol": "hew_semaphore_try_acquire"
     },

@@ -794,6 +794,7 @@ actor RemoteCrashObserver {
                 assert(location.incarnation() == expected.incarnation());
             }
             DownTarget.Local(_) => panic("remote link reported a local origin"),
+            DownTarget.Role(_) => panic("remote link reported a local role origin"),
         }
         assert(note.kind == CrashKind.Fault);
         notices = notices + 1;
@@ -1215,6 +1216,7 @@ actor MonitorProbe {
         let remote = match note.target {
             DownTarget.Remote(_) => true,
             DownTarget.Local(_) => false,
+            DownTarget.Role(_) => false,
         };
         if remote != expect_remote {
             down_reason = -97;
@@ -1295,6 +1297,7 @@ actor LinkSetupRaceProbe {
         }
         match note.target {
             DownTarget.Local(_) => {}
+            DownTarget.Role(_) => {}
             DownTarget.Remote(_) => {
                 down_reason = -97;
                 return;

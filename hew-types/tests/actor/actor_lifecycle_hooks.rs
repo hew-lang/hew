@@ -661,6 +661,7 @@ fn named_imported_down_payload_and_nested_types_consume_import() {
                 match note.target {
                     DownTarget.Local(slot) => { let _slot = slot; }
                     DownTarget.Remote(location) => { let _location = location; }
+                    DownTarget.Role(token) => { let _token = token; }
                 }
                 match note.reason {
                     DownReason.Stopped => {}

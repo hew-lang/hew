@@ -37,7 +37,7 @@ actor Watcher {
     fn exited(note: failure.CrashNotification) {
         sleep(1ms);
         audit.note("exit").expect("audit exit");
-        assert(match note.target { .Local(id) => id > 0, .Remote(_) => false });
+        assert(match note.target { .Local(id) => id > 0, .Remote(_) => false, .Role(_) => false });
         assert(note.kind == failure.CrashKind.Fault);
         exits = exits + 1;
     }

@@ -959,6 +959,7 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
 
 const DOWN_TARGET_LOCAL: u32 = 0;
 const DOWN_TARGET_REMOTE: u32 = 1;
+pub(crate) const DOWN_TARGET_ROLE: u32 = 2;
 const DOWN_REASON_STOPPED: u32 = 0;
 const DOWN_REASON_TERMINATED: u32 = 1;
 const DOWN_REASON_CRASHED: u32 = 2;
@@ -994,6 +995,18 @@ impl HewNotificationTarget {
             node_hi: target.node().hi(),
             node_lo: target.node().lo(),
             slot: target.slot(),
+        }
+    }
+
+    pub(crate) fn role(token: HewLocalPidId) -> Self {
+        Self {
+            kind: DOWN_TARGET_ROLE,
+            session_incarnation: 0,
+            node_hi: 0,
+            node_lo: 0,
+            // Stable local role tokens are semantic identities, not packed
+            // actor PIDs. Keep the complete token in the shared slot word.
+            slot: u64::try_from(token.as_usize()).expect("local role token fits notification slot"),
         }
     }
 }
@@ -1072,6 +1085,15 @@ impl HewDownMessage {
         Self {
             reason_kind: DOWN_REASON_LOCAL_SHUTDOWN,
             ..Self::remote_lost(monitor_id, target)
+        }
+    }
+
+    pub(crate) fn role_stopped(monitor_id: u64, token: HewLocalPidId) -> Self {
+        Self {
+            monitor_id,
+            target: HewNotificationTarget::role(token),
+            reason_kind: DOWN_REASON_STOPPED,
+            crash_kind: 0,
         }
     }
 }
@@ -1271,27 +1293,84 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
     if watcher.is_null() {
         return HEW_OBSERVATION_NO_CONTEXT;
     }
-    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target) = crate::lifetime::local_handles::resolve_current_observed_target(target)
     else {
         return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
     };
-    let target = pin_actor_by_id(target_id);
-    // SAFETY: the activation owns watcher; the optional pin protects target;
-    // the caller provides a writable output slot.
-    let status = unsafe {
-        register_local_monitor(
-            (*watcher).id,
-            target_id,
-            target
-                .as_ref()
-                .map(crate::lifetime::live_actors::ActorPin::actor),
-            out_monitor_id,
-        )
-    };
-    if status == 0 {
-        0
-    } else {
-        -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+    let watcher_id = unsafe { (*watcher).id };
+    match target {
+        crate::lifetime::local_handles::ObservedActorTarget::Actor(target_id) => {
+            let target = pin_actor_by_id(target_id);
+            // SAFETY: the activation owns watcher; the optional pin protects
+            // target; the caller provides a writable output slot.
+            let status = unsafe {
+                register_local_monitor(
+                    watcher_id,
+                    target_id,
+                    target
+                        .as_ref()
+                        .map(crate::lifetime::live_actors::ActorPin::actor),
+                    out_monitor_id,
+                )
+            };
+            if status == 0 {
+                0
+            } else {
+                -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { token, .. } => {
+            for _ in 0..2 {
+                let Some((target_id, target_serial)) =
+                    crate::supervisor::current_actor_role_identity(token)
+                else {
+                    let state = monitor_state();
+                    let ref_id = state
+                        .next_observation_id()
+                        .unwrap_or_else(|| observation_ids_exhausted());
+                    // This role has no current incarnation. Report the stable
+                    // role identity once with a normal terminal reason; a
+                    // later replacement is a separate observation.
+                    deliver_down_message(watcher_id, HewDownMessage::role_stopped(ref_id, token));
+                    // SAFETY: inherited from this function's writable output
+                    // pointer contract.
+                    unsafe { *out_monitor_id = ref_id };
+                    return 0;
+                };
+                // Pin the exact incarnation selected under the supervisor's
+                // roster lock. A packed actor ID alone could alias another
+                // incarnation before the monitor is registered.
+                let status = crate::lifetime::live_actors::with_actor_send_by_identity(
+                    target_id,
+                    target_serial,
+                    |pin| {
+                        // SAFETY: the activation owns watcher; `pin` retains
+                        // the selected target through registration.
+                        unsafe {
+                            register_local_monitor(
+                                watcher_id,
+                                target_id,
+                                Some(pin.actor()),
+                                out_monitor_id,
+                            )
+                        }
+                    },
+                );
+                if let Some(status) = status {
+                    return if status == 0 {
+                        0
+                    } else {
+                        -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                    };
+                }
+            }
+            -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { .. } => {
+            -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+        }
     }
 }
 

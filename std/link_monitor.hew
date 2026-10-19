@@ -4,6 +4,9 @@
 //! by `monitor(actor) -> Result<MonitorRef, LinkError>`. Its consuming close
 //! removes the subscription; ordinary resource cleanup closes it at scope exit.
 //! `LinkError` is available from the prelude; local and remote monitors share it.
+//! Observing an occupied supervised actor role selects its current incarnation;
+//! an empty role reports its stable token immediately and does not observe a
+//! later replacement.
 
 import std.failure.{CrashKind, DownTarget};
 
@@ -43,6 +46,7 @@ pub enum DownReason {
 /// Typed payload delivered to an actor's `#[on(down)]` hook.
 pub type DownNotification {
     monitor: MonitorId;
+    /// Exact current incarnation, or stable local role token when vacant.
     target: DownTarget;
     reason: DownReason;
 }

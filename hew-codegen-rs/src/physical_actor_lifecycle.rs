@@ -185,6 +185,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, target_tag)?;
         let local = self.ctx.append_basic_block(function, "down.local");
         let remote = self.ctx.append_basic_block(function, "down.remote");
+        let role = self.ctx.append_basic_block(function, "down.role");
         let reason = self
             .ctx
             .append_basic_block(function, "notification.target.done");
@@ -196,6 +197,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &[
                     (self.ctx.i32_type().const_zero(), local),
                     (self.ctx.i32_type().const_int(1, false), remote),
+                    (self.ctx.i32_type().const_int(2, false), role),
                 ],
             )
             .llvm_ctx("decode DOWN target")?;
@@ -257,6 +259,18 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_unconditional_branch(reason)
             .llvm_ctx("finish remote DOWN target")?;
+        builder.position_at_end(role);
+        let role_token = word(std::mem::offset_of!(HewNotificationTarget, slot), 64)?;
+        self.lifecycle_variant_payload(
+            builder,
+            target,
+            BuiltinType::DownTarget,
+            2,
+            &[role_token.into()],
+        )?;
+        builder
+            .build_unconditional_branch(reason)
+            .llvm_ctx("finish role DOWN target")?;
         builder.position_at_end(reason);
         Ok(())
     }

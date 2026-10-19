@@ -11,6 +11,9 @@ actor Watcher {
             DownTarget.Remote(location) => {
                 let _location = location;
             }
+            DownTarget.Role(token) => {
+                let _token = token;
+            }
         }
     }
 }

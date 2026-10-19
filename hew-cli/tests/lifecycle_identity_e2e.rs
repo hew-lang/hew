@@ -136,6 +136,7 @@ actor Watcher {
         let _target = match note.target {
             DownTarget.Local(slot) => slot,
             DownTarget.Remote(_) => 0,
+            DownTarget.Role(_) => 0,
         };
         let _reason = match note.reason {
             DownReason.Stopped => 1,

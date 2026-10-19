@@ -1,8 +1,9 @@
 name: Setup LLVM
 description: >
   Provision LLVM for the build and export LLVM_SYS_221_PREFIX plus the bin/
-  directory on PATH. Linux x86_64/arm64 and Windows x86_64 use a pinned LLVM
-  binary release (verified by SHA256, cached extracted). macOS arm64 uses the
+  directory on PATH. Linux x86_64/arm64 use a pinned upstream LLVM binary
+  release; Windows x86_64 uses the latest hew-lang/llvm-toolchain build of the
+  same release series. Both are verified by SHA256 and cached extracted. macOS arm64 uses the
   Homebrew llvm@<major> bottle, whose static libs link with the platform
   default linker — no lld/lc++/rpath forcing required.
 
@@ -73,25 +74,27 @@ runs:
             # The official upstream Windows tarball statically embeds rpmalloc
             # (defines malloc/free/calloc -> duplicate symbols against ucrt at
             # lld-link time) and omits xml2s.lib. Use hew-lang/llvm-toolchain's
-            # LLVM build, published under the llvm-22.1.0-windows-msvc-v1 release.
-            # Override `version` to the pinned toolchain identifier (independent
-            # of inputs.version, which only tracks the Linux/macOS upstream
-            # version): the cache key and install_root are derived from
-            # `version` below, and inputs.version bumping without this override
-            # would leave both mislabelled and, since the Windows sha256 is the
-            # constant "companion" sentinel, could serve a stale cached archive
-            # under a v2/v3/... repackage that keeps the same inputs.version.
-            version="22.1.0-windows-msvc-v1"
+            # build, which floats per release series: the
+            # toolchain/llvm-<series>-windows-msvc release always holds the
+            # latest <series>.x. `version` becomes the series label for the
+            # cache key and install root; the sha256 below comes from the
+            # release's sidecar, so a new patch release misses the cache.
+            major="${version%%.*}"
+            series="${version%.*}"
+            version="${series}-windows-msvc"
             asset="hew-llvm-${version}.tar.gz"
-            # The prebuild workflow tars from C:\ with root llvm-22/ .
-            subdir="llvm-22"
+            url="https://github.com/hew-lang/llvm-toolchain/releases/download/toolchain/llvm-${version}/${asset}"
+            sha256="$(curl -fsSL --retry 3 --retry-all-errors "${url}.sha256" | awk '{print $1}')"
+            [[ "${sha256}" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::Bad checksum sidecar for ${asset}"; exit 1; }
+            # The archive root is llvm-<major>/.
+            subdir="llvm-${major}"
             ;;
           *)
             echo "::error::No upstream LLVM binary asset known for ${target}"
             exit 1
             ;;
         esac
-        # SHA256 digests pinned from
+        # Upstream SHA256 digests pinned from
         # https://github.com/llvm/llvm-project/releases/download/llvmorg-${version}/${asset}.jsonl
         # (sigstore in-toto attestation, subject digest).
         case "${asset}" in
@@ -101,11 +104,7 @@ runs:
           "LLVM-22.1.5-Linux-ARM64.tar.xz")
             sha256="05e303cf01a97ca2a11e42e75ade839e85af274f84573554c5e5c05f714be989"
             ;;
-          "hew-llvm-22.1.0-windows-msvc-v1.tar.gz")
-            # Verified against the companion .sha256 asset on the toolchain
-            # release at download time (sha256="companion" sentinel).
-            sha256="companion"
-            ;;
+          hew-llvm-*) ;; # Windows: sha256 resolved above
           *)
             echo "::error::No pinned SHA256 for asset ${asset}. Update .github/actions/setup-llvm/action.yml when bumping the version."
             exit 1
@@ -158,7 +157,7 @@ runs:
         set -euo pipefail
         asset="${{ steps.layout.outputs.asset }}"
         if [[ "${asset}" == hew-llvm-* ]]; then
-          url="https://github.com/hew-lang/llvm-toolchain/releases/download/llvm-${{ steps.layout.outputs.version }}/${asset}"
+          url="https://github.com/hew-lang/llvm-toolchain/releases/download/toolchain/llvm-${{ steps.layout.outputs.version }}/${asset}"
         else
           url="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ steps.layout.outputs.version }}/${asset}"
         fi

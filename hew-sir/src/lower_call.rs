@@ -2145,7 +2145,15 @@ impl Builder<'_, '_> {
         let mut indexed_writeback = None;
         if let Some(place) = &transformed_place {
             let provenance = Provenance::Site(expr.site);
-            let whole_owner = self.whole_owner_root(place)?;
+            // A faulting runtime transform may release its input. A projected
+            // `var self` field must therefore be staged beneath the whole
+            // receiver even when it has an independently owned field place.
+            let releases = !contract.failures.is_empty() && !contract.preserves_inputs_on_failure();
+            let whole_owner = self.whole_owner_root(place)?.or(if releases {
+                self.failing_var_self_owner_root(place)?
+            } else {
+                None
+            });
             let projected = match whole_owner {
                 Some(root) => root,
                 None => self
@@ -2176,7 +2184,6 @@ impl Builder<'_, '_> {
             // that can fail, and a transform that releases its receiver when
             // it fails leaves nothing to close the owner around, so those
             // mutate a copy of the field that is assigned back after them.
-            let releases = !contract.failures.is_empty() && !contract.preserves_inputs_on_failure();
             let copies_field = indexed_path.is_some() || releases;
             // A closure called again after a recovered fault reads its capture
             // again, so a transform that releases a capture when it fails

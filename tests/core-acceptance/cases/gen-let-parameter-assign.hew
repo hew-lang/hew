@@ -1,0 +1,12 @@
+gen fn count_down(n: i64) -> i64 {
+    while n > 0 {
+        yield n;
+        n -= 1;
+    }
+}
+
+fn main() {
+    for n in count_down(3) {
+        println(f"{n}");
+    }
+}

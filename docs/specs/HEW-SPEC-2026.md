@@ -6139,7 +6139,10 @@ are cloned structurally when every reachable leaf has both a total clone and
 the matching inverse drop.
 
 The caller, enclosing closure, or actor state remains the owner of the capture
-source. The generator owns only its snapshot. Destroying a completed,
+source. The generator owns only its snapshot. A captured `var` binding,
+including a `gen fn` parameter declared `var` or `consume var`, may be
+assigned in the body; the assignment changes the snapshot and never the
+capture source. Destroying a completed,
 suspended, or never-resumed generator destroys the coroutine frame first,
 drops environment fields in reverse declaration order, frees the environment,
 drops any pending yielded value, and finally frees the companion.

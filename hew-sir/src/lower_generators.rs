@@ -57,7 +57,11 @@ impl Builder<'_, '_> {
                     } else {
                         hew_types::ClosureCaptureAcquisition::Snapshot
                     },
-                    access: hew_types::ClosureCaptureAccess::Read,
+                    access: if capture.mutable {
+                        hew_types::ClosureCaptureAccess::Var
+                    } else {
+                        hew_types::ClosureCaptureAccess::Read
+                    },
                     consumption: hew_types::ClosureCaptureConsumption::Consumed,
                     is_send: facts.send == hew_types::SendFact::Known(true),
                     // Generator creation grants no shared concurrent invocation.

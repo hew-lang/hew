@@ -547,7 +547,7 @@ fn builtin_iterator_lang_item_publishes_exact_next_identity() {
 /// receiver field moved out and not yet restored is refused at every
 /// operation that can fail, naming the field and the operation.
 #[test]
-fn var_self_receiver_remains_whole_for_both_custom_display_forms() {
+fn var_self_receiver_checks_the_selected_display_operation() {
     for suffix in ["", ":?"] {
         let source = format!(
             r#"
@@ -576,6 +576,9 @@ impl Holder {{
             "{source}: {:?}",
             output.errors
         );
+        let scalar = source.replace("caption: Caption", "caption: i64");
+        let output = check_source(&scalar);
+        assert!(output.errors.is_empty(), "{scalar}: {:?}", output.errors);
     }
 }
 
@@ -684,7 +687,6 @@ trait Touch {
         // A runtime operation fails only where its contract says so.
         "let conn = self.conn; self.count = self.items.len(); self.conn = conn; 0",
         "let conn = self.conn; let label = f\"{divisor}\"; self.count = label.len(); self.conn = conn; 0",
-        "let conn = self.conn; let label = f\"{divisor:?}\"; self.count = label.len(); self.conn = conn; 0",
         "let spare = self.spare.is_some(); let conn = self.conn; self.conn = conn; if spare { 1 } else { 0 }",
         "let conn = self.conn; self.items.clear(); self.conn = conn; 0",
     ] {

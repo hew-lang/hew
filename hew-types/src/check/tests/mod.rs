@@ -62,15 +62,30 @@ mod wire;
 pub(super) fn root_values<T>(
     facts: &std::collections::HashMap<SpanKey, T>,
 ) -> impl Iterator<Item = &T> {
+    module_values(facts, 0)
+}
+
+/// Facts from a fixture's authored source file, using its module graph index.
+pub(super) fn module_values<T>(
+    facts: &std::collections::HashMap<SpanKey, T>,
+    module_idx: u32,
+) -> impl Iterator<Item = &T> {
     facts
         .iter()
-        .filter(|(key, _)| key.module_idx == 0)
+        .filter(move |(key, _)| key.module_idx == module_idx)
         .map(|(_, value)| value)
 }
 
 /// Build a single-module program whose one module has the given dotted path
 /// (e.g. `["std", "math"]`) and contains `source`'s items.
 pub(super) fn check_source_in_module(source: &str, module_path: Vec<String>) -> TypeCheckOutput {
+    check_source_in_module_with_index(source, module_path).0
+}
+
+pub(super) fn check_source_in_module_with_index(
+    source: &str,
+    module_path: Vec<String>,
+) -> (TypeCheckOutput, u32) {
     check_source_in_module_with_prelude_policy(source, module_path, false)
 }
 
@@ -79,14 +94,14 @@ pub(super) fn check_source_in_module_allowing_prelude_redeclaration(
     source: &str,
     module_path: Vec<String>,
 ) -> TypeCheckOutput {
-    check_source_in_module_with_prelude_policy(source, module_path, true)
+    check_source_in_module_with_prelude_policy(source, module_path, true).0
 }
 
 fn check_source_in_module_with_prelude_policy(
     source: &str,
     module_path: Vec<String>,
     allow_prelude_redeclaration: bool,
-) -> TypeCheckOutput {
+) -> (TypeCheckOutput, u32) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -104,7 +119,11 @@ fn check_source_in_module_with_prelude_policy(
     };
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(module).unwrap();
-    mg.topo_order = vec![mod_id, root_id];
+    mg.topo_order = vec![mod_id.clone(), root_id];
+    let module_idx = mg
+        .file_span_indices()
+        .module_base(&mod_id)
+        .expect("authored module index");
     let program = Program {
         expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
@@ -113,7 +132,7 @@ fn check_source_in_module_with_prelude_policy(
     };
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.checking_embedded_builtins = allow_prelude_redeclaration;
-    checker.check_program(&program)
+    (checker.check_program(&program), module_idx)
 }
 
 /// Like [`check_source_in_module`], but gives the graph node the real shipped
@@ -124,6 +143,13 @@ pub(super) fn check_source_in_canonical_std_module(
     source: &str,
     module_path: &[String],
 ) -> TypeCheckOutput {
+    check_source_in_canonical_std_module_with_index(source, module_path).0
+}
+
+pub(super) fn check_source_in_canonical_std_module_with_index(
+    source: &str,
+    module_path: &[String],
+) -> (TypeCheckOutput, u32) {
     let parsed = hew_parser::parse(source);
     assert!(
         parsed.errors.is_empty(),
@@ -153,14 +179,21 @@ pub(super) fn check_source_in_canonical_std_module(
     };
     let mut mg = ModuleGraph::new(root_id.clone());
     mg.add_module(module).unwrap();
-    mg.topo_order = vec![mod_id, root_id];
+    mg.topo_order = vec![mod_id.clone(), root_id];
+    let module_idx = mg
+        .file_span_indices()
+        .module_base(&mod_id)
+        .expect("authored module index");
     let program = Program {
         expansions: hew_parser::macro_syntax::ExpansionMap::default(),
         module_graph: Some(mg),
         items: vec![],
         module_doc: None,
     };
-    Checker::new(ModuleRegistry::new(vec![])).check_program(&program)
+    (
+        Checker::new(ModuleRegistry::new(vec![])).check_program(&program),
+        module_idx,
+    )
 }
 
 pub(super) fn make_int_literal(n: i128, span: Span) -> Spanned<Expr> {

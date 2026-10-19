@@ -234,10 +234,6 @@ impl Checker {
         Some(result)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "pattern matching type checker with many variants"
-    )]
     pub(super) fn check_method_call_inner(
         &mut self,
         receiver: &Spanned<Expr>,

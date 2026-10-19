@@ -1,8 +1,9 @@
 //! Thread-count regression checks for generators and `fork`.
 //!
-//! Both tests read `/proc/self/task` from inside the running Hew program to
-//! count OS threads at a known point, so the count is exact, not sampled from
-//! outside. Blocking-pool threads are excluded: they run offloaded calls,
+//! Both tests read `/proc/self/task` from inside the running Hew program.
+//! The generator probe retains each task's ID and name in the same pass that
+//! counts it, so a changed peak can identify the thread without a later sample.
+//! Blocking-pool threads are excluded: they run offloaded calls,
 //! including the file reads that take the count. Linux-only: `/proc/self/task` has no cross-platform equivalent
 //! here, and the portable alternative (a runtime-owned spawn counter) does
 //! not exist yet.
@@ -36,13 +37,9 @@ fn value_after_label(stdout: &str, label: &str) -> i64 {
     panic!("label {label:?} not found in stdout:\n{stdout}");
 }
 
-/// U370: all four generator surfaces already run on coroutine frames, not
-/// OS threads — the `cut-gen-coro` cutover held. Each block samples the
-/// thread count immediately before its loop starts, then samples again on
-/// every iteration and keeps the max; the peak must equal the pre-loop
-/// baseline for that block specifically (not a shared global baseline —
-/// spawning the `Emitter` actor for the `receive gen fn` case legitimately
-/// changes its own pre-loop count).
+/// Each generator surface samples immediately before its loop and on every
+/// iteration. Its peak must equal that surface's own pre-loop baseline;
+/// spawning `Emitter` legitimately changes the receive-generator baseline.
 #[test]
 fn generator_iteration_creates_no_os_threads() {
     require_codegen();
@@ -96,21 +93,24 @@ const GENERATOR_THREAD_FENCE_SOURCE: &str = r#"
 import std.fs;
 
 // Blocking-pool threads run offloaded calls, including the reads below; the
-// fence counts every other thread.
-fn threads() -> i64 {
+// fence counts every other thread. Retain IDs and names from the same reads
+// used for the count so a transient peak can be identified without resampling.
+fn threads() -> (i64, string) {
     let names = fs.list_dir("/proc/self/task").expect("the task directory is readable");
     var count = 0;
+    var identities = "";
     for name in names {
         match fs.read(f"/proc/self/task/{name}/comm") {
             .Ok(comm) => {
                 if !comm.starts_with("hew-blocking") {
                     count += 1;
+                    identities = identities + f" {name}:{comm.trim()}";
                 }
             }
             .Err(_) => {}
         }
     }
-    count
+    (count, identities)
 }
 
 gen fn counter(n: i64) -> i64 {
@@ -135,12 +135,16 @@ actor Emitter {
 
 fn main() {
     // gen fn + for-in
-    let pre_genfn = threads();
+    let (pre_genfn, pre_genfn_threads) = threads();
     var peak_genfn = pre_genfn;
+    var peak_genfn_threads = pre_genfn_threads;
     var iters_genfn = 0;
     for v in counter(500) {
-        let t = threads();
-        if t > peak_genfn { peak_genfn = t; }
+        let (t, thread_ids) = threads();
+        if t > peak_genfn {
+            peak_genfn = t;
+            peak_genfn_threads = thread_ids;
+        }
         iters_genfn = iters_genfn + 1;
         if v < 0 { println("unreachable"); }
     }
@@ -150,10 +154,14 @@ fn main() {
     println(peak_genfn);
     println("iters-genfn");
     println(iters_genfn);
+    if peak_genfn != pre_genfn {
+        println(f"thread identities genfn baseline={pre_genfn_threads} peak={peak_genfn_threads}");
+    }
 
     // gen {} block
-    let pre_genblock = threads();
+    let (pre_genblock, pre_genblock_threads) = threads();
     var peak_genblock = pre_genblock;
+    var peak_genblock_threads = pre_genblock_threads;
     var iters_genblock = 0;
     let g = gen {
         yield 1;
@@ -161,8 +169,11 @@ fn main() {
         yield 3;
     };
     for v in g {
-        let t = threads();
-        if t > peak_genblock { peak_genblock = t; }
+        let (t, thread_ids) = threads();
+        if t > peak_genblock {
+            peak_genblock = t;
+            peak_genblock_threads = thread_ids;
+        }
         iters_genblock = iters_genblock + 1;
         if v < 0 { println("unreachable"); }
     }
@@ -172,14 +183,21 @@ fn main() {
     println(peak_genblock);
     println("iters-genblock");
     println(iters_genblock);
+    if peak_genblock != pre_genblock {
+        println(f"thread identities genblock baseline={pre_genblock_threads} peak={peak_genblock_threads}");
+    }
 
     // second gen fn + for
-    let pre_asyncgen = threads();
+    let (pre_asyncgen, pre_asyncgen_threads) = threads();
     var peak_asyncgen = pre_asyncgen;
+    var peak_asyncgen_threads = pre_asyncgen_threads;
     var iters_asyncgen = 0;
     for v in aticks(50) {
-        let t = threads();
-        if t > peak_asyncgen { peak_asyncgen = t; }
+        let (t, thread_ids) = threads();
+        if t > peak_asyncgen {
+            peak_asyncgen = t;
+            peak_asyncgen_threads = thread_ids;
+        }
         iters_asyncgen = iters_asyncgen + 1;
         if v < 0 { println("unreachable"); }
     }
@@ -189,15 +207,22 @@ fn main() {
     println(peak_asyncgen);
     println("iters-asyncgen");
     println(iters_asyncgen);
+    if peak_asyncgen != pre_asyncgen {
+        println(f"thread identities asyncgen baseline={pre_asyncgen_threads} peak={peak_asyncgen_threads}");
+    }
 
     // receive gen fn + for (cross-actor stream producer)
     let e = spawn Emitter;
-    let pre_recvgen = threads();
+    let (pre_recvgen, pre_recvgen_threads) = threads();
     var peak_recvgen = pre_recvgen;
+    var peak_recvgen_threads = pre_recvgen_threads;
     var iters_recvgen = 0;
     for v in e.ticks(200) {
-        let t = threads();
-        if t > peak_recvgen { peak_recvgen = t; }
+        let (t, thread_ids) = threads();
+        if t > peak_recvgen {
+            peak_recvgen = t;
+            peak_recvgen_threads = thread_ids;
+        }
         iters_recvgen = iters_recvgen + 1;
         if v < 0 { println("unreachable"); }
     }
@@ -207,6 +232,9 @@ fn main() {
     println(peak_recvgen);
     println("iters-recvgen");
     println(iters_recvgen);
+    if peak_recvgen != pre_recvgen {
+        println(f"thread identities recvgen baseline={pre_recvgen_threads} peak={peak_recvgen_threads}");
+    }
 }
 "#;
 

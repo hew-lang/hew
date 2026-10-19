@@ -1196,6 +1196,7 @@ impl Checker {
                 self.errors.push(error);
             }
         }
+        let mut reported_obligations = HashSet::new();
         for (obligation, failures) in graph.obligations.iter().zip(failures) {
             if matches!(obligation.body, EffectBody::Declaration(_))
                 && !graph.bodies.contains_key(&obligation.body)
@@ -1231,6 +1232,16 @@ impl Checker {
                 ),
             };
             for (key, source_module, _) in failures {
+                // Distinct coercion sites in one generic body can discharge at
+                // the same failing call instance. They are separate solver
+                // obligations but describe one source diagnostic there.
+                if !reported_obligations.insert((
+                    key.clone(),
+                    source_module.clone(),
+                    message.clone(),
+                )) {
+                    continue;
+                }
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidOperation,
                     key.start..key.end,

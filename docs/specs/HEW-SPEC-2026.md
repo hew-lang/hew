@@ -5816,6 +5816,13 @@ cleanup. To request a graceful stop and wait, write `stop(pid); stopped(pid);`.
 To wait concurrently, `fork stopped(pid)` returns a `Task<()>` that must be
 joined. These operations are idempotent once the actor is terminal.
 
+`stopped(pid)` on an actor that crashed returns once its cleanup is complete.
+The crash was reported when it happened and counts toward the exit status on
+its own (§5.8); the waiter does not raise it again, and a later call on the
+actor reports `ActorError.Dead`. A fault raised while the actor is being
+stopped — in a stop hook or while its state is released — passes to the caller
+waiting in `stopped`, which can recover it like any other fault.
+
 A call on a receive handler waits for that handler's completion, not the
 actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary

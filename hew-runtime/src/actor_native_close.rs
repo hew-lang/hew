@@ -206,7 +206,15 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             }
         }
     }
-    completion.finish(code);
+    // A crash was reported when it happened and already counts toward the
+    // exit status (or its supervisor's ruling); a later `stopped` observes the
+    // ended actor and returns. Only a fault raised while the actor was being
+    // stopped, recorded above, passes to the waiting caller.
+    completion.finish(if state == HewActorState::Crashed as i32 {
+        0
+    } else {
+        code
+    });
 }
 
 /// Request cooperative stop through a stable actor identity.

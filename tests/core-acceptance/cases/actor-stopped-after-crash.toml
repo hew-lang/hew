@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-stopped-after-crash"
+intent = "Waiting with `stopped` on an actor that already crashed returns to the caller; the crash keeps the process exit status failing and a later call reports Dead."
+source = "cases/actor-stopped-after-crash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "Err(Trapped: the handler faulted before replying)\nafter stopped\nErr(Dead: the destination actor is gone and will not come back)\n"
+stderr = "hew: failure: UserPanic (212): bad frame\nhew: actor crash in Reader.feed (actor 1): UserPanic\n"
+exit = 1

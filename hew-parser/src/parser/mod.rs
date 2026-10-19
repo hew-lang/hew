@@ -648,6 +648,12 @@ impl Parser<'_> {
                 parser = parser.with_expander(Rc::clone(expander), self.macro_source.clone());
             }
             let expression = parser.parse_expr();
+            if expression.is_some() && !parser.at_end() {
+                parser.error_at(
+                    "unexpected trailing input in f-string interpolation".to_string(),
+                    parser.peek_span(),
+                );
+            }
             (expression, parser.errors)
         });
         self.errors.extend(errors);

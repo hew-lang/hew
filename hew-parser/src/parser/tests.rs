@@ -1422,6 +1422,24 @@ fn parse_interpolated_string_contains_expr_part() {
 }
 
 #[test]
+fn interpolation_rejects_unconsumed_input_at_its_source_span() {
+    for expression in ["x garbage", "x; y", "x )", "x 7 8", "1e21", "x:04"] {
+        let source = format!("fn main() {{ let s = f\"é [{expression}]\"; }}");
+        let result = parse(&source);
+        let diagnostic = result
+            .errors
+            .iter()
+            .find(|error| error.message.contains("trailing input in f-string"))
+            .unwrap_or_else(|| panic!("{expression}: {:?}", result.errors));
+        let trailing = &source[diagnostic.span.clone()];
+        assert!(!trailing.is_empty(), "{expression}: {diagnostic:?}");
+        assert!(expression.contains(trailing), "{expression}: {trailing}");
+    }
+    let result = parse(r#"fn main() { let s = f"{1.0e21} {value:?} {call(1 + 2)}"; }"#);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+}
+
+#[test]
 fn parse_interpolated_string_structural_format_part() {
     let result = parse(r#"fn main() { let s = f"value={item:?}"; }"#);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);

@@ -35,9 +35,10 @@ pub(super) fn collect_imported_private_fn_closure(
                     }
                 }
             }
-            Item::Function(_) | Item::Impl(_) | Item::Trait(_) => roots.push((index, span)),
-            Item::Actor(actor) if actor.visibility.is_pub() => roots.push((index, span)),
-            _ => {}
+            // Every other item is emitted whatever its visibility: a private
+            // actor reached through a public supervisor or spawning function
+            // still runs its handlers, so a helper they call is live.
+            _ => roots.push((index, span)),
         }
     }
     while let Some((index, span)) = roots.pop() {

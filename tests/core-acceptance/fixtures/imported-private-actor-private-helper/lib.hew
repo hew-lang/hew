@@ -1,0 +1,29 @@
+fn double(n: i64) -> i64 {
+    n * 2
+}
+
+fn triple(n: i64) -> i64 {
+    n * 3
+}
+
+actor Doubler {
+    receive fn work(n: i64) -> i64 {
+        double(n)
+    }
+}
+
+actor Tripler {
+    receive fn work(n: i64) -> i64 {
+        triple(n)
+    }
+}
+
+pub fn start() -> Doubler {
+    spawn Doubler
+}
+
+pub supervisor Pool {
+    strategy: simple_one_for_one;
+    intensity: 5 within 10s;
+    pool workers: Tripler count: 2;
+}

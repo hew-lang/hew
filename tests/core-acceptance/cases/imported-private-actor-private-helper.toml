@@ -1,0 +1,10 @@
+[[case]]
+id = "imported-private-actor-private-helper"
+intent = "A private actor reached through an imported spawning function or supervisor pool calls its module's private helpers."
+source = "fixtures/imported-private-actor-private-helper/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "10\n15\n"
+exit = 0

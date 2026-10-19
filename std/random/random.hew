@@ -31,7 +31,7 @@
 //! import std.random;
 //!
 //! fn main() {
-//!     let rng = random.Rng.new(42);
+//!     var rng = random.Rng.new(42);
 //!     println(rng.next_u64());
 //!     println(rng.next_f64());
 //!     println(rng.range(0, 10));
@@ -46,42 +46,46 @@ import std.crypto.crypto;
 /// Unlike the module-level functions, an `Rng` value is not shared
 /// thread-local state: create one with `Rng.new(seed)` and hold it wherever
 /// it is needed. Two `Rng` values created with the same seed produce
-/// identical sequences.
+/// identical sequences. Advancing a generator requires a mutable `var` binding.
+/// Copying a generator creates an independent stream at the same position.
 pub type Rng {
     state: Vec<u64>;
 }
 
 /// Methods available on an `Rng`.
 trait RngMethods {
-    fn next_u64(self) -> u64;
+    fn next_u64(var self) -> u64;
 
-    fn next_f64(self) -> f64;
+    fn next_f64(var self) -> f64;
 
-    fn range(self, lo: i64, hi: i64) -> i64;
+    fn range(var self, lo: i64, hi: i64) -> i64;
 
-    fn shuffle(self, v: Vec<i64>);
+    /// Return an independently shuffled copy, advancing this generator.
+    fn shuffle(var self, v: Vec<i64>) -> Vec<i64>;
 }
 
 impl RngMethods for Rng {
-    fn next_u64(self) -> u64 {
+    fn next_u64(var self) -> u64 {
         unsafe {
             hew_rng_next_u64(self.state)
         }
     }
-    fn next_f64(self) -> f64 {
+    fn next_f64(var self) -> f64 {
         unsafe {
             hew_rng_next_f64(self.state)
         }
     }
-    fn range(self, lo: i64, hi: i64) -> i64 {
+    fn range(var self, lo: i64, hi: i64) -> i64 {
         unsafe {
             hew_rng_range(self.state, lo, hi)
         }
     }
-    fn shuffle(self, v: Vec<i64>) {
+    fn shuffle(var self, v: Vec<i64>) -> Vec<i64> {
+        let shuffled = v.clone();
         unsafe {
-            hew_rng_shuffle_i64(self.state, v)
-        }
+            hew_rng_shuffle_i64(self.state, shuffled);
+        };
+        shuffled
     }
 }
 
@@ -166,13 +170,16 @@ pub fn randint(lo: i64, hi: i64) -> i64 {
     }
 }
 
-/// Shuffle a `Vec<i64>` in-place using Fisher-Yates.
+/// Return an independently shuffled copy of a `Vec<i64>` using Fisher-Yates.
+/// The input and any aliases of it remain unchanged.
 ///
 /// Matches CPython's `random.shuffle` output for the same seed.
-pub fn shuffle(v: Vec<i64>) {
+pub fn shuffle(v: Vec<i64>) -> Vec<i64> {
+    let shuffled = v.clone();
     unsafe {
-        hew_random_shuffle_i64(v)
-    }
+        hew_random_shuffle_i64(shuffled);
+    };
+    shuffled
 }
 
 /// Weighted choice by bisecting cumulative weights. Returns the chosen index.

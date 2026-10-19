@@ -1,0 +1,13 @@
+[[case]]
+id = "random_rng_immutable_receiver"
+intent = "Advancing a value-owned generator requires a mutable binding, just as an iterator does."
+source = "../vertical-slice/reject/random_rng_immutable_receiver.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 5
+column = 5
+message = "method `range` on `std.random.Rng` requires a mutable binding receiver; `rng` is not declared with `var`"

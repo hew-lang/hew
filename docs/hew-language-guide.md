@@ -4091,15 +4091,20 @@ The functions above share one implicit generator per thread. `random.Rng` is a p
 ```hew
 import std.random;
 fn main() {
-    let rng = random.Rng.new(42);
+    var rng = random.Rng.new(42);
     println(rng.next_u64());
     println(rng.next_f64());     // f64 in [0.0, 1.0)
     println(rng.range(1, 7));    // i64 in [1, 7)
 
-    var hand: Vec<i64> = [1, 2, 3, 4, 5];
-    rng.shuffle(hand);
+    let hand: Vec<i64> = [1, 2, 3, 4, 5];
+    let shuffled = rng.shuffle(hand);
+    let another = random.shuffle(hand);
+    // hand keeps its original order; both calls return independent values.
+    println(f"{hand} {shuffled} {another}");
 }
 ```
+
+Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
 `Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
 

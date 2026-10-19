@@ -2066,6 +2066,9 @@ struct Builder<'hir, 'service> {
     deferred_initialized: BTreeSet<PlaceId>,
     /// Mutable actor-state seats consumed on this path and awaiting `StoreInit`.
     state_taken: BTreeSet<PlaceId>,
+    /// Collections an indexed write took from their place, with that place.
+    /// A fault before the write publishes puts each one back unchanged.
+    fault_restores: Vec<(ValueId, PlaceId)>,
     /// A stream producer body: the caller's sink it yields into and the
     /// element type each yield transfers.
     stream_sink: Option<(ValueId, ResolvedTy)>,

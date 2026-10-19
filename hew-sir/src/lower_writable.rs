@@ -81,7 +81,8 @@ impl Builder<'_, '_> {
     /// The container an indexed path starts from, and where the updated
     /// container is published. Beneath a whole owner the path reads and
     /// updates a copy of its container, so a failing step leaves the owner as
-    /// it was.
+    /// it was. A container with its own seat is taken from it, so the update
+    /// owns the only reference and changes the element in place.
     pub(super) fn stage_indexed_base(
         &mut self,
         base: &BindingPlace,
@@ -101,12 +102,42 @@ impl Builder<'_, '_> {
         let leaf = self
             .owned_projection(base)?
             .ok_or("indexed writable root has no owning seat")?;
-        let container = self.emit_typed(
-            provenance.clone(),
-            &base.leaf_ty,
-            SemOpKind::LoadCopy { place: leaf },
-        )?;
-        Ok((container, WritableRoot::Place { leaf, taken: false }))
+        let container = self.take_indexed_container(leaf, &base.leaf_ty, provenance)?;
+        Ok((container, WritableRoot::Place { leaf, taken: true }))
+    }
+
+    /// Take the collection an indexed path updates out of its seat. Until the
+    /// path publishes, a fault puts the collection back unchanged, so the seat
+    /// is whole on every edge: a `var self` method hands its receiver back and
+    /// an actor releases its state once.
+    pub(super) fn take_indexed_container(
+        &mut self,
+        leaf: PlaceId,
+        ty: &ResolvedTy,
+        provenance: &Provenance,
+    ) -> Result<ValueId, String> {
+        let container =
+            self.emit_typed(provenance.clone(), ty, SemOpKind::LoadTake { place: leaf })?;
+        if matches!(
+            self.places[leaf.0 as usize].origin,
+            crate::PlaceOrigin::ActorState { .. }
+        ) || self.in_var_self_receiver(leaf)
+        {
+            self.state_taken.insert(leaf);
+        }
+        self.fault_restores.push((container, leaf));
+        Ok(container)
+    }
+
+    /// Put every collection an unpublished indexed path took back into its
+    /// seat on a fault edge.
+    pub(super) fn restore_indexed_containers(&mut self) -> Result<(), String> {
+        for (container, leaf) in self.fault_restores.clone() {
+            if self.owned_live.contains_key(&container) {
+                self.restore_taken_place(leaf, container, Provenance::Synthesized)?;
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn publish_writable(
@@ -117,6 +148,7 @@ impl Builder<'_, '_> {
     ) -> Result<(), String> {
         match root {
             WritableRoot::Place { leaf, taken: true } => {
+                self.fault_restores.retain(|(_, taken)| *taken != leaf);
                 self.restore_taken_place(leaf, replacement, provenance.clone())
             }
             WritableRoot::Place { leaf, taken: false } => {

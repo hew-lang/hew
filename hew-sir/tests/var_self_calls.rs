@@ -926,3 +926,70 @@ fn main() -> i64 {
             if reason.contains("defer dependency is not initialized")
     )));
 }
+
+#[test]
+fn indexed_field_writes_take_the_collection_and_restore_it_on_faults() {
+    let module = lower(
+        r"type Node {
+    edges: HashMap<char, i64>;
+    terminal: bool;
+}
+
+type Trie {
+    nodes: Vec<Node>;
+}
+
+impl Trie {
+    fn mark(var self, at: i64) {
+        self.nodes[at].terminal = true;
+    }
+
+    fn link(var self, from: i64, label: char, to: i64) {
+        self.nodes[from].edges.insert(label, to);
+    }
+}
+
+fn main() -> i64 {
+    var trie = Trie { nodes: [Node { edges: HashMap.new(), terminal: false }] };
+    trie.mark(0);
+    trie.link(0, 'a', 0);
+    trie.nodes.len()
+}
+",
+    );
+    let mut checked = 0;
+    // Each `var self` method returns its unit result paired with the receiver.
+    for function in module.functions.iter().filter(|function| {
+        matches!(&function.return_ty, hew_types::ResolvedTy::Tuple(fields) if fields.len() == 2)
+    }) {
+        let nodes: Vec<_> = function
+            .places
+            .iter()
+            .filter(|place| {
+                matches!(place.origin, hew_sir::PlaceOrigin::Aggregate { .. })
+                    && matches!(&place.ty, hew_types::ResolvedTy::Named { args, .. } if args.len() == 1)
+            })
+            .map(|place| place.id)
+            .collect();
+        let ops = || function.blocks.iter().flat_map(|block| &block.ops);
+        // The collection field is taken, never copied, so the element update
+        // owns the only reference and runs in place.
+        assert!(!ops()
+            .any(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if nodes.contains(&place))));
+        let taken: Vec<_> = ops()
+            .filter_map(|op| match op.kind {
+                SemOpKind::LoadTake { place } if nodes.contains(&place) => Some(place),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(taken.len(), 1, "{}", hew_sir::dump_sir(&module));
+        // Every edge after the take re-initializes the field: the publish on
+        // the normal edge and the unchanged collection on each fault edge.
+        let stores = ops()
+            .filter(|op| matches!(op.kind, SemOpKind::StoreInit { place, .. } if place == taken[0]))
+            .count();
+        assert!(stores >= 2, "{}", hew_sir::dump_sir(&module));
+        checked += 1;
+    }
+    assert_eq!(checked, 2, "{}", hew_sir::dump_sir(&module));
+}

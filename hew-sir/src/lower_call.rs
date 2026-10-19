@@ -2173,13 +2173,15 @@ impl Builder<'_, '_> {
                 ),
             };
             let source = if let Some(path) = indexed_path.take() {
-                let container = match current {
-                    Some(copy) => copy,
-                    None => self.emit_typed(
-                        provenance.clone(),
-                        &place.leaf_ty,
-                        SemOpKind::LoadCopy { place: projected },
-                    )?,
+                let (container, target) = match current {
+                    Some(copy) => (copy, target),
+                    None => (
+                        self.take_indexed_container(projected, &place.leaf_ty, &provenance)?,
+                        WritableRoot::Place {
+                            leaf: projected,
+                            taken: true,
+                        },
+                    ),
                 };
                 let (source, writeback) =
                     self.acquire_indexed_path(path, container, target, true, &provenance)?;

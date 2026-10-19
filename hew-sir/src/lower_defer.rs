@@ -183,6 +183,7 @@ impl Builder<'_, '_> {
     /// Generate a fault successor without changing its sibling's lexical state.
     pub(super) fn finish_fault_exit(&mut self) -> Result<(), String> {
         let saved = self.control_state();
+        self.restore_indexed_containers()?;
         self.cleanup_draining = true;
         let boundary = self
             .defer_bodies

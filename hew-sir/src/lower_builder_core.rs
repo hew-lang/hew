@@ -139,6 +139,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             failure_exit: false,
             deferred_initialized: BTreeSet::new(),
             state_taken: BTreeSet::new(),
+            fault_restores: Vec::new(),
             stream_sink,
             dual_return: None,
             cleanup_ladder: super::cleanup::CleanupLadder::default(),

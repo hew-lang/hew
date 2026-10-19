@@ -1,0 +1,102 @@
+import std.failure;
+
+// A write through an element of a collection field, `self.nodes[i].flag = v`
+// or `self.nodes[i].edges.insert(k, v)`, takes the collection from its seat
+// and updates the element in place. A fault before the update publishes puts
+// the collection back unchanged, so a `var self` method hands its receiver
+// back whole and the crash hook reads the seat as it was. A local record
+// field takes the same path.
+
+type Node {
+    edges: HashMap<char, i64>;
+    terminal: bool;
+}
+
+type Trie {
+    nodes: Vec<Node>;
+}
+
+impl Trie {
+    fn add_node(var self) -> i64 {
+        self.nodes.push(Node { edges: HashMap.new(), terminal: false });
+        self.nodes.len() - 1
+    }
+
+    fn mark(var self, at: i64) {
+        self.nodes[at].terminal = true;
+    }
+
+    fn link(var self, from: i64, label: char, to: i64) {
+        self.nodes[from].edges.insert(label, to);
+    }
+
+    fn describe(self) -> string {
+        var text = "";
+        for node in self.nodes.iter() {
+            text = text + f"[{node.edges.len()} {node.terminal}]";
+        }
+        text
+    }
+}
+
+actor Words {
+    var trie: Trie = Trie { nodes: [] };
+    receive fn grow() -> string {
+        let root = trie.add_node();
+        let child = trie.add_node();
+        trie.link(root, 'a', child);
+        trie.mark(child);
+        trie.describe()
+    }
+    receive fn mark_missing() {
+        trie.mark(7);
+    }
+    receive fn link_missing() {
+        trie.link(9, 'b', 0);
+    }
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        println(f"seat {trie.describe()}");
+        failure.CrashAction.GiveUp
+    }
+}
+
+fn settle_crash(target: Words) {
+    scope {
+        stopped(target);
+        panic("expected actor crash");
+    } handle failure {
+        match failure {
+            .Fault { message } => assert(message.contains("IndexOutOfBounds")),
+            .Deadline { message } => panic(message),
+        }
+    };
+}
+
+fn main() {
+    var trie = Trie { nodes: [] };
+    for _ in 0..4 {
+        trie.add_node();
+    }
+    for at in 0..3 {
+        trie.link(at, 'x', at + 1);
+    }
+    trie.mark(3);
+    trie.mark(1);
+    let snapshot = trie;
+    trie.link(0, 'y', 2);
+    trie.nodes[2].terminal = true;
+    trie.nodes[3].edges.insert('z', 0);
+    println(trie.describe());
+    println(snapshot.describe());
+
+    let marking = spawn Words;
+    println(marking.grow().expect("grow"));
+    let _ = marking.mark_missing();
+    settle_crash(marking);
+    let linking = spawn Words;
+    println(linking.grow().expect("grow"));
+    let _ = linking.link_missing();
+    settle_crash(linking);
+    println("done");
+}

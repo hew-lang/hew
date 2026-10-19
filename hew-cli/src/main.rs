@@ -1786,40 +1786,23 @@ fn cmd_run_native(
         command.env("HEW_PPROF", default_profile_endpoint());
     }
 
-    let mut child = match crate::process::BoundedChild::spawn(&mut command) {
-        Ok(child) => child,
+    let status = match crate::process::run_command_interactive(&mut command, timeout) {
+        Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
+        Ok(crate::process::ChildWaitOutcome::Timeout) => {
+            drop(artifact);
+            eprintln!(
+                "Error: program timed out after {}",
+                crate::process::format_timeout(
+                    timeout.expect("timeout outcome requires a deadline")
+                )
+            );
+            std::process::exit(124);
+        }
         Err(e) => {
             drop(artifact);
-            eprintln!("Error: cannot launch {input}: {e}");
+            eprintln!("Error: cannot run {input}: {e}");
             std::process::exit(1);
         }
-    };
-
-    let status = match timeout {
-        Some(timeout) => match child.wait_with_timeout(timeout) {
-            Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
-            Ok(crate::process::ChildWaitOutcome::Timeout) => {
-                drop(artifact);
-                eprintln!(
-                    "Error: program timed out after {}",
-                    crate::process::format_timeout(timeout)
-                );
-                std::process::exit(124);
-            }
-            Err(e) => {
-                drop(artifact);
-                eprintln!("Error: cannot wait for {input}: {e}");
-                std::process::exit(1);
-            }
-        },
-        None => match child.wait_unbounded() {
-            Ok(status) => status,
-            Err(e) => {
-                drop(artifact);
-                eprintln!("Error: cannot wait for {input}: {e}");
-                std::process::exit(1);
-            }
-        },
     };
 
     drop(artifact);

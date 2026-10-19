@@ -557,7 +557,9 @@ impl<T> Vec<T> {
     #[extern_symbol(hew_vec_len)]
     fn len(self) -> i64 {}
     #[extern_symbol("hew_vec_get_{T}")]
-    fn get(self, index: i64) -> Option<T> { self.get(index) }
+    fn get(self, index: i64) -> Option<T> {
+        self.get(index)
+    }
     #[extern_symbol("hew_vec_set_{T}")]
     fn set(self, index: i64, value: T) {}
     #[extern_symbol("hew_vec_remove_at_{T}")]
@@ -819,7 +821,9 @@ pub trait Index<Idx> {
 
 impl<T: Clone> Index<i64> for Vec<T> {
     type Output = T;
-    fn get(self, index: i64) -> Option<T> { self.get(index) }
+    fn get(self, index: i64) -> Option<T> {
+        self.get(index)
+    }
     fn at(self, index: i64) -> T {
         self[index]
     }
@@ -841,8 +845,12 @@ impl Index<i64> for string {
 
 impl<K: Hash + Eq, V: Clone> Index<K> for HashMap<K, V> {
     type Output = V;
-    fn get(self, index: K) -> Option<V> { self.get(index) }
-    fn at(self, index: K) -> V { self[index] }
+    fn get(self, index: K) -> Option<V> {
+        self.get(index)
+    }
+    fn at(self, index: K) -> V {
+        self[index]
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -42,6 +42,14 @@ fn main() {
     assert(restored.next_u64() == next);
     assert(restored.next_u64() == computed.next_u64());
 
+    // A nested draw runs before the outer draw and both advance the receiver.
+    var nested = random.Rng.new(7);
+    let nested_value = nested.range(0, nested.range(1, 10));
+    var hoisted = random.Rng.new(7);
+    let inner = hoisted.range(1, 10);
+    assert(nested_value == hoisted.range(0, inner));
+    assert(nested.next_u64() == hoisted.next_u64());
+
     // Two generators seeded differently diverge.
     var c = random.Rng.new(1);
     var d = random.Rng.new(2);

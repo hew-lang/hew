@@ -1,0 +1,22 @@
+// A head binding that shadows an outer name is refused once at the head,
+// though the guard and the body each bind it.
+const limit: i64 = 10;
+
+machine Meter {
+    events {
+        Add { limit: i64; }
+    }
+
+    state Idle;
+    state Acc { sum: i64; }
+
+    on Add { limit }: Idle => Acc when limit > 0 { sum: limit }
+
+    default { state }
+}
+
+fn main() {
+    var meter: Meter = .Idle;
+    let _ = meter.step(.Add { limit: 1 });
+    println(meter.state_name());
+}

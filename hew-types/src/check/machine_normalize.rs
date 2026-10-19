@@ -72,10 +72,15 @@ impl NormalizedProgram {
         }
     }
 
-    /// Reduce the unused-variable warnings on head-binding copies to one per
-    /// authored head name that no copy reads. A name the guard reads and the
-    /// body does not (or the reverse) is used.
-    pub(super) fn merge_head_binding_warnings(&self, warnings: &mut Vec<TypeError>) {
+    /// Report each head binding once, not once per copy. An unused-variable
+    /// warning stands only when no copy is read (a name the guard reads and
+    /// the body does not, or the reverse, is used); any other diagnostic on a
+    /// copy is kept once per binding.
+    pub(super) fn merge_head_binding_diagnostics(
+        &self,
+        errors: &mut Vec<TypeError>,
+        warnings: &mut Vec<TypeError>,
+    ) {
         if self.head_bindings.is_empty() {
             return;
         }
@@ -92,20 +97,25 @@ impl NormalizedProgram {
             }
         }
         let mut reported = std::collections::HashSet::new();
-        warnings.retain_mut(|warning| {
-            if warning.kind != TypeErrorKind::UnusedVariable {
-                return true;
-            }
-            let Some((binding, name)) = self.head_bindings.get(&warning.span) else {
+        let mut keep = |diagnostic: &mut TypeError| {
+            let Some((binding, name)) = self.head_bindings.get(&diagnostic.span) else {
                 return true;
             };
-            if unused.get(binding) != copies.get(binding) || !reported.insert(*binding) {
-                return false;
+            if diagnostic.kind == TypeErrorKind::UnusedVariable {
+                if unused.get(binding) != copies.get(binding) {
+                    return false;
+                }
+                // A head name must name a payload field, so `_name` is no fix.
+                diagnostic.suggestions = vec![format!("remove `{name}` from the rule head")];
             }
-            // A head name must name a payload field, so `_name` is no fix.
-            warning.suggestions = vec![format!("remove `{name}` from the rule head")];
-            true
-        });
+            reported.insert((
+                *binding,
+                diagnostic.kind.as_kind_str(),
+                diagnostic.message.clone(),
+            ))
+        };
+        errors.retain_mut(&mut keep);
+        warnings.retain_mut(&mut keep);
     }
 
     /// The source span a diagnostic at `span` in a generated node reports at.

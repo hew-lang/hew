@@ -43,6 +43,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "tests/core-acceptance/cases/spawn-keyed.hew",
     },
     ParityCase {
+        // A transition head binding read by the `when` guard and the body,
+        // across plain, wildcard-source, generic and composite-group rules.
+        test_name: "machine_guard_head_binding",
+        source_rel: "tests/core-acceptance/cases/machine-guard-head-binding.hew",
+    },
+    ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
         test_name: "defer_order",
         source_rel: "examples/sandbox-graduation/defer_order.hew",

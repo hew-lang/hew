@@ -4206,7 +4206,7 @@ impl Checker {
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
         if let Some(normalized) = normalized_program {
-            normalized.merge_head_binding_warnings(&mut output.warnings);
+            normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();

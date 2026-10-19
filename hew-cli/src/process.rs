@@ -301,9 +301,12 @@ impl BoundedChild {
         loop {
             if interrupted.is_none() {
                 if let Some(signal) = signals.requested() {
-                    // SAFETY: spawn established this child's isolated group;
-                    // the child has not been reaped, so its ID cannot be reused.
-                    let result = unsafe { libc::killpg(self.child.id().cast_signed(), signal) };
+                    let pid = self.child.id().cast_signed();
+                    let target = if self.isolated_group { -pid } else { pid };
+                    // SAFETY: the unreaped child reserves this identity. A
+                    // negative target selects only its isolated group; an
+                    // inherited group is never signalled as a whole.
+                    let result = unsafe { libc::kill(target, signal) };
                     if result != 0 {
                         let error = std::io::Error::last_os_error();
                         if error.raw_os_error() != Some(libc::ESRCH) {
@@ -368,14 +371,16 @@ impl BoundedChild {
 
 /// Own the complete interactive child lifetime, including errors. Callers may
 /// exit the CLI immediately after this returns: no child cleanup relies on
-/// destructors running after `process::exit`.
+/// destructors running after `process::exit`. Inherited groups preserve terminal
+/// input for WASI; only the direct child is owned in that mode.
 pub(crate) fn run_command_interactive(
     command: &mut Command,
     timeout: Option<Duration>,
+    inherit_group: bool,
 ) -> Result<ChildWaitOutcome, String> {
     #[cfg(unix)]
     let signals = crate::signal::RunSignals::install()?;
-    let mut child = BoundedChild::spawn(command)?;
+    let mut child = spawn_test_child(command, inherit_group)?;
     #[cfg(unix)]
     {
         child.wait_for_run(timeout, &signals)
@@ -1116,7 +1121,8 @@ mod tests {
                 "-c",
                 "trap 'exit 37' TERM; echo $$ > leader; (trap '' TERM; touch ready; exec sleep 60) & wait",
             ]);
-            let outcome = run_command_interactive(&mut command, None).expect("interactive shell");
+            let outcome =
+                run_command_interactive(&mut command, None, false).expect("interactive shell");
             assert!(
                 matches!(outcome, ChildWaitOutcome::Exited(status) if status.code() == Some(37))
             );

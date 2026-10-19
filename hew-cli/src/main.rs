@@ -1786,7 +1786,7 @@ fn cmd_run_native(
         command.env("HEW_PPROF", default_profile_endpoint());
     }
 
-    let status = match crate::process::run_command_interactive(&mut command, timeout) {
+    let status = match crate::process::run_command_interactive(&mut command, timeout, false) {
         Ok(crate::process::ChildWaitOutcome::Exited(status)) => status,
         Ok(crate::process::ChildWaitOutcome::Timeout) => {
             drop(artifact);

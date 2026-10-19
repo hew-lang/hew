@@ -2576,7 +2576,7 @@ impl Checker {
                 // A binder is its own type, even when an actor or handler
                 // trait elsewhere shares its spelling.
                 if let crate::TypeHead::Nominal(nominal) = *head {
-                    if self.name_is_actor_handle_nominal(nominal.spelling.as_str()) {
+                    if self.nominal_is_actor_handle(nominal) {
                         *head = crate::TypeHead::Actor(nominal);
                     }
                 }
@@ -2613,22 +2613,18 @@ impl Checker {
         }
     }
 
-    /// Whether a written nominal names an actor handle: a declared actor, or a
-    /// handler-style trait an actor satisfies structurally.
-    fn name_is_actor_handle_nominal(&self, name: &str) -> bool {
-        if self.lookup_type_def(name).is_some_and(|definition| {
-            matches!(
-                definition.kind,
-                super::types::TypeDefKind::Actor | super::types::TypeDefKind::Supervisor
-            )
-        }) {
-            return true;
-        }
-        if self.supervisor_children.contains_key(name) {
-            return true;
-        }
-        self.lookup_declaration(name)
-            .is_some_and(|id| self.trait_is_handler_style(id))
+    /// Whether a written nominal names an actor handle: a declared actor or
+    /// supervisor, or a handler-style trait an actor satisfies structurally.
+    ///
+    /// The nominal's declaration decides it. Its spelling is display data and
+    /// differs between the declaring file and a file that imports it, so a
+    /// lookup by spelling misses an imported supervisor.
+    fn nominal_is_actor_handle(&self, nominal: crate::NominalHead) -> bool {
+        let declaration = nominal.id.declaration();
+        matches!(
+            self.defs.kind(declaration),
+            crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
+        ) || self.trait_is_handler_style(declaration)
     }
 
     #[expect(

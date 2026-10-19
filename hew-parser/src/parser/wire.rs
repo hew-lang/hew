@@ -299,12 +299,15 @@ impl Parser<'_> {
         let mut fields = Vec::new();
         let mut field_meta = Vec::new();
         let mut reserved_numbers: Vec<u32> = Vec::new();
+        let mut reserved = Vec::new();
         let mut explicit_numbers: Vec<u32> = Vec::new();
         let mut seen_explicit_numbers = std::collections::HashSet::new();
 
         while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
             // Check for `reserved @N, @M, ...;`
             if self.peek() == Some(&Token::Reserved) {
+                let reserved_start = self.peek_span().start;
+                let first_number = reserved_numbers.len();
                 self.advance();
                 while self.peek() != Some(&Token::Semicolon) && !self.at_end() {
                     self.expect(&Token::At)?;
@@ -326,6 +329,10 @@ impl Parser<'_> {
                         break;
                     }
                 }
+                reserved.push(WireReserved {
+                    numbers: reserved_numbers[first_number..].to_vec(),
+                    span: reserved_start..self.last_token_end,
+                });
                 self.expect_member_terminator("reserved");
                 continue;
             }
@@ -440,7 +447,7 @@ impl Parser<'_> {
             doc_comment: None,
             wire: Some(WireMetadata {
                 field_meta: resolved_meta,
-                reserved_numbers,
+                reserved,
                 version,
                 min_version,
             }),
@@ -528,7 +535,7 @@ impl Parser<'_> {
 
         td.wire = Some(WireMetadata {
             field_meta: Vec::new(),
-            reserved_numbers: Vec::new(),
+            reserved: Vec::new(),
             version,
             min_version,
         });

@@ -2959,7 +2959,7 @@ enum Command {
     assert_eq!(decl.name, Ident::new("Command"));
     let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
     assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 3);
     for item in &decl.body {
         match item {
@@ -3218,7 +3218,7 @@ pub enum Command {
         .as_ref()
         .expect("expected wire metadata on pub enum");
     assert!(wire.field_meta.is_empty());
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 2);
     for item in &decl.body {
         match item {

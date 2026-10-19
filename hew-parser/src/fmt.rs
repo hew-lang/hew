@@ -17,6 +17,7 @@ use crate::ast::{
     Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
     TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
     TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -1622,6 +1623,9 @@ impl<'a> Formatter<'a> {
         self.indent += 1;
         match decl.kind {
             TypeDeclKind::Struct => {
+                // `reserved` clauses print among the fields where they were
+                // written; the AST keeps them in a separate list.
+                let mut reserved = wire.reserved.iter().peekable();
                 for (i, item) in decl.body.iter().enumerate() {
                     if let TypeBodyItem::Field {
                         name,
@@ -1631,6 +1635,9 @@ impl<'a> Formatter<'a> {
                         ..
                     } = item
                     {
+                        while let Some(clause) = reserved.next_if(|c| c.span.start < span.start) {
+                            self.format_wire_reserved(clause);
+                        }
                         self.flush_comments_before(span.start);
                         self.prev_source_pos = span.start;
                         self.format_attributes(attributes);
@@ -1655,18 +1662,8 @@ impl<'a> Formatter<'a> {
                         self.prev_source_pos = self.prev_source_pos.max(span.end);
                     }
                 }
-                // Emit reserved field numbers
-                if !wire.reserved_numbers.is_empty() {
-                    self.write_indent();
-                    self.write("reserved ");
-                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write("@");
-                        self.write(&n.to_string());
-                    }
-                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+                for clause in reserved {
+                    self.format_wire_reserved(clause);
                 }
             }
             TypeDeclKind::Enum => {
@@ -1689,6 +1686,23 @@ impl<'a> Formatter<'a> {
         }
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    fn format_wire_reserved(&mut self, clause: &WireReserved) {
+        self.flush_comments_before(clause.span.start);
+        self.prev_source_pos = clause.span.start;
+        self.write_indent();
+        self.write("reserved ");
+        for (i, n) in clause.numbers.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write("@");
+            self.write(&n.to_string());
+        }
+        self.write(";");
+        self.newline();
+        self.prev_source_pos = self.prev_source_pos.max(clause.span.end);
     }
 
     /// The attributes a wire declaration folds into its metadata, for a
@@ -7431,6 +7445,42 @@ impl Counter {
     pub fn e(self) -> i64 {
         self.count + 4
     }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// `reserved` clauses print where they were written among the wire
+    /// fields, one clause per source clause, with their comments.
+    #[test]
+    fn wire_reserved_clauses_keep_their_position() {
+        let src = "\
+#[wire]
+type First {
+    reserved @1;
+    a: i64 @2;
+}
+
+#[wire]
+type Middle {
+    a: i64 @1;
+    reserved @2, @4;
+    c: i64 @3;
+}
+
+#[wire]
+type Last {
+    a: i64 @1;
+    // retired in v2
+    reserved @2;
+}
+
+#[wire]
+type Split {
+    a: i64 @1; // first
+    reserved @2; // gone
+    reserved @5;
+    c: i64 @3;
 }
 ";
         assert_eq!(roundtrip_source(src), src);

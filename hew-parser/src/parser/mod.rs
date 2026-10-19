@@ -18,7 +18,7 @@ pub(crate) use crate::ast::{
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
     TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
     TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata,
+    WireFieldMeta, WireMetadata, WireReserved,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;

@@ -215,8 +215,6 @@ struct FileScope {
     /// Names two imports of this file bind to different declarations; a
     /// reference to one is ambiguous.
     ambiguous: HashMap<Symbol, Vec<Binding>>,
-    /// The module each import declaration of this file names.
-    import_targets: Vec<(ModuleId, ImportSite)>,
 }
 
 /// One import declaration: the file it is written in and its source span.
@@ -393,6 +391,27 @@ impl Scopes {
         }
     }
 
+    /// A named selection also makes its module reachable for qualified
+    /// siblings. Keep that incidental binding behind an explicit whole-module
+    /// import, regardless of declaration order.
+    pub fn bind_implicit_module_import(
+        &mut self,
+        file: ModuleId,
+        name: Symbol,
+        module: ModuleId,
+        site: ImportSite,
+    ) {
+        if self
+            .files
+            .get(&file)
+            .and_then(|scope| scope.imports.get(&name))
+            .is_some_and(|(binding, _)| *binding == Binding::Module(module))
+        {
+            return;
+        }
+        self.bind_import(file, name, Binding::Module(module), site);
+    }
+
     /// The modules `file` imports whole that declare `name`, for the hint
     /// on a bare reference the plain import does not publish.
     #[must_use]
@@ -424,31 +443,6 @@ impl Scopes {
             .get(&file)
             .and_then(|scope| scope.ambiguous.get(&name))
             .map_or(&[], Vec::as_slice)
-    }
-
-    /// Record the module an import declaration names.
-    pub fn record_import_target(&mut self, target: ModuleId, site: ImportSite) {
-        let targets = &mut self.files.entry(site.file).or_default().import_targets;
-        if !targets.contains(&(target, site)) {
-            targets.push((target, site));
-        }
-    }
-
-    /// Count a use of `module` that no written path names (a trait method
-    /// reached through dispatch, an implicit literal import) as a use of
-    /// every import of it in `file`.
-    pub fn mark_module_used(&mut self, file: ModuleId, module: ModuleId) {
-        let module = self.namespace_of(module);
-        let Some(scope) = self.files.get(&file) else {
-            return;
-        };
-        let used: Vec<ImportSite> = scope
-            .import_targets
-            .iter()
-            .filter(|(target, _)| self.namespace_of(*target) == module)
-            .map(|(_, site)| *site)
-            .collect();
-        self.used_imports.extend(used);
     }
 
     /// Count a use of the import binding `name` in `file`.

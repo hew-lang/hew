@@ -229,7 +229,7 @@ impl Checker {
                 span,
             },
         )?;
-        self.note_path_use(&head.canonical_type);
+        self.note_import_use_of_expr_head(&receiver.0);
 
         Some(result)
     }
@@ -260,7 +260,7 @@ impl Checker {
                     span,
                 },
             ) {
-                self.note_path_use(&head.canonical_type);
+                self.note_import_use_of_expr_head(&receiver.0);
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
@@ -1731,6 +1731,12 @@ impl Checker {
                         }
                     }
                 }
+                // These adapters construct a new Range value in MIR. They
+                // have no callable target, so the effect graph must not treat
+                // their call syntax as an unresolved body dependency. In an
+                // imported impl, that false dependency otherwise suppresses
+                // the entire checked method body at HIR registration.
+                self.record_construct_call(span);
                 range_ty
             }
             // User-defined struct/actor methods from type_defs

@@ -253,7 +253,17 @@ impl LowerCtx {
             self.source_declaration(item_span, hew_types::DeclarationKind::Function, 0);
         let symbol = declaration.map_or_else(
             || symbol.to_string(),
-            |declaration| self.defs.linkage_name(declaration, symbol),
+            |declaration| {
+                // A quoted file import is spliced into the root item stream,
+                // but its declaration still belongs to the imported file.
+                // Keep that owner's symbol even when it declares `main` or a
+                // same-spelled private helper from another file.
+                if self.defs.module(declaration) != self.defs.root_module() {
+                    crate::symbol::declaration_symbol(&self.defs, declaration)
+                } else {
+                    self.defs.linkage_name(declaration, symbol)
+                }
+            },
         );
         let id = self.register_fn_entry(&symbol, func);
         if let Some(declaration) = declaration {

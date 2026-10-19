@@ -6030,22 +6030,127 @@ mod tests {
             "file-import fixture must lower without HIR diagnostics: {:#?}",
             hir.diagnostics
         );
-        let lowered: Vec<hew_types::DefId> = hir
+        let lowered: Vec<_> = hir
             .module
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
-                    Some(function.declaration)
+                hew_hir::HirItem::Function(function) if function.declaration == minted[0] => {
+                    Some(function)
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            lowered,
-            vec![minted[0]],
+            lowered.len(),
+            1,
             "HIR must lower the helper once, under the checker-minted identity"
         );
+        assert_eq!(lowered[0].name, "helper$helper_value");
+    }
+
+    #[test]
+    fn quoted_file_imports_keep_private_function_symbols_by_source() {
+        for (imports, main_body, expected) in [
+            (
+                "import \"a.hew\";",
+                "fn main() { assert(f() == 1); }",
+                vec!["a$f", "a$main", "main"],
+            ),
+            (
+                "import \"a.hew\"; import \"b.hew\";",
+                "fn main() { assert(a_api() + b_api() == 3); }",
+                vec!["a$helper", "b$helper", "a$a_api", "b$b_api", "main"],
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("create quoted import fixture");
+            if expected.len() == 3 {
+                write_source(dir.path(), "a.hew", "pub fn f() -> i64 { 1 } fn main() {}");
+            } else {
+                write_source(
+                    dir.path(),
+                    "a.hew",
+                    "fn helper() -> i64 { 1 } pub fn a_api() -> i64 { helper() }",
+                );
+                write_source(
+                    dir.path(),
+                    "b.hew",
+                    "fn helper() -> i64 { 2 } pub fn b_api() -> i64 { helper() }",
+                );
+            }
+            let input = write_source(dir.path(), "main.hew", &format!("{imports}\n{main_body}\n"));
+            let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+                .expect("quoted import fixture must type-check");
+            let tco = state.typecheck_result.tco.as_ref().expect("type facts");
+            let hir = hew_hir::lower_program(
+                &state.program,
+                tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+            let names: Vec<_> = hir
+                .module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    hew_hir::HirItem::Function(function) => Some(function.name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for symbol in expected {
+                assert!(names.contains(&symbol), "missing `{symbol}` in {names:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dotted_imported_impl_with_iterator_has_a_callable_body() {
+        let dir = tempfile::tempdir().expect("create imported method fixture");
+        write_source(
+            dir.path(),
+            "modp3.hew",
+            "pub type T { xs: Vec<f64>; }\n\
+             impl T { pub fn a(self) -> f64 { var sum = 0.0;\
+                 for i in (0..self.xs.len()).rev() { sum += self.xs[i]; } sum } }\n\
+             pub fn mk() -> T { T { xs: [1.0, 2.0] } }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import modp3; fn main() { let value = modp3.mk(); assert(value.a() == 3.0); }",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("imported method fixture must type-check");
+        let tco = state.typecheck_result.tco.as_ref().expect("type facts");
+        let declaration = tco
+            .defs
+            .declarations()
+            .map(|(_, declaration)| declaration)
+            .find(|declaration| {
+                tco.defs.kind(*declaration) == hew_types::DeclarationKind::ImplMethod
+                    && tco.defs.name(*declaration) == hew_types::Symbol::intern("a")
+                    && tco.defs.path(*declaration).starts_with("modp3.")
+            })
+            .expect("checked method identity");
+        assert!(
+            tco.imported_impl_body_facts.contains_key(&declaration),
+            "a Range adapter has no runtime callee and cannot suppress its enclosing body"
+        );
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("selected imported method must have a callable body");
+        let callable = output
+            .semantics()
+            .module
+            .callable_for_declaration(&declaration)
+            .expect("method body is emitted");
+        assert!(output
+            .semantics()
+            .module
+            .function_index()
+            .function(callable.id)
+            .is_some());
     }
 
     #[test]

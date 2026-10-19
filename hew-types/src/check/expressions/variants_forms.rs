@@ -360,9 +360,6 @@ else needs `impl Display for {rendered}`)"
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        for candidate in &candidates {
-            self.note_path_use(candidate);
-        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,

@@ -1033,9 +1033,6 @@ impl Checker {
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
-            for candidate in &candidates {
-                self.note_path_use(candidate);
-            }
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,

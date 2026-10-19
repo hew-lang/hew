@@ -1487,9 +1487,7 @@ impl Checker {
                 .cloned()
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
-                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
-                    self.note_path_use(source_owner);
-                }
+                self.note_import_use(name);
             }
             self.record_call_edge(&fn_sig_key);
             let sig = self

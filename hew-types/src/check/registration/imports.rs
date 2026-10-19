@@ -46,19 +46,14 @@ impl Checker {
         }
     }
 
-    /// Count a use of the module or declaration a rendered path names as a
-    /// use of the current file's imports of its module.
-    ///
-    /// TRANSITION(A1c3): WHY qualified call and member paths still arrive
-    /// rendered. WHEN they resolve through `Scope`, the resolution marks the
-    /// import and this is deleted. WHAT: callers take the written `Path`.
-    pub(in crate::check) fn note_path_use(&mut self, path: &str) {
-        let module = self.defs.module_for_path(path).or_else(|| {
-            self.lookup_declaration(path)
-                .and_then(|declaration| self.defs.module(declaration))
-        });
-        if let (Some(site), Some(module)) = (self.scope_site(), module) {
-            self.scopes.mark_module_used(site.file, module);
+    /// Credit the binding at the written head of a dotted expression. The
+    /// checker calls this only after selecting that expression as a type or
+    /// constructor path, so lexical value shadowing has already been ruled out.
+    pub(in crate::check) fn note_import_use_of_expr_head(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Ident(name) => self.note_import_use(name.name.as_str()),
+            Expr::FieldAccess { object, .. } => self.note_import_use_of_expr_head(&object.0),
+            _ => {}
         }
     }
 

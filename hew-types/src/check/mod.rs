@@ -1317,7 +1317,6 @@ impl Checker {
             return;
         };
         let site = scope::ImportSite::new(file, span);
-        self.scopes.record_import_target(target, site);
         let namespace = self.scopes.namespace_of(target);
         if decl.path.segments.is_empty() {
             for (name, binding) in self.scopes.items(namespace) {
@@ -1355,12 +1354,8 @@ impl Checker {
                 // A selection also binds its module for qualified siblings
                 // (`net.listen` beside `import std.net.{Connection}`).
                 if let Some(module_name) = decl.path.last() {
-                    self.scopes.bind_import(
-                        file,
-                        module_name.name,
-                        scope::Binding::Module(target),
-                        site,
-                    );
+                    self.scopes
+                        .bind_implicit_module_import(file, module_name.name, target, site);
                 }
                 for selected in names {
                     if let Some(binding) = self.scopes.item(namespace, selected.name.name) {

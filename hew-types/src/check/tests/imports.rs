@@ -3384,6 +3384,49 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     })
 }
 
+#[test]
+fn sibling_bare_and_selected_imports_credit_the_binding_used() {
+    for imports in [
+        "import m;\nimport m.{ Mode };",
+        "import m.{ Mode };\nimport m;",
+    ] {
+        let source = format!(
+            "{imports}\nfn main() {{ let value: m.Mode = m.Mode.Present(42); assert(m.pick(value) == 42); }}"
+        );
+        let output = check_qualified_variant_root(&source);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+            .collect();
+        assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+        assert_eq!(
+            unused[0].span.start,
+            source.find("import m.{ Mode };").unwrap()
+        );
+    }
+
+    let source = "import m;\nimport m.{ Mode };\nfn main() { let value: Mode = Mode.Present(42); }";
+    let output = check_qualified_variant_root(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let unused: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+        .collect();
+    assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+    assert_eq!(unused[0].span.start, source.find("import m;").unwrap());
+
+    let shadowed = "import m;\nfn main() { let m = 1; assert(m == 1); }";
+    let output = check_qualified_variant_root(shadowed);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.warnings.iter().any(|warning| {
+        warning.kind == TypeErrorKind::UnusedImport
+            && warning.span.start == shadowed.find("import m;").unwrap()
+    }));
+}
+
 /// Harness for the selective-imported-machine rule (#3175): a module `m`
 /// exporting `machine Light`, checked from a root that reaches `Light` only
 /// by referencing one of its states as a bare dotted literal (`Light.On`),

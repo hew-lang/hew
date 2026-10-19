@@ -109,7 +109,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
-                self.note_path_use(&head.canonical_type);
+                self.note_import_use_of_expr_head(&object.0);
                 return result;
             }
         }
@@ -1404,13 +1404,10 @@ impl Checker {
             return Ty::Error;
         }
 
-        if let Some(qualified) = qualified_owned.as_deref() {
-            // `qualified` is the full owner-qualified source identity
-            // (`owner.TypeName`); constructing it uses the current file's
-            // imports of `owner`.
-            if let Some((owner, _)) = qualified.rsplit_once('.') {
-                self.note_path_use(owner);
-            }
+        if qualified_owned.is_some() {
+            // Credit the written binding, not every import of its selected
+            // declaration's source module.
+            self.note_import_use(name.split('.').next().unwrap_or(name));
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
         if self
@@ -2170,13 +2167,6 @@ impl Checker {
         candidate_modules: &[String],
         span: &Span,
     ) {
-        let candidate_identities: Vec<String> = candidate_modules
-            .iter()
-            .map(|module| format!("{module}.{name}"))
-            .collect();
-        for candidate in &candidate_identities {
-            self.note_path_use(candidate);
-        }
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))

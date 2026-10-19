@@ -81,8 +81,9 @@ impl Builder<'_, '_> {
     /// The container an indexed path starts from, and where the updated
     /// container is published. Beneath a whole owner the path reads and
     /// updates a copy of its container, so a failing step leaves the owner as
-    /// it was. A container with its own seat is taken from it, so the update
-    /// owns the only reference and changes the element in place.
+    /// it was. Taking a container from its own seat avoids an extra owner,
+    /// permitting an in-place update when uniquely owned. Existing snapshots
+    /// still require copy-on-write isolation.
     pub(super) fn stage_indexed_base(
         &mut self,
         base: &BindingPlace,

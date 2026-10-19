@@ -2471,10 +2471,11 @@ It requests a graceful stop and returns immediately, whether called inside or
 outside the actor. `stopped(worker)` waits for terminal cleanup, while
 `terminate(actor)` requests cancellation. After `stop(self)`, the current
 handler finishes and queued messages drain before `#[on(stop)]` runs.
-`stopped(worker)` on an actor that already crashed simply returns: the crash
-was reported when it happened and still counts toward the exit status. A fault
-raised while the actor is being stopped, such as a panic in `#[on(stop)]`,
-passes to the caller waiting in `stopped`.
+`stopped(worker)` does not raise an actor's original crash again: the crash
+was reported when it happened and still counts toward the exit status. The
+wait finishes after terminal cleanup. A distinct fault from a stop or crash
+hook, or from releasing actor state, passes to the waiting caller, including
+when cleanup follows a crash.
 
 ### Accepting connections and reading in a handler
 

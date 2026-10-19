@@ -62,15 +62,48 @@ actor Words {
 }
 
 fn settle_crash(target: Words) {
-    scope {
-        stopped(target);
-        panic("expected actor crash");
-    } handle failure {
-        match failure {
-            .Fault { message } => assert(message.contains("IndexOutOfBounds")),
-            .Deadline { message } => panic(message),
-        }
-    };
+    stopped(target);
+}
+
+type Key {
+    label: string;
+    divisor: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.label.len() / self.divisor
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.label == other.label
+    }
+}
+
+type Bucket {
+    entries: HashMap<Key, i64>;
+}
+
+actor CallbackFault {
+    var rows: Vec<Bucket> = [Bucket { entries: HashMap.new() }];
+
+    receive fn prepare() {
+        rows[0].entries.insert(Key { label: "a", divisor: 1 }, 1);
+    }
+
+    receive fn insert_fault() {
+        rows[0].entries.insert(Key { label: "b", divisor: 0 }, 2);
+    }
+
+    #[on(crash)]
+    fn crashed(info: failure.CrashInfo) -> failure.CrashAction {
+        let remaining = rows[0].entries.len();
+        let kept = rows[0].entries.get(Key { label: "a", divisor: 1 }).expect("kept");
+        println(f"callback seat {remaining} {kept}");
+        failure.CrashAction.GiveUp
+    }
 }
 
 fn main() {
@@ -98,5 +131,9 @@ fn main() {
     println(linking.grow().expect("grow"));
     let _ = linking.link_missing();
     settle_crash(linking);
+    let callback = spawn CallbackFault;
+    callback.prepare().expect("prepare callback map");
+    let _ = callback.insert_fault();
+    stopped(callback);
     println("done");
 }

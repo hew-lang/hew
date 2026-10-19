@@ -16,6 +16,22 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "actor_reference_equality",
+        source_rel: "tests/core-acceptance/cases/actor-reference-equality.hew",
+    },
+    ParityCase {
+        test_name: "actor_same_type_completion_chain",
+        source_rel: "tests/core-acceptance/cases/actor-same-type-completion-chain.hew",
+    },
+    ParityCase {
+        test_name: "actor_same_type_completion_ring",
+        source_rel: "tests/core-acceptance/cases/actor-same-type-completion-ring.hew",
+    },
+    ParityCase {
+        test_name: "indexed_field_write_in_place",
+        source_rel: "tests/core-acceptance/cases/indexed-field-write-in-place.hew",
+    },
+    ParityCase {
         test_name: "recursive_structural_equality",
         source_rel: "tests/core-acceptance/cases/recursive-structural-equality.hew",
     },
@@ -883,6 +899,27 @@ fn assert_case(case: &ParityCase, stdin: &str) {
 
 #[cfg(unix)]
 #[test]
+fn quoted_file_import_aliases_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "codecs/rle.hew",
+        include_str!("../../tests/core-acceptance/fixtures/file-import-alias/codecs/rle.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "file_import_alias_same_source",
+            source_rel: "tests/core-acceptance/fixtures/file-import-alias/same_source.hew",
+        },
+        "",
+        inputs,
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn contextual_macros_native_and_vm() {
     let source = "macro add { ($x:expr) => expr { $x + 1 } } fn main() { println(add!(2)); }";
     let expanded = hew_wasm::expand_macro(source, source.find("add!(2)").unwrap())
@@ -1267,16 +1304,39 @@ fn assert_stdout_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
 
 #[cfg(unix)]
 fn run_native(source_path: &Path, stdin: &str) -> Output {
-    Command::new(hew_binary())
-        .arg("run")
+    let output_dir = tempfile::tempdir().expect("native parity output directory");
+    // Compare execution output on both paths. The sandbox API returns frontend
+    // warnings as diagnostics, so native compiler warnings are separate too.
+    let compiled = Command::new(hew_binary())
+        .arg("compile")
+        .arg("--emit-dir")
+        .arg(output_dir.path())
+        .arg("--opt-level")
+        .arg("0")
         .arg(source_path)
+        .current_dir(repo_root())
+        .env("HEW_STD", repo_root().join("std"))
+        .env("HEW_SEED", HEW_SEED)
+        .env("NO_COLOR", "1")
+        .output()
+        .unwrap_or_else(|err| panic!("failed to compile native parity source: {err}"));
+    assert!(
+        compiled.status.success(),
+        "native compilation failed for {}: {}",
+        source_path.display(),
+        describe_output(&compiled),
+    );
+    let binary = output_dir
+        .path()
+        .join(source_path.file_stem().expect("native parity source name"));
+    Command::new(binary)
         .current_dir(repo_root())
         .env("HEW_STD", repo_root().join("std"))
         .env("HEW_SEED", HEW_SEED)
         .env("NO_COLOR", "1")
         .write_stdin(stdin)
         .output()
-        .unwrap_or_else(|err| panic!("failed to spawn native `hew run`: {err}"))
+        .unwrap_or_else(|err| panic!("failed to execute native parity program: {err}"))
 }
 
 #[cfg(unix)]

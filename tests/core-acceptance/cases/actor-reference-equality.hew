@@ -42,6 +42,10 @@ fn main() {
     let maybe: Option<Printer> = .Some(first);
     println(f"option: {maybe == .Some(alias)}");
 
+    println(f"tuple: {(first, second) == (alias, second)}");
+    println(f"vector: {[first, second] == [alias, second]}");
+    println(f"vector other: {[first] == [second]}");
+
     // A submission result carries the actor in its rejected request.
     println(f"accepted: {mailbox(first).print(1) == .Ok(.Accepted)}");
 

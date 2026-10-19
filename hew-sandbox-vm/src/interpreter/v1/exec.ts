@@ -7,6 +7,8 @@
 /// `checked.binary` names rather than trapping on its own.
 
 import { executeCodec } from "./codecs.js";
+import { actorIdentical } from "./actor-identity.js";
+import { ActorWaits } from "./actor-waits.js";
 import { TraceBuilder, runtimeFailure } from "../trace.js";
 import type {
   JsonValue,
@@ -103,6 +105,7 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
+  parked?: boolean;
   rcOwner?: RcOwner | null;
   pollBudget?: { remaining: number };
   pollSuppression?: number;
@@ -240,6 +243,7 @@ interface TaskEntry {
   value: VmValue;
   fault: Fault | null;
   actorError: string | null;
+  actorTarget?: ActorInstance;
   cancel(): void;
   // Actor-call handles own admission and reply storage. Scoped task handles
   // leave their execution and any unclaimed result with the enclosing scope.
@@ -387,6 +391,7 @@ class ExecutorV1 {
   private readonly scheduler: FrameScheduler;
   private readonly ids: DeterministicIds;
   private readonly actors = new Map<string, ActorInstance>();
+  private readonly actorWaits = new ActorWaits<ActorInstance>();
   private readonly supervisors = new Map<string, SupervisorInstance>();
   private readonly roles = new Map<string, RoleSlot>();
   private readonly pipes = new Pipes();
@@ -2510,9 +2515,19 @@ class ExecutorV1 {
       }
       case "Await": {
         const task = this.taskFor(this.boundary(act, term.inputs[0]!));
-        const wake = this.park(act, term);
+        let unwatch = () => {};
+        const wake = this.park(act, term, () => unwatch());
         const ready = () => {
-          if (!task.done) return;
+          if (!task.done) {
+            this.pendingActorWait(
+              act,
+              [task.actorTarget],
+              false,
+              "ask",
+              (fault) => wake(UNIT, fault),
+            );
+            return;
+          }
           if (task.fault) wake(UNIT, task.fault);
           else {
             const value = task.value;
@@ -2521,6 +2536,10 @@ class ExecutorV1 {
           }
         };
         task.changed.push(ready);
+        unwatch = () => {
+          const index = task.changed.indexOf(ready);
+          if (index >= 0) task.changed.splice(index, 1);
+        };
         ready();
         return;
       }
@@ -2584,6 +2603,18 @@ class ExecutorV1 {
           if (ready[0]) {
             cancelTimer?.();
             wake({ kind: "i64", value: BigInt(ready[0].index) });
+          } else {
+            this.pendingActorWait(
+              act,
+              sources.map((value) =>
+                value.kind === "stream"
+                  ? undefined
+                  : this.taskFor(value).actorTarget,
+              ),
+              hasTimeout,
+              "select",
+              (fault) => wake(UNIT, fault),
+            );
           }
         };
         if (hasTimeout) {
@@ -2613,6 +2644,8 @@ class ExecutorV1 {
         const protocol = term.detail as ActorProtocol;
         const inputs = term.inputs.map((input) => this.boundary(act, input));
         const wake = this.park(act, term);
+        let target: ActorInstance | undefined;
+        let checkWait: (() => void) | undefined;
         const cancelRequest = this.ask(
           protocol,
           inputs,
@@ -2628,10 +2661,19 @@ class ExecutorV1 {
             );
           },
           term.request_shapes,
+          (actor) => {
+            target = actor;
+            checkWait?.();
+          },
         );
         const cancel = act.context.cancel!;
         act.context.cancel = (fault) =>
           cancelRequest((closeFault) => cancel(closeFault ?? fault));
+        checkWait = () =>
+          this.pendingActorWait(act, [target], false, "ask", (fault) =>
+            cancelRequest((closeFault) => wake(UNIT, closeFault ?? fault)),
+          );
+        checkWait();
         return;
       }
       case "NativeIo": {
@@ -2716,17 +2758,46 @@ class ExecutorV1 {
     }
   }
 
+  private pendingActorWait(
+    act: Activation,
+    targets: Array<ActorInstance | undefined>,
+    externalProgress: boolean,
+    operation: string,
+    fail: (fault: Fault) => void,
+  ): void {
+    const owner = act.context.actor;
+    // Independent tasks carry actor ownership for cleanup, but do not hold its turn.
+    if (!owner || owner.active !== act.context || !act.context.parked) return;
+    this.actorWaits.ready(owner);
+    if (
+      externalProgress ||
+      this.requestDeadline(act) !== undefined ||
+      targets.some((target) => !target)
+    )
+      return;
+    const path = this.actorWaits.pending(owner, targets as ActorInstance[]);
+    if (path)
+      fail({
+        kind: "panic",
+        message: `local actor wait cycle at ${operation}: ${path.map((actor) => actor.identity).join(" -> ")}`,
+      });
+  }
+
   private park(
     act: Activation,
     term: Extract<TermV1, { op: "suspend" }>,
     cleanup: () => void = () => {},
   ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => boolean {
     this.running = false;
+    act.context.parked = true;
     let pending: { value: VmValue; fault: Fault | null; edge: number } | null =
       null;
     const resume = (value: VmValue, fault: Fault | null = null, edge = 0) => {
       if (pending) return false;
       pending = { value, fault, edge };
+      act.context.parked = false;
+      if (act.context.actor?.active === act.context)
+        this.actorWaits.ready(act.context.actor);
       cleanup();
       this.scheduler.enqueue(act.context.id, () => {
         const outcome = pending!;
@@ -3436,16 +3507,9 @@ class ExecutorV1 {
     switch (operation.op) {
       case "identity": {
         const [left, right] = args;
-        if (
-          (left?.kind !== "actor" && left?.kind !== "supervisor") ||
-          (right?.kind !== "actor" && right?.kind !== "supervisor")
-        )
-          throw new Error(
-            "actor identity requires actor or supervisor handles",
-          );
         this.completeShim(act, term, {
           kind: "bool",
-          value: left.kind === right.kind && left.id === right.id,
+          value: actorIdentical(left, right),
         });
         return;
       }
@@ -3753,6 +3817,11 @@ class ExecutorV1 {
             task.actorError = error;
             this.settleTask(task, value ?? UNIT, closeFault ?? null);
             return true;
+          },
+          undefined,
+          (actor) => {
+            task.actorTarget = actor;
+            for (const changed of [...task.changed]) changed();
           },
         );
         task.close = (done) =>
@@ -4117,6 +4186,7 @@ class ExecutorV1 {
       closeFault?: Fault | null,
     ) => boolean,
     shapes?: RequestShapes,
+    selectedTarget?: (actor: ActorInstance) => void,
   ): (done: (fault: Fault | null) => void) => void {
     let settled = false;
     let admitted = false;
@@ -4205,6 +4275,8 @@ class ExecutorV1 {
       );
       if (!handler)
         throw new Error(`actor ${actor.id} has no message ${protocol.message}`);
+      selectedTarget?.(actor);
+      if (settled || closing) return;
       const full =
         actor.layout.mailbox_capacity !== undefined &&
         actor.mailbox.length >= actor.layout.mailbox_capacity;
@@ -4598,16 +4670,28 @@ class ExecutorV1 {
         actor.state,
         this.faultText(fault),
         (stateFault) => {
+          actor.closingFault = combineFaults(actor.closingFault, stateFault);
           fault = combineFaults(fault, stateFault)!;
           actor.crashing = fault;
           this.reportFault(fault);
           this.drainMailbox(actor, this.faultText(fault), (payloadFault) => {
+            actor.closingFault = combineFaults(
+              actor.closingFault,
+              payloadFault,
+            );
             fault = combineFaults(fault, payloadFault)!;
             actor.crashing = fault;
             this.reportFault(fault);
             this.sweepRcOwner(actor.rcOwner, actor, (sweepFault) => {
+              actor.closingFault = combineFaults(
+                actor.closingFault,
+                sweepFault,
+              );
               actor.crashing = combineFaults(actor.crashing, sweepFault);
               this.reportFault(actor.crashing!);
+              if (actor.closingFault) {
+                this.reportFault(actor.closingFault);
+              }
               actor.completed = true;
               for (const wake of actor.closed.splice(0)) wake();
               for (const admit of actor.admission.splice(0)) admit();
@@ -4673,6 +4757,7 @@ class ExecutorV1 {
             complete(action);
           },
           (hookFault) => {
+            actor.closingFault = combineFaults(actor.closingFault, hookFault);
             fault = combineFaults(fault, hookFault)!;
             actor.crashing = fault;
             this.reportFault(fault);
@@ -4698,6 +4783,7 @@ class ExecutorV1 {
       } else finished("Restart");
     };
     this.drainMailbox(actor, this.faultText(fault), (cleanupFault) => {
+      actor.closingFault = combineFaults(actor.closingFault, cleanupFault);
       fault = combineFaults(fault, cleanupFault)!;
       actor.crashing = fault;
       this.reportFault(fault);

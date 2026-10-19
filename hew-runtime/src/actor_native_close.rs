@@ -24,6 +24,7 @@ pub struct NativeActorCompletion {
     terminal_notice: Mutex<Option<crate::actor::TerminalNotification>>,
     close_fault_record: AtomicU64,
     fault: Mutex<Option<crate::fault::HewFault>>,
+    close_fault: Mutex<Option<crate::fault::HewFault>>,
 }
 
 impl NativeActorCompletion {
@@ -78,6 +79,33 @@ impl NativeActorCompletion {
             *retained = Some(fault);
         }
         super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
+    }
+
+    /// Retain a fault raised by terminal hooks or state release separately
+    /// from the crash that caused cleanup. `stopped` observes only this fault.
+    pub(crate) fn record_close_fault(&self, fault: crate::fault::HewFault) -> i32 {
+        let retained = {
+            let mut retained = self.close_fault.lock_or_recover();
+            if let Some(primary) = retained.as_mut() {
+                primary.append(fault);
+            } else {
+                *retained = Some(fault);
+            }
+            retained.as_ref().expect("retained close fault").clone()
+        };
+        let code = retained.code();
+        // Preserve the original crash as the primary report while keeping
+        // cleanup diagnostics separate for `stopped`. HewFault clones share
+        // each diagnostic's reported flag, so observers cannot print it twice.
+        let original = self.fault.lock_or_recover().clone();
+        let report = if let Some(mut original) = original {
+            original.append(retained);
+            original
+        } else {
+            retained.clone()
+        };
+        let _ = super::report_checked_failure(&report);
+        code
     }
 
     /// Wake `waker` when this incarnation's terminal cleanup finishes. The
@@ -157,9 +185,16 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
         return;
     };
     let code = actor.error_code.load(Ordering::Acquire);
-    if state == HewActorState::Stopped as i32 && code != 0 {
-        // An explicit close observer transfers this fault to generated caller
-        // code. Without an observer, the open record keeps process exit failing.
+    let close_fault_code = completion
+        .close_fault
+        .lock_or_recover()
+        .as_ref()
+        .map(crate::fault::HewFault::code);
+    if state == HewActorState::Stopped as i32 && close_fault_code.is_some() {
+        // A clean stop has no crash record to account for failed cleanup. A
+        // crashed actor's existing record remains owned by its supervisor;
+        // observing its close fault must not settle that crash or create a
+        // second record that restart cannot rule on.
         let record = crate::exit_status::open_pending_fault();
         completion
             .close_fault_record
@@ -207,14 +242,15 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
         }
     }
     // A crash was reported when it happened and already counts toward the
-    // exit status (or its supervisor's ruling); a later `stopped` observes the
-    // ended actor and returns. Only a fault raised while the actor was being
-    // stopped, recorded above, passes to the waiting caller.
-    completion.finish(if state == HewActorState::Crashed as i32 {
-        0
-    } else {
-        code
-    });
+    // exit status (or its supervisor's ruling). Only a distinct fault raised
+    // by terminal cleanup passes through `stopped`.
+    completion.finish(close_fault_code.unwrap_or({
+        if state == HewActorState::Crashed as i32 {
+            0
+        } else {
+            code
+        }
+    }));
 }
 
 /// Request cooperative stop through a stable actor identity.
@@ -406,7 +442,11 @@ pub unsafe extern "C" fn hew_actor_wait_take_fault(
     );
     crate::exit_status::settle_supervised_fault(record, crate::exit_status::FaultRuling::Handled);
     let code = completion.code.load(Ordering::Relaxed);
-    let fault = completion.fault.lock_or_recover().clone();
+    let fault = completion
+        .close_fault
+        .lock_or_recover()
+        .clone()
+        .or_else(|| completion.fault.lock_or_recover().clone());
     fault.map_or_else(
         || crate::fault::hew_fault_new(code),
         |fault| Box::into_raw(Box::new(fault)),
@@ -483,7 +523,7 @@ mod tests {
         }
     }
     #[test]
-    fn stop_fault_requires_transfer_to_a_close_observer() {
+    fn close_fault_requires_transfer_to_a_close_observer() {
         let _runtime = crate::runtime_test_guard();
         for observe in [false, true] {
             crate::exit_status::reset_process_exit_status();
@@ -494,7 +534,7 @@ mod tests {
                 .actor_state
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             actor.error_code.store(212, Ordering::Release);
-            completion.record_fault(crate::fault::HewFault::with_message(
+            completion.record_close_fault(crate::fault::HewFault::with_message(
                 212,
                 "state close failed".into(),
             ));
@@ -618,6 +658,83 @@ mod tests {
             let completed = hew_actor_wait_new(token, wake.descriptor());
             assert_eq!(hew_actor_wait_poll(completed), 1);
             hew_actor_wait_free(completed);
+        }
+    }
+
+    #[test]
+    fn stopped_after_crash_does_not_steal_supervisor_fault_ruling() {
+        let _runtime = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
+        let mut actor = crate::test_actor::stub_actor();
+        let completion = Arc::new(NativeActorCompletion::default());
+        actor.native_completion = Some(completion.clone());
+        actor
+            .actor_state
+            .store(HewActorState::Crashed as i32, Ordering::Release);
+        actor.error_code.store(212, Ordering::Release);
+        completion.record_fault(crate::fault::HewFault::with_message(
+            212,
+            "original handler crash".into(),
+        ));
+        // SAFETY: this fixture owns the completed crashed actor.
+        finish_actor_terminal(&actor, HewActorState::Crashed as i32);
+        let (_, waker) = crate::wake::blocking::Readiness::new();
+        let wait = Box::into_raw(Box::new(HewNativeActorWait {
+            completion: Some(completion.clone()),
+            #[cfg(not(target_arch = "wasm32"))]
+            imported: None,
+            target: live_actors::ActorIncarnation::NONE,
+            _waker: Arc::new(waker),
+        }));
+        // SAFETY: the test owns the unique observer until its final free.
+        unsafe {
+            assert_eq!(hew_actor_wait_poll(wait), 1);
+            hew_actor_wait_free(wait);
+        }
+
+        crate::exit_status::reset_process_exit_status();
+        let crash_record = crate::exit_status::open_supervised_fault();
+        let mut actor = crate::test_actor::stub_actor();
+        let completion = Arc::new(NativeActorCompletion::default());
+        actor.native_completion = Some(completion.clone());
+        actor
+            .actor_state
+            .store(HewActorState::Crashed as i32, Ordering::Release);
+        actor.error_code.store(212, Ordering::Release);
+        completion.record_fault(crate::fault::HewFault::with_message(
+            212,
+            "original handler crash".into(),
+        ));
+        completion.record_close_fault(crate::fault::HewFault::with_message(
+            213,
+            "crash hook failed".into(),
+        ));
+        // SAFETY: this fixture owns the completed crashed actor.
+        finish_actor_terminal(&actor, HewActorState::Crashed as i32);
+        assert_eq!(crate::exit_status::hew_runtime_exit_status(), 1);
+        let (_, waker) = crate::wake::blocking::Readiness::new();
+        let wait = Box::into_raw(Box::new(HewNativeActorWait {
+            completion: Some(completion),
+            #[cfg(not(target_arch = "wasm32"))]
+            imported: None,
+            target: live_actors::ActorIncarnation::NONE,
+            _waker: Arc::new(waker),
+        }));
+        // SAFETY: the test owns the unique observer until its final free.
+        unsafe {
+            assert_eq!(hew_actor_wait_poll(wait), 2);
+            let fault = hew_actor_wait_take_fault(wait);
+            assert_eq!(crate::fault::hew_fault_code(fault), 213);
+            crate::fault::hew_fault_drop(fault);
+            // `stopped` observes the close failure but cannot rule on the
+            // original supervised crash; only effective restart owns that.
+            assert_eq!(crate::exit_status::hew_runtime_exit_status(), 1);
+            crate::exit_status::settle_supervised_fault(
+                crash_record,
+                crate::exit_status::FaultRuling::Handled,
+            );
+            assert_eq!(crate::exit_status::hew_runtime_exit_status(), 0);
+            hew_actor_wait_free(wait);
         }
     }
 

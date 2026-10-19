@@ -972,8 +972,8 @@ fn main() -> i64 {
             .map(|place| place.id)
             .collect();
         let ops = || function.blocks.iter().flat_map(|block| &block.ops);
-        // The collection field is taken, never copied, so the element update
-        // owns the only reference and runs in place.
+        // Taking the collection field avoids an extra owner, permitting an
+        // in-place update when no actual snapshot shares the buffer.
         assert!(!ops()
             .any(|op| matches!(op.kind, SemOpKind::LoadCopy { place } if nodes.contains(&place))));
         let taken: Vec<_> = ops()

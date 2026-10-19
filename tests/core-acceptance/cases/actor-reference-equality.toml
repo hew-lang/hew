@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "same handle: true\nother actor: false\nnot equal: true\nagrees with is: true\nrecord: true\nrecord other: false\noption: true\naccepted: true\nrole alias: true\nrole vs occupant: false false\n"
+stdout = "same handle: true\nother actor: false\nnot equal: true\nagrees with is: true\nrecord: true\nrecord other: false\noption: true\ntuple: true\nvector: true\nvector other: false\naccepted: true\nrole alias: true\nrole vs occupant: false false\n"
 exit = 0

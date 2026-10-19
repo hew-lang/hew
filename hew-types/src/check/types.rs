@@ -1128,9 +1128,11 @@ pub struct ClosureEscapeFact {
     pub rule: ClosureEscapeRule,
 }
 
-/// One exact source of a function value selected at an indirect call.
+/// One exact source of a value tracked through lexical bindings and calls.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallableCandidate {
+    /// The current actor handle, tied to the body that established its identity.
+    ActorSelf(super::effects::EffectBody),
     /// An authored callable declaration, including one in an imported module.
     Declaration(crate::DefId),
     /// A closure literal in the checked source module.

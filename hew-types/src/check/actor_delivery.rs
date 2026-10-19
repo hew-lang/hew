@@ -445,7 +445,10 @@ impl Checker {
                     self.effect_graph.current_body,
                     Some(super::effects::EffectBody::Declaration(_))
                 ));
-        let targets_self = matches!(&receiver.0, Expr::Ident(name) if name.name.as_str() == "self");
+        let origins = self.callable_candidates_for_expr(&receiver.0, &receiver.1);
+        let targets_self = !origins.may_be_unknown
+            && matches!(origins.known.as_slice(), [super::CallableCandidate::ActorSelf(body)]
+                if self.effect_graph.current_body.as_ref() == Some(body));
         if !through_view
             && owns_actor_turn
             && targets_self

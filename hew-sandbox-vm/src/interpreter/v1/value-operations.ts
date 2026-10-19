@@ -11,6 +11,7 @@ import {
   type ValueComponentCapabilities,
 } from "./package.js";
 import { ShimFault } from "./shims.js";
+import { actorIdentical } from "./actor-identity.js";
 
 export type ValueRequest =
   | { kind: "fault"; message: string }
@@ -158,6 +159,10 @@ export function* selectedValue(
           ),
       );
     throw new Error("bytes ordering is outside the checked capability domain");
+  }
+  if (left.kind === "actor" || left.kind === "supervisor") {
+    if (equality) return boolean(actorIdentical(left, right));
+    throw new Error("actor capability is outside the checked equality domain");
   }
   const components = plan.components ?? [];
   let fields: VmValue[];

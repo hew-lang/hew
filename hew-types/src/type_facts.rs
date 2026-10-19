@@ -2140,6 +2140,38 @@ fn main() {}"#,
     }
 
     #[test]
+    fn actor_equality_ignores_state_without_admitting_hash() {
+        let parsed = hew_parser::parse(
+            r"
+            actor Worker {
+                var state: HashMap<string, i64>;
+                receive fn ping() {}
+            }
+            type Holder { worker: Worker; }
+            fn main() {}
+        ",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let service = TypeFactService::new(output.type_fact_context, output.type_facts);
+        let actor = ResolvedTy::named_actor_path(service.defs(), "Worker", vec![]);
+        let holder = ResolvedTy::named_path(service.defs(), "Holder", vec![]);
+        let vector = ResolvedTy::named_builtin(BuiltinType::Vec, vec![actor.clone()]);
+        for ty in [actor, holder, vector] {
+            assert_eq!(
+                service.select_capability(&ty, ValueCapability::Eq),
+                Ok(Some(ValueMethodPlan::Derived))
+            );
+            assert_eq!(
+                service.select_capability(&ty, ValueCapability::Hash),
+                Ok(None)
+            );
+        }
+    }
+
+    #[test]
     fn recursive_capabilities_withdraw_failed_mutual_assumptions_in_either_order() {
         let parsed = hew_parser::parse(
             r"

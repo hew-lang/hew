@@ -428,7 +428,17 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
     if !work.fault.is_null() {
         // SAFETY: every child finished using this uniquely owned diagnostic.
         let fault = unsafe { Box::from_raw(work.fault) };
-        let code = super::report_actor_failure(actor, *fault);
+        let code = if terminal != 0 {
+            // A fault raised while closing is a separate observation from the
+            // crash that selected this terminal path.
+            if let Some(completion) = &actor.native_completion {
+                completion.record_close_fault(*fault)
+            } else {
+                super::report_checked_failure(&fault)
+            }
+        } else {
+            super::report_actor_failure(actor, *fault)
+        };
         if actor.error_code.load(Ordering::Acquire) == 0 {
             actor.error_code.store(code, Ordering::Release);
         }

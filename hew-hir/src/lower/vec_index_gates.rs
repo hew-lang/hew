@@ -363,23 +363,6 @@ pub(super) fn scan_expr_for_vec_index_gate(
 
 /// Render a `ResolvedTy` for the user-facing diagnostic. Keep the textual
 /// form compact (`bool`, `char`, `Vec<i32>`, `Foo`) so the diagnostic reads
-/// Map a scalar `ResolvedTy` to its `to_string_*` catalog builtin for Display
-/// dispatch. Only the scalar arm of `lower_display_dispatch` reaches here; any
-/// non-scalar type is a caller bug (the dispatch match never routes it here).
-pub(super) fn scalar_display_builtin(ty: &ResolvedTy) -> (&'static str, ResolvedTy) {
-    match ty {
-        ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 => ("to_string_i32", ResolvedTy::I32),
-        ResolvedTy::I64 | ResolvedTy::Isize => ("to_string_i64", ResolvedTy::I64),
-        ResolvedTy::U8 => ("to_string_u8", ResolvedTy::U8),
-        ResolvedTy::U16 | ResolvedTy::U32 => ("to_string_u32", ResolvedTy::U32),
-        ResolvedTy::U64 | ResolvedTy::Usize => ("to_string_u64", ResolvedTy::U64),
-        ResolvedTy::F32 | ResolvedTy::F64 => ("to_string_f64", ResolvedTy::F64),
-        ResolvedTy::Bool => ("to_string_bool", ResolvedTy::Bool),
-        ResolvedTy::Char => ("to_string_char", ResolvedTy::Char),
-        _ => unreachable!("scalar_display_builtin called on non-scalar type {ty:?}"),
-    }
-}
-
 /// naturally; do not use `{:?}` because that leaks variant punctuation
 /// (`I32`, `Named { name: "Foo", args: [] }`, etc.).
 pub(super) fn render_elem_ty(ty: &ResolvedTy) -> String {

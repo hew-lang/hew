@@ -1,0 +1,7 @@
+// A draw advances the generator, so a `let` generator is refused.
+import std.random;
+
+fn main() {
+    let rng = random.Rng.new(42);
+    println(f"{rng.range(0, 10)}");
+}

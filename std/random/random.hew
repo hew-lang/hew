@@ -22,7 +22,9 @@
 //! The module-level functions above (`seed`, `random`, `randint`, `shuffle`,
 //! `choices`, `gauss`) share one implicit generator per thread. `Rng` is a
 //! plain value a caller holds and passes around instead, so several
-//! independent streams can run in the same thread. It uses xoshiro256++
+//! independent streams can run in the same thread. Each draw advances the
+//! generator, so it needs a `var` binding; a copy is an independent generator
+//! that continues from the same point. It uses xoshiro256++
 //! (see `hew-runtime/src/random.rs` for the choice rationale) rather than
 //! MT19937, so its output does not match the module-level functions for the
 //! same seed.
@@ -31,7 +33,7 @@
 //! import std.random;
 //!
 //! fn main() {
-//!     let rng = random.Rng.new(42);
+//!     var rng = random.Rng.new(42);
 //!     println(rng.next_u64());
 //!     println(rng.next_f64());
 //!     println(rng.range(0, 10));
@@ -51,37 +53,44 @@ pub type Rng {
     state: Vec<u64>;
 }
 
-/// Methods available on an `Rng`.
+/// Methods available on an `Rng`. Every draw advances the generator's state.
 trait RngMethods {
-    fn next_u64(self) -> u64;
+    /// Draw the next 64 random bits.
+    fn next_u64(var self) -> u64;
 
-    fn next_f64(self) -> f64;
+    /// Draw an `f64` in `[0.0, 1.0)`.
+    fn next_f64(var self) -> f64;
 
-    fn range(self, lo: i64, hi: i64) -> i64;
+    /// Draw an `i64` in the half-open range `[lo, hi)`; returns `lo` when
+    /// `hi <= lo`.
+    fn range(var self, lo: i64, hi: i64) -> i64;
 
-    fn shuffle(self, v: Vec<i64>);
+    /// Return a Fisher-Yates permutation of `v`. `v` itself is unchanged.
+    fn shuffle(var self, v: Vec<i64>) -> Vec<i64>;
 }
 
 impl RngMethods for Rng {
-    fn next_u64(self) -> u64 {
+    fn next_u64(var self) -> u64 {
         unsafe {
             hew_rng_next_u64(self.state)
         }
     }
-    fn next_f64(self) -> f64 {
+    fn next_f64(var self) -> f64 {
         unsafe {
             hew_rng_next_f64(self.state)
         }
     }
-    fn range(self, lo: i64, hi: i64) -> i64 {
+    fn range(var self, lo: i64, hi: i64) -> i64 {
         unsafe {
             hew_rng_range(self.state, lo, hi)
         }
     }
-    fn shuffle(self, v: Vec<i64>) {
+    fn shuffle(var self, v: Vec<i64>) -> Vec<i64> {
+        var shuffled = v;
         unsafe {
-            hew_rng_shuffle_i64(self.state, v)
-        }
+            hew_rng_shuffle_i64(self.state, shuffled)
+        };
+        shuffled
     }
 }
 
@@ -166,13 +175,16 @@ pub fn randint(lo: i64, hi: i64) -> i64 {
     }
 }
 
-/// Shuffle a `Vec<i64>` in-place using Fisher-Yates.
+/// Return a Fisher-Yates permutation of `v`. `v` itself is unchanged.
 ///
-/// Matches CPython's `random.shuffle` output for the same seed.
-pub fn shuffle(v: Vec<i64>) {
+/// The order matches the list CPython's `random.shuffle` leaves for the same
+/// seed.
+pub fn shuffle(v: Vec<i64>) -> Vec<i64> {
+    var shuffled = v;
     unsafe {
-        hew_random_shuffle_i64(v)
-    }
+        hew_random_shuffle_i64(shuffled)
+    };
+    shuffled
 }
 
 /// Weighted choice by bisecting cumulative weights. Returns the chosen index.

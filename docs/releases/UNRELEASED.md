@@ -13,3 +13,7 @@ Slow subscribers receive explicit lag, and owner closure drains retained
 notices before end-of-stream. Subscription cleanup detaches pending waits and
 releases capacity. The wrapper uses the ordinary machine evaluator and actor
 services.
+
+`std.random` draws now advance the caller's generator: `Rng` methods take
+`var self`, and `random.shuffle` and `Rng.shuffle` return the permutation
+instead of reordering a read-only argument (see the migration guide).

@@ -1,0 +1,14 @@
+[[case]]
+id = "random-draw-needs-var"
+intent = "An Rng draw mutates its generator, so calling one on a `let` binding is refused."
+source = "cases/random-draw-needs-var.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "MutabilityError"
+line = 6
+column = 16
+message = "method `range` on `std.random.Rng` requires a mutable binding receiver"

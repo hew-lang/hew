@@ -1,0 +1,72 @@
+// Every Rng draw advances the generator, whatever the other arguments are,
+// and shuffling returns a permutation without changing its argument.
+import std.random;
+
+fn bound() -> i64 {
+    1000
+}
+
+fn draws(label: string, values: Vec<i64>) {
+    var text = "";
+    for value in values {
+        text += f" {value}";
+    }
+    println(f"{label}:{text}");
+}
+
+fn main() {
+    // A literal bound is the reference sequence for seed 7.
+    var literal = random.Rng.new(7);
+    var reference: Vec<i64> = Vec.new();
+    for _ in 0..4 {
+        reference.push(literal.range(0, 1000));
+    }
+    draws("literal", reference);
+
+    // A computed bound once made the call draw from a copy of the generator,
+    // so every draw repeated the first value.
+    let sizes: Vec<i64> = [0, 0, 0];
+    var by_call = random.Rng.new(7);
+    var by_sum = random.Rng.new(7);
+    var by_len = random.Rng.new(7);
+    var calls: Vec<i64> = Vec.new();
+    var sums: Vec<i64> = Vec.new();
+    var lens: Vec<i64> = Vec.new();
+    for _ in 0..4 {
+        calls.push(by_call.range(0, bound()));
+        sums.push(by_sum.range(0, 1000 + 0));
+        lens.push(by_len.range(0, sizes.len() * 0 + 1000));
+    }
+    draws("bound()", calls);
+    draws("1000 + 0", sums);
+    draws("len", lens);
+
+    // A draw in an argument runs before the outer draw and both advance.
+    var nested = random.Rng.new(7);
+    let inner_then_outer = nested.range(0, nested.range(1, 10));
+    var hoisted = random.Rng.new(7);
+    let inner = hoisted.range(1, 10);
+    let outer = hoisted.range(0, inner);
+    println(f"nested: {inner_then_outer} {nested.range(0, 1000)}");
+    println(f"hoisted: {outer} {hoisted.range(0, 1000)}");
+
+    // A copy continues from the same position independently.
+    var original = random.Rng.new(11);
+    let _ = original.next_u64();
+    var copy = original;
+    println(f"copy agrees: {original.next_u64() == copy.next_u64()}");
+    println(f"copy stays in step: {original.next_f64() == copy.next_f64()}");
+
+    // Shuffling returns the permutation and leaves the `let` argument alone.
+    random.seed(1);
+    let deck: Vec<i64> = [1, 2, 3, 4, 5, 6, 7, 8];
+    let mixed = random.shuffle(deck);
+    draws("deck", deck);
+    draws("random.shuffle", mixed);
+    var dealer = random.Rng.new(5);
+    let first = dealer.shuffle(deck);
+    let second = dealer.shuffle(deck);
+    draws("deck", deck);
+    draws("rng.shuffle", first);
+    draws("rng.shuffle again", second);
+}

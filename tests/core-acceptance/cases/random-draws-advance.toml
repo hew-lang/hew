@@ -1,0 +1,25 @@
+[[case]]
+id = "random-draws-advance"
+intent = "An Rng draw advances the caller's generator when another argument is a call, an arithmetic expression or a draw on the same generator; a copied Rng continues independently from the same position; random.shuffle and Rng.shuffle return a permutation and leave a `let` argument unchanged."
+source = "cases/random-draws-advance.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = """
+literal: 317 532 114 316
+bound(): 317 532 114 316
+1000 + 0: 317 532 114 316
+len: 317 532 114 316
+nested: 2 316
+hoisted: 2 316
+copy agrees: true
+copy stays in step: true
+deck: 1 2 3 4 5 6 7 8
+random.shuffle: 4 7 2 6 8 1 5 3
+deck: 1 2 3 4 5 6 7 8
+rng.shuffle: 1 4 2 5 6 3 8 7
+rng.shuffle again: 3 6 8 7 1 2 5 4
+"""
+stderr = ""
+exit = 0

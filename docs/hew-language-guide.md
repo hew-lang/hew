@@ -4073,20 +4073,22 @@ fn main() {
 
 Backed by a CPython-compatible MT19937 Mersenne Twister — the same seed produces the same sequence as CPython's `random` module. Call `seed(n)` first for reproducible output; without a seed, the state is initialised from OS entropy. `randint(lo, hi)` returns in the half-open range `[lo, hi)`.
 
-The functions above share one implicit generator per thread. `random.Rng` is a plain value instead, so a caller can hold several independent streams at once:
+The functions above share one implicit generator per thread. `random.Rng` is a plain value instead, so a caller can hold several independent streams at once. Each draw advances the generator, so it lives in a `var` binding:
 
 ```hew
 import std.random;
 fn main() {
-    let rng = random.Rng.new(42);
+    var rng = random.Rng.new(42);
     println(rng.next_u64());
     println(rng.next_f64());     // f64 in [0.0, 1.0)
     println(rng.range(1, 7));    // i64 in [1, 7)
 
-    var hand: Vec<i64> = [1, 2, 3, 4, 5];
-    rng.shuffle(hand);
+    let deck: Vec<i64> = [1, 2, 3, 4, 5];
+    let hand = rng.shuffle(deck);   // `deck` is unchanged
 }
 ```
+
+`random.shuffle(v)` and `rng.shuffle(v)` return the permutation, as `sort.sort` returns the sorted vector; the argument keeps its order. Copying an `Rng` copies its position: the copy and the original then produce the same sequence independently.
 
 `Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
 

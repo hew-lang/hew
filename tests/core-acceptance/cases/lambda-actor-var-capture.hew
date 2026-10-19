@@ -1,0 +1,34 @@
+// A lambda actor's captures become its state fields. A `var` capture is a
+// mutable field: each call sees the previous call's writes, while the
+// enclosing binding keeps its own independent value.
+fn main() {
+    var total: i64 = 0;
+    var names: Vec<string> = [];
+    let acc = actor |n: i64| -> i64 {
+        total += n;
+        names.push(f"n{n}");
+        total * 100 + names.len()
+    };
+    for n in [5, 7, 11] {
+        match acc(n) {
+            .Ok(v) => println(v),
+            .Err(_) => println("err"),
+        }
+    }
+    println(f"outer {total} {names.len()}");
+    stop(acc);
+    stopped(acc);
+
+    var count: i64 = 0;
+    let counter = actor move || -> i64 {
+        count += 1;
+        count
+    };
+    let _ = counter();
+    match counter() {
+        .Ok(v) => println(v),
+        .Err(_) => println("err"),
+    }
+    stop(counter);
+    stopped(counter);
+}

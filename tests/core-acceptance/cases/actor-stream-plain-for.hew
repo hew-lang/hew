@@ -1,14 +1,14 @@
 actor Producer {
     var label: string = "tick";
-    var served: i64 = 0;
+    var turns: i64 = 0;
     receive gen fn ticks(count: i64) -> string {
-        for index in 0 .. count {
-            served = served + 1;
+        turns = turns + 1;
+        for index in 0..count {
             yield label;
         }
     }
-    receive fn served() -> i64 {
-        served
+    receive fn turns() -> i64 {
+        turns
     }
 }
 
@@ -32,9 +32,9 @@ fn main() {
         }
     }
     println(partial);
-    match producer.served() {
-        .Ok(served) => println(served),
-        .Err(_) => panic("served failed"),
+    match producer.turns() {
+        .Ok(turns) => println(turns),
+        .Err(_) => panic("turns failed"),
     }
     stop(producer);
     stopped(producer);

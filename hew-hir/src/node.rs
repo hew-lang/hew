@@ -2276,24 +2276,9 @@ pub struct HirGenCapture {
     /// field. The MIR slot type is the authority; this is the HIR view
     /// recorded for verification and dump parity.
     pub ty: ResolvedTy,
-    /// Where this capture's value lives in the enclosing frame. MIR consumes
-    /// this checker/HIR-recorded discriminator to pick the snapshot source
-    /// (a plain local read vs an `ActorStateFieldLoad`) instead of
-    /// re-deriving gen-ness from the binding's name or type.
-    pub source: HirGenCaptureSource,
-}
-
-/// Source of an `HirGenCapture`'s value in the enclosing frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HirGenCaptureSource {
-    /// An ordinary local binding: a `gen fn`'s formal parameter, a `gen { }`
-    /// block's captured outer local, or a `receive gen fn` handler parameter.
-    Local,
-    /// An actor state field read inside a `receive gen fn` handler body. MIR
-    /// snapshots this at generator-construction time (a point-in-time copy,
-    /// not a live reference — the snapshot is taken once, at stream start,
-    /// and never re-reads the actor's live state).
-    ActorStateField,
+    /// The captured binding was declared `var`. The generator owns its copy,
+    /// so the body may assign it; the enclosing binding keeps its own value.
+    pub mutable: bool,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

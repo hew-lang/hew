@@ -1,6 +1,6 @@
 [[case]]
 id = "actor-state-map-hash-fault"
-intent = "A trapping key hash consumes an actor state map on the failure edge, so the handler unwinds with the seat empty and the actor's release closes the field exactly once."
+intent = "A trapping key hash leaves an actor state map with its seat on the failure edge, so the handler unwinds with the field whole and the actor's release closes it exactly once."
 source = "cases/actor-state-map-hash-fault.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

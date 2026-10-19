@@ -654,6 +654,11 @@ Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
 
+A capture of a `var` binding is a mutable state field: the handler may assign
+it or call mutating methods on it, and each message observes the writes of
+earlier ones. The enclosing binding keeps its own independent value. A capture
+of a `let` binding is immutable.
+
 **Operations:**
 
 ```hew
@@ -6140,27 +6145,34 @@ pull that crosses an actor boundary is written the same way:
 `for await` spelling; `for await` is `E_FOR_AWAIT` (User) with a fix-it that
 deletes `await`.
 
-Generator construction snapshots every captured value into a heap-owned
-environment before the body ramp reaches its first `yield`. Bit-copy values and
+Ordinary generator construction snapshots copyable captures into an owned
+environment before the body executes. Affine captures transfer their owner. Bit-copy values and
 proven null-environment function values are copied directly. Strings, bytes,
 `Rc`, `Weak`, supported collections, tuples, fixed arrays, records, and enums
 are cloned structurally when every reachable leaf has both a total clone and
 the matching inverse drop.
 
-The caller, enclosing closure, or actor state remains the owner of the capture
-source. The generator owns only its snapshot. Destroying a completed,
-suspended, or never-resumed generator destroys the coroutine frame first,
+The source of a copyable capture keeps its own value. The generator owns
+its independent snapshot. A captured `var` binding,
+including a `gen fn` parameter declared `var` or `consume var`, may be
+assigned in the body; the assignment changes the snapshot and never the
+capture source. Destroying a completed, suspended, or never-resumed generator destroys the coroutine frame first,
 drops environment fields in reverse declaration order, frees the environment,
 drops any pending yielded value, and finally frees the companion.
 
-Opaque handles, resources, IO handles, trait objects, and capturing closure
-pairs are not cloneable generator captures. A whole owned value loaded from a
-generator environment is an alias; it must be cloned explicitly before being
-yielded or otherwise moved into another owner.
+Each yielded owning value transfers to the consumer. The producer retains
+its other captures and any state needed for its next resume; an affine value
+cannot be used again after its owner transfers.
+
+An actor's `receive gen fn` runs as one exclusive producer turn over live
+actor state. It keeps that turn while yielding or waiting, so another handler
+cannot observe partial execution. State writes completed before normal return,
+consumer close or cancellation remain in the actor. Closing the consumer ends
+the producer turn and releases its pending output and local owners. An ordinary
+`gen { ... }` created inside the turn still owns independent captured snapshots.
 
 > See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
-> (`Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, and `receive gen fn` use
-> the snapshot semantics above. There is no `async gen fn` form: a generator
+> (`Lazy<T>`, `#[prefetch(N)]`). There is no `async gen fn` form: a generator
 > whose body suspends carries no marker, because suspension is inferred from
 > the body rather than declared on the signature (§12).
 

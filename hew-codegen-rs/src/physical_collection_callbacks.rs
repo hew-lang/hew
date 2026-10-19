@@ -290,7 +290,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         &self,
         operation: CollectionProbe<'_, 'ctx>,
         failure: Option<&PhysicalEdge>,
-        consumed: &[(StorageId, DestroyAction)],
     ) -> CodegenResult<(IntValue<'ctx>, Option<PointerValue<'ctx>>)> {
         let failure = failure.ok_or_else(|| {
             CodegenError::FailClosed("collection probe lacks callback cleanup".into())
@@ -313,10 +312,10 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .builder
             .get_insert_block()
             .expect("probe commit has a block");
+        // A callback fault happens before the commit takes anything: the
+        // receiver and every input stay with the caller, whose failure edge
+        // keeps them (`preserves_inputs_on_failure`).
         self.builder.position_at_end(failed);
-        for &(source, destroy) in consumed {
-            self.destroy_owned_operand(source, destroy)?;
-        }
         self.emit_edge(failure)?;
         self.builder.position_at_end(ready);
         Ok(result)

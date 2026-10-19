@@ -294,11 +294,11 @@ impl LowerCtx {
         // into a same-named function or constructor. Binding names serve only
         // as a negative boundary check here; they never select an identity.
         if !self.resolutions.contains_key(&key)
-            && self
-                .binding_scopes
-                .iter()
-                .rev()
-                .any(|scope| scope.values().any(|(bound_name, _, _)| bound_name == name))
+            && self.binding_scopes.iter().rev().any(|scope| {
+                scope
+                    .values()
+                    .any(|(bound_name, _, _, _)| bound_name == name)
+            })
         {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {

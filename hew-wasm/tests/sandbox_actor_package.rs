@@ -1656,10 +1656,10 @@ fn collection_callbacks_drain_affine_owners_on_cancellation_and_fault() {
     let mut expected = String::new();
     for phase in 0..3 {
         for collection in ["map", "set"] {
-            writeln!(expected, "cancel {collection} phase {phase}\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\n{collection} closed").unwrap();
+            writeln!(expected, "cancel {collection} phase {phase}\nCALLBACK LOCAL CLOSED\nowner 99 closed\nowner 0 closed\n{collection} closed").unwrap();
         }
     }
-    expected.push_str("fault during rehash\nCALLBACK LOCAL CLOSED\nowner 0 closed\nowner 99 closed\ncallback fault returned\n");
+    expected.push_str("fault during rehash\nCALLBACK LOCAL CLOSED\nowner 99 closed\nowner 0 closed\ncallback fault returned\n");
     assert_eq!(stdout(&trace), expected);
     assert_eq!(trace["final_state"]["exit_code"], 1);
 }

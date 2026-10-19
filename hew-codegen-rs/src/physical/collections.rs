@@ -878,7 +878,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         releases: false,
                     },
                     failure,
-                    &[],
                 )?;
                 self.store(result, contains.into())?;
             }
@@ -887,16 +886,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     // The adopted value transfers into the slot; the key is
                     // cloned in either entry point.
                     let moved = matches!(transfers.get(2), Some(ArgumentTransfer::Move(_)));
-                    let mut consumed = vec![(receiver, DestroyAction::Map(glue))];
-                    if moved {
-                        let descriptor =
-                            self.module.map_glue.get(glue.0 as usize).ok_or_else(|| {
-                                CodegenError::FailClosed("unknown map descriptor".into())
-                            })?;
-                        if let Some(destroy) = descriptor.value.destroy {
-                            consumed.push((source(2)?, destroy));
-                        }
-                    }
                     let (_, cursor) = self.emit_collection_probe(
                         CollectionProbe {
                             key: &self.module.map_glue[glue.0 as usize].key.ty,
@@ -913,7 +902,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                             releases: true,
                         },
                         failure,
-                        &consumed,
                     )?;
                     if moved {
                         self.clear_owned(source(2)?)?;
@@ -1028,8 +1016,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             PhysicalMapOp::GetBorrow { .. } => "hew_hashmap_probe_get_borrow",
             _ => "hew_hashmap_probe_get_clone",
         };
-        let consumed = matches!(operation, PhysicalMapOp::Remove { .. })
-            .then_some((receiver, DestroyAction::Map(id)));
         let (found, cursor) = self.emit_collection_probe(
             CollectionProbe {
                 key: &glue.key.ty,
@@ -1042,7 +1028,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 releases: matches!(operation, PhysicalMapOp::Remove { .. }),
             },
             failure,
-            consumed.as_slice(),
         )?;
         let found = self
             .builder
@@ -1161,19 +1146,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     PhysicalSetOp::Remove { .. } => "hew_hashset_probe_remove",
                     _ => unreachable!("matched membership operation"),
                 };
-                let mut consumed = Vec::new();
-                if operation != PhysicalSetOp::Contains {
-                    consumed.push((receiver, DestroyAction::Set(glue)));
-                }
-                if matches!(operation, PhysicalSetOp::Insert { .. }) && moved {
-                    let descriptor =
-                        self.module.set_glue.get(glue.0 as usize).ok_or_else(|| {
-                            CodegenError::FailClosed("unknown set descriptor".into())
-                        })?;
-                    if let Some(destroy) = descriptor.element.destroy {
-                        consumed.push((source(1)?, destroy));
-                    }
-                }
                 let (present, cursor) = self.emit_collection_probe(
                     CollectionProbe {
                         key: &self.module.set_glue[glue.0 as usize].element.ty,
@@ -1186,7 +1158,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                         releases: operation != PhysicalSetOp::Contains,
                     },
                     failure,
-                    &consumed,
                 )?;
                 if matches!(operation, PhysicalSetOp::Insert { .. }) && moved {
                     self.clear_owned(source(1)?)?;

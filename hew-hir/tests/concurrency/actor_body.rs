@@ -50,40 +50,13 @@ fn assert_binding_ref(expr: &HirExpr, expected: hew_hir::BindingId, name: &str) 
     assert_eq!(*resolved, ResolvedRef::Binding(expected));
 }
 
-/// A `receive gen fn` body is wrapped in a `GenBlock` tail (mirroring a
-/// standalone `gen fn`): the handler's outer block carries no statements, and
-/// the real body — including the `let seen = <param>;` referencing the handler
-/// param — lives inside the `GenBlock` body. This routes the handler through
-/// the shared `Terminator::Yield` state-machine path in MIR. Asserts the
-/// handler is a generator, the first `GenBlock`-body statement binds
-/// `param_name`, and the handler param reached the `GenBlock`'s capture list
-/// tagged `HirGenCaptureSource::Local` (the free-var channel MIR's
-/// `lower_gen_block` reads to build the generator's env record).
+/// A stream producer keeps the handler's parameter identity in its actor body.
 fn assert_generator_handler_param_bound(handler: &hew_hir::HirActorReceiveFn, param_name: &str) {
     assert!(handler.is_generator);
-    assert!(
-        handler.body.statements.is_empty(),
-        "generator handler outer block should be a thin GenBlock wrapper"
-    );
-    let tail = handler
-        .body
-        .tail
-        .as_ref()
-        .expect("generator handler body must have a GenBlock tail");
-    let HirExprKind::GenBlock { body, captures, .. } = &tail.kind else {
-        panic!("expected GenBlock tail, got {:?}", tail.kind);
-    };
-    let HirStmtKind::Let(_, Some(value)) = &body.statements[0].kind else {
+    let HirStmtKind::Let(_, Some(value)) = &handler.body.statements[0].kind else {
         panic!("generator body should contain a let initialized from its param");
     };
     assert_binding_ref(value, handler.params[0].id, param_name);
-    let param_capture = captures
-        .iter()
-        .find(|capture| capture.binding == handler.params[0].id)
-        .unwrap_or_else(|| {
-            panic!("expected handler param `{param_name}` in gen captures: {captures:?}")
-        });
-    assert_eq!(param_capture.source, hew_hir::HirGenCaptureSource::Local);
 }
 
 #[test]

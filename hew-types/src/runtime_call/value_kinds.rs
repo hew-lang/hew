@@ -549,12 +549,15 @@ pub struct RuntimeSemanticContract {
 }
 
 impl RuntimeSemanticContract {
-    /// A bounds failure happens before a receiver transform mutates or takes
-    /// any input. Its cleanup edge retains those owners for ordinary cleanup.
+    /// A bounds failure, or a fault from a key callback, happens before a
+    /// receiver transform mutates or takes any input: the runtime leaves every
+    /// owner with the caller. Its cleanup edge retains those owners for
+    /// ordinary cleanup, so a `var self` receiver or an actor seat stays whole.
     #[must_use]
     pub fn preserves_inputs_on_failure(self) -> bool {
         self.failures == [RuntimeLogicalFailure::RcUnavailable]
-            || self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
+            || (self.failures == [RuntimeLogicalFailure::IndexOutOfBounds]
+                || self.failures == [RuntimeLogicalFailure::CallbackFault])
                 && matches!(
                     self.result,
                     RuntimeResultEffect::UpdatedReceiver(_)

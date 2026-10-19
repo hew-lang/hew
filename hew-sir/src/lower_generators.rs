@@ -36,12 +36,6 @@ impl Builder<'_, '_> {
         let captures = captures
             .iter()
             .map(|capture| {
-                if capture.source != hew_hir::HirGenCaptureSource::Local {
-                    return Err(
-                        "actor generator captures require the checked actor snapshot boundary"
-                            .into(),
-                    );
-                }
                 let ty = self.ty(&capture.ty);
                 let facts = self
                     .service
@@ -57,7 +51,11 @@ impl Builder<'_, '_> {
                     } else {
                         hew_types::ClosureCaptureAcquisition::Snapshot
                     },
-                    access: hew_types::ClosureCaptureAccess::Read,
+                    access: if capture.mutable {
+                        hew_types::ClosureCaptureAccess::Var
+                    } else {
+                        hew_types::ClosureCaptureAccess::Read
+                    },
                     consumption: hew_types::ClosureCaptureConsumption::Consumed,
                     is_send: facts.send == hew_types::SendFact::Known(true),
                     // Generator creation grants no shared concurrent invocation.

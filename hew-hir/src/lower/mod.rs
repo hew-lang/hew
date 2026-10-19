@@ -35,12 +35,12 @@ use crate::node::{
     ExternProvenance, HirActorDecl, HirActorInit, HirActorMethod, HirActorReceiveFn,
     HirActorStateGuard, HirBinding, HirBlock, HirCaptureKind, HirClosureCapture,
     HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
-    HirGenCapture, HirGenCaptureSource, HirItem, HirLambdaCapture, HirLifecycleHook,
-    HirLifecycleHookKind, HirLiteral, HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate,
-    HirModule, HirPayloadPredicate, HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral,
-    HirRestartPolicy, HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind,
-    HirSupervisorChild, HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind,
-    HirVarSelfMethodTarget, HirVariant, HirVariantKind,
+    HirGenCapture, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
+    HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
+    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
+    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
+    HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant,
+    HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};
@@ -245,7 +245,9 @@ impl TargetArch {
 }
 
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
-type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
+/// An enclosing binding a capture can name: its name, type, declaration span
+/// and whether it was declared `var`.
+type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>, bool);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /

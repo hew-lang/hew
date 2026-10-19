@@ -139,22 +139,6 @@ impl Builder<'_, '_> {
         Ok(Some(root))
     }
 
-    /// A failing transform of a field cannot leave a `var self` receiver
-    /// partly taken: its fault edge must hand the whole receiver back. Stage
-    /// the transform on a copy and publish it through the receiver on success.
-    pub(super) fn failing_var_self_owner_root(
-        &self,
-        place: &BindingPlace,
-    ) -> Result<Option<PlaceId>, String> {
-        if place.projections.is_empty() {
-            return Ok(None);
-        }
-        let super::BindingTarget::Place(root) = self.binding_target(place.binding)? else {
-            return Ok(None);
-        };
-        Ok(self.in_var_self_receiver(root).then_some(root))
-    }
-
     /// Take the owner `place` is rooted at whole and take it apart down to the
     /// field `place` names, which is returned. The caller closes the owner
     /// again with [`Self::close_owner`] before anything but the one mutation

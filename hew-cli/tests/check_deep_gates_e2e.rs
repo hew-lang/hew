@@ -596,13 +596,12 @@ fn check_rejects_invalid_module_const_arithmetic_without_nyi_or_artifact() {
 /// render with the same `file:line:col` and source excerpt as any other
 /// diagnostic, not a bare internal-symbol line.
 ///
-/// The fixture inserts into a map of resources held by a `#[resource]`. The
-/// insert can release the map when it fails, so the resource could not be
-/// rebuilt whole around it, and the map has no copy to work on instead.
+/// The fixture inserts into a map while a borrowed `get` still holds a loan
+/// of it, which SIR refuses by name.
 #[test]
 fn check_sir_unsupported_renders_with_source_span() {
     let (_dir, path) = write_fixture(
-        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nfn main() {\n    var registry = Registry { conns: HashMap.new() };\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
+        "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nfn main() {\n    var m: HashMap<string, Tok> = HashMap.new();\n    m.insert(\"a\", Tok { id: 1 });\n    match m.get(\"a\") {\n        Option.Some(t) => {\n            m.insert(\"b\", Tok { id: 2 });\n            println(t.id);\n        }\n        Option.None => println(\"none\"),\n    }\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
@@ -611,7 +610,7 @@ fn check_sir_unsupported_renders_with_source_span() {
     assert!(!output.status.success(), "{}", describe_output(&output));
     assert!(
         stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the live map-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        "expected the live element-loan limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
     );
     assert!(
         stderr.contains("compiler limitation:"),
@@ -654,7 +653,7 @@ fn check_sir_unsupported_renders_with_source_span() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     let (_dir, path) = write_fixture(
-        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nactor Holder {\n    var registry: Registry;\n\n    receive fn poke() {\n        let conn = Conn { fd: 1 };\n        registry.conns.insert(\"a\", conn);\n    }\n}\n\nfn main() {\n    let h = spawn Holder { registry: Registry { conns: HashMap.new() } };\n    let _ = h.poke();\n}\n",
+        "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nactor Holder {\n    receive fn poke() {\n        var m: HashMap<string, Tok> = HashMap.new();\n        m.insert(\"a\", Tok { id: 1 });\n        match m.get(\"a\") {\n            Option.Some(t) => {\n                m.insert(\"b\", Tok { id: 2 });\n                println(t.id);\n            }\n            Option.None => println(\"none\"),\n        }\n    }\n}\n\nfn main() {\n    let h = spawn Holder;\n    let _ = h.poke();\n}\n",
     );
 
     let output = run_check(&["check", path.to_str().unwrap()]);
@@ -663,7 +662,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
     assert!(!output.status.success(), "{}", describe_output(&output));
     assert!(
         stderr.contains("E_SIR_UNSUPPORTED"),
-        "expected the actor handler's map-mutation limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
+        "expected the actor handler's element-loan limitation to report E_SIR_UNSUPPORTED; got:\n{stderr}"
     );
     let file_name = path.file_name().unwrap().to_str().unwrap();
     assert!(
@@ -673,7 +672,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
         "expected a `{file_name}:<line>:<col>: ... E_SIR_UNSUPPORTED` header for the actor handler; got:\n{stderr}"
     );
     assert!(
-        stderr.contains("let conn = Conn { fd: 1 };"),
+        stderr.contains("var m: HashMap<string, Tok> = HashMap.new();"),
         "expected the handler body's own source line in the excerpt, not a bare line; got:\n{stderr}"
     );
     assert!(
@@ -691,7 +690,7 @@ fn check_sir_unsupported_renders_with_source_span_for_actor_handler() {
 #[test]
 fn check_sir_unsupported_renders_with_source_span_json() {
     let (_dir, path) = write_fixture(
-        "#[resource]\ntype Conn {\n    fd: i64;\n}\n\nimpl Conn {\n    fn close(consume self) {\n        println(f\"close {self.fd}\");\n    }\n}\n\n#[resource]\ntype Registry {\n    conns: HashMap<string, Conn>;\n}\n\nimpl Registry {\n    fn close(consume self) {\n        println(\"close registry\");\n    }\n}\n\nfn main() {\n    var registry = Registry { conns: HashMap.new() };\n    let conn = Conn { fd: 1 };\n    registry.conns.insert(\"a\", conn);\n}\n",
+        "#[resource]\ntype Tok {\n    id: i64;\n}\n\nimpl Tok {\n    fn close(consume self) {\n        println(f\"close {self.id}\");\n    }\n}\n\nfn main() {\n    var m: HashMap<string, Tok> = HashMap.new();\n    m.insert(\"a\", Tok { id: 1 });\n    match m.get(\"a\") {\n        Option.Some(t) => {\n            m.insert(\"b\", Tok { id: 2 });\n            println(t.id);\n        }\n        Option.None => println(\"none\"),\n    }\n}\n",
     );
 
     let output = Command::new(hew_binary())

@@ -371,42 +371,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(function)
     }
 
-    /// A stream producer reads a snapshot of every state field it captures
-    /// (§4.12): the copy is a mutable local of this turn, and the actor's own
-    /// seat is untouched.
-    pub(super) fn snapshot_stream_captures(
-        &mut self,
-        captures: &[hew_hir::HirGenCapture],
-        state_bindings: &[HirBinding],
-    ) -> Result<(), String> {
-        for capture in captures {
-            if capture.source != hew_hir::HirGenCaptureSource::ActorStateField {
-                continue;
-            }
-            let binding = state_bindings
-                .iter()
-                .find(|binding| binding.id == capture.binding)
-                .ok_or("stream producer captures an unknown state field")?;
-            let BindingTarget::Place(place) = self.binding_target(binding.id)? else {
-                return Err("stream producer state capture has no state seat".into());
-            };
-            let ty = self.ty(&capture.ty);
-            self.service.require_type_facts(&ty)?;
-            if self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone
-                == hew_types::CloneKind::None
-            {
-                return Err(format!(
-                    "stream producer cannot snapshot state field `{}`: its type has no copy",
-                    binding.name
-                ));
-            }
-            let value =
-                self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::LoadCopy { place })?;
-            self.bind_source_value(binding, value)?;
-        }
-        Ok(())
-    }
-
     pub(super) fn lower_source_body(
         &mut self,
         source: BodySource,
@@ -423,28 +387,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             } => {
                 self.lower_intercept_entry(actor, handler, interceptor)?;
                 Ok(None)
-            }
-            BodySource::Actor { state_bindings, .. } if self.stream_sink.is_some() => {
-                // HIR shapes a stream producer as a generator block; the body
-                // runs as this actor turn and yields straight into the sink.
-                let body = self.function.body.clone();
-                let Some(HirExpr {
-                    kind:
-                        HirExprKind::GenBlock {
-                            body: producer,
-                            captures,
-                            ..
-                        },
-                    ..
-                }) = body.tail.as_deref()
-                else {
-                    return Err("stream producer body is not a generator block".into());
-                };
-                if !body.statements.is_empty() {
-                    return Err("stream producer body carries statements outside its block".into());
-                }
-                self.snapshot_stream_captures(captures, &state_bindings)?;
-                self.lower_block(producer, OwnedBindingUse::Return)
             }
             BodySource::Function | BodySource::Actor { .. } => {
                 let body = self.function.body.clone();

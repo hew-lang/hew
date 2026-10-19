@@ -4040,7 +4040,10 @@ class ExecutorV1 {
         if (target.kind === "actor") {
           const actor = this.actorFor(target);
           const complete = () => {
-            const fault = actor.crashing ?? actor.closingFault;
+            // A crash was reported when it happened and already counts toward
+            // the exit status; only a fault raised while the actor was being
+            // stopped passes to the caller that waits for it.
+            const fault = actor.closingFault;
             if (actor.closeFaultDebt !== undefined)
               this.faultDebts.delete(actor.closeFaultDebt);
             if (fault) this.raiseFault(act, fault, term.unwind);

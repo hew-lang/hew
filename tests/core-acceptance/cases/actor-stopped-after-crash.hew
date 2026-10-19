@@ -1,0 +1,19 @@
+// `stopped` on an actor that has already crashed returns: the crash was
+// reported when it happened and still makes the process exit 1. A later
+// call on the ended actor reports `Dead`.
+actor Reader {
+    receive fn feed(text: string) -> string {
+        if text == "boom" {
+            panic("bad frame");
+        }
+        text
+    }
+}
+
+fn main() {
+    let reader = spawn Reader;
+    println(f"{reader.feed("boom"):?}");
+    stopped(reader);
+    println("after stopped");
+    println(f"{reader.feed("x"):?}");
+}

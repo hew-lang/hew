@@ -39,6 +39,12 @@ const PARITY_CASES: &[ParityCase] = &[
         source_rel: "tests/core-acceptance/cases/spawn-keyed.hew",
     },
     ParityCase {
+        // `stopped` on an actor that already crashed returns in both
+        // executors; the crash alone keeps the exit status failing.
+        test_name: "actor_stopped_after_crash",
+        source_rel: "tests/core-acceptance/cases/actor-stopped-after-crash.hew",
+    },
+    ParityCase {
         // Deferred work runs as the scope ends, in reverse registration order.
         test_name: "defer_order",
         source_rel: "examples/sandbox-graduation/defer_order.hew",

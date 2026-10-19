@@ -365,11 +365,9 @@ impl MonitorState {
 
     pub(crate) fn enqueue_terminal(&self, down: MonitorDown, crash_kind: u32, end_reason: u8) {
         if let Some(completion) = down.completion {
-            completion.finish(if end_reason == 2 {
-                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
-            } else {
-                0
-            });
+            // An imported actor's crash is reported on its own node; the
+            // waiter observes the ended actor as it would a local crash.
+            completion.finish(0);
         } else {
             self.enqueue_down(
                 down.watcher_actor_id,

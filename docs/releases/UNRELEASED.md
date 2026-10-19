@@ -13,3 +13,8 @@ Slow subscribers receive explicit lag, and owner closure drains retained
 notices before end-of-stream. Subscription cleanup detaches pending waits and
 releases capacity. The wrapper uses the ordinary machine evaluator and actor
 services.
+
+An f-string interpolation that continues past its expression is now an error
+instead of silently dropping the rest. `f"{x:<8}"`, `f"{f:.2}"` and
+`f"{x garbage}"` previously printed the bare value; only `{value}` and
+`{value:?}` are accepted.

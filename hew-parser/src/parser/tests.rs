@@ -1525,6 +1525,70 @@ fn parse_interpolated_string_empty_expr_reports_error() {
     );
 }
 
+fn interpolation_errors(source: &str) -> Vec<(String, String)> {
+    parse(source)
+        .errors
+        .into_iter()
+        .map(|error| (error.message, source[error.span].to_string()))
+        .collect()
+}
+
+#[test]
+fn parse_interpolated_string_refuses_format_specifiers_other_than_debug() {
+    for (spec, expected) in [
+        ("x:<8", ":<8"),
+        ("x:08", ":08"),
+        ("f:.2", ":.2"),
+        ("x:x", ":x"),
+        ("x :<8", ":<8"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{spec}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                "f-string interpolation accepts only the `:?` format specifier".to_string(),
+                expected.to_string()
+            )],
+            "{spec}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_refuses_tokens_after_the_expression() {
+    for (inner, message, tail) in [
+        ("x garbage", "unexpected identifier `garbage`", "garbage"),
+        ("x; y", "unexpected `;`", "; y"),
+        ("x )", "unexpected `)`", ")"),
+        ("1e21", "unexpected identifier `e21`", "e21"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                format!("{message} after the interpolated expression"),
+                tail.to_string()
+            )],
+            "{inner}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_keeps_colons_inside_the_expression() {
+    for inner in [
+        " x ",
+        "x :?",
+        "xs.iter().map(|k: i64| k + 1).count()",
+        "Point { x: 1, y: 2 }:?",
+        r#"label("a:b")"#,
+        r#"if x > 1 { "a" } else { "b" }"#,
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(interpolation_errors(&source), [], "{inner}");
+    }
+}
+
 #[test]
 fn parse_deeply_nested_expr_produces_error() {
     // 300 levels of parenthesized nesting exceeds MAX_DEPTH (256).

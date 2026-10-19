@@ -143,6 +143,11 @@ fn main() {
 Prefix interpolated strings with `f`. Expressions inside braces use Display;
 use an explicit Display implementation to choose the user-facing text.
 
+Each pair of braces holds one expression, optionally followed by `:?`.
+Anything else after the expression is an error, including width, alignment and
+precision specifiers such as `{x:<8}` or `{f:.2}`. Format the value first, for
+example with `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`.
+
 ### Structural rendering with `:?`
 
 ```hew

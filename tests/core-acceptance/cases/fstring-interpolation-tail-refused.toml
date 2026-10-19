@@ -1,0 +1,28 @@
+[[case]]
+id = "fstring-interpolation-tail-refused"
+intent = "An f-string interpolation refuses format specifiers other than `:?` and tokens after its expression instead of dropping them."
+source = "../vertical-slice/reject/fstring_interpolation_tail_refused.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidLiteral"
+line = 4
+column = 22
+message = "accepts only the `:?` format specifier"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidLiteral"
+line = 4
+column = 35
+message = "accepts only the `:?` format specifier"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "InvalidLiteral"
+line = 5
+column = 23
+message = "unexpected identifier `garbage` after the interpolated expression"

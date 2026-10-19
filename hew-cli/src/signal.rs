@@ -1,67 +1,65 @@
-//! Signal forwarding: when `hew run` receives SIGTERM or SIGINT, forward it to
-//! the compiled child binary so it is not orphaned. Restore SIGPIPE's default
-//! disposition so closed output pipes terminate cleanly instead of surfacing as
-//! Rust I/O panics.
-
-#![allow(
-    dead_code,
-    reason = "currently used only by the retained interactive WASI runner path"
-)]
+//! Scoped termination requests for interactive child runs, plus the CLI's
+//! default SIGPIPE disposition.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-/// PID of the child process to receive forwarded signals.
-/// Written once before the child is waited on; read only inside the handler.
-static CHILD_PID: AtomicI32 = AtomicI32::new(0);
+const RUN_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+static RUN_SIGNAL: AtomicI32 = AtomicI32::new(0);
 
-#[allow(
-    clippy::cast_possible_wrap,
-    reason = "PIDs fit in i32 on all supported platforms"
-)]
-fn set_child_pid(child_pid: u32) {
-    CHILD_PID.store(child_pid as i32, Ordering::SeqCst);
+/// Record the first termination request. Child ownership and forwarding belong
+/// to the wait loop, which can safely report errors, enforce a grace period and
+/// reap the child. The handler never retains a PID that could be reused.
+extern "C" fn request_termination(signal: libc::c_int) {
+    let _ = RUN_SIGNAL.compare_exchange(0, signal, Ordering::SeqCst, Ordering::SeqCst);
 }
 
-fn clear_child_pid() {
-    CHILD_PID.store(0, Ordering::SeqCst);
+/// Install before spawning so a termination request cannot orphan a child in
+/// the gap between spawn and handler installation. Restore all previous
+/// dispositions when the owned run has finished, including failed spawns.
+pub(crate) struct RunSignals {
+    previous: Vec<(libc::c_int, libc::sigaction)>,
 }
 
-/// Signal handler: forward the received signal to the child process.
-/// SAFETY: only async-signal-safe operations are performed (kill, atomic load).
-unsafe extern "C" fn forward_to_child(sig: libc::c_int) {
-    let pid = CHILD_PID.load(Ordering::SeqCst);
-    if pid > 0 {
-        // SAFETY: kill(2) is async-signal-safe.
-        unsafe { libc::kill(pid, sig) };
+impl RunSignals {
+    pub(crate) fn install() -> Result<Self, String> {
+        RUN_SIGNAL.store(0, Ordering::SeqCst);
+        let mut guard = Self {
+            previous: Vec::new(),
+        };
+        for signal in RUN_SIGNALS {
+            // SAFETY: both actions are valid C structs; the handler performs
+            // only lock-free atomic operations and retains no process handles.
+            unsafe {
+                let mut action: libc::sigaction = std::mem::zeroed();
+                let mut previous: libc::sigaction = std::mem::zeroed();
+                action.sa_sigaction = request_termination as *const () as libc::sighandler_t;
+                libc::sigemptyset(&raw mut action.sa_mask);
+                action.sa_flags = libc::SA_RESTART;
+                if libc::sigaction(signal, &raw const action, &raw mut previous) != 0 {
+                    return Err(format!(
+                        "cannot install run signal handler: {}",
+                        std::io::Error::last_os_error()
+                    ));
+                }
+                guard.previous.push((signal, previous));
+            }
+        }
+        Ok(guard)
+    }
+
+    pub(crate) fn requested(&self) -> Option<libc::c_int> {
+        match RUN_SIGNAL.load(Ordering::SeqCst) {
+            0 => None,
+            signal => Some(signal),
+        }
     }
 }
 
-/// Installs SIGTERM and SIGINT handlers that forward the signal to `child_pid`.
-/// Call this once after the child is spawned and before
-/// `Child::wait`.  The parent process is *not* terminated by the handler —
-/// it continues and `Child::wait` will return once the child has exited.
-pub fn forward_signals_to_child(child_pid: u32) {
-    set_child_pid(child_pid);
-
-    // Restore SIGPIPE's DEFAULT disposition for THIS (CLI) process so a closed
-    // output pipe terminates cleanly. See `reset_sigpipe_to_default`.
-    let pipe_ok = reset_sigpipe_to_default();
-
-    // SAFETY: zeroed sigaction is a valid starting value; `forward_to_child`
-    // performs only async-signal-safe operations.  SA_RESTART ensures that
-    // syscalls interrupted by the signal (e.g. waitpid) are restarted.
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = forward_to_child as *const () as libc::sighandler_t;
-        libc::sigemptyset(&raw mut sa.sa_mask);
-        sa.sa_flags = libc::SA_RESTART;
-
-        let term_result = libc::sigaction(libc::SIGTERM, &raw const sa, std::ptr::null_mut());
-        let int_result = libc::sigaction(libc::SIGINT, &raw const sa, std::ptr::null_mut());
-
-        if !pipe_ok || term_result != 0 || int_result != 0 {
-            clear_child_pid();
-            eprintln!("hew: warning: failed to install signal handlers");
+impl Drop for RunSignals {
+    fn drop(&mut self) {
+        for (signal, previous) in self.previous.iter().rev() {
+            // SAFETY: restore the exact disposition saved during installation.
+            unsafe { libc::sigaction(*signal, previous, std::ptr::null_mut()) };
         }
     }
 }
@@ -84,7 +82,7 @@ pub fn forward_signals_to_child(child_pid: u32) {
 /// unexpected failure (`"$HEW_BIN" check "$path" 2>&1 | head -3`), and it is
 /// why a plain diagnosable rejection reached CI as `exit 134` while the same
 /// file run directly exited 1 with a full diagnostic. The reset used to be
-/// reachable only from [`forward_signals_to_child`] — i.e. only on the
+/// reachable only from the child signal-forwarding setup — i.e. only on the
 /// `hew run` child-spawn path — so every non-spawning subcommand (`check`,
 /// `compile`, `fmt`, `doc`, …) kept the inherited `SIG_IGN` and could abort
 /// this way.
@@ -105,39 +103,6 @@ pub fn reset_sigpipe_to_default() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Child, Command, ExitStatus};
-
-    /// Wait for the child to exit after its forwarded signal; the test
-    /// runner's timeout is the hang guard.
-    fn wait_for_child_exit(child: &mut Child) -> ExitStatus {
-        child.wait().expect("failed to wait for child")
-    }
-
-    #[test]
-    fn handler_forwards_sigterm_and_sigint_to_child() {
-        for sig in [libc::SIGTERM, libc::SIGINT] {
-            let mut child = Command::new("sleep")
-                .arg("60")
-                .spawn()
-                .expect("failed to spawn sleep");
-            set_child_pid(child.id());
-
-            // Call the handler directly so the test exercises the forwarding
-            // logic without mutating process-global signal handlers.
-            // SAFETY: `forward_to_child` sends a signal to the child process whose PID was set above; the child is alive and the signal number is valid.
-            unsafe { forward_to_child(sig) };
-
-            let status = wait_for_child_exit(&mut child);
-            clear_child_pid();
-
-            // A process killed by a signal has no numeric exit code on Unix.
-            assert!(
-                status.code().is_none(),
-                "child should have been killed by signal, not exited normally"
-            );
-        }
-    }
-
     /// The CLI must RESET SIGPIPE to its default disposition (unlike the
     /// compiled-program runtime, which IGNORES it) so `hew run foo | head`
     /// terminates cleanly. Simulate an inherited `SIG_IGN` and verify the reset

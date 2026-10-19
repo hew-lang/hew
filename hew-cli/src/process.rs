@@ -282,12 +282,124 @@ impl BoundedChild {
         }
     }
 
-    /// Wait without a deadline while preserving the same process-isolation
-    /// setup used by timed runs.
-    pub(crate) fn wait_unbounded(&mut self) -> Result<ExitStatus, String> {
-        self.child
-            .wait()
-            .map_err(|e| format!("cannot wait for child process: {e}"))
+    /// Wait for an interactive run, forwarding termination requests to the
+    /// owned group. Give handlers a bounded opportunity to shut down, then
+    /// terminate and reap even a child that ignores the forwarded signal.
+    #[cfg(unix)]
+    #[allow(
+        clippy::useless_conversion,
+        reason = "FreeBSD uses i64 for id_t; other Unix targets use u32"
+    )]
+    fn wait_for_run(
+        &mut self,
+        timeout: Option<Duration>,
+        signals: &crate::signal::RunSignals,
+    ) -> Result<ChildWaitOutcome, String> {
+        const SIGNAL_GRACE: Duration = Duration::from_secs(1);
+        let started = Instant::now();
+        let mut interrupted = None;
+        loop {
+            if interrupted.is_none() {
+                if let Some(signal) = signals.requested() {
+                    // SAFETY: spawn established this child's isolated group;
+                    // the child has not been reaped, so its ID cannot be reused.
+                    let result = unsafe { libc::killpg(self.child.id().cast_signed(), signal) };
+                    if result != 0 {
+                        let error = std::io::Error::last_os_error();
+                        if error.raw_os_error() != Some(libc::ESRCH) {
+                            return Err(format!(
+                                "cannot forward signal to child process group: {error}"
+                            ));
+                        }
+                    }
+                    interrupted = Some(Instant::now());
+                }
+            }
+            // Clean the group before reaping its leader so the group ID still
+            // belongs to this run. This also covers descendants that ignore
+            // the request after the leader exits promptly.
+            if interrupted.is_some_and(|sent: Instant| sent.elapsed() >= SIGNAL_GRACE) {
+                self.terminate_process_group()?;
+                return self
+                    .child
+                    .wait()
+                    .map(ChildWaitOutcome::Exited)
+                    .map_err(|e| format!("cannot reap interrupted child process: {e}"));
+            }
+            // WNOWAIT observes completion without releasing the PID. Keep the
+            // group identity reserved until descendant cleanup is complete.
+            // SAFETY: the zeroed siginfo is an output buffer, and this Child
+            // owns the PID being inspected. WNOHANG never blocks the wait loop.
+            let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+            // SAFETY: inspect only the owned child, retaining its wait status.
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.child.id().into(),
+                    &raw mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(format!("cannot poll child process: {error}"));
+            }
+            if info.si_signo != 0 {
+                if interrupted.is_some() {
+                    self.terminate_process_group()?;
+                }
+                return self
+                    .child
+                    .wait()
+                    .map(ChildWaitOutcome::Exited)
+                    .map_err(|e| format!("cannot reap child process: {e}"));
+            }
+            if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                self.terminate_process_group()?;
+                return Ok(ChildWaitOutcome::Timeout);
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+/// Own the complete interactive child lifetime, including errors. Callers may
+/// exit the CLI immediately after this returns: no child cleanup relies on
+/// destructors running after `process::exit`.
+pub(crate) fn run_command_interactive(
+    command: &mut Command,
+    timeout: Option<Duration>,
+) -> Result<ChildWaitOutcome, String> {
+    #[cfg(unix)]
+    let signals = crate::signal::RunSignals::install()?;
+    let mut child = BoundedChild::spawn(command)?;
+    #[cfg(unix)]
+    {
+        child.wait_for_run(timeout, &signals)
+    }
+    #[cfg(not(unix))]
+    {
+        match timeout {
+            Some(timeout) => child.wait_with_timeout(timeout),
+            None => child
+                .child
+                .wait()
+                .map(ChildWaitOutcome::Exited)
+                .map_err(|e| format!("cannot wait for child process: {e}")),
+        }
+    }
+}
+
+impl Drop for BoundedChild {
+    fn drop(&mut self) {
+        // A failed wait or an early return must not detach a running child.
+        // Successful waits have already reaped it; avoid signalling a stale ID.
+        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+            let _ = self.terminate_process_group();
+        }
     }
 }
 
@@ -321,6 +433,7 @@ pub(crate) fn native_run_exit_code(status: ExitStatus, stderr: &mut impl std::io
             libc::SIGFPE => "SIGFPE",
             libc::SIGILL => "SIGILL",
             libc::SIGINT => "SIGINT",
+            libc::SIGHUP => "SIGHUP",
             libc::SIGKILL => "SIGKILL",
             libc::SIGPIPE => "SIGPIPE",
             libc::SIGQUIT => "SIGQUIT",
@@ -715,43 +828,6 @@ fn truncation_marker() -> String {
     format!("\n[output truncated at {MAX_CAPTURED_OUTPUT_BYTES} bytes]\n")
 }
 
-/// Wait for a child process to exit before `timeout`, terminating it otherwise.
-pub(crate) fn wait_for_child_with_timeout(
-    child: &mut Child,
-    timeout: Duration,
-    kill_target: TimeoutKillTarget,
-) -> Result<ChildWaitOutcome, String> {
-    let start = Instant::now();
-
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Ok(ChildWaitOutcome::Exited(status)),
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    terminate_timed_out_child(child, kill_target)?;
-                    return Ok(ChildWaitOutcome::Timeout);
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            Err(e) => return Err(format!("cannot poll child process: {e}")),
-        }
-    }
-}
-
-/// Returns `true` if the entire process tree was terminated (all processes
-/// that could hold a write end of a pipe are dead), `false` if only the
-/// direct child was killed.
-fn terminate_timed_out_child(
-    child: &mut Child,
-    kill_target: TimeoutKillTarget,
-) -> Result<bool, String> {
-    let tree_killed = kill_timed_out_child(child, kill_target)?;
-    child
-        .wait()
-        .map_err(|e| format!("cannot reap timed-out child process: {e}"))?;
-    Ok(tree_killed)
-}
-
 fn kill_child_only(child: &mut Child) -> Result<(), String> {
     match child.kill() {
         Ok(()) => Ok(()),
@@ -1013,12 +1089,120 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     #[test]
+    fn dropping_bounded_child_terminates_and_reaps_it() {
+        let mut command = Command::new("sleep");
+        command.arg("60");
+        let child = BoundedChild::spawn(&mut command).expect("spawn owned child");
+        let pid = child.child.id().cast_signed();
+        drop(child);
+        // SAFETY: signal zero queries the exact PID of the child just dropped.
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "owned child survived drop"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::ESRCH)
+        );
+    }
+
+    #[test]
+    fn interactive_termination_cleans_descendants_and_preserves_exit() {
+        const FIXTURE: &str = "HEW_INTERACTIVE_PROCESS_FIXTURE";
+        if let Some(directory) = std::env::var_os(FIXTURE) {
+            let mut command = Command::new("sh");
+            command.current_dir(directory).args([
+                "-c",
+                "trap 'exit 37' TERM; echo $$ > leader; (trap '' TERM; touch ready; exec sleep 60) & wait",
+            ]);
+            let outcome = run_command_interactive(&mut command, None).expect("interactive shell");
+            assert!(
+                matches!(outcome, ChildWaitOutcome::Exited(status) if status.code() == Some(37))
+            );
+            return;
+        }
+
+        // A separate test process owns the process-global signal handlers.
+        // Its descendant ignores TERM and retains stdout after the shell exits.
+        struct Fixture {
+            wrapper: Child,
+            directory: tempfile::TempDir,
+        }
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                if let Ok(pid) = std::fs::read_to_string(self.directory.path().join("leader")) {
+                    if let Ok(pid) = pid.trim().parse::<i32>() {
+                        // SAFETY: the shell published its own isolated group ID.
+                        unsafe { libc::killpg(pid, libc::SIGKILL) };
+                    }
+                }
+                let _ = self.wrapper.kill();
+                let _ = self.wrapper.wait();
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let wrapper = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "process::tests::interactive_termination_cleans_descendants_and_preserves_exit",
+                "--nocapture",
+            ])
+            .env(FIXTURE, directory.path())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn signal-owning fixture");
+        let mut fixture = Fixture { wrapper, directory };
+        let stdout = fixture.wrapper.stdout.take().unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let result = BufReader::new(stdout).read_to_end(&mut bytes);
+            let _ = sender.send((result, bytes));
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !fixture.directory.path().join("ready").exists() {
+            assert!(Instant::now() < deadline, "descendant did not start");
+            assert!(
+                fixture.wrapper.try_wait().unwrap().is_none(),
+                "fixture exited before startup"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // SAFETY: the wrapper is an unreaped process owned by this test.
+        assert_eq!(
+            unsafe { libc::kill(fixture.wrapper.id().cast_signed(), libc::SIGTERM) },
+            0
+        );
+        let status = loop {
+            if let Some(status) = fixture.wrapper.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "interactive fixture did not exit"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "signal-owning fixture failed: {status}");
+        let (result, bytes) = receiver
+            .recv_timeout(Duration::from_secs(3))
+            .expect("descendant retained stdout after wrapper exited");
+        result.expect("read fixture output through EOF");
+        assert!(
+            !bytes.is_empty(),
+            "fixture test harness should report its result"
+        );
+    }
+
+    #[test]
     fn native_run_reports_signalled_child() {
         let mut command = Command::new("sh");
         command.args(["-c", "ulimit -c 0; kill -SEGV $$"]);
         let status = BoundedChild::spawn(&mut command)
             .unwrap()
-            .wait_unbounded()
+            .child
+            .wait()
             .unwrap();
         let mut stderr = Vec::new();
         assert_eq!(native_run_exit_code(status, &mut stderr), 1);

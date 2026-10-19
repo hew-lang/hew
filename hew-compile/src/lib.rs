@@ -9073,14 +9073,19 @@ mod source_analysis_batch_tests {
         let options = test_options();
         let mut batch = SourceAnalysisBatch::new(options.clone());
         let source = r#"
+fn first<I>(var it: I) -> i64 where I: Iterator<Item = i64> {
+    match it.next() { .Some(value) => value, .None => 0 }
+}
 fn ready() -> i64 {
-    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
-    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
-    sums[0] + sums[1]
+    let row: Vec<i64> = [1, 2];
+    first(row.iter())
 }
 fn main() {
     let callback: fn() -> i64 = ready;
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
     println(f"{callback()}");
+    println(f"{sums[0] + sums[1]}");
 }
 "#;
         for name in ["first.hew", "second.hew"] {

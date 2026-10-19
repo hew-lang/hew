@@ -197,7 +197,7 @@ fn assert_generator_surface_ran_clean(
 ) {
     assert_eq!(
         samples.len(),
-        expected_iters as usize + 1,
+        usize::try_from(expected_iters).expect("iteration count fits usize") + 1,
         "{form}: expected one baseline and a sample from every iteration"
     );
     let counts: Vec<_> = samples
@@ -484,7 +484,9 @@ fn main() -> i64 {{
         single_thread_snapshot(&stdout, "final-thread-snapshot"),
     ];
     let blocking_tids = blocking_worker_tids(&samples);
-    let during = counted_threads(&samples[1], &blocking_tids) as i64;
-    let pre = counted_threads(&samples[0], &blocking_tids) as i64;
+    let during =
+        i64::try_from(counted_threads(&samples[1], &blocking_tids)).expect("thread count fits i64");
+    let pre =
+        i64::try_from(counted_threads(&samples[0], &blocking_tids)).expect("thread count fits i64");
     (pre, during)
 }

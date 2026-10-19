@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-private-name-collision"
+intent = "Quoted-imported files, including two with the same file name in different directories, keep same-named private helpers and constants apart from each other and from the importer's."
+source = "fixtures/file-import-private-name-collision/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "11 22 103 root\nxy\n"
+exit = 0

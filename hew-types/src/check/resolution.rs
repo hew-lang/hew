@@ -403,28 +403,6 @@ impl Checker {
         self.type_def_exact(qualified).map(|_| qualified.clone())
     }
 
-    pub(super) fn flat_file_import_type_owner(&self, name: &str) -> Option<String> {
-        if self.current_module.is_some() {
-            return None;
-        }
-        let mut owners: Vec<String> =
-            self.registered_type_owners(name)
-                .into_iter()
-                .filter(|owner| {
-                    owner.rsplit_once('.').is_some_and(|(module, _)| {
-                        self.flat_file_import_module_names.contains(module)
-                    }) && self.type_def_exact(owner).is_some()
-                        && self.resolved_builtin_type(owner).is_none()
-                })
-                .collect();
-        owners.sort_unstable();
-        owners.dedup();
-        match owners.as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        }
-    }
-
     pub(super) fn is_current_module_type_def(&self, name: &str) -> bool {
         self.current_module_identity().is_some_and(|module| {
             name.rsplit_once('.')
@@ -536,19 +514,7 @@ impl Checker {
         // presentation through the general unique-owner fallback would turn
         // it into a source nominal after the lexical authority has gone away.
         // Non-root stdlib bodies keep their owner through the branch above.
-        //
-        // A USER declaration whose bare leaf collides with a builtin name is
-        // the exception: a file-imported `type Result` shadows the prelude
-        // enum, and its layout registration is keyed by the declaring file's
-        // full owner (`lib.Result`). Keeping the spelling bare here hands MIR
-        // a field-order key its registration can never match. Yield to a
-        // unique NON-builtin, non-stdlib declaration owner — exactly the
-        // qualification every non-builtin-shaped leaf receives below — and
-        // keep the builtin presentation only when no such user owner exists.
         if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
-            if let Some(owner) = self.flat_file_import_type_owner(name) {
-                return Some(owner);
-            }
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified

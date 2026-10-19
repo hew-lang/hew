@@ -1,0 +1,20 @@
+import "one.hew";
+import "two.hew";
+import "x/util.hew";
+import "y/util.hew";
+
+const WIDTH: i64 = 100;
+
+type Cell {
+    label: string;
+}
+
+fn helper() -> i64 {
+    3
+}
+
+fn main() {
+    let cell = Cell { label: "root" };
+    println(f"{one()} {two()} {helper() + WIDTH} {cell.label}");
+    println(from_x() + from_y());
+}

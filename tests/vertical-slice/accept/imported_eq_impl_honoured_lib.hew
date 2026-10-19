@@ -1,4 +1,4 @@
-type ImportedEqKey {
+pub type ImportedEqKey {
     primary: i64;
     ignored: i64;
 }

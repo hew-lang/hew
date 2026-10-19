@@ -4211,7 +4211,12 @@ fn main() {
 
 A quoted string path (`import "relative/path.hew";`) pulls in a sibling
 source file directly — no project layout is required. This is the fastest
-way to split a script into files.
+way to split a script into files. The imported file is a module of its own:
+its `pub` items are bound unqualified in the importing file, while its private
+items, including a `fn main` that lets the file run on its own, stay inside it.
+Two imported files may each keep a private `helper` or `const WIDTH` without
+clashing; two that both publish the same `pub` name are refused as an import
+binding collision.
 
 A dotted import names a module by its path: `import a.b.c;` finds
 `a/b/c.hew` beside the importing file or from its package root (never in the

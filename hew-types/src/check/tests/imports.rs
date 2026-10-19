@@ -1840,38 +1840,6 @@ fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
 }
 
 #[test]
-fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
-    let flat = make_user_import(
-        &["pkg", "flat"],
-        None,
-        vec![(Item::TypeDecl(make_pub_struct("FlatResult", "local")), 0..0)],
-    );
-    let package = make_user_import(
-        &["pkg", "package"],
-        None,
-        vec![(
-            Item::TypeDecl(make_pub_struct("FlatResult", "remote")),
-            0..0,
-        )],
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.check_program(&Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: None,
-        items: vec![(Item::Import(flat), 0..0), (Item::Import(package), 0..0)],
-        module_doc: None,
-    });
-    checker
-        .flat_file_import_module_names
-        .insert("pkg.flat".to_string());
-
-    assert_eq!(
-        checker.flat_file_import_type_owner("FlatResult"),
-        Some("pkg.flat.FlatResult".to_string())
-    );
-}
-
-#[test]
 fn canonical_module_variants_shadow_builtin_variants() {
     let output = check_source_in_module(
         r"pub enum AppErr {

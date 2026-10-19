@@ -180,11 +180,6 @@ impl Checker {
         let selected = |span: &Span| {
             generated.is_none_or(|ranges| ranges.iter().any(|(range, _)| range == span))
         };
-        let flat_file_import_modules = flat_file_import_module_ids(program);
-        self.flat_file_import_module_names = flat_file_import_modules
-            .iter()
-            .map(hew_parser::module::ModulePath::dotted)
-            .collect();
         // Process module graph items first (if multi-module).
         // Skip the root module — its items are already in program.items and
         // will be processed below with current_module = None (bare names).
@@ -198,8 +193,6 @@ impl Checker {
                     let module_name = mod_id.dotted();
                     self.record_canonical_std_module_source(&module_name, &module.source_paths);
                     self.current_module = Some(module_name.clone());
-                    self.registration_is_flat_file_import =
-                        flat_file_import_modules.contains(mod_id);
                     self.current_module_direct_imports = module
                         .imports
                         .iter()
@@ -280,7 +273,6 @@ impl Checker {
         // Process main module items.
         self.current_module = None;
         self.current_module_idx = 0;
-        self.registration_is_flat_file_import = false;
         self.current_module_direct_imports = program
             .module_graph
             .as_ref()
@@ -1930,18 +1922,9 @@ impl Checker {
         declaration_id: crate::DefId,
     ) {
         if let Some(shared) = &keys.shared {
-            if self.registration_is_flat_file_import {
-                // File-import items are lowered as root items after checking.
-                // Their shared dispatch entry therefore outranks any package
-                // module's compatibility alias, independent of graph/import
-                // traversal order.
-                self.impl_method_declaration_ids
-                    .insert(shared.clone(), declaration_id);
-            } else {
-                self.impl_method_declaration_ids
-                    .entry(shared.clone())
-                    .or_insert_with(|| declaration_id);
-            }
+            self.impl_method_declaration_ids
+                .entry(shared.clone())
+                .or_insert_with(|| declaration_id);
         }
         for key in keys.canonical.iter().chain(&keys.mangled) {
             self.impl_method_declaration_ids
@@ -1966,7 +1949,7 @@ impl Checker {
             .map(|id| self.defs.path(id.declaration()).to_string());
         let receiver = if let Some(declared) = declared_type {
             declared
-        } else if self.registration_is_flat_file_import || type_name.contains('.') {
+        } else if type_name.contains('.') {
             type_name.to_string()
         } else {
             self.canonical_nominal_name(type_name).unwrap_or_else(|| {

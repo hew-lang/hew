@@ -1511,12 +1511,7 @@ impl LowerCtx {
                         module_name.name.as_str(),
                         field.0.name.as_str(),
                     );
-                    // A file import's declaration is spliced into the root
-                    // namespace and registered under its bare name, so the
-                    // qualified spelling reaches it through the same mapping a
-                    // bare reference uses.
-                    let registry_key = self.published_const_key(&qualified_key).to_string();
-                    if let Some(entry) = self.const_registry.get(&registry_key).cloned() {
+                    if let Some(entry) = self.const_registry.get(&qualified_key).cloned() {
                         let ty = entry.ty.clone();
                         let id = entry.id;
                         return HirExpr {

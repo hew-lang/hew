@@ -789,37 +789,6 @@ fn derive_opaque_resource_candidate_graph(
     graph
 }
 
-/// Module-graph nodes reached by a root file-path import.
-///
-/// The checker visits these nodes under their source module so diagnostics and
-/// span keys retain file provenance. The frontend later flattens their items
-/// into `program.items`, however, and HIR emits those declarations in the root
-/// namespace. Declaration IDs must follow that emitted ownership, while package
-/// imports remain module-qualified.
-pub(in crate::check) fn flat_file_import_module_ids(
-    program: &Program,
-) -> HashSet<hew_parser::module::ModulePath> {
-    let Some(module_graph) = program.module_graph.as_ref() else {
-        return HashSet::new();
-    };
-    let file_paths = hew_parser::module::file_import_chain_sources(&program.items);
-    if file_paths.is_empty() {
-        return HashSet::new();
-    }
-    module_graph
-        .modules
-        .iter()
-        .filter(|(module_id, module)| {
-            **module_id != module_graph.root
-                && module
-                    .source_paths
-                    .iter()
-                    .any(|source| file_paths.contains(source))
-        })
-        .map(|(module_id, _)| module_id.clone())
-        .collect()
-}
-
 /// Whether `item` is a record/type-decl declaring the bare `type_name`.
 /// Mirrors the HIR lowering helper of the same shape (#2208).
 fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
@@ -841,7 +810,6 @@ fn collision_item_declares_type_name(item: &Item, type_name: &str) -> bool {
 /// stays unique and is never owner-qualified (#2208).
 fn collision_preferred_package_module_ids(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
 ) -> HashSet<hew_parser::module::ModulePath> {
     use std::path::{Path, PathBuf};
 
@@ -852,7 +820,7 @@ fn collision_preferred_package_module_ids(
 
     let mut candidates: Vec<(&hew_parser::module::ModulePath, HashSet<&Path>, usize)> = Vec::new();
     for (pos, id) in mg.topo_order.iter().enumerate() {
-        if *id == mg.root || file_import_modules.contains(id) {
+        if *id == mg.root {
             continue;
         }
         let Some(module) = mg.modules.get(id) else {
@@ -932,7 +900,6 @@ fn member_item_is_absorbed_from_distinct_child(
 /// collision notion the checker owner-qualification must agree with (#2208).
 fn collision_imported_type_name_collides(
     program: &Program,
-    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
     preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     type_name: &str,
 ) -> bool {
@@ -950,26 +917,25 @@ fn collision_imported_type_name_collides(
             // Excluding root left the checker/HIR value flow bare against that
             // qualified layout (#2208). Re-export subsumption below still dedups
             // a package that re-exports a file module's item.
-            !file_import_modules.contains(*module_id)
-                && module.items.iter().any(|(item, _)| {
-                    if !collision_item_declares_type_name(item, type_name) {
-                        return false;
-                    }
-                    if preferred_modules.contains(*module_id) {
-                        return true;
-                    }
-                    !preferred_modules.iter().any(|preferred_id| {
-                        module_graph
-                            .modules
-                            .get(preferred_id)
-                            .is_some_and(|preferred| {
-                                preferred
-                                    .items
-                                    .iter()
-                                    .any(|(candidate, _)| candidate == item)
-                            })
-                    })
+            module.items.iter().any(|(item, _)| {
+                if !collision_item_declares_type_name(item, type_name) {
+                    return false;
+                }
+                if preferred_modules.contains(*module_id) {
+                    return true;
+                }
+                !preferred_modules.iter().any(|preferred_id| {
+                    module_graph
+                        .modules
+                        .get(preferred_id)
+                        .is_some_and(|preferred| {
+                            preferred
+                                .items
+                                .iter()
+                                .any(|(candidate, _)| candidate == item)
+                        })
                 })
+            })
         })
         .take(2)
         .count()

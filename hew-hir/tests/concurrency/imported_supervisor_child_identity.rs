@@ -15,10 +15,7 @@ fn child_handle(defs: &hew_types::DefTable, name: &str) -> hew_types::ResolvedTy
     hew_types::ResolvedTy::named_actor_path(defs, name, Vec::new())
 }
 
-fn file_import_program(
-    imported_src: &str,
-    root_src: &str,
-) -> (Program, Vec<hew_parser::ast::Spanned<Item>>) {
+fn file_import_program(imported_src: &str, root_src: &str) -> Program {
     let imported = hew_parser::parse(imported_src);
     assert!(
         imported.errors.is_empty(),
@@ -72,15 +69,12 @@ fn file_import_program(
     graph.add_module(root_module).expect("add root module");
     graph.topo_order = vec![worker_id, root_id];
 
-    (
-        Program {
-            expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-            items: root_items,
-            module_graph: Some(graph),
-            module_doc: root.program.module_doc,
-        },
-        imported_items,
-    )
+    Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: root_items,
+        module_graph: Some(graph),
+        module_doc: root.program.module_doc,
+    }
 }
 
 fn lower_file_import(
@@ -95,13 +89,10 @@ fn lower_file_import_with(
     root_src: &str,
     prepare_checked: impl FnOnce(&mut TypeCheckOutput),
 ) -> (hew_hir::LowerOutput, TypeCheckOutput) {
-    let (mut program, imported_items) = file_import_program(imported_src, root_src);
+    let program = file_import_program(imported_src, root_src);
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let mut tc_output = checker.check_program(&program);
     prepare_checked(&mut tc_output);
-    // `hew-compile` performs this source-order splice after checking. HIR sees
-    // both the checker-authored module graph and the flattened tail entries.
-    program.items.extend(imported_items);
     let lowered = lower_program_host_target(&program, &tc_output, &ResolutionCtx);
     (lowered, tc_output)
 }

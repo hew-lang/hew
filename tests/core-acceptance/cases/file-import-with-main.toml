@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-with-main"
+intent = "A runnable file with its own `fn main` can be quoted-imported; its `main` stays private and the importer's `main` is the entry."
+source = "fixtures/file-import-with-main/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "20\n"
+exit = 0

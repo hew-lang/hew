@@ -520,9 +520,8 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<Vec<hew_types::DefId>, SessionError> {
-        // File imports are appended for body lowering after checking. Their
-        // public declarations remain imports, with their own source identities,
-        // rather than becoming authored root exports through flattening.
+        // A file import's public declarations remain imports, with their own
+        // source identities, rather than authored root exports.
         let root_items = program
             .module_graph
             .as_ref()
@@ -2774,9 +2773,7 @@ fn build_module_graph_with_diagnostics(
     // `bank$Account` — so `spawn bank.Account { ... }` and `spawn
     // store.Account(...)` bind their own handlers/state/drop glue.  Within one
     // module there is no qualifier left to tell two same-named actors apart,
-    // so that case stays a hard error.  Runs before
-    // `flatten_file_import_items`, so each actor still lives in exactly one
-    // module here.
+    // so that case stays a hard error.
     if let Err(msg) = check_duplicate_actor_layout_names(&graph) {
         return Err(FrontendFailure::message_only(msg));
     }
@@ -2969,9 +2966,7 @@ fn check_ambiguous_module_import_bindings(
 /// same-named actors from DIFFERENT modules are legal and keep distinct
 /// layouts, handle types, and native symbols.  Within one module the
 /// qualified identities collide — `bank.Account` twice — and no spawn
-/// spelling could tell them apart, so that shape stays a hard error.  The
-/// guard runs at graph-build time (before file-import flattening), so each
-/// actor lives in exactly one module here.
+/// spelling could tell them apart, so that shape stays a hard error.
 fn check_duplicate_actor_layout_names(
     graph: &hew_parser::module::ModuleGraph,
 ) -> Result<(), String> {
@@ -3023,14 +3018,6 @@ pub fn build_module_graph(
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
     build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
-}
-
-fn flatten_file_import_items(program: &mut Program) {
-    let extra: Vec<Spanned<Item>> = hew_parser::module::file_import_spliced_items(&program.items)
-        .into_iter()
-        .map(|(item, _)| item.clone())
-        .collect();
-    program.items.extend(extra);
 }
 
 /// The graph node already assembled from `source`, if the walk reached that
@@ -4305,16 +4292,6 @@ fn run_frontend_after_parse_with_dependency_cache(
         }
     }
 
-    if let Some(normalized) = state
-        .typecheck_result
-        .as_mut()
-        .and_then(|result| result.tco.as_mut())
-        .and_then(|tco| tco.normalized_program.as_mut())
-    {
-        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
-    } else {
-        flatten_file_import_items(&mut state.program);
-    }
     let stdlib_roots = configured_stdlib_roots(options);
     retain_user_facing_diagnostics(input, &stdlib_roots, &mut state.diagnostics);
     state
@@ -5809,12 +5786,10 @@ mod tests {
         );
     }
 
-    /// The same rule across the other namespace that assembles from several
-    /// files: a file import flattens into the root, so a name the root and the
-    /// imported file both declare collides there too, and the report must not
-    /// double up when the item is inventoried through more than one route.
+    /// A file import is its own module: a private type it declares and a root
+    /// type of the same name are distinct declarations, not a collision.
     #[test]
-    fn a_root_and_its_file_import_claiming_one_name_report_one_duplicate() {
+    fn a_root_type_and_a_private_file_import_type_share_a_name() {
         let dir = tempfile::tempdir().expect("create file-import fixture");
         write_source(
             dir.path(),
@@ -5827,24 +5802,8 @@ mod tests {
             "import \"lib.hew\";\n\ntype Point {\n    y: i64;\n}\n\nfn main() {\n    let p = Point { y: 2 };\n    println(p.y + lib_point());\n}\n",
         );
 
-        let failure = check_file(&input, &FrontendOptions::default())
-            .expect_err("a root and its file import cannot both declare `Point`");
-        let duplicates = failure
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                matches!(
-                    &diagnostic.kind,
-                    FrontendDiagnosticKind::Type(error)
-                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
-                )
-            })
-            .count();
-        assert_eq!(
-            duplicates, 1,
-            "one collision must produce one report: {:#?}",
-            failure.diagnostics
-        );
+        check_file(&input, &FrontendOptions::default())
+            .expect("a private file-import type does not collide with a root type");
     }
 
     /// Negative control for the rule above: an `extern "C"` symbol declared by
@@ -5917,7 +5876,7 @@ mod tests {
     }
 
     #[test]
-    fn source_roots_keep_authored_exports_after_file_import_flattening() {
+    fn source_roots_keep_authored_exports_beside_file_imports() {
         let dir = tempfile::tempdir().expect("create source-root fixture");
         write_source(dir.path(), "helper.hew", "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }");
         let input = write_source(
@@ -5951,13 +5910,11 @@ mod tests {
         }
     }
 
-    /// A file-imported item reaches HIR lowering on two surfaces: its file's
-    /// module-graph entry and, after `flatten_file_import_items`, the root
-    /// `Program::items`. The checker must have minted ONE declaration for it,
-    /// and that identity is the one the call site and the lowered HIR item
-    /// carry; a second root-owned mint would split every downstream join.
+    /// A file-imported item lives in its file's module-graph entry only. The
+    /// checker mints ONE declaration for it, and that identity is the one the
+    /// call site and the lowered HIR item carry.
     #[test]
-    fn flattened_file_import_declares_one_identity_per_item() {
+    fn file_import_declares_one_identity_per_item() {
         let dir = tempfile::tempdir().expect("create file-import fixture dir");
         write_source(
             dir.path(),
@@ -5986,9 +5943,9 @@ mod tests {
         });
         let in_root_items = state.program.items.iter().any(|(item, _)| is_helper(item));
         assert!(
-            in_graph && in_root_items,
-            "the fixture must present the helper on both checker surfaces \
-             (graph: {in_graph}, flattened root items: {in_root_items})"
+            in_graph && !in_root_items,
+            "the helper belongs to its file's module, not the root \
+             (graph: {in_graph}, root items: {in_root_items})"
         );
 
         let minted: Vec<hew_types::DefId> = tco
@@ -6035,7 +5992,10 @@ mod tests {
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
+                hew_hir::HirItem::Function(function)
+                    if tco.defs.name(function.declaration)
+                        == hew_types::Symbol::intern("helper_value") =>
+                {
                     Some(function.declaration)
                 }
                 _ => None,
@@ -6388,7 +6348,7 @@ fn main() -> i64 {
     fn nested_generic_free_calls_keep_exact_direct_symbols_across_all_module_origins() {
         // Every invocation sits in a closure body, which lowers through a child
         // MIR builder.  Exercise all body origins that may be the selected
-        // generic declaration: root, flattened file import, package import,
+        // generic declaration: root, file import, package import,
         // and two modules with the same final path component.  The same-leaf
         // pair makes a linker-name or leaf-name recovery observably unsound.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6467,10 +6427,8 @@ fn main() {
         // sharing a body symbol.
         let expected = [
             ("main.root_first", "root_first"),
-            // A file import is spliced into the root namespace and lowered
-            // once, so its declaration keeps the declaring file's identity
-            // while its emitted body carries the root's bare symbol.
-            ("file_helpers.file_first", "file_first"),
+            // A file import is a module: its body symbol is qualified by it.
+            ("file_helpers.file_first", "file_helpers$file_first"),
             ("hew.genhelpers.first", "hew$genhelpers$first"),
             ("alpha.first", "alpha$first"),
             ("beta.alpha.first", "beta$alpha$first"),
@@ -7759,10 +7717,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     /// Negative control for the file-import happy path: a single `pub actor`
-    /// reached via `import "counter.hew"` must NOT be flagged. The actor is
-    /// flattened into the root program AND present in its file-import graph
-    /// module, but the guard runs before flattening, so it is counted exactly
-    /// once and accepted.
+    /// reached via `import "counter.hew"` must NOT be flagged: it lives in
+    /// exactly one module.
     #[test]
     fn check_file_accepts_single_file_imported_actor() {
         let dir = tempfile::tempdir().expect("create temp dir");

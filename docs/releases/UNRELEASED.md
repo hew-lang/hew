@@ -13,3 +13,11 @@ Slow subscribers receive explicit lag, and owner closure drains retained
 notices before end-of-stream. Subscription cleanup detaches pending waits and
 releases capacity. The wrapper uses the ordinary machine evaluator and actor
 services.
+
+A quoted import (`import "lib.hew";`) is now a module like any other. Private
+functions, constants and a `fn main` in the imported file stay private to it,
+so a runnable file can be imported for its public items, and two imported files
+may each keep a private helper of the same name. Range slices inside a
+quoted-imported file lower as they do at the root. A private actor or
+supervisor in an imported module may call the module's private helpers and
+read its own supervisor's children.

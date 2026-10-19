@@ -1,0 +1,7 @@
+fn helper() -> string {
+    "y"
+}
+
+pub fn from_y() -> string {
+    helper()
+}

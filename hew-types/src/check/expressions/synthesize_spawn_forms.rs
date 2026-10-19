@@ -1391,9 +1391,7 @@ impl Checker {
         // from colliding in the downstream MIR record-layout / field-order
         // registry (the same identity discipline `samename_type_layout` proves
         // for explicitly qualified constructions).
-        let qualified_owned = self
-            .published_bare_type_qualified(name)
-            .or_else(|| self.flat_file_import_type_owner(name));
+        let qualified_owned = self.published_bare_type_qualified(name);
         let delivery_owner = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));

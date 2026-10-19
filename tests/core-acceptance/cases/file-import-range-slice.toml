@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-range-slice"
+intent = "Range slices and range `get` in a file quoted-imported from a parent directory lower as they do at the root."
+source = "fixtures/file-import-range-slice/app/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "el\nell\nout of range\n"
+exit = 0

@@ -811,7 +811,11 @@ actor Counter {
         output.errors
     );
     assert_eq!(
-        output.assign_target_kinds.len(),
+        output
+            .assign_target_kinds
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         4,
         "expected four classified assignment targets, got: {:?}",
         output.assign_target_kinds
@@ -875,7 +879,11 @@ fn f() {
         output.errors
     );
     assert_eq!(
-        output.assign_target_shapes.len(),
+        output
+            .assign_target_shapes
+            .keys()
+            .filter(|key| key.module_idx == 0)
+            .count(),
         4,
         "expected four shape entries, got: {:?}",
         output.assign_target_shapes
@@ -883,8 +891,8 @@ fn f() {
     // u8 and u64 should be marked unsigned.
     let unsigned_count = output
         .assign_target_shapes
-        .values()
-        .filter(|s| s.is_unsigned)
+        .iter()
+        .filter(|(key, s)| key.module_idx == 0 && s.is_unsigned)
         .count();
     assert_eq!(
         unsigned_count, 2,
@@ -894,8 +902,8 @@ fn f() {
     // i32 and i64 should be marked signed.
     let signed_count = output
         .assign_target_shapes
-        .values()
-        .filter(|s| !s.is_unsigned)
+        .iter()
+        .filter(|(key, s)| key.module_idx == 0 && !s.is_unsigned)
         .count();
     assert_eq!(
         signed_count, 2,
@@ -2390,7 +2398,7 @@ fn http_request_close_dispatches_through_resource_impl() {
         output.errors
     );
     assert!(
-        output.method_call_rewrites.values().any(|rewrite| matches!(
+        output.method_call_rewrites.iter().any(|(key, rewrite)| key.module_idx == 0 && matches!(
             rewrite,
             MethodCallRewrite::RewriteToFunction { target: hew_types::check::CallTarget::ImplMethod(def), .. }
                 if output.defs.path(*def).starts_with("std.net.http.Request::")
@@ -2399,11 +2407,15 @@ fn http_request_close_dispatches_through_resource_impl() {
         output.method_call_rewrites
     );
     assert!(
-        !output.method_call_rewrites.values().any(|rewrite| matches!(
-            rewrite,
-            MethodCallRewrite::RewriteToFunction { c_symbol, .. }
-                if c_symbol.starts_with("hew_")
-        )),
+        !output
+            .method_call_rewrites
+            .iter()
+            .any(|(key, rewrite)| key.module_idx == 0
+                && matches!(
+                    rewrite,
+                    MethodCallRewrite::RewriteToFunction { c_symbol, .. }
+                        if c_symbol.starts_with("hew_")
+                )),
         "resource-wrapper close must not fall back to a raw FFI rewrite, got: {:?}",
         output.method_call_rewrites
     );
@@ -2959,13 +2971,13 @@ fn for_range_infers_i32_from_body_usage() {
     // the right constant width.
     let i32_count = output
         .expr_types
-        .values()
-        .filter(|ty| **ty == hew_types::Ty::I32)
+        .iter()
+        .filter(|(key, ty)| key.module_idx == 0 && **ty == hew_types::Ty::I32)
         .count();
     let i64_bound_count = output
         .expr_types
-        .values()
-        .filter(|ty| **ty == hew_types::Ty::I64)
+        .iter()
+        .filter(|(key, ty)| key.module_idx == 0 && **ty == hew_types::Ty::I64)
         .count();
     // The loop body constrains the range to i32; there should be no spurious
     // i64 entries for the bound literals (they should have been re-recorded).

@@ -455,12 +455,6 @@ impl Checker {
         }
     }
 
-    /// Keep the synthetic `HashSet` projection distinct from the iterable's
-    /// real expression span, whose type remains `HashSet<T>`.
-    pub(super) fn hashset_for_in_to_vec_span(iterable: &Span) -> Span {
-        iterable.start..iterable.start
-    }
-
     fn stream_source_actor_handler(&mut self, iterable: &Expr) -> Option<crate::DefId> {
         let Expr::MethodCall {
             receiver, method, ..
@@ -2101,41 +2095,6 @@ impl Checker {
                         let elem = args[0].clone();
                         if self.record_vec_iter_element_mode(&elem, &iterable.1) {
                             elem
-                        } else {
-                            Ty::Error
-                        }
-                    }
-                    Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::HashSet),
-                        args,
-                        ..
-                    } if !args.is_empty() => {
-                        // `for x in s` desugars (in HIR) to a `VecIter` over the
-                        // set's `to_vec()` element snapshot. Record the `to_vec`
-                        // resolved-call fact (+ matching expr_type) at a synthetic
-                        // zero-width span (NOT the iterable span — see
-                        // `hashset_for_in_to_vec_span`) so the HIR synthesis
-                        // lowers the projection to `hew_hashset_to_vec_layout`
-                        // while `expr_types[iterable_span]` keeps the iterable's
-                        // true HashSet type. Recording at the iterable span would
-                        // clobber it with `Vec<T>` and mis-route non-identifier
-                        // sources (`for x in self.s`) to the Vec arm — a silent
-                        // wrong-value pass (the VecIter reads the HashSet handle as
-                        // a zero-length Vec).
-                        let elem_ty = args[0].clone();
-                        let to_vec_span = Self::hashset_for_in_to_vec_span(&iterable.1);
-                        if self.validate_collection_value_clone_type(
-                            &elem_ty,
-                            BuiltinType::HashSet,
-                            "for value in set",
-                            &iterable.1,
-                        ) && self.record_vec_iter_element_mode(&elem_ty, &iterable.1)
-                            && self.validate_hashset_element_type(&elem_ty, &to_vec_span)
-                        {
-                            let elem_vec = self.make_vec_type(elem_ty.clone(), &to_vec_span);
-                            self.record_type(&to_vec_span, &elem_vec);
-                            self.record_resolved_hashset_call("to_vec", &elem_ty, &to_vec_span);
-                            elem_ty
                         } else {
                             Ty::Error
                         }

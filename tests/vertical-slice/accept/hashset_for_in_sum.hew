@@ -1,9 +1,6 @@
-// `for x in s` over a HashSet<i64>.
-//
-// The for-in desugar snapshots the set's elements into an owned Vec via
-// `to_vec()` and iterates that Vec through a VecIter cursor. Three elements
-// 10, 20, 30 sum to 60; a count guard pins the iteration count. The set is
-// shared (Capture), so it stays live after the loop.
+// HashSet for-in reaches the declared IntoIterator impl and owns its
+// element snapshot through VecIter. Elements 10, 20, 30 sum to 60; the count
+// guard checks that all are visited and the set stays live after the loop.
 pub fn main() -> i64 {
     var s: HashSet<i64> = HashSet.new();
     s.insert(10);

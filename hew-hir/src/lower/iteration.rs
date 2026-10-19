@@ -1,7 +1,6 @@
 //! Iterator shapes, `for` loop desugaring and range adapters.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 /// Walk each monomorphisation's origin fn body, substitute the
 /// per-monomorphisation type-arg map into every inner Call site's
@@ -352,10 +351,6 @@ impl LowerCtx {
     /// read more than once with no observable side effect and no extra
     /// evaluation cost (an identifier, or a field/index projection rooted in a
     /// place).
-    ///
-    /// Collection projections borrow place receivers directly. Non-place
-    /// receivers use a temporary binding so their evaluation and cleanup each
-    /// happen once (see [`Self::bind_for_in_source`]).
     pub(super) fn for_in_iterable_is_place(expr: &Expr) -> bool {
         match expr {
             Expr::Ident(_) => true,
@@ -364,32 +359,6 @@ impl LowerCtx {
             }
             _ => false,
         }
-    }
-
-    /// Bind a for-in iterable's already-lowered value to a synthetic temp so a
-    /// non-place `HashSet` source is evaluated exactly once.
-    ///
-    /// Only used for non-place rvalue sources (see
-    /// [`Self::for_in_iterable_is_place`]); place sources re-lower their
-    /// projection receivers directly. The temp owns the collection and its
-    /// scope-exit drop frees it exactly once; the projections borrow the temp
-    /// (Read), so the temp stays the sole owner. Returns the exact temp binding
-    /// and the `Let` statement to prepend
-    /// to the for-in's outer block.
-    pub(super) fn bind_for_in_source(
-        &mut self,
-        lowered_iterable: HirExpr,
-        source_ty: ResolvedTy,
-        span: &Span,
-    ) -> (HirBinding, HirStmt) {
-        let src_name = format!("__hew_for_src_{}", self.ids.binding().0);
-        let src_binding = self.bind(src_name.clone(), source_ty, false, span.clone());
-        let src_stmt = HirStmt {
-            node: self.ids.node(),
-            kind: HirStmtKind::Let(src_binding.clone(), Some(lowered_iterable)),
-            span: span.clone(),
-        };
-        (src_binding, src_stmt)
     }
 
     pub(super) fn lower_builtin_vec_iter_next(
@@ -1043,10 +1012,6 @@ impl LowerCtx {
             }
         }
 
-        // Statements that must run before the iterator-cursor `Let` in the
-        // for-in's outer block. The HashSet arm pushes a single-eval
-        // source temp here so a side-effectful iterable is evaluated once.
-        let mut source_prelude: Vec<HirStmt> = Vec::new();
         let (iter_init, iter_ty, elem_ty, next_call) = match lowered_iterable.ty.clone() {
             ResolvedTy::Named {
                 args,
@@ -1058,72 +1023,6 @@ impl LowerCtx {
                 // end before the cursor loop and must not become loop-carried values.
                 (
                     self.make_vec_iter_init(lowered_iterable, elem_ty.clone(), iterable.1.clone()),
-                    Self::resolved_vec_iter_ty(elem_ty.clone()),
-                    elem_ty,
-                    ForIterNextCall::BuiltinVecIter,
-                )
-            }
-            ResolvedTy::Named {
-                args,
-                head: hew_types::TypeHead::Builtin(BuiltinType::HashSet),
-                ..
-            } if !args.is_empty() => {
-                // `for x in s` over a HashSet snapshots the set's elements into
-                // an owned `Vec<T>` via `to_vec()` (the checker recorded the
-                // resolved call at a synthetic zero-width span — see the HashSet
-                // arm in statements.rs `Stmt::For`) and iterates that Vec through
-                // the proven `VecIter` cursor — each element is a fresh clone, so
-                // it is independently droppable; the set is shared (Capture) and
-                // stays live after the loop. A place source is re-read directly
-                // (drop-safe); a non-place rvalue (`for x in make_set()`) binds
-                // a single-eval temp so the source runs once, and `to_vec()`
-                // borrows the temp.
-                lowered_iterable.intent = IntentKind::Capture;
-                let elem_ty = args[0].clone();
-                // `to_vec()` is spanned at `iterable.start..start` (synthetic
-                // zero-width, matching `Checker::hashset_for_in_to_vec_span`
-                // byte-for-byte), NOT the iterable's real span — that span keeps
-                // the set's true type so non-identifier sources route here, not
-                // to the Vec arm. Only the CALL uses the synthetic span: its
-                // receiver keeps the real iterable span so a field/tuple
-                // projection reads its HashSet type rather than the call's Vec
-                // result type.
-                let to_vec_span = iterable.1.start..iterable.1.start;
-                let (to_vec_receiver, synthetic_source) =
-                    if Self::for_in_iterable_is_place(&iterable.0) {
-                        (iterable.clone(), None)
-                    } else {
-                        let source_ty = lowered_iterable.ty.clone();
-                        let (src_binding, src_stmt) =
-                            self.bind_for_in_source(lowered_iterable, source_ty, &iterable.1);
-                        source_prelude.push(src_stmt);
-                        (
-                            (
-                                Expr::Ident(Ident::new(&src_binding.name)),
-                                iterable.1.clone(),
-                            ),
-                            Some(src_binding),
-                        )
-                    };
-                let to_vec_call = (
-                    Expr::MethodCall {
-                        receiver: Box::new(to_vec_receiver),
-                        method: (Ident::new("to_vec"), to_vec_span.clone()),
-                        args: Vec::new(),
-                    },
-                    to_vec_span,
-                );
-                let vec_hir = if let Some(binding) = synthetic_source {
-                    self.with_synthetic_binding_use(&iterable.1, &binding, |ctx| {
-                        ctx.lower_expr(&to_vec_call, IntentKind::Consume)
-                    })
-                } else {
-                    self.lower_expr(&to_vec_call, IntentKind::Consume)
-                };
-                let iter_init =
-                    self.make_vec_iter_init(vec_hir, elem_ty.clone(), iterable.1.clone());
-                (
-                    iter_init,
                     Self::resolved_vec_iter_ty(elem_ty.clone()),
                     elem_ty,
                     ForIterNextCall::BuiltinVecIter,
@@ -1483,16 +1382,10 @@ impl LowerCtx {
         };
         self.pop_scope();
 
-        // The single-eval source temp (`__hew_for_src_N`, pushed by the
-        // HashSet arm) must define before the iterator-cursor `Let`,
-        // which builds its projections by borrowing the temp.
-        let mut statements = source_prelude;
-        statements.push(iter_stmt);
-        statements.push(loop_stmt);
         HirExprKind::Block(HirBlock {
             node: self.ids.node(),
             scope: block_scope,
-            statements,
+            statements: vec![iter_stmt, loop_stmt],
             tail: None,
             ty: ResolvedTy::Unit,
             span,

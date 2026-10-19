@@ -682,7 +682,7 @@ pub(super) fn is_builtin_iterator_impl(item: &Item) -> bool {
             "Iterator",
             "VecIter" | "StringIter" | "HashMapIter" | "Generator"
         ) | ("DoubleEndedIterator", "VecIter" | "StringIter")
-            | ("IntoIterator", "Vec" | "string" | "HashMap")
+            | ("IntoIterator", "Vec" | "string" | "HashMap" | "HashSet")
     )
 }
 

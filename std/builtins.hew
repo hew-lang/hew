@@ -645,10 +645,22 @@ impl<T> IntoIterator for Vec<T> {
     /// The returned iterator shares the receiver's underlying refcounted
     /// storage; mutating the source `Vec` while a `VecIter` is live yields
     /// the same semantics as any other shared-handle aliasing in Hew
-    /// (no iterator-invalidation diagnostic — see Stage 5 HashSet note).
+    /// without an iterator-invalidation diagnostic.
     fn into_iter(self) -> VecIter<T> {
         let back = self.len();
         VecIter { vec: self, front: 0, back: back }
+    }
+}
+
+// HashSet iteration uses the ordinary IntoIterator contract and Vec cursor.
+impl<K: Hash + Eq + Clone> IntoIterator for HashSet<K> {
+    type Item = K;
+    type IntoIter = VecIter<K>;
+
+    /// Snapshot the elements in unspecified order, leaving the set live.
+    /// Later set mutations cannot change the returned cursor.
+    fn into_iter(self) -> VecIter<K> {
+        self.to_vec().into_iter()
     }
 }
 

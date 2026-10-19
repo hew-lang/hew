@@ -1,14 +1,7 @@
-// `for x in make_set()` over a HashSet<i64> produced by a call result.
-//
-// A call-result iterable is non-identifier: its for-in route comes from the
-// checker side-table type at the call's span. Pre-fix, recording `to_vec()` at
-// the iterable span clobbered that with `Vec<i64>` and the loop iterated zero
-// times. Post-fix the call result keeps its HashSet type and routes correctly.
-//
-// The call is also a single-eval witness: the iterable is bound to a temp and
-// the `to_vec()` projection borrows the temp, so `make_set()` runs once.
-//
-// Elements 10, 20, 30 sum to 60; a count guard pins the iteration count to 3.
+// A call-result HashSet reaches its declared IntoIterator impl with the
+// original receiver type. The source call is evaluated once and the cursor
+// owns its element snapshot. Elements 10, 20, 30 sum to 60; the count guard
+// also rejects an incorrectly empty iteration.
 fn make_set() -> HashSet<i64> {
     var s: HashSet<i64> = HashSet.new();
     s.insert(10);

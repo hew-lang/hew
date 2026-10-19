@@ -1,0 +1,80 @@
+// Set iteration snapshots owned elements in unspecified order. Check sums,
+// counts and lengths so these controls never depend on hash-table slot order.
+type Holder {
+    members: HashSet<string>;
+}
+
+fn scalar_snapshot() {
+    var values: HashSet<i64> = HashSet.new();
+    values.insert(20);
+    values.insert(22);
+    var cursor = values.into_iter();
+    values.clear();
+    values.insert(99);
+    var total = 0;
+    var seen = 0;
+    loop {
+        match cursor.next() {
+            .Some(value) => {
+                total = total + value;
+                seen = seen + 1;
+            }
+            .None => { break; }
+        }
+    }
+    assert(cursor.next().is_none());
+    println(f"scalar {seen} {total} {values.len()} {values.contains(99)}");
+    var current = 0;
+    for value in values { current = current + value; }
+    println(f"current {current} {values.len()}");
+}
+
+fn owned_snapshot() {
+    var values: HashSet<string> = HashSet.new();
+    values.insert("one");
+    values.insert("three");
+    let cursor = values.into_iter();
+    values.clear();
+    var chars = 0;
+    for value in cursor { chars = chars + value.len(); }
+    println(f"owned {chars} {values.len()}");
+    values.insert("kept");
+    values.insert("other");
+    var seen = 0;
+    for value in values {
+        assert(!value.is_empty());
+        seen = seen + 1;
+        break;
+    }
+    println(f"break {seen} {values.len()}");
+}
+
+fn make_members() -> HashSet<string> {
+    println("evaluated");
+    var values: HashSet<string> = HashSet.new();
+    values.insert("a");
+    values.insert("bbb");
+    values
+}
+
+fn source_shapes() {
+    let holder = Holder { members: make_members() };
+    var field_chars = 0;
+    for value in holder.members { field_chars = field_chars + value.len(); }
+    let pair = (holder.members, 7);
+    var tuple_chars = 0;
+    for value in pair.0 { tuple_chars = tuple_chars + value.len(); }
+    var temp_chars = 0;
+    for value in make_members() { temp_chars = temp_chars + value.len(); }
+    var explicit_chars = 0;
+    for value in make_members().into_iter() {
+        explicit_chars = explicit_chars + value.len();
+    }
+    println(f"shapes {field_chars} {tuple_chars} {temp_chars} {explicit_chars} {pair.0.len()}");
+}
+
+fn main() {
+    scalar_snapshot();
+    owned_snapshot();
+    source_shapes();
+}

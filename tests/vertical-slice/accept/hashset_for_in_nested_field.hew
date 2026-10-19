@@ -1,6 +1,5 @@
-// HashSet for-in over a nested record projection. The synthetic to_vec call
-// must retain the real `outer.inner.s` span/type on its receiver while its own
-// zero-width span carries the fresh Vec result.
+// A nested HashSet record projection retains its real receiver type when
+// its declared IntoIterator impl constructs the snapshot cursor.
 type Inner {
     s: HashSet<i64>;
 }

@@ -404,7 +404,7 @@ fn hashset_clear_no_args_typechecks() {
 }
 
 #[test]
-fn hashset_for_in_keeps_real_receiver_type_separate_from_synthetic_vec_result() {
+fn hashset_for_in_preserves_receiver_types_across_place_shapes() {
     let source = r"type SetBox {
     s: HashSet<i64>;
 }
@@ -486,29 +486,6 @@ fn tuple_field(pair: (HashSet<i64>, i64)) {
                 Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::HashSet), .. } if args == &[Ty::I64]
             ),
             "`{function_name}` real iterable span must remain HashSet<i64>, got {iterable_ty:?}"
-        );
-
-        let projection_span = iterable_span.start..iterable_span.start;
-        let projection_key = SpanKey::from(&projection_span);
-        let projection_ty = output
-            .expr_types
-            .get(&projection_key)
-            .unwrap_or_else(|| panic!("missing synthetic to_vec type for `{function_name}`"));
-        assert!(
-            matches!(
-                projection_ty,
-                Ty::Named { args, head: crate::TypeHead::Builtin(BuiltinType::Vec), .. } if args == &[Ty::I64]
-            ),
-            "`{function_name}` synthetic projection must be Vec<i64>, got {projection_ty:?}"
-        );
-        let resolved_call = output
-            .resolved_calls
-            .get(&projection_key)
-            .unwrap_or_else(|| panic!("missing synthetic to_vec call for `{function_name}`"));
-        assert_eq!(resolved_call.method_name, "to_vec");
-        assert_eq!(
-            resolved_call.method_target.symbol_name,
-            "hew_hashset_to_vec_layout"
         );
     }
 }
@@ -3901,6 +3878,51 @@ fn main() {{
                 "snapshot refusal must identify the unavailable contract: {:?}",
                 output.errors
             );
+        }
+    }
+}
+
+#[test]
+fn hashset_snapshot_iteration_requires_cloneable_elements() {
+    for (element, value, accepted) in [
+        ("string", "\"entry\"", true),
+        ("Token", "Token { id: 1 }", false),
+    ] {
+        for iteration in [
+            "let _cursor = values.into_iter();",
+            "for _item in values { break; }",
+            "demand(values);",
+        ] {
+            let source = format!(
+                r"
+#[resource]
+type Token {{ id: i64; }}
+impl Token {{ fn close(consume self) {{}} }}
+impl Hash for Token {{ fn hash(self) -> i64 {{ self.id }} }}
+impl Eq for Token {{ fn eq(self, other: Token) -> bool {{ self.id == other.id }} }}
+fn demand<I: IntoIterator>(input: I) {{ let _ = input; }}
+fn main() {{
+    var values: HashSet<{element}> = HashSet.new();
+    values.insert({value});
+    {iteration}
+}}
+"
+            );
+            let output = check_source_with_stdlib(&source);
+            if accepted {
+                assert!(output.errors.is_empty(), "{:?}", output.errors);
+            } else {
+                assert!(
+                    output
+                        .errors
+                        .iter()
+                        .any(|error| error.message.contains("Clone")
+                            || error.message.contains("not iterable")
+                            || error.message.contains("IntoIterator")),
+                    "snapshotting affine set elements must refuse the unavailable contract: {:?}",
+                    output.errors
+                );
+            }
         }
     }
 }

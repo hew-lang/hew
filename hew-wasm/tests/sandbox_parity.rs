@@ -693,6 +693,21 @@ fn generic_sort_and_reverse_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn hashset_iteration_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "hashset_iteration",
+            source_rel: "tests/core-acceptance/cases/hashset-iteration.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn utf8_decode_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

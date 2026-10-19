@@ -175,27 +175,6 @@ impl LowerCtx {
         }
     }
 
-    /// Give a generated identifier an exact binding during one AST rewrite.
-    /// Source identifiers never read this overlay; they join checker rows.
-    pub(super) fn with_synthetic_binding_use<R>(
-        &mut self,
-        span: &Span,
-        binding: &HirBinding,
-        lower: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let key = self.mk_key(span);
-        let prior = self
-            .synthetic_binding_uses
-            .insert(key.clone(), (binding.id, binding.ty.clone()));
-        let result = lower(self);
-        if let Some(prior) = prior {
-            self.synthetic_binding_uses.insert(key, prior);
-        } else {
-            self.synthetic_binding_uses.remove(&key);
-        }
-        result
-    }
-
     /// Look up a tagged-union constructor using canonical owner identity.
     ///
     /// Imported declarations are registered only under module-qualified keys.

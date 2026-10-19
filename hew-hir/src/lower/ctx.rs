@@ -22,7 +22,6 @@ impl LowerCtx {
             checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
-            synthetic_binding_uses: HashMap::new(),
             checked_field_scopes: Vec::new(),
             resolutions: tc_output.resolutions.clone(),
             current_actor_nominal: None,

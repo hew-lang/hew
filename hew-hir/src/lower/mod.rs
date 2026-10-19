@@ -778,8 +778,6 @@ struct LowerCtx {
     binding_scopes: Vec<HashMap<BindingId, OuterClosureBinding>>,
     /// Checker-owned source binding identities in the current lexical scopes.
     checked_scopes: Vec<HashMap<TypeBindingId, ScopeBinding>>,
-    /// Scoped compiler-generated receiver references with no source row.
-    synthetic_binding_uses: HashMap<SpanKey, (BindingId, ResolvedTy)>,
     /// Stable actor field identities mapped to this handler's physical state seats.
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
     /// Exact source-site resolutions; synthetic expressions have no row.

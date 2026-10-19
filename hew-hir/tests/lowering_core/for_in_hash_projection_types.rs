@@ -1,11 +1,7 @@
 //! Checker-to-HIR type flow for hash-collection iteration.
 //!
-//! The `HashSet::to_vec` projection deliberately
-//! has a synthetic zero-width span because its result type must not overwrite the
-//! real iterable expression's type. The receiver is still the original place,
-//! however, and must keep the original place span. Giving the receiver the
-//! projection span substitutes the projection's `Vec<T>` result into a field or
-//! tuple projection and reaches MIR as a clone from a non-hash receiver.
+//! Hash collections use declared IntoIterator impls, preserving the real
+//! receiver type for binding, field and tuple places.
 
 use hew_hir::{HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind};
 use hew_types::ResolvedTy;
@@ -68,71 +64,25 @@ fn for_iter_init(function: &HirFn) -> &HirExpr {
         })
 }
 
-fn assert_hashset_vec_iter(
+fn assert_hashset_into_iter(
     output: &hew_hir::LowerOutput,
     function_name: &str,
     elem_ty: ResolvedTy,
     receiver_shape: impl FnOnce(&HirExprKind) -> bool,
 ) {
     let iter_init = for_iter_init(function(output, function_name));
-    let HirExprKind::Block(block) = &iter_init.kind else {
-        panic!("`{function_name}` iterator must evaluate its vector before moving it");
-    };
-    let Some(HirStmtKind::Let(source, Some(vec))) =
-        block.statements.first().map(|statement| &statement.kind)
-    else {
-        panic!("`{function_name}` iterator must bind its projected vector");
-    };
-    let iter_init = block.tail.as_ref().expect("iterator record result");
-    let HirExprKind::StructInit {
-        name,
-        type_args,
-        fields,
-        base,
-    } = &iter_init.kind
-    else {
-        panic!("`{function_name}` iterator must be a complete VecIter record, got {iter_init:#?}");
-    };
-    assert_eq!(name, "VecIter");
-    assert_eq!(type_args, std::slice::from_ref(&elem_ty));
-    assert!(
-        base.is_none(),
-        "synthetic VecIter must not use update syntax"
-    );
-    assert_eq!(
-        fields
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>(),
-        ["vec", "front", "back"],
-        "synthetic VecIter must initialise every field exactly once"
-    );
-
-    assert!(matches!(
-        &fields[0].1.kind,
-        HirExprKind::BindingRef { resolved: hew_hir::ResolvedRef::Binding(id), .. }
-            if *id == source.id
-    ));
-    assert_eq!(
-        vec.ty,
-        ResolvedTy::Named {
-            args: vec![elem_ty.clone()],
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
-            is_opaque: false
-        },
-        "`HashSet::to_vec` must carry its checker-authored Vec result type"
-    );
     let HirExprKind::Call {
-        target:
-            hew_types::CallTarget::Runtime(hew_types::RuntimeCallFamily::Set(
-                hew_types::runtime_call::SetValueOp::Elements,
-            )),
+        target: hew_types::CallTarget::ImplMethod(_),
         args,
         ..
-    } = &vec.kind
+    } = &iter_init.kind
     else {
-        panic!("VecIter.vec must be the semantic HashSet projection, got {vec:#?}");
+        panic!("`{function_name}` must call its declared IntoIterator impl: {iter_init:#?}");
     };
+    assert_eq!(
+        iter_init.ty,
+        ResolvedTy::named_builtin(hew_types::BuiltinType::VecIter, vec![elem_ty.clone()])
+    );
     let [receiver] = args.as_slice() else {
         panic!("HashSet elements must carry exactly its receiver: {args:#?}");
     };
@@ -143,7 +93,7 @@ fn assert_hashset_vec_iter(
             head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::HashSet),
             is_opaque: false
         },
-        "the projection receiver must retain the real iterable HashSet type"
+        "the IntoIterator receiver must retain the real iterable HashSet type"
     );
     assert!(
         receiver_shape(&receiver.kind),
@@ -257,19 +207,19 @@ fn map_into_iter_field(b: MapBox) {
         output.diagnostics
     );
 
-    assert_hashset_vec_iter(
+    assert_hashset_into_iter(
         &output,
         "direct",
         ResolvedTy::I64,
         |kind| matches!(kind, HirExprKind::BindingRef { name, .. } if name == "s"),
     );
-    assert_hashset_vec_iter(
+    assert_hashset_into_iter(
         &output,
         "field",
         ResolvedTy::I64,
         |kind| matches!(kind, HirExprKind::FieldAccess { field, .. } if field == "s"),
     );
-    assert_hashset_vec_iter(&output, "nested", ResolvedTy::I64, |kind| {
+    assert_hashset_into_iter(&output, "nested", ResolvedTy::I64, |kind| {
         matches!(
             kind,
             HirExprKind::FieldAccess { object, field }
@@ -280,10 +230,10 @@ fn map_into_iter_field(b: MapBox) {
                     )
         )
     });
-    assert_hashset_vec_iter(&output, "tuple_field", ResolvedTy::I64, |kind| {
+    assert_hashset_into_iter(&output, "tuple_field", ResolvedTy::I64, |kind| {
         matches!(kind, HirExprKind::TupleIndex { index: 0, .. })
     });
-    assert_hashset_vec_iter(
+    assert_hashset_into_iter(
         &output,
         "owned_field",
         ResolvedTy::String,

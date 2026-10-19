@@ -46,4 +46,4 @@ message = "E_ELEMENT_NO_COPY: `HashSet.to_vec()` copies each element out of the 
 code = "InvalidOperation"
 line = 59
 column = 17
-message = "E_ELEMENT_NO_COPY: `for value in set` copies each element out of the set, but the element type `Conn` (an affine resource) has no copy operation"
+message = "type is not iterable"

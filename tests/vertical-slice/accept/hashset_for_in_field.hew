@@ -1,15 +1,7 @@
-// `for x in self.field` over a HashSet<i64> held in a record field.
-//
-// Coverage gap that hid the iterable-span clobber: a non-identifier iterable
-// (here a field access) derives its for-in route from the checker side-table
-// type at the iterable's span. Recording the `to_vec()` projection at the
-// iterable span (the pre-fix bug) clobbered that type with `Vec<i64>`, routing
-// the loop to the Vec arm and building a VecIter directly over the HashSet
-// handle — which read length 0 and silently iterated ZERO times (exit 0). The
-// synthetic-span fix keeps the field-read type as HashSet, so this routes to
-// the HashSet arm and yields all three elements.
-//
-// Elements 10, 20, 30 sum to 60; a count guard pins the iteration count to 3.
+// A HashSet record field reaches its declared IntoIterator impl without
+// changing the field's receiver type. The cursor owns its element snapshot,
+// and the source field stays live after the loop. Elements 10, 20, 30 sum to
+// 60; the count guard also rejects an incorrectly empty iteration.
 type SetBox {
     s: HashSet<i64>;
 }

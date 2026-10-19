@@ -667,14 +667,14 @@ impl Checker {
             return None;
         }
         if self.in_lambda_actor_body {
-            let mut error = TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
+            let mut error = TypeError::new(TypeErrorKind::ImmutableCaptureMutation, span.clone(),
                 format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` after `actor` to give the actor a mutable state field"));
             error.suggestions.push(format!(
                 "insert `capture(var {name}) ` before the actor's parameter list"
             ));
             return Some(error);
         }
-        Some(TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
+        Some(TypeError::new(TypeErrorKind::ImmutableCaptureMutation, span.clone(),
             format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` before the lambda to mutate its private field")))
     }
 

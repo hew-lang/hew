@@ -68,7 +68,7 @@ fn lambda_actor_capture_write_needs_the_private_prefix() {
         let error = output
             .errors
             .iter()
-            .find(|error| error.kind == TypeErrorKind::MutabilityError)
+            .find(|error| error.kind == TypeErrorKind::ImmutableCaptureMutation)
             .unwrap_or_else(|| panic!("{binding}: {:?}", output.errors));
         assert_eq!(
             error.message,

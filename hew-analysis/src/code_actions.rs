@@ -126,7 +126,7 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
             }
 
             // Assigning to an immutable `let` binding — offer to change it to `var`.
-            Some("MutabilityError") if !diag.message.starts_with("capture `") => {
+            Some("MutabilityError") => {
                 let var_name = diag.message.split('`').nth(1);
                 if let Some(let_span) = find_keyword(source, diag.span.start, "let", var_name) {
                     actions.push(CodeAction {
@@ -769,13 +769,30 @@ mod tests {
 
     #[test]
     fn private_capture_mutation_does_not_rewrite_the_enclosing_binding() {
-        let source = "let x = 1; let worker = actor || { x += 1; };";
-        for message in [
-            "capture `x` is an immutable snapshot; add `capture(var x)` before the lambda to mutate its private field",
-            "capture `x` is an immutable snapshot; add `capture(var x)` after `actor` to give the actor a mutable state field",
-        ] {
-            let diagnostic = diag("MutabilityError", message, 34, 40);
-            assert!(build_code_actions(source, &[diagnostic]).is_empty());
+        for literal in ["||", "actor ||"] {
+            let source =
+                format!("fn main() {{ let x = 1; let worker = {literal} {{ x += 1; }}; }}");
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let output = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+                Vec::new(),
+            ))
+            .check_program(&parsed.program);
+            let error = output
+                .errors
+                .iter()
+                .find(|error| {
+                    error.kind == hew_types::error::TypeErrorKind::ImmutableCaptureMutation
+                })
+                .expect("capture mutation diagnostic");
+            let diagnostic = DiagnosticInfo {
+                kind: Some(error.kind.as_kind_str().to_string()),
+                // Even ordinary binding prose cannot change the typed action policy.
+                message: "cannot assign to immutable variable `x`".into(),
+                span: OffsetSpan::from(error.span.clone()),
+                suggestions: error.suggestions.clone(),
+            };
+            assert!(build_code_actions(&source, &[diagnostic]).is_empty());
         }
     }
 

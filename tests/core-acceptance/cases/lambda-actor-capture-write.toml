@@ -7,13 +7,13 @@ kind = "check"
 timeout_seconds = 30
 
 [[case.expected.diagnostics]]
-code = "MutabilityError"
+code = "ImmutableCaptureMutation"
 line = 6
 column = 9
 message = "add `capture(var hits)` after `actor`"
 
 [[case.expected.diagnostics]]
-code = "MutabilityError"
+code = "ImmutableCaptureMutation"
 line = 13
 column = 9
 message = "add `capture(var seen)` after `actor`"

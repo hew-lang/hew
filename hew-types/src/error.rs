@@ -814,6 +814,8 @@ pub enum TypeErrorKind {
     ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
+    /// An immutable closure or lambda actor capture was mutated.
+    ImmutableCaptureMutation,
     LocalUninitialized,
     LocalConditionalInit,
     /// Return statement type doesn't match function signature
@@ -1522,6 +1524,7 @@ impl TypeErrorKind {
             Self::DuplicateDefinition => "DuplicateDefinition",
             Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
+            Self::ImmutableCaptureMutation => "ImmutableCaptureMutation",
             Self::LocalUninitialized => "E_LOCAL_UNINITIALIZED",
             Self::LocalConditionalInit => "E_LOCAL_CONDITIONAL_INIT",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",

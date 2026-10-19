@@ -157,6 +157,7 @@ impl Checker {
             }
             Expr::SpawnLambdaActor {
                 is_move,
+                private_captures,
                 params,
                 return_type,
                 body,
@@ -184,7 +185,7 @@ impl Checker {
                 // so they correctly see in_lambda_actor_body=false.
                 let lambda_ty = self.check_lambda(
                     *is_move,
-                    &[],
+                    private_captures,
                     None,
                     params,
                     None,

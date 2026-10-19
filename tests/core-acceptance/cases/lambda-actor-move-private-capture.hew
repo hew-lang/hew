@@ -1,0 +1,16 @@
+// `move` transfers the capture into the actor before `capture(var ..)` makes
+// the field mutable, so the actor owns the only copy.
+fn main() {
+    let seen: Vec<string> = [];
+    let collect = actor move capture(var seen) |line: string| -> i64 {
+        seen.push(line);
+        seen.len()
+    };
+    let _ = collect("a");
+    match collect("b") {
+        .Ok(n) => println(n),
+        .Err(_) => println("collector is gone"),
+    }
+    stop(collect);
+    stopped(collect);
+}

@@ -1,0 +1,26 @@
+[[case]]
+id = "lambda-actor-capture-write"
+intent = "Default actor captures reject assignment and mutable receiver calls with the explicit private capture prefix, including captures of outer var bindings."
+source = "../vertical-slice/reject/lambda_actor_capture_write.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 6
+column = 9
+message = "add `capture(var hits)` after `actor`"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 13
+column = 9
+message = "add `capture(var seen)` after `actor`"
+
+[[case.expected.diagnostics]]
+code = "UnusedMut"
+severity = "warning"
+line = 4
+column = 5
+message = "variable `hits` is declared mutable but never reassigned"

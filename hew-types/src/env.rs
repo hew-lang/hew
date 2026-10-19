@@ -261,9 +261,6 @@ pub struct Binding {
     /// Whether the binding has been reassigned, and whether anything read the
     /// result. See [`MutationState`].
     pub mutation: MutationState,
-    /// A lambda actor wrote its private snapshot of this `var` capture. The
-    /// outer value did not change, but `var` was required for that actor body.
-    pub private_actor_capture_written: bool,
     /// Any-path consuming use while checking the current closure body.
     /// This is a body capability fact, independent of the current path's moves.
     pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
@@ -881,7 +878,6 @@ impl TypeEnv {
                     read_count: 1, // synthetic bindings are always "used"
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
-                    private_actor_capture_written: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: None,
@@ -1004,7 +1000,6 @@ impl TypeEnv {
                     read_count: 0,
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
-                    private_actor_capture_written: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
@@ -1104,7 +1099,6 @@ impl TypeEnv {
                     read_count: 1, // exempt from unused-variable lint, like `define`
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
-                    private_actor_capture_written: false,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
                     def_span: None,
                     shadow_span: Some(span),
@@ -1120,7 +1114,6 @@ impl TypeEnv {
     pub(crate) fn closure_environment(
         &self,
         private: &std::collections::HashSet<TypeBindingId>,
-        actor_body: bool,
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
@@ -1132,9 +1125,7 @@ impl TypeEnv {
             scope.clear();
         }
         for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
-            if !actor_body {
-                binding.is_mutable = private.contains(&binding.id);
-            }
+            binding.is_mutable = private.contains(&binding.id);
             // A later invocation may observe this private field's replacement.
             if binding.is_mutable {
                 binding.value_candidates.may_be_unknown = true;
@@ -1147,7 +1138,7 @@ impl TypeEnv {
 
     /// Preserve reads and fresh identities from a checked body without applying
     /// its private mutations or invocation-time moves to the enclosing scope.
-    pub(crate) fn merge_closure_reads(&mut self, body: &Self, actor_body: bool) {
+    pub(crate) fn merge_closure_reads(&mut self, body: &Self) {
         self.next_binding_id = body.next_binding_id;
         for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
             if let Some(checked) = body.binding_by_id(binding.id) {
@@ -1159,9 +1150,6 @@ impl TypeEnv {
                     && binding.mutation == MutationState::Unobserved
                 {
                     binding.mutation = MutationState::Observed;
-                }
-                if actor_body && checked.mutation != MutationState::Unwritten {
-                    binding.private_actor_capture_written = true;
                 }
             }
         }
@@ -1653,10 +1641,7 @@ impl TypeEnv {
                     kind: ScopeWarningKind::Unused,
                     ty: binding.ty.clone(),
                 });
-            } else if binding.is_mutable
-                && !binding.is_written()
-                && !binding.private_actor_capture_written
-            {
+            } else if binding.is_mutable && !binding.is_written() {
                 warnings.push(ScopeWarning {
                     name: name.name.to_string(),
                     span: span.clone(),

@@ -1,5 +1,11 @@
 # Unreleased
 
+Lambda actors declare mutable private state with `actor capture(var total)`
+or `actor move capture(var total)`. The enclosing binding may be `let`;
+each message sees the actor's earlier writes, while the enclosing value stays
+unchanged. Captures without the prefix are read-only, and an attempted write
+names the prefix needed to make the field mutable.
+
 The next 0.6 release replaces string scalar aliases with indexed access and
 iteration, and the per-type sorting helpers with generic operations. Follow
 the [v0.6.2 migration guide](../migrations/v0.6.2.md) when updating these calls

@@ -1296,12 +1296,17 @@ impl Parser<'_> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
-            // actor [move] |params| [-> Ret] { body }
+            // actor [move] [capture(var x, ..)] |params| [-> Ret] { body }
             // Lambda actor literal (replaces `spawn (...) => ...`).
             Token::Actor => {
                 self.advance();
 
                 let is_move = self.eat(&Token::Move);
+                let private_captures = if self.peek() == Some(&Token::Identifier("capture")) {
+                    self.parse_private_capture_prefix()?
+                } else {
+                    Vec::new()
+                };
 
                 let params = if self.eat(&Token::PipePipe) {
                     Vec::new()
@@ -1321,6 +1326,7 @@ impl Parser<'_> {
                     self.expect(&Token::Pipe)?;
                     params
                 };
+                self.reject_private_capture_parameter_clash(&private_captures, &params)?;
 
                 let return_type = self.parse_opt_return_type()?;
 
@@ -1341,6 +1347,7 @@ impl Parser<'_> {
                 return Some((
                     Expr::SpawnLambdaActor {
                         is_move,
+                        private_captures,
                         params,
                         return_type,
                         body,
@@ -1727,6 +1734,25 @@ impl Parser<'_> {
         Some(captures)
     }
 
+    /// A private capture names an enclosing binding, so a parameter of the
+    /// same name would make the body's reference ambiguous.
+    fn reject_private_capture_parameter_clash(
+        &mut self,
+        private_captures: &[Spanned<Ident>],
+        params: &[LambdaParam],
+    ) -> Option<()> {
+        for (name, span) in private_captures {
+            if params.iter().any(|parameter| parameter.name == *name) {
+                self.error_at(
+                    format!("private capture `{name}` conflicts with a parameter"),
+                    span.clone(),
+                );
+                return None;
+            }
+        }
+        Some(())
+    }
+
     pub(crate) fn parse_pipe_lambda(
         &mut self,
         is_move: bool,
@@ -1757,15 +1783,7 @@ impl Parser<'_> {
             (type_params, params)
         };
 
-        for (name, span) in &private_captures {
-            if params.iter().any(|parameter| parameter.name == *name) {
-                self.error_at(
-                    format!("private capture `{name}` conflicts with a closure parameter"),
-                    span.clone(),
-                );
-                return None;
-            }
-        }
+        self.reject_private_capture_parameter_clash(&private_captures, &params)?;
         let return_type = self.parse_opt_return_type()?;
         let body = if return_type.is_some() {
             if self.peek() != Some(&Token::LeftBrace) {

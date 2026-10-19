@@ -51,6 +51,105 @@ fn compose(flag: bool, left: fn[clone]() -> Option<i64>, right: fn[once, clone](
 }
 
 #[test]
+fn lambda_actor_capture_prefix_parses_and_round_trips() {
+    let source = r"
+fn main() {
+    let total = 0;
+    let seen: Vec<string> = [];
+    let add = actor capture(var total) |n: i64| -> i64 { total += n; total };
+    let collect = actor move capture(var seen, var total) |line: string| { seen.push(line); };
+    let tick = actor capture(var total) || -> i64 { total };
+    let capture = actor |x: i64| -> i64 { x };
+}
+";
+    let parsed = parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(main) = &parsed.program.items[0].0 else {
+        panic!("function")
+    };
+    let prefixes: Vec<(bool, Vec<String>)> = main.body.stmts[2..]
+        .iter()
+        .map(|(stmt, _)| {
+            let Stmt::Let {
+                value:
+                    Some((
+                        Expr::SpawnLambdaActor {
+                            is_move,
+                            private_captures,
+                            ..
+                        },
+                        _,
+                    )),
+                ..
+            } = stmt
+            else {
+                panic!("lambda actor binding: {stmt:?}")
+            };
+            (
+                *is_move,
+                private_captures
+                    .iter()
+                    .map(|(name, _)| name.to_string())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        prefixes,
+        [
+            (false, vec!["total".to_string()]),
+            (true, vec!["seen".to_string(), "total".to_string()]),
+            (false, vec!["total".to_string()]),
+            (false, Vec::new()),
+        ]
+    );
+    let formatted = format_source(source, &parsed.program);
+    assert!(
+        formatted.contains("actor move capture(var seen, var total) |line: string| {"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("actor capture(var total) || -> i64 {"),
+        "{formatted}"
+    );
+    let reparsed = parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(program_eq_ignoring_spans(
+        &parsed.program,
+        &reparsed.program
+    ));
+    assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+}
+
+#[test]
+fn malformed_lambda_actor_capture_prefixes_are_rejected() {
+    for (expression, expected) in [
+        (
+            "actor capture(var count, var count) || {}",
+            "duplicate private capture `count`",
+        ),
+        (
+            "actor capture(var count) |count: i64| {}",
+            "private capture `count` conflicts with a parameter",
+        ),
+        ("actor capture(count) || {}", "expected `var`"),
+        ("actor capture(var count = 1) || {}", "expected `)`"),
+        ("capture(var count) actor || {}", ""),
+        ("actor capture() || {}", "expected `var`"),
+    ] {
+        let source = format!("fn main() {{ let count = 0; let f = {expression}; }}");
+        let errors = parse(&source).errors;
+        assert!(!errors.is_empty(), "accepted {source}");
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.message.to_lowercase().contains(expected)),
+            "{source}: {errors:?}"
+        );
+    }
+}
+
+#[test]
 fn callable_qualifiers_preserve_nested_types_and_round_trip() {
     for (qualifiers, call, clone, suspends) in [
         ("", CallableCallMode::Read, false, false),

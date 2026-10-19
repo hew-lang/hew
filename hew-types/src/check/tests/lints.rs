@@ -4591,29 +4591,24 @@ fn invisible_codepoint_allow_level_suppresses() {
 // -- should_import_name --
 
 #[test]
-fn lambda_actor_var_capture_write_counts_as_reassignment() {
+fn lambda_actor_private_capture_leaves_an_outer_var_unwritten() {
     let (errors, warnings) = parse_and_check(
-        "fn main() { var total: i64 = 0; let acc = actor |n: i64| -> i64 { total += n; total }; let _ = acc(1); stop(acc); stopped(acc); }",
-    );
-    assert!(errors.is_empty(), "errors: {errors:?}");
-    assert!(
-        !warnings
-            .iter()
-            .any(|w| w.message.contains("never reassigned")),
-        "a lambda actor's `var` capture is its mutable state field, got: {warnings:?}"
-    );
-}
-
-#[test]
-fn lambda_actor_read_only_var_capture_still_warns() {
-    let (errors, warnings) = parse_and_check(
-        "fn main() { var total: i64 = 0; let acc = actor |n: i64| -> i64 { total + n }; let _ = acc(1); stop(acc); stopped(acc); }",
+        "fn main() { var total: i64 = 0; let acc = actor capture(var total) |n: i64| -> i64 { total += n; total }; let _ = acc(1); stop(acc); stopped(acc); }",
     );
     assert!(errors.is_empty(), "errors: {errors:?}");
     assert!(
         warnings
             .iter()
             .any(|w| w.message.contains("never reassigned")),
-        "a capture nothing writes can be `let`, got: {warnings:?}"
+        "the actor writes its own field, never the enclosing `var`, got: {warnings:?}"
     );
+}
+
+#[test]
+fn lambda_actor_private_capture_of_a_let_is_silent() {
+    let (errors, warnings) = parse_and_check(
+        "fn main() { let total: i64 = 0; let acc = actor capture(var total) |n: i64| -> i64 { total += n; total }; let _ = acc(1); stop(acc); stopped(acc); }",
+    );
+    assert!(errors.is_empty(), "errors: {errors:?}");
+    assert!(warnings.is_empty(), "warnings: {warnings:?}");
 }

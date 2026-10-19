@@ -1,0 +1,10 @@
+[[case]]
+id = "lambda-actor-enum-protocol"
+intent = "A lambda actor offers several operations through an enum message and returns its private state in replies; match-arm payloads in its handler are locals, not captures."
+source = "cases/lambda-actor-enum-protocol.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "tally = 7\n4\n"
+exit = 0

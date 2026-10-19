@@ -126,7 +126,7 @@ pub fn build_code_actions(source: &str, diagnostics: &[DiagnosticInfo]) -> Vec<C
             }
 
             // Assigning to an immutable `let` binding — offer to change it to `var`.
-            Some("MutabilityError") => {
+            Some("MutabilityError") if !diag.message.starts_with("capture `") => {
                 let var_name = diag.message.split('`').nth(1);
                 if let Some(let_span) = find_keyword(source, diag.span.start, "let", var_name) {
                     actions.push(CodeAction {
@@ -765,6 +765,18 @@ mod tests {
         assert_eq!(actions[0].title, "Change `let` to `var`");
         assert_eq!(actions[0].edits[0].span, OffsetSpan { start: 0, end: 3 });
         assert_eq!(actions[0].edits[0].new_text, "var");
+    }
+
+    #[test]
+    fn private_capture_mutation_does_not_rewrite_the_enclosing_binding() {
+        let source = "let x = 1; let worker = actor || { x += 1; };";
+        for message in [
+            "capture `x` is an immutable snapshot; add `capture(var x)` before the lambda to mutate its private field",
+            "capture `x` is an immutable snapshot; add `capture(var x)` after `actor` to give the actor a mutable state field",
+        ] {
+            let diagnostic = diag("MutabilityError", message, 34, 40);
+            assert!(build_code_actions(source, &[diagnostic]).is_empty());
+        }
     }
 
     // ── UnusedMut ────────────────────────────────────────────────────

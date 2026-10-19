@@ -836,9 +836,7 @@ impl Checker {
         is_fork_body: bool,
     ) -> Ty {
         let private_bindings = self.resolve_private_captures(private_captures);
-        let body_environment = self
-            .env
-            .closure_environment(&private_bindings, is_actor_body);
+        let body_environment = self.env.closure_environment(&private_bindings);
         let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -1052,8 +1050,7 @@ impl Checker {
         }
 
         let body_environment = std::mem::replace(&mut self.env, outer_environment);
-        self.env
-            .merge_closure_reads(&body_environment, is_actor_body);
+        self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
         // Acquisition happens in the enclosing scope, not in the new closure.
         self.lambda_capture_depth = prev_capture_depth;

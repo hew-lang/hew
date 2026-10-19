@@ -2182,14 +2182,17 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
-Capturing a `var` binding gives the actor a mutable state field, so a lambda
-actor can keep a running total. The enclosing `var` keeps its own value; the
-actor's copy is the one that changes.
+Captured values initialize read-only state fields: ordinary values are
+independent snapshots, and affine resources transfer their ownership. To keep
+state that changes from one message to the next, name the capture in a
+`capture(var ..)` prefix after `actor` (and after `move`, when present). The
+actor gets its own mutable field starting from the captured value; the
+enclosing binding can be `let` and never changes.
 
 ```hew
 fn main() {
-    var total: i64 = 0;
-    let add = actor |n: i64| -> i64 {
+    let total: i64 = 0;
+    let add = actor capture(var total) |n: i64| -> i64 {
         total += n;
         total
     };
@@ -2198,10 +2201,46 @@ fn main() {
         .Ok(sum) => println(sum), // 12
         .Err(_) => println("the call failed"),
     }
+    println(total); // 0: main's own value
     stop(add);
     stopped(add);
 }
 ```
+
+The only way to read that state back is a reply. A lambda actor has one
+handler, so give it an enum message when it offers several operations:
+
+```hew
+enum Tally {
+    Add(i64);
+    Get;
+}
+
+fn main() {
+    let count: i64 = 0;
+    let tally = actor capture(var count) |m: Tally| -> i64 {
+        match m {
+            .Add(n) => {
+                count += n;
+                count
+            }
+            .Get => count,
+        }
+    };
+    let _ = tally(Tally.Add(3));
+    let _ = tally(Tally.Add(4));
+    match tally(Tally.Get) {
+        .Ok(n) => println(f"tally = {n}"), // tally = 7
+        .Err(_) => println("tally is gone"),
+    }
+    stop(tally);
+    stopped(tally);
+}
+```
+
+Writing a capture the prefix does not name is a compile error, even when the
+enclosing binding is a `var`: the actor's copy is never the caller's variable,
+so the write could not reach it.
 
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is

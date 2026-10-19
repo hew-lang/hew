@@ -663,8 +663,16 @@ impl Checker {
         let name = name.lexical_key();
         let depth = self.lambda_capture_depth?;
         let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
-        if binding_depth >= depth || binding.is_mutable || self.in_lambda_actor_body {
+        if binding_depth >= depth || binding.is_mutable {
             return None;
+        }
+        if self.in_lambda_actor_body {
+            let mut error = TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
+                format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` after `actor` to give the actor a mutable state field"));
+            error.suggestions.push(format!(
+                "insert `capture(var {name}) ` before the actor's parameter list"
+            ));
+            return Some(error);
         }
         Some(TypeError::new(TypeErrorKind::MutabilityError, span.clone(),
             format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` before the lambda to mutate its private field")))

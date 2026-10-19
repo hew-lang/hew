@@ -16,6 +16,10 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "lambda_actor_private_capture",
+        source_rel: "tests/core-acceptance/cases/lambda-actor-private-capture.hew",
+    },
+    ParityCase {
         test_name: "task_race",
         source_rel: "examples/sandbox-graduation/task_race.hew",
     },
@@ -1170,6 +1174,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "user_codec_stream" => Some("user codec frames\n"),
+        "lambda_actor_private_capture" => Some("501\n1202\n2303\nouter 0 0\n2\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {
             Some("alpha 3\nbeta 3\n300\nalpha 3\nbeta 5 alpha 5 500\nright\nleft\ntag 7\n")

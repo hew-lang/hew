@@ -587,7 +587,8 @@ fn main() {
 **Syntax:**
 
 ```ebnf
-LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
+LambdaActorExpr = "actor" "move"? PrivateCaptures? ( "|" LambdaParams? "|" | "||" ) RetType? Block ;
+PrivateCaptures = "capture" "(" "var" Ident { "," "var" Ident } ","? ")" ;
 ActorSpawn      = "spawn" Path TypeArgs? [ "{" FieldInitList "}" ] ;  (* spawn Counter { count: 0 } *)
 ```
 
@@ -654,10 +655,45 @@ Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
 
-A capture of a `var` binding is a mutable state field: the handler may assign
-it or call mutating methods on it, and each message observes the writes of
-earlier ones. The enclosing binding keeps its own independent value. A capture
-of a `let` binding is immutable.
+Every capture initializes a private, read-only state field using those value
+and transfer rules. Naming a capture in a `capture(var name, ...)` prefix makes its
+state field mutable: the handler may assign it or call mutating methods on it,
+and each message observes the writes of earlier ones. The prefix follows
+`actor` and any `move`, with the closure rules of §3.8.6: duplicate names,
+names that clash with a parameter, and initializers are errors. The enclosing
+binding is a separate value. It may be `let`, it is never changed, and the
+handler's state is read back only through replies. Writing a capture that the
+prefix does not name is an error whether the enclosing binding is `let` or
+`var`.
+
+```hew
+enum Tally {
+    Add(i64);
+    Get;
+}
+
+fn main() {
+    let count: i64 = 0;
+    let tally = actor capture(var count) |m: Tally| -> i64 {
+        match m {
+            .Add(n) => {
+                count += n;
+                count
+            }
+            .Get => count,
+        }
+    };
+    let _ = tally(Tally.Add(3));
+    let _ = tally(Tally.Add(4));
+    match tally(Tally.Get) {
+        .Ok(n) => println(f"tally = {n}"), // tally = 7
+        .Err(_) => println("tally is gone"),
+    }
+    println(count); // 0: the enclosing binding is unchanged
+    stop(tally);
+    stopped(tally);
+}
+```
 
 **Operations:**
 
@@ -1746,8 +1782,10 @@ fn main() {
 ```
 
 Captured types must satisfy the actor boundary's sendability rules. A borrowed
-view cannot outlive its owner by being captured. See §3.8.6 for ordinary
-closure capabilities and private mutable captures.
+view cannot outlive its owner by being captured. A capture is read-only state
+unless `capture(var name)` names it, which makes it a mutable state field of the
+actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
+ordinary closure capabilities and private mutable captures.
 
 #### 3.4.6 What IS Allowed (Within an Actor)
 
@@ -6166,10 +6204,13 @@ cannot be used again after its owner transfers.
 
 An actor's `receive gen fn` runs as one exclusive producer turn over live
 actor state. It keeps that turn while yielding or waiting, so another handler
-cannot observe partial execution. State writes completed before normal return,
-consumer close or cancellation remain in the actor. Closing the consumer ends
-the producer turn and releases its pending output and local owners. An ordinary
-`gen { ... }` created inside the turn still owns independent captured snapshots.
+cannot observe partial execution. Closing the consumer discards its buffered
+output and requests cancellation of the producer, including a pending wait.
+The next handler waits until the producer has released its pending output and
+local owners; closing the consumer does not itself join that cleanup. Writes
+performed before the producer finishes or observes cancellation remain in the
+actor. An ordinary `gen { ... }` created inside the turn still owns independent
+captured snapshots.
 
 > See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
 > (`Lazy<T>`, `#[prefetch(N)]`). There is no `async gen fn` form: a generator

@@ -761,11 +761,20 @@ impl TemplateNames<'_> {
                 self.pop();
             }
             Expr::SpawnLambdaActor {
+                private_captures,
                 params,
                 return_type,
                 body,
                 ..
             } => {
+                for (name, span) in private_captures {
+                    self.path(
+                        &Path {
+                            segments: vec![(*name, span.clone())],
+                        },
+                        Namespace::Value,
+                    )?;
+                }
                 self.push();
                 for param in params {
                     if let Some(ty) = &param.ty {

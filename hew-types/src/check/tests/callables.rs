@@ -60,6 +60,42 @@ fn implicit_capture_mutation_names_the_private_prefix() {
 }
 
 #[test]
+fn lambda_actor_capture_write_needs_the_private_prefix() {
+    for binding in ["var", "let"] {
+        let output = check_source(&format!(
+            "fn main() {{ {binding} hits: i64 = 0; let count = actor || -> i64 {{ hits += 1; hits }}; stop(count); stopped(count); }}"
+        ));
+        let error = output
+            .errors
+            .iter()
+            .find(|error| error.kind == TypeErrorKind::MutabilityError)
+            .unwrap_or_else(|| panic!("{binding}: {:?}", output.errors));
+        assert_eq!(
+            error.message,
+            "capture `hits` is an immutable snapshot; add `capture(var hits)` after `actor` to give the actor a mutable state field"
+        );
+        assert_eq!(
+            error.suggestions,
+            ["insert `capture(var hits) ` before the actor's parameter list"]
+        );
+    }
+}
+
+#[test]
+fn lambda_actor_private_prefix_publishes_a_var_capture() {
+    let output = check_source(
+        "fn main() { let hits: i64 = 0; let count = actor capture(var hits) || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(capture(&output, "hits").access, ClosureCaptureAccess::Var);
+    let output = check_source(
+        "fn main() { let hits: i64 = 0; let count = actor || -> i64 { hits + 1 }; let _ = count(); stop(count); stopped(count); }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(capture(&output, "hits").access, ClosureCaptureAccess::Read);
+}
+
+#[test]
 fn private_prefix_resolves_existing_binding_and_respects_body_shadowing() {
     let output = check_source(
         "fn main() { let count: i64 = 0; let f = capture(var count) || { var count: i64 = 2; count = 3; count }; }",

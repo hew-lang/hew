@@ -33,7 +33,7 @@ pub enum PublishError {
     Invalid(String),
     /// No credentials or signing key for an upload; nothing was uploaded.
     Auth(String),
-    /// Reading the registry's copy before upload failed; nothing was uploaded.
+    /// Reading the registry's copy failed, before upload or after a conflict.
     Query(String),
     /// The registry refused or failed the upload.
     Remote(ApiError),
@@ -69,16 +69,8 @@ impl fmt::Display for PublishError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Invalid(message) | Self::Auth(message) => f.write_str(message),
-            Self::Query(message) => {
-                write!(
-                    f,
-                    "registry query failed: {message}\nNothing was published."
-                )
-            }
-            Self::Remote(error) => write!(
-                f,
-                "remote publish failed: {error}\nNothing was published; no local copy was written."
-            ),
+            Self::Query(message) => write!(f, "registry query failed: {message}"),
+            Self::Remote(error) => write!(f, "remote publish failed: {error}"),
             Self::Drift {
                 name,
                 version,

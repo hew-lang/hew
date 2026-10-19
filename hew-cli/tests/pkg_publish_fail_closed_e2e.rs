@@ -329,10 +329,6 @@ fn publish_registry_error_exits_one_and_writes_no_local_copy() {
         "stderr missing registry-failure prefix:\n{stderr}"
     );
     assert!(
-        stderr.contains("Nothing was published."),
-        "stderr missing nothing-published note:\n{stderr}"
-    );
-    assert!(
         !stderr.contains("Falling back"),
         "stderr must not mention a local fallback:\n{stderr}"
     );

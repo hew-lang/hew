@@ -62,6 +62,8 @@ struct State {
     archive_misses: usize,
     /// Answer every PUT with 500 and store nothing.
     fail_puts: bool,
+    /// Refuse uploads after this many have been accepted.
+    fail_after_puts: Option<usize>,
     /// Trusted publishing: the `audience` of every OIDC token request.
     oidc_audiences: Vec<String>,
     /// OIDC tokens issued and not yet exchanged; each exchanges once.
@@ -448,7 +450,11 @@ fn accept_upload(
     let Some((name, version)) = package_version(path) else {
         return not_found();
     };
-    if state.fail_puts {
+    if state.fail_puts
+        || state
+            .fail_after_puts
+            .is_some_and(|limit| state.accepted_puts >= limit)
+    {
         return (500, br#"{"error":"registry down"}"#.to_vec());
     }
     if let Some((archive, secret)) = state.conflict_with.take() {
@@ -1414,6 +1420,31 @@ fn published_members_are_skipped_and_drift_uploads_nothing() {
         "{stderr}"
     );
     assert_eq!(mock.puts(), 0, "{:?}", mock.log());
+}
+
+#[test]
+fn workspace_upload_failure_preserves_the_reported_partial_success() {
+    let mock = MockRegistry::start();
+    let root = tempfile::tempdir().unwrap();
+    abc_workspace(root.path(), "acme.a");
+    mock.state.lock().unwrap().fail_after_puts = Some(1);
+    let (hew_home, _) = publisher_home(&mock);
+
+    let output = hew_publish(&mock, root.path(), hew_home.path(), &["--workspace"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(stdout.contains("published 1, skipped 0"), "{stdout}");
+    assert!(stderr.contains("remote publish failed:"), "{stderr}");
+    assert!(!stderr.contains("Nothing was published"), "{stderr}");
+    assert_eq!(mock.state.lock().unwrap().accepted_puts, 1);
+    assert_eq!(
+        mock.put_paths(),
+        [
+            "/api/v1/packages/acme.a/1.0.0",
+            "/api/v1/packages/acme.b/1.0.0"
+        ]
+    );
 }
 
 #[test]

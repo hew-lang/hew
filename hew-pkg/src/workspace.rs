@@ -250,15 +250,22 @@ fn expand_member(root: &Path, entry: &str) -> Result<Vec<PathBuf>, WorkspaceErro
     candidates
         .into_iter()
         .map(|dir| {
-            if !dir.join(MANIFEST_FILE).is_file() {
+            let canonical = dir.canonicalize().map_err(|error| {
+                WorkspaceError::Member(format!("`{entry}`: {}: {error}", dir.display()))
+            })?;
+            if !canonical.starts_with(root) {
+                return Err(WorkspaceError::Member(format!(
+                    "`{entry}`: {} resolves outside the workspace root",
+                    dir.display()
+                )));
+            }
+            if !canonical.join(MANIFEST_FILE).is_file() {
                 return Err(WorkspaceError::Member(format!(
                     "`{entry}`: {} has no {MANIFEST_FILE}",
                     dir.display()
                 )));
             }
-            dir.canonicalize().map_err(|error| {
-                WorkspaceError::Member(format!("`{entry}`: {}: {error}", dir.display()))
-            })
+            Ok(canonical)
         })
         .collect()
 }
@@ -557,6 +564,37 @@ mod tests {
             workspace(root.path(), &format!("{entry:?}"));
             let error = load(root.path()).unwrap_err().to_string();
             assert!(error.starts_with("E_WORKSPACE_MEMBER"), "{entry}: {error}");
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn member_links_stay_inside_the_workspace() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        package(root.path(), "inside", "inside", "");
+        package(outside.path(), "package", "outside", "");
+        symlink(root.path().join("inside"), root.path().join("alias")).unwrap();
+        workspace(root.path(), "\"inside\", \"alias\"");
+        let ws = load(root.path()).unwrap();
+        assert_eq!(ws.members.len(), 1);
+        assert_eq!(ws.members[0].name(), "inside");
+
+        std::fs::create_dir(root.path().join("links")).unwrap();
+        symlink(
+            outside.path().join("package"),
+            root.path().join("links/outside"),
+        )
+        .unwrap();
+        for entry in ["links/outside", "links/*"] {
+            workspace(root.path(), &format!("{entry:?}"));
+            let error = load(root.path()).unwrap_err().to_string();
+            assert!(
+                error.contains("resolves outside the workspace root"),
+                "{error}"
+            );
         }
     }
 

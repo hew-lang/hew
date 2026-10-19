@@ -103,7 +103,7 @@ pub(crate) struct BoundedChild {
 impl BoundedChild {
     /// Spawn a process with the appropriate process-isolation setup for this
     /// platform and return it together with any cleanup resources.
-    #[cfg(unix)]
+    #[cfg(all(unix, test))]
     pub(crate) fn spawn(command: &mut Command) -> Result<Self, String> {
         Self::spawn_with_group(command, true)
     }
@@ -1101,11 +1101,8 @@ mod tests {
         let pid = child.child.id().cast_signed();
         drop(child);
         // SAFETY: signal zero queries the exact PID of the child just dropped.
-        assert_eq!(
-            unsafe { libc::kill(pid, 0) },
-            -1,
-            "owned child survived drop"
-        );
+        let child_liveness = unsafe { libc::kill(pid, 0) };
+        assert_eq!(child_liveness, -1, "owned child survived drop");
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::ESRCH)
@@ -1114,21 +1111,6 @@ mod tests {
 
     #[test]
     fn interactive_termination_cleans_descendants_and_preserves_exit() {
-        const FIXTURE: &str = "HEW_INTERACTIVE_PROCESS_FIXTURE";
-        if let Some(directory) = std::env::var_os(FIXTURE) {
-            let mut command = Command::new("sh");
-            command.current_dir(directory).args([
-                "-c",
-                "trap 'exit 37' TERM; echo $$ > leader; (trap '' TERM; touch ready; exec sleep 60) & wait",
-            ]);
-            let outcome =
-                run_command_interactive(&mut command, None, false).expect("interactive shell");
-            assert!(
-                matches!(outcome, ChildWaitOutcome::Exited(status) if status.code() == Some(37))
-            );
-            return;
-        }
-
         // A separate test process owns the process-global signal handlers.
         // Its descendant ignores TERM and retains stdout after the shell exits.
         struct Fixture {
@@ -1147,6 +1129,21 @@ mod tests {
                 let _ = self.wrapper.wait();
             }
         }
+        const FIXTURE: &str = "HEW_INTERACTIVE_PROCESS_FIXTURE";
+        if let Some(directory) = std::env::var_os(FIXTURE) {
+            let mut command = Command::new("sh");
+            command.current_dir(directory).args([
+                "-c",
+                "trap 'exit 37' TERM; echo $$ > leader; (trap '' TERM; touch ready; exec sleep 60) & wait",
+            ]);
+            let outcome =
+                run_command_interactive(&mut command, None, false).expect("interactive shell");
+            assert!(
+                matches!(outcome, ChildWaitOutcome::Exited(status) if status.code() == Some(37))
+            );
+            return;
+        }
+
         let directory = tempfile::tempdir().unwrap();
         let wrapper = Command::new(std::env::current_exe().unwrap())
             .args([
@@ -1176,10 +1173,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         // SAFETY: the wrapper is an unreaped process owned by this test.
-        assert_eq!(
-            unsafe { libc::kill(fixture.wrapper.id().cast_signed(), libc::SIGTERM) },
-            0
-        );
+        let signal_result =
+            unsafe { libc::kill(fixture.wrapper.id().cast_signed(), libc::SIGTERM) };
+        assert_eq!(signal_result, 0);
         let status = loop {
             if let Some(status) = fixture.wrapper.try_wait().unwrap() {
                 break status;

@@ -254,18 +254,16 @@ impl Parser<'_> {
 
     fn validate_authority_attribute_shape(&mut self, attr: &Attribute) {
         match attr.name.as_str() {
-            "lang_item" | "intrinsic" => {
-                if !matches!(attr.args.as_slice(), [AttributeArg::Positional(value)] if !value.is_empty())
-                {
-                    self.error_at(
-                        format!(
-                            "`#[{}]` requires exactly one string key, for example \
-                             `#[{}(\"key\")]`",
-                            attr.name, attr.name
-                        ),
-                        attr.span.clone(),
-                    );
-                }
+            "lang_item" | "intrinsic" if !matches!(attr.args.as_slice(), [AttributeArg::Positional(value)] if !value.is_empty()) =>
+            {
+                self.error_at(
+                    format!(
+                        "`#[{}]` requires exactly one string key, for example \
+                         `#[{}(\"key\")]`",
+                        attr.name, attr.name
+                    ),
+                    attr.span.clone(),
+                );
             }
             _ => {}
         }

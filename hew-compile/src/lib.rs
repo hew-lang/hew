@@ -8963,6 +8963,32 @@ mod source_analysis_batch_tests {
     }
 
     #[test]
+    fn cached_builtin_iterator_effects_match_the_complete_frontend() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        let source = r#"
+fn ready() -> i64 {
+    let grid: Vec<Vec<i64>> = [[1, 2], [3, 4]];
+    let sums = grid.iter().map(|row: Vec<i64>| row.iter().fold(0, |a: i64, b: i64| a + b)).collect();
+    sums[0] + sums[1]
+}
+fn main() {
+    let callback: fn() -> i64 = ready;
+    println(f"{callback()}");
+}
+"#;
+        for name in ["first.hew", "second.hew"] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+        }
+        assert_eq!(batch.reused_roots(), 2);
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.dependency_cache_hits(), 1);
+    }
+
+    #[test]
     fn independent_roots_reuse_dependencies_with_fresh_alias_scopes() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(

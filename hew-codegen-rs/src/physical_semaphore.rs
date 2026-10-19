@@ -1,5 +1,6 @@
 //! Owned semaphore waits use the shared permit operation and canonical cancellation.
 
+use super::suspend::{call_value, EXIT_CANCEL, EXIT_NORMAL, EXIT_UNWIND};
 use super::*;
 
 impl<'ctx> FunctionEmitter<'_, 'ctx> {

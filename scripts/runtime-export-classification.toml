@@ -3527,6 +3527,7 @@ discharge-depth = "none"
 symbol = "hew_semaphore_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.semaphore.SemaphoreHandle"]
 release-symbol = ""
 discharge-depth = "none"
 

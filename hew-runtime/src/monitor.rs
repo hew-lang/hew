@@ -1581,7 +1581,7 @@ pub(crate) fn notify_monitors_on_end(
     reason: i32,
     crash_kind: u32,
     end: crate::internal::types::ActorEndReason,
-    close_fault: Option<(i32, String)>,
+    close_fault: Option<&(i32, String)>,
 ) {
     let shard_index = get_shard_index(actor_id);
     // No runtime → no per-runtime monitor table → no monitors to notify. This
@@ -3086,7 +3086,7 @@ mod tests {
                 expected.reason.state,
                 expected.reason.crash_kind,
                 expected.reason.end,
-                expected.close_fault.clone(),
+                expected.close_fault.as_ref(),
             );
             assert_eq!(
                 state.register_admitted_watcher((*actor).id, watcher, 3, false, 17, 0),

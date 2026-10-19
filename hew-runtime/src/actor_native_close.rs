@@ -222,7 +222,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
     completion.phase.store(3, Ordering::Release);
     if let Some(notice) = notice {
         // SAFETY: terminal ownership retains the supervisor across publication.
-        unsafe { notice.publish_terminal_notification(completion.close_fault_payload()) };
+        unsafe { notice.publish_terminal_notification(completion.close_fault_payload().as_ref()) };
     } else if state == HewActorState::Stopped as i32 {
         crate::actor::notify_monitors_on_death(
             actor_id,
@@ -233,7 +233,7 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
                 // SAFETY: terminal publication retains the actor and mailbox.
                 unsafe { crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast()) },
             ),
-            completion.close_fault_payload(),
+            completion.close_fault_payload().as_ref(),
         );
         #[cfg(not(target_arch = "wasm32"))]
         if !actor.supervisor.is_null() {

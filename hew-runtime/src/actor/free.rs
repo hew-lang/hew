@@ -2878,7 +2878,7 @@ pub(crate) fn notify_monitors_on_death(
     state: i32,
     reason: u32,
     end: crate::internal::types::ActorEndReason,
-    close_fault: Option<(i32, String)>,
+    close_fault: Option<&(i32, String)>,
 ) {
     #[cfg(not(target_arch = "wasm32"))]
     crate::monitor::notify_monitors_on_end(actor_id, state, reason, end, close_fault);
@@ -3093,7 +3093,7 @@ unsafe impl Send for TerminalNotification {}
 
 impl TerminalNotification {
     /// Publish after cleanup while the actor still retains its supervisor.
-    pub(crate) unsafe fn publish_terminal_notification(self, close_fault: Option<(i32, String)>) {
+    pub(crate) unsafe fn publish_terminal_notification(self, close_fault: Option<&(i32, String)>) {
         let Self {
             actor_id,
             terminal,

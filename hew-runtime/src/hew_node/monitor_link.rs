@@ -435,7 +435,7 @@ pub(crate) fn fan_out_remote_monitor_down(
     reason: i32,
     crash_kind: u32,
     end: crate::internal::types::ActorEndReason,
-    close_fault: Option<(i32, String)>,
+    close_fault: Option<&(i32, String)>,
 ) {
     if watchers.is_empty() {
         return;
@@ -461,7 +461,7 @@ pub(crate) fn fan_out_remote_monitor_down(
                 reason,
                 end_reason: end as u8,
                 crash_kind: crash_kind.cast_signed(),
-                close_fault: close_fault.clone(),
+                close_fault: close_fault.cloned(),
             };
             // A LINK watcher receives a link down (its node crashes the local
             // linked actor via the mailbox EXIT cascade); a MONITOR watcher

@@ -19,7 +19,7 @@
 
 use hew_hir::{lower_program, HirDiagnosticKind, HirExprKind, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
-use hew_types::{Checker, ResolvedTy, TypeCheckOutput};
+use hew_types::{Checker, ResolvedTy, SpanKey, TypeCheckOutput};
 
 fn typecheck_and_lower(source: &str) -> (hew_hir::LowerOutput, TypeCheckOutput) {
     let parsed = hew_parser::parse(source);
@@ -453,8 +453,14 @@ fn direct_call_without_checker_target_fails_closed() {
     );
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let mut tc_output = checker.check_program(&parsed.program);
+    let call_start = source.rfind("helper()").expect("helper call is in source");
+    let call_key = SpanKey {
+        start: call_start,
+        end: call_start + "helper()".len(),
+        module_idx: 0,
+    };
     assert!(
-        !tc_output.direct_call_targets.is_empty(),
+        tc_output.direct_call_targets.contains_key(&call_key),
         "checker must publish an ordinary-call target for helper()"
     );
     tc_output.direct_call_targets.clear();

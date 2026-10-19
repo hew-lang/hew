@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-19
+
 - Give `std.encoding.toml` values the checked owning model used by JSON and
   YAML: typed kinds and errors, optional lookups, independent copies and
   mutation on a `var`. Remove the old public resource and builder APIs.
@@ -26,7 +28,8 @@
 - Preserve generic signatures across repeated imports, bound cleanup analysis
   of invalid recursive types and remove superseded actor lowering paths.
 
-See the [migration guide](docs/migrations/v0.6.2.md) for changed actor, string,
+See the [release notes](docs/releases/v0.6.2.md) and
+[migration guide](docs/migrations/v0.6.2.md) for changed actor, string,
 sorting, native SDK and tool interfaces.
 
 ## [0.6.1] - 2026-10-15

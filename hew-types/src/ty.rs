@@ -65,7 +65,8 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Instant
             | BuiltinType::Trap
             | BuiltinType::JsonValue
-            | BuiltinType::YamlValue,
+            | BuiltinType::YamlValue
+            | BuiltinType::TomlValue,
         )
         | None => None,
     }

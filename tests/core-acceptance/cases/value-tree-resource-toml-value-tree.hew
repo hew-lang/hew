@@ -1,16 +1,41 @@
 import std.encoding.toml;
 
 fn main() -> i32 {
-    for _ in 0 .. 50 {
+    for _ in 0..50 {
         var value = toml.array();
-        value = value.push(toml.from_int(7));
-        let child = value.array_get(0);
-        println(f"{child.get_int()}");
-        child.close();
-        value.close();
+        match value.push(toml.from_int(7)) {
+            .Ok(_) => {}
+            .Err(_) => {
+                return 1;
+            }
+        }
+        var copy = value;
+        match copy.push(toml.from_int(8)) {
+            .Ok(_) => {}
+            .Err(_) => {
+                return 1;
+            }
+        }
+        match value.array_get(0) {
+            .Ok(.Some(child)) => {
+                match child.get_int() {
+                    .Ok(n) => {
+                        println(f"{n}");
+                    }
+                    .Err(_) => {
+                        return 1;
+                    }
+                }
+            }
+            .Ok(.None) => {
+                return 1;
+            }
+            .Err(_) => {
+                return 1;
+            }
+        }
         match toml.parse("=") {
-            .Ok(parsed) => {
-                parsed.close();
+            .Ok(_) => {
                 return 1;
             }
             .Err(_) => {}

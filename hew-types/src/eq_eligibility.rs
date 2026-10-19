@@ -159,7 +159,8 @@ fn eq_ineligibility_inner(
                     | BuiltinType::Rc
                     | BuiltinType::Weak
                     | BuiltinType::JsonValue
-                    | BuiltinType::YamlValue,), .. }
+                    | BuiltinType::YamlValue
+                    | BuiltinType::TomlValue,), .. }
         | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)

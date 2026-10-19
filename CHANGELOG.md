@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Give `std.encoding.toml` values the checked owning model used by JSON and
+  YAML: typed kinds and errors, optional lookups, independent copies and
+  mutation on a `var`. Remove the old public resource and builder APIs.
 - Use an actor's own type for local, supervised and authenticated imported
   references. Preserve stable supervised roles across restart and distinguish
   definite mailbox rejection from uncertain remote admission.

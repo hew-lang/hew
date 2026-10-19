@@ -267,7 +267,7 @@ which mechanism applies and the order of the per-handle migration PRs.
 | `std/encoding/protobuf` | `Message` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Scalar/string field setters do not consume another message handle. |
 | `std/encoding/xml` | `Node` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | `get_child` returns a cloned node allocation; no child-transfer builder exists. |
 | `std/encoding/json` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`; direct resource migration would double-free. |
-| `std/encoding/toml` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`. |
+| `std/encoding/toml` | `Value` | none — automatic | not a resource | encoding value carrier (`CowValue`/`DeepCopy`) | **landed** | Copies are independent; `set`/`push` on a `var` insert an independent child. Release runs through `EncodingOp::Free`. |
 | `std/encoding/yaml` | `Value` | `free()` | deferred — ownership transfer | blocked on transfer/disarm semantics | **deferred** | `with(key, child)` / `push(child)` consume the child natively with `Box::from_raw`. |
 | `std/net/http_client` | `Response` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | One-shot independent response allocation. |
 | `std/net/http` | `Request` | `close()` | 2 — per-recv allocation inside an actor scope | C + H | **B-1 safe set — landed** | Request allocation has a single release path and no child handle transfer. |
@@ -394,7 +394,7 @@ by the PR itself; this spec fixes the *shape*.
 | `protobuf.Message` | `msg.free()` removed; `msg.close()` releases early | fielded `#[resource]` wrapper around `MessageHandle` | existing resource drop emission |
 | `xml.Node` | `node.free()` removed; `node.close()` releases early | fielded `#[resource]` wrapper around `NodeHandle` | existing resource drop emission |
 | `json.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
-| `toml.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
+| `toml.Value` | `free()`, `close()` and the consuming builders removed; checked accessors and `set`/`push` on a `var` | `#[resource]` marker removed; joins the `EncodingFormat` carrier with JSON and YAML | clone and release through the format's `EncodingOp::Clone`/`Free` symbols |
 | `yaml.Value` | deferred; manual `free()` remains | child-consuming `with` / `push` require ownership-transfer semantics | no change |
 | `http_client.Response` | `resp.free()` removed; `resp.close()` releases early | fielded `#[resource]` wrapper around `ResponseHandle` | existing resource drop emission |
 | `http.Request` | `req.free()` removed; `req.close()` releases early | fielded `#[resource]` wrapper around `RequestHandle` | existing resource drop emission |

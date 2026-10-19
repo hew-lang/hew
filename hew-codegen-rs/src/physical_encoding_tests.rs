@@ -51,6 +51,7 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
                         | Op::Stringify
                         | Op::FromString
                         | Op::GetString
+                        | Op::GetDatetime
                         | Op::Clone
                         | Op::ObjectKeys => (vec![ptr], Some(ptr.try_into().unwrap())),
                         Op::Type | Op::IntStatus | Op::GetBool | Op::ArrayLen => {
@@ -81,7 +82,11 @@ fn encoding_c_declarations_preserve_scalar_widths_and_void_mutation_across_targe
                 "{family:?}, {triple}"
             );
         }
-        for format in [EncodingFormat::Json, EncodingFormat::Yaml] {
+        for format in [
+            EncodingFormat::Json,
+            EncodingFormat::Yaml,
+            EncodingFormat::Toml,
+        ] {
             let physical = physical_fixture(&fixture::copy(format), triple);
             let llvm = llvm(&ctx, &physical);
             assert_eq!(

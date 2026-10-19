@@ -19350,8 +19350,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_toml_array_len( *const HewTomlValue) -> i64",
-        "wasm32-wasip1": "fn hew_toml_array_len( *const HewTomlValue) -> i64"
+        "native": "fn hew_toml_array_len( *const HewTomlValue) -> i32",
+        "wasm32-wasip1": "fn hew_toml_array_len( *const HewTomlValue) -> i32"
       },
       "symbol": "hew_toml_array_len"
     },
@@ -19395,10 +19395,10 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_toml_array_push_bool( *mut HewTomlValue, i32)",
-        "wasm32-wasip1": "fn hew_toml_array_push_bool( *mut HewTomlValue, i32)"
+        "native": "fn hew_toml_clone( *const HewTomlValue) -> *mut HewTomlValue",
+        "wasm32-wasip1": "fn hew_toml_clone( *const HewTomlValue) -> *mut HewTomlValue"
       },
-      "symbol": "hew_toml_array_push_bool"
+      "symbol": "hew_toml_clone"
     },
     {
       "availability": [
@@ -19410,40 +19410,10 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_toml_array_push_float( *mut HewTomlValue, f64)",
-        "wasm32-wasip1": "fn hew_toml_array_push_float( *mut HewTomlValue, f64)"
+        "native": "fn hew_toml_eq( *const HewTomlValue, *const HewTomlValue) -> i32",
+        "wasm32-wasip1": "fn hew_toml_eq( *const HewTomlValue, *const HewTomlValue) -> i32"
       },
-      "symbol": "hew_toml_array_push_float"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_array_push_int( *mut HewTomlValue, i64)",
-        "wasm32-wasip1": "fn hew_toml_array_push_int( *mut HewTomlValue, i64)"
-      },
-      "symbol": "hew_toml_array_push_int"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_array_push_string( *mut HewTomlValue, *const HewString)",
-        "wasm32-wasip1": "fn hew_toml_array_push_string( *mut HewTomlValue, *const HewString)"
-      },
-      "symbol": "hew_toml_array_push_string"
+      "symbol": "hew_toml_eq"
     },
     {
       "availability": [
@@ -19545,6 +19515,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_toml_get_datetime( *const HewTomlValue) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_toml_get_datetime( *const HewTomlValue) -> *mut HewString"
+      },
+      "symbol": "hew_toml_get_datetime"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_toml_get_field( *const HewTomlValue, *const HewString, ) -> *mut HewTomlValue",
         "wasm32-wasip1": "fn hew_toml_get_field( *const HewTomlValue, *const HewString, ) -> *mut HewTomlValue"
       },
@@ -19620,10 +19605,40 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_toml_last_serialize_error() -> *mut HewString",
-        "wasm32-wasip1": "fn hew_toml_last_serialize_error() -> *mut HewString"
+        "native": "fn hew_toml_object_keys( *const HewTomlValue) -> *mut HewTomlValue",
+        "wasm32-wasip1": "fn hew_toml_object_keys( *const HewTomlValue) -> *mut HewTomlValue"
       },
-      "symbol": "hew_toml_last_serialize_error"
+      "symbol": "hew_toml_object_keys"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_toml_object_new() -> *mut HewTomlValue",
+        "wasm32-wasip1": "fn hew_toml_object_new() -> *mut HewTomlValue"
+      },
+      "symbol": "hew_toml_object_new"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_toml_object_set( *mut HewTomlValue, *const HewString, *mut HewTomlValue, )",
+        "wasm32-wasip1": "fn hew_toml_object_set( *mut HewTomlValue, *const HewString, *mut HewTomlValue, )"
+      },
+      "symbol": "hew_toml_object_set"
     },
     {
       "availability": [
@@ -19654,96 +19669,6 @@
         "wasm32-wasip1": "fn hew_toml_stringify( *const HewTomlValue) -> *mut HewString"
       },
       "symbol": "hew_toml_stringify"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_new() -> *mut HewTomlValue",
-        "wasm32-wasip1": "fn hew_toml_table_new() -> *mut HewTomlValue"
-      },
-      "symbol": "hew_toml_table_new"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_set( *mut HewTomlValue, *const HewString, *mut HewTomlValue, )",
-        "wasm32-wasip1": "fn hew_toml_table_set( *mut HewTomlValue, *const HewString, *mut HewTomlValue, )"
-      },
-      "symbol": "hew_toml_table_set"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_set_bool( *mut HewTomlValue, *const HewString, i32, )",
-        "wasm32-wasip1": "fn hew_toml_table_set_bool( *mut HewTomlValue, *const HewString, i32, )"
-      },
-      "symbol": "hew_toml_table_set_bool"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_set_float( *mut HewTomlValue, *const HewString, f64, )",
-        "wasm32-wasip1": "fn hew_toml_table_set_float( *mut HewTomlValue, *const HewString, f64, )"
-      },
-      "symbol": "hew_toml_table_set_float"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_set_int( *mut HewTomlValue, *const HewString, i64, )",
-        "wasm32-wasip1": "fn hew_toml_table_set_int( *mut HewTomlValue, *const HewString, i64, )"
-      },
-      "symbol": "hew_toml_table_set_int"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_toml_table_set_string( *mut HewTomlValue, *const HewString, *const HewString, )",
-        "wasm32-wasip1": "fn hew_toml_table_set_string( *mut HewTomlValue, *const HewString, *const HewString, )"
-      },
-      "symbol": "hew_toml_table_set_string"
     },
     {
       "availability": [

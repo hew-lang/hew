@@ -22,7 +22,9 @@ fn source_signature(
     let (params, result) = match op {
         EncodingOp::Parse | EncodingOp::FromString => (vec![String], value.clone()),
         EncodingOp::LastError => (vec![], String),
-        EncodingOp::Stringify | EncodingOp::GetString => (vec![value.clone()], String),
+        EncodingOp::Stringify | EncodingOp::GetString | EncodingOp::GetDatetime => {
+            (vec![value.clone()], String)
+        }
         EncodingOp::Type | EncodingOp::IntStatus | EncodingOp::GetBool | EncodingOp::ArrayLen => {
             (vec![value.clone()], I32)
         }
@@ -57,7 +59,7 @@ fn source_signature(
 #[test]
 fn every_encoding_extern_checks_its_complete_source_abi_and_identity() {
     for format in EncodingFormat::iter() {
-        for op in EncodingOp::iter() {
+        for op in EncodingOp::iter().filter(|op| op.supported(format)) {
             let family = RuntimeCallFamily::Encoding { format, op };
             let symbol = family.c_symbol();
             let declaration = format!("{}.{}", format.module(), symbol);
@@ -218,4 +220,38 @@ fn encoding_mutation_moves_both_owners_and_returns_the_updated_receiver() {
             assert!(!consuming[0] && consuming[child]);
         }
     }
+}
+
+#[test]
+fn format_support_is_the_only_source_of_encoding_families() {
+    let families = all_runtime_call_families();
+    for format in EncodingFormat::iter() {
+        assert_eq!(EncodingFormat::of_builtin(format.builtin()), Some(format));
+        for op in EncodingOp::iter() {
+            let family = RuntimeCallFamily::Encoding { format, op };
+            let listed = families.contains(&family);
+            assert_eq!(listed, op.supported(format), "{family:?}");
+            assert_eq!(
+                RuntimeCallFamily::from_c_symbol(op.c_symbol(format)),
+                listed.then_some(family),
+                "{family:?}"
+            );
+        }
+    }
+    let toml_only = [EncodingOp::GetDatetime];
+    let toml_absent = [
+        EncodingOp::GetU64,
+        EncodingOp::IntStatus,
+        EncodingOp::FromU64,
+        EncodingOp::FromNull,
+    ];
+    for op in toml_only {
+        assert!(op.supported(EncodingFormat::Toml));
+        assert!(!op.supported(EncodingFormat::Json) && !op.supported(EncodingFormat::Yaml));
+    }
+    for op in toml_absent {
+        assert!(!op.supported(EncodingFormat::Toml));
+        assert!(op.supported(EncodingFormat::Json) && op.supported(EncodingFormat::Yaml));
+    }
+    assert_eq!(EncodingFormat::of_builtin(BuiltinType::Vec), None);
 }

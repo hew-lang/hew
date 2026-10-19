@@ -26,6 +26,7 @@ fn encoding_values_require_shipped_source_and_have_semantic_copy_facts() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!("{VALUE_SOURCE}\npub fn identity(value: Value) -> Value {{ value }}");
         let module: Vec<String> = ["std", "encoding", format].map(str::to_string).into();
@@ -98,6 +99,7 @@ fn encoding_values_select_only_explicit_eq_methods() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!(
             "{VALUE_SOURCE}\nimpl Eq for Value {{ fn eq(self, other: Value) -> bool {{ true }} }}\n\
@@ -146,6 +148,7 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!(
             r"
@@ -187,7 +190,11 @@ fn generic_equality_preserves_opaque_encoding_type_arguments() {
 #[test]
 fn encoding_value_markers_come_from_owned_tree_contract() {
     let registry = TraitRegistry::new();
-    for kind in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
+    for kind in [
+        BuiltinType::JsonValue,
+        BuiltinType::YamlValue,
+        BuiltinType::TomlValue,
+    ] {
         let ty = encoding_ty(kind);
         for marker in [
             MarkerTrait::Clone,
@@ -220,11 +227,14 @@ fn encoding_value_names_do_not_grant_catalogue_authority() {
         "Value",
         "JsonValue",
         "YamlValue",
+        "TomlValue",
         "json.Value",
         "yaml.Value",
+        "toml.Value",
         "alias.Value",
         "std.encoding.json.Value",
         "std.encoding.yaml.Value",
+        "std.encoding.toml.Value",
     ] {
         assert_eq!(crate::lookup_builtin_type(name), None, "{name}");
         assert_eq!(
@@ -259,6 +269,7 @@ fn encoding_value_import_aliases_preserve_identity_inside_generics() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         for import_source in [
             format!("import std.encoding.{format} as encoded;"),
@@ -407,6 +418,7 @@ fn encoding_extern_calls_require_the_exact_shipped_declaration_and_signature() {
     for (format, encoding) in [
         ("json", EncodingFormat::Json),
         ("yaml", EncodingFormat::Yaml),
+        ("toml", EncodingFormat::Toml),
     ] {
         let source = format!(
             r#"
@@ -510,6 +522,7 @@ fn selected_encoding_import_preserves_result_and_option_try_payload_identity() {
     for (format, kind) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!(
             r#"

@@ -554,13 +554,10 @@ fn toml_encoding_round_trips_under_wasi() {
         "import std.encoding.toml;\n\
          \n\
          fn main() {\n\
-         \x20   let doc = match toml.parse(\"[package]\\nname = \\\"hew\\\"\") { .Ok(value) => value, .Err(_) => panic(\"TOML parse failed\"), };\n\
-         \x20   let pkg = doc.get_field(\"package\");\n\
-         \x20   let name = pkg.get_field(\"name\");\n\
-         \x20   println(name.get_string());\n\
-         \x20   name.free();\n\
-         \x20   pkg.free();\n\
-         \x20   doc.free();\n\
+         \x20   let doc = toml.parse(\"[package]\\nname = \\\"hew\\\"\").expect(\"valid TOML\");\n\
+         \x20   let pkg = doc.get_field(\"package\").expect(\"table\").expect(\"present\");\n\
+         \x20   let name = pkg.get_field(\"name\").expect(\"table\").expect(\"present\");\n\
+         \x20   println(name.get_string().expect(\"string\"));\n\
          }\n",
     )
     .expect("write TOML WASI parity source");

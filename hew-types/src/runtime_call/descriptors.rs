@@ -410,7 +410,11 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
             F::Service(_) => out.extend(super::ServiceOp::iter().map(F::Service)),
             F::Encoding { .. } => {
                 for format in EncodingFormat::iter() {
-                    out.extend(EncodingOp::iter().map(|op| F::Encoding { format, op }));
+                    out.extend(
+                        EncodingOp::iter()
+                            .filter(|op| op.supported(format))
+                            .map(|op| F::Encoding { format, op }),
+                    );
                 }
             }
             F::FileRead(_) => out.extend(FileReadOp::iter().map(F::FileRead)),

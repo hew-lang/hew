@@ -13,6 +13,8 @@ pub enum BuiltinType {
     /// Exact shipped `std::encoding::yaml::Value`.
     /// Runtime values own an Arc-backed serde tree handle.
     YamlValue,
+    /// Exact shipped `std::encoding::toml::Value`, owning a boxed TOML tree.
+    TomlValue,
     Option,
     Result,
     Vec,
@@ -190,6 +192,7 @@ macro_rules! builtin_types {
 builtin_types! {
     JsonValue => "std.encoding.json.Value",
     YamlValue => "std.encoding.yaml.Value",
+    TomlValue => "std.encoding.toml.Value",
     Option => "Option",
     Result => "Result",
     Vec => "Vec",
@@ -243,6 +246,7 @@ impl BuiltinType {
         match (owner, leaf) {
             ("std.encoding.json", "Value") => Some(Self::JsonValue),
             ("std.encoding.yaml", "Value") => Some(Self::YamlValue),
+            ("std.encoding.toml", "Value") => Some(Self::TomlValue),
             _ => None,
         }
     }
@@ -250,7 +254,7 @@ impl BuiltinType {
     /// Whether this discriminator owns a format-specific boxed value tree.
     #[must_use]
     pub const fn is_encoding_value(self) -> bool {
-        matches!(self, Self::JsonValue | Self::YamlValue)
+        matches!(self, Self::JsonValue | Self::YamlValue | Self::TomlValue)
     }
 
     /// Look up a constructor variant registered for this generic builtin enum.
@@ -486,6 +490,7 @@ impl BuiltinType {
             | Self::ActorFn => 2,
             Self::JsonValue
             | Self::YamlValue
+            | Self::TomlValue
             | Self::HewActor
             | Self::BoxedActor
             | Self::NodeId

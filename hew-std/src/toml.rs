@@ -3,8 +3,10 @@
 //! Provides TOML parsing, serialization, and value inspection for compiled
 //! Hew programs. Text inputs borrow managed [`HewString`] handles and text
 //! results transfer an independent managed owner. Null is the canonical
-//! empty string. Opaque [`HewTomlValue`] handles must be freed with
-//! [`hew_toml_free`].
+//! empty string. Every returned [`HewTomlValue`] is an independent owner
+//! released with [`hew_toml_free`]; the compiler copies values with
+//! [`hew_toml_clone`] and releases them through the shared encoding-value
+//! operation vocabulary.
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 
 /// Opaque wrapper around a [`toml::Value`].
@@ -45,19 +47,6 @@ fn record_value_box_consumed() {
     });
 }
 
-std::thread_local! {
-    static LAST_SERIALIZE_ERROR: std::cell::RefCell<Option<String>> =
-        const { std::cell::RefCell::new(None) };
-}
-
-fn set_serialize_last_error(msg: impl Into<String>) {
-    LAST_SERIALIZE_ERROR.with(|slot| *slot.borrow_mut() = Some(msg.into()));
-}
-
-fn clear_serialize_last_error() {
-    LAST_SERIALIZE_ERROR.with(|slot| *slot.borrow_mut() = None);
-}
-
 fn set_parse_last_error(msg: impl Into<String>) {
     hew_runtime::parse_error_slot::set_error(
         hew_runtime::parse_error_slot::ErrorSlotKind::Toml,
@@ -72,6 +61,41 @@ fn clear_parse_last_error() {
 fn get_parse_last_error() -> String {
     hew_runtime::parse_error_slot::get_error(hew_runtime::parse_error_slot::ErrorSlotKind::Toml)
         .unwrap_or_default()
+}
+
+/// Create an independent deep copy of a TOML value, borrowing `val`.
+///
+/// The returned owner is released with [`hew_toml_free`]. Null input returns
+/// null. This operation does not change the error slot.
+///
+/// # Safety
+///
+/// `val` must be null or a live [`HewTomlValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_clone(val: *const HewTomlValue) -> *mut HewTomlValue {
+    // SAFETY: the caller supplies null or a live, readable value.
+    let Some(value) = (unsafe { val.as_ref() }) else {
+        return std::ptr::null_mut();
+    };
+    boxed_value(value.inner.clone())
+}
+
+/// Compare TOML values by the `toml` crate's value equality.
+///
+/// Returns 1 when equal and 0 otherwise. Both inputs are borrowed. Any null
+/// pointer returns 0, including two null pointers. Integer and float
+/// representations remain distinct. The error slot is unchanged.
+///
+/// # Safety
+///
+/// Each input must be null or a live [`HewTomlValue`] readable for this call.
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_eq(lhs: *const HewTomlValue, rhs: *const HewTomlValue) -> i32 {
+    // SAFETY: the caller supplies null or live, readable values.
+    match unsafe { (lhs.as_ref(), rhs.as_ref()) } {
+        (Some(lhs), Some(rhs)) => i32::from(lhs.inner == rhs.inner),
+        _ => 0,
+    }
 }
 
 /// Parse a TOML string into an opaque [`HewTomlValue`].
@@ -100,9 +124,10 @@ pub unsafe extern "C" fn hew_toml_parse(s: *const HewString) -> *mut HewTomlValu
     }
 }
 
-/// Return the most recent parse error for this Hew actor.
+/// Return the most recent parse or serialization error for this Hew actor.
 ///
-/// Returns canonical empty (null) when no error is set.
+/// Returns canonical empty (null) when no error is set. A successful parse or
+/// [`hew_toml_stringify`] clears the slot.
 ///
 /// Errors are keyed per (actor, parser-kind), so a different parser's success
 /// does not clear this slot.
@@ -212,6 +237,24 @@ pub unsafe extern "C" fn hew_toml_get_bool(val: *const HewTomlValue) -> i32 {
     }
 }
 
+/// Return the TOML lexical form of a datetime value: an offset or local
+/// date-time, a local date, or a local time.
+///
+/// Returns an owned managed string, or canonical empty (null) when `val` is
+/// null or not a datetime; use [`hew_toml_type`] to distinguish.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_get_datetime(val: *const HewTomlValue) -> *mut HewString {
+    // SAFETY: val is null or a valid pointer to a HewTomlValue per caller contract.
+    match unsafe { val.as_ref() }.map(|value| &value.inner) {
+        Some(toml::Value::Datetime(datetime)) => string_from_str(&datetime.to_string()),
+        _ => std::ptr::null_mut(),
+    }
+}
+
 /// Look up a field in a TOML table by key.
 ///
 /// Returns a new heap-allocated [`HewTomlValue`] (cloned) or null if the
@@ -241,23 +284,46 @@ pub unsafe extern "C" fn hew_toml_get_field(
     }
 }
 
-/// Return the number of elements in a TOML array.
+/// Return the keys of a TOML table as an array of strings, in the table's
+/// sorted key order.
 ///
-/// Returns -1 if `val` is null or not an array. The count crosses at `i64`
-/// width: narrowing it to `i32` would have to saturate, and a saturated count
-/// is a length the array does not have.
+/// Returns a new owner released with [`hew_toml_free`], or null if `val` is
+/// null or not a table.
 ///
 /// # Safety
 ///
 /// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_len(val: *const HewTomlValue) -> i64 {
+pub unsafe extern "C" fn hew_toml_object_keys(val: *const HewTomlValue) -> *mut HewTomlValue {
+    // SAFETY: val is null or a valid pointer to a HewTomlValue per caller contract.
+    match unsafe { val.as_ref() }.map(|value| &value.inner) {
+        Some(toml::Value::Table(table)) => boxed_value(toml::Value::Array(
+            table
+                .keys()
+                .map(|key| toml::Value::String(key.clone()))
+                .collect(),
+        )),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// Return the number of elements in a TOML array.
+///
+/// Returns -1 if `val` is null or not an array. The count shares the `i32`
+/// index width of [`hew_toml_array_get`]: a longer array reports `i32::MAX`,
+/// the number of elements an index can address.
+///
+/// # Safety
+///
+/// `val` must be a valid pointer to a [`HewTomlValue`] (or null).
+#[no_mangle]
+pub unsafe extern "C" fn hew_toml_array_len(val: *const HewTomlValue) -> i32 {
     if val.is_null() {
         return -1;
     }
     // SAFETY: val is a valid pointer to a HewTomlValue per caller contract.
     match &unsafe { &*val }.inner {
-        toml::Value::Array(a) => i64::try_from(a.len()).unwrap_or(-1),
+        toml::Value::Array(a) => i32::try_from(a.len()).unwrap_or(i32::MAX),
         _ => -1,
     }
 }
@@ -296,10 +362,11 @@ pub unsafe extern "C" fn hew_toml_array_get(
 ///
 /// Returns an owned managed string. The caller must release every non-null
 /// result with `hew_string_drop`. Returns canonical empty (null) if `val` is
-/// null or serialization fails, and records the reason in the serialize slot
-/// so an empty document (a valid table with no keys) stays distinguishable
-/// from a root TOML cannot represent — check [`hew_toml_last_serialize_error`],
-/// not the nullness of this result.
+/// null or serialization fails. Success clears this actor's TOML error slot
+/// and every failure sets a nonempty diagnostic there, so an empty document (a
+/// valid table with no keys) stays distinguishable from a root TOML cannot
+/// represent — read [`hew_toml_last_error`] immediately, not the nullness of
+/// this result.
 ///
 /// # Safety
 ///
@@ -307,37 +374,25 @@ pub unsafe extern "C" fn hew_toml_array_get(
 #[no_mangle]
 pub unsafe extern "C" fn hew_toml_stringify(val: *const HewTomlValue) -> *mut HewString {
     if val.is_null() {
-        set_serialize_last_error("toml: cannot serialize an invalid value");
+        set_parse_last_error("toml: cannot serialize an invalid value");
         return std::ptr::null_mut();
     }
     // SAFETY: val is a valid pointer to a HewTomlValue per caller contract.
     let v = &unsafe { &*val }.inner;
     match toml::to_string(v) {
         Ok(s) => {
-            clear_serialize_last_error();
+            clear_parse_last_error();
             string_from_str(&s)
         }
         Err(err) => {
-            set_serialize_last_error(format!("toml: {err}"));
+            set_parse_last_error(format!("toml: {err}"));
             std::ptr::null_mut()
         }
     }
 }
 
-/// Return and clear the reason the most recent [`hew_toml_stringify`] call on
-/// this thread failed, or canonical empty (null) if it succeeded.
-///
-/// A TOML document root must be a table. Serializing an integer, string, or
-/// array root produces no text at all, which is exactly what an empty table
-/// produces, so the reason slot is what separates the two.
-#[no_mangle]
-pub extern "C" fn hew_toml_last_serialize_error() -> *mut HewString {
-    let message = LAST_SERIALIZE_ERROR.with(|slot| slot.borrow_mut().take());
-    string_from_str(&message.unwrap_or_default())
-}
-
 // ---------------------------------------------------------------------------
-// Table builder — typed field setters
+// Builders
 // ---------------------------------------------------------------------------
 
 /// Create a new empty TOML table.
@@ -345,106 +400,8 @@ pub extern "C" fn hew_toml_last_serialize_error() -> *mut HewString {
 /// Returns a heap-allocated [`HewTomlValue`] wrapping an empty table.
 /// Must be freed with [`hew_toml_free`].
 #[no_mangle]
-pub extern "C" fn hew_toml_table_new() -> *mut HewTomlValue {
+pub extern "C" fn hew_toml_object_new() -> *mut HewTomlValue {
     boxed_value(toml::Value::Table(toml::map::Map::new()))
-}
-
-/// Set a boolean field on a TOML table.
-///
-/// Does nothing if `tbl` is null or not a table. A null `key` is the
-/// canonical empty key.
-///
-/// # Safety
-///
-/// `tbl` must be a valid pointer to a [`HewTomlValue`] (or null).
-/// `key` must be null (canonical empty) or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_table_set_bool(
-    tbl: *mut HewTomlValue,
-    key: *const HewString,
-    val: i32,
-) {
-    if tbl.is_null() {
-        return;
-    }
-    // SAFETY: key is null (canonical empty) or a live managed string handle.
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: tbl is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
-        map.insert(key, toml::Value::Boolean(val != 0));
-    }
-}
-
-/// Set an integer field on a TOML table.
-///
-/// # Safety
-///
-/// Same as [`hew_toml_table_set_bool`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_table_set_int(
-    tbl: *mut HewTomlValue,
-    key: *const HewString,
-    val: i64,
-) {
-    if tbl.is_null() {
-        return;
-    }
-    // SAFETY: key is null (canonical empty) or a live managed string handle.
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: tbl is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
-        map.insert(key, toml::Value::Integer(val));
-    }
-}
-
-/// Set a float field on a TOML table.
-///
-/// # Safety
-///
-/// Same as [`hew_toml_table_set_bool`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_table_set_float(
-    tbl: *mut HewTomlValue,
-    key: *const HewString,
-    val: f64,
-) {
-    if tbl.is_null() {
-        return;
-    }
-    // SAFETY: key is null (canonical empty) or a live managed string handle.
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: tbl is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
-        map.insert(key, toml::Value::Float(val));
-    }
-}
-
-/// Set a string field on a TOML table. The string value is copied.
-///
-/// A null `val` sets the field to the empty string, not a no-op: a managed
-/// empty string is indistinguishable from null.
-///
-/// # Safety
-///
-/// Same as [`hew_toml_table_set_bool`]. `val` must be null (canonical empty)
-/// or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_table_set_string(
-    tbl: *mut HewTomlValue,
-    key: *const HewString,
-    val: *const HewString,
-) {
-    if tbl.is_null() {
-        return;
-    }
-    // SAFETY: key is null (canonical empty) or a live managed string handle.
-    let key = unsafe { string_as_str(key) }.to_owned();
-    // SAFETY: val is null (canonical empty) or a live managed string handle.
-    let val = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: tbl is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Table(map) = &mut unsafe { &mut *tbl }.inner {
-        map.insert(key, toml::Value::String(val));
-    }
 }
 
 /// Set a [`HewTomlValue`] child on a TOML table, taking ownership.
@@ -461,7 +418,7 @@ pub unsafe extern "C" fn hew_toml_table_set_string(
 /// `val` must be a pointer previously returned by a function in this module
 /// and must not have been freed already (or null).
 #[no_mangle]
-pub unsafe extern "C" fn hew_toml_table_set(
+pub unsafe extern "C" fn hew_toml_object_set(
     tbl: *mut HewTomlValue,
     key: *const HewString,
     val: *mut HewTomlValue,
@@ -485,10 +442,6 @@ pub unsafe extern "C" fn hew_toml_table_set(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Array builder — typed element pushers
-// ---------------------------------------------------------------------------
-
 /// Create a new empty TOML array.
 ///
 /// Returns a heap-allocated [`HewTomlValue`] wrapping an empty array.
@@ -496,79 +449,6 @@ pub unsafe extern "C" fn hew_toml_table_set(
 #[no_mangle]
 pub extern "C" fn hew_toml_array_new() -> *mut HewTomlValue {
     boxed_value(toml::Value::Array(Vec::new()))
-}
-
-/// Push a boolean onto a TOML array.
-///
-/// Does nothing if `arr` is null or not an array.
-///
-/// # Safety
-///
-/// `arr` must be a valid pointer to a [`HewTomlValue`] (or null).
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_push_bool(arr: *mut HewTomlValue, val: i32) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(toml::Value::Boolean(val != 0));
-    }
-}
-
-/// Push an integer onto a TOML array.
-///
-/// # Safety
-///
-/// Same as [`hew_toml_array_push_bool`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_push_int(arr: *mut HewTomlValue, val: i64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(toml::Value::Integer(val));
-    }
-}
-
-/// Push a float onto a TOML array.
-///
-/// # Safety
-///
-/// Same as [`hew_toml_array_push_bool`].
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_push_float(arr: *mut HewTomlValue, val: f64) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(toml::Value::Float(val));
-    }
-}
-
-/// Push a string onto a TOML array. The string value is copied.
-///
-/// Does nothing if `arr` is null or not an array. A null `val` pushes the
-/// empty string, not a no-op: a managed empty string is indistinguishable
-/// from null.
-///
-/// # Safety
-///
-/// `arr` must be a valid pointer to a [`HewTomlValue`] (or null).
-/// `val` must be null (canonical empty) or a live managed string handle.
-#[no_mangle]
-pub unsafe extern "C" fn hew_toml_array_push_string(arr: *mut HewTomlValue, val: *const HewString) {
-    if arr.is_null() {
-        return;
-    }
-    // SAFETY: val is null (canonical empty) or a live managed string handle.
-    let val = unsafe { string_as_str(val) }.to_owned();
-    // SAFETY: arr is non-null (checked above) and valid per caller contract.
-    if let toml::Value::Array(vec) = &mut unsafe { &mut *arr }.inner {
-        vec.push(toml::Value::String(val));
-    }
 }
 
 /// Push a [`HewTomlValue`] child onto a TOML array, taking ownership.
@@ -693,19 +573,19 @@ mod tests {
         // SAFETY: every non-null handle below is freshly allocated and freed or
         // transferred exactly once; null pointers exercise the documented no-op path.
         unsafe {
-            hew_toml_table_set(std::ptr::null_mut(), key.as_ptr(), hew_toml_from_int(1));
+            hew_toml_object_set(std::ptr::null_mut(), key.as_ptr(), hew_toml_from_int(1));
             assert_eq!(live_value_boxes(), baseline);
 
             let scalar_parent = hew_toml_from_int(2);
-            hew_toml_table_set(scalar_parent, std::ptr::null(), hew_toml_from_int(3));
+            hew_toml_object_set(scalar_parent, std::ptr::null(), hew_toml_from_int(3));
             assert_eq!(live_value_boxes(), baseline + 1);
-            hew_toml_table_set(scalar_parent, key.as_ptr(), hew_toml_from_int(4));
+            hew_toml_object_set(scalar_parent, key.as_ptr(), hew_toml_from_int(4));
             assert_eq!(live_value_boxes(), baseline + 1);
             hew_toml_free(scalar_parent);
 
             hew_toml_array_push(std::ptr::null_mut(), hew_toml_from_int(5));
             assert_eq!(live_value_boxes(), baseline);
-            let table_parent = hew_toml_table_new();
+            let table_parent = hew_toml_object_new();
             hew_toml_array_push(table_parent, hew_toml_from_int(6));
             assert_eq!(live_value_boxes(), baseline + 1);
             hew_toml_free(table_parent);
@@ -864,7 +744,7 @@ mod tests {
             // distinguishes it from a valid empty table (also canonical empty).
             assert!(hew_toml_stringify(std::ptr::null()).is_null());
             assert_eq!(
-                read_and_free_string(hew_toml_last_serialize_error()),
+                read_and_free_string(hew_toml_last_error()),
                 "toml: cannot serialize an invalid value"
             );
             hew_toml_free(std::ptr::null_mut()); // must not crash
@@ -922,49 +802,23 @@ mod tests {
     // Builder tests
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn test_table_builder_typed_setters() {
-        // SAFETY: all pointers come from this module's builder functions.
+    /// Insert `child` under `key`, transferring the child owner.
+    unsafe fn set(table: *mut HewTomlValue, key: &str, child: *mut HewTomlValue) {
+        let key = ManagedString::new(key);
+        // SAFETY: the caller passes a live table and a transferable child.
+        unsafe { hew_toml_object_set(table, key.as_ptr(), child) };
+    }
+
+    /// Read `key` from `table` as a string, releasing the selected child.
+    unsafe fn field_string(table: *const HewTomlValue, key: &str) -> String {
+        let key = ManagedString::new(key);
+        // SAFETY: the caller passes a live table; the child is released here.
         unsafe {
-            let tbl = hew_toml_table_new();
-            assert!(!tbl.is_null());
-            assert_eq!(hew_toml_type(tbl), 6); // table
-
-            let k_name = ManagedString::new("name");
-            let v_name = ManagedString::new("hew");
-            hew_toml_table_set_string(tbl, k_name.as_ptr(), v_name.as_ptr());
-
-            let k_port = ManagedString::new("port");
-            hew_toml_table_set_int(tbl, k_port.as_ptr(), 8080);
-
-            let k_pi = ManagedString::new("pi");
-            hew_toml_table_set_float(tbl, k_pi.as_ptr(), 3.14);
-
-            let k_en = ManagedString::new("enabled");
-            hew_toml_table_set_bool(tbl, k_en.as_ptr(), 1);
-
-            // Read back via getter API.
-            let name = hew_toml_get_field(tbl, k_name.as_ptr());
-            assert!(!name.is_null());
-            assert_eq!(read_and_free_string(hew_toml_get_string(name)), "hew");
-            hew_toml_free(name);
-
-            let port = hew_toml_get_field(tbl, k_port.as_ptr());
-            assert!(!port.is_null());
-            assert_eq!(hew_toml_get_int(port), 8080);
-            hew_toml_free(port);
-
-            let pi = hew_toml_get_field(tbl, k_pi.as_ptr());
-            assert!(!pi.is_null());
-            assert!((hew_toml_get_float(pi) - 3.14).abs() < f64::EPSILON);
-            hew_toml_free(pi);
-
-            let en = hew_toml_get_field(tbl, k_en.as_ptr());
-            assert!(!en.is_null());
-            assert_eq!(hew_toml_get_bool(en), 1);
-            hew_toml_free(en);
-
-            hew_toml_free(tbl);
+            let child = hew_toml_get_field(table, key.as_ptr());
+            assert!(!child.is_null());
+            let text = read_and_free_string(hew_toml_get_string(child));
+            hew_toml_free(child);
+            text
         }
     }
 
@@ -973,99 +827,26 @@ mod tests {
         // Build a nested structure: { server = { host = "localhost", port = 9090 } }
         // SAFETY: all pointers come from this module's builder functions.
         unsafe {
-            let inner = hew_toml_table_new();
-            let k_host = ManagedString::new("host");
-            let v_host = ManagedString::new("localhost");
-            hew_toml_table_set_string(inner, k_host.as_ptr(), v_host.as_ptr());
+            let inner = hew_toml_object_new();
+            assert_eq!(hew_toml_type(inner), 6);
+            let host = ManagedString::new("localhost");
+            set(inner, "host", hew_toml_from_string(host.as_ptr()));
+            set(inner, "port", hew_toml_from_int(9090));
 
-            let k_port = ManagedString::new("port");
-            hew_toml_table_set_int(inner, k_port.as_ptr(), 9090);
+            let outer = hew_toml_object_new();
+            set(outer, "server", inner);
 
-            let outer = hew_toml_table_new();
             let k_server = ManagedString::new("server");
-            // Takes ownership of inner — do not free inner after this.
-            hew_toml_table_set(outer, k_server.as_ptr(), inner);
-
-            // Verify nested access.
             let server = hew_toml_get_field(outer, k_server.as_ptr());
             assert!(!server.is_null());
-            assert_eq!(hew_toml_type(server), 6); // table
-
-            let host = hew_toml_get_field(server, k_host.as_ptr());
-            assert!(!host.is_null());
-            assert_eq!(read_and_free_string(hew_toml_get_string(host)), "localhost");
-            hew_toml_free(host);
-
+            assert_eq!(hew_toml_type(server), 6);
+            assert_eq!(field_string(server, "host"), "localhost");
+            let k_port = ManagedString::new("port");
             let port = hew_toml_get_field(server, k_port.as_ptr());
-            assert!(!port.is_null());
             assert_eq!(hew_toml_get_int(port), 9090);
             hew_toml_free(port);
-
             hew_toml_free(server);
             hew_toml_free(outer);
-        }
-    }
-
-    #[test]
-    fn test_array_builder_typed_pushers() {
-        // SAFETY: all pointers come from this module's builder functions.
-        unsafe {
-            let arr = hew_toml_array_new();
-            assert!(!arr.is_null());
-            assert_eq!(hew_toml_type(arr), 5); // array
-            assert_eq!(hew_toml_array_len(arr), 0);
-
-            hew_toml_array_push_int(arr, 10);
-            hew_toml_array_push_int(arr, 20);
-            hew_toml_array_push_int(arr, 30);
-            assert_eq!(hew_toml_array_len(arr), 3);
-
-            let elem = hew_toml_array_get(arr, 1);
-            assert!(!elem.is_null());
-            assert_eq!(hew_toml_get_int(elem), 20);
-            hew_toml_free(elem);
-
-            hew_toml_free(arr);
-        }
-    }
-
-    #[test]
-    fn test_array_push_mixed_scalars() {
-        // TOML arrays are homogeneous in spec, but toml::Value allows mixed.
-        // We test push_bool, push_float, push_string independently.
-        // SAFETY: all pointers come from this module's builder functions.
-        unsafe {
-            let bools = hew_toml_array_new();
-            hew_toml_array_push_bool(bools, 1);
-            hew_toml_array_push_bool(bools, 0);
-            assert_eq!(hew_toml_array_len(bools), 2);
-            let b0 = hew_toml_array_get(bools, 0);
-            assert_eq!(hew_toml_get_bool(b0), 1);
-            hew_toml_free(b0);
-            let b1 = hew_toml_array_get(bools, 1);
-            assert_eq!(hew_toml_get_bool(b1), 0);
-            hew_toml_free(b1);
-            hew_toml_free(bools);
-
-            let floats = hew_toml_array_new();
-            hew_toml_array_push_float(floats, 1.5);
-            hew_toml_array_push_float(floats, 2.5);
-            assert_eq!(hew_toml_array_len(floats), 2);
-            let f0 = hew_toml_array_get(floats, 0);
-            assert!((hew_toml_get_float(f0) - 1.5).abs() < f64::EPSILON);
-            hew_toml_free(f0);
-            hew_toml_free(floats);
-
-            let strings = hew_toml_array_new();
-            let s_a = ManagedString::new("alpha");
-            let s_b = ManagedString::new("beta");
-            hew_toml_array_push_string(strings, s_a.as_ptr());
-            hew_toml_array_push_string(strings, s_b.as_ptr());
-            assert_eq!(hew_toml_array_len(strings), 2);
-            let e1 = hew_toml_array_get(strings, 1);
-            assert_eq!(read_and_free_string(hew_toml_get_string(e1)), "beta");
-            hew_toml_free(e1);
-            hew_toml_free(strings);
         }
     }
 
@@ -1075,27 +856,18 @@ mod tests {
         // SAFETY: all pointers come from this module's builder functions.
         unsafe {
             let arr = hew_toml_array_new();
-
-            let tbl1 = hew_toml_table_new();
-            let k = ManagedString::new("host");
-            let v = ManagedString::new("alpha");
-            hew_toml_table_set_string(tbl1, k.as_ptr(), v.as_ptr());
-            hew_toml_array_push(arr, tbl1); // takes ownership
-
-            let tbl2 = hew_toml_table_new();
-            let v2 = ManagedString::new("beta");
-            hew_toml_table_set_string(tbl2, k.as_ptr(), v2.as_ptr());
-            hew_toml_array_push(arr, tbl2); // takes ownership
-
+            assert_eq!(hew_toml_array_len(arr), 0);
+            for name in ["alpha", "beta"] {
+                let table = hew_toml_object_new();
+                let host = ManagedString::new(name);
+                set(table, "host", hew_toml_from_string(host.as_ptr()));
+                hew_toml_array_push(arr, table);
+            }
             assert_eq!(hew_toml_array_len(arr), 2);
-
             let elem = hew_toml_array_get(arr, 0);
-            assert_eq!(hew_toml_type(elem), 6); // table
-            let host = hew_toml_get_field(elem, k.as_ptr());
-            assert_eq!(read_and_free_string(hew_toml_get_string(host)), "alpha");
-            hew_toml_free(host);
+            assert_eq!(hew_toml_type(elem), 6);
+            assert_eq!(field_string(elem, "host"), "alpha");
             hew_toml_free(elem);
-
             hew_toml_free(arr);
         }
     }
@@ -1105,8 +877,7 @@ mod tests {
         // SAFETY: all pointers come from this module's builder functions.
         unsafe {
             let b = hew_toml_from_bool(1);
-            assert!(!b.is_null());
-            assert_eq!(hew_toml_type(b), 1); // boolean
+            assert_eq!(hew_toml_type(b), 1);
             assert_eq!(hew_toml_get_bool(b), 1);
             hew_toml_free(b);
 
@@ -1115,29 +886,25 @@ mod tests {
             hew_toml_free(b_false);
 
             let i = hew_toml_from_int(42);
-            assert!(!i.is_null());
-            assert_eq!(hew_toml_type(i), 2); // integer
+            assert_eq!(hew_toml_type(i), 2);
             assert_eq!(hew_toml_get_int(i), 42);
             hew_toml_free(i);
 
             let f = hew_toml_from_float(2.718);
-            assert!(!f.is_null());
-            assert_eq!(hew_toml_type(f), 3); // float
+            assert_eq!(hew_toml_type(f), 3);
             assert!((hew_toml_get_float(f) - 2.718).abs() < f64::EPSILON);
             hew_toml_free(f);
 
             let cs = ManagedString::new("hello");
             let s = hew_toml_from_string(cs.as_ptr());
-            assert!(!s.is_null());
-            assert_eq!(hew_toml_type(s), 4); // string
+            assert_eq!(hew_toml_type(s), 4);
             assert_eq!(read_and_free_string(hew_toml_get_string(s)), "hello");
             hew_toml_free(s);
 
             // A null text handle creates an empty string value, not a null Value:
             // a managed empty string is indistinguishable from null.
             let empty = hew_toml_from_string(std::ptr::null());
-            assert!(!empty.is_null());
-            assert_eq!(hew_toml_type(empty), 4); // string
+            assert_eq!(hew_toml_type(empty), 4);
             assert!(hew_toml_get_string(empty).is_null());
             hew_toml_free(empty);
         }
@@ -1145,57 +912,28 @@ mod tests {
 
     #[test]
     fn test_builder_stringify_roundtrip() {
-        // Build { name = "hew", version = 1, tags = ["fast", "safe"] }
-        // then stringify and re-parse.
+        // Build { name = "hew", version = 1, tags = ["fast", "safe"] }, then
+        // stringify and re-parse.
         // SAFETY: all pointers come from this module's builder functions.
         unsafe {
-            let tbl = hew_toml_table_new();
-
-            let k_name = ManagedString::new("name");
-            let v_name = ManagedString::new("hew");
-            hew_toml_table_set_string(tbl, k_name.as_ptr(), v_name.as_ptr());
-
-            let k_ver = ManagedString::new("version");
-            hew_toml_table_set_int(tbl, k_ver.as_ptr(), 1);
-
+            let tbl = hew_toml_object_new();
+            let name = ManagedString::new("hew");
+            set(tbl, "name", hew_toml_from_string(name.as_ptr()));
+            set(tbl, "version", hew_toml_from_int(1));
             let tags = hew_toml_array_new();
-            let t1 = ManagedString::new("fast");
-            let t2 = ManagedString::new("safe");
-            hew_toml_array_push_string(tags, t1.as_ptr());
-            hew_toml_array_push_string(tags, t2.as_ptr());
+            for tag in ["fast", "safe"] {
+                let tag = ManagedString::new(tag);
+                hew_toml_array_push(tags, hew_toml_from_string(tag.as_ptr()));
+            }
+            set(tbl, "tags", tags);
 
-            let k_tags = ManagedString::new("tags");
-            hew_toml_table_set(tbl, k_tags.as_ptr(), tags); // takes ownership
-
-            // Stringify.
             let toml_str = read_and_free_string(hew_toml_stringify(tbl));
-            assert!(toml_str.contains("name"));
-            assert!(toml_str.contains("hew"));
-            assert!(toml_str.contains("version"));
-
-            // Re-parse the stringified output.
+            assert!(hew_toml_last_error().is_null());
             let reparsed_input = ManagedString::new(&toml_str);
             let reparsed = hew_toml_parse(reparsed_input.as_ptr());
             assert!(!reparsed.is_null());
-
-            let name = hew_toml_get_field(reparsed, k_name.as_ptr());
-            assert!(!name.is_null());
-            assert_eq!(read_and_free_string(hew_toml_get_string(name)), "hew");
-            hew_toml_free(name);
-
-            let ver = hew_toml_get_field(reparsed, k_ver.as_ptr());
-            assert!(!ver.is_null());
-            assert_eq!(hew_toml_get_int(ver), 1);
-            hew_toml_free(ver);
-
-            let tags_field = hew_toml_get_field(reparsed, k_tags.as_ptr());
-            assert!(!tags_field.is_null());
-            assert_eq!(hew_toml_array_len(tags_field), 2);
-            let first_tag = hew_toml_array_get(tags_field, 0);
-            assert_eq!(read_and_free_string(hew_toml_get_string(first_tag)), "fast");
-            hew_toml_free(first_tag);
-            hew_toml_free(tags_field);
-
+            assert_eq!(hew_toml_eq(reparsed, tbl), 1);
+            assert_eq!(field_string(reparsed, "name"), "hew");
             hew_toml_free(reparsed);
             hew_toml_free(tbl);
         }
@@ -1203,54 +941,120 @@ mod tests {
 
     #[test]
     fn test_builder_null_safety() {
-        // All builder functions must handle null gracefully. Null string
-        // arguments are the canonical empty string, not a no-op sentinel: a
-        // null key targets the empty-string key and a null value sets or
-        // pushes an empty string value.
+        // Null string arguments are the canonical empty string: a null key
+        // targets the empty-string key.
         // SAFETY: testing null handling.
         unsafe {
-            // Table setters with null table are no-ops.
-            let k = ManagedString::new("k");
-            let v = ManagedString::new("v");
-            hew_toml_table_set_bool(std::ptr::null_mut(), k.as_ptr(), 1);
-            hew_toml_table_set_int(std::ptr::null_mut(), k.as_ptr(), 1);
-            hew_toml_table_set_float(std::ptr::null_mut(), k.as_ptr(), 1.0);
-            hew_toml_table_set_string(std::ptr::null_mut(), k.as_ptr(), v.as_ptr());
-            hew_toml_table_set(std::ptr::null_mut(), k.as_ptr(), std::ptr::null_mut());
-
-            // A null key targets the empty-string key rather than a no-op.
-            let tbl = hew_toml_table_new();
-            hew_toml_table_set_bool(tbl, std::ptr::null(), 1);
-            hew_toml_table_set_int(tbl, std::ptr::null(), 1);
-            hew_toml_table_set_float(tbl, std::ptr::null(), 1.0);
-            hew_toml_table_set_string(tbl, std::ptr::null(), v.as_ptr());
-            // A null child value remains a no-op even with a null key.
-            hew_toml_table_set(tbl, std::ptr::null(), std::ptr::null_mut());
-            let empty_key_field = hew_toml_get_field(tbl, std::ptr::null());
-            assert!(!empty_key_field.is_null());
-            assert_eq!(hew_toml_type(empty_key_field), 4); // string, from the last successful set
-            assert_eq!(
-                read_and_free_string(hew_toml_get_string(empty_key_field)),
-                "v"
-            );
-            hew_toml_free(empty_key_field);
-            hew_toml_free(tbl);
-
-            // Array pushers with null array.
-            hew_toml_array_push_bool(std::ptr::null_mut(), 1);
-            hew_toml_array_push_int(std::ptr::null_mut(), 1);
-            hew_toml_array_push_float(std::ptr::null_mut(), 1.0);
-            hew_toml_array_push_string(std::ptr::null_mut(), v.as_ptr());
+            hew_toml_object_set(std::ptr::null_mut(), std::ptr::null(), std::ptr::null_mut());
             hew_toml_array_push(std::ptr::null_mut(), std::ptr::null_mut());
 
-            // A null string pushes the empty string, not a no-op.
-            let arr = hew_toml_array_new();
-            hew_toml_array_push_string(arr, std::ptr::null());
-            assert_eq!(hew_toml_array_len(arr), 1);
-            let elem = hew_toml_array_get(arr, 0);
-            assert!(hew_toml_get_string(elem).is_null()); // empty string reads as canonical empty
-            hew_toml_free(elem);
-            hew_toml_free(arr);
+            let tbl = hew_toml_object_new();
+            let v = ManagedString::new("v");
+            hew_toml_object_set(tbl, std::ptr::null(), hew_toml_from_string(v.as_ptr()));
+            // A null child value remains a no-op even with a null key.
+            hew_toml_object_set(tbl, std::ptr::null(), std::ptr::null_mut());
+            assert_eq!(field_string(tbl, ""), "v");
+            hew_toml_free(tbl);
+        }
+    }
+
+    #[test]
+    fn clone_and_eq_compare_independent_values() {
+        let baseline = live_value_boxes();
+        // SAFETY: every handle is allocated here and freed exactly once.
+        unsafe {
+            let original = hew_toml_object_new();
+            set(original, "n", hew_toml_from_int(1));
+            let copy = hew_toml_clone(original);
+            assert_eq!(hew_toml_eq(original, copy), 1);
+            set(copy, "n", hew_toml_from_int(2));
+            assert_eq!(hew_toml_eq(original, copy), 0);
+            let k = ManagedString::new("n");
+            let n = hew_toml_get_field(original, k.as_ptr());
+            assert_eq!(hew_toml_get_int(n), 1);
+            hew_toml_free(n);
+
+            // Integer and float stay distinct; null handles never compare equal.
+            let int_one = hew_toml_from_int(1);
+            let float_one = hew_toml_from_float(1.0);
+            assert_eq!(hew_toml_eq(int_one, float_one), 0);
+            assert_eq!(hew_toml_eq(std::ptr::null(), std::ptr::null()), 0);
+            assert!(hew_toml_clone(std::ptr::null()).is_null());
+            for value in [original, copy, int_one, float_one] {
+                hew_toml_free(value);
+            }
+        }
+        assert_eq!(live_value_boxes(), baseline);
+    }
+
+    #[test]
+    fn datetime_reads_back_its_lexical_form_and_other_kinds_read_empty() {
+        let input = ManagedString::new(
+            "odt = 1979-05-27T07:32:00Z\nld = 1979-05-27\nlt = 07:32:00\ns = \"1979-05-27\"",
+        );
+        // SAFETY: input is live; every child is freed once.
+        unsafe {
+            let root = hew_toml_parse(input.as_ptr());
+            assert!(!root.is_null());
+            for (key, text) in [
+                ("odt", "1979-05-27T07:32:00Z"),
+                ("ld", "1979-05-27"),
+                ("lt", "07:32:00"),
+            ] {
+                let k = ManagedString::new(key);
+                let value = hew_toml_get_field(root, k.as_ptr());
+                assert_eq!(hew_toml_type(value), 7, "{key}");
+                assert_eq!(read_and_free_string(hew_toml_get_datetime(value)), text);
+                assert!(hew_toml_get_string(value).is_null(), "{key}");
+                hew_toml_free(value);
+            }
+            let k = ManagedString::new("s");
+            let string = hew_toml_get_field(root, k.as_ptr());
+            assert!(hew_toml_get_datetime(string).is_null());
+            hew_toml_free(string);
+            assert!(hew_toml_get_datetime(std::ptr::null()).is_null());
+            hew_toml_free(root);
+        }
+    }
+
+    #[test]
+    fn object_keys_lists_table_keys_and_rejects_other_kinds() {
+        let input = ManagedString::new("b = 1\n[a]\nx = 2\n");
+        // SAFETY: input is live; every handle is freed once.
+        unsafe {
+            let root = hew_toml_parse(input.as_ptr());
+            let keys = hew_toml_object_keys(root);
+            assert_eq!(hew_toml_type(keys), 5);
+            assert_eq!(hew_toml_array_len(keys), 2);
+            let first = hew_toml_array_get(keys, 0);
+            assert_eq!(read_and_free_string(hew_toml_get_string(first)), "a");
+            hew_toml_free(first);
+            let second = hew_toml_array_get(keys, 1);
+            assert_eq!(read_and_free_string(hew_toml_get_string(second)), "b");
+            hew_toml_free(second);
+            hew_toml_free(keys);
+
+            let scalar = hew_toml_from_int(1);
+            assert!(hew_toml_object_keys(scalar).is_null());
+            hew_toml_free(scalar);
+            hew_toml_free(root);
+        }
+    }
+
+    #[test]
+    fn stringify_failure_sets_and_success_clears_the_error_slot() {
+        // SAFETY: every handle is allocated here and freed once.
+        unsafe {
+            let scalar = hew_toml_from_int(1);
+            let text = hew_toml_stringify(scalar);
+            assert!(text.is_null());
+            assert!(!read_and_free_string(hew_toml_last_error()).is_empty());
+            hew_toml_free(scalar);
+
+            let empty = hew_toml_object_new();
+            assert_eq!(read_and_free_string(hew_toml_stringify(empty)), "");
+            assert!(hew_toml_last_error().is_null());
+            hew_toml_free(empty);
         }
     }
 
@@ -1283,6 +1087,11 @@ mod tests {
             let object_val = boxed_value(toml::Value::Table(toml::Table::new()));
             assert_eq!(hew_toml_type(object_val), 6);
             hew_toml_free(object_val);
+
+            let datetime = "1979-05-27".parse::<toml::value::Datetime>().unwrap();
+            let datetime_val = boxed_value(toml::Value::Datetime(datetime));
+            assert_eq!(hew_toml_type(datetime_val), 7);
+            hew_toml_free(datetime_val);
         }
     }
 

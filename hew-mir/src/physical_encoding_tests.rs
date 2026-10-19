@@ -43,7 +43,11 @@ fn encoding_operations_lower_through_shared_ownership_contracts() {
     {
         physical(&fixture::operation(family));
     }
-    for format in [EncodingFormat::Json, EncodingFormat::Yaml] {
+    for format in [
+        EncodingFormat::Json,
+        EncodingFormat::Yaml,
+        EncodingFormat::Toml,
+    ] {
         physical(&fixture::copy(format));
         physical(&fixture::local_copy(format));
     }
@@ -51,9 +55,13 @@ fn encoding_operations_lower_through_shared_ownership_contracts() {
 
 #[test]
 fn encoding_recipes_reject_bitwise_copy_and_cross_format_glue() {
-    for format in [EncodingFormat::Json, EncodingFormat::Yaml] {
+    for format in [
+        EncodingFormat::Json,
+        EncodingFormat::Yaml,
+        EncodingFormat::Toml,
+    ] {
         let other = if format == EncodingFormat::Json {
-            EncodingFormat::Yaml
+            EncodingFormat::Toml
         } else {
             EncodingFormat::Json
         };

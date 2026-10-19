@@ -1055,6 +1055,7 @@ pub enum EncodingFormat {
     #[default]
     Json,
     Yaml,
+    Toml,
 }
 
 impl EncodingFormat {
@@ -1063,6 +1064,7 @@ impl EncodingFormat {
         match self {
             Self::Json => BuiltinType::JsonValue,
             Self::Yaml => BuiltinType::YamlValue,
+            Self::Toml => BuiltinType::TomlValue,
         }
     }
 
@@ -1072,6 +1074,7 @@ impl EncodingFormat {
         match builtin {
             BuiltinType::JsonValue => Some(Self::Json),
             BuiltinType::YamlValue => Some(Self::Yaml),
+            BuiltinType::TomlValue => Some(Self::Toml),
             _ => None,
         }
     }
@@ -1081,6 +1084,7 @@ impl EncodingFormat {
         match self {
             Self::Json => "std.encoding.json",
             Self::Yaml => "std.encoding.yaml",
+            Self::Toml => "std.encoding.toml",
         }
     }
 }
@@ -1096,10 +1100,26 @@ macro_rules! encoding_operations {
             pub const fn c_symbol(self, format: EncodingFormat) -> &'static str {
                 match (format, self) {
                     $((EncodingFormat::Json, Self::$op) => concat!("hew_json_", $suffix),
-                      (EncodingFormat::Yaml, Self::$op) => concat!("hew_yaml_", $suffix)),+
+                      (EncodingFormat::Yaml, Self::$op) => concat!("hew_yaml_", $suffix),
+                      (EncodingFormat::Toml, Self::$op) => concat!("hew_toml_", $suffix)),+
                 }
             }
 
+            /// Whether `format` implements this operation. TOML has no null and
+            /// only signed integers; only TOML has a datetime kind. This is the
+            /// one authority over which (format, op) runtime families exist.
+            #[must_use]
+            pub const fn supported(self, format: EncodingFormat) -> bool {
+                match format {
+                    EncodingFormat::Json | EncodingFormat::Yaml => {
+                        !matches!(self, Self::GetDatetime)
+                    }
+                    EncodingFormat::Toml => !matches!(
+                        self,
+                        Self::GetU64 | Self::IntStatus | Self::FromU64 | Self::FromNull
+                    ),
+                }
+            }
         }
     };
 }
@@ -1116,6 +1136,7 @@ encoding_operations! {
     GetU64 => "get_u64",
     GetFloat => "get_float",
     GetString => "get_string",
+    GetDatetime => "get_datetime",
     GetField => "get_field",
     ArrayLen => "array_len",
     ArrayGet => "array_get",
@@ -1164,7 +1185,7 @@ macro_rules! encoding_contract {
                 runtime_semantic_contract(&[TEXT], FreshOwned(VALUE), &[])
             }
             EncodingOp::LastError => runtime_semantic_contract(&[], FreshOwned(String), &[]),
-            EncodingOp::Stringify | EncodingOp::GetString => {
+            EncodingOp::Stringify | EncodingOp::GetString | EncodingOp::GetDatetime => {
                 runtime_semantic_contract(&[READ], FreshOwned(String), &[])
             }
             EncodingOp::Type
@@ -1226,6 +1247,7 @@ impl EncodingOp {
         match format {
             EncodingFormat::Json => encoding_contract!(JsonValue, self),
             EncodingFormat::Yaml => encoding_contract!(YamlValue, self),
+            EncodingFormat::Toml => encoding_contract!(TomlValue, self),
         }
     }
 }

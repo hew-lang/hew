@@ -378,11 +378,10 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 **State: DELETED.** The `encode_header`, `decode_header`, and
 `validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
 The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
-`04bfb422`) was the replacement; the migration is complete. JSON and YAML
-now expose format-specific owning values with automatic cleanup and checked
-accessors. Their former shared resource-shaped `CanonicalValueMethods` trait
-has been removed. TOML retains its independent resource API; MessagePack
-converts between its bytes and JSON text.
+`04bfb422`) was the replacement; the migration is complete. JSON, YAML and
+TOML now expose format-specific owning values with automatic cleanup and
+checked accessors. The former shared resource-shaped `CanonicalValueMethods`
+trait has been removed. MessagePack converts between its bytes and JSON text.
 
 ### S2. Cap'n Proto stub crate
 

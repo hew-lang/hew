@@ -277,7 +277,8 @@ pub fn builtin_named_type(name: &str) -> Option<BuiltinNamedType> {
             | BuiltinType::Instant
             | BuiltinType::Trap
             | BuiltinType::JsonValue
-            | BuiltinType::YamlValue,
+            | BuiltinType::YamlValue
+            | BuiltinType::TomlValue,
         )
         | None => None,
     }

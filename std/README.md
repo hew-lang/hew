@@ -1,9 +1,9 @@
 # Hew Standard Library
 
-JSON and YAML expose owning values with automatic cleanup, independent copies,
-checked accessors and ordinary mutable receivers. Their format-specific APIs
-preserve exact integer access and return typed parse, access and encode errors.
-TOML currently retains its independent resource API.
+JSON, YAML and TOML expose owning values with automatic cleanup, independent
+copies, checked accessors and ordinary mutable receivers. Their format-specific
+APIs preserve exact integer access and return typed parse, access and encode
+errors.
 
 The Hew standard library provides core types, data structures, networking, encoding, and utilities.
 

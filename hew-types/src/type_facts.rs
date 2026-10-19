@@ -1401,7 +1401,8 @@ impl TypeFactService {
                         | BuiltinType::Rc
                         | BuiltinType::Weak
                         | BuiltinType::JsonValue
-                        | BuiltinType::YamlValue,
+                        | BuiltinType::YamlValue
+                        | BuiltinType::TomlValue,
                     ),
                 ..
             } => Ok(None),
@@ -2464,7 +2465,8 @@ fn main() {}"#,
                 BuiltinType::Vec
                 | BuiltinType::HashSet
                 | BuiltinType::JsonValue
-                | BuiltinType::YamlValue => Some((ValueClass::CowValue, CloneKind::DeepCopy)),
+                | BuiltinType::YamlValue
+                | BuiltinType::TomlValue => Some((ValueClass::CowValue, CloneKind::DeepCopy)),
                 BuiltinType::HashMap | BuiltinType::HashMapIter | BuiltinType::VecIter => {
                     Some((ValueClass::CowValue, CloneKind::FieldWise))
                 }

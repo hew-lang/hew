@@ -19,7 +19,7 @@
 use crate::check::{TypeDef, TypeDefKind, TypeDefView, VariantDef};
 use crate::ty::Ty;
 use crate::BuiltinType;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EqEligibility {
@@ -47,65 +47,36 @@ impl EqEligibilityFailure {
     }
 }
 
-#[derive(Default)]
-struct EqWalk {
-    completed: HashMap<Ty, Option<EqEligibilityFailure>>,
-    active: HashSet<Ty>,
-    path: Vec<Ty>,
-}
+type EqWalk = crate::capability_walk::CapabilityWalk<Option<EqEligibilityFailure>>;
 
-fn contains_type(ty: &Ty, needle: &Ty) -> bool {
-    let mut pending = vec![ty];
-    while let Some(ty) = pending.pop() {
-        if ty == needle {
-            return true;
-        }
-        ty.for_each_child(&mut |child| pending.push(child));
-    }
-    false
-}
-
-/// Returns `Some(rejection)` if `ty` is not equality-eligible, `None` if eligible.
-///
-/// Only concrete elements are eligible at this layout gate.
+/// Only concrete elements are eligible at this operation-specific layout gate.
 fn eq_ineligibility(
     ty: &Ty,
     types: TypeDefView<'_>,
     walk: &mut EqWalk,
 ) -> Option<EqEligibilityFailure> {
-    if let Some(completed) = walk.completed.get(ty) {
-        return completed.clone();
+    use crate::capability_walk::CapabilityVisit;
+    // Literal leaves retain their existing inference-time policy. All recursive
+    // queries use the same concrete identity as selected value capabilities.
+    if matches!(ty, Ty::IntLiteral | Ty::FloatLiteral) {
+        return eq_ineligibility_inner(ty, types, walk);
     }
-    let growing = matches!(ty, Ty::Named { head, args } if head.nominal().is_some() && !args.is_empty())
-        && walk.path.iter().any(|previous| match (previous, ty) {
-            (
-                Ty::Named {
-                    head: previous_head,
-                    args: previous,
-                },
-                Ty::Named { head, args },
-            ) => {
-                previous_head == head
-                    && previous.len() == args.len()
-                    && previous != args
-                    && previous
-                        .iter()
-                        .zip(args)
-                        .all(|(previous, actual)| contains_type(actual, previous))
-            }
-            _ => false,
-        });
-    if growing || !walk.active.insert(ty.clone()) {
-        return Some(EqEligibilityFailure {
+    let unknown = || {
+        Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleUnknown,
             member: String::new(),
-        });
-    }
-    walk.path.push(ty.clone());
+        })
+    };
+    let Ok(resolved) = crate::ResolvedTy::from_ty(ty) else {
+        return unknown();
+    };
+    let entry = match walk.enter(&resolved, crate::type_facts::ValueCapability::Eq) {
+        CapabilityVisit::Complete(result) => return result,
+        CapabilityVisit::Recursive | CapabilityVisit::Growing => return unknown(),
+        CapabilityVisit::Entered(entry) => entry,
+    };
     let result = eq_ineligibility_inner(ty, types, walk);
-    walk.path.pop();
-    walk.active.remove(ty);
-    walk.completed.insert(ty.clone(), result.clone());
+    walk.finish(entry, result.clone(), result.is_none());
     result
 }
 

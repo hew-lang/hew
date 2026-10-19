@@ -200,15 +200,7 @@ impl BuiltinDisplayPlan {
     }
 }
 
-#[derive(Default)]
-struct CapabilityWalk {
-    states: HashMap<(ResolvedTy, ValueCapability), CapabilityState>,
-}
-
-enum CapabilityState {
-    Visiting,
-    Complete(CapabilityResult),
-}
+type CapabilityWalk = crate::capability_walk::CapabilityWalk<CapabilityResult>;
 
 type DisplayResult = Result<Option<(crate::DefId, Vec<ResolvedTy>)>, ClassError>;
 
@@ -1339,17 +1331,19 @@ impl TypeFactService {
         walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> CapabilityResult {
-        let key = (ty.clone(), capability);
-        match walk.states.get(&key) {
-            Some(CapabilityState::Complete(result)) => return result.clone(),
-            // Recursive structural operations have no admitted implementation.
-            Some(CapabilityState::Visiting) => return Ok(None),
-            None => {}
-        }
-        walk.states.insert(key.clone(), CapabilityState::Visiting);
+        use crate::capability_walk::CapabilityVisit;
+        let entry = match walk.enter(ty, capability) {
+            CapabilityVisit::Complete(result) => return result,
+            CapabilityVisit::Recursive | CapabilityVisit::Growing => return Ok(None),
+            CapabilityVisit::Entered(entry) => entry,
+        };
+        let call_mark = calls.len();
         let result = self.select_capability_uncached(ty, capability, walk, calls);
-        walk.states
-            .insert(key, CapabilityState::Complete(result.clone()));
+        let admitted = matches!(result, Ok(Some(_)));
+        if !admitted {
+            calls.truncate(call_mark);
+        }
+        walk.finish(entry, result.clone(), admitted);
         result
     }
 

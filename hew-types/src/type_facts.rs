@@ -1332,13 +1332,23 @@ impl TypeFactService {
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> CapabilityResult {
         use crate::capability_walk::CapabilityVisit;
-        let entry = match walk.enter(ty, capability) {
+        let method = selected_impl_method(
+            &self.context.method_ids,
+            ty,
+            ImplMethodSlot::Value(capability),
+        );
+        let entry = match walk.enter(ty, capability, method.is_none()) {
             CapabilityVisit::Complete(result) => return result,
+            CapabilityVisit::Recursive
+                if matches!(capability, ValueCapability::Eq | ValueCapability::Hash) =>
+            {
+                return Ok(Some(ValueMethodPlan::Derived))
+            }
             CapabilityVisit::Recursive | CapabilityVisit::Growing => return Ok(None),
             CapabilityVisit::Entered(entry) => entry,
         };
         let call_mark = calls.len();
-        let result = self.select_capability_uncached(ty, capability, walk, calls);
+        let result = self.select_capability_uncached(ty, capability, method, walk, calls);
         let admitted = matches!(result, Ok(Some(_)));
         if !admitted {
             calls.truncate(call_mark);
@@ -1351,16 +1361,12 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
         capability: ValueCapability,
+        method: Option<crate::DefId>,
         walk: &mut CapabilityWalk,
         calls: &mut Vec<(crate::DefId, Vec<ResolvedTy>)>,
     ) -> Result<Option<ValueMethodPlan>, ClassError> {
         crate::value_class::classify_ty(ty, &ClassContext::new(&self.context))?;
         require_concrete_capability_type(ty)?;
-        let method = selected_impl_method(
-            &self.context.method_ids,
-            ty,
-            ImplMethodSlot::Value(capability),
-        );
         if let Some(method) = method {
             if capability == ValueCapability::Hash {
                 let admitted_shape = match ty {
@@ -1405,9 +1411,6 @@ impl TypeFactService {
             calls.push((method, type_args.clone()));
             return Ok(Some(ValueMethodPlan::User { method, type_args }));
         }
-        if !crate::check::declaration_walk_terminates(ty, self.context.types()) {
-            return Ok(None);
-        }
         let derived = match capability {
             ValueCapability::Hash => self.derived_hash(ty, walk, calls),
             ValueCapability::Eq => self.derived_eq(ty, walk, calls),
@@ -1439,13 +1442,12 @@ impl TypeFactService {
         &self,
         ty: &ResolvedTy,
     ) -> Result<Option<Vec<ResolvedTy>>, ClassError> {
-        if !crate::check::declaration_walk_terminates(ty, self.context.types())
-            || selected_impl_method(
-                &self.context.method_ids,
-                ty,
-                ImplMethodSlot::Value(ValueCapability::Eq),
-            )
-            .is_some()
+        if selected_impl_method(
+            &self.context.method_ids,
+            ty,
+            ImplMethodSlot::Value(ValueCapability::Eq),
+        )
+        .is_some()
         {
             return Ok(None);
         }
@@ -1984,7 +1986,9 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
 
 #[cfg(test)]
 mod tests {
-    use super::{selected_impl_method, ImplMethodKey};
+    use super::{
+        selected_impl_method, CapabilityWalk, ImplMethodKey, ValueCapability, ValueMethodPlan,
+    };
     use std::collections::BTreeMap;
     use std::collections::{HashMap, HashSet};
 
@@ -2129,6 +2133,42 @@ fn main() {}"#,
             service.display_method_for_type(&missing, &missing),
             Ok(None)
         );
+    }
+
+    #[test]
+    fn recursive_capabilities_withdraw_failed_mutual_assumptions_in_either_order() {
+        let parsed = hew_parser::parse(
+            r"
+            type Left { peers: Vec<Right>; unsupported: HashMap<string, i64>; }
+            type Right { peers: Vec<Left>; }
+            type Node { children: Vec<Node>; label: string; }
+            fn main() {}
+        ",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = crate::Checker::new(crate::module_registry::ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        let service = TypeFactService::new(output.type_fact_context, output.type_facts);
+        for capability in [ValueCapability::Eq, ValueCapability::Hash] {
+            for order in [["Left", "Right"], ["Right", "Left"]] {
+                let mut walk = CapabilityWalk::default();
+                let mut calls = Vec::new();
+                for name in order {
+                    let ty = ResolvedTy::named_path(service.defs(), name, vec![]);
+                    assert_eq!(
+                        service.select_capability_inner(&ty, capability, &mut walk, &mut calls),
+                        Ok(None)
+                    );
+                    assert!(calls.is_empty());
+                }
+                let node = ResolvedTy::named_path(service.defs(), "Node", vec![]);
+                assert_eq!(
+                    service.select_capability_inner(&node, capability, &mut walk, &mut calls),
+                    Ok(Some(ValueMethodPlan::Derived))
+                );
+            }
+        }
     }
 
     /// Declarations the §1.1 Aggregate rule needs for the cases below.

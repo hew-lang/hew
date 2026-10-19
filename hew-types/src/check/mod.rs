@@ -495,9 +495,9 @@ pub(crate) fn class_is_non_owning(
 
 /// Whether a declaration walk rooted at `ty` reaches no cycle.
 ///
-/// Structural capability selection descends through declarations, so a
-/// self-recursive nominal has no finite derived operation. This answers,
-/// fail-closed, whether it is safe to start that walk.
+/// Walks that expand members without memoizing concrete instances, such as
+/// generic demand expansion, cannot finish on a recursive nominal. This
+/// answers whether those walks may start; capability selection tracks cycles.
 #[expect(
     clippy::too_many_lines,
     reason = "the walk enumerates every Ty and VariantDef shape it descends through"

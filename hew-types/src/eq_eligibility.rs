@@ -56,23 +56,31 @@ fn eq_ineligibility(
     walk: &mut EqWalk,
 ) -> Option<EqEligibilityFailure> {
     use crate::capability_walk::CapabilityVisit;
-    // Literal leaves retain their existing inference-time policy. All recursive
-    // queries use the same concrete identity as selected value capabilities.
-    if matches!(ty, Ty::IntLiteral | Ty::FloatLiteral) {
-        return eq_ineligibility_inner(ty, types, walk);
-    }
+    // Literal defaults affect the traversal key only. Eligibility still uses
+    // the original type so inference-time diagnostics retain their spelling.
     let unknown = || {
         Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleUnknown,
             member: String::new(),
         })
     };
-    let Ok(resolved) = crate::ResolvedTy::from_ty(ty) else {
+    let resolved = crate::ResolvedTy::from_ty(ty).or_else(|error| {
+        if matches!(
+            error,
+            crate::resolved_ty::BoundaryError::UnmaterializedLiteral { .. }
+        ) {
+            crate::ResolvedTy::from_ty(&ty.materialize_literal_defaults())
+        } else {
+            Err(error)
+        }
+    });
+    let Ok(resolved) = resolved else {
         return unknown();
     };
-    let entry = match walk.enter(&resolved, crate::type_facts::ValueCapability::Eq) {
+    let entry = match walk.enter(&resolved, crate::type_facts::ValueCapability::Eq, true) {
         CapabilityVisit::Complete(result) => return result,
-        CapabilityVisit::Recursive | CapabilityVisit::Growing => return unknown(),
+        CapabilityVisit::Recursive => return None,
+        CapabilityVisit::Growing => return unknown(),
         CapabilityVisit::Entered(entry) => entry,
     };
     let result = eq_ineligibility_inner(ty, types, walk);
@@ -324,11 +332,23 @@ mod tests {
     }
 
     #[test]
-    fn equality_recursive_layout_gate_terminates_conservatively() {
+    fn equality_layout_preserves_nested_literal_eligibility() {
+        let output = checked("fn main() {}");
+        assert_eq!(
+            ty_eq_ineligibility(
+                &Ty::Tuple(vec![Ty::IntLiteral, Ty::FloatLiteral]),
+                output.types()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn equality_recursive_layout_gate_accepts_finite_structural_values() {
         let output = checked("enum EqNode { Leaf(i64); Branch(Vec<EqNode>); } fn main() {}");
-        let failure = ty_eq_ineligibility(&named(&output, "EqNode", vec![]), output.types())
-            .expect("recursive layout gate remains unproven");
-        assert_eq!(failure.reason, EqEligibility::IneligibleUnknown);
-        assert!(!failure.member.is_empty());
+        assert_eq!(
+            ty_eq_ineligibility(&named(&output, "EqNode", vec![]), output.types()),
+            None
+        );
     }
 }

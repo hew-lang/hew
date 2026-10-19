@@ -44,6 +44,7 @@ impl<R: Clone> CapabilityWalk<R> {
         &mut self,
         ty: &ResolvedTy,
         capability: ValueCapability,
+        structural: bool,
     ) -> CapabilityVisit<R> {
         let key = (ty.clone(), capability);
         match self.states.get(&key) {
@@ -51,7 +52,7 @@ impl<R: Clone> CapabilityWalk<R> {
             Some(State::Visiting) => return CapabilityVisit::Recursive,
             None => {}
         }
-        if self.grows(ty, capability) {
+        if structural && self.grows(ty, capability) {
             return CapabilityVisit::Growing;
         }
         self.states.insert(key.clone(), State::Visiting);

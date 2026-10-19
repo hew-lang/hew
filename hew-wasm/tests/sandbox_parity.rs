@@ -16,6 +16,10 @@ const HEW_SEED: &str = "42";
 
 const PARITY_CASES: &[ParityCase] = &[
     ParityCase {
+        test_name: "recursive_structural_equality",
+        source_rel: "tests/core-acceptance/cases/recursive-structural-equality.hew",
+    },
+    ParityCase {
         test_name: "lambda_actor_private_capture",
         source_rel: "tests/core-acceptance/cases/lambda-actor-private-capture.hew",
     },
@@ -1180,6 +1184,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "user_codec_stream" => Some("user codec frames\n"),
+        "recursive_structural_equality" => Some("json true false true\nvec true false true\nnode true false\nrecursive keys ok\nlist true false\n"),
         "lambda_actor_private_capture" => Some("501\n1202\n2303\nouter 0 0\n2\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
         "dyn_multibound_dispatch" => {

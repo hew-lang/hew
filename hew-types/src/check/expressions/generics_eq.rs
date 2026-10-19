@@ -305,11 +305,20 @@ impl Checker {
             if mentioned_owners.len() > 1 && kind == GenericRequirementKind::Eq {
                 if let Ok(resolved) = ResolvedTy::from_ty(ty) {
                     let service = TypeFactService::new(self.type_fact_context(), BTreeMap::new());
-                    if let Ok(Some(members)) = service.derived_eq_members(&resolved) {
-                        for member in members {
-                            self.record_generic_requirement(kind.clone(), &member.to_ty(), span);
+                    if crate::check::declaration_walk_terminates(
+                        &resolved,
+                        service.context().types(),
+                    ) {
+                        if let Ok(Some(members)) = service.derived_eq_members(&resolved) {
+                            for member in members {
+                                self.record_generic_requirement(
+                                    kind.clone(),
+                                    &member.to_ty(),
+                                    span,
+                                );
+                            }
+                            return;
                         }
-                        return;
                     }
                 }
             }

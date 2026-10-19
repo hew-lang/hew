@@ -13,3 +13,8 @@ Slow subscribers receive explicit lag, and owner closure drains retained
 notices before end-of-stream. Subscription cleanup detaches pending waits and
 releases capacity. The wrapper uses the ordinary machine evaluator and actor
 services.
+
+A machine output without fields is emitted by its name alone, `emit Ready;`.
+`hew fmt` no longer refuses files that use that spelling, and `emit Ready {}`
+is now refused with `E_EMPTY_KEY_BRACES`, as an empty `spawn` key list is;
+`hew fmt --migrate` rewrites it.

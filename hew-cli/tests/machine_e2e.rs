@@ -395,7 +395,7 @@ fn reenter_fixture() -> &'static str {
 /// Machine with an `emits { … }` manifest.
 /// Uses `default { state }` to satisfy exhaustiveness so the HIR check path works.
 fn emits_fixture() -> &'static str {
-    "machine Relay {\n    events {\n        Trigger;\n        Signal;\n    }\n    emits {\n        Signal;\n    }\n    state Idle;\n    state Active;\n    on Trigger: Idle => Active {\n        emit Signal {};\n        .Active\n    }\n    on Trigger: Active => Idle;\n    default { state }\n}\n"
+    "machine Relay {\n    events {\n        Trigger;\n        Signal;\n    }\n    emits {\n        Signal;\n    }\n    state Idle;\n    state Active;\n    on Trigger: Idle => Active {\n        emit Signal;\n        .Active\n    }\n    on Trigger: Active => Idle;\n    default { state }\n}\n"
 }
 
 /// Generic machine — the ordinary HIR check path admits it. `default { state }`

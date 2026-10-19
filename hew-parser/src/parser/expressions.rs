@@ -917,10 +917,13 @@ impl Parser<'_> {
             Token::Identifier("emit")
                 if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
             {
+                let head_start = self.peek_span().start;
                 self.advance();
                 let event_name = self.expect_ident()?;
                 let mut field_labels = Vec::new();
-                let fields = if self.eat(&Token::LeftBrace) {
+                let fields = if self.peek() == Some(&Token::LeftBrace) {
+                    let open = self.peek_span();
+                    self.advance();
                     let mut fields = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                         let (field_name, field_label, field_val) = self.parse_field_init()?;
@@ -931,6 +934,20 @@ impl Parser<'_> {
                         }
                     }
                     self.expect(&Token::RightBrace)?;
+                    // A unit output is emitted by its name alone (§3.11.6:
+                    // `FieldInitList` names at least one field).
+                    if fields.is_empty() {
+                        let head = self
+                            .source_text(head_start..open.start)
+                            .trim_end()
+                            .to_string();
+                        self.error_at_with_kind_and_hint(
+                            "an empty field list is written without braces".to_string(),
+                            open.start..self.last_token_end,
+                            format!("write `{head}`"),
+                            ParseDiagnosticKind::EmptyKeyBraces,
+                        );
+                    }
                     fields
                 } else {
                     Vec::new()

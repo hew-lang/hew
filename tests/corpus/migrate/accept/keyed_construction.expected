@@ -19,10 +19,16 @@ machine Door {
     events {
         Open { by: string; }
     }
+    emits {
+        Opened;
+    }
     state Shut;
     state Ajar { by: string; }
 
-    on Open { by }: Shut => Ajar { by: by }
+    on Open { by }: Shut => Ajar {
+        emit Opened;
+        Ajar { by }
+    }
 
     default { state }
 }

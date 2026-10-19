@@ -471,7 +471,7 @@ fn parse_machine_emits_manifest() {
     state Active;
 
     on Start: Idle => Active {
-        emit Ready {};
+        emit Ready;
         Active
     }
     on Ready: Idle => Idle reenter;

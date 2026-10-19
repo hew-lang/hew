@@ -4914,9 +4914,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write("emit ");
                 self.write_ident(*event_name);
-                if fields.is_empty() {
-                    self.write(" {}");
-                } else {
+                if !fields.is_empty() {
                     self.write(" { ");
                     self.write_field_inits(fields, field_labels);
                     self.write(" }");

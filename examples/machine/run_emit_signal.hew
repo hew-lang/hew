@@ -2,14 +2,14 @@
 //
 // Drives the MachineEmitPlaceholder codegen path via `hew run`:
 //   1. Construct a `Signal` machine at its initial state.
-//   2. Step with `Start`, which triggers `emit Ready {}` then transitions
+//   2. Step with `Start`, which triggers `emit Ready` then transitions
 //      to `Active`.
 //   3. Observe that the step succeeds and state_name() reflects the new state.
 //   4. Read the emitted output from the step's own report: outputs are
 //      returned per-step (MACHINE-SPEC's `MStep.outputs`), not pulled from a
 //      separate queue — a later step with no `emit` reports an empty vector.
 //
-// The emit call (`emit Ready {}`) is a unit-payload Mealy output. It lowers
+// The emit call (`emit Ready`) is a unit-payload Mealy output. It lowers
 // through `Instr::MachineEmitPlaceholder` in the LLVM IR, tagged with the
 // machine's stable type id, and is collected into the step's `MStep.outputs`
 // (see docs/specs/MACHINE-SPEC.md's emit section).
@@ -31,7 +31,7 @@ machine Signal {
     state Active;
 
     on Start: Idle => Active {
-        emit Ready {};
+        emit Ready;
         Active
     }
     on Stop: Active => Idle;

@@ -5127,7 +5127,9 @@ companion types:
 | `m.state_name()`      | Returns the current state tag as a string                            |
 
 `emit` appends output data in evaluation order; it never feeds an input event
-back in or performs the represented work. Without an `emits` header,
+back in or performs the represented work. A unit output is emitted by its name
+alone, `emit Ready;`; `emit Ready {}` is refused (`E_EMPTY_KEY_BRACES`) and
+`hew fmt --migrate` rewrites it. Without an `emits` header,
 `NameOutput` is an empty enum and the report's vector is empty. There is no
 dummy output variant and no hidden queue.
 

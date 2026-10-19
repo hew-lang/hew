@@ -26,7 +26,7 @@ machine Alarm {
     state Tripped;
 
     on Trigger: Armed => Tripped {
-        emit Ring {};
+        emit Ring;
         Tripped
     }
     on Trigger: Tripped => Tripped reenter;

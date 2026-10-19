@@ -1370,7 +1370,7 @@ fn main() -> i64 {
         1,
         "exactly one arm carries a nested constructor subpattern"
     );
-    let pvp = nested[0];
+    let pvp = &nested[0];
     assert_eq!(pvp.field_idx, 0);
     assert_eq!(pvp.variant_match.type_name, "Color");
     assert_eq!(pvp.variant_match.variant_name, "Red");
@@ -1433,7 +1433,7 @@ fn main() -> i64 {
     let resolution = root_arm_resolution_at(&output, source, "(.Some(n), m)");
     let nested = &resolution.payload_variant_patterns;
     assert_eq!(nested.len(), 1, "one tuple arm carries a nested variant");
-    let pvp = nested[0];
+    let pvp = &nested[0];
     assert_eq!(pvp.field_idx, 0, "element position keys the nested check");
     assert_eq!(pvp.variant_match.variant_name, "Some");
     assert_eq!(pvp.bindings.len(), 1);

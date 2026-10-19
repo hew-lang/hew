@@ -3872,7 +3872,7 @@ fn hashmap_snapshot_iteration_requires_cloneable_keys_and_values() {
             "demand(values);",
         ] {
             let source = format!(
-                r#"
+                r"
 #[resource]
 type Token {{ id: i64; }}
 impl Token {{ fn close(consume self) {{}} }}
@@ -3884,7 +3884,7 @@ fn main() {{
     {setup}
     {iteration}
 }}
-"#
+"
             );
             let output = check_source_with_stdlib(&source);
             assert!(
@@ -3963,7 +3963,7 @@ fn builtin_impl_receiver_bounds_keep_associated_equalities() {
     for (item, accepted) in [("string", true), ("i64", false)] {
         for call in ["let _ = rows.label();", "demand(rows);"] {
             let source = format!(
-                r#"
+                r"
 type Cursor {{ done: bool; }}
 impl Iterator for Cursor {{
     type Item = {item};
@@ -3978,7 +3978,7 @@ fn main() {{
     let rows: Vec<Cursor> = [];
     {call}
 }}
-"#,
+",
             );
             let output = check_source_with_stdlib(&source);
             if accepted {
@@ -4012,7 +4012,7 @@ fn builtin_impl_exists_independently_of_conditional_methods() {
             ""
         };
         let source = format!(
-            r#"
+            r"
 #[resource]
 type Token {{ id: i64; }}
 impl Token {{ fn close(consume self) {{}} }}
@@ -4026,7 +4026,7 @@ fn main() {{
     accept(values);
     {call}
 }}
-"#,
+",
         );
         let output = check_source_with_stdlib(&source);
         if call_method {
@@ -4058,7 +4058,7 @@ fn builtin_impl_receiver_bounds_check_projected_item_copyability() {
     for (item, accepted) in [("string", true), ("Token", false)] {
         for call in ["let _ = rows.count();", "demand(rows);"] {
             let source = format!(
-                r#"
+                r"
 #[resource]
 type Token {{ id: i64; }}
 impl Token {{ fn close(consume self) {{}} }}
@@ -4076,7 +4076,7 @@ fn main() {{
     let rows: Vec<Cursor> = [];
     {call}
 }}
-"#,
+",
             );
             let output = check_source_with_stdlib(&source);
             if accepted {

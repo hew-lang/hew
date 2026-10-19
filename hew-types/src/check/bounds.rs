@@ -714,7 +714,9 @@ impl Checker {
             self.report_error(TypeErrorKind::InvalidOperation, &span, message);
             return false;
         }
-        let receiver = self.normalize_for_use(ty).materialize_literal_defaults();
+        let receiver = self
+            .normalize_preserving_aliases(ty)
+            .materialize_literal_defaults();
         let bound = TraitRef {
             trait_id: bound.trait_id,
             args: bound
@@ -750,7 +752,7 @@ impl Checker {
             })
             .flat_map(|((_, declared), rows)| rows.iter().cloned().map(move |row| (*declared, row)))
             .collect();
-        rows.into_iter().any(|(declared, row)| {
+        let implemented = rows.into_iter().any(|(declared, row)| {
             let substitutions: HashMap<_, _> = row
                 .params
                 .iter()
@@ -773,7 +775,7 @@ impl Checker {
                 .filter(|candidate| candidate.trait_id == bound.trait_id)
                 .any(|candidate| {
                     let snapshot = self.subst.snapshot();
-                    let matches = self.bound_types_agree(&target, receiver)
+                    let matches = self.impl_receiver_matches(&target, receiver)
                         && (bound.args.is_empty()
                             || (candidate.args.len() == bound.args.len()
                                 && candidate.args.iter().zip(&bound.args).all(
@@ -795,7 +797,16 @@ impl Checker {
                     self.subst.restore(snapshot);
                     matches
                 })
-        })
+        });
+        if implemented {
+            return true;
+        }
+        if let Ty::Named { head, args } = receiver {
+            if let Some(target) = self.alias_target_for_instance(*head, args) {
+                return self.type_implements_trait_ref(&target, bound);
+            }
+        }
+        false
     }
 
     pub(in crate::check) fn impl_bound_subject(
@@ -807,7 +818,7 @@ impl Checker {
             .iter()
             .find_map(|(parameter, argument)| (parameter.id == subject).then_some(argument))
         {
-            return Some(self.normalize_for_use(argument));
+            return Some(self.normalize_preserving_aliases(argument));
         }
         let (base, trait_id, associated) = self
             .associated_schema_parameters
@@ -829,6 +840,80 @@ impl Checker {
         });
         self.subst.restore(snapshot);
         agree
+    }
+
+    /// Keep authored identities when opening the binders used by impl
+    /// obligations; expand aliases only at concrete mismatching subterms.
+    fn impl_receiver_matches(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let snapshot = self.subst.snapshot();
+        let matches = self.impl_receiver_matches_inner(expected, actual, &mut Vec::new());
+        if !matches {
+            self.subst.restore(snapshot);
+        }
+        matches
+    }
+
+    fn impl_receiver_matches_inner(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        active_aliases: &mut Vec<(bool, Ty)>,
+    ) -> bool {
+        let expected = self
+            .normalize_preserving_aliases(expected)
+            .materialize_literal_defaults();
+        let actual = self
+            .normalize_preserving_aliases(actual)
+            .materialize_literal_defaults();
+        if matches!(expected, Ty::Var(_)) || matches!(actual, Ty::Var(_)) {
+            return crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok();
+        }
+
+        let mut expected_children = Vec::new();
+        let expected_shape = expected.map_children(&mut |child| {
+            expected_children.push(child.clone());
+            Ty::Unit
+        });
+        let mut actual_children = Vec::new();
+        let actual_shape = actual.map_children(&mut |child| {
+            actual_children.push(child.clone());
+            Ty::Unit
+        });
+        if expected_shape == actual_shape {
+            return expected_children
+                .iter()
+                .zip(&actual_children)
+                .all(|(expected, actual)| {
+                    self.impl_receiver_matches_inner(expected, actual, active_aliases)
+                });
+        }
+
+        let alias_target = |ty: &Ty| match ty {
+            Ty::Named { head, args } => self.alias_target_for_instance(*head, args),
+            _ => None,
+        };
+        let (alias, target, expected_alias) = if let Some(target) = alias_target(&expected) {
+            (&expected, target, true)
+        } else if let Some(target) = alias_target(&actual) {
+            (&actual, target, false)
+        } else {
+            return crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok();
+        };
+        if active_aliases.iter().any(|(expected_side, ancestor)| {
+            *expected_side == expected_alias
+                && (ancestor == alias
+                    || super::admissibility::StructuralTypeWalk::grows_from(ancestor, alias))
+        }) {
+            return false;
+        }
+        active_aliases.push((expected_alias, alias.clone()));
+        let matches = if expected_alias {
+            self.impl_receiver_matches_inner(&target, &actual, active_aliases)
+        } else {
+            self.impl_receiver_matches_inner(&expected, &target, active_aliases)
+        };
+        active_aliases.pop();
+        matches
     }
 
     fn bound_types_agree(&mut self, expected: &Ty, actual: &Ty) -> bool {

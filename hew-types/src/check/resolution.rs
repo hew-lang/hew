@@ -2193,10 +2193,16 @@ impl Checker {
     /// three operations together prevents individual consumers from silently
     /// accepting one presentation while another preserves a distinct spelling.
     pub(super) fn normalize_for_use(&self, ty: &Ty) -> Ty {
+        let canonical = self.normalize_preserving_aliases(ty);
+        self.expand_type_aliases(&canonical, &mut Vec::new(), &mut HashMap::new())
+    }
+
+    /// Resolve inference, projections and declaration identities while retaining
+    /// the authored alias head that can own a trait implementation.
+    pub(super) fn normalize_preserving_aliases(&self, ty: &Ty) -> Ty {
         let substituted = self.subst.resolve(ty);
         let projected = self.project_assoc_types(&substituted);
-        let canonical = self.canonicalize_nominal_identity(&projected);
-        self.expand_type_aliases(&canonical, &mut Vec::new(), &mut HashMap::new())
+        self.canonicalize_nominal_identity(&projected)
     }
 
     /// Final checker-output form of a semantic type. Every type-carrying

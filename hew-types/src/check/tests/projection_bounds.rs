@@ -301,3 +301,153 @@ fn unsupported_where_subjects_are_diagnosed_at_checker_boundary() {
         }
     }
 }
+
+#[test]
+fn alias_display_impl_keeps_its_authored_receiver_identity() {
+    let output = check_source(
+        r#"type Measurements<T> { value: T; }
+type Readings<T> = Measurements<T>;
+impl<T> Display for Readings<T> {
+    fn fmt(self) -> string { "readings" }
+}
+fn main() {
+    let readings: Readings<i64> = Measurements { value: 7 };
+    let measurements = Measurements { value: 8 };
+    println(f"{readings:?}");
+    println(f"{measurements:?}");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(
+        output.interpolation_display_types.len(),
+        1,
+        "only the alias has an authored Display implementation: {:?}",
+        output.interpolation_display_types
+    );
+    assert_eq!(
+        output
+            .interpolation_display_types
+            .values()
+            .next()
+            .unwrap()
+            .user_facing()
+            .to_string(),
+        "Readings<i64>"
+    );
+}
+
+#[test]
+fn alias_without_an_impl_inherits_its_targets_display_impl() {
+    let output = check_source(
+        r#"type Measurements<T> { value: T; }
+type Readings<T> = Measurements<T>;
+impl<T> Display for Measurements<T> {
+    fn fmt(self) -> string { "measurements" }
+}
+fn main() {
+    let readings: Readings<i64> = Measurements { value: 7 };
+    println(f"{readings:?}");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(output.interpolation_display_types.len(), 1);
+}
+
+#[test]
+fn alias_display_impl_requires_its_full_condition() {
+    for (item, selected) in [("ReadyItem", true), ("PlainItem", false)] {
+        let source = format!(
+            r#"
+trait Ready {{ fn ready(self) -> i64; }}
+type ReadyItem {{}}
+impl Ready for ReadyItem {{ fn ready(self) -> i64 {{ 42 }} }}
+type PlainItem {{}}
+type Measurements<T> {{ value: T; }}
+type Readings<T> = Measurements<T>;
+impl<T: Ready> Display for Readings<T> {{
+    fn fmt(self) -> string {{ "readings" }}
+}}
+fn main() {{
+    let readings: Readings<{item}> = Measurements {{ value: {item} {{}} }};
+    println(f"{{readings:?}}");
+}}
+"#
+        );
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        assert_eq!(
+            !output.interpolation_display_types.is_empty(),
+            selected,
+            "conditional alias Display selection for {item}: {:?}",
+            output.interpolation_display_types
+        );
+    }
+}
+
+#[test]
+fn alias_impl_conditions_preserve_alias_owned_obligations() {
+    for (item, selected) in [("ReadyAlias", true), ("PlainItem", false)] {
+        let source = format!(
+            r#"
+trait Ready {{ fn ready(self) -> i64; }}
+type PlainItem {{}}
+type ReadyAlias = PlainItem;
+impl Ready for ReadyAlias {{ fn ready(self) -> i64 {{ 42 }} }}
+type Measurements<T> {{ value: T; }}
+type Readings<T> = Measurements<T>;
+impl<T: Ready> Display for Readings<T> {{
+    fn fmt(self) -> string {{ "readings" }}
+}}
+fn main() {{
+    let readings: Readings<{item}> = Measurements {{ value: PlainItem {{}} }};
+    println(f"{{readings:?}}");
+}}
+"#
+        );
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        assert_eq!(
+            !output.interpolation_display_types.is_empty(),
+            selected,
+            "alias-owned obligation for {item}: {:?}",
+            output.interpolation_display_types
+        );
+    }
+}
+
+#[test]
+fn alias_impl_conditions_keep_aliases_beside_concrete_receiver_patterns() {
+    for (pattern, count) in [("i64", "IntAlias"), ("IntAlias", "SecondIntAlias")] {
+        for (item, selected) in [("ReadyAlias", true), ("PlainItem", false)] {
+            let source = format!(
+                r#"
+trait Ready {{ fn ready(self) -> i64; }}
+type PlainItem {{}}
+type ReadyAlias = PlainItem;
+impl Ready for ReadyAlias {{ fn ready(self) -> i64 {{ 42 }} }}
+type IntAlias = i64;
+type SecondIntAlias = IntAlias;
+type Measurements<T, U> {{ value: T; count: U; }}
+type Readings<T, U> = Measurements<T, U>;
+impl<T: Ready> Display for Readings<T, {pattern}> {{
+    fn fmt(self) -> string {{ "readings" }}
+}}
+fn main() {{
+    let readings: Readings<{item}, {count}> = Measurements {{ value: PlainItem {{}}, count: 2 }};
+    println(f"{{readings:?}}");
+}}
+"#
+            );
+            let output = check_source(&source);
+            assert!(output.errors.is_empty(), "{:?}", output.errors);
+            assert_eq!(
+                !output.interpolation_display_types.is_empty(),
+                selected,
+                "mixed receiver alias obligation for {item}, {pattern}/{count}: {:?}",
+                output.interpolation_display_types
+            );
+        }
+    }
+}

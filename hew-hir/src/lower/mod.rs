@@ -247,7 +247,6 @@ impl TargetArch {
 type ScopeBinding = (BindingId, ResolvedTy, std::ops::Range<usize>);
 type OuterClosureBinding = (String, ResolvedTy, std::ops::Range<usize>);
 type ClosureCaptureCandidate = (BindingId, String, std::ops::Range<usize>);
-const BUILTINS_HEW_SOURCE: &str = include_str!("../../../std/builtins.hew");
 
 /// Synthetic-builtin sentinel `ItemId`s for the actor `link(target)` /
 /// `monitor(target)` builtins. These have no AST `fn` item, so
@@ -885,7 +884,6 @@ struct LowerCtx {
     /// Checker-owned machine method dispatch decisions keyed by method-call span.
     /// HIR checks this before `method_call_rewrites` to produce `MachineStep` /
     /// `MachineStateName` nodes rather than falling through to `MethodCallNoRewrite`.
-    machine_method_dispatch: HashMap<SpanKey, hew_types::MachineMethodKind>,
     /// Checker-owned function-tail Ok-coercion sites keyed by the tail
     /// expression's span. Each entry marks a `Result<Ok, Err>`-returning
     /// function tail whose value is the `Ok` payload; `lower_expr` wraps the

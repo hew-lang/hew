@@ -21,16 +21,6 @@ pub fn lower_program(
         .map_or(program, |normalized| &normalized.program);
     let mut ctx = LowerCtx::new(type_check_output, target_arch);
     let entry_exit_plan = type_check_output.entry_exit_plan.clone();
-    let compiling_prelude_manifest = program.module_graph.as_ref().is_some_and(|graph| {
-        graph
-            .modules
-            .get(&graph.root)
-            .is_some_and(|root| root.items.is_empty() && root.source_paths.is_empty())
-            && graph
-                .modules
-                .keys()
-                .any(|module| module.dotted() == "std.prelude")
-    });
     let file_import_module_idx = file_import_item_module_indices(program);
     // Source items flattened from a file import still belong to that file's
     // declaration namespace.  Compute the checker-aligned module-name carrier
@@ -43,6 +33,23 @@ pub fn lower_program(
         .as_ref()
         .map(hew_parser::module::ModuleGraph::file_span_indices)
         .unwrap_or_default();
+    // The checker selected this module's full canonical source as the builtin
+    // declaration authority. HIR emits that source through its prelude and
+    // callable projections below; the ordinary imported-module walks must not
+    // realize the same declaration identities a second time.
+    let selected_builtin_graph_module = program.module_graph.as_ref().and_then(|graph| {
+        graph.topo_order.iter().find(|module_id| {
+            module_id.dotted() == "std.builtins"
+                && graph.modules.get(*module_id).is_some_and(|module| {
+                    module.source_paths.iter().any(|source| {
+                        hew_types::module_registry::is_canonical_stdlib_module_source(
+                            source,
+                            "std.builtins",
+                        )
+                    })
+                })
+        })
+    });
     if let Some(root) = ctx.defs.root_module() {
         ctx.declaration_module_by_file_index.insert(0, root);
     }
@@ -99,25 +106,16 @@ pub fn lower_program(
         }
     }
     ctx.seed_stdlib_fn_registry();
-    let builtin_declarations = builtin_callable_impl_program();
-    let mut builtin_impl_diagnostics = Vec::new();
-    let (builtin_callable_impl_program, builtin_callable_impl_output) =
-        match builtin_declarations.clone() {
-            Some(program) => match check_builtin_callable_impl_program(&program, &ctx.defs) {
-                Ok(output) => {
-                    // Embedded checking appends declaration rows. Every fact
-                    // consumed below must index that same extended table.
-                    Arc::make_mut(&mut ctx.defs).include_embedded(&output.defs);
-                    ctx.impl_method_symbol_collisions = impl_method_symbol_collisions(&ctx.defs);
-                    (Some(program), Some(output))
-                }
-                Err(diagnostic) => {
-                    builtin_impl_diagnostics.push(*diagnostic);
-                    (None, None)
-                }
-            },
-            None => (None, None),
-        };
+    let builtin_program = type_check_output.selected_builtin_program.as_deref();
+    let builtin_item_index = |ordinal| {
+        selected_builtin_graph_module
+            .and_then(|module| span_indices.item_index(module, ordinal))
+            .unwrap_or(u32::MAX)
+    };
+    if let Some(module) = ctx.defs.module_for_path("std.builtins") {
+        ctx.declaration_module_by_file_index
+            .insert(u32::MAX, module);
+    }
 
     // Root-authored declarations only: items spliced into `program.items` by
     // `flatten_file_import_items` keep their defining file's module identity
@@ -184,24 +182,27 @@ pub fn lower_program(
             _ => {}
         }
     }
-    // The actor delivery declarations and `ScopeFailure` are authored in the
-    // embedded `std/builtins.hew` program rather than the module graph, but
-    // they are lowered under the same `std.builtins` owner every downstream
-    // stage looks them up by. Publish their identities alongside the graph's.
-    for name in hew_types::actor_delivery::DECLARATIONS
-        .iter()
-        .map(|known| known.path().trim_start_matches("std.builtins."))
-        .chain(SOURCE_PRELUDE_TYPES.iter().copied())
-    {
-        let canonical = format!("std.builtins.{name}");
-        ctx.source_type_identities.insert(canonical.clone());
-        // Expression carriers use the checker-published root owner.
-        ctx.file_import_root_type_aliases
-            .insert(name.to_string(), canonical);
+    if let Some(builtins) = builtin_program {
+        for (item, _) in &builtins.items {
+            if let Item::TypeDecl(decl) = item {
+                let canonical = format!("std.builtins.{}", decl.name);
+                ctx.source_type_identities.insert(canonical.clone());
+                ctx.canonical_std_source_type_identities
+                    .insert(canonical.clone());
+                if SOURCE_PRELUDE_TYPES.contains(&decl.name.name.as_str())
+                    || hew_types::actor_delivery::DECLARATIONS
+                        .iter()
+                        .any(|known| known.path() == canonical)
+                {
+                    ctx.file_import_root_type_aliases
+                        .insert(decl.name.to_string(), canonical);
+                }
+            }
+        }
     }
     if let Some(module_graph) = &program.module_graph {
         for module_id in &module_graph.topo_order {
-            if *module_id == module_graph.root {
+            if *module_id == module_graph.root || selected_builtin_graph_module == Some(module_id) {
                 continue;
             }
             let module_full_path = module_id.dotted();
@@ -437,7 +438,7 @@ pub fn lower_program(
     };
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root {
+            if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                 continue;
             }
             let module_full_path = mod_id.dotted();
@@ -909,7 +910,7 @@ pub fn lower_program(
         // or enum in an imported module is invisible to consumers.
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
+                if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
@@ -1079,7 +1080,7 @@ pub fn lower_program(
         // behaviour (registration.rs:1359, no pub guard).
         if let Some(ref mg) = program.module_graph {
             for mod_id in &mg.topo_order {
-                if *mod_id == mg.root {
+                if *mod_id == mg.root || selected_builtin_graph_module == Some(mod_id) {
                     continue;
                 }
                 if let Some(module) = mg.modules.get(mod_id) {
@@ -1243,7 +1244,6 @@ pub fn lower_program(
     // Discard pre-pass diagnostics from `lower_type`; the third pass re-emits
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
-    ctx.diagnostics.extend(builtin_impl_diagnostics);
 
     // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
     // diagnostics.clear above) so the gate's diagnostics survive into the
@@ -1370,7 +1370,10 @@ pub fn lower_program(
     ctx.current_module_name = None;
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
+            if *mod_id == mg.root
+                || file_import_modules.contains(mod_id)
+                || selected_builtin_graph_module == Some(mod_id)
+            {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -1435,7 +1438,10 @@ pub fn lower_program(
 
     if let Some(ref mg) = program.module_graph {
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
+            if *mod_id == mg.root
+                || file_import_modules.contains(mod_id)
+                || selected_builtin_graph_module == Some(mod_id)
+            {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -1559,122 +1565,111 @@ pub fn lower_program(
         }
     }
 
-    let lowered_type_declarations: HashSet<_> = type_decl_cache
+    let mut lowered_type_declarations: HashSet<_> = type_decl_cache
         .values()
         .map(|declaration| declaration.declaration)
         .collect();
-    let builtin_method_demands = builtin_callable_impl_output
-        .as_ref()
-        .map(|builtins| BuiltinMethodDemands::for_program(type_check_output, builtins));
+    let builtin_method_demands = BuiltinMethodDemands::for_program(type_check_output);
     // Register executable std builtins.hew impl methods only after all user
     // item IDs have been preallocated. This makes builtin bodies visible to
     // source-body lowering without perturbing stable user `ItemId`s. Ordinary
     // trait impls use the same module-qualified symbols as imported impls;
     // receiver-specific cursor and duration impls retain their compiler owner.
-    if let (Some(program), Some(output)) = (
-        &builtin_callable_impl_program,
-        &builtin_callable_impl_output,
-    ) {
-        ctx.with_typecheck_facts(output, |ctx| {
-            // Embedded checking excludes extern blocks from declaration ordinals.
-            let mut checked_item_ordinal = 0;
-            for (item, _) in &program.items {
-                ctx.current_item_ordinal = checked_item_ordinal;
-                if !matches!(item, Item::ExternBlock(_)) {
-                    checked_item_ordinal += 1;
-                }
-                if let Item::ExternBlock(block) = item {
-                    for function in &block.functions {
-                        ctx.register_extern_fn_entry(function);
-                        let path = format!("std.builtins.{}", function.name);
-                        if let Some(declaration) =
-                            ctx.defs.lookup_path(&path).filter(|declaration| {
-                                ctx.defs.kind(*declaration)
-                                    == hew_types::DeclarationKind::ExternFunction
-                            })
+    if let Some(builtins) = builtin_program {
+        let saved_index = ctx.current_module_idx;
+        let saved_ordinal = ctx.current_item_ordinal;
+        let saved_module = ctx.current_module_name.replace("std.builtins".to_string());
+        for (ordinal, (item, span)) in builtins.items.iter().enumerate() {
+            ctx.current_item_ordinal = ordinal;
+            ctx.current_module_idx = builtin_item_index(ordinal);
+            if let Item::Function(function) = item {
+                let symbol = format!("std.builtins.{}", function.name);
+                ctx.register_declared_fn_entry(&symbol, function, span);
+            }
+            if let Item::ExternBlock(block) = item {
+                for function in &block.functions {
+                    ctx.register_extern_fn_entry(function);
+                    let path = format!("std.builtins.{}", function.name);
+                    if let Some(declaration) = ctx.defs.lookup_path(&path).filter(|declaration| {
+                        ctx.defs.kind(*declaration) == hew_types::DeclarationKind::ExternFunction
+                    }) {
+                        if let Some(entry) =
+                            ctx.fn_registry.get(function.name.name.as_str()).cloned()
                         {
-                            if let Some(entry) =
-                                ctx.fn_registry.get(function.name.name.as_str()).cloned()
-                            {
-                                ctx.source_fn_entries
-                                    .insert(declaration, (function.name.to_string(), entry));
-                            }
-                        }
-                    }
-                }
-                if let Item::Impl(impl_decl) = item {
-                    if !is_builtin_callable_impl(item) {
-                        continue;
-                    }
-                    if let TypeExpr::Named {
-                        path: named_path, ..
-                    } = &impl_decl.target_type.0
-                    {
-                        let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        let receiver_specific = is_builtin_receiver_impl(item);
-                        let symbol_owner = if receiver_specific {
-                            injected_builtin_impl_symbol_owner(name).to_string()
-                        } else {
-                            imported_impl_symbol_self_name("std.builtins", name)
-                        };
-                        let impl_type_params = impl_type_parameters(ctx, impl_decl);
-                        for method in &impl_decl.methods {
-                            let declaration = ctx.source_declaration(
-                                &method.fn_span,
-                                hew_types::DeclarationKind::ImplMethod,
-                                0,
-                            );
-                            let Some(declaration) = declaration else {
-                                continue;
-                            };
-                            let emitted_symbol = ctx.emitted_impl_method_symbol(
-                                declaration,
-                                &symbol_owner,
-                                method.name.name.as_str(),
-                            );
-                            let selected_by_checker =
-                                builtin_method_demands.as_ref().is_some_and(|demands| {
-                                    output
-                                        .fn_sigs
-                                        .get(&declaration)
-                                        .is_some_and(|sig| demands.selects(sig))
-                                });
-                            if (!receiver_specific && !selected_by_checker)
-                                || ctx.fn_registry.contains_key(&emitted_symbol)
-                            {
-                                continue;
-                            }
-                            ctx.register_impl_method_fn_entry(
-                                &symbol_owner,
-                                method,
-                                &impl_type_params,
-                            );
-                            // Establish the declaration-keyed body plan for the
-                            // injected builtin impl NOW, before any user body is
-                            // lowered in the third pass. The body itself is emitted
-                            // later in the fourth pass (`lower_impl_block` under
-                            // `lowering_injected_items`), but a direct method call
-                            // such as `x.fmt()` inside a user body resolves its
-                            // callee through `registered_impl_method_symbol` at
-                            // third-pass time — before that emission. Without the
-                            // plan entry the projection is absent and the call fails
-                            // closed (`CallableUnsupportedInMir`), even though the
-                            // identical value renders fine through the f-string
-                            // Display path, which never consults this projection.
-                            // `plan_imported_impl_bodies` covers user/imported
-                            // bodies; the compiler-injected builtins live in a
-                            // separate program, so they must be planned here.
-                            ctx.impl_body_plan.compiler_selected.insert(declaration);
-                            ctx.impl_body_plan
-                                .symbols
-                                .entry(declaration)
-                                .or_insert_with(|| emitted_symbol.clone());
-                            builtin_callable_impl_method_symbols.insert(emitted_symbol);
+                            ctx.source_fn_entries
+                                .insert(declaration, (function.name.to_string(), entry));
                         }
                     }
                 }
             }
-        });
+            if let Item::Impl(impl_decl) = item {
+                if !is_builtin_callable_impl(item) {
+                    continue;
+                }
+                if let TypeExpr::Named {
+                    path: named_path, ..
+                } = &impl_decl.target_type.0
+                {
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                    let receiver_specific = is_builtin_receiver_impl(item);
+                    let symbol_owner = if receiver_specific {
+                        injected_builtin_impl_symbol_owner(name).to_string()
+                    } else {
+                        imported_impl_symbol_self_name("std.builtins", name)
+                    };
+                    let impl_type_params = impl_type_parameters(&mut ctx, impl_decl);
+                    for method in &impl_decl.methods {
+                        let declaration = ctx.source_declaration(
+                            &method.fn_span,
+                            hew_types::DeclarationKind::ImplMethod,
+                            0,
+                        );
+                        let Some(declaration) = declaration else {
+                            continue;
+                        };
+                        let emitted_symbol = ctx.emitted_impl_method_symbol(
+                            declaration,
+                            &symbol_owner,
+                            method.name.name.as_str(),
+                        );
+                        let selected_by_checker = type_check_output
+                            .fn_sigs
+                            .get(&declaration)
+                            .is_some_and(|signature| builtin_method_demands.selects(signature));
+                        if (!receiver_specific && !selected_by_checker)
+                            || ctx.fn_registry.contains_key(&emitted_symbol)
+                        {
+                            continue;
+                        }
+                        ctx.register_impl_method_fn_entry(&symbol_owner, method, &impl_type_params);
+                        // Establish the declaration-keyed body plan for the
+                        // injected builtin impl NOW, before any user body is
+                        // lowered in the third pass. The body itself is emitted
+                        // later in the fourth pass (`lower_impl_block` under
+                        // `lowering_injected_items`), but a direct method call
+                        // such as `x.fmt()` inside a user body resolves its
+                        // callee through `registered_impl_method_symbol` at
+                        // third-pass time — before that emission. Without the
+                        // plan entry the projection is absent and the call fails
+                        // closed (`CallableUnsupportedInMir`), even though the
+                        // identical value renders fine through the f-string
+                        // Display path, which never consults this projection.
+                        // `plan_imported_impl_bodies` covers user/imported
+                        // bodies; the compiler-injected builtins live in a
+                        // separate program, so they must be planned here.
+                        ctx.impl_body_plan.compiler_selected.insert(declaration);
+                        ctx.impl_body_plan
+                            .symbols
+                            .entry(declaration)
+                            .or_insert_with(|| emitted_symbol.clone());
+                        builtin_callable_impl_method_symbols.insert(emitted_symbol);
+                    }
+                }
+            }
+        }
+        ctx.current_module_idx = saved_index;
+        ctx.current_item_ordinal = saved_ordinal;
+        ctx.current_module_name = saved_module;
     }
 
     // Establish every executable impl body before lowering any source body.
@@ -1689,7 +1684,7 @@ pub fn lower_program(
         &file_import_modules,
         &preferred_modules,
         &span_indices,
-        compiling_prelude_manifest,
+        selected_builtin_graph_module,
     );
 
     // Third pass: emit all items in source order now that both fn signatures
@@ -1711,19 +1706,15 @@ pub fn lower_program(
     // whether their executable methods are needed or have checked successfully.
     let actor_intercept_types = ctx.lower_actor_intercept_types();
     let mut prelude_declarations = Vec::new();
-    if let Some(builtins) = builtin_declarations.as_ref() {
-        for name in SOURCE_PRELUDE_TYPES.iter().copied().chain(
-            hew_types::actor_delivery::DECLARATIONS
-                .iter()
-                .map(|known| known.path().trim_start_matches("std.builtins.")),
-        ) {
-            let Some((source, span)) = builtins.items.iter().find_map(|(item, span)| match item {
-                Item::TypeDecl(decl) if decl.name.name.as_str() == name => Some((decl, span)),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let canonical_name = format!("std.builtins.{name}");
+    if let Some(builtins) = builtin_program {
+        for (source, span) in builtins.items.iter().filter_map(|(item, span)| {
+            if let Item::TypeDecl(decl) = item {
+                Some((decl, span))
+            } else {
+                None
+            }
+        }) {
+            let canonical_name = format!("std.builtins.{}", source.name);
             let Some(declaration) = ctx.defs.lookup_path(&canonical_name) else {
                 ctx.unsupported(
                     span.clone(),
@@ -1775,6 +1766,7 @@ pub fn lower_program(
                     );
                 }
             }
+            lowered_type_declarations.insert(declaration);
             prelude_declarations.push(decl);
         }
     }
@@ -2075,7 +2067,10 @@ pub fn lower_program(
         // another file's entry and byte-offset collisions across files are
         // misread as same-file types.
         for mod_id in &mg.topo_order {
-            if *mod_id == mg.root || file_import_modules.contains(mod_id) {
+            if *mod_id == mg.root
+                || file_import_modules.contains(mod_id)
+                || selected_builtin_graph_module == Some(mod_id)
+            {
                 continue;
             }
             if let Some(module) = mg.modules.get(mod_id) {
@@ -2271,15 +2266,6 @@ pub fn lower_program(
                         // A missing body fact skips that exact declaration;
                         // a call to it later fails at the callable-set boundary.
                         Item::Impl(impl_decl) => {
-                            // `std/prelude.hew` is the compiler's import-only
-                            // authority manifest. Its explicit `std.builtins`
-                            // edge selects the same implicit declarations whose
-                            // executable receiver bodies are injected below;
-                            // it must not materialise a second body set through
-                            // the package-import path.
-                            if compiling_prelude_manifest && source_module == "std.builtins" {
-                                continue;
-                            }
                             // Skip impl blocks of FILE-import modules: their
                             // items were spliced into `program.items` and
                             // already lowered by the source-order third pass.
@@ -2471,138 +2457,130 @@ pub fn lower_program(
     // as user and imported impls so direct method rewrites and the
     // static-dispatch index see them. Keep them after source items to avoid
     // changing user-item ordering guarantees.
-    if let (Some(program), Some(output)) = (
-        &builtin_callable_impl_program,
-        &builtin_callable_impl_output,
-    ) {
+    if let Some(builtins) = builtin_program {
         let item_start = items.len();
-        ctx.with_typecheck_facts(output, |ctx| {
-            // The builtin callable impls lower at module index 0 but their
-            // bodies index `std/builtins.hew`, not the user's root source. Flag
-            // the phase so the `root_item_ids` inserts in `lower_impl_block`
-            // skip them — a fail-closed in a builtin method must render bare,
-            // never a false caret against the root. Restored below.
-            let saved_injected = ctx.lowering_injected_items;
-            ctx.lowering_injected_items = true;
-            let saved_some = ctx
-                .machine_ctor_registry
-                .insert("Some".to_string(), ("Option".to_string(), 0));
-            let saved_none = ctx
-                .machine_ctor_registry
-                .insert("None".to_string(), ("Option".to_string(), 1));
-            // Embedded checking excludes extern blocks from declaration ordinals.
-            let mut checked_item_ordinal = 0;
-            for (item, span) in &program.items {
-                ctx.current_item_ordinal = checked_item_ordinal;
-                if !matches!(item, Item::ExternBlock(_)) {
-                    checked_item_ordinal += 1;
-                }
-                if let Item::ExternBlock(block) = item {
-                    for function in &block.functions {
-                        let owner = format!("std.builtins.{}", function.name);
-                        let Some(declaration) = ctx.defs.lookup_path(&owner) else {
-                            continue;
-                        };
-                        let provenance = extern_provenance(Some("std.builtins"));
-                        items.push(HirItem::ExternFn(crate::node::HirExternFn {
-                            failure_domain: hew_types::CallableFailureDomain::Abort,
-                            id: ctx.ids.item(),
-                            node: ctx.ids.node(),
-                            declaration,
-                            name: function.name.to_string(),
-                            abi: block.abi.clone(),
-                            param_tys: function
-                                .params
-                                .iter()
-                                .map(|parameter| ctx.lower_type(&parameter.ty))
-                                .collect(),
-                            param_consume: function
-                                .params
-                                .iter()
-                                .map(|parameter| parameter.is_consume)
-                                .collect(),
-                            return_ty: function
-                                .return_type
-                                .as_ref()
-                                .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty)),
-                            runtime_capability: extern_runtime_capability(
-                                &provenance,
-                                function.name.name.as_str(),
-                            ),
-                            provenance,
-                            offload: false,
-                            span: function.span.clone(),
-                        }));
-                    }
-                }
-                if let Item::Impl(impl_decl) = item {
-                    if is_builtin_callable_impl(item) {
-                        let TypeExpr::Named {
-                            path: named_path, ..
-                        } = &impl_decl.target_type.0
-                        else {
-                            continue;
-                        };
-                        let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                        let receiver_specific = is_builtin_receiver_impl(item);
-                        let symbol_owner = if receiver_specific {
-                            injected_builtin_impl_symbol_owner(name).to_string()
-                        } else {
-                            imported_impl_symbol_self_name("std.builtins", name)
-                        };
-                        let skipped_methods: HashSet<hew_types::DefId> = impl_decl
-                            .methods
+        let saved_module_idx = ctx.current_module_idx;
+        let saved_ordinal = ctx.current_item_ordinal;
+        let saved_module = ctx.current_module_name.replace("std.builtins".to_string());
+        let saved_injected = ctx.lowering_injected_items;
+        ctx.lowering_injected_items = true;
+        let saved_some = ctx
+            .machine_ctor_registry
+            .insert("Some".to_string(), ("Option".to_string(), 0));
+        let saved_none = ctx
+            .machine_ctor_registry
+            .insert("None".to_string(), ("Option".to_string(), 1));
+        for (ordinal, (item, span)) in builtins.items.iter().enumerate() {
+            ctx.current_item_ordinal = ordinal;
+            ctx.current_module_idx = builtin_item_index(ordinal);
+            if let Item::ExternBlock(block) = item {
+                for function in &block.functions {
+                    let owner = format!("std.builtins.{}", function.name);
+                    let Some(declaration) = ctx.defs.lookup_path(&owner) else {
+                        continue;
+                    };
+                    let provenance = extern_provenance(Some("std.builtins"));
+                    items.push(HirItem::ExternFn(crate::node::HirExternFn {
+                        failure_domain: hew_types::CallableFailureDomain::Abort,
+                        id: ctx.ids.item(),
+                        node: ctx.ids.node(),
+                        declaration,
+                        name: function.name.to_string(),
+                        abi: block.abi.clone(),
+                        param_tys: function
+                            .params
                             .iter()
-                            .filter_map(|method| {
-                                let declaration = ctx.source_declaration(
-                                    &method.fn_span,
-                                    hew_types::DeclarationKind::ImplMethod,
-                                    0,
-                                )?;
-                                let symbol = ctx.emitted_impl_method_symbol(
-                                    declaration,
-                                    &symbol_owner,
-                                    method.name.name.as_str(),
-                                );
-                                (!builtin_callable_impl_method_symbols.contains(&symbol))
-                                    .then_some(declaration)
-                            })
-                            .collect();
-                        if skipped_methods.len() == impl_decl.methods.len() {
-                            continue;
-                        }
-                        if receiver_specific {
-                            ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
-                        } else {
-                            let imported = ImportedImplLowering {
-                                skip_methods: &skipped_methods,
-                                symbol_self_name: Some(&symbol_owner),
-                            };
-                            ctx.lower_impl_block(
-                                impl_decl,
-                                span.clone(),
-                                &mut items,
-                                false,
-                                Some(&imported),
+                            .map(|parameter| ctx.lower_type(&parameter.ty))
+                            .collect(),
+                        param_consume: function
+                            .params
+                            .iter()
+                            .map(|parameter| parameter.is_consume)
+                            .collect(),
+                        return_ty: function
+                            .return_type
+                            .as_ref()
+                            .map_or(ResolvedTy::Unit, |ty| ctx.lower_type(ty)),
+                        runtime_capability: extern_runtime_capability(
+                            &provenance,
+                            function.name.name.as_str(),
+                        ),
+                        provenance,
+                        offload: false,
+                        span: function.span.clone(),
+                    }));
+                }
+            }
+            if let Item::Impl(impl_decl) = item {
+                if is_builtin_callable_impl(item) {
+                    let TypeExpr::Named {
+                        path: named_path, ..
+                    } = &impl_decl.target_type.0
+                    else {
+                        continue;
+                    };
+                    let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
+                    let receiver_specific = is_builtin_receiver_impl(item);
+                    let symbol_owner = if receiver_specific {
+                        injected_builtin_impl_symbol_owner(name).to_string()
+                    } else {
+                        imported_impl_symbol_self_name("std.builtins", name)
+                    };
+                    let skipped_methods: HashSet<hew_types::DefId> = impl_decl
+                        .methods
+                        .iter()
+                        .filter_map(|method| {
+                            let declaration = ctx.source_declaration(
+                                &method.fn_span,
+                                hew_types::DeclarationKind::ImplMethod,
+                                0,
+                            )?;
+                            let symbol = ctx.emitted_impl_method_symbol(
+                                declaration,
+                                &symbol_owner,
+                                method.name.name.as_str(),
                             );
-                        }
+                            (!builtin_callable_impl_method_symbols.contains(&symbol))
+                                .then_some(declaration)
+                        })
+                        .collect();
+                    if skipped_methods.len() == impl_decl.methods.len() {
+                        continue;
+                    }
+                    if receiver_specific {
+                        ctx.lower_impl_block(impl_decl, span.clone(), &mut items, false, None);
+                    } else {
+                        let imported = ImportedImplLowering {
+                            skip_methods: &skipped_methods,
+                            symbol_self_name: Some(&symbol_owner),
+                        };
+                        ctx.lower_impl_block(
+                            impl_decl,
+                            span.clone(),
+                            &mut items,
+                            false,
+                            Some(&imported),
+                        );
                     }
                 }
             }
-            if let Some(previous) = saved_some {
-                ctx.machine_ctor_registry
-                    .insert("Some".to_string(), previous);
-            } else {
-                ctx.machine_ctor_registry.remove("Some");
-            }
-            if let Some(previous) = saved_none {
-                ctx.machine_ctor_registry
-                    .insert("None".to_string(), previous);
-            } else {
-                ctx.machine_ctor_registry.remove("None");
-            }
-            ctx.lowering_injected_items = saved_injected;
-        });
+        }
+        if let Some(previous) = saved_some {
+            ctx.machine_ctor_registry
+                .insert("Some".to_string(), previous);
+        } else {
+            ctx.machine_ctor_registry.remove("Some");
+        }
+        if let Some(previous) = saved_none {
+            ctx.machine_ctor_registry
+                .insert("None".to_string(), previous);
+        } else {
+            ctx.machine_ctor_registry.remove("None");
+        }
+        ctx.lowering_injected_items = saved_injected;
+        ctx.current_module_idx = saved_module_idx;
+        ctx.current_item_ordinal = saved_ordinal;
+        ctx.current_module_name = saved_module;
         record_source_modules_for_items(
             &items[item_start..],
             "std.builtins",

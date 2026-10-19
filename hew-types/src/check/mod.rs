@@ -2786,15 +2786,17 @@ impl Checker {
         })
     }
 
-    /// Check the compiler-embedded builtin source under its declaration
-    /// authority, minting into a fork of `base` so the declarations it shares
+    /// Check the selected builtin source under its declaration authority,
+    /// minting into a fork of `base` so the declarations it shares
     /// with the compilation keep their identities. User programs must enter
     /// through [`Self::check_program`].
     pub fn check_embedded_builtins(
         &mut self,
         program: &Program,
         base: &crate::DefTable,
+        selected_builtin_program: std::sync::Arc<Program>,
     ) -> TypeCheckOutput {
+        self.selected_builtin_program = Some(selected_builtin_program);
         self.seed_defs = Some(base.fork_for_embedded_builtins());
         self.checking_embedded_builtins = true;
         let output = self.check_program(program);
@@ -2844,34 +2846,62 @@ impl Checker {
             .map_or(program, |normalized| &normalized.program);
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
-        self.check_embedded_builtin_trait_impl_bodies();
+        self.check_embedded_builtin_impl_bodies(program);
         self.check_root_bodies(program);
         self.finish_program(program, normalized_program.as_ref())
     }
 
-    /// Bring compiler-owned builtin trait bodies into the same effect graph as
-    /// the program that instantiates them. Their declarations are registered
-    /// from this source during preparation; checking the selected bodies here
-    /// lets generic calls use their actual effects instead of an unknown body.
-    fn check_embedded_builtin_trait_impl_bodies(&mut self) {
-        const SOURCE: &str = include_str!("../../../std/builtins.hew");
-        if self.checking_embedded_builtins {
+    /// Check embedded executable bodies only when the ordinary module walk
+    /// did not own them. Declaration registration and body facts share the
+    /// selected source and its original item ordinals.
+    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
+        if self.checking_embedded_builtins
+            || program.module_graph.as_ref().is_some_and(|graph| {
+                graph
+                    .modules
+                    .get(&hew_parser::module::ModulePath::new(["std", "builtins"]))
+                    .is_some_and(|module| {
+                        module.source_paths.iter().any(|source| {
+                            crate::module_registry::is_canonical_stdlib_module_source(
+                                source,
+                                "std.builtins",
+                            )
+                        })
+                    })
+            })
+        {
             return;
         }
-        let parsed = hew_parser::parse(SOURCE);
-        assert!(parsed.errors.is_empty(), "embedded builtins must parse");
+        let builtin_program = self.builtin_program();
         let saved_module = self.current_module.replace("std.builtins".to_string());
         let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let saved_ordinal = self.current_item_ordinal;
+        let saved_source = self.current_item_source.take();
         let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
-        for (ordinal, (item, span)) in parsed.program.items.iter().enumerate() {
+        for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
+            self.current_item_ordinal = ordinal;
+            if let Item::Function(function) = item {
+                // Retain the declared signature's annotation facts; its
+                // compiler-owned endpoint supplies execution, not the stub.
+                self.register_fn_sig(function);
+            }
             if let Item::Impl(implementation) = item {
-                if implementation.trait_bound.is_some() {
+                // Runtime declarations have documentation stubs, not Hew bodies.
+                let mut implementation = implementation.clone();
+                implementation.methods.retain(|method| {
+                    !method
+                        .attributes
+                        .iter()
+                        .any(|attribute| attribute.name == "extern_symbol")
+                });
+                if !implementation.methods.is_empty() {
                     self.current_item_ordinal = ordinal;
-                    self.check_impl(implementation, span);
+                    self.check_impl(&implementation, span);
                 }
             }
         }
-        self.current_item_ordinal = 0;
+        self.current_item_ordinal = saved_ordinal;
+        self.current_item_source = saved_source;
         self.is_stdlib_source = saved_stdlib;
         self.current_module_idx = saved_index;
         self.current_module = saved_module;
@@ -3153,6 +3183,7 @@ impl Checker {
             is_stdlib_source: self.is_stdlib_source.clone(),
             in_stdlib_registration: self.in_stdlib_registration.clone(),
             checking_embedded_builtins: self.checking_embedded_builtins.clone(),
+            selected_builtin_program: self.selected_builtin_program.clone(),
             has_checked_program: self.has_checked_program.clone(),
             wasm_warning_spans: self.wasm_warning_spans.clone(),
             wasm_reject_spans: self.wasm_reject_spans.clone(),
@@ -3264,16 +3295,16 @@ impl Checker {
                 }
             }
         }
+        self.select_builtin_program(program);
         self.mint_source_declaration_identities(program);
         self.register_builtins();
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
-        // `register_builtins` parses the compiler-embedded `std/builtins.hew`
-        // source outside the module graph.  Record that exact producer so
-        // later trait/source identity normalization can relate prelude traits
-        // (notably `Iterator`) to their canonical owner without treating a
-        // user module named `builtins` as authoritative.
+        // Builtin registration consumes the selected canonical source, using
+        // embedded source only when the graph has none. Record that producer
+        // so prelude traits retain their canonical owner without granting a
+        // user module named `builtins` the same authority.
         self.canonical_std_module_sources
             .insert("std.builtins".to_string());
         // Compute the precise cross-module record-name collision set before any
@@ -4022,6 +4053,7 @@ impl Checker {
             })
             .collect();
         let mut output = TypeCheckOutput {
+            selected_builtin_program: self.selected_builtin_program.clone(),
             input_references: std::mem::take(&mut self.input_references),
             inputs: self
                 .input_provider
@@ -4268,6 +4300,11 @@ impl Checker {
         let repl_fragment = self.repl_fragment;
         let is_stdlib_source = self.is_stdlib_source;
         let checking_embedded_builtins = self.checking_embedded_builtins;
+        let selected_builtin_program = if checking_embedded_builtins {
+            self.selected_builtin_program.clone()
+        } else {
+            None
+        };
         let consume_receiver_methods = std::mem::take(&mut self.consume_receiver_methods);
         let lint_levels = self.lint_levels.clone();
         let lint_sources = self.lint_sources.clone();
@@ -4279,6 +4316,7 @@ impl Checker {
         self.repl_fragment = repl_fragment;
         self.is_stdlib_source = is_stdlib_source;
         self.checking_embedded_builtins = checking_embedded_builtins;
+        self.selected_builtin_program = selected_builtin_program;
         self.has_checked_program = true;
         self.consume_receiver_methods = consume_receiver_methods;
         self.lint_levels = lint_levels;

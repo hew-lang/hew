@@ -23,9 +23,9 @@ const IMPORTED_MACHINE: &str = r"pub machine Toggle {
 
 fn lower(program: &hew_parser::ast::Program) -> HirModule {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let checked = checker.check_program(program);
-    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
-    let output = hew_hir::lower_program_host_target(program, &checked, &hew_hir::ResolutionCtx);
+    let facts = checker.check_program(program);
+    assert!(facts.errors.is_empty(), "{:?}", facts.errors);
+    let output = hew_hir::lower_program_host_target(program, &facts, &hew_hir::ResolutionCtx);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     output.module
 }

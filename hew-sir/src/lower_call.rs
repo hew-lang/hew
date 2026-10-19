@@ -1813,6 +1813,17 @@ impl Builder<'_, '_> {
             }
             return self.lower_service_acquire(expr, operation, args);
         }
+        if let hew_types::RuntimeCallFamily::Semaphore(operation) = family {
+            if !evaluation_order.is_empty() {
+                return Err("semaphore acquisition takes positional arguments only".into());
+            }
+            return self.lower_borrowed_native_suspend(
+                expr,
+                crate::SuspendKind::SemaphoreAcquire { operation },
+                operation.contract(),
+                args,
+            );
+        }
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             if !evaluation_order.is_empty() {
                 return Err("native I/O takes positional arguments only".into());

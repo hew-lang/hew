@@ -131,6 +131,7 @@ pub enum RuntimeCallAbiShape {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AsyncSuspendKind {
     NativeIo(AsyncIoOp),
+    Semaphore(super::SemaphoreOp),
     Service(super::ServiceOp),
     /// `sink.send(x)` over any describable `Sink<T>` element: the
     /// layout-witness `hew_stream_send_layout` on the backpressure-aware
@@ -406,6 +407,7 @@ pub fn all_runtime_call_families() -> Vec<RuntimeCallFamily> {
                     out.extend([false, true].map(|newline| F::Print { kind, newline }));
                 }
             }
+            F::Semaphore(_) => out.extend(super::SemaphoreOp::iter().map(F::Semaphore)),
             F::AsyncIo(_) => out.extend(AsyncIoOp::iter().map(F::AsyncIo)),
             F::Service(_) => out.extend(super::ServiceOp::iter().map(F::Service)),
             F::Encoding { .. } => {

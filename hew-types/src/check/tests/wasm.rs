@@ -14,7 +14,7 @@ pub(super) use super::*;
 // Coverage:
 //  - stream.pipe / Sink send/close → allowed on wasm32 (Sink is ungated)
 //  - semaphore.new / try_acquire / release / count / close → allowed on wasm32
-//  - Semaphore::acquire / Semaphore::acquire_timeout → BlockingSemaphoreAcquire error
+//  - Semaphore::acquire / Semaphore::acquire_timeout → allowed on wasm32
 //  - sleep_ms → now an undefined-function error (removed; use sleep(duration))
 //  - sleep → Timers warning
 //  - Stream<T>::next → Streams error
@@ -380,7 +380,7 @@ mod wasm_rejects {
     }
 
     #[test]
-    fn wasm_rejects_blocking_semaphore_methods() {
+    fn wasm_allows_owned_semaphore_waits() {
         let source = concat!(
             "import std.semaphore;\n",
             "fn main() {\n",
@@ -399,17 +399,9 @@ mod wasm_rejects {
         let mut checker = Checker::new(test_registry());
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
-        let reject_count = output
-            .errors
-            .iter()
-            .filter(|error| {
-                error.kind == TypeErrorKind::PlatformLimitation
-                    && error.message.contains("Blocking semaphore acquire")
-            })
-            .count();
         assert!(
-            reject_count >= 2,
-            "blocking semaphore methods should be rejected on WASM; got errors: {:?}",
+            !has_platform_limitation_error(&output),
+            "owned semaphore waits should be admitted on WASM: {:?}",
             output.errors
         );
     }

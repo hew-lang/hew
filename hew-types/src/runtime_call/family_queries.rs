@@ -686,6 +686,7 @@ impl RuntimeCallFamily {
         use RuntimeCallFamily as F;
         match self {
             F::AsyncIo(op) => Some(AsyncSuspendKind::NativeIo(op)),
+            F::Semaphore(op) => Some(AsyncSuspendKind::Semaphore(op)),
             F::Service(op @ (super::ServiceOp::Export | super::ServiceOp::Receive)) => Some(AsyncSuspendKind::Service(op)),
             // The suspending symbols (HIR await-classifier source of truth).
             // Every describable sink-send element rides the layout-witness

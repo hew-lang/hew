@@ -112,8 +112,8 @@ where available, a supported alternative. In particular:
 - Single-process actors and in-memory pipes run on Tier 2. Supervision trees,
   links and monitors, structured task scopes, and `select` require runtime
   modules excluded from wasm32.
-- Use `Semaphore.try_acquire` for non-blocking coordination. The blocking
-  `acquire` methods have no cooperative WASM wait path.
+- Semaphore acquisition releases the worker while waiting. Timed acquisition
+  and cancellation use the same owned permit operation on native and WASI.
 - File and socket streams depend on the native I/O reactor. Networking,
   subprocess, and distributed-node APIs are native-only.
 - `crypto.random_bytes`, encryption, and signing require native cryptographic

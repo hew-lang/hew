@@ -43,6 +43,8 @@ mod io;
 mod offload;
 #[path = "../physical_select.rs"]
 mod select;
+#[path = "../physical_semaphore.rs"]
+mod semaphore;
 #[path = "../physical_stream.rs"]
 mod stream;
 #[path = "../physical_suspend.rs"]

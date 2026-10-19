@@ -1,0 +1,28 @@
+import std.semaphore;
+
+fn main() {
+    let sem = semaphore.new(1);
+    sem.acquire();
+    assert(sem.count() == 0);
+    assert(!sem.acquire_timeout(0));
+    assert(!sem.acquire_timeout(-1));
+    sem.release();
+    assert(sem.acquire_timeout(0));
+    assert(!sem.acquire_timeout(5));
+    var cancelled = false;
+    scope within 5ms {
+        sem.acquire();
+        panic("empty semaphore unexpectedly acquired");
+    } handle failure {
+        match failure {
+            .Deadline { message } => { cancelled = true; },
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(cancelled);
+    sem.release();
+    assert(sem.acquire_timeout(100));
+    assert(sem.count() == 0);
+    sem.close();
+    println("owned semaphore ok");
+}

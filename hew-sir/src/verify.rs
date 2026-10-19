@@ -6058,6 +6058,19 @@ fn verify_terminator_shape(
                                 }) && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                     })
                 }
+                crate::SuspendKind::SemaphoreAcquire { operation } => {
+                    let argument_types = inputs
+                        .iter()
+                        .map(|input| types.get(&input.operand.value).cloned())
+                        .collect::<Option<Vec<_>>>();
+                    resumes.len() == 1
+                        && inputs
+                            .iter()
+                            .all(|input| input.decision == crate::BoundaryDecision::Borrow)
+                        && matches!(result, crate::CallResult::Value(value)
+                            if argument_types.is_some_and(|arguments| operation.contract().matches_signature(variants.defs, &arguments, &value.ty))
+                                && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
+                }
                 crate::SuspendKind::NativeIo { operation } => {
                     let argument_types = inputs
                         .iter()

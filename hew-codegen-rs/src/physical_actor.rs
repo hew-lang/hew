@@ -498,7 +498,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     return true;
                 }
                 match &block.terminator {
-                    PhysicalTerminator::NativeIo { .. } | PhysicalTerminator::ServiceAcquire { .. }
+                    PhysicalTerminator::NativeIo { .. }
+                | PhysicalTerminator::SemaphoreAcquire { .. } | PhysicalTerminator::ServiceAcquire { .. }
                     | PhysicalTerminator::Offload { .. }
                     // Content-backed stream operations offload producer work
                     // through the installed runtime's blocking pool.

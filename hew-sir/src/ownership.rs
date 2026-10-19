@@ -486,6 +486,10 @@ pub struct TaskScopeId(pub u32);
 ///   neither reading is foreclosed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SuspendKind {
+    /// An owned permit acquisition over the semaphore's shared state.
+    SemaphoreAcquire {
+        operation: hew_types::runtime_call::SemaphoreOp,
+    },
     /// An owned native request with an exact result and input-loan contract.
     NativeIo {
         operation: hew_types::runtime_call::AsyncIoOp,

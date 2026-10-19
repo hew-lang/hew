@@ -28,6 +28,18 @@ impl RuntimeCallFamily {
         match self {
             // The async IO, file and TCP operation sets and the encoding
             // matrix each carry their row in their own operation enum.
+            Self::Semaphore(op) => RuntimeOpRow {
+                authority: RuntimeAuthority::Service,
+                symbol: op.c_symbol(),
+                contract: Some(op.contract()),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                c_return: match op {
+                    super::SemaphoreOp::Acquire => RuntimeCReturn::Storage,
+                    super::SemaphoreOp::AcquireTimeout => RuntimeCReturn::TruthI32,
+                },
+                physical: RuntimePhysicalForm::NotAnAction,
+            },
             Self::AsyncIo(op) => RuntimeOpRow {
                 authority: op.authority(),
                 symbol: op.c_symbol(),

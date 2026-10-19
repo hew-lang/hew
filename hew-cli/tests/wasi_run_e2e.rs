@@ -91,7 +91,7 @@ fn main() {
 }
 
 /// Nonblocking permits use the same count transitions and resource cleanup on
-/// both targets. Blocking acquire methods retain their WASM diagnostic.
+/// both targets.
 #[test]
 fn semaphore_nonblocking_operations_run_on_native_and_wasi() {
     require_codegen();
@@ -109,6 +109,30 @@ fn semaphore_nonblocking_operations_run_on_native_and_wasi() {
         );
         assert_eq!(output.stdout, b"semaphore ok\n");
         assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn semaphore_owned_waits_match_on_native_and_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let source = repo_root().join("tests/vertical-slice/accept/semaphore_owned_waits.hew");
+    let source = source.to_str().expect("source path");
+    for optimization in ["0", "2"] {
+        for target in [None, Some("wasm32-wasi")] {
+            let mut args = vec!["run", source, "--opt-level", optimization];
+            if let Some(target) = target {
+                args.extend(["--target", target]);
+            }
+            let output = run_hew_in(repo_root(), &args);
+            assert!(
+                output.status.success(),
+                "{target:?} O{optimization}: {}",
+                support::describe_output(&output)
+            );
+            assert_eq!(output.stdout, b"owned semaphore ok\n");
+            assert!(output.stderr.is_empty());
+        }
     }
 }
 

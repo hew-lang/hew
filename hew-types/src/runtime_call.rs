@@ -18,6 +18,9 @@ pub use supervisor_pool::SupervisorPoolOp;
 mod service;
 pub use service::{ServiceHandleKind, ServiceOp};
 
+mod semaphore;
+pub use semaphore::SemaphoreOp;
+
 mod async_io;
 pub use async_io::{AsyncIoLoan, AsyncIoOp, AsyncIoResume, IoHandleKind};
 mod tcp;

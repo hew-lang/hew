@@ -28,6 +28,7 @@ use strum::EnumIter;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
+    Semaphore(super::SemaphoreOp),
     FileRead(FileReadOp),
     Service(super::ServiceOp),
     Tcp(TcpOp),

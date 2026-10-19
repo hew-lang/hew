@@ -377,6 +377,14 @@ fn async_suspension_classification_preserves_operation_identity() {
 
     // Positive: exactly these (family, expected kind) tuples.
     let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
+        (
+            F::Semaphore(super::SemaphoreOp::Acquire),
+            AsyncSuspendKind::Semaphore(super::SemaphoreOp::Acquire),
+        ),
+        (
+            F::Semaphore(super::SemaphoreOp::AcquireTimeout),
+            AsyncSuspendKind::Semaphore(super::SemaphoreOp::AcquireTimeout),
+        ),
         (F::StreamSendLayout, AsyncSuspendKind::SinkSend),
         (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
     ];

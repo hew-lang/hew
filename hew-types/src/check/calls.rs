@@ -1787,6 +1787,14 @@ impl Checker {
             &params,
             &result,
             &contract.consuming_params,
+        ) || family.matches_semaphore_extern(
+            &self.defs,
+            module,
+            self.defs.path(declaration),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
         ) || family.matches_async_io_extern(
             &self.defs,
             module,

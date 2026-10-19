@@ -629,7 +629,6 @@ impl Checker {
             };
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
-        self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Some(receiver) = match &resolved {
             Ty::Named { head, .. } => head.nominal(),
             _ => None,

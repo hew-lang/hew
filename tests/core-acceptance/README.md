@@ -13,6 +13,13 @@ require those operating systems, such as POSIX signals or FIFOs. Omitting
 `EXCLUDED`, separately from passes and failures, and refuses an empty selection.
 These exclusions describe fixture requirements, not execution parity.
 
+`[case.env]` supplies the program's execution environment, overriding inherited
+values only for the named variables. Native–sandbox parity reuses these values
+by matching each manifest's declared source path, including sources outside
+`cases/`. Unconfigured variables retain the caller's environment and harness
+defaults. Exact diagnostic transcripts may pin scheduler workers here; separate
+native actor tests cover the ring's behaviour with multiple workers.
+
 ## Expectation kinds
 
 A case's `kind` says what it proves. Omitting `kind` is `kind = "run"`, so

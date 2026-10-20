@@ -294,6 +294,7 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
         # the runner process itself died of ENOSPC twice mid-run even after
@@ -304,16 +305,16 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run foundational compiled-Hew gates
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: |
-          make core-acceptance
-          make test-doc-examples
-          make test-hew-ratchet
-          make test-migrate-corpus
+          make -k core-acceptance test-doc-examples test-hew-ratchet test-migrate-corpus
 
       - name: Run MQTT broker end-to-end oracle
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # The Linux release lane has explicit mosquitto_pub/sub provisioning
         # above, so this exercises a real external client against the shipped
         # compiler's broker example before a release candidate is tagged.
@@ -326,12 +327,15 @@ jobs:
       # and the wasm-pack release build. Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
       - name: Install wasm-pack v0.13.1 and Binaryen 117 (browser-analysis gate)
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         uses: ./.github/actions/setup-wasm-pack
 
       - name: Add wasm32-unknown-unknown target
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: rustup target add wasm32-unknown-unknown
 
       - name: Set up Node.js for browser execution
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -339,6 +343,7 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Browser compiler and VM playground gate
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make playground-check
 
       - name: Upload test reports
@@ -448,6 +453,7 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           NEXTEST_WORKSPACE_FILTER: "not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)"
@@ -458,9 +464,11 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make core-acceptance
 
       - name: Upload test reports
@@ -563,6 +571,7 @@ jobs:
           wasm-ld --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
@@ -572,9 +581,11 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make core-acceptance
 
       - name: Upload test reports
@@ -672,15 +683,18 @@ jobs:
           & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         shell: bash
         run: make SHELL=bash test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # Standalone because the workspace run above must exclude hew-cabi.
         shell: bash
         run: make SHELL=bash test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         shell: bash
         run: make SHELL=bash core-acceptance
 
@@ -814,16 +828,9 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake test-strict
-
-            # hew-cabi is excluded from the workspace run above because its
-            # cfg(test) runtime stubs collide with hew-runtime's real symbols
-            # at link time. Run it on its own so the C-ABI ownership contract
-            # is actually proven on this platform rather than merely skipped.
-            gmake test-cabi
-
-            gmake core-acceptance
-            gmake test-hew-ratchet
+            # These goals run independent suites, including the separate C-ABI
+            # link boundary. Collect all failures without hiding a later suite.
+            gmake -k test-strict test-cabi core-acceptance test-hew-ratchet
             HEW_FREEBSD_CI
 
       - name: Upload test reports

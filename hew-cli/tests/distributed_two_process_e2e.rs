@@ -59,6 +59,11 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// headroom for loopback gossip under load without masking a true hang.
 const CLIENT_RUN_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// The shared distributed fixture is substantially larger than ordinary E2E
+/// programs. Allow a cold native compile to finish on slower hosted runners;
+/// nextest's per-test ceiling remains the independent hang watchdog.
+const DIST_NODE_COMPILE_TIMEOUT: Duration = Duration::from_mins(2);
+
 #[derive(Clone, Copy)]
 enum StderrExpectation {
     Ignore,
@@ -163,15 +168,10 @@ fn compiled_node_binary() -> &'static Path {
                 .arg(&source)
                 .env("HEW_STD", repo_root().join("std"))
                 .current_dir(repo_root());
-            let compile_timeout = if sanitize {
-                Duration::from_mins(2)
-            } else {
-                hew_testutil::DEFAULT_EXEC_TIMEOUT
-            };
             let output = support::try_run_bounded_command(
                 command,
                 format!("hew compile {}", source.display()),
-                compile_timeout,
+                DIST_NODE_COMPILE_TIMEOUT,
             )
             .unwrap_or_else(|error| panic!("{error}"));
             assert!(

@@ -179,14 +179,76 @@ fn trimmed_package_paths_are_stable_across_roots() {
                 "json",
             ],
         );
-        assert!(!output.status.success());
-        let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(diagnostics, serde_json::json!([]));
-        assert!(!stdout(&output).contains(root.to_str().unwrap()));
-        assert!(!stderr(&output).contains(root.to_str().unwrap()));
+        assert_trimmed_missing_input(&output, root);
     }
     #[cfg(target_os = "linux")]
     assert_remapped_debug_source(dir.path(), &roots);
+}
+
+fn assert_trimmed_missing_input(output: &Output, root: &Path) {
+    let details = describe_output(output);
+    assert!(!output.status.success(), "{details}");
+    let diagnostics: serde_json::Value = serde_json::from_slice(&output.stdout)
+        .unwrap_or_else(|error| panic!("invalid JSON: {error}\n{details}"));
+    assert_eq!(diagnostics, serde_json::json!([]), "{details}");
+    assert!(
+        !stdout(output).contains(root.to_str().unwrap()),
+        "{details}"
+    );
+    assert!(
+        !stderr(output).contains(root.to_str().unwrap()),
+        "{details}"
+    );
+    assert!(stderr(output).contains("missing.hew"), "{details}");
+}
+
+#[cfg(unix)]
+#[test]
+fn trimmed_missing_input_through_a_symlink_preserves_the_read_error() {
+    let dir = workspace();
+    let real = dir.path().join("real");
+    let alias = dir.path().join("alias");
+    std::fs::create_dir(&real).unwrap();
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+    let missing = alias.join("missing.hew");
+    let output = hew(
+        &alias,
+        &[
+            "build",
+            missing.to_str().unwrap(),
+            "--trim-paths",
+            "--format",
+            "json",
+        ],
+    );
+    assert_trimmed_missing_input(&output, &alias);
+    assert_trimmed_missing_input(&output, &real.canonicalize().unwrap());
+    assert!(
+        stderr(&output).contains("cannot read"),
+        "{}",
+        describe_output(&output)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn debug_source_directory_preserves_llvm_string_escapes() {
+    require_codegen();
+    let dir = workspace();
+    let root = dir.path().join("literal\\separator\"quote");
+    write(
+        &root.join("hew.toml"),
+        "[package]\nname = \"debug-escape\"\nversion = \"0.1.0\"\n",
+    );
+    write(&root.join("main.hew"), "fn main() { println(1); }\n");
+    let (_, llvm) = emit_package_paths(&root, &["--no-trim-paths"]);
+    assert_eq!(
+        llvm_debug_directory(&llvm, "main.hew")
+            .canonicalize()
+            .unwrap(),
+        root.canonicalize().unwrap(),
+        "{llvm}"
+    );
 }
 
 fn assert_untrimmed_debug_source(roots: &[PathBuf; 2]) {
@@ -237,10 +299,20 @@ fn llvm_debug_directory(llvm: &str, filename: &str) -> PathBuf {
     let mut remaining = encoded.as_bytes();
     while let Some((&byte, rest)) = remaining.split_first() {
         if byte == b'\\' {
-            assert!(rest.len() >= 2, "truncated LLVM escape: {encoded}");
-            let hex = std::str::from_utf8(&rest[..2]).unwrap();
-            bytes.push(u8::from_str_radix(hex, 16).expect("LLVM hexadecimal escape"));
-            remaining = &rest[2..];
+            assert!(!rest.is_empty(), "truncated LLVM escape: {encoded:?}");
+            if rest[0] == b'\\' {
+                bytes.push(b'\\');
+                remaining = &rest[1..];
+            } else {
+                assert!(rest.len() >= 2, "truncated LLVM escape: {encoded:?}");
+                let hex = std::str::from_utf8(&rest[..2]).unwrap();
+                bytes.push(
+                    u8::from_str_radix(hex, 16).unwrap_or_else(|error| {
+                        panic!("invalid LLVM escape in {encoded:?}: {error}")
+                    }),
+                );
+                remaining = &rest[2..];
+            }
         } else {
             bytes.push(byte);
             remaining = rest;
@@ -787,20 +859,29 @@ fn objects_rebuild_when_a_header_changes() {
 }
 
 /// Valid manifests without `[native]` do not add a native build prerequisite.
-const PLAIN_MANIFESTS: &[(&str, &str)] = &[
-    ("workspace only", "[workspace]\nmembers = []\n"),
-    ("dependencies only", "[dependencies]\n"),
-    ("empty", ""),
+const PLAIN_MANIFESTS: &[(&str, &str, &str)] = &[
+    (
+        "workspace only",
+        "[workspace]\nmembers = []\n",
+        "import lib.lib as lib;",
+    ),
+    (
+        "dependencies only",
+        "[dependencies]\n",
+        "import lib.lib as lib;",
+    ),
+    ("empty", "", "import lib.lib as lib;"),
     (
         "package",
         "[package]\nname = \"lib\"\nversion = \"0.1.0\"\n",
+        "import lib;",
     ),
 ];
 
 #[test]
 fn valid_manifests_without_native_allow_a_single_file_build() {
     require_codegen();
-    for (shape, text) in PLAIN_MANIFESTS {
+    for (shape, text, module_import) in PLAIN_MANIFESTS {
         let dir = workspace();
         write(&dir.path().join("hew.toml"), text);
         write(
@@ -811,7 +892,7 @@ fn valid_manifests_without_native_allow_a_single_file_build() {
         assert_ok(&run, &format!("hew run beside a manifest ({shape})"));
         assert_eq!(stdout(&run), "7\n", "{shape}");
 
-        // The same manifest owning an imported module.
+        // The same manifest beside an imported file.
         let dir = workspace();
         write(&dir.path().join("lib/hew.toml"), text);
         write(
@@ -820,10 +901,10 @@ fn valid_manifests_without_native_allow_a_single_file_build() {
         );
         write(
             &dir.path().join("app.hew"),
-            "import lib;\n\nfn main() {\n    println(lib.value());\n}\n",
+            &format!("{module_import}\n\nfn main() {{\n    println(lib.value());\n}}\n"),
         );
         let run = hew(dir.path(), &["run", "app.hew"]);
-        assert_ok(&run, &format!("hew run importing a module ({shape})"));
+        assert_ok(&run, &format!("hew run importing a file ({shape})"));
         assert_eq!(stdout(&run), "5\n", "{shape}");
     }
 }

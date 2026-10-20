@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 #[cfg(unix)]
@@ -661,6 +663,124 @@ struct ParityCase {
     source_rel: &'static str,
 }
 
+#[cfg(unix)]
+#[derive(serde::Deserialize)]
+struct CaseEnvironment {
+    source: PathBuf,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
+}
+
+#[cfg(unix)]
+fn load_case_environments(root: &Path) -> Vec<CaseEnvironment> {
+    #[derive(serde::Deserialize)]
+    struct Manifest {
+        #[serde(rename = "case")]
+        cases: Vec<CaseEnvironment>,
+    }
+
+    let mut paths: Vec<_> = std::fs::read_dir(root.join("cases"))
+        .expect("read core acceptance manifests")
+        .map(|entry| entry.expect("core acceptance manifest entry").path())
+        .filter(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "toml")
+        })
+        .collect();
+    paths.sort();
+    let mut environments = Vec::new();
+    for path in paths {
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|err| panic!("read {}: {err}", path.display()));
+        let manifest: Manifest =
+            toml::from_str(&text).unwrap_or_else(|err| panic!("parse {}: {err}", path.display()));
+        for mut case in manifest.cases {
+            case.source = root
+                .join(&case.source)
+                .canonicalize()
+                .unwrap_or_else(|err| panic!("resolve source in {}: {err}", path.display()));
+            environments.push(case);
+        }
+    }
+    environments
+}
+
+#[cfg(unix)]
+fn environment_for_source(
+    cases: &[CaseEnvironment],
+    source_path: &Path,
+) -> BTreeMap<String, String> {
+    let source = source_path.canonicalize().expect("resolve parity source");
+    let mut matching = cases.iter().filter(|case| case.source == source);
+    let Some(first) = matching.next() else {
+        return BTreeMap::new();
+    };
+    for other in matching {
+        assert_eq!(
+            first.env,
+            other.env,
+            "{} has conflicting core acceptance environments",
+            source.display()
+        );
+    }
+    first.env.clone()
+}
+
+#[cfg(unix)]
+fn fixture_environment(source_path: &Path) -> BTreeMap<String, String> {
+    static ENVIRONMENTS: OnceLock<Vec<CaseEnvironment>> = OnceLock::new();
+    environment_for_source(
+        ENVIRONMENTS
+            .get_or_init(|| load_case_environments(&repo_root().join("tests/core-acceptance"))),
+        source_path,
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn manifest_environment_reaches_native_execution_and_preserves_unconfigured_values() {
+    ensure_native_toolchain();
+    let root = tempfile::tempdir().expect("environment contract fixture");
+    std::fs::create_dir(root.path().join("cases")).unwrap();
+    let source = r#"import std.os;
+fn main() {
+    match os.env("HEW_WORKERS") { .Some(value) => println(value), .None => println("absent"), }
+    match os.env("HEW_SEED") { .Some(value) => println(value), .None => println("absent"), }
+}
+"#;
+    for name in ["configured", "unconfigured", "unregistered"] {
+        std::fs::write(root.path().join(format!("{name}.hew")), source).unwrap();
+    }
+    std::fs::write(
+        root.path().join("cases/unconfigured.toml"),
+        "[[case]]\nsource = \"unconfigured.hew\"\n",
+    )
+    .unwrap();
+    let cases = load_case_environments(root.path());
+    let ring = repo_root().join("tests/core-acceptance/cases/actor-same-type-completion-ring.hew");
+    for name in ["configured", "unconfigured", "unregistered"] {
+        let path = root.path().join(format!("{name}.hew"));
+        let environment = if name == "configured" {
+            fixture_environment(&ring)
+        } else {
+            environment_for_source(&cases, &path)
+        };
+        let output = run_native(&path, "", &environment);
+        let workers = if name == "configured" {
+            "1".to_string()
+        } else {
+            std::env::var("HEW_WORKERS").unwrap_or_else(|_| "absent".into())
+        };
+        assert!(output.status.success(), "{}", describe_output(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!("{workers}\n{HEW_SEED}\n"),
+            "{name}"
+        );
+        assert!(output.stderr.is_empty(), "{}", describe_output(&output));
+    }
+}
+
 #[test]
 fn sandbox_graduation_corpus_is_fully_covered() {
     let graduation_dir = repo_root().join("examples").join("sandbox-graduation");
@@ -1160,7 +1280,8 @@ fn package_coherence_native_and_vm() {
 fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::SourceSet) {
     let repo_root = repo_root();
     let source_path = repo_root.join(case.source_rel);
-    let native = run_native(&source_path, stdin);
+    let environment = fixture_environment(&source_path);
+    let native = run_native(&source_path, stdin, &environment);
     let source = std::fs::read_to_string(&source_path).unwrap_or_else(|err| {
         panic!(
             "failed to read parity source {} for {}: {err}",
@@ -1191,7 +1312,7 @@ fn assert_case_with_inputs(case: &ParityCase, stdin: &str, inputs: hew_compile::
     let stdin_path = tempdir.path().join("stdin.txt");
     std::fs::write(&stdin_path, stdin)
         .unwrap_or_else(|err| panic!("failed to write stdin for {}: {err}", case.test_name));
-    let sandbox = run_sandbox(&bytecode_path, &stdin_path);
+    let sandbox = run_sandbox(&bytecode_path, &stdin_path, &environment);
     assert_exit_code_parity(case, &native, &sandbox);
     assert_stdout_parity(case, &native, &sandbox);
     assert_stderr_parity(case, &native, &sandbox);
@@ -1303,7 +1424,7 @@ fn assert_stdout_parity(case: &ParityCase, native: &Output, sandbox: &Output) {
 }
 
 #[cfg(unix)]
-fn run_native(source_path: &Path, stdin: &str) -> Output {
+fn run_native(source_path: &Path, stdin: &str, environment: &BTreeMap<String, String>) -> Output {
     let output_dir = tempfile::tempdir().expect("native parity output directory");
     // Compare execution output on both paths. The sandbox API returns frontend
     // warnings as diagnostics, so native compiler warnings are separate too.
@@ -1334,13 +1455,18 @@ fn run_native(source_path: &Path, stdin: &str) -> Output {
         .env("HEW_STD", repo_root().join("std"))
         .env("HEW_SEED", HEW_SEED)
         .env("NO_COLOR", "1")
+        .envs(environment)
         .write_stdin(stdin)
         .output()
         .unwrap_or_else(|err| panic!("failed to execute native parity program: {err}"))
 }
 
 #[cfg(unix)]
-fn run_sandbox(bytecode_path: &Path, stdin_path: &Path) -> Output {
+fn run_sandbox(
+    bytecode_path: &Path,
+    stdin_path: &Path,
+    environment: &BTreeMap<String, String>,
+) -> Output {
     Command::new("npm")
         .arg("--prefix")
         .arg(repo_root().join("hew-sandbox-vm"))
@@ -1355,6 +1481,7 @@ fn run_sandbox(bytecode_path: &Path, stdin_path: &Path) -> Output {
         .arg(stdin_path)
         .current_dir(repo_root())
         .env("NO_COLOR", "1")
+        .envs(environment)
         .output()
         .unwrap_or_else(|err| panic!("failed to spawn sandbox parity runner: {err}"))
 }

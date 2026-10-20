@@ -2512,6 +2512,10 @@ const fn trap_kind(kind: TrapKind) -> wire::TrapName {
 }
 
 /// Every suspension kind the compiler can produce, named with its payload.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive suspension-to-wire mapping has one authoritative match"
+)]
 fn suspend_shape(kind: &SuspendKind) -> (&'static str, wire::Suspension) {
     use wire::Suspension as S;
     match kind {

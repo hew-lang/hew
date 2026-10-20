@@ -50,6 +50,10 @@ impl<'de> Deserialize<'de> for RuntimeFamilyEntry {
             id: u32,
             family: String,
             #[serde(default, deserialize_with = "present_nullable")]
+            #[expect(
+                clippy::option_option,
+                reason = "v1 preserves omitted, present-null and present-value detail fields"
+            )]
             detail: Option<Option<serde_json::Value>>,
         }
         let entry = Entry::deserialize(deserializer)?;
@@ -1128,6 +1132,10 @@ fn discriminator_names(
 ///
 /// # Errors
 /// Returns an error if the envelope template is not a schema object.
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps derived schema composition and runtime identity adaptation together"
+)]
 pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Value, String> {
     #[derive(JsonSchema)]
     #[allow(

@@ -3,6 +3,12 @@ type StockKey {
     shelf: i64;
 }
 
+impl Hash for StockKey {
+    fn hash(self) -> i64 {
+        self.shelf
+    }
+}
+
 type StockValue {
     label: string;
     quantity: i64;
@@ -82,11 +88,11 @@ fn main() {
     assert(replacement.quantity == 5);
     let failed_record = scope {
         stock.update(StockKey { aisle: "pantry", shelf: 2 }, |old| {
-            var changed = old;
-            changed.label = "damaged";
+            var damaged = old;
+            damaged.label = "damaged";
             let ticket = CallbackTicket { label: "record" };
             panic("record callback failed");
-            changed
+            damaged
         })
     } handle failure {
         println("record recovered");

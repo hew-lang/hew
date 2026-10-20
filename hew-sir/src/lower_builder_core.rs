@@ -408,18 +408,11 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                     self.lower_discarded_expr(body)?;
                     return Ok(None);
                 }
-                // A body block with no tail expression carries its value out
-                // through a `return` instead, which already sealed the
-                // callable's return. There is nothing to transfer here and the
-                // divergence doctrine forbids inventing a placeholder, so the
-                // body is complete without a tail: `{ ...; return v; }` and
-                // `{ ...; v }` are the same callable.
+                // A return or fault can make a checked value tail unreachable.
+                // Preserve the block's terminated control flow without asking
+                // a divergent body to produce a placeholder return value.
                 if let HirExprKind::Block(block) = &body.kind {
-                    if block.tail.is_none() {
-                        let block = block.clone();
-                        self.lower_scoped_block(&block, OwnedBindingUse::Return)?;
-                        return Ok(None);
-                    }
+                    return self.lower_scoped_block(block, OwnedBindingUse::Return);
                 }
                 Ok(Some(Operand {
                     value: lower_initial_value_transfer(

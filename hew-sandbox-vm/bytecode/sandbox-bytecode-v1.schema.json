@@ -386,6 +386,51 @@
       "required": ["actor", "message", "policy", "sealed"],
       "type": "object"
     },
+    "ArrayValueOp": {
+      "enum": ["Len", "Index", "IndexBorrow", "Set"],
+      "type": "string"
+    },
+    "AskDetail": {
+      "properties": {
+        "actor": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "message": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "policy": {
+          "$ref": "#/$defs/SendPolicy"
+        },
+        "sealed": {
+          "type": "boolean"
+        }
+      },
+      "required": ["actor", "message", "policy", "sealed"],
+      "type": "object"
+    },
+    "AsyncIoOp": {
+      "enum": [
+        "TcpRead",
+        "TcpWrite",
+        "TcpAccept",
+        "TcpConnect",
+        "TcpConnectTimeout",
+        "StdinReadLine",
+        "SinkFinish",
+        "TlsConnect",
+        "TlsRead",
+        "TlsWrite",
+        "FileRead",
+        "FileWrite"
+      ],
+      "type": "string"
+    },
     "BoundaryDecision": {
       "enum": ["borrow", "borrow_mut", "copy", "move", "snapshot"],
       "type": "string"
@@ -519,6 +564,66 @@
       "required": ["to", "args"],
       "type": "object"
     },
+    "EncodingFormat": {
+      "description": "Distinct owned serde representations; no normalization between formats.",
+      "enum": ["Json", "Yaml", "Toml"],
+      "type": "string"
+    },
+    "EncodingOp": {
+      "enum": [
+        "Parse",
+        "LastError",
+        "Stringify",
+        "Type",
+        "IntStatus",
+        "GetBool",
+        "GetInt",
+        "GetU64",
+        "GetFloat",
+        "GetString",
+        "GetDatetime",
+        "GetField",
+        "ArrayLen",
+        "ArrayGet",
+        "ObjectKeys",
+        "ObjectNew",
+        "ArrayNew",
+        "FromBool",
+        "FromInt",
+        "FromU64",
+        "FromFloat",
+        "FromString",
+        "FromNull",
+        "Eq",
+        "ObjectSet",
+        "ArrayPush",
+        "Clone",
+        "Free"
+      ],
+      "type": "string"
+    },
+    "FileReadOp": {
+      "description": "Existing synchronous file adapters and their shared error channel.",
+      "enum": [
+        "Open",
+        "IsValid",
+        "Collect",
+        "Close",
+        "StreamOpen",
+        "StreamIsValid",
+        "StreamCollect",
+        "HasError",
+        "LastErrorKind",
+        "LastErrno",
+        "LastError"
+      ],
+      "type": "string"
+    },
+    "FloatMethodOp": {
+      "description": "`f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).\nScoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the\n`IntMethodWidth` gap for the narrower integer widths.",
+      "enum": ["ToBits", "IsNan", "IsFinite", "IsInfinite", "IsSignNegative"],
+      "type": "string"
+    },
     "IndirectInvocation": {
       "properties": {
         "receiver": {
@@ -534,6 +639,51 @@
       "required": ["receiver"],
       "type": "object"
     },
+    "IntArithKind": {
+      "description": "Non-trapping and overflow-checked integer arithmetic: `x.wrapping_add(y)`\nand its siblings. `SaturatingMul` has no direct LLVM saturating-multiply\nintrinsic; codegen builds it from `llvm.{s,u}mul.with.overflow` plus a\nselect onto the saturated bound. `Checked*` results are `Option<T>`\nthrough the ordinary `VariantResult` physical form (see the row table).",
+      "enum": [
+        "WrappingAdd",
+        "WrappingSub",
+        "WrappingMul",
+        "SaturatingAdd",
+        "SaturatingSub",
+        "SaturatingMul",
+        "CheckedAdd",
+        "CheckedSub",
+        "CheckedMul"
+      ],
+      "type": "string"
+    },
+    "IntBitOp": {
+      "description": "Bit-manipulation method discriminator for `x.count_ones()` and its\nsiblings. Every op maps to one LLVM intrinsic (`ctpop`, `ctlz`, `cttz`,\n`bswap`, `bitreverse`, `fshl`/`fshr`) parameterized on the receiver's\nwidth, carried separately as [`IntMethodWidth`].",
+      "enum": [
+        "CountOnes",
+        "CountZeros",
+        "LeadingZeros",
+        "TrailingZeros",
+        "SwapBytes",
+        "ReverseBits",
+        "RotateLeft",
+        "RotateRight"
+      ],
+      "type": "string"
+    },
+    "IntMethodWidth": {
+      "description": "Receiver width for [`IntBitOp`]/[`IntArithKind`] methods, covering every\ninteger width Hew has. Narrow widths (`I8`/`I16`/`U8`/`U16`) and the\npointer-sized widths (`Isize`/`Usize`) share codegen's C ABI convention\nfor `RuntimeValueKind`: they carry their own LLVM width end to end (no\nwidening at a call boundary), so codegen picks the LLVM intrinsic at the\nvalue's own bit width (`llvm.ctpop.i8`, `llvm.sadd.sat.i16`, …) and needs\nno runtime symbol per width.",
+      "enum": [
+        "I8",
+        "I16",
+        "I32",
+        "I64",
+        "Isize",
+        "U8",
+        "U16",
+        "U32",
+        "U64",
+        "Usize"
+      ],
+      "type": "string"
+    },
     "InvocationCallee": {
       "anyOf": [
         {
@@ -547,6 +697,120 @@
         },
         {
           "$ref": "#/$defs/IndirectInvocation"
+        }
+      ]
+    },
+    "JoinDetail": {
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/JoinMode"
+        },
+        "scope": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["scope", "mode"],
+      "type": "object"
+    },
+    "JoinMode": {
+      "enum": ["wait", "cancel_losers", "propagate_fault"],
+      "type": "string"
+    },
+    "MapValueOp": {
+      "description": "Ordinary map operations with independently owned keys and values.",
+      "oneOf": [
+        {
+          "enum": [
+            "New",
+            "Len",
+            "Index",
+            "Get",
+            "ContainsKey",
+            "Insert",
+            "Remove",
+            "Clear",
+            "Keys",
+            "Values",
+            "Entries"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "GetBorrow",
+          "description": "`m.get(k)` where the value has no clone: `Some` carries a loan of the\nslot the map still owns, readable for the length of the receiver's\nloan, and an absent key still reads `None`.",
+          "type": "string"
+        }
+      ]
+    },
+    "MathIntrinsic": {
+      "description": "Math-intrinsic family discriminator. HIR resolves the user-visible\nidentifiers (`\"sqrt\"`, `\"sin\"`, …) onto\n`RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the\ncall so codegen never re-derives the intrinsic from the callee string.",
+      "oneOf": [
+        {
+          "enum": [
+            "Sqrt",
+            "Exp",
+            "Log",
+            "Sin",
+            "Cos",
+            "AbsI64",
+            "MinI64",
+            "MaxI64",
+            "AbsF64",
+            "MinF64",
+            "MaxF64",
+            "Pow",
+            "Floor",
+            "Ceil",
+            "Round",
+            "Tan",
+            "Asin",
+            "Acos",
+            "Atan",
+            "Atan2",
+            "Sinh",
+            "Cosh",
+            "Tanh",
+            "Exp2",
+            "Log2",
+            "Log10",
+            "Fma",
+            "Trunc",
+            "Copysign"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Log1p",
+          "description": "Not an LLVM intrinsic on this target's LLVM version; codegen declares\nand calls the libm symbol `log1p` directly (see `emit_math_intrinsic`).",
+          "type": "string"
+        },
+        {
+          "const": "Expm1",
+          "description": "Libm-only, like `Log1p`: codegen calls `expm1` directly.",
+          "type": "string"
+        },
+        {
+          "const": "Cbrt",
+          "description": "Libm-only, like `Log1p`: codegen calls `cbrt` directly.",
+          "type": "string"
+        },
+        {
+          "const": "Hypot",
+          "description": "Libm-only, like `Log1p`: codegen calls `hypot` directly.",
+          "type": "string"
+        },
+        {
+          "const": "Powi",
+          "description": "`x.powi(n)`: `llvm.powi.f64.i32`. `n` is `i32` — LLVM's `powi` overload\nis parameterized on a fixed integer width and does not generalize to\n`i64`; widening `n` to `i64` in source would silently truncate at the\ncall site instead of at the declared signature.",
+          "type": "string"
+        },
+        {
+          "const": "FromBits",
+          "description": "`f64.from_bits(u64) -> f64`: reinterpret the bit pattern (`bitcast`,\nnot a real LLVM intrinsic call — codegen special-cases it like the\nlibm symbols above). Spelled `math.from_bits`, not the primitive\ntype-path call `f64.from_bits` the brief for this looked for: the\nchecker does not admit a bare builtin type name (`f64`, `i32`, …) as\na call receiver today (`error: type f64 cannot be used as a value`),\nand adding that surface is out of scope for one function.",
+          "type": "string"
         }
       ]
     },
@@ -568,9 +832,30 @@
       "required": ["mutable", "receiver", "staged"],
       "type": "object"
     },
+    "NativeIoDetail": {
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/AsyncIoOp"
+        }
+      },
+      "required": ["operation"],
+      "type": "object"
+    },
     "Nonfinite": {
       "enum": ["nan", "inf", "-inf"],
       "type": "string"
+    },
+    "OffloadDetail": {
+      "properties": {
+        "function": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["function"],
+      "type": "object"
     },
     "OpV1": {
       "oneOf": [
@@ -2063,6 +2348,11 @@
       "enum": ["none", "owned", "guaranteed"],
       "type": "string"
     },
+    "PrintKind": {
+      "description": "Selected primitive print representation. Physical lowering carries this\nchoice and the newline flag to the runtime's tagged print ABI.",
+      "enum": ["I32", "I64", "U8", "U32", "U64", "F64", "Bool", "Str"],
+      "type": "string"
+    },
     "RequestShapes": {
       "properties": {
         "failure": {
@@ -2092,8 +2382,2754 @@
       },
       "type": "object"
     },
+    "RuntimeFamilyEntry": {
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorLink"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorMonitor"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorCaller"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorRefusalLog"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorUnlink"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "AutoMutexAlloc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "AutoMutexFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "AutoMutexLock"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "AutoMutexUnlock"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DequePopFront"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DequePopBack"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesAppend"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesClear"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesContains"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesDecodeUtf8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesDecodeUtf8Lossy"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesEndsWith"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesIndex"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesIsEmpty"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesLen"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesPop"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesPush"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesSet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesSlice"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesStartsWith"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CancelTokenIsRequested"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CancelTokenRelease"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CancelTokenRetain"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorRequestRelease"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorCallFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorRequestTake"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationAbs"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationHours"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationIsZero"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationMicros"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationMillis"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationMins"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationNanos"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DurationSecs"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DynBoxAlloc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "DynBoxFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapContainsKeyLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapClearLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapCloneLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapEntriesLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapFreeLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapGetLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapInsertLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapLenLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapNewWithLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapRemoveLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapValuesLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetContainsLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetClearLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetCloneLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetFreeLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetInsertLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetIsEmptyLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetLenLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetNewWithLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetRemoveLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetToVecLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "InstantDurationSince"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "InstantElapsed"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "InstantNow"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "TimestampNow"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeAllowPeer"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeConnect"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocationNodeId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocationSlot"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocationIncarnation"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocationDisplay"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeIdentityKey"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeLoadKeys"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeLookup"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeRegister"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeSetTransport"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeShutdown"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeStart"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricCounterRegister"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricCounterInc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricCounterAdd"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricGaugeRegister"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricGaugeSet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricGaugeInc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricGaugeDec"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricGaugeAdd"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricHistogramRegister"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricHistogramRecord"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricVecRegister"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricVecWith"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ObserveReadU64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ObserveScrape"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ObserveSeries"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ObserveBarrier"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcClone"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcDowngrade"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcDrop"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcIsUnique"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcSet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcStrongCount"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RcWeakCount"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "WeakCloneRc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "WeakDropRc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "WeakUpgradeRc"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexCapture"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexCompile"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexFreeCapture"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexMatch"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ReplyChannelCancel"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ReplyChannelFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ReplyChannelNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ReplyWait"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SelectFirst"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SinkClone"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SinkClose"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamClose"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamFromGenerator"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SinkFromEncoder"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamLines"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamNextLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamPairStream"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamSendLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamTake"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamTryNextLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamTrySendLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsDigit"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsLetter"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsAlphanumeric"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsWhitespace"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsUpper"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsLower"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsPunctuation"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsControl"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharIsAscii"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharToUpper"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharToLower"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharToTitle"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharLenUtf8"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharToDigit"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharFromI64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharFromU64"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringGetRange"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringSliceRange"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringAppend"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringPush"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringClear"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringFindFrom"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringByteLen"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringConcat"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringEquals"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringCompare"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringStartsWith"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringEndsWith"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringContains"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringIsEmpty"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StructuralFormat"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringFind"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringIndex"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringLen"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringReplace"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringClone"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringSliceCodepoints"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringSliceCodepointsFrom"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringToLowercase"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringToBytes"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringToUppercase"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringTrim"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "U8ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "I32ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "I64ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "U32ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "U64ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "F64ToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "CharToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BoolToString"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorChildGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorNestedGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorStop"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "TlsAttachLocal"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "WebSocketAttachLocal"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "TaskFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "GeneratorFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecAppend"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecClear"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecClone"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecCloneLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecCloneOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecContainsLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecContainsOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecIsEmpty"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecJoinStr"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecLen"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPopBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPopLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPopOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPushBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPushLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPushOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecPushOwnedMove"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecRemoveAtBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecRemoveAtLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecRemoveAtOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecSetBool"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecSetLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecSetOwned"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecSetOwnedMove"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VtableDispatchPanicOnOob"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/AsyncIoOp"
+            },
+            "family": {
+              "const": "AsyncIo"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/SemaphoreOp"
+            },
+            "family": {
+              "const": "Semaphore"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/FileReadOp"
+            },
+            "family": {
+              "const": "FileRead"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/ServiceOp"
+            },
+            "family": {
+              "const": "Service"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/TcpOp"
+            },
+            "family": {
+              "const": "Tcp"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "properties": {
+                "format": {
+                  "$ref": "#/$defs/EncodingFormat"
+                },
+                "op": {
+                  "$ref": "#/$defs/EncodingOp"
+                }
+              },
+              "required": ["format", "op"],
+              "type": "object"
+            },
+            "family": {
+              "const": "Encoding"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ActorDemonitor"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesConcat"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesSliceFrom"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "BytesNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapKeysLayout"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashMapNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "HashSetNew"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/MathIntrinsic"
+            },
+            "family": {
+              "const": "MathIntrinsic"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/IntBitOp"
+                },
+                {
+                  "$ref": "#/$defs/IntMethodWidth"
+                }
+              ],
+              "type": "array"
+            },
+            "family": {
+              "const": "IntMethod"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "maxItems": 2,
+              "minItems": 2,
+              "prefixItems": [
+                {
+                  "$ref": "#/$defs/IntArithKind"
+                },
+                {
+                  "$ref": "#/$defs/IntMethodWidth"
+                }
+              ],
+              "type": "array"
+            },
+            "family": {
+              "const": "IntArith"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/FloatMethodOp"
+            },
+            "family": {
+              "const": "FloatMethod"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "NodeIdDisplay"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "MetricHistogramRegisterSimple"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "RegexHandle"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ReplyPayloadFree"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamChunks"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamForward"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StreamPairSink"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringRepeat"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringSplit"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StringLines"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "properties": {
+                "kind": {
+                  "$ref": "#/$defs/PrintKind"
+                },
+                "newline": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["kind", "newline"],
+              "type": "object"
+            },
+            "family": {
+              "const": "Print"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "ProcessExit"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "StderrWrite"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorDirectId"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocalPidSupervisorChildGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorPoolChildGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "LocalPidSupervisorPoolChildRefGet"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "SupervisorPoolLen"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/VecValueOp"
+            },
+            "family": {
+              "const": "Vector"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/ArrayValueOp"
+            },
+            "family": {
+              "const": "Array"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/SupervisorPoolOp"
+            },
+            "family": {
+              "const": "SupervisorPool"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/MapValueOp"
+            },
+            "family": {
+              "const": "Map"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/SetValueOp"
+            },
+            "family": {
+              "const": "Set"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "type": "null"
+            },
+            "family": {
+              "const": "VecTakeAll"
+            }
+          }
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/VecContainsScalarElem"
+            },
+            "family": {
+              "const": "VecContainsScalar"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/VecGetElem"
+            },
+            "family": {
+              "const": "VecGet"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "properties": {
+                "elem": {
+                  "$ref": "#/$defs/VecScalarElem"
+                },
+                "op": {
+                  "$ref": "#/$defs/VecScalarOp"
+                }
+              },
+              "required": ["op", "elem"],
+              "type": "object"
+            },
+            "family": {
+              "const": "VecScalar"
+            }
+          },
+          "required": ["detail"]
+        },
+        {
+          "properties": {
+            "detail": {
+              "$ref": "#/$defs/VecSliceElem"
+            },
+            "family": {
+              "const": "VecSliceRange"
+            }
+          },
+          "required": ["detail"]
+        }
+      ],
+      "properties": {
+        "detail": {},
+        "family": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "required": ["id", "family"],
+      "type": "object"
+    },
+    "SafepointDetail": {
+      "properties": {
+        "budget": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["budget"],
+      "type": "object"
+    },
+    "SelectDetail": {
+      "properties": {
+        "has_timeout": {
+          "type": "boolean"
+        },
+        "order": {
+          "$ref": "#/$defs/SelectionOrder"
+        }
+      },
+      "required": ["has_timeout", "order"],
+      "type": "object"
+    },
+    "SelectionOrder": {
+      "enum": ["source", "completion"],
+      "type": "string"
+    },
+    "SemaphoreAcquireDetail": {
+      "properties": {
+        "operation": {
+          "$ref": "#/$defs/SemaphoreOp"
+        }
+      },
+      "required": ["operation"],
+      "type": "object"
+    },
+    "SemaphoreOp": {
+      "enum": ["Acquire", "AcquireTimeout"],
+      "type": "string"
+    },
     "SendPolicy": {
       "enum": ["reject", "wait", "drop_newest"],
+      "type": "string"
+    },
+    "ServiceAcquireDetail": {
+      "properties": {
+        "actor": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "export": {
+          "type": "boolean"
+        }
+      },
+      "required": ["actor", "export"],
+      "type": "object"
+    },
+    "ServiceOp": {
+      "enum": ["Peer", "Export", "Receive", "ClosePeer", "CloseExport"],
+      "type": "string"
+    },
+    "SetValueOp": {
+      "description": "Ordinary set operations using the same element and receiver type templates.",
+      "enum": [
+        "New",
+        "Len",
+        "Contains",
+        "Insert",
+        "Remove",
+        "Clear",
+        "Elements"
+      ],
       "type": "string"
     },
     "SpanV1": {
@@ -2112,6 +5148,24 @@
         }
       },
       "required": ["start", "end"],
+      "type": "object"
+    },
+    "StreamNextDetail": {
+      "properties": {
+        "park": {
+          "type": "boolean"
+        }
+      },
+      "required": ["park"],
+      "type": "object"
+    },
+    "StreamSendDetail": {
+      "properties": {
+        "park": {
+          "type": "boolean"
+        }
+      },
+      "required": ["park"],
       "type": "object"
     },
     "SubmissionShapes": {
@@ -2137,6 +5191,52 @@
       },
       "type": "object"
     },
+    "SupervisorPoolOp": {
+      "oneOf": [
+        {
+          "const": "Len",
+          "description": "The evaluated construction-time member count.",
+          "type": "string"
+        },
+        {
+          "const": "Member",
+          "description": "`pool[i]` — the member's role, trapping outside the declared members\nexactly as `Vec[i]` does.",
+          "type": "string"
+        },
+        {
+          "const": "Get",
+          "description": "`pool.get(i)` — the member's role, or `None` outside them.",
+          "type": "string"
+        }
+      ]
+    },
+    "SuspensionKind": {
+      "enum": [
+        "Sleep",
+        "SleepUntil",
+        "Await",
+        "ActorSend",
+        "RestartWait",
+        "Read",
+        "Accept",
+        "CallClosure",
+        "Timeout",
+        "ScopeDeadline",
+        "Yield",
+        "GeneratorNext",
+        "Safepoint",
+        "ServiceAcquire",
+        "SemaphoreAcquire",
+        "NativeIo",
+        "Offload",
+        "Ask",
+        "Join",
+        "StreamSend",
+        "StreamNext",
+        "Select"
+      ],
+      "type": "string"
+    },
     "SwitchArm": {
       "properties": {
         "edge": {
@@ -2157,6 +5257,20 @@
       },
       "required": ["variant", "fields", "edge"],
       "type": "object"
+    },
+    "TcpOp": {
+      "enum": [
+        "Listen",
+        "ListenerValid",
+        "ConnectionValid",
+        "ListenerPort",
+        "ListenerClose",
+        "ConnectionClose",
+        "ReadTimeout",
+        "WriteTimeout",
+        "BroadcastExcept"
+      ],
+      "type": "string"
     },
     "TermV1": {
       "oneOf": [
@@ -3134,6 +6248,295 @@
           "type": "object"
         },
         {
+          "description": "The kind and payload travel together so consumers cannot mix identities.",
+          "oneOf": [
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Sleep",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "SleepUntil",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Await",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "ActorSend",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "RestartWait",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Read",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Accept",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "CallClosure",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Timeout",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "ScopeDeadline",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "Yield",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "type": "null"
+                },
+                "kind": {
+                  "const": "GeneratorNext",
+                  "type": "string"
+                }
+              },
+              "required": ["kind"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/SafepointDetail"
+                },
+                "kind": {
+                  "const": "Safepoint",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/ServiceAcquireDetail"
+                },
+                "kind": {
+                  "const": "ServiceAcquire",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/SemaphoreAcquireDetail"
+                },
+                "kind": {
+                  "const": "SemaphoreAcquire",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/NativeIoDetail"
+                },
+                "kind": {
+                  "const": "NativeIo",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/OffloadDetail"
+                },
+                "kind": {
+                  "const": "Offload",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/AskDetail"
+                },
+                "kind": {
+                  "const": "Ask",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/JoinDetail"
+                },
+                "kind": {
+                  "const": "Join",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/StreamSendDetail"
+                },
+                "kind": {
+                  "const": "StreamSend",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/StreamNextDetail"
+                },
+                "kind": {
+                  "const": "StreamNext",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "detail": {
+                  "$ref": "#/$defs/SelectDetail"
+                },
+                "kind": {
+                  "const": "Select",
+                  "type": "string"
+                }
+              },
+              "required": ["kind", "detail"],
+              "type": "object"
+            }
+          ],
           "properties": {
             "cancel": {
               "anyOf": [
@@ -3145,7 +6548,6 @@
                 }
               ]
             },
-            "detail": true,
             "error_shape": {
               "format": "uint32",
               "maximum": 4294967295,
@@ -3157,9 +6559,6 @@
                 "$ref": "#/$defs/BoundaryOperand"
               },
               "type": "array"
-            },
-            "kind": {
-              "type": "string"
             },
             "op": {
               "const": "suspend",
@@ -3201,7 +6600,7 @@
               ]
             }
           },
-          "required": ["op", "kind", "inputs", "result", "resumes"],
+          "required": ["op", "inputs", "result", "resumes"],
           "type": "object"
         }
       ],
@@ -3269,6 +6668,139 @@
       },
       "required": ["error", "error_len"],
       "type": "object"
+    },
+    "VecContainsScalarElem": {
+      "description": "Element discriminators for the scalar `Vec::contains` ABI entries that\nexist in the runtime. Other element representations use their dedicated\nlayout/owned families.",
+      "enum": ["F64", "I32", "I64", "Str"],
+      "type": "string"
+    },
+    "VecGetElem": {
+      "description": "Element-type discriminator for `Vec<T>::get` runtime entries\n(`hew_vec_get_*`). One variant per monomorphic-element C-ABI symbol\nemitted today by `hew-runtime/src/vec.rs`.\n\n`Layout` covers the layout-descriptor path for `BitCopy` Named records\nand tuples; `Owned` is the W5.016 borrow-getter for non-Copy owned\nelements. The pending Vec genericisation work will collapse most of\nthese onto a single `Generic` variant that reads the descriptor's\n`elem` field — out of scope here.",
+      "oneOf": [
+        {
+          "enum": [
+            "Bool",
+            "F32",
+            "F64",
+            "I8",
+            "I16",
+            "I32",
+            "I64",
+            "Layout",
+            "Owned",
+            "Ptr",
+            "Str",
+            "U8",
+            "U16"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "Clone",
+          "description": "Descriptor-backed deep clone into a caller-provided output slot.\n\nUnlike the scalar getters, this family rides the intercepted\n`Terminator::Call` path because its concrete element layout determines\nthe hidden output-pointer ABI.",
+          "type": "string"
+        },
+        {
+          "const": "Take",
+          "description": "Descriptor-backed move into a caller-provided output slot. Used by\nconsuming iteration over drop-only elements.",
+          "type": "string"
+        }
+      ]
+    },
+    "VecScalarElem": {
+      "description": "Scalar element ABI discriminator shared by the direct Vec operation\nmatrix. `bool`, layout-managed, owned, and closure-pair paths remain\ndistinct families because their ABI/ownership contracts differ.",
+      "enum": [
+        "F32",
+        "F64",
+        "I8",
+        "I16",
+        "I32",
+        "I64",
+        "Ptr",
+        "Str",
+        "U8",
+        "U16"
+      ],
+      "type": "string"
+    },
+    "VecScalarOp": {
+      "description": "The scalar Vec operations that share the same element discriminator.",
+      "enum": ["Push", "Pop", "Set", "RemoveAt"],
+      "type": "string"
+    },
+    "VecSliceElem": {
+      "description": "Element-type discriminator for `Vec<T>::slice_range` runtime entries\n(`hew_vec_slice_range_*`). Narrower than [`VecGetElem`] because slice\ndoes not have a bool path today; descriptor-backed record/tuple elements\nroute through the `Layout`/`Owned` substrate variants.",
+      "enum": [
+        "Bytesize",
+        "F64",
+        "I32",
+        "I64",
+        "Layout",
+        "Owned",
+        "Ptr",
+        "Str"
+      ],
+      "type": "string"
+    },
+    "VecValueOp": {
+      "description": "Ordinary vector value operations, independent of element representation.",
+      "oneOf": [
+        {
+          "enum": [
+            "New",
+            "Len",
+            "Contains",
+            "Index",
+            "Get",
+            "Push",
+            "Set",
+            "Pop",
+            "Remove",
+            "Clear"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "IndexBorrow",
+          "description": "`v[i]` where the element has no clone: a loan of the element the vector\nstill owns, readable for the length of the receiver's loan.",
+          "type": "string"
+        },
+        {
+          "const": "GetBorrow",
+          "description": "`v.get(i)` where the element has no clone: `Some` carries a loan of the\nslot the vector still owns, readable for the length of the receiver's\nloan, and a past-end index still reads `None`.",
+          "type": "string"
+        },
+        {
+          "const": "TakeFirst",
+          "description": "Remove the first element and hand its ownership to the caller. This is\nthe consuming iterator's step for an element with no clone: the vector\nshrinks by one and ends empty when the drain runs to completion.",
+          "type": "string"
+        },
+        {
+          "const": "TakeAll",
+          "description": "Move the whole buffer out and leave the receiver a valid empty vector\nwith its element representation intact. This is how a `Vec` living in\npersistent storage - an actor state field - is drained by a consuming\niteration: the cursor owns the elements and the seat keeps a usable\nvector a later dispatch can refill.",
+          "type": "string"
+        },
+        {
+          "const": "Slice",
+          "description": "`v[a..b]` - a fresh independent `Vec<T>` over the selected range.",
+          "type": "string"
+        },
+        {
+          "const": "SliceFrom",
+          "description": "`v[a..]` - the open-ended form; the runtime supplies the end bound so\nthe receiver expression is evaluated once.",
+          "type": "string"
+        },
+        {
+          "const": "Append",
+          "description": "`dst.append(src)` - every element of `src` is added to `dst`. The\nelement authority admits this only for the shared-copy families\n(bit-copyable and refcounted-string elements), so `src` keeps its own\nelements and stays usable afterwards.",
+          "type": "string"
+        },
+        {
+          "const": "Join",
+          "description": "`v.join(sep)` - concatenate a `Vec<string>` with `sep` between\nelements into one fresh string.",
+          "type": "string"
+        }
+      ]
     },
     "actor": {
       "additionalProperties": false,
@@ -3901,19 +7433,7 @@
     },
     "runtime_families": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "detail": {},
-          "family": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "id": {
-            "$ref": "#/$defs/id"
-          }
-        },
-        "required": ["id", "family"],
-        "type": "object"
+        "$ref": "#/$defs/RuntimeFamilyEntry"
       },
       "type": "array"
     },
@@ -3956,8 +7476,7 @@
     },
     "suspend_kinds": {
       "items": {
-        "minLength": 1,
-        "type": "string"
+        "$ref": "#/$defs/SuspensionKind"
       },
       "type": "array"
     },

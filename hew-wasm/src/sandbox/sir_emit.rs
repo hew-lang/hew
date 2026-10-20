@@ -320,13 +320,7 @@ pub struct ValueOrderingCapabilities {
     pub greater_equal: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct RuntimeFamily {
-    pub id: u32,
-    pub family: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub detail: Option<serde_json::Value>,
-}
+pub use super::bytecode::RuntimeFamilyEntry as RuntimeFamily;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Extern {
@@ -429,7 +423,7 @@ struct Walker<'m> {
     functions: BTreeMap<CallableId, u32>,
     capabilities: BTreeMap<(hew_types::ResolvedTy, hew_types::ValueCapability), u32>,
     families: Vec<RuntimeFamily>,
-    family_index: BTreeMap<String, u32>,
+    family_index: std::collections::HashMap<hew_types::RuntimeCallFamily, u32>,
     externs: Vec<Extern>,
     extern_index: BTreeMap<String, u32>,
     /// Every SSA value's semantic type in the function being walked.
@@ -475,7 +469,7 @@ impl<'m> Walker<'m> {
             functions,
             capabilities,
             families: Vec::new(),
-            family_index: BTreeMap::new(),
+            family_index: std::collections::HashMap::new(),
             externs: Vec::new(),
             extern_index: BTreeMap::new(),
             value_types: BTreeMap::new(),
@@ -1201,42 +1195,19 @@ impl<'m> Walker<'m> {
             .collect()
     }
 
-    /// Intern a runtime-call family by its own identity.
-    ///
-    /// `RuntimeCallFamily` serializes as a bare name for a unit variant and as
-    /// a one-key object for a payload variant, so the family name and its
-    /// detail come straight from the type rather than from a spelling this
-    /// walker invents.
-    fn family_id(&mut self, family: hew_types::RuntimeCallFamily) -> Result<u32, EmitError> {
-        let value = serde_json::to_value(family)
-            .map_err(|error| EmitError::new(format!("runtime family is not encodable: {error}")))?;
-        let (name, detail) = match value {
-            serde_json::Value::String(name) => (name, None),
-            serde_json::Value::Object(map) if map.len() == 1 => {
-                let (name, detail) = map.into_iter().next().expect("one key");
-                (name, Some(detail))
-            }
-            other => {
-                return Err(EmitError::new(format!(
-                    "runtime family has an unexpected encoding: {other}"
-                )))
-            }
-        };
-        let key = match &detail {
-            Some(detail) => format!("{name}:{detail}"),
-            None => name.clone(),
-        };
-        if let Some(id) = self.family_index.get(&key) {
-            return Ok(*id);
+    /// Intern the compiler-owned runtime identity without reconstructing it from JSON.
+    fn family_id(&mut self, family: hew_types::RuntimeCallFamily) -> u32 {
+        if let Some(id) = self.family_index.get(&family) {
+            return *id;
         }
         let id = table_index(self.families.len());
         self.families.push(RuntimeFamily {
             id,
-            family: name,
-            detail,
+            identity: family,
+            null_detail: false,
         });
-        self.family_index.insert(key, id);
-        Ok(id)
+        self.family_index.insert(family, id);
+        id
     }
 
     fn extern_id(&mut self, symbol: &str) -> u32 {
@@ -1939,7 +1910,7 @@ impl<'m> Walker<'m> {
                     unwind: encode_unwind(unwind),
                     request_shapes: None,
                     shared_payload_type,
-                    family: self.family_id(*family)?,
+                    family: self.family_id(*family),
                     structural: Some(
                         if *family == hew_types::RuntimeCallFamily::StructuralFormat {
                             Some(self.structural_id(
@@ -2037,10 +2008,11 @@ impl<'m> Walker<'m> {
             SemTerminator::Safepoint { resume, cancel } => {
                 self.suspend_kind_id("Safepoint");
                 wire::TermKind::Suspend {
-                    kind: "Safepoint".to_string(),
-                    detail: Some(Some(
-                        serde_json::json!({ "budget": hew_sir::SAFEPOINT_BUDGET }),
-                    )),
+                    suspension: wire::Suspension::Safepoint {
+                        detail: wire::SafepointDetail {
+                            budget: hew_sir::SAFEPOINT_BUDGET,
+                        },
+                    },
                     request_shapes: Some(None),
                     result_shape: Some(None),
                     error_shape: Some(None),
@@ -2088,8 +2060,7 @@ impl<'m> Walker<'m> {
                 let (name, detail) = suspend_shape(kind);
                 self.suspend_kind_id(name);
                 wire::TermKind::Suspend {
-                    kind: name.to_string(),
-                    detail: Some(Some(detail)),
+                    suspension: detail,
                     request_shapes: Some(self.request_shapes(result)),
                     result_shape: Some(self.result_shape(result)),
                     error_shape: Some(self.error_shape(result)),
@@ -2469,22 +2440,6 @@ fn send_policy(policy: hew_types::actor_delivery::SendPolicy) -> wire::SendPolic
         hew_types::actor_delivery::SendPolicy::DropNewest => wire::SendPolicy::DropNewest,
     }
 }
-/// How a scope's join treats a losing task and a fault.
-const fn join_mode_name(mode: hew_sir::TaskScopeJoinMode) -> &'static str {
-    match mode {
-        hew_sir::TaskScopeJoinMode::Wait => "wait",
-        hew_sir::TaskScopeJoinMode::CancelLosers => "cancel_losers",
-        hew_sir::TaskScopeJoinMode::PropagateFault => "propagate_fault",
-    }
-}
-
-const fn send_policy_name(policy: hew_types::actor_delivery::SendPolicy) -> &'static str {
-    match policy {
-        hew_types::actor_delivery::SendPolicy::Reject => "reject",
-        hew_types::actor_delivery::SendPolicy::Wait => "wait",
-        hew_types::actor_delivery::SendPolicy::DropNewest => "drop_newest",
-    }
-}
 
 const fn observation_name(kind: hew_sir::LocalObservationKind) -> &'static str {
     match kind {
@@ -2557,26 +2512,54 @@ const fn trap_kind(kind: TrapKind) -> wire::TrapName {
 }
 
 /// Every suspension kind the compiler can produce, named with its payload.
-fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
+fn suspend_shape(kind: &SuspendKind) -> (&'static str, wire::Suspension) {
+    use wire::Suspension as S;
     match kind {
-        SuspendKind::Sleep => ("Sleep", serde_json::Value::Null),
-        SuspendKind::SleepUntil => ("SleepUntil", serde_json::Value::Null),
+        SuspendKind::Sleep => ("Sleep", S::Sleep { detail: Some(None) }),
+        SuspendKind::SleepUntil => ("SleepUntil", S::SleepUntil { detail: Some(None) }),
+        SuspendKind::Await => ("Await", S::Await { detail: Some(None) }),
+        SuspendKind::ActorSend => ("ActorSend", S::ActorSend { detail: Some(None) }),
+        SuspendKind::RestartWait => ("RestartWait", S::RestartWait { detail: Some(None) }),
+        SuspendKind::Read => ("Read", S::Read { detail: Some(None) }),
+        SuspendKind::Accept => ("Accept", S::Accept { detail: Some(None) }),
+        SuspendKind::CallClosure => ("CallClosure", S::CallClosure { detail: Some(None) }),
+        SuspendKind::Timeout => ("Timeout", S::Timeout { detail: Some(None) }),
+        SuspendKind::ScopeDeadline => ("ScopeDeadline", S::ScopeDeadline { detail: Some(None) }),
+        SuspendKind::Yield => ("Yield", S::Yield { detail: Some(None) }),
+        SuspendKind::GeneratorNext => ("GeneratorNext", S::GeneratorNext { detail: Some(None) }),
         SuspendKind::ServiceAcquire { actor, export } => (
             "ServiceAcquire",
-            serde_json::json!({"actor": actor.0, "export": export}),
+            S::ServiceAcquire {
+                detail: wire::ServiceAcquireDetail {
+                    actor: actor.0,
+                    export: *export,
+                },
+            },
         ),
         SuspendKind::SemaphoreAcquire { operation } => (
             "SemaphoreAcquire",
-            serde_json::json!({ "operation": format!("{operation:?}") }),
+            S::SemaphoreAcquire {
+                detail: wire::SemaphoreAcquireDetail {
+                    operation: *operation,
+                },
+            },
         ),
         SuspendKind::NativeIo { operation } => (
             "NativeIo",
-            serde_json::json!({ "operation": format!("{operation:?}") }),
+            S::NativeIo {
+                detail: wire::NativeIoDetail {
+                    operation: *operation,
+                },
+            },
         ),
-        // Emitted as its extern call; the shape only names the kind.
-        SuspendKind::Offload { function } => {
-            ("Offload", serde_json::json!({ "function": function.0 }))
-        }
+        SuspendKind::Offload { function } => (
+            "Offload",
+            S::Offload {
+                detail: wire::OffloadDetail {
+                    function: function.0,
+                },
+            },
+        ),
         SuspendKind::Ask {
             actor,
             message,
@@ -2584,38 +2567,53 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
             sealed,
         } => (
             "Ask",
-            serde_json::json!({
-                "actor": actor.0,
-                "message": message,
-                "policy": send_policy_name(*policy),
-                "sealed": sealed,
-            }),
+            S::Ask {
+                detail: wire::AskDetail {
+                    actor: actor.0,
+                    message: *message,
+                    policy: send_policy(*policy),
+                    sealed: *sealed,
+                },
+            },
         ),
-        SuspendKind::Await => ("Await", serde_json::Value::Null),
         SuspendKind::Join { scope, mode } => (
             "Join",
-            serde_json::json!({ "scope": scope.0, "mode": join_mode_name(*mode) }),
+            S::Join {
+                detail: wire::JoinDetail {
+                    scope: scope.0,
+                    mode: match mode {
+                        hew_sir::TaskScopeJoinMode::Wait => wire::JoinMode::Wait,
+                        hew_sir::TaskScopeJoinMode::CancelLosers => wire::JoinMode::CancelLosers,
+                        hew_sir::TaskScopeJoinMode::PropagateFault => {
+                            wire::JoinMode::PropagateFault
+                        }
+                    },
+                },
+            },
         ),
-        SuspendKind::ActorSend => ("ActorSend", serde_json::Value::Null),
-        SuspendKind::RestartWait => ("RestartWait", serde_json::Value::Null),
-        SuspendKind::Read => ("Read", serde_json::Value::Null),
-        SuspendKind::Accept => ("Accept", serde_json::Value::Null),
-        SuspendKind::StreamSend { park } => ("StreamSend", serde_json::json!({ "park": park })),
-        SuspendKind::CallClosure => ("CallClosure", serde_json::Value::Null),
+        SuspendKind::StreamSend { park } => (
+            "StreamSend",
+            S::StreamSend {
+                detail: wire::StreamSendDetail { park: *park },
+            },
+        ),
+        SuspendKind::StreamNext { park } => (
+            "StreamNext",
+            S::StreamNext {
+                detail: wire::StreamNextDetail { park: *park },
+            },
+        ),
         SuspendKind::Select { has_timeout, order } => (
             "Select",
-            serde_json::json!({
-                "has_timeout": has_timeout,
-                "order": match order {
-                    hew_sir::TaskSelectionOrder::Source => "source",
-                    hew_sir::TaskSelectionOrder::Completion => "completion",
+            S::Select {
+                detail: wire::SelectDetail {
+                    has_timeout: *has_timeout,
+                    order: match order {
+                        hew_sir::TaskSelectionOrder::Source => wire::SelectionOrder::Source,
+                        hew_sir::TaskSelectionOrder::Completion => wire::SelectionOrder::Completion,
+                    },
                 },
-            }),
+            },
         ),
-        SuspendKind::Timeout => ("Timeout", serde_json::Value::Null),
-        SuspendKind::ScopeDeadline => ("ScopeDeadline", serde_json::Value::Null),
-        SuspendKind::Yield => ("Yield", serde_json::Value::Null),
-        SuspendKind::GeneratorNext => ("GeneratorNext", serde_json::Value::Null),
-        SuspendKind::StreamNext { park } => ("StreamNext", serde_json::json!({ "park": park })),
     }
 }

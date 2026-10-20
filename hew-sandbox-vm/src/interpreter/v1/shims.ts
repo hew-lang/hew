@@ -1,14 +1,8 @@
 import { executeCalendar } from "./calendar.js";
 import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
-/// The VM's runtime-family and extern shim table.
-///
-/// This table is the runtime-family admission authority: a package may name a
-/// runtime family or an extern symbol exactly when there is a shim here for it.
-/// A family or symbol with no entry is rejected at load, so there is no second
-/// reject list to keep in step with this one. `FileRead` is refused by its
-/// absence, and a `NativeIo` suspension by an operation missing from
-/// [`SUPPORTED_NATIVE_IO`].
+/// Runtime implementations and their host execution registration. Admission and
+/// execution consume the same ordinary, resumable or refused disposition.
 
 import {
   UNIT,
@@ -48,7 +42,6 @@ export interface ShimHost {
   calendarBridge?: (request: string) => string;
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
-  closePipe?(value: VmValue): void;
   generatorStream?(generator: VmValue): VmValue;
   encoderSink?(sink: VmValue, encoder: VmValue): VmValue;
   cloneSink?(sink: VmValue): VmValue;
@@ -81,132 +74,310 @@ export type RuntimeShim = (
   aggregate: AggregateShape | null,
 ) => VmValue;
 
-/// Resolve a declared runtime family to its shim, or `undefined` when the VM
-/// has none. Both the load-time validator and the executor go through here, so
-/// admission and execution can never disagree about what is implemented.
-export function resolveRuntimeShim(
-  entry: RuntimeFamilyEntry,
-): RuntimeShim | undefined {
+export type HostBridges = Pick<
+  import("../types.js").RunOptions,
+  "codecBridge" | "calendarBridge"
+>;
+type BridgeRequirement = keyof HostBridges;
+export type Refused = {
+  kind: "refused";
+  category: "native_only" | "not_implemented";
+  capability: string;
+  description?: string;
+};
+type Ordinary = {
+  kind: "ordinary";
+  shim: RuntimeShim;
+  bridge?: BridgeRequirement;
+};
+export type RuntimeContinuation =
+  | {
+      handler:
+        | "actor_caller"
+        | "actor_refusal_log"
+        | "structural_format"
+        | "utf8_decode"
+        | "close";
+    }
+  | {
+      handler: "supervisor_pool";
+      operation: Extract<
+        RuntimeFamilyEntry,
+        { family: "SupervisorPool" }
+      >["detail"];
+    }
+  | ({ handler: "collection" } & (
+      | { family: "Vector"; operation: "Contains" | "Set" | "Clear" }
+      | {
+          family: "Map";
+          operation: Extract<RuntimeFamilyEntry, { family: "Map" }>["detail"];
+        }
+      | {
+          family: "Set";
+          operation: Extract<RuntimeFamilyEntry, { family: "Set" }>["detail"];
+        }
+    ))
+  | {
+      handler: "shared";
+      operation: Extract<
+        RuntimeFamilyEntry["family"],
+        | "RcNew"
+        | "RcClone"
+        | "RcDowngrade"
+        | "WeakCloneRc"
+        | "WeakUpgradeRc"
+        | "RcGet"
+        | "RcIsUnique"
+        | "RcSet"
+        | "RcStrongCount"
+        | "RcWeakCount"
+      >;
+    };
+export type RuntimeRegistration =
+  | Ordinary
+  | Refused
+  | ({ kind: "resumable" } & RuntimeContinuation);
+
+function ordinary(shim: RuntimeShim): Ordinary {
+  return { kind: "ordinary", shim };
+}
+function refused(capability: string, native = false): Refused {
+  return {
+    kind: "refused",
+    category: native ? "native_only" : "not_implemented",
+    capability,
+  };
+}
+function resumable(continuation: RuntimeContinuation): RuntimeRegistration {
+  return { kind: "resumable", ...continuation };
+}
+
+/// A registered algorithm may still require a host-supplied Wasm bridge.
+export function registrationRefusal(
+  registration:
+    | RuntimeRegistration
+    | { kind: "resumable"; bridge: BridgeRequirement },
+  bridges: HostBridges,
+): Refused | null {
+  if (registration.kind === "refused") return registration;
+  return "bridge" in registration &&
+    registration.bridge &&
+    typeof bridges[registration.bridge] !== "function"
+    ? refused(registration.bridge)
+    : null;
+}
+
+export const CODEC_REGISTRATION = {
+  kind: "resumable",
+  bridge: "codecBridge",
+} as const;
+
+/// Each typed runtime identity has exactly one host disposition. An added Rust
+/// family or nested operation must acquire a disposition before TypeScript builds.
+export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
   switch (entry.family) {
     case "SupervisorPool":
-      return ["Len", "Member", "Get"].includes(String(entry.detail))
-        ? () => {
-            throw new Error("SupervisorPool requires its resumable executor");
-          }
-        : undefined;
-    case "ActorCaller":
-    case "ActorRefusalLog":
-    case "StructuralFormat":
-      return () => {
-        throw new Error("StructuralFormat requires its resumable executor");
-      };
-    case "FileRead":
-      return entry.detail === "LastError" ? () => str("") : undefined;
+      return resumable({ handler: "supervisor_pool", operation: entry.detail });
     case "Print":
-      return printShim(entry.detail);
-    case "RcNew":
-    case "RcClone":
-    case "RcDowngrade":
-    case "WeakCloneRc":
-    case "WeakUpgradeRc":
-    case "RcGet":
-    case "RcIsUnique":
-    case "RcSet":
-    case "RcStrongCount":
-    case "RcWeakCount":
-      return () => {
-        throw new Error("shared operation requires its resumable executor");
-      };
+      return ordinary(printShim(entry.detail));
+    case "FileRead":
+      return entry.detail === "LastError"
+        ? ordinary(() => str(""))
+        : refused(`FileRead::${entry.detail}`, true);
+    case "AsyncIo":
+    case "Tcp":
+      return refused(`${entry.family}::${entry.detail}`, true);
+    case "Semaphore":
+    case "Service":
+    case "VecContainsScalar":
+    case "VecGet":
+    case "VecSliceRange":
+      return refused(`${entry.family}::${entry.detail}`);
+    case "Encoding":
+    case "VecScalar":
+      return refused(entry.family);
     case "Vector":
-      return ["Contains", "Set", "Clear"].includes(String(entry.detail))
-        ? () => {
-            throw new Error(
-              "vector Contains requires its selected Eq executor",
-            );
-          }
-        : VECTOR_SHIMS[detailName(entry.detail)];
+      switch (entry.detail) {
+        case "Contains":
+        case "Set":
+        case "Clear":
+          return resumable({
+            handler: "collection",
+            family: "Vector",
+            operation: entry.detail,
+          });
+        case "Pop":
+        case "GetBorrow":
+        case "TakeFirst":
+        case "TakeAll":
+        case "Append":
+          return refused(`Vector::${entry.detail}`);
+        default:
+          return ordinary(VECTOR_SHIMS[entry.detail]);
+      }
     case "Array":
-      return entry.detail === "Set"
-        ? () => {
-            throw new Error("array mutation requires its resumable executor");
-          }
-        : entry.detail === "IndexBorrow"
-          ? (_host, args) => sequenceElement(args)
-          : ["Len", "Index"].includes(String(entry.detail))
-            ? VECTOR_SHIMS[detailName(entry.detail)]
-            : undefined;
+      switch (entry.detail) {
+        case "Set":
+          return resumable({
+            handler: "collection",
+            family: "Vector",
+            operation: entry.detail,
+          });
+        case "Len":
+        case "Index":
+        case "IndexBorrow":
+          return ordinary(VECTOR_SHIMS[entry.detail]);
+        default: {
+          const exhaustive: never = entry;
+          throw new Error(`unknown array operation ${String(exhaustive)}`);
+        }
+      }
     case "Map":
+      return resumable({
+        handler: "collection",
+        family: "Map",
+        operation: entry.detail,
+      });
     case "Set":
-      return [
-        "New",
-        "Len",
-        "Index",
-        "Get",
-        "GetBorrow",
-        "ContainsKey",
-        "Contains",
-        "Insert",
-        "Remove",
-        "Clear",
-        "Keys",
-        "Values",
-        "Entries",
-        "Elements",
-      ].includes(detailName(entry.detail))
-        ? () => {
-            throw new Error(
-              "collection operation requires its resumable executor",
-            );
-          }
-        : undefined;
+      return resumable({
+        handler: "collection",
+        family: "Set",
+        operation: entry.detail,
+      });
     case "MathIntrinsic":
-      return MATH_SHIMS[detailName(entry.detail)];
+      return ordinary(MATH_SHIMS[entry.detail]);
     case "FloatMethod":
-      return FLOAT_METHOD_SHIMS[detailName(entry.detail)];
+      return ordinary(FLOAT_METHOD_SHIMS[entry.detail]);
     case "IntMethod":
-      return intMethodShim(entry.detail);
+      return ordinary(intMethodShim(entry.detail));
     case "IntArith":
-      return intArithShim(entry.detail);
-    default:
-      return UNIT_FAMILY_SHIMS[entry.family];
+      return ordinary(intArithShim(entry.detail));
+    default: {
+      const registration = UNIT_FAMILIES[entry.family];
+      return typeof registration === "function"
+        ? ordinary(registration)
+        : registration;
+    }
   }
 }
 
-export function resolveExternShim(symbol: string): RuntimeShim | undefined {
-  return EXTERN_SHIMS[symbol];
+export function resolveExtern(entry: {
+  symbol: string;
+  native_capability?: string;
+}): Ordinary | Refused {
+  const registration = Object.hasOwn(EXTERN_SHIMS, entry.symbol)
+    ? EXTERN_SHIMS[entry.symbol]
+    : undefined;
+  if (typeof registration === "function") return ordinary(registration);
+  return (
+    registration ?? {
+      ...refused(entry.symbol, entry.native_capability !== undefined),
+      description: entry.native_capability,
+    }
+  );
 }
 
-/// The suspend kinds a sequential package may carry. `NativeIo` is admitted
-/// per operation through [`SUPPORTED_NATIVE_IO`] instead.
-export const SUPPORTED_SUSPEND_KINDS: ReadonlySet<string> = new Set([
-  "GeneratorNext",
-  "Yield",
-  "Sleep",
-  "Safepoint",
-  "Ask",
-  "Await",
-  "Join",
-  "Select",
-  "StreamSend",
-  "StreamNext",
-]);
+type SuspendTerm = Extract<import("./package.js").TermV1, { op: "suspend" }>;
+const SUSPENSION_ROUTES = {
+  GeneratorNext: "GeneratorNext",
+  Yield: "Yield",
+  Sleep: "Sleep",
+  Safepoint: "Safepoint",
+  Ask: "Ask",
+  Await: "Await",
+  Join: "Join",
+  Select: "Select",
+  StreamSend: "StreamSend",
+  StreamNext: "StreamNext",
+  NativeIo: "NativeIo",
+  Read: refused("Read", true),
+  Accept: refused("Accept", true),
+  SleepUntil: refused("SleepUntil"),
+  ServiceAcquire: refused("ServiceAcquire"),
+  SemaphoreAcquire: refused("SemaphoreAcquire"),
+  ActorSend: refused("ActorSend"),
+  RestartWait: refused("RestartWait"),
+  CallClosure: refused("CallClosure"),
+  Timeout: refused("Timeout"),
+  ScopeDeadline: refused("ScopeDeadline"),
+  Offload: refused("Offload"),
+} as const satisfies { [K in SuspendTerm["kind"]]: K | Refused };
 
-/// The VM serves replay standard input and in-memory sink closure.
-export const SUPPORTED_NATIVE_IO: ReadonlySet<string> = new Set([
-  "StdinReadLine",
-  "SinkFinish",
-]);
+type ExecutableSuspension = Extract<
+  SuspendTerm,
+  {
+    kind: Extract<
+      (typeof SUSPENSION_ROUTES)[keyof typeof SUSPENSION_ROUTES],
+      string
+    >;
+  }
+>;
+
+export function suspensionRefusal(kind: SuspendTerm["kind"]): Refused | null {
+  const route = SUSPENSION_ROUTES[kind];
+  return typeof route === "string" ? null : route;
+}
+
+function executableSuspension(term: SuspendTerm): term is ExecutableSuspension {
+  return suspensionRefusal(term.kind) === null;
+}
+
+type NativeIoTerm = Extract<SuspendTerm, { kind: "NativeIo" }>;
+const NATIVE_IO_ROUTES = {
+  StdinReadLine: "StdinReadLine",
+  SinkFinish: "SinkFinish",
+  TcpRead: refused("NativeIo::TcpRead", true),
+  TcpWrite: refused("NativeIo::TcpWrite", true),
+  TcpAccept: refused("NativeIo::TcpAccept", true),
+  TcpConnect: refused("NativeIo::TcpConnect", true),
+  TcpConnectTimeout: refused("NativeIo::TcpConnectTimeout", true),
+  TlsConnect: refused("NativeIo::TlsConnect", true),
+  TlsRead: refused("NativeIo::TlsRead", true),
+  TlsWrite: refused("NativeIo::TlsWrite", true),
+  FileRead: refused("NativeIo::FileRead", true),
+  FileWrite: refused("NativeIo::FileWrite", true),
+} as const satisfies {
+  [K in NativeIoTerm["detail"]["operation"]]: K | Refused;
+};
+
+type ExecutableNativeIo = NativeIoTerm & {
+  detail: {
+    operation: Extract<
+      (typeof NATIVE_IO_ROUTES)[keyof typeof NATIVE_IO_ROUTES],
+      string
+    >;
+  };
+};
+function nativeIoRefusal(
+  operation: NativeIoTerm["detail"]["operation"],
+): Refused | null {
+  const route = NATIVE_IO_ROUTES[operation];
+  return typeof route === "string" ? null : route;
+}
+function executableNativeIo(term: NativeIoTerm): term is ExecutableNativeIo {
+  return nativeIoRefusal(term.detail.operation) === null;
+}
+
+/// The executor handles exactly the resumable identities registered above.
+export function resolveSuspension(term: SuspendTerm) {
+  if (!executableSuspension(term)) return suspensionRefusal(term.kind)!;
+  if (term.kind === "NativeIo") {
+    if (!executableNativeIo(term))
+      return nativeIoRefusal(term.detail.operation)!;
+    return { kind: "resumable" as const, term };
+  }
+  return { kind: "resumable" as const, term };
+}
 
 // ── families ────────────────────────────────────────────────────────────────
 
 /// `Print { kind, newline }`. The rendering follows the value's own
 /// representation: casts normalize an integer into its target range, so the
 /// declared `kind` never changes how a value prints.
-function printShim(detail: unknown): RuntimeShim | undefined {
-  if (typeof detail !== "object" || detail === null) {
-    return undefined;
-  }
-  const newline = (detail as { newline?: unknown }).newline === true;
+function printShim(
+  detail: Extract<RuntimeFamilyEntry, { family: "Print" }>["detail"],
+): RuntimeShim {
+  const newline = detail.newline;
   return (host, args) => {
     host.writeStdout(
       newline ? `${renderStdout(arg(args, 0))}\n` : renderStdout(arg(args, 0)),
@@ -215,7 +386,7 @@ function printShim(detail: unknown): RuntimeShim | undefined {
   };
 }
 
-const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+const UNIT_FAMILIES = {
   TimestampNow: (host, _args, _variant, aggregate) => {
     const millis = host.unixTimeMillis();
     if (!Number.isFinite(millis))
@@ -263,14 +434,8 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   SinkFromEncoder: (host, args) =>
     host.encoderSink!(arg(args, 0), arg(args, 1)),
   SinkClone: (host, args) => host.cloneSink!(arg(args, 0)),
-  SinkClose: (host, args) => {
-    host.closePipe!(arg(args, 0));
-    return UNIT;
-  },
-  StreamClose: (host, args) => {
-    host.closePipe!(arg(args, 0));
-    return UNIT;
-  },
+  SinkClose: resumable({ handler: "close" }),
+  StreamClose: resumable({ handler: "close" }),
   StringConcat: (_host, args) => str(`${text(args, 0)}${text(args, 1)}`),
   StringClone: (_host, args) => cloneValue(arg(args, 0)),
   StringEquals: (_host, args) => bool(text(args, 0) === text(args, 1)),
@@ -411,9 +576,7 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
   CharFromI64: checkedChar,
   CharFromU64: checkedChar,
   CharToString: (_host, args) => str(renderStdout(arg(args, 0))),
-  BytesDecodeUtf8: () => {
-    throw new Error("UTF-8 decode requires its checked result carrier");
-  },
+  BytesDecodeUtf8: resumable({ handler: "utf8_decode" }),
   // TextDecoder replaces each maximal invalid subsequence with U+FFFD, as
   // native lossy decoding does.
   BytesDecodeUtf8Lossy: (_host, args) => str(decodeUtf8(arg(args, 0))),
@@ -520,9 +683,174 @@ const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
       ],
     };
   },
-};
 
-const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
+  ActorDemonitor: refused("ActorDemonitor"),
+  ActorLink: refused("ActorLink"),
+  ActorMonitor: refused("ActorMonitor"),
+  ActorCaller: resumable({ handler: "actor_caller" }),
+  ActorRefusalLog: resumable({ handler: "actor_refusal_log" }),
+  ActorUnlink: refused("ActorUnlink"),
+  AutoMutexAlloc: refused("AutoMutexAlloc"),
+  AutoMutexFree: refused("AutoMutexFree"),
+  AutoMutexLock: refused("AutoMutexLock"),
+  AutoMutexUnlock: refused("AutoMutexUnlock"),
+  DequePopFront: refused("DequePopFront"),
+  DequePopBack: refused("DequePopBack"),
+  CancelTokenIsRequested: refused("CancelTokenIsRequested"),
+  CancelTokenRelease: refused("CancelTokenRelease"),
+  CancelTokenRetain: refused("CancelTokenRetain"),
+  ActorRequestRelease: refused("ActorRequestRelease"),
+  ActorCallFree: refused("ActorCallFree"),
+  ActorRequestTake: refused("ActorRequestTake"),
+  DurationAbs: refused("DurationAbs"),
+  DurationHours: refused("DurationHours"),
+  DurationIsZero: refused("DurationIsZero"),
+  DurationMicros: refused("DurationMicros"),
+  DurationMillis: refused("DurationMillis"),
+  DurationMins: refused("DurationMins"),
+  DurationNanos: refused("DurationNanos"),
+  DurationSecs: refused("DurationSecs"),
+  DynBoxAlloc: refused("DynBoxAlloc"),
+  DynBoxFree: refused("DynBoxFree"),
+  HashMapContainsKeyLayout: refused("HashMapContainsKeyLayout"),
+  HashMapClearLayout: refused("HashMapClearLayout"),
+  HashMapCloneLayout: refused("HashMapCloneLayout"),
+  HashMapEntriesLayout: refused("HashMapEntriesLayout"),
+  HashMapFreeLayout: refused("HashMapFreeLayout"),
+  HashMapGetLayout: refused("HashMapGetLayout"),
+  HashMapInsertLayout: refused("HashMapInsertLayout"),
+  HashMapKeysLayout: refused("HashMapKeysLayout"),
+  HashMapLenLayout: refused("HashMapLenLayout"),
+  HashMapNew: refused("HashMapNew"),
+  HashMapNewWithLayout: refused("HashMapNewWithLayout"),
+  HashMapRemoveLayout: refused("HashMapRemoveLayout"),
+  HashMapValuesLayout: refused("HashMapValuesLayout"),
+  HashSetContainsLayout: refused("HashSetContainsLayout"),
+  HashSetClearLayout: refused("HashSetClearLayout"),
+  HashSetCloneLayout: refused("HashSetCloneLayout"),
+  HashSetFreeLayout: refused("HashSetFreeLayout"),
+  HashSetInsertLayout: refused("HashSetInsertLayout"),
+  HashSetIsEmptyLayout: refused("HashSetIsEmptyLayout"),
+  HashSetLenLayout: refused("HashSetLenLayout"),
+  HashSetNew: refused("HashSetNew"),
+  HashSetNewWithLayout: refused("HashSetNewWithLayout"),
+  HashSetRemoveLayout: refused("HashSetRemoveLayout"),
+  HashSetToVecLayout: refused("HashSetToVecLayout"),
+  InstantDurationSince: refused("InstantDurationSince"),
+  InstantElapsed: refused("InstantElapsed"),
+  InstantNow: refused("InstantNow"),
+  NodeAllowPeer: refused("NodeAllowPeer"),
+  NodeConnect: refused("NodeConnect"),
+  NodeId: refused("NodeId"),
+  NodeIdDisplay: refused("NodeIdDisplay"),
+  LocationNodeId: refused("LocationNodeId"),
+  LocationSlot: refused("LocationSlot"),
+  LocationIncarnation: refused("LocationIncarnation"),
+  LocationDisplay: refused("LocationDisplay"),
+  NodeIdentityKey: refused("NodeIdentityKey"),
+  NodeLoadKeys: refused("NodeLoadKeys"),
+  NodeLookup: refused("NodeLookup"),
+  NodeRegister: refused("NodeRegister"),
+  NodeSetTransport: refused("NodeSetTransport"),
+  NodeShutdown: refused("NodeShutdown"),
+  NodeStart: refused("NodeStart"),
+  MetricCounterRegister: refused("MetricCounterRegister"),
+  MetricCounterInc: refused("MetricCounterInc"),
+  MetricCounterAdd: refused("MetricCounterAdd"),
+  MetricGaugeRegister: refused("MetricGaugeRegister"),
+  MetricGaugeSet: refused("MetricGaugeSet"),
+  MetricGaugeInc: refused("MetricGaugeInc"),
+  MetricGaugeDec: refused("MetricGaugeDec"),
+  MetricGaugeAdd: refused("MetricGaugeAdd"),
+  MetricHistogramRegister: refused("MetricHistogramRegister"),
+  MetricHistogramRegisterSimple: refused("MetricHistogramRegisterSimple"),
+  MetricHistogramRecord: refused("MetricHistogramRecord"),
+  MetricVecRegister: refused("MetricVecRegister"),
+  MetricVecWith: refused("MetricVecWith"),
+  ObserveReadU64: refused("ObserveReadU64"),
+  ObserveScrape: refused("ObserveScrape"),
+  ObserveSeries: refused("ObserveSeries"),
+  ObserveBarrier: refused("ObserveBarrier"),
+  RcClone: resumable({ handler: "shared", operation: "RcClone" }),
+  RcDowngrade: resumable({ handler: "shared", operation: "RcDowngrade" }),
+  RcDrop: refused("RcDrop"),
+  RcGet: resumable({ handler: "shared", operation: "RcGet" }),
+  RcIsUnique: resumable({ handler: "shared", operation: "RcIsUnique" }),
+  RcNew: resumable({ handler: "shared", operation: "RcNew" }),
+  RcSet: resumable({ handler: "shared", operation: "RcSet" }),
+  RcStrongCount: resumable({ handler: "shared", operation: "RcStrongCount" }),
+  RcWeakCount: resumable({ handler: "shared", operation: "RcWeakCount" }),
+  WeakCloneRc: resumable({ handler: "shared", operation: "WeakCloneRc" }),
+  WeakDropRc: refused("WeakDropRc"),
+  WeakUpgradeRc: resumable({ handler: "shared", operation: "WeakUpgradeRc" }),
+  RegexCapture: refused("RegexCapture"),
+  RegexCompile: refused("RegexCompile"),
+  RegexFreeCapture: refused("RegexFreeCapture"),
+  RegexHandle: refused("RegexHandle"),
+  RegexMatch: refused("RegexMatch"),
+  ReplyChannelCancel: refused("ReplyChannelCancel"),
+  ReplyChannelFree: refused("ReplyChannelFree"),
+  ReplyChannelNew: refused("ReplyChannelNew"),
+  ReplyPayloadFree: refused("ReplyPayloadFree"),
+  ReplyWait: refused("ReplyWait"),
+  SelectFirst: refused("SelectFirst"),
+  StreamChunks: refused("StreamChunks"),
+  StreamForward: refused("StreamForward"),
+  StreamLines: refused("StreamLines"),
+  StreamNextLayout: refused("StreamNextLayout"),
+  StreamSendLayout: refused("StreamSendLayout"),
+  StreamTake: refused("StreamTake"),
+  StreamTryNextLayout: refused("StreamTryNextLayout"),
+  StreamTrySendLayout: refused("StreamTrySendLayout"),
+  StructuralFormat: resumable({ handler: "structural_format" }),
+  StringLines: refused("StringLines"),
+  ProcessExit: refused("ProcessExit"),
+  SupervisorDirectId: refused("SupervisorDirectId"),
+  SupervisorChildGet: refused("SupervisorChildGet"),
+  LocalPidSupervisorChildGet: refused("LocalPidSupervisorChildGet"),
+  SupervisorNestedGet: refused("SupervisorNestedGet"),
+  SupervisorPoolChildGet: refused("SupervisorPoolChildGet"),
+  LocalPidSupervisorPoolChildRefGet: refused(
+    "LocalPidSupervisorPoolChildRefGet",
+  ),
+  SupervisorPoolLen: refused("SupervisorPoolLen"),
+  SupervisorStop: refused("SupervisorStop"),
+  TlsAttachLocal: refused("TlsAttachLocal"),
+  WebSocketAttachLocal: refused("WebSocketAttachLocal"),
+  TaskFree: refused("TaskFree"),
+  GeneratorFree: refused("GeneratorFree"),
+  VecAppend: refused("VecAppend"),
+  VecClear: refused("VecClear"),
+  VecClone: refused("VecClone"),
+  VecCloneLayout: refused("VecCloneLayout"),
+  VecCloneOwned: refused("VecCloneOwned"),
+  VecContainsLayout: refused("VecContainsLayout"),
+  VecTakeAll: refused("VecTakeAll"),
+  VecContainsOwned: refused("VecContainsOwned"),
+  VecIsEmpty: refused("VecIsEmpty"),
+  VecJoinStr: refused("VecJoinStr"),
+  VecLen: refused("VecLen"),
+  VecNew: refused("VecNew"),
+  VecPopBool: refused("VecPopBool"),
+  VecPopLayout: refused("VecPopLayout"),
+  VecPopOwned: refused("VecPopOwned"),
+  VecPushBool: refused("VecPushBool"),
+  VecPushLayout: refused("VecPushLayout"),
+  VecPushOwned: refused("VecPushOwned"),
+  VecPushOwnedMove: refused("VecPushOwnedMove"),
+  VecRemoveAtBool: refused("VecRemoveAtBool"),
+  VecRemoveAtLayout: refused("VecRemoveAtLayout"),
+  VecRemoveAtOwned: refused("VecRemoveAtOwned"),
+  VecSetBool: refused("VecSetBool"),
+  VecSetLayout: refused("VecSetLayout"),
+  VecSetOwned: refused("VecSetOwned"),
+  VecSetOwnedMove: refused("VecSetOwnedMove"),
+  VtableDispatchPanicOnOob: refused("VtableDispatchPanicOnOob"),
+} satisfies Partial<
+  Record<RuntimeFamilyEntry["family"], RuntimeShim | RuntimeRegistration>
+>;
+
+const VECTOR_SHIMS = {
   New: () => ({ kind: "vector", elementType: "", items: [] }),
   // The receiver arrives by `move` and leaves as the call's result, so the
   // package can store the vector back into its place. The element carries the
@@ -588,7 +916,7 @@ const VECTOR_SHIMS: Record<string, RuntimeShim | undefined> = {
       items: items.slice(start).map(cloneValue),
     };
   },
-};
+} satisfies Record<string, RuntimeShim>;
 
 function sequenceElement(args: VmValue[]): VmValue {
   const items = vec(args, 0).items;
@@ -637,7 +965,7 @@ function checkSliceBounds(start: number, end: number, length: number): void {
 /// mapping is to the matching IEEE operation rather than to whatever JS spells
 /// similarly: `Round` is half away from zero, `MinF64`/`MaxF64` follow
 /// `minnum`/`maxnum` where a NaN operand loses, and `Fma` is fused.
-const MATH_SHIMS: Record<string, RuntimeShim | undefined> = {
+const MATH_SHIMS = {
   Sqrt: float1(Math.sqrt),
   Exp: float1(Math.exp),
   Log: float1(Math.log),
@@ -678,7 +1006,7 @@ const MATH_SHIMS: Record<string, RuntimeShim | undefined> = {
   },
   MinI64: (_host, args) => int(bigMin(integer(args, 0), integer(args, 1))),
   MaxI64: (_host, args) => int(bigMax(integer(args, 0), integer(args, 1))),
-};
+} satisfies Record<string, RuntimeShim>;
 
 function float1(apply: (x: number) => number): RuntimeShim {
   return (_host, args) => num(apply(real(args, 0)));
@@ -752,7 +1080,7 @@ function fma(a: number, b: number, c: number): number {
 /// `f64` classification and bit methods. Native reads the IEEE bits
 /// directly, so `IsSignNegative` tests the sign bit (true for `-0.0` and a
 /// negative NaN) rather than comparing against zero.
-const FLOAT_METHOD_SHIMS: Record<string, RuntimeShim | undefined> = {
+const FLOAT_METHOD_SHIMS = {
   ToBits: (_host, args) => int(toBits(real(args, 0))),
   IsNan: (_host, args) => bool(Number.isNaN(real(args, 0))),
   IsFinite: (_host, args) => bool(Number.isFinite(real(args, 0))),
@@ -761,14 +1089,16 @@ const FLOAT_METHOD_SHIMS: Record<string, RuntimeShim | undefined> = {
     return bool(value === Infinity || value === -Infinity);
   },
   IsSignNegative: (_host, args) => bool(toBits(real(args, 0)) >> 63n === 1n),
-};
+} satisfies Record<string, RuntimeShim>;
 
 /// The receiver width an `IntMethod`/`IntArith` detail names. The VM is a
 /// 64-bit target, so the pointer-sized widths are 64 bits wide.
-const INT_WIDTHS: Record<
-  string,
-  { bits: number; signed: boolean } | undefined
-> = {
+type IntWidthName = Extract<
+  RuntimeFamilyEntry,
+  { family: "IntMethod" }
+>["detail"][1];
+type IntWidth = { bits: number; signed: boolean };
+const INT_WIDTHS = {
   I8: { bits: 8, signed: true },
   I16: { bits: 16, signed: true },
   I32: { bits: 32, signed: true },
@@ -779,19 +1109,7 @@ const INT_WIDTHS: Record<
   U32: { bits: 32, signed: false },
   U64: { bits: 64, signed: false },
   Usize: { bits: 64, signed: false },
-};
-
-type IntWidth = { bits: number; signed: boolean };
-
-/// `[op, width]`, as `RuntimeCallFamily` serializes a two-field variant.
-function intDetail(detail: unknown): [string, IntWidth] | undefined {
-  if (!Array.isArray(detail) || detail.length !== 2) {
-    return undefined;
-  }
-  const [op, width] = detail;
-  const shape = typeof width === "string" ? INT_WIDTHS[width] : undefined;
-  return typeof op === "string" && shape ? [op, shape] : undefined;
-}
+} satisfies Record<IntWidthName, IntWidth>;
 
 function wrapTo(width: IntWidth, value: bigint): bigint {
   return width.signed
@@ -818,12 +1136,11 @@ function popcount(value: bigint): bigint {
 /// `bitreverse`/`fshl`/`fshr` at the receiver's width, so every operation
 /// works on the receiver's unsigned bit pattern and the rotate amount is taken
 /// modulo the width.
-function intMethodShim(detail: unknown): RuntimeShim | undefined {
-  const parsed = intDetail(detail);
-  if (!parsed) {
-    return undefined;
-  }
-  const [op, width] = parsed;
+function intMethodShim(
+  detail: Extract<RuntimeFamilyEntry, { family: "IntMethod" }>["detail"],
+): RuntimeShim {
+  const [op, name] = detail;
+  const width = INT_WIDTHS[name];
   const bits = BigInt(width.bits);
   const unsigned = (args: VmValue[]) =>
     BigInt.asUintN(width.bits, integer(args, 0));
@@ -883,36 +1200,44 @@ function intMethodShim(detail: unknown): RuntimeShim | undefined {
       return (_host, args) => rotate(args, true);
     case "RotateRight":
       return (_host, args) => rotate(args, false);
-    default:
-      return undefined;
+    default: {
+      const exhaustive: never = op;
+      throw new Error(`unknown integer operation ${String(exhaustive)}`);
+    }
   }
 }
 
 /// Non-trapping integer arithmetic at the receiver's width: wrapping keeps
 /// the low bits, saturating clamps to the width's bounds and checked answers
 /// `None` where native's overflow flag is set.
-function intArithShim(detail: unknown): RuntimeShim | undefined {
-  const parsed = intDetail(detail);
-  if (!parsed) {
-    return undefined;
-  }
-  const [kind, width] = parsed;
+function intArithShim(
+  detail: Extract<RuntimeFamilyEntry, { family: "IntArith" }>["detail"],
+): RuntimeShim {
+  const [kind, name] = detail;
+  const width = INT_WIDTHS[name];
   const [min, max] = intBounds(width);
-  const operations: Record<
-    string,
-    ((x: bigint, y: bigint) => bigint) | undefined
-  > = {
-    Add: (x, y) => x + y,
-    Sub: (x, y) => x - y,
-    Mul: (x, y) => x * y,
-  };
-  const mode = ["Wrapping", "Saturating", "Checked"].find((prefix) =>
-    kind.startsWith(prefix),
-  );
-  const apply = mode ? operations[kind.slice(mode.length)] : undefined;
-  if (!mode || !apply) {
-    return undefined;
-  }
+  type ArithKind = typeof kind;
+  const add = (x: bigint, y: bigint) => x + y;
+  const sub = (x: bigint, y: bigint) => x - y;
+  const mul = (x: bigint, y: bigint) => x * y;
+  const operations = {
+    WrappingAdd: ["Wrapping", add],
+    WrappingSub: ["Wrapping", sub],
+    WrappingMul: ["Wrapping", mul],
+    SaturatingAdd: ["Saturating", add],
+    SaturatingSub: ["Saturating", sub],
+    SaturatingMul: ["Saturating", mul],
+    CheckedAdd: ["Checked", add],
+    CheckedSub: ["Checked", sub],
+    CheckedMul: ["Checked", mul],
+  } as const satisfies Record<
+    ArithKind,
+    readonly [
+      "Wrapping" | "Saturating" | "Checked",
+      (x: bigint, y: bigint) => bigint,
+    ]
+  >;
+  const [mode, apply] = operations[kind];
   const exact = (args: VmValue[]) =>
     apply(wrapTo(width, integer(args, 0)), wrapTo(width, integer(args, 1)));
   switch (mode) {
@@ -960,25 +1285,41 @@ function bigMax(left: bigint, right: bigint): bigint {
 
 // ── externs ─────────────────────────────────────────────────────────────────
 
-const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
-  hew_calendar_format: (host, args, _variant, shape) =>
-    executeCalendar(host.calendarBridge, "hew_calendar_format", args, shape),
-  hew_calendar_parse: (host, args, _variant, shape) =>
-    executeCalendar(host.calendarBridge, "hew_calendar_parse", args, shape),
-  hew_calendar_components: (host, args, _variant, shape) =>
-    executeCalendar(
-      host.calendarBridge,
-      "hew_calendar_components",
-      args,
-      shape,
-    ),
-  hew_calendar_from_parts: (host, args, _variant, shape) =>
-    executeCalendar(
-      host.calendarBridge,
-      "hew_calendar_from_parts",
-      args,
-      shape,
-    ),
+const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_calendar_format: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(host.calendarBridge, "hew_calendar_format", args, shape),
+  },
+  hew_calendar_parse: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(host.calendarBridge, "hew_calendar_parse", args, shape),
+  },
+  hew_calendar_components: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(
+        host.calendarBridge,
+        "hew_calendar_components",
+        args,
+        shape,
+      ),
+  },
+  hew_calendar_from_parts: {
+    kind: "ordinary",
+    bridge: "calendarBridge",
+    shim: (host, args, _variant, shape) =>
+      executeCalendar(
+        host.calendarBridge,
+        "hew_calendar_from_parts",
+        args,
+        shape,
+      ),
+  },
 
   hew_args_count: (host) => int(BigInt(host.argv.length)),
   // A native null managed string is canonical empty. Each result owns fresh
@@ -1134,10 +1475,6 @@ function pattern(host: ShimHost, value: VmValue): string {
 }
 
 // ── operand helpers ─────────────────────────────────────────────────────────
-
-function detailName(detail: unknown): string {
-  return typeof detail === "string" ? detail : "";
-}
 
 function arg(args: VmValue[], at: number): VmValue {
   return args[at] ?? UNIT;

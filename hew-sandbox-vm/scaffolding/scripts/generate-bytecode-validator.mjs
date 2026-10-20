@@ -18,6 +18,9 @@ const ajv = new Ajv2020({
 // remains standard JSON Schema and independent validators need no extension.
 for (const name of ["OpV1", "TermV1"])
   schema.$defs[name].discriminator = { propertyName: "op" };
+schema.$defs.RuntimeFamilyEntry.discriminator = { propertyName: "family" };
+const suspension = schema.$defs.TermV1.oneOf.find((variant) => variant.properties.op.const === "suspend");
+suspension.discriminator = { propertyName: "kind" };
 const definitions = {};
 function include(name) {
   if (Object.hasOwn(definitions, name)) return;
@@ -32,10 +35,12 @@ function include(name) {
 }
 include("OpV1");
 include("TermV1");
+include("RuntimeFamilyEntry");
 ajv.addSchema({ $id: schema.$id, $defs: definitions });
 const unformatted = "// @ts-nocheck\n// Generated from the Rust instruction schema. Run make sandbox-bytecode.\n" +
   standaloneCode(ajv, {
     validOperation: schema.$id + "#/$defs/OpV1",
+    validRuntimeFamily: schema.$id + "#/$defs/RuntimeFamilyEntry",
     validTerminator: schema.$id + "#/$defs/TermV1",
   }) + "\n";
 const destination = path.join(root, "src/interpreter/v1/instruction-validator.generated.ts");

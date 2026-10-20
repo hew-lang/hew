@@ -3,9 +3,9 @@ import { calendarResultFields } from "./calendar.js";
 ///
 /// The package declares what it needs: `runtime_families` names every runtime
 /// call family the instruction stream reaches, and `externs` names every
-/// declared C-ABI symbol. This validator matches each against the shim table
-/// the VM implements. A family or symbol with no shim is refused before a
-/// single instruction runs. Unknown is rejected, never allowed.
+/// declared C-ABI symbol. Admission consumes the same typed host registrations
+/// as execution, including resumable operations and required Wasm bridges.
+/// An unavailable operation is refused before a single instruction runs.
 ///
 /// The check keys on the declared identity: it never matches a symbol prefix
 /// and never reads an instruction stream to guess a capability.
@@ -14,15 +14,17 @@ import type { SandboxRejection } from "../types.js";
 import type { PackageV1 } from "./package.js";
 import { OP_NAMES, TERM_NAMES } from "./instructions.generated.js";
 import {
-  SUPPORTED_NATIVE_IO,
-  SUPPORTED_SUSPEND_KINDS,
-  resolveExternShim,
-  resolveRuntimeShim,
+  CODEC_REGISTRATION,
+  registrationRefusal,
+  resolveExtern,
+  resolveRuntime,
+  resolveSuspension,
+  suspensionRefusal,
+  type HostBridges,
+  type Refused,
 } from "./shims.js";
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
-const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
-const NATIVE_SUSPENSIONS = new Set(["NativeIo", "Read", "Accept"]);
 
 const OPS: ReadonlySet<string> = new Set(OP_NAMES);
 const TERMS: ReadonlySet<string> = new Set(TERM_NAMES);
@@ -60,8 +62,11 @@ function unavailable(capability: string): SandboxRejection {
   };
 }
 
-/// The first refusal, or `null` when every declared capability has a shim.
-export function admitPackage(pkg: PackageV1): SandboxRejection | null {
+/// The first refusal, or `null` when all operations and bridges are available.
+export function admitPackage(
+  pkg: PackageV1,
+  bridges: HostBridges = {},
+): SandboxRejection | null {
   if (!pkg.entry) {
     return {
       category: "invalid_package",
@@ -274,7 +279,14 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
             span: null,
           };
       }
+      if (term.op === "wire.codec") {
+        const refusal = registrationRefusal(CODEC_REGISTRATION, bridges);
+        if (refusal) return rejectRegistration(refusal);
+      }
       if (term.op === "suspend") {
+        const registration = resolveSuspension(term);
+        if (registration.kind === "refused")
+          return rejectRegistration(registration);
         const mandatoryClose = (pkg.resources ?? []).some(
           (resource) => resource.close === function_.id,
         );
@@ -323,7 +335,10 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
       return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&
-      !resolveExternShim(resource.release ?? "")
+      registrationRefusal(
+        resolveExtern({ symbol: resource.release ?? "" }),
+        bridges,
+      )
     )
       return unavailable("resource.external_close");
   }
@@ -445,76 +460,38 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
   }
 
   for (const entry of pkg.runtime_families) {
-    if (!resolveRuntimeShim(entry)) {
-      return {
-        category: NATIVE_FAMILIES.has(entry.family)
-          ? "native_only"
-          : "not_implemented",
-        code: UNSUPPORTED,
-        capability: familyIdentity(entry.family, entry.detail),
-        message: capabilityMessage(
-          entry.family,
-          NATIVE_FAMILIES.has(entry.family),
-        ),
-        span: null,
-      };
-    }
+    const refusal = registrationRefusal(resolveRuntime(entry), bridges);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   for (const entry of pkg.externs) {
-    if (!resolveExternShim(entry.symbol)) {
-      const native = entry.native_capability;
-      return {
-        category: native === undefined ? "not_implemented" : "native_only",
-        code: UNSUPPORTED,
-        capability: entry.symbol,
-        message:
-          native === undefined
-            ? "This external-library operation is not available in the browser runtime yet."
-            : `${native} require native execution.`,
-        span: null,
-      };
-    }
+    const refusal = registrationRefusal(resolveExtern(entry), bridges);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   for (const kind of pkg.suspend_kinds) {
-    const refused =
-      kind === "NativeIo"
-        ? refusedNativeIo(pkg)
-        : SUPPORTED_SUSPEND_KINDS.has(kind)
-          ? null
-          : kind;
-    if (refused !== null) {
-      return {
-        category: NATIVE_SUSPENSIONS.has(kind)
-          ? "native_only"
-          : "not_implemented",
-        code: UNSUPPORTED,
-        capability: refused,
-        message: capabilityMessage(kind, NATIVE_SUSPENSIONS.has(kind)),
-        span: null,
-      };
-    }
+    const refusal = suspensionRefusal(kind);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   return null;
 }
 
-/// The first native I/O suspension whose operation the VM does not serve.
-function refusedNativeIo(pkg: PackageV1): string | null {
-  for (const function_ of pkg.functions) {
-    for (const block of function_.blocks) {
-      const term = block.term;
-      if (term.op !== "suspend" || term.kind !== "NativeIo") continue;
-      const operation = String(term.detail?.operation);
-      if (!SUPPORTED_NATIVE_IO.has(operation)) return `NativeIo::${operation}`;
-    }
-  }
-  return null;
-}
-
-function familyIdentity(family: string, detail: unknown): string {
-  return typeof detail === "string" && detail.length > 0
-    ? `${family}::${detail}`
-    : family;
+function rejectRegistration(refusal: Refused): SandboxRejection {
+  return {
+    category: refusal.category,
+    code: UNSUPPORTED,
+    capability: refusal.capability,
+    message:
+      refusal.capability === "codecBridge" ||
+      refusal.capability === "calendarBridge"
+        ? `This operation requires the ${refusal.capability === "codecBridge" ? "codec" : "calendar"} Wasm bridge.`
+        : refusal.description !== undefined
+          ? `${refusal.description} require native execution.`
+          : capabilityMessage(
+              refusal.capability.split("::")[0]!,
+              refusal.category === "native_only",
+            ),
+    span: null,
+  };
 }

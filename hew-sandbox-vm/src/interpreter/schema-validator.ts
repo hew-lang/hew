@@ -1,6 +1,8 @@
+import { SUSPENSION_NAMES } from "./v1/instructions.generated.js";
 import {
   validOperation,
   validTerminator,
+  validRuntimeFamily,
 } from "./v1/instruction-validator.generated.js";
 import { isPackageV1, type PackageV1 } from "./v1/package.js";
 
@@ -37,6 +39,15 @@ export function validateBytecodePackage(input: unknown): PackageV1 {
     if (!Array.isArray(input[key])) errors.push(`${key} must be an array`);
   }
   if (errors.length) throw new BytecodeValidationError(errors);
+  const suspensionNames: readonly string[] = SUSPENSION_NAMES;
+  if (
+    !Array.isArray(input.suspend_kinds) ||
+    input.suspend_kinds.some((kind) => !suspensionNames.includes(kind))
+  )
+    errors.push("malformed suspension manifest");
+  for (const entry of input.runtime_families) {
+    if (!validRuntimeFamily(entry)) errors.push("malformed runtime family");
+  }
   for (const fn of input.functions) {
     if (
       !fn ||

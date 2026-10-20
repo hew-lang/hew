@@ -22,6 +22,7 @@ use strum::EnumIter;
     EnumIter,
     Default,
 )]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum SemaphoreOp {
     #[default]
     Acquire,

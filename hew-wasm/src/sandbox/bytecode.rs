@@ -1,11 +1,237 @@
 //! Concrete v1 instruction wire types, shared by SIR projection and generated VM bindings.
 //!
-//! Runtime-family and suspension detail registration is a separate contract.
-//! This module carries their existing payload without changing execution policy.
+//! Runtime identities and suspension payloads retain their v1 JSON representation.
+//! Host admission and execution policy consume these typed contracts.
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
+
+/// Runtime identity at the sandbox boundary. The compiler enum owns its vocabulary.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeFamilyEntry {
+    pub id: u32,
+    pub identity: hew_types::RuntimeCallFamily,
+    /// Unit identities accept both omitted and explicit-null v1 detail fields.
+    pub null_detail: bool,
+}
+
+impl Serialize for RuntimeFamilyEntry {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap as _;
+        let value = serde_json::to_value(self.identity).map_err(serde::ser::Error::custom)?;
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        match value {
+            serde_json::Value::String(name) => {
+                map.serialize_entry("family", &name)?;
+                if self.null_detail {
+                    map.serialize_entry("detail", &())?;
+                }
+            }
+            serde_json::Value::Object(fields) if fields.len() == 1 => {
+                let (name, detail) = fields
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| serde::ser::Error::custom("runtime identity has no variant"))?;
+                map.serialize_entry("family", &name)?;
+                map.serialize_entry("detail", &detail)?;
+            }
+            _ => return Err(serde::ser::Error::custom("runtime identity is not an enum")),
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeFamilyEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Entry {
+            id: u32,
+            family: String,
+            #[serde(default, deserialize_with = "present_nullable")]
+            detail: Option<Option<serde_json::Value>>,
+        }
+        let entry = Entry::deserialize(deserializer)?;
+        let null_detail = entry.detail == Some(None);
+        let identity = match entry.detail.flatten() {
+            Some(detail) => serde_json::json!({entry.family: detail}),
+            None => entry.family.into(),
+        };
+        Ok(Self {
+            id: entry.id,
+            identity: serde_json::from_value(identity).map_err(serde::de::Error::custom)?,
+            null_detail,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinMode {
+    Wait,
+    CancelLosers,
+    PropagateFault,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum SelectionOrder {
+    Source,
+    Completion,
+}
+
+/// The kind and payload travel together so consumers cannot mix identities.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(tag = "kind")]
+pub enum Suspension {
+    Sleep {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    SleepUntil {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Await {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    ActorSend {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    RestartWait {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Read {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Accept {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    CallClosure {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Timeout {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    ScopeDeadline {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Yield {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    GeneratorNext {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(deserialize_with = "present_nullable")]
+        detail: Option<Option<()>>,
+    },
+    Safepoint {
+        detail: SafepointDetail,
+    },
+    ServiceAcquire {
+        detail: ServiceAcquireDetail,
+    },
+    SemaphoreAcquire {
+        detail: SemaphoreAcquireDetail,
+    },
+    NativeIo {
+        detail: NativeIoDetail,
+    },
+    Offload {
+        detail: OffloadDetail,
+    },
+    Ask {
+        detail: AskDetail,
+    },
+    Join {
+        detail: JoinDetail,
+    },
+    StreamSend {
+        detail: StreamSendDetail,
+    },
+    StreamNext {
+        detail: StreamNextDetail,
+    },
+    Select {
+        detail: SelectDetail,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SafepointDetail {
+    pub budget: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct ServiceAcquireDetail {
+    pub actor: u32,
+    pub export: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SemaphoreAcquireDetail {
+    pub operation: hew_types::runtime_call::SemaphoreOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct NativeIoDetail {
+    pub operation: hew_types::runtime_call::AsyncIoOp,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct OffloadDetail {
+    pub function: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct AskDetail {
+    pub actor: u32,
+    pub message: u32,
+    pub policy: SendPolicy,
+    pub sealed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct JoinDetail {
+    pub scope: u32,
+    pub mode: JoinMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StreamSendDetail {
+    pub park: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct StreamNextDetail {
+    pub park: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub struct SelectDetail {
+    pub has_timeout: bool,
+    pub order: SelectionOrder,
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub enum Own {
@@ -706,11 +932,8 @@ pub enum TermKind {
     },
     #[serde(rename = "suspend")]
     Suspend {
-        kind: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[serde(deserialize_with = "present_nullable")]
-        #[ts(type = "any")]
-        detail: Option<Option<serde_json::Value>>,
+        #[serde(flatten)]
+        suspension: Suspension,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[serde(deserialize_with = "present_nullable")]
         request_shapes: Option<Option<RequestShapes>>,
@@ -851,26 +1074,28 @@ pub fn typescript() -> Result<String, String> {
     };
     ts_rs::TypeVisitor::visit::<OpV1>(&mut declarations);
     ts_rs::TypeVisitor::visit::<TermV1>(&mut declarations);
+    ts_rs::TypeVisitor::visit::<hew_types::RuntimeCallFamily>(&mut declarations);
     let mut output = String::from(
         "// Generated from hew-wasm/src/sandbox/bytecode.rs. Run make sandbox-bytecode.\n",
     );
     for declaration in declarations.entries.into_values() {
         output.push_str(&declaration);
     }
-    for (name, schema) in [
-        ("OP_NAMES", schemars::schema_for!(OpKind).to_value()),
-        ("TERM_NAMES", schemars::schema_for!(TermKind).to_value()),
+    output.push_str("type RuntimeIdentity<T> = T extends string ? { family: T; detail?: null } : { [K in keyof T]: { family: K; detail: T[K] } }[keyof T];\nexport type RuntimeFamilyEntry = { id: number } & RuntimeIdentity<RuntimeCallFamily>;\n");
+    for (name, discriminator, schema) in [
+        ("OP_NAMES", "op", schemars::schema_for!(OpKind).to_value()),
+        (
+            "TERM_NAMES",
+            "op",
+            schemars::schema_for!(TermKind).to_value(),
+        ),
+        (
+            "SUSPENSION_NAMES",
+            "kind",
+            schemars::schema_for!(Suspension).to_value(),
+        ),
     ] {
-        let names = schema["oneOf"]
-            .as_array()
-            .ok_or_else(|| "instruction enum is no longer tagged".to_string())?
-            .iter()
-            .map(|variant| {
-                variant["properties"]["op"]["const"]
-                    .as_str()
-                    .ok_or_else(|| "instruction variant has no discriminator".to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let names = discriminator_names(&schema, discriminator)?;
         writeln!(
             &mut output,
             "export const {name} = {} as const;",
@@ -880,6 +1105,23 @@ pub fn typescript() -> Result<String, String> {
     }
     output.push_str("export type OpName = OpV1[\"op\"];\nexport type TermName = TermV1[\"op\"];\n");
     Ok(output)
+}
+
+fn discriminator_names(
+    schema: &serde_json::Value,
+    discriminator: &str,
+) -> Result<Vec<String>, String> {
+    schema["oneOf"]
+        .as_array()
+        .ok_or_else(|| "wire enum is no longer tagged".to_string())?
+        .iter()
+        .map(|variant| {
+            variant["properties"][discriminator]["const"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "wire variant has no discriminator".to_string())
+        })
+        .collect()
 }
 
 /// Complete the package envelope schema with the derived instruction definitions.
@@ -926,10 +1168,64 @@ pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Val
     {
         definitions.insert(name.clone(), definition.clone());
     }
+    let runtime = schemars::schema_for!(hew_types::RuntimeCallFamily).to_value();
+    if let Some(nested) = runtime["$defs"].as_object() {
+        definitions.extend(nested.clone());
+    }
+    let mut variants = Vec::new();
+    for variant in runtime["oneOf"]
+        .as_array()
+        .ok_or("runtime identity is not an enum")?
+    {
+        let unit_names = variant["enum"].as_array().cloned().or_else(|| {
+            variant
+                .get("const")
+                .filter(|name| name.is_string())
+                .map(|name| vec![name.clone()])
+        });
+        if let Some(names) = unit_names {
+            for name in names {
+                variants.push(serde_json::json!({
+                    "properties": {"family": {"const": name}, "detail": {"type": "null"}}
+                }));
+            }
+        } else {
+            let fields = variant["properties"]
+                .as_object()
+                .ok_or_else(|| format!("runtime payload has no properties: {variant}"))?;
+            if fields.len() != 1 {
+                return Err("runtime payload must have exactly one variant".to_string());
+            }
+            let (name, detail) = fields
+                .iter()
+                .next()
+                .ok_or("runtime payload has no variant")?;
+            variants.push(serde_json::json!({
+                "required": ["detail"],
+                "properties": {"family": {"const": name}, "detail": detail}
+            }));
+        }
+    }
+    definitions.insert(
+        "RuntimeFamilyEntry".to_string(),
+        serde_json::json!({
+            "type": "object", "additionalProperties": false,
+            "required": ["id", "family"],
+            "properties": {"id": {"$ref": "#/$defs/id"}, "family": {"type": "string"}, "detail": {}},
+            "oneOf": variants,
+        }),
+    );
     definitions.insert("op".to_string(), schema["properties"]["operation"].clone());
     definitions.insert(
         "term".to_string(),
         schema["properties"]["terminator"].clone(),
+    );
+    definitions.insert(
+        "SuspensionKind".to_string(),
+        serde_json::json!({
+            "type": "string",
+            "enum": discriminator_names(&schemars::schema_for!(Suspension).to_value(), "kind")?,
+        }),
     );
     envelope["$comment"] =
         "Generated from the envelope schema and Rust instruction DTOs; run make sandbox-bytecode"

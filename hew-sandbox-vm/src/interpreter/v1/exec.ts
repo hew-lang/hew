@@ -61,11 +61,14 @@ import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
 import {
   ShimFault,
+  CODEC_REGISTRATION,
   decodeUtf8Checked,
-  resolveExternShim,
-  resolveRuntimeShim,
+  resolveExtern,
+  resolveRuntime,
+  resolveSuspension,
   type ShimHost,
   type RuntimeShim,
+  type RuntimeContinuation,
 } from "./shims.js";
 import { admitPackage } from "./validate.js";
 
@@ -355,7 +358,7 @@ export function runPackageV1(
 
   // Admission is a load-time decision: nothing runs when the package names a
   // capability the VM has no shim for.
-  const rejection = admitPackage(pkg);
+  const rejection = admitPackage(pkg, options);
   if (rejection) {
     trace.reject(rejection);
     return trace.finish();
@@ -459,8 +462,6 @@ class ExecutorV1 {
           : this.pipes.cloneSink(value);
       },
       newPipe: (capacity) => this.newPipe(capacity),
-      closePipe: (value) =>
-        this.pipes.close(value, this.pipeFault(this.current)),
       releaseValue: (value) =>
         this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
@@ -1672,179 +1673,174 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
-        if (entry?.family === "ActorCaller") {
-          const caller = act.context.caller ?? { kind: "Task" };
-          const payload: VmValue[] = [];
-          if (caller.kind === "Actor") {
-            const shape = this.pkg.variants[term.result_shape!];
-            const tag = runtimeTag(shape!, "CallerActor");
-            payload.push({
-              kind: "record",
-              typeId: shape!.cases[tag]!.fields[0]!,
-              fields: [{ kind: "i64", value: caller.identity }],
-            });
-          }
-          this.completeShim(
-            act,
-            term,
-            this.variant(
-              term.result_shape,
-              caller.kind === "Actor"
-                ? "CallerActor"
-                : caller.kind === "Timer"
-                  ? "CallerTimer"
-                  : "CallerTask",
-              payload,
-            ),
-          );
+        if (!entry) throw new Error("runtime family is absent after admission");
+        const registration = resolveRuntime(entry);
+        if (registration.kind === "ordinary") {
+          this.callShim(act, term, registration.shim);
           return;
         }
-        if (entry?.family === "ActorRefusalLog") {
-          const [message, handler, reason] = term.args.map((argument) =>
-            this.boundary(act, argument),
-          );
-          this.trace.snapshot("actor.delivery_refused", {
-            actor_id: act.context.actor?.id ?? null,
-            handler: toJsonValue(handler!),
-            message: toJsonValue(message!),
-            reason: toJsonValue(reason!),
-          });
-          if (!act.context.reply)
-            this.trace.writeStderr(
-              `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)} reason=${JSON.stringify(asString(reason!))}\n`,
-              null,
-            );
-          this.completeShim(act, term, UNIT);
-          return;
-        }
-        if (
-          entry &&
-          (entry.family === "Map" ||
-            entry.family === "Set" ||
-            (entry.family === "Array" && entry.detail === "Set") ||
-            (entry.family === "Vector" &&
-              ["Contains", "Clear", "Set"].includes(String(entry.detail))))
-        ) {
-          const args = term.args.map((operand) => this.boundary(act, operand));
-          const iterator = collectionOperation(
-            this.pkg,
-            entry.family === "Array" ? "Vector" : entry.family,
-            String(entry.detail),
-            args,
-            term.callbacks ?? [],
-            term.result_member_shapes?.[1] ?? term.result_shape,
-          );
-          this.runValueProgram(act, term, args, iterator);
-          return;
-        }
-        if (
-          entry &&
-          [
-            "RcNew",
-            "RcClone",
-            "RcDowngrade",
-            "WeakCloneRc",
-            "WeakUpgradeRc",
-            "RcGet",
-            "RcIsUnique",
-            "RcSet",
-            "RcStrongCount",
-            "RcWeakCount",
-          ].includes(entry.family)
-        ) {
-          const args = term.args.map((operand) => this.boundary(act, operand));
-          this.runValueProgram(
-            act,
-            term,
-            args,
-            sharedOperation(
-              entry.family,
-              args,
-              act.rcOwner,
-              term.shared_payload_type ?? "",
-              (value) =>
-                this.variant(
-                  term.result_shape,
-                  value ? "OptionSome" : "OptionNone",
-                  value ? [value] : [],
-                ),
-            ),
-          );
-          return;
-        }
-        if (entry?.family === "SupervisorPool") {
-          this.supervisorPool(act, term, String(entry.detail));
-          return;
-        }
-        if (entry && ["SinkClose", "StreamClose"].includes(entry.family)) {
-          const value = this.boundary(act, term.args[0]!);
-          this.running = false;
-          this.closeValueAsync(
-            value,
-            this.pipeFault(act),
-            (fault) => {
-              if (fault) this.raiseFault(act, fault, term.unwind);
-              else this.completeShim(act, term, UNIT);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-            },
-            act.context.actor,
-            act.rcOwner,
-          );
-          return;
-        }
-        if (entry?.family === "StructuralFormat") {
-          this.structuralFormat(act, term);
-          return;
-        }
-        if (entry?.family === "BytesDecodeUtf8") {
-          const value = decodeUtf8Checked(this.boundary(act, term.args[0]!));
-          let result: VmValue;
-          if ("value" in value)
-            result = this.variant(term.result_shape, "ResultOk", [
-              stringValue(value.value),
-            ]);
-          else {
-            const shapes = term.variant_result_shapes!;
-            const error = this.pkg.aggregates[shapes.error]!;
-            result = this.variant(term.result_shape, "ResultErr", [
-              {
-                kind: "record",
-                typeId: error.name,
-                shape: error.id,
-                fields: [
-                  { kind: "i64", value: BigInt(value.validUpTo) },
-                  this.variant(
-                    shapes.error_len,
-                    value.errorLen === null ? "OptionNone" : "OptionSome",
-                    value.errorLen === null
-                      ? []
-                      : [{ kind: "i64", value: BigInt(value.errorLen) }],
-                  ),
-                ],
-              },
-            ]);
-          }
-          this.completeShim(act, term, result);
-          return;
-        }
-        const shim = entry ? resolveRuntimeShim(entry) : undefined;
-        if (!entry || !shim) {
+        if (registration.kind === "refused")
           throw new Error(
-            `runtime family ${term.family} resolved no shim after admission`,
+            `runtime family ${registration.capability} was refused after admission`,
           );
+        switch (registration.handler) {
+          case "actor_caller": {
+            const caller = act.context.caller ?? { kind: "Task" };
+            const payload: VmValue[] = [];
+            if (caller.kind === "Actor") {
+              const shape = this.pkg.variants[term.result_shape!];
+              const tag = runtimeTag(shape!, "CallerActor");
+              payload.push({
+                kind: "record",
+                typeId: shape!.cases[tag]!.fields[0]!,
+                fields: [{ kind: "i64", value: caller.identity }],
+              });
+            }
+            this.completeShim(
+              act,
+              term,
+              this.variant(
+                term.result_shape,
+                caller.kind === "Actor"
+                  ? "CallerActor"
+                  : caller.kind === "Timer"
+                    ? "CallerTimer"
+                    : "CallerTask",
+                payload,
+              ),
+            );
+            return;
+          }
+          case "actor_refusal_log": {
+            const [message, handler, reason] = term.args.map((argument) =>
+              this.boundary(act, argument),
+            );
+            this.trace.snapshot("actor.delivery_refused", {
+              actor_id: act.context.actor?.id ?? null,
+              handler: toJsonValue(handler!),
+              message: toJsonValue(message!),
+              reason: toJsonValue(reason!),
+            });
+            if (!act.context.reply)
+              this.trace.writeStderr(
+                `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)} reason=${JSON.stringify(asString(reason!))}\n`,
+                null,
+              );
+            this.completeShim(act, term, UNIT);
+            return;
+          }
+          case "collection": {
+            const args = term.args.map((operand) =>
+              this.boundary(act, operand),
+            );
+            const iterator = collectionOperation(
+              this.pkg,
+              registration,
+              args,
+              term.callbacks ?? [],
+              term.result_member_shapes?.[1] ?? term.result_shape,
+            );
+            this.runValueProgram(act, term, args, iterator);
+            return;
+          }
+          case "shared": {
+            const args = term.args.map((operand) =>
+              this.boundary(act, operand),
+            );
+            this.runValueProgram(
+              act,
+              term,
+              args,
+              sharedOperation(
+                registration.operation,
+                args,
+                act.rcOwner,
+                term.shared_payload_type ?? "",
+                (value) =>
+                  this.variant(
+                    term.result_shape,
+                    value ? "OptionSome" : "OptionNone",
+                    value ? [value] : [],
+                  ),
+              ),
+            );
+            return;
+          }
+          case "supervisor_pool": {
+            this.supervisorPool(act, term, registration.operation);
+            return;
+          }
+          case "close": {
+            const value = this.boundary(act, term.args[0]!);
+            this.running = false;
+            this.closeValueAsync(
+              value,
+              this.pipeFault(act),
+              (fault) => {
+                if (fault) this.raiseFault(act, fault, term.unwind);
+                else this.completeShim(act, term, UNIT);
+                this.scheduler.enqueue(act.context.id, () =>
+                  this.runFrame(act),
+                );
+              },
+              act.context.actor,
+              act.rcOwner,
+            );
+            return;
+          }
+          case "structural_format": {
+            this.structuralFormat(act, term);
+            return;
+          }
+          case "utf8_decode": {
+            const value = decodeUtf8Checked(this.boundary(act, term.args[0]!));
+            let result: VmValue;
+            if ("value" in value)
+              result = this.variant(term.result_shape, "ResultOk", [
+                stringValue(value.value),
+              ]);
+            else {
+              const shapes = term.variant_result_shapes!;
+              const error = this.pkg.aggregates[shapes.error]!;
+              result = this.variant(term.result_shape, "ResultErr", [
+                {
+                  kind: "record",
+                  typeId: error.name,
+                  shape: error.id,
+                  fields: [
+                    { kind: "i64", value: BigInt(value.validUpTo) },
+                    this.variant(
+                      shapes.error_len,
+                      value.errorLen === null ? "OptionNone" : "OptionSome",
+                      value.errorLen === null
+                        ? []
+                        : [{ kind: "i64", value: BigInt(value.errorLen) }],
+                    ),
+                  ],
+                },
+              ]);
+            }
+            this.completeShim(act, term, result);
+            return;
+          }
+          default: {
+            const exhaustive: never = registration;
+            throw new Error(
+              `unknown runtime continuation ${String(exhaustive)}`,
+            );
+          }
         }
-        this.callShim(act, term, shim);
-        return;
       }
       case "extern.call": {
         const entry = this.pkg.externs[term.extern];
-        const shim = entry ? resolveExternShim(entry.symbol) : undefined;
-        if (!entry || !shim) {
+        if (!entry)
+          throw new Error("external operation is absent after admission");
+        const registration = resolveExtern(entry);
+        if (registration.kind === "refused")
           throw new Error(
-            `extern ${term.extern} resolved no shim after admission`,
+            `external operation ${registration.capability} was refused after admission`,
           );
-        }
-        this.callShim(act, term, shim);
+        this.callShim(act, term, registration.shim);
         return;
       }
       case "wire.codec": {
@@ -1857,7 +1853,7 @@ class ExecutorV1 {
             this.pkg,
             term,
             args[0]!,
-            this.options.codecBridge,
+            this.options[CODEC_REGISTRATION.bridge],
             this.options.propertyInput ?? [],
           ),
         );
@@ -2135,7 +2131,10 @@ class ExecutorV1 {
   private supervisorPool(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" }>,
-    operation: string,
+    operation: Extract<
+      RuntimeContinuation,
+      { handler: "supervisor_pool" }
+    >["operation"],
   ): void {
     const [view, index] = term.args.map((arg) => this.boundary(act, arg));
     if (view?.kind !== "vector") throw new Error("pool operation has no view");
@@ -2160,15 +2159,25 @@ class ExecutorV1 {
       );
       return;
     }
-    if (!value) {
-      this.raiseFault(
-        act,
-        { kind: "trap", trap: "vector_bounds" },
-        term.unwind,
-      );
-      return;
+    switch (operation) {
+      case "Member":
+        if (!value) {
+          this.raiseFault(
+            act,
+            { kind: "trap", trap: "vector_bounds" },
+            term.unwind,
+          );
+          return;
+        }
+        this.completeShim(act, term, value);
+        return;
+      default: {
+        const exhaustive: never = operation;
+        throw new Error(
+          `unknown supervisor pool operation ${String(exhaustive)}`,
+        );
+      }
     }
-    this.completeShim(act, term, value);
   }
 
   private structuralFormat(
@@ -2433,8 +2442,14 @@ class ExecutorV1 {
 
   private suspend(
     act: Activation,
-    term: Extract<TermV1, { op: "suspend" }>,
+    input: Extract<TermV1, { op: "suspend" }>,
   ): void {
+    const registration = resolveSuspension(input);
+    if (registration.kind === "refused")
+      throw new Error(
+        `suspension ${registration.capability} was refused after admission`,
+      );
+    const term = registration.term;
     switch (term.kind) {
       case "Yield": {
         const generator = act.context.generator;
@@ -2725,7 +2740,11 @@ class ExecutorV1 {
           });
           return;
         }
-        // Admission passed `StdinReadLine`. The record is the raw line,
+        if (term.detail.operation !== "StdinReadLine") {
+          const exhaustive: never = term.detail.operation;
+          throw new Error(`unknown native I/O handler ${String(exhaustive)}`);
+        }
+        // The record is the raw line,
         // so the records concatenate to the stdin the program consumed.
         const line = this.stdin.readLine() ?? new Uint8Array();
         this.trace.recordReplayInput(
@@ -2780,10 +2799,10 @@ class ExecutorV1 {
         cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
         return;
       }
-      default:
-        throw new Error(
-          `suspension kind ${term.kind} resolved no handler after admission`,
-        );
+      default: {
+        const exhaustive: never = term;
+        throw new Error(`unknown suspension handler ${String(exhaustive)}`);
+      }
     }
   }
 
@@ -3060,7 +3079,7 @@ class ExecutorV1 {
 
   private receiveGeneratorStream(
     act: Activation,
-    term: Extract<TermV1, { op: "suspend" }>,
+    term: Extract<TermV1, { op: "suspend"; kind: "StreamNext" }>,
     adapter: GeneratorStream,
   ): void {
     const wake = this.park(act, term);

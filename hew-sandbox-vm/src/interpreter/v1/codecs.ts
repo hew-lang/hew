@@ -199,7 +199,13 @@ function* fromBridge(
   }
   if ("Map" in node || "Set" in node) {
     const family = "Map" in node ? "Map" : "Set";
-    const map = yield* collectionOperation(pkg, family, "New", [], [], null);
+    const map = yield* collectionOperation(
+      pkg,
+      { handler: "collection", family, operation: "New" },
+      [],
+      [],
+      null,
+    );
     for (const item of array(value)) {
       const itemFields = array(item);
       const pair = "Map" in node ? itemFields : [itemFields[0]!, null];
@@ -219,8 +225,7 @@ function* fromBridge(
       const size = map.entries.size;
       yield* collectionOperation(
         pkg,
-        family,
-        "Insert",
+        { handler: "collection", family, operation: "Insert" },
         [map, key, member],
         context.callbacks[id] ?? [],
         null,

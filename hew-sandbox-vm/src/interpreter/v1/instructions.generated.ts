@@ -28,6 +28,26 @@ export type ActorProtocol = {
   policy: SendPolicy;
   sealed: boolean;
 };
+export type ArrayValueOp = "Len" | "Index" | "IndexBorrow" | "Set";
+export type AskDetail = {
+  actor: number;
+  message: number;
+  policy: SendPolicy;
+  sealed: boolean;
+};
+export type AsyncIoOp =
+  | "TcpRead"
+  | "TcpWrite"
+  | "TcpAccept"
+  | "TcpConnect"
+  | "TcpConnectTimeout"
+  | "StdinReadLine"
+  | "SinkFinish"
+  | "TlsConnect"
+  | "TlsRead"
+  | "TlsWrite"
+  | "FileRead"
+  | "FileWrite";
 export type BoundaryDecision =
   | "borrow"
   | "borrow_mut"
@@ -52,21 +72,152 @@ export type DynInvocation = {
   receiver: BoundaryOperand;
 };
 export type Edge = { to: number; args: Array<number> };
+export type EncodingFormat = "Json" | "Yaml" | "Toml";
+export type EncodingOp =
+  | "Parse"
+  | "LastError"
+  | "Stringify"
+  | "Type"
+  | "IntStatus"
+  | "GetBool"
+  | "GetInt"
+  | "GetU64"
+  | "GetFloat"
+  | "GetString"
+  | "GetDatetime"
+  | "GetField"
+  | "ArrayLen"
+  | "ArrayGet"
+  | "ObjectKeys"
+  | "ObjectNew"
+  | "ArrayNew"
+  | "FromBool"
+  | "FromInt"
+  | "FromU64"
+  | "FromFloat"
+  | "FromString"
+  | "FromNull"
+  | "Eq"
+  | "ObjectSet"
+  | "ArrayPush"
+  | "Clone"
+  | "Free";
+export type FileReadOp =
+  | "Open"
+  | "IsValid"
+  | "Collect"
+  | "Close"
+  | "StreamOpen"
+  | "StreamIsValid"
+  | "StreamCollect"
+  | "HasError"
+  | "LastErrorKind"
+  | "LastErrno"
+  | "LastError";
+export type FloatMethodOp =
+  | "ToBits"
+  | "IsNan"
+  | "IsFinite"
+  | "IsInfinite"
+  | "IsSignNegative";
 export type IndirectInvocation = {
   receiver: BoundaryOperand;
   specialization: number | null;
 };
+export type IntArithKind =
+  | "WrappingAdd"
+  | "WrappingSub"
+  | "WrappingMul"
+  | "SaturatingAdd"
+  | "SaturatingSub"
+  | "SaturatingMul"
+  | "CheckedAdd"
+  | "CheckedSub"
+  | "CheckedMul";
+export type IntBitOp =
+  | "CountOnes"
+  | "CountZeros"
+  | "LeadingZeros"
+  | "TrailingZeros"
+  | "SwapBytes"
+  | "ReverseBits"
+  | "RotateLeft"
+  | "RotateRight";
+export type IntMethodWidth =
+  | "I8"
+  | "I16"
+  | "I32"
+  | "I64"
+  | "Isize"
+  | "U8"
+  | "U16"
+  | "U32"
+  | "U64"
+  | "Usize";
 export type InvocationCallee =
   | DirectInvocation
   | MutableInvocation
   | DynInvocation
   | IndirectInvocation;
+export type JoinDetail = { scope: number; mode: JoinMode };
+export type JoinMode = "wait" | "cancel_losers" | "propagate_fault";
+export type MapValueOp =
+  | "New"
+  | "Len"
+  | "Index"
+  | "Get"
+  | "GetBorrow"
+  | "ContainsKey"
+  | "Insert"
+  | "Remove"
+  | "Clear"
+  | "Keys"
+  | "Values"
+  | "Entries";
+export type MathIntrinsic =
+  | "Sqrt"
+  | "Exp"
+  | "Log"
+  | "Sin"
+  | "Cos"
+  | "AbsI64"
+  | "MinI64"
+  | "MaxI64"
+  | "AbsF64"
+  | "MinF64"
+  | "MaxF64"
+  | "Pow"
+  | "Floor"
+  | "Ceil"
+  | "Round"
+  | "Tan"
+  | "Asin"
+  | "Acos"
+  | "Atan"
+  | "Atan2"
+  | "Sinh"
+  | "Cosh"
+  | "Tanh"
+  | "Exp2"
+  | "Log2"
+  | "Log10"
+  | "Log1p"
+  | "Expm1"
+  | "Cbrt"
+  | "Hypot"
+  | "Fma"
+  | "Trunc"
+  | "Copysign"
+  | "Powi"
+  | "FromBits";
 export type MutableInvocation = {
   mutable: number;
   receiver: BoundaryOperand;
   staged: boolean;
 };
+export type NativeIoDetail = { operation: AsyncIoOp };
 export type Nonfinite = "nan" | "inf" | "-inf";
+export type OffloadDetail = { function: number };
 export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
   | { op: "coverage.hit"; counter: number }
   | { op: "const.int"; dst: number; value: string; ty: string }
@@ -236,24 +387,326 @@ export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
     }
 );
 export type Own = "none" | "owned" | "guaranteed";
+export type PrintKind =
+  | "I32"
+  | "I64"
+  | "U8"
+  | "U32"
+  | "U64"
+  | "F64"
+  | "Bool"
+  | "Str";
 export type RequestShapes = {
   failure: number | null;
   reason: number | null;
   message: number | null;
   request: number | null;
 };
+export type RuntimeCallFamily =
+  | { AsyncIo: AsyncIoOp }
+  | { Semaphore: SemaphoreOp }
+  | { FileRead: FileReadOp }
+  | { Service: ServiceOp }
+  | { Tcp: TcpOp }
+  | { Encoding: { format: EncodingFormat; op: EncodingOp } }
+  | "ActorDemonitor"
+  | "ActorLink"
+  | "ActorMonitor"
+  | "ActorCaller"
+  | "ActorRefusalLog"
+  | "ActorUnlink"
+  | "AutoMutexAlloc"
+  | "AutoMutexFree"
+  | "AutoMutexLock"
+  | "AutoMutexUnlock"
+  | "DequePopFront"
+  | "DequePopBack"
+  | "BytesAppend"
+  | "BytesClear"
+  | "BytesConcat"
+  | "BytesContains"
+  | "BytesDecodeUtf8"
+  | "BytesDecodeUtf8Lossy"
+  | "BytesEndsWith"
+  | "BytesGet"
+  | "BytesIndex"
+  | "BytesIsEmpty"
+  | "BytesLen"
+  | "BytesPop"
+  | "BytesPush"
+  | "BytesSet"
+  | "BytesSlice"
+  | "BytesSliceFrom"
+  | "BytesStartsWith"
+  | "BytesNew"
+  | "CancelTokenIsRequested"
+  | "CancelTokenRelease"
+  | "CancelTokenRetain"
+  | "ActorRequestRelease"
+  | "ActorCallFree"
+  | "ActorRequestTake"
+  | "DurationAbs"
+  | "DurationHours"
+  | "DurationIsZero"
+  | "DurationMicros"
+  | "DurationMillis"
+  | "DurationMins"
+  | "DurationNanos"
+  | "DurationSecs"
+  | "DynBoxAlloc"
+  | "DynBoxFree"
+  | "HashMapContainsKeyLayout"
+  | "HashMapClearLayout"
+  | "HashMapCloneLayout"
+  | "HashMapEntriesLayout"
+  | "HashMapFreeLayout"
+  | "HashMapGetLayout"
+  | "HashMapInsertLayout"
+  | "HashMapKeysLayout"
+  | "HashMapLenLayout"
+  | "HashMapNew"
+  | "HashMapNewWithLayout"
+  | "HashMapRemoveLayout"
+  | "HashMapValuesLayout"
+  | "HashSetContainsLayout"
+  | "HashSetClearLayout"
+  | "HashSetCloneLayout"
+  | "HashSetFreeLayout"
+  | "HashSetInsertLayout"
+  | "HashSetIsEmptyLayout"
+  | "HashSetLenLayout"
+  | "HashSetNew"
+  | "HashSetNewWithLayout"
+  | "HashSetRemoveLayout"
+  | "HashSetToVecLayout"
+  | "InstantDurationSince"
+  | "InstantElapsed"
+  | "InstantNow"
+  | "TimestampNow"
+  | { MathIntrinsic: MathIntrinsic }
+  | { IntMethod: [IntBitOp, IntMethodWidth] }
+  | { IntArith: [IntArithKind, IntMethodWidth] }
+  | { FloatMethod: FloatMethodOp }
+  | "NodeAllowPeer"
+  | "NodeConnect"
+  | "NodeId"
+  | "NodeIdDisplay"
+  | "LocationNodeId"
+  | "LocationSlot"
+  | "LocationIncarnation"
+  | "LocationDisplay"
+  | "NodeIdentityKey"
+  | "NodeLoadKeys"
+  | "NodeLookup"
+  | "NodeRegister"
+  | "NodeSetTransport"
+  | "NodeShutdown"
+  | "NodeStart"
+  | "MetricCounterRegister"
+  | "MetricCounterInc"
+  | "MetricCounterAdd"
+  | "MetricGaugeRegister"
+  | "MetricGaugeSet"
+  | "MetricGaugeInc"
+  | "MetricGaugeDec"
+  | "MetricGaugeAdd"
+  | "MetricHistogramRegister"
+  | "MetricHistogramRegisterSimple"
+  | "MetricHistogramRecord"
+  | "MetricVecRegister"
+  | "MetricVecWith"
+  | "ObserveReadU64"
+  | "ObserveScrape"
+  | "ObserveSeries"
+  | "ObserveBarrier"
+  | "RcClone"
+  | "RcDowngrade"
+  | "RcDrop"
+  | "RcGet"
+  | "RcIsUnique"
+  | "RcNew"
+  | "RcSet"
+  | "RcStrongCount"
+  | "RcWeakCount"
+  | "WeakCloneRc"
+  | "WeakDropRc"
+  | "WeakUpgradeRc"
+  | "RegexCapture"
+  | "RegexCompile"
+  | "RegexFreeCapture"
+  | "RegexHandle"
+  | "RegexMatch"
+  | "ReplyChannelCancel"
+  | "ReplyChannelFree"
+  | "ReplyChannelNew"
+  | "ReplyPayloadFree"
+  | "ReplyWait"
+  | "SelectFirst"
+  | "SinkClone"
+  | "SinkClose"
+  | "StreamClose"
+  | "StreamChunks"
+  | "StreamForward"
+  | "StreamFromGenerator"
+  | "SinkFromEncoder"
+  | "StreamLines"
+  | "StreamNextLayout"
+  | "StreamPairSink"
+  | "StreamPairStream"
+  | "StreamSendLayout"
+  | "StreamTake"
+  | "StreamTryNextLayout"
+  | "StreamTrySendLayout"
+  | "CharIsDigit"
+  | "CharIsLetter"
+  | "CharIsAlphanumeric"
+  | "CharIsWhitespace"
+  | "CharIsUpper"
+  | "CharIsLower"
+  | "CharIsPunctuation"
+  | "CharIsControl"
+  | "CharIsAscii"
+  | "CharToUpper"
+  | "CharToLower"
+  | "CharToTitle"
+  | "CharLenUtf8"
+  | "CharToDigit"
+  | "CharFromI64"
+  | "CharFromU64"
+  | "StringGet"
+  | "StringGetRange"
+  | "StringSliceRange"
+  | "StringAppend"
+  | "StringPush"
+  | "StringClear"
+  | "StringFindFrom"
+  | "StringByteLen"
+  | "StringConcat"
+  | "StringEquals"
+  | "StringCompare"
+  | "StringStartsWith"
+  | "StringEndsWith"
+  | "StringContains"
+  | "StringIsEmpty"
+  | "StructuralFormat"
+  | "StringFind"
+  | "StringIndex"
+  | "StringLen"
+  | "StringRepeat"
+  | "StringReplace"
+  | "StringClone"
+  | "StringSplit"
+  | "StringLines"
+  | "StringSliceCodepoints"
+  | "StringSliceCodepointsFrom"
+  | "StringToLowercase"
+  | "StringToBytes"
+  | "StringToUppercase"
+  | "StringTrim"
+  | "U8ToString"
+  | "I32ToString"
+  | "I64ToString"
+  | "U32ToString"
+  | "U64ToString"
+  | "F64ToString"
+  | "CharToString"
+  | { Print: { kind: PrintKind; newline: boolean } }
+  | "ProcessExit"
+  | "StderrWrite"
+  | "BoolToString"
+  | "SupervisorDirectId"
+  | "SupervisorChildGet"
+  | "LocalPidSupervisorChildGet"
+  | "SupervisorNestedGet"
+  | "SupervisorPoolChildGet"
+  | "LocalPidSupervisorPoolChildRefGet"
+  | "SupervisorPoolLen"
+  | "SupervisorStop"
+  | "TlsAttachLocal"
+  | "WebSocketAttachLocal"
+  | "TaskFree"
+  | "GeneratorFree"
+  | { Vector: VecValueOp }
+  | { Array: ArrayValueOp }
+  | { SupervisorPool: SupervisorPoolOp }
+  | { Map: MapValueOp }
+  | { Set: SetValueOp }
+  | "VecAppend"
+  | "VecClear"
+  | "VecClone"
+  | "VecCloneLayout"
+  | "VecCloneOwned"
+  | "VecContainsLayout"
+  | "VecTakeAll"
+  | "VecContainsOwned"
+  | { VecContainsScalar: VecContainsScalarElem }
+  | { VecGet: VecGetElem }
+  | "VecIsEmpty"
+  | "VecJoinStr"
+  | "VecLen"
+  | "VecNew"
+  | "VecPopBool"
+  | "VecPopLayout"
+  | "VecPopOwned"
+  | "VecPushBool"
+  | "VecPushLayout"
+  | "VecPushOwned"
+  | "VecPushOwnedMove"
+  | { VecScalar: { op: VecScalarOp; elem: VecScalarElem } }
+  | "VecRemoveAtBool"
+  | "VecRemoveAtLayout"
+  | "VecRemoveAtOwned"
+  | "VecSetBool"
+  | "VecSetLayout"
+  | "VecSetOwned"
+  | "VecSetOwnedMove"
+  | { VecSliceRange: VecSliceElem }
+  | "VtableDispatchPanicOnOob";
+export type SafepointDetail = { budget: number };
+export type SelectDetail = { has_timeout: boolean; order: SelectionOrder };
+export type SelectionOrder = "source" | "completion";
+export type SemaphoreAcquireDetail = { operation: SemaphoreOp };
+export type SemaphoreOp = "Acquire" | "AcquireTimeout";
 export type SendPolicy = "reject" | "wait" | "drop_newest";
+export type ServiceAcquireDetail = { actor: number; export: boolean };
+export type ServiceOp =
+  | "Peer"
+  | "Export"
+  | "Receive"
+  | "ClosePeer"
+  | "CloseExport";
+export type SetValueOp =
+  | "New"
+  | "Len"
+  | "Contains"
+  | "Insert"
+  | "Remove"
+  | "Clear"
+  | "Elements";
 export type SpanV1 = { start: number; end: number };
+export type StreamNextDetail = { park: boolean };
+export type StreamSendDetail = { park: boolean };
 export type SubmissionShapes = {
   success: number | null;
   failure: number | null;
   reason: number | null;
 };
+export type SupervisorPoolOp = "Len" | "Member" | "Get";
 export type SwitchArm = {
   variant: number;
   fields: Array<ValueDef>;
   edge: Edge;
 };
+export type TcpOp =
+  | "Listen"
+  | "ListenerValid"
+  | "ConnectionValid"
+  | "ListenerPort"
+  | "ListenerClose"
+  | "ConnectionClose"
+  | "ReadTimeout"
+  | "WriteTimeout"
+  | "BroadcastExcept";
 export type TermV1 = { span?: SpanV1 | null | null } & (
   | { op: "return"; value: BoundaryOperand | null }
   | { op: "goto"; edge: Edge }
@@ -410,10 +863,8 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
       normal: Edge;
       unwind: Edge | null;
     }
-  | {
+  | ({
       op: "suspend";
-      kind: string;
-      detail?: any;
       request_shapes?: RequestShapes | null | null;
       result_shape?: number | null | null;
       error_shape?: number | null | null;
@@ -422,7 +873,30 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
       resumes: Array<Edge>;
       cancel: Edge | null;
       unwind: Edge | null;
-    }
+    } & (
+      | { kind: "Sleep"; detail?: null | null | null }
+      | { kind: "SleepUntil"; detail?: null | null | null }
+      | { kind: "Await"; detail?: null | null | null }
+      | { kind: "ActorSend"; detail?: null | null | null }
+      | { kind: "RestartWait"; detail?: null | null | null }
+      | { kind: "Read"; detail?: null | null | null }
+      | { kind: "Accept"; detail?: null | null | null }
+      | { kind: "CallClosure"; detail?: null | null | null }
+      | { kind: "Timeout"; detail?: null | null | null }
+      | { kind: "ScopeDeadline"; detail?: null | null | null }
+      | { kind: "Yield"; detail?: null | null | null }
+      | { kind: "GeneratorNext"; detail?: null | null | null }
+      | { kind: "Safepoint"; detail: SafepointDetail }
+      | { kind: "ServiceAcquire"; detail: ServiceAcquireDetail }
+      | { kind: "SemaphoreAcquire"; detail: SemaphoreAcquireDetail }
+      | { kind: "NativeIo"; detail: NativeIoDetail }
+      | { kind: "Offload"; detail: OffloadDetail }
+      | { kind: "Ask"; detail: AskDetail }
+      | { kind: "Join"; detail: JoinDetail }
+      | { kind: "StreamSend"; detail: StreamSendDetail }
+      | { kind: "StreamNext"; detail: StreamNextDetail }
+      | { kind: "Select"; detail: SelectDetail }
+    ))
 );
 export type TimerSendPolicy = "reject" | "drop_newest";
 export type TimestampBinaryOp = "Add" | "Subtract";
@@ -434,6 +908,69 @@ export type TrapName =
   | "actor_refused";
 export type ValueDef = { value: number; own: Own };
 export type VariantResultShapes = { error: number; error_len: number };
+export type VecContainsScalarElem = "F64" | "I32" | "I64" | "Str";
+export type VecGetElem =
+  | "Bool"
+  | "F32"
+  | "F64"
+  | "I8"
+  | "I16"
+  | "I32"
+  | "I64"
+  | "Clone"
+  | "Take"
+  | "Layout"
+  | "Owned"
+  | "Ptr"
+  | "Str"
+  | "U8"
+  | "U16";
+export type VecScalarElem =
+  | "F32"
+  | "F64"
+  | "I8"
+  | "I16"
+  | "I32"
+  | "I64"
+  | "Ptr"
+  | "Str"
+  | "U8"
+  | "U16";
+export type VecScalarOp = "Push" | "Pop" | "Set" | "RemoveAt";
+export type VecSliceElem =
+  | "Bytesize"
+  | "F64"
+  | "I32"
+  | "I64"
+  | "Layout"
+  | "Owned"
+  | "Ptr"
+  | "Str";
+export type VecValueOp =
+  | "New"
+  | "Len"
+  | "Contains"
+  | "Index"
+  | "Get"
+  | "Push"
+  | "Set"
+  | "Pop"
+  | "Remove"
+  | "Clear"
+  | "IndexBorrow"
+  | "GetBorrow"
+  | "TakeFirst"
+  | "TakeAll"
+  | "Slice"
+  | "SliceFrom"
+  | "Append"
+  | "Join";
+type RuntimeIdentity<T> = T extends string
+  ? { family: T; detail?: null }
+  : { [K in keyof T]: { family: K; detail: T[K] } }[keyof T];
+export type RuntimeFamilyEntry = {
+  id: number;
+} & RuntimeIdentity<RuntimeCallFamily>;
 export const OP_NAMES = [
   "coverage.hit",
   "const.int",
@@ -515,6 +1052,30 @@ export const TERM_NAMES = [
   "finish_defer",
   "recover_fault",
   "suspend",
+] as const;
+export const SUSPENSION_NAMES = [
+  "Sleep",
+  "SleepUntil",
+  "Await",
+  "ActorSend",
+  "RestartWait",
+  "Read",
+  "Accept",
+  "CallClosure",
+  "Timeout",
+  "ScopeDeadline",
+  "Yield",
+  "GeneratorNext",
+  "Safepoint",
+  "ServiceAcquire",
+  "SemaphoreAcquire",
+  "NativeIo",
+  "Offload",
+  "Ask",
+  "Join",
+  "StreamSend",
+  "StreamNext",
+  "Select",
 ] as const;
 export type OpName = OpV1["op"];
 export type TermName = TermV1["op"];

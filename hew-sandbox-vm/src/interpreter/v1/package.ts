@@ -12,6 +12,7 @@ import type {
   OpV1,
   TermV1,
   ValueDef,
+  RuntimeFamilyEntry,
 } from "./instructions.generated.js";
 export type {
   Own,
@@ -31,6 +32,7 @@ export type {
   RequestShapes,
   ActorProtocol,
   ActorOperation,
+  RuntimeFamilyEntry,
 } from "./instructions.generated.js";
 export type Operand = number;
 
@@ -114,11 +116,6 @@ export function runtimeTag(
 /// `detail` is the serde payload of the `RuntimeCallFamily` variant: an object
 /// for a struct variant (`Print`), the bare operation name for a newtype
 /// variant (`Vector`, `Map`), and absent for a unit variant.
-export interface RuntimeFamilyEntry {
-  id: number;
-  family: string;
-  detail?: unknown;
-}
 
 export interface ExternEntry {
   id: number;
@@ -292,7 +289,7 @@ export interface PackageV1 {
   runtime_families: RuntimeFamilyEntry[];
   externs: ExternEntry[];
   /// Every `SuspendKind` variant name the instruction stream reaches.
-  suspend_kinds: string[];
+  suspend_kinds: Extract<TermV1, { op: "suspend" }>["kind"][];
   value_capabilities: ValueCapability[];
   closures: ClosureShape[];
   vtables: VtableShape[];

@@ -1253,6 +1253,74 @@ fn a_process_root_wait_does_not_hold_the_drain() {
 }
 
 #[test]
+fn shutdown_sweep_preserves_root_readiness_on_a_shared_socket() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let (handle, mut peer) = crate::transport::tcp_socketpair_conn_for_test();
+    let root_signal = Arc::new(ReadySignal::default());
+    // SAFETY: the connection and descriptor stay live until the read is freed.
+    let read = crate::coro_root::as_process_root_for_test(|| unsafe {
+        hew_async_tcp_read(handle, &descriptor(&root_signal))
+    });
+    let writer_signal = Arc::new(ReadySignal::default());
+    let payload = vec![0xa5; 16 * 1024 * 1024];
+    // SAFETY: the payload outlives the borrowed bytes and write operation.
+    let bytes = unsafe {
+        crate::bytes::hew_bytes_from_static(payload.as_ptr(), u32::try_from(payload.len()).unwrap())
+    };
+    // SAFETY: the connection, bytes and descriptor outlive the pending write.
+    let write =
+        unsafe { hew_async_tcp_write(handle, &raw const bytes, &descriptor(&writer_signal)) };
+    // SAFETY: both creator references remain live through the sweep.
+    unsafe {
+        assert_eq!(hew_async_io_status(read), AsyncIoStatus::Pending as i32);
+        assert_eq!(hew_async_io_status(write), AsyncIoStatus::Pending as i32);
+    }
+    assert!(!crate::reactor::drain_is_idle());
+    let swept = crate::reactor::reactor_cancel_parked_waits_for_shutdown();
+    let drain_idle = crate::reactor::drain_is_idle();
+    // SAFETY: both operations remain owned here; freeing the write ends its loan.
+    let (root_status, writer_status) = unsafe {
+        let statuses = (hew_async_io_status(read), hew_async_io_status(write));
+        hew_async_io_free(write);
+        crate::bytes::hew_bytes_drop(bytes.ptr);
+        statuses
+    };
+    let received = if root_status == AsyncIoStatus::Pending as i32 {
+        peer.write_all(b"late").unwrap();
+        // SAFETY: the root read is retained until its successful take frees it.
+        unsafe {
+            assert_eq!(drive(read, &root_signal), AsyncIoStatus::Success as i32);
+            take_read(read)
+        }
+    } else {
+        // SAFETY: release the read even when a faulty sweep cancelled it.
+        unsafe { hew_async_io_free(read) };
+        Vec::new()
+    };
+    assert_eq!(crate::transport::hew_tcp_close(handle), 0);
+    assert_eq!(
+        root_status,
+        AsyncIoStatus::Pending as i32,
+        "a root wait survives the sweep"
+    );
+    assert_eq!(writer_status, AsyncIoStatus::Cancelled as i32);
+    assert!(
+        drain_idle,
+        "the surviving root wait does not hold the drain"
+    );
+    assert_eq!(
+        swept, 1,
+        "only the non-root writer belongs to the shutdown drain"
+    );
+    assert_eq!(
+        received, b"late",
+        "the root keeps its readiness registration"
+    );
+    assert!(crate::reactor::drain_is_idle());
+}
+
+#[test]
 #[cfg(unix)]
 fn the_shutdown_sweep_cancels_socket_waits_and_leaves_exit_watches() {
     let _runtime = crate::runtime_test_guard();

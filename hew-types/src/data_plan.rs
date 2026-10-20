@@ -6,6 +6,9 @@ use std::collections::BTreeMap;
 use crate::def_table::DeclarationOccurrence;
 use crate::ResolvedTy;
 
+/// Largest fractional nanosecond in a normalized timestamp data value.
+pub const TIMESTAMP_NANOSECONDS_MAX: u64 = 999_999_999;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataVariant {
     pub name: String,
@@ -190,6 +193,18 @@ impl crate::TypeFactService {
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
+                (BuiltinType::Timestamp, []) => {
+                    let (_, fields) = self.record_fields(ty)?;
+                    let fields = fields.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>();
+                    if fields != [ResolvedTy::I64, ResolvedTy::U32] {
+                        return Err("timestamp data shape lacks its normalized pair".into());
+                    }
+                    DataKind::Timestamp {
+                        shape: (),
+                        fields,
+                        nanoseconds_max: TIMESTAMP_NANOSECONDS_MAX,
+                    }
+                }
                 (BuiltinType::Vec, [element]) => DataKind::Vector(element.clone()),
                 (BuiltinType::HashSet, [element]) => DataKind::Set(element.clone()),
                 (BuiltinType::HashMap, [key, value]) => DataKind::Map {
@@ -354,6 +369,13 @@ pub enum DataKind<A, V> {
         some: u32,
         value: ResolvedTy,
     },
+    /// A normalized Unix-seconds/nanoseconds pair. The wire sequence has
+    /// exactly two fields and rejects fractions outside 0..1_000_000_000.
+    Timestamp {
+        shape: A,
+        fields: Vec<ResolvedTy>,
+        nanoseconds_max: u64,
+    },
     /// Fields in declaration order: field `i` is aggregate field `i` and
     /// table member `i`. A positional record has no table and encodes as a
     /// sequence.
@@ -416,6 +438,9 @@ impl<A, V> DataPlan<A, V> {
         match &self.kind {
             DataKind::Scalar | DataKind::Unit => Vec::new(),
             DataKind::Tuple(elements)
+            | DataKind::Timestamp {
+                fields: elements, ..
+            }
             | DataKind::Record {
                 fields: elements, ..
             } => elements.iter().collect(),
@@ -479,7 +504,9 @@ pub fn property_shape<A, V>(
     let mut grouped_payloads = vec![false; plans.len()];
     for (ty, plan) in plans {
         match &plan.kind {
-            DataKind::Record { shape, .. } => aggregates[child(ty)?] = aggregate(shape),
+            DataKind::Record { shape, .. } | DataKind::Timestamp { shape, .. } => {
+                aggregates[child(ty)?] = aggregate(shape);
+            }
             DataKind::Enum { shape, .. } | DataKind::Option { shape, .. } => {
                 variant_shapes[child(ty)?] = variant(shape);
             }
@@ -533,6 +560,24 @@ pub fn property_shape<A, V>(
                     ))
                 }
             },
+            DataKind::Timestamp {
+                fields,
+                nanoseconds_max,
+                ..
+            } => {
+                if fields != &[ResolvedTy::I64, ResolvedTy::U32] {
+                    return Err("timestamp property shape lacks its normalized pair".into());
+                }
+                let fraction = nodes.len();
+                nodes.push(Node::Unsigned {
+                    max: *nanoseconds_max,
+                });
+                names.push("u32".into());
+                aggregates.push(None);
+                variant_shapes.push(None);
+                grouped_payloads.push(false);
+                Node::Tuple(vec![child(&fields[0])?, fraction])
+            }
             DataKind::Unit => Node::Unit,
             DataKind::Tuple(fields) => {
                 Node::Tuple(fields.iter().map(&child).collect::<Result<_, _>>()?)

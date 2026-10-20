@@ -1,0 +1,63 @@
+import std.encoding.json;
+import std.encoding.cbor;
+import std.encoding.wire;
+
+#[wire]
+type Event {
+    name: string @1;
+    at: timestamp @2;
+}
+
+fn check_fraction_error(error: wire.DecodeError, expected_path: string) {
+    match error {
+        .Range { path, value, target } => {
+            assert(path == expected_path);
+            assert(value == "1000000000");
+            assert(target == "integer in 0..=999999999");
+        }
+        _ => panic("expected a located timestamp fraction range error"),
+    }
+}
+
+fn main() {
+    let first = timestamp.from_unix_secs(-9223372036854775808);
+    let last = timestamp.from_unix_parts(9223372036854775807, 999999999).expect("normalized maximum");
+    let before = timestamp.from_unix_nanos(-1);
+    let ancient = timestamp.from_unix_parts(-62167219200, 123456789).expect("normalized ancient date");
+    for value in [first, last, before, ancient] {
+        assert(json.decode<timestamp>(json.encode(value)).expect("JSON timestamp") == value);
+        assert(cbor.decode<timestamp>(cbor.encode(value)).expect("CBOR timestamp") == value);
+    }
+    assert(json.encode(before) == "[-1,999999999]");
+
+    let events: Vec<Event> = [
+        Event { name: "early".repeat(8), at: ancient },
+        Event { name: "latest".repeat(8), at: last },
+    ];
+    let back = cbor.decode<Vec<Event>>(cbor.encode(events)).expect("nested timestamp data");
+    assert(back[0].at == ancient && back[1].at == last);
+    assert(back[0].name == events[0].name);
+    var index: HashMap<timestamp, string> = HashMap.new();
+    index.insert(before, "before".repeat(8));
+    index.insert(last, "last".repeat(8));
+    let decoded = json.decode<HashMap<timestamp, string>>(json.encode(index)).expect("timestamp keys");
+    assert(decoded.get(before).expect("before key") == "before".repeat(8));
+    assert(decoded.get(last).expect("last key") == "last".repeat(8));
+
+    for invalid in ["[0,-1]", "[0,1000000000]", "[0,4294967296]", "[0]", "[0,0,0]", "[9223372036854775808,0]", "[0,0.5]"] {
+        assert(json.decode<timestamp>(invalid).is_err());
+    }
+    let invalid_fraction = cbor.encode((0, 1000000000 as u32));
+    match cbor.decode<timestamp>(invalid_fraction) {
+        .Err(error) => check_fraction_error(error, "[1]"),
+        .Ok(_) => panic("invalid CBOR timestamp fraction was accepted"),
+    }
+    // Failure after a managed field has decoded must release the partial record.
+    for _ in 0..8 {
+        match json.decode<Event>("{\"name\":\"owned before invalid timestamp\",\"at\":[0,1000000000]}") {
+            .Err(error) => check_fraction_error(error, ".at[1]"),
+            .Ok(_) => panic("invalid nested JSON timestamp fraction was accepted"),
+        }
+    }
+    println("timestamp codecs ok");
+}

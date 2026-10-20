@@ -5875,6 +5875,21 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_de_u64( *mut c_void, u64) -> u64",
+        "wasm32-wasip1": "fn hew_de_u64( *mut c_void, u64) -> u64"
+      },
+      "symbol": "hew_de_u64"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_de_unit( *mut c_void)",
         "wasm32-wasip1": "fn hew_de_unit( *mut c_void)"
       },

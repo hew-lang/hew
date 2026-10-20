@@ -35,6 +35,17 @@ test("runProgram hello_world returns stdout and zero exit code", () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("runProgram preserves timestamp codec values and located errors", () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/timestamp-codecs.hew"),
+    "utf8"
+  );
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp codecs ok\n");
+});
+
 test("serialized bytecode preserves supervisor child i64 bounds", () => {
   const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
     `

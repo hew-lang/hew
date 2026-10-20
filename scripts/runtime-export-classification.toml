@@ -1227,6 +1227,7 @@ non-declarable = [
   "hew_de_failed",
   "hew_de_free",
   "hew_de_int",
+  "hew_de_u64",
   "hew_de_is_null",
   "hew_de_map_begin",
   "hew_de_map_next",

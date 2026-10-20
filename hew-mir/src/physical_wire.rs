@@ -117,7 +117,14 @@ pub(super) fn verify_wire_plan(
                 };
                 same(std::slice::from_ref(&field.ty), std::slice::from_ref(value))?;
             }
-            SemWireKind::Record { fields, .. } => {
+            SemWireKind::Record { fields, .. } | SemWireKind::Timestamp { fields, .. } => {
+                if matches!(&plan.kind, SemWireKind::Timestamp { nanoseconds_max, .. }
+                    if !plan.ty.is_builtin(hew_types::BuiltinType::Timestamp)
+                        || fields != &[ResolvedTy::I64, ResolvedTy::U32]
+                        || *nanoseconds_max != hew_types::data_plan::TIMESTAMP_NANOSECONDS_MAX)
+                {
+                    return Err(mismatch());
+                }
                 let glue = module
                     .aggregate_glue
                     .iter()

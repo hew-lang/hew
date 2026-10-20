@@ -281,10 +281,10 @@ fn get_scheduler() -> Option<&'static Scheduler> {
 static PENDING_ACTIVATIONS: AtomicU64 = AtomicU64::new(0);
 
 /// RAII claim over the pop-to-activation handoff. See [`PENDING_ACTIVATIONS`].
-struct ActivationClaim;
+pub(crate) struct ActivationClaim;
 
 impl ActivationClaim {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         PENDING_ACTIVATIONS.fetch_add(1, Ordering::AcqRel);
         Self
     }
@@ -299,6 +299,13 @@ impl Drop for ActivationClaim {
 /// Whether any worker holds the pop-to-activation handoff.
 fn activation_handoff_in_flight() -> bool {
     PENDING_ACTIVATIONS.load(Ordering::Acquire) != 0
+}
+
+/// Existing activation owners and queue-to-host handoffs still borrow runtime
+/// storage, including after the scheduler workers themselves have joined.
+pub(crate) fn activations_in_flight() -> bool {
+    activation_handoff_in_flight()
+        || crate::activation::ACTIVE_ACTIVATIONS.load(Ordering::Acquire) != 0
 }
 
 /// Whether another activation or continuation can use a yielded worker.
@@ -990,6 +997,13 @@ pub extern "C" fn hew_runtime_cleanup() {
     }
     if !teardown_workers(sched as *const Scheduler, None, false).all_joined {
         set_last_error("runtime cleanup: scheduler workers remain joinable");
+        return;
+    }
+    // Joined scheduler workers may have transferred complete activations to
+    // the joined blocking host. Preserve the runtime until those same owners
+    // have returned; their callbacks may still use actors, timers and config.
+    if activations_in_flight() {
+        set_last_error("runtime cleanup: hosted activations remain active");
         return;
     }
     finalize_scheduler_shutdown(sched);
@@ -3729,6 +3743,7 @@ mod tests {
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             dispatch_active: AtomicBool::new(false),
+            activation_host: crate::actor::ActivationHost::Scheduler,
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,
@@ -6142,6 +6157,7 @@ mod tests {
             terminate_called: AtomicBool::new(false),
             terminate_finished: AtomicBool::new(false),
             dispatch_active: AtomicBool::new(false),
+            activation_host: crate::actor::ActivationHost::Scheduler,
             error_code: AtomicI32::new(0),
             supervisor: ptr::null_mut(),
             supervisor_child_index: -1,

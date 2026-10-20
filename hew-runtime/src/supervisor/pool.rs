@@ -1644,8 +1644,6 @@ mod tests {
     // every restart; thunk OOM fails closed; the config buffer is freed exactly
     // once at teardown; the byte-copy template is bypassed for init_fn children.
 
-    use std::sync::atomic::AtomicUsize;
-
     /// Thunk-produced actor state: a single owned heap pointer (the "owned value"
     /// the init-closure model must re-clone fresh per incarnation) plus a tag.
     /// Models the `string`/`Vec`-bearing actor state without pulling the Hew

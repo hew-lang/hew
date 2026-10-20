@@ -467,6 +467,10 @@ pub(crate) fn install_default(inner: Box<RuntimeInner>) -> bool {
 /// `hew_runtime_cleanup` perform the scheduler-frees-last drop order. Returns
 /// `None` when no runtime was installed.
 pub(crate) fn take_default() -> Option<Box<RuntimeInner>> {
+    if crate::scheduler::activations_in_flight() {
+        crate::set_last_error("runtime detach: activations remain active");
+        return None;
+    }
     crate::shutdown_signal::disarm_runtime_handlers();
     if !crate::shutdown::finish_for_cleanup() {
         crate::set_last_error("runtime cleanup: shutdown work remains active");

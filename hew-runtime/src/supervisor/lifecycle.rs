@@ -485,6 +485,7 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // `self_actor` slot is still null.
     unsafe {
         actor::hew_actor_set_sys_dispatch(self_actor, Some(supervisor_sys_dispatch));
+        (*self_actor).activation_host = crate::actor::ActivationHost::Supervisor;
     }
 
     // Override the actor's state to point to our supervisor struct directly
@@ -512,6 +513,19 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: start retains both allocations until buffered admission finishes.
     unsafe { flush_construction_events(sup, self_actor) };
     0
+}
+
+/// Close a supervisor whose serialized activation could not reach its host.
+/// # Safety
+/// The caller owns this supervisor actor's activation throughout the refusal.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) unsafe fn refuse_hosted_activation(actor: *mut HewActor) {
+    // SAFETY: this hosting fact is installed only on the supervisor's own actor.
+    let sup = unsafe { (*actor).state.cast::<HewSupervisor>() };
+    request_supervisor_shutdown(sup);
+    wake_restart_waiters(sup);
+    // SAFETY: activation ownership retains the actor through terminal cleanup.
+    unsafe { actor::hew_actor_trap(actor, crate::internal::types::HewError::ErrOom as i32) };
 }
 
 /// Notify the supervisor that a supervised child ACTOR has stopped or crashed.

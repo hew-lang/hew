@@ -120,10 +120,11 @@ pub unsafe extern "C" fn hew_instant_now() -> i64 {
         return 0;
     }
     crate::driver::initialize_clock();
-    let ms = crate::deterministic::simtime_now().unwrap_or_else(monotonic_ms);
-    i64::try_from(ms)
-        .unwrap_or(i64::MAX)
-        .saturating_mul(1_000_000)
+    let nanos = crate::deterministic::simtime_now()
+        .map_or_else(crate::monotonic::monotonic_ns, |ms| {
+            ms.saturating_mul(1_000_000)
+        });
+    i64::try_from(nanos).unwrap_or(i64::MAX)
 }
 
 /// Return elapsed nanoseconds since `instant_ns`.
@@ -320,6 +321,21 @@ mod tests {
         let t1 = monotonic_ms();
         let t2 = monotonic_ms();
         assert!(t2 >= t1);
+    }
+
+    #[test]
+    fn instant_retains_the_shared_monotonic_clocks_nanosecond_precision() {
+        for _ in 0..16 {
+            let before = crate::monotonic::monotonic_ns();
+            // SAFETY: the clock has no preconditions.
+            let actual = unsafe { hew_instant_now() };
+            let after = crate::monotonic::monotonic_ns();
+            let actual = u64::try_from(actual).expect("process clock is non-negative");
+            assert!(
+                (before..=after).contains(&actual),
+                "instant {actual}ns falls outside its shared clock samples {before}..={after}"
+            );
+        }
     }
 
     #[test]

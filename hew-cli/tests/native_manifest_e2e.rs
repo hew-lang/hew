@@ -213,7 +213,8 @@ fn assert_untrimmed_debug_source(roots: &[PathBuf; 2]) {
         assert_eq!(
             directory.canonicalize().expect("untrimmed debug directory"),
             root.canonicalize().unwrap(),
-            "untrimmed debug source directory: {directory:?}\n{llvm}"
+            "untrimmed debug source directory: {}\n{llvm}",
+            directory.display()
         );
     }
 }

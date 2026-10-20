@@ -50,12 +50,32 @@ unsafe fn settle_stopped_child_event(kind: HewSysMsg, data: *mut c_void, data_si
             _ => None,
         }
     };
-    if let Some(record) = record {
-        crate::exit_status::settle_supervised_fault(
-            FaultRecord::from_raw(record),
-            FaultRuling::Unrecovered,
-        );
+    if let Some(record) = record
+        .map(FaultRecord::from_raw)
+        .filter(|record| record.is_some())
+    {
+        crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
     }
+}
+
+/// Release the recovery responsibility of a signal discarded before dispatch.
+///
+/// The message envelope clears this callback when its dispatch adapter takes
+/// ownership; accepted transfers therefore keep their ordinary ruling path.
+///
+/// # Safety
+/// `data` must be null or point to `data_size` readable bytes from the system
+/// message producer. Typed payload reads check their required size.
+pub(crate) unsafe extern "C" fn discard_child_event(
+    kind: i32,
+    data: *mut c_void,
+    data_size: usize,
+) {
+    let Some(kind) = HewSysMsg::from_raw(kind) else {
+        return;
+    };
+    // SAFETY: the exclusive envelope retains the copied payload for this call.
+    unsafe { settle_stopped_child_event(kind, data, data_size) };
 }
 
 /// Apply the parent's ordinary ruling to one nested-supervisor escalation.
@@ -1054,6 +1074,130 @@ mod tests {
             }
             assert!(!crate::exit_status::role_has_unsettled_fault(role));
             hew_supervisor_stop(sup);
+        }
+    }
+
+    #[test]
+    fn supervisor_discarded_clean_stop_preserves_successful_exit() {
+        let _runtime = crate::runtime_test_guard();
+        // SAFETY: the test owns each mailbox and its copied lifecycle payload.
+        unsafe {
+            for reclaim_before_free in [false, true] {
+                let mut event = ChildEvent {
+                    child_index: 0,
+                    child_id: 123,
+                    exit_state: HewActorState::Stopped as i32,
+                    end_reason: crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Stopped as i32,
+                        false,
+                    ),
+                    crash_code: 0,
+                    fault_record: FaultRecord::NONE.as_raw(),
+                };
+                let mailbox = mailbox::hew_mailbox_new();
+                assert!(!mailbox.is_null());
+                assert!(mailbox::mailbox_send_sys_checked(
+                    mailbox,
+                    HewSysMsg::ChildStopped,
+                    std::ptr::from_mut(&mut event).cast(),
+                    std::mem::size_of_val(&event),
+                ));
+                mailbox::mailbox_close(mailbox);
+                if reclaim_before_free {
+                    mailbox::mailbox_reclaim_queued_terminal(mailbox);
+                }
+                mailbox::hew_mailbox_free(mailbox);
+                assert_eq!(crate::exit_status::final_exit_code(0), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn supervisor_discarded_notifications_settle_owned_faults() {
+        let _runtime = crate::runtime_test_guard();
+        // SAFETY: the test owns every supervisor, typed payload and mailbox;
+        // no activation can consume a notification before its terminal drain.
+        unsafe {
+            for reclaim_before_free in [false, true] {
+                let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5);
+                let role = crate::exit_status::RoleKey {
+                    owner: (*sup).local_pid_id,
+                    slot: 0,
+                    nested: false,
+                };
+                let records = std::array::from_fn::<_, 3, _>(|_| {
+                    let record = crate::exit_status::open_supervised_fault();
+                    crate::exit_status::attribute_supervised_fault(record, vec![role]);
+                    record
+                });
+                let mut events = [
+                    ConstructionEvent::Actor(ChildEvent {
+                        child_index: 0,
+                        child_id: 123,
+                        exit_state: HewActorState::Crashed as i32,
+                        end_reason: crate::internal::types::ActorEndReason::from_terminal(
+                            HewActorState::Crashed as i32,
+                            false,
+                        ),
+                        crash_code: 212,
+                        fault_record: records[0].as_raw(),
+                    }),
+                    ConstructionEvent::Escalated(ChildSupervisorEscalation {
+                        supervisor_index: 0,
+                        child_token: (*sup).local_pid_id,
+                        exit_state: HewActorState::Crashed as i32,
+                        crash_code: 212,
+                        fault_record: records[1].as_raw(),
+                    }),
+                    ConstructionEvent::Delayed(DelayedRestartEvent {
+                        child_identity: 1,
+                        fault_record: records[2].as_raw(),
+                    }),
+                ];
+                let mailbox = mailbox::hew_mailbox_new();
+                assert!(!mailbox.is_null());
+                for event in &mut events {
+                    let (kind, payload, size) = match event {
+                        ConstructionEvent::Actor(payload) => (
+                            HewSysMsg::ChildCrashed,
+                            std::ptr::from_mut(payload).cast(),
+                            std::mem::size_of_val(payload),
+                        ),
+                        ConstructionEvent::Escalated(payload) => (
+                            HewSysMsg::ChildSupervisorEscalated,
+                            std::ptr::from_mut(payload).cast(),
+                            std::mem::size_of_val(payload),
+                        ),
+                        ConstructionEvent::Delayed(payload) => (
+                            HewSysMsg::DelayedRestart,
+                            std::ptr::from_mut(payload).cast(),
+                            std::mem::size_of_val(payload),
+                        ),
+                        ConstructionEvent::Stopped(_) => unreachable!(),
+                    };
+                    assert!(mailbox::mailbox_send_sys_checked(
+                        mailbox, kind, payload, size
+                    ));
+                }
+                assert!(records
+                    .iter()
+                    .all(|record| crate::exit_status::supervised_fault_is_open(*record)));
+                assert!(crate::exit_status::role_has_unsettled_fault(role));
+                mailbox::mailbox_close(mailbox);
+                if reclaim_before_free {
+                    mailbox::mailbox_reclaim_queued_terminal(mailbox);
+                    assert!(records
+                        .iter()
+                        .all(|record| !crate::exit_status::supervised_fault_is_open(*record)));
+                }
+                mailbox::hew_mailbox_free(mailbox);
+                assert!(records
+                    .iter()
+                    .all(|record| !crate::exit_status::supervised_fault_is_open(*record)));
+                assert!(!crate::exit_status::role_has_unsettled_fault(role));
+                assert_eq!(crate::exit_status::final_exit_code(0), 1);
+                hew_supervisor_stop(sup);
+            }
         }
     }
 

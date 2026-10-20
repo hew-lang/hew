@@ -631,14 +631,22 @@ unsafe fn msg_node_alloc_sys(
 ) -> *mut HewMsgNode {
     // SAFETY: forwards the caller's `data`/`data_size`/`reply_channel` contract.
     unsafe {
-        msg_node_alloc_with_trace(
+        let node = msg_node_alloc_with_trace(
             msg_type,
             data,
             data_size,
             reply_channel,
             crate::tracing::system_context(),
             crate::actor_caller::HewCallerStamp::default(),
-        )
+        );
+        #[cfg(not(target_arch = "wasm32"))]
+        if !node.is_null() {
+            (*(*node).envelope).ingress_drop = Some(crate::cow_envelope::IngressDrop {
+                message: msg_type,
+                callback: crate::supervisor::discard_child_event,
+            });
+        }
+        node
     }
 }
 

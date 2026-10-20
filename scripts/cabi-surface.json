@@ -18629,19 +18629,6 @@
       "availability": [
         "native"
       ],
-      "classification": "non-declarable",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_supervisor_role_await_send( HewLocalPidId, u32, i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, *mut u64, ) -> c_int"
-      },
-      "symbol": "hew_supervisor_role_await_send"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "length-or-count",
       "nul": "not-applicable",

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1641u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1640u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1640] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -7127,12 +7127,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
      "{\"native\": \"fn hew_supervisor_role_ask_with_channel( HewLocalPidId, "
      "u32, i32, *mut c_void, usize, *mut c_void, ) -> i32\"}",
      "native", "stable", "not-applicable", "length-or-count",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_role_await_send",
-     "{\"native\": \"fn hew_supervisor_role_await_send( HewLocalPidId, u32, "
-     "i32, *mut c_void, usize, *mut HewActor, *mut HewReadSlot, *mut u64, *mut "
-     "u64, ) -> c_int\"}",
-     "native", "non-declarable", "not-applicable", "length-or-count",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_role_send",
      "{\"native\": \"fn hew_supervisor_role_send( HewLocalPidId, u32, i32, "

@@ -1579,7 +1579,6 @@ non-declarable = [
   "hew_supervisor_native_spawn_new",
   "hew_supervisor_native_spawn_poll",
   "hew_supervisor_native_spawn_take",
-  "hew_supervisor_role_await_send",
   "hew_supervisor_stop_native",
   "hew_supervisor_terminate_native",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
@@ -6665,26 +6664,6 @@ discharge-depth = "none"
 symbol = "hew_supervisor_role_send"
 result = "none"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# hew-runtime/src/supervisor.rs: cooperative owner-scoped stable-role tell.
-# The mailbox copies the payload and retains its waiter slot only while parked;
-# the sender, role words, and exact-incarnation output remain borrowed.
-[[ownership.contracts]]
-symbol = "hew_supervisor_role_await_send"
-result = "none"
-params = [
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "retain",
-  "borrow",
-  "borrow",
-]
 release-symbol = ""
 discharge-depth = "none"
 

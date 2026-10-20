@@ -517,7 +517,7 @@ fn serve_native(
         Tamper::KeyFp => record["key_fp"] = json!(KeyPair::generate().fingerprint()),
         Tamper::Sig => record["sig"] = json!(registry_key.sign(b"wrong bytes")),
         Tamper::RegistrySig => {
-            record["registry_sig"] = json!(registry_key.sign(b"wrong native identity"))
+            record["registry_sig"] = json!(registry_key.sign(b"wrong native identity"));
         }
         Tamper::NoRegistrySig => {
             record.as_object_mut().unwrap().remove("registry_sig");
@@ -1431,7 +1431,7 @@ fn invalid_member_fails_before_any_request() {
         &["--workspace", "--dry-run"],
     );
     assert!(output.status.success(), "{output:?}");
-    assert!(!mock.log().is_empty());
+    assert!(!mock.log().is_empty(), "{output:?}");
 }
 
 #[test]
@@ -2218,14 +2218,12 @@ impl publish::Auth for NativeAuth<'_> {
 fn unified_publication_uploads_source_then_native_and_retries_missing_native() {
     let mock = MockRegistry::start();
     let (dir, package) = native_package();
-    let archives =
-        [
-            publish::NativeArchive::from_bytes(native_archive(
-                dir.path(),
-                &package.archive.checksum,
-            ))
-            .unwrap(),
-        ];
+    let built = hew_pkg::native_prebuilt::build(
+        dir.path(),
+        &hew_pkg::native::embedded_rustc_identity().host,
+    )
+    .unwrap();
+    let archives = [publish::NativeArchive::from_bytes(built.data).unwrap()];
     let mut auth = NativeAuth {
         mock: &mock,
         keypair: KeyPair::generate(),
@@ -2427,4 +2425,195 @@ fn trusted_source_and_native_share_key_and_refresh_grant() {
     assert_eq!(state.exchanges[0], state.exchanges[1]);
     assert_eq!(state.native_records.len(), 1);
     assert_eq!(state.accepted_puts, 2);
+}
+
+#[test]
+fn local_publication_installs_locks_and_builds_retained_native_source() {
+    let mock = MockRegistry::start();
+    let (dir, _) = native_package();
+    let home = tempfile::tempdir().unwrap();
+    hew_pkg::signing::save_keypair(&home.path().join("keys"), &KeyPair::generate()).unwrap();
+    let output = hew_publish(&mock, dir.path(), home.path(), &["--local"]);
+    assert!(output.status.success(), "{output:?}");
+    let app = tempfile::tempdir().unwrap();
+    fs::write(
+        app.path().join("hew.toml"),
+        format!("[package]\nname='app'\nversion='1.0.0'\n[dependencies]\n'{NAME}'='{VERSION}'\n"),
+    )
+    .unwrap();
+    let output = hew_command(&mock, app.path(), home.path(), &["install", "--offline"]);
+    assert!(output.status.success(), "{output:?}");
+    let lock_path = app.path().join("hew.lock");
+    let original_lock = fs::read(&lock_path).unwrap();
+    let lock: toml::Value = toml::from_str(std::str::from_utf8(&original_lock).unwrap()).unwrap();
+    assert_eq!(lock["package"][0]["source"].as_str(), Some("local"));
+    assert!(lock["package"][0].get("native").is_none());
+    let output = hew_command(&mock, app.path(), home.path(), &["install", "--locked"]);
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(fs::read(&lock_path).unwrap(), original_lock);
+    let package = app.path().join(".hew/packages/acme/widget");
+    let manifest = hew_pkg::manifest::parse_manifest(&package.join("hew.toml")).unwrap();
+    let toolchain = hew_pkg::native::NativeToolchain {
+        target: hew_pkg::native::embedded_rustc_identity().host,
+        lockfile: Some(lock_path.clone()),
+        os: if cfg!(target_os = "windows") {
+            hew_pkg::manifest::NativeOs::Windows
+        } else if cfg!(target_os = "macos") {
+            hew_pkg::manifest::NativeOs::Macos
+        } else if cfg!(target_os = "freebsd") {
+            hew_pkg::manifest::NativeOs::FreeBsd
+        } else {
+            hew_pkg::manifest::NativeOs::Linux
+        },
+        driver: "clang".into(),
+        flags: Vec::new(),
+        object_suffix: ".o",
+    };
+    let native = hew_pkg::native::build(&package, &manifest, &toolchain)
+        .unwrap()
+        .unwrap();
+    assert_eq!(native.inputs.len(), 1);
+    assert!(fs::metadata(&native.inputs[0]).unwrap().len() > 8);
+    assert!(
+        mock.log().is_empty(),
+        "local native build must not contact the registry: {:?}",
+        mock.log()
+    );
+    let retained = package.join(".hew-registry-cache.tar.zst");
+    let original_archive = fs::read(&retained).unwrap();
+    fs::write(&retained, b"damaged local archive").unwrap();
+    assert!(hew_pkg::native::build(&package, &manifest, &toolchain)
+        .unwrap_err()
+        .contains("invalid retained package archive"));
+    fs::write(retained, original_archive).unwrap();
+    fs::remove_file(package.join(".hew-registry-cache.toml")).unwrap();
+    assert!(hew_pkg::native::build(&package, &manifest, &toolchain)
+        .unwrap_err()
+        .contains("missing verified source provenance"));
+    let cache = hew_pkg::registry::Registry::with_root(home.path().join("packages"));
+    let metadata = cache
+        .package_dir_for(&hew_pkg::config::default_registry_identity(), NAME, VERSION)
+        .join(".hew-registry-cache.toml");
+    let original = fs::read_to_string(&metadata).unwrap();
+    fs::remove_file(&metadata).unwrap();
+    let output = hew_command(&mock, app.path(), home.path(), &["install", "--locked"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("missing explicit source provenance"),
+        "{output:?}"
+    );
+    fs::write(&metadata, original.replace("local-publication", "registry")).unwrap();
+    let output = hew_command(&mock, app.path(), home.path(), &["install", "--locked"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("source origin does not match"),
+        "{output:?}"
+    );
+    fs::write(
+        &metadata,
+        original.replace("local-publication", "untrusted"),
+    )
+    .unwrap();
+    let output = hew_command(&mock, app.path(), home.path(), &["install", "--locked"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid package provenance"),
+        "{output:?}"
+    );
+}
+
+#[test]
+fn local_cache_is_ignored_by_online_resolution() {
+    let mock = MockRegistry::start();
+    let (dir, _) = packed(1);
+    let home = tempfile::tempdir().unwrap();
+    hew_pkg::signing::save_keypair(&home.path().join("keys"), &KeyPair::generate()).unwrap();
+    let output = hew_publish(&mock, dir.path(), home.path(), &["--local"]);
+    assert!(output.status.success(), "{output:?}");
+    // Move the explicitly generated local fixture to a named loopback scope;
+    // the default cache scope deliberately keeps the official registry identity.
+    let cache = hew_pkg::registry::Registry::with_root(home.path().join("packages"));
+    let original =
+        cache.package_dir_for(&hew_pkg::config::default_registry_identity(), NAME, VERSION);
+    let selected = cache.package_dir_for(mock.client().registry_identity(), NAME, VERSION);
+    fs::create_dir_all(selected.parent().unwrap()).unwrap();
+    fs::rename(&original, &selected).unwrap();
+    let metadata_path = selected.join(".hew-registry-cache.toml");
+    let mut metadata: toml::Value =
+        toml::from_str(&fs::read_to_string(&metadata_path).unwrap()).unwrap();
+    metadata["registry"] = toml::Value::String(mock.client().registry_identity().to_string());
+    fs::write(metadata_path, toml::to_string(&metadata).unwrap()).unwrap();
+    fs::write(
+        home.path().join("config.toml"),
+        format!(
+            "[registries.fixture]\napi = '{}'\nindex = 'unused'\n",
+            mock.api()
+        ),
+    )
+    .unwrap();
+    let app = tempfile::tempdir().unwrap();
+    fs::write(
+        app.path().join("hew.toml"),
+        format!("[package]\nname='app'\nversion='1.0.0'\n[dependencies]\n'{NAME}'={{version='{VERSION}',registry='fixture'}}\n"),
+    )
+    .unwrap();
+    let output = hew_command(&mock, app.path(), home.path(), &["install"]);
+    assert!(!output.status.success(), "{output:?}");
+    assert!(!app.path().join("hew.lock").exists());
+    assert!(!mock.log().is_empty(), "{output:?}");
+}
+
+#[test]
+fn prepared_publication_cannot_change_registry_destination() {
+    let first = MockRegistry::start();
+    let second = MockRegistry::start();
+    let (_, source) = packed(1);
+    first.seed(&source.archive.data, &KeyPair::generate());
+    let sources = [source];
+    let plan = publish::prepare_remote(&first.client(), &sources).unwrap();
+    let mut auth = NativeAuth {
+        mock: &second,
+        keypair: KeyPair::generate(),
+        calls: 0,
+    };
+    let mut reports = Vec::new();
+    let error = publish::publish_prepared(
+        second.client(),
+        &plan,
+        false,
+        &mut auth,
+        &no_sleep,
+        &mut |_, outcome| reports.push(outcome.clone()),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("execution destination"));
+    assert_eq!(auth.calls, 0);
+    assert!(reports.is_empty());
+    assert!(second.log().is_empty());
+}
+
+#[test]
+fn local_publication_refuses_native_attachments_before_side_effects() {
+    let mock = MockRegistry::start();
+    let (dir, package) = native_package();
+    let home = tempfile::tempdir().unwrap();
+    let native = home.path().join("native.tar.zst");
+    fs::write(
+        &native,
+        native_archive(dir.path(), &package.archive.checksum),
+    )
+    .unwrap();
+    let output = hew_publish(
+        &mock,
+        dir.path(),
+        home.path(),
+        &["--local", "--native-archive", native.to_str().unwrap()],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+        "{output:?}"
+    );
+    assert!(!home.path().join("packages").exists());
+    assert!(mock.log().is_empty());
 }

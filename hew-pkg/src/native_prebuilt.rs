@@ -192,8 +192,7 @@ fn package_artifact(
     target: &str,
     package: Option<&crate::lockfile::LockedPackage>,
 ) -> Result<Option<PrebuiltArtifact>, String> {
-    let Some((registry, source_checksum, _)) = crate::registry::source_provenance(root, manifest)?
-    else {
+    let Some(provenance) = crate::registry::source_provenance(root, manifest)? else {
         if package.is_some() {
             return Err(
                 "native registry package is missing verified source provenance".to_string(),
@@ -201,6 +200,20 @@ fn package_artifact(
         }
         return Ok(None);
     };
+    if provenance.origin == crate::registry::CacheOrigin::LocalPublication {
+        if package.is_some_and(|package| {
+            package.source != "local"
+                || package.registry.as_deref() != Some(provenance.registry.as_str())
+        }) {
+            return Err("local native package origin does not match hew.lock".into());
+        }
+        return Ok(None);
+    }
+    if package.is_some_and(|package| package.source != "registry") {
+        return Err("registry native package origin does not match hew.lock".into());
+    }
+    let registry = provenance.registry;
+    let source_checksum = provenance.archive_checksum;
     let identity = NativeIdentity::current(target);
     if package.is_some_and(|package| package.registry.as_deref() != Some(&registry)) {
         return Err("native package registry does not match hew.lock".to_string());
@@ -273,7 +286,7 @@ fn locked_package(
     let Some(package) = lockfile.packages.iter().find(|package| {
         package.name == manifest.package.name
             && package.version == manifest.package.version
-            && package.source == "registry"
+            && matches!(package.source.as_str(), "registry" | "local")
     }) else {
         return Ok(None);
     };
@@ -391,17 +404,12 @@ pub fn build(root: &Path, target: &str) -> Result<crate::tarball::PackResult, St
         .as_ref()
         .and_then(crate::manifest::NativeLib::rust_crate)
         .ok_or_else(|| "package has no [native] Rust crate".to_string())?;
-    let (source_archive, source_checksum) = if let Some((_, checksum, archive)) =
+    let (source_archive, source_checksum) = if let Some(provenance) =
         crate::registry::source_provenance(root, &manifest)?
     {
-        (archive, checksum)
+        (provenance.archive, provenance.archive_checksum)
     } else {
-        let source = crate::tarball::pack(
-            root,
-            manifest.package.exclude.as_deref().unwrap_or_default(),
-            manifest.package.include.as_deref().unwrap_or_default(),
-        )
-        .map_err(|error| error.to_string())?;
+        let source = crate::publish::pack(root, &manifest).map_err(|error| error.to_string())?;
         (source.data, source.checksum)
     };
     let slot = root.join("target/native-package-source");
@@ -500,7 +508,25 @@ mod tests {
             "pub fn answer() -> u32 { 42 }\n",
         )
         .unwrap();
-        let packed = crate::tarball::pack(source.path(), &[], &[]).unwrap();
+        // Authoring locks are not publication inputs. Native creation must
+        // bind the exact same packed source membership as `hew publish`.
+        crate::lockfile::write_lockfile(
+            &source.path().join("hew.lock"),
+            &crate::lockfile::LockFile {
+                packages: Vec::new(),
+            },
+        )
+        .unwrap();
+        let manifest = crate::manifest::parse_manifest(&source.path().join("hew.toml")).unwrap();
+        let packed = crate::publish::pack(source.path(), &manifest).unwrap();
+        assert!(!packed
+            .files
+            .iter()
+            .any(|path| path == Path::new("hew.lock")));
+        let target = embedded_rustc_identity().host;
+        let authored = build(source.path(), &target).unwrap();
+        let authored_descriptor = inspect(&authored.data, source.path()).unwrap();
+        assert_eq!(authored_descriptor.source_checksum, packed.checksum);
         let payload = zstd::decode_all(packed.data.as_slice()).unwrap();
         let published = zstd::encode_all(payload.as_slice(), 22).unwrap();
         let published_checksum = crate::tarball::checksum_bytes(&published);
@@ -521,7 +547,6 @@ mod tests {
                 .checksum,
             published_checksum,
         );
-        let target = embedded_rustc_identity().host;
         let artifact = build(installed.path(), &target).unwrap();
         let descriptor = inspect(&artifact.data, source.path()).unwrap();
         assert_eq!(descriptor.source_checksum, published_checksum);

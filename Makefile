@@ -1087,7 +1087,7 @@ test-cabi:
 # does not need compiler/runtime or sandbox artefacts.
 .PHONY: test-package-publish
 test-package-publish:
-	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-pkg --test test_publish
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-fail-fast -p hew-pkg --lib --test test_publish
 
 test-compiler-pipeline: test-artifacts
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \

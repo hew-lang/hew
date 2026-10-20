@@ -74,7 +74,7 @@ pub enum PkgCommand {
         #[arg(long, value_enum, default_value_t = PublishAuth::Credentials, conflicts_with = "local")]
         auth: PublishAuth,
     },
-    /// Build or publish release-qualified native package archives
+    /// Build release-qualified native package archives
     Native {
         #[command(subcommand)]
         action: NativeAction,
@@ -309,7 +309,7 @@ pub fn dispatch(
         } => cmd_publish(
             &registry,
             reg.as_deref(),
-            PublishFlags {
+            &PublishFlags {
                 local: *local,
                 dry_run: *dry_run,
                 workspace: *workspace,
@@ -1008,6 +1008,41 @@ pub(crate) fn install_dependencies(
         }
     };
 
+    let mut resolved = resolved;
+    // Resolution selectors name registry scopes. The selected pinned generation
+    // supplies its actual origin; package contents cannot assert this fact.
+    for (name, package) in &mut resolved {
+        if let resolver::PackageSource::Registry {
+            registry: registry_id,
+        } = &package.source
+        {
+            let identity = (registry_id.clone(), name.clone(), package.version.clone());
+            let selected = pinned_locked_registry
+                .get(&identity)
+                .or_else(|| offline_registry.get(&identity))
+                .or_else(|| confirmed_registry.get(&identity))
+                .expect("selected cached package must retain its pin");
+            let manifest = manifest::parse_manifest(&selected.path().join("hew.toml"))
+                .map_err(|error| error.to_string())?;
+            let provenance =
+                registry::source_provenance(selected.path(), &manifest)?.ok_or_else(|| {
+                    format!(
+                        "cached package {name}@{} is missing explicit source provenance",
+                        package.version
+                    )
+                })?;
+            if provenance.registry != *registry_id {
+                return Err(format!(
+                    "cached package {name} source scope does not match resolution"
+                ));
+            }
+            if provenance.origin == registry::CacheOrigin::LocalPublication {
+                package.source = resolver::PackageSource::Local {
+                    registry: registry_id.clone(),
+                };
+            }
+        }
+    }
     if let Some(lockfile) = &locked_lockfile {
         validate_locked_resolution(lockfile, &resolved)?;
     }
@@ -1031,14 +1066,23 @@ pub(crate) fn install_dependencies(
         let (target, source, locked_path, locked_registry, pkg_checksum) = match &package.source {
             resolver::PackageSource::Registry {
                 registry: registry_id,
+            }
+            | resolver::PackageSource::Local {
+                registry: registry_id,
             } => {
+                let source_kind = if matches!(package.source, resolver::PackageSource::Local { .. })
+                {
+                    "local"
+                } else {
+                    "registry"
+                };
                 if locked_lockfile.is_some() {
                     let pinned = pinned_locked_registry
                         .get(&(registry_id.clone(), name.clone(), version.clone()))
                         .expect("locked registry resolution must retain its verified path");
                     (
                         pinned.path().to_path_buf(),
-                        "registry",
+                        source_kind,
                         None,
                         Some(registry_id.clone()),
                         Some(pinned.checksum.clone()),
@@ -1049,7 +1093,7 @@ pub(crate) fn install_dependencies(
                         .expect("offline registry resolution must retain its pinned path");
                     (
                         pinned.path().to_path_buf(),
-                        "registry",
+                        source_kind,
                         None,
                         Some(registry_id.clone()),
                         Some(pinned.checksum.clone()),
@@ -1060,7 +1104,7 @@ pub(crate) fn install_dependencies(
                         .expect("online registry resolution must retain its verified path");
                     (
                         pinned.path().to_path_buf(),
-                        "registry",
+                        source_kind,
                         None,
                         Some(registry_id.clone()),
                         Some(pinned.checksum.clone()),
@@ -1141,13 +1185,15 @@ pub(crate) fn install_dependencies(
                 .map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
         }
         let materialization = match &package.source {
-            resolver::PackageSource::Registry { .. } => replace_registry_package_copy_verified(
-                &link,
-                &target,
-                pkg_checksum
-                    .as_deref()
-                    .expect("verified registry package has a checksum"),
-            ),
+            resolver::PackageSource::Registry { .. } | resolver::PackageSource::Local { .. } => {
+                replace_registry_package_copy_verified(
+                    &link,
+                    &target,
+                    pkg_checksum
+                        .as_deref()
+                        .expect("verified registry package has a checksum"),
+                )
+            }
             resolver::PackageSource::Path(_) => {
                 replace_local_package_materialization(&link, &target)
             }
@@ -1308,7 +1354,7 @@ fn verify_locked_registry_packages(
 ) -> Result<BTreeMap<(String, String, String), VerifiedRegistryPackage>, String> {
     let mut pinned = BTreeMap::new();
     for entry in &lockfile.packages {
-        if entry.source != "registry" {
+        if !matches!(entry.source.as_str(), "registry" | "local") {
             continue;
         }
         let expected = entry
@@ -1347,6 +1393,25 @@ fn verify_locked_registry_packages(
                 entry.name,
                 entry.version,
                 path.display()
+            ));
+        }
+        let manifest =
+            manifest::parse_manifest(&path.join("hew.toml")).map_err(|error| error.to_string())?;
+        let provenance = registry::source_provenance(path, &manifest)?.ok_or_else(|| {
+            format!(
+                "locked package {}@{} is missing explicit source provenance",
+                entry.name, entry.version
+            )
+        })?;
+        let actual_source = if provenance.origin == registry::CacheOrigin::LocalPublication {
+            "local"
+        } else {
+            "registry"
+        };
+        if entry.source != actual_source || provenance.registry != registry_id {
+            return Err(format!(
+                "locked package {}@{} source origin does not match cached provenance",
+                entry.name, entry.version
             ));
         }
         let actual = checksum::compute_dir_checksum(path).map_err(|error| {
@@ -1392,6 +1457,7 @@ fn validate_locked_resolution(
             .ok_or_else(|| format!("locked dependency graph is missing `{name}`"))?;
         let expected_source = match &package.source {
             resolver::PackageSource::Registry { .. } => "registry",
+            resolver::PackageSource::Local { .. } => "local",
             resolver::PackageSource::Path(_) => "path",
         };
         if entry.version != package.version || entry.source != expected_source {
@@ -1400,7 +1466,9 @@ fn validate_locked_resolution(
                 entry.source, entry.version, expected_source, package.version
             ));
         }
-        if let resolver::PackageSource::Registry { registry } = &package.source {
+        if let resolver::PackageSource::Registry { registry }
+        | resolver::PackageSource::Local { registry } = &package.source
+        {
             if entry.registry.as_deref() != Some(registry) {
                 return Err(format!(
                     "locked dependency `{name}` registry identity does not match the resolved graph"
@@ -1852,7 +1920,7 @@ pub(crate) fn verify_registry_message(
 fn cmd_publish(
     registry: &registry::Registry,
     registry_name: Option<&str>,
-    flags: PublishFlags,
+    flags: &PublishFlags,
     check_generation: &impl Fn(&Path) -> Result<(), String>,
 ) {
     let fail = |error: &dyn std::fmt::Display| -> ! {
@@ -2132,7 +2200,7 @@ impl PublishTally {
             publish::PublicationItem::Native(archive) => {
                 format!(" native {}", archive.descriptor().identity.target)
             }
-            _ => String::new(),
+            publish::PublicationItem::Source(_) => String::new(),
         };
         match outcome {
             publish::Outcome::WouldPublish => {
@@ -3663,6 +3731,22 @@ mod tests {
             "[package]\nname = \"bar\"\nversion = \"1.0.0\"\n",
         )
         .unwrap();
+        for (path, name) in [
+            (&generation_a, "foo"),
+            (&generation_b, "foo"),
+            (&bar, "bar"),
+        ] {
+            let archive = tarball::pack(path, &[], &[]).unwrap();
+            registry::Registry::write_cache_metadata(
+                path,
+                &registry_id,
+                name,
+                "1.0.0",
+                &archive.checksum,
+                &archive.data,
+            )
+            .unwrap();
+        }
         std::fs::write(
             package_root.join(".1.0.0.current"),
             format!("{}\n", generation_a.file_name().unwrap().to_string_lossy()),
@@ -3808,7 +3892,7 @@ mod tests {
                 checksum: Some(checksum),
                 signature: None,
                 native: Vec::new(),
-                source: "registry".to_string(),
+                source: "local".to_string(),
                 registry: Some(registry_id.clone()),
                 path: None,
             }],

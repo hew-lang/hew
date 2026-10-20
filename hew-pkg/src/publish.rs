@@ -29,9 +29,9 @@ const READBACK_DOWNLOAD_BACKOFF: [Duration; 3] = [
 /// A failed publish phase. The CLI prints it after `hew publish: `.
 #[derive(Debug)]
 pub enum PublishError {
-    /// The package is not publishable; nothing touched the network.
+    /// The package or requested publication plan is not publishable.
     Invalid(String),
-    /// No credentials or signing key for an upload; nothing was uploaded.
+    /// Acquiring or renewing upload credentials or a signing key failed.
     Auth(String),
     /// Reading the registry's copy failed, before upload or after a conflict.
     Query(String),
@@ -185,6 +185,7 @@ impl PreparedSource<'_> {
 /// A publication whose entire source set has been compared before any upload.
 #[derive(Debug)]
 pub struct PreparedPublication<'a> {
+    registry: String,
     sources: Vec<PreparedSource<'a>>,
     natives: Vec<PreparedNative<'a>>,
 }
@@ -230,6 +231,7 @@ pub fn prepare_remote<'a>(
     }
     PublishError::combine(drift)?;
     Ok(PreparedPublication {
+        registry: api_client.registry_identity().to_string(),
         sources,
         natives: Vec::new(),
     })
@@ -364,7 +366,9 @@ pub fn prepare_with_native<'a>(
                 source.package.name() == archive.descriptor.name
                     && source.package.version() == archive.descriptor.version
             })
-            .expect("membership validated");
+            .ok_or_else(|| {
+                PublishError::Invalid("native archive has no selected source package".into())
+            })?;
         require_native_source(archive, &source.source_checksum)?;
     }
     for archive in archives {
@@ -375,7 +379,9 @@ pub fn prepare_with_native<'a>(
                 source.package.name() == archive.descriptor.name
                     && source.package.version() == archive.descriptor.version
             })
-            .expect("membership validated");
+            .ok_or_else(|| {
+                PublishError::Invalid("native archive has no selected source package".into())
+            })?;
         publication.natives.push(PreparedNative {
             archive,
             source: source.package,
@@ -746,6 +752,11 @@ pub fn publish_prepared(
     sleep: &dyn Fn(Duration),
     report: &mut dyn FnMut(PublicationItem<'_>, &Outcome),
 ) -> Result<(), PublishError> {
+    if api_client.registry_identity() != publication.registry {
+        return Err(PublishError::Invalid(
+            "publication plan registry does not match the execution destination".into(),
+        ));
+    }
     let mut uploads = Vec::new();
     for source in &publication.sources {
         let package = source.package;
@@ -1125,8 +1136,23 @@ pub(crate) fn publish_local_package(
     let incoming_checksum = tarball::unpacked_tree_checksum(archive)
         .map_err(|error| std::io::Error::other(format!("cannot checksum archive: {error}")))?;
     if let Ok(Some(existing)) = registry.pin_package_dir_for_if_present(&identity, name, version) {
-        if let Some(verified_checksum) = registry::Registry::verified_tree_checksum(existing.path())
-        {
+        let manifest = crate::manifest::parse_manifest(&existing.path().join("hew.toml"))
+            .map_err(std::io::Error::other)?;
+        let provenance = registry::source_provenance(existing.path(), &manifest)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| {
+                std::io::Error::other(
+                    "existing package cache is missing explicit source provenance",
+                )
+            })?;
+        if provenance.registry != identity {
+            return Err(std::io::Error::other(
+                "existing package cache has a different source scope",
+            ));
+        }
+        if provenance.origin == registry::CacheOrigin::Registry {
+            let verified_checksum = registry::Registry::verified_tree_checksum(existing.path())
+                .expect("validated registry provenance retains a tree checksum");
             if verified_checksum != incoming_checksum {
                 return Err(std::io::Error::other(format!(
                     "{name}@{version} is already cached from a verified registry fetch with a \
@@ -1145,5 +1171,7 @@ pub(crate) fn publish_local_package(
     }
     let staged = crate::atomic_fs::StagedDir::new(&dest)?;
     tarball::unpack(archive, staged.path()).map_err(std::io::Error::other)?;
+    registry::Registry::write_local_metadata(staged.path(), &identity, name, version, archive)
+        .map_err(std::io::Error::other)?;
     staged.publish_pinned(&dest)
 }

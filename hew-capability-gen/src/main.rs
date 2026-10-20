@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::PathBuf;
 
 fn main() {
     if let Err(err) = run() {
@@ -20,12 +20,13 @@ fn run() -> Result<(), String> {
         }
     }
 
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or_else(|| "crate directory has no repository parent".to_string())?;
-    let manifest = hew_capability_gen::load_manifest(root)?;
+    let root = std::env::var_os("HEW_BUILD_SOURCE_ROOT")
+        .map(PathBuf::from)
+        .map_or_else(std::env::current_dir, Ok)
+        .map_err(|err| format!("resolve invocation source root: {err}"))?;
+    let manifest = hew_capability_gen::load_manifest(&root)?;
     if check {
-        let stale = hew_capability_gen::stale_outputs(root, &manifest)?;
+        let stale = hew_capability_gen::stale_outputs(&root, &manifest)?;
         if stale.is_empty() {
             println!("WASM capability outputs are current.");
             return Ok(());
@@ -33,7 +34,7 @@ fn run() -> Result<(), String> {
         let paths = stale
             .iter()
             .map(|path| {
-                path.strip_prefix(root)
+                path.strip_prefix(&root)
                     .unwrap_or(path)
                     .display()
                     .to_string()
@@ -45,7 +46,7 @@ fn run() -> Result<(), String> {
         ));
     }
 
-    hew_capability_gen::write_outputs(root, &manifest)?;
+    hew_capability_gen::write_outputs(&root, &manifest)?;
     println!("Generated WASM capability Rust, playground, and matrix tables.");
     Ok(())
 }

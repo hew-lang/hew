@@ -194,10 +194,10 @@ fn parse_options(args: &[String]) -> Result<Options> {
 }
 
 fn workspace_root() -> Result<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "xtask manifest should have a workspace parent".to_string())
+    std::env::var_os("HEW_BUILD_SOURCE_ROOT")
+        .map(PathBuf::from)
+        .map_or_else(std::env::current_dir, Ok)
+        .map_err(|err| format!("resolve invocation source root: {err}"))
 }
 
 fn discover_fixtures(fixtures_dir: &Path) -> Result<Vec<FixtureDir>> {

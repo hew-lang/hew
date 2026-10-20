@@ -581,4 +581,4 @@ jobs:
       - name: Install compiled Hew artefacts
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
       - name: Check sandbox unit tests, parity and source corpus
-        run: make -o hew-native -o wasm-runtime sandbox-vm-test sandbox-parity hew-check-all
+        run: make -k -o hew-native -o wasm-runtime sandbox-vm-test sandbox-parity hew-check-all

@@ -688,6 +688,55 @@ jobs:
         shell: bash
         run: make SHELL=bash test-strict
 
+      # Snapshot before later test targets can rebuild the failing workspace's binaries.
+      - name: Collect failed Windows workspace binaries
+        if: ${{ failure() && steps.workspace-tests.outcome == 'failure' }}
+        shell: pwsh
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.gate-release-checks.outputs.source_sha }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP "release-windows-failure-binaries"
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $required = @("target/debug/hew.exe", "target/debug/hew.lib")
+          $selected = @($required | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Item -LiteralPath $_ })
+          $selected += @(Get-ChildItem -Path target/debug/deps -Filter "distributed_two_process_e2e-*.exe" -File -ErrorAction SilentlyContinue)
+          # Select only compiled fixtures; temporary credentials and other files are never copied.
+          $temporaryRoots = @($env:TEMP, $env:TMP, $env:RUNNER_TEMP) | Where-Object { $_ } | Select-Object -Unique
+          foreach ($directory in $temporaryRoots) {
+            $selected += @(Get-ChildItem -LiteralPath $directory -Filter dist_node.exe -File -Recurse -Force -ErrorAction SilentlyContinue)
+          }
+          $files = @()
+          foreach ($file in ($selected | Sort-Object FullName -Unique)) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $stored = "$hash-$($file.Name)"
+            $copy = Join-Path $destination $stored
+            if (-not (Test-Path -LiteralPath $copy)) {
+              Copy-Item -LiteralPath $file.FullName -Destination $copy
+            }
+            if ((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) {
+              throw "Retained binary changed during capture: $($file.FullName)"
+            }
+            $files += [ordered]@{ source = $file.FullName; stored = $stored; bytes = $file.Length; sha256 = $hash }
+          }
+          [ordered]@{
+            source_sha = (git rev-parse HEAD).Trim()
+            expected_source_sha = $env:RELEASE_SOURCE_SHA
+            workflow_sha = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            captured_utc = [DateTime]::UtcNow.ToString("o")
+            missing_required = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
+            files = $files
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination "manifest.json") -Encoding utf8
+
+      - name: Retain failed Windows workspace binaries
+        if: ${{ failure() && steps.workspace-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-workspace-failure-${{ needs.gate-release-checks.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-windows-failure-binaries/
+          if-no-files-found: error
+
       - name: Run C-ABI crate tests
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # Standalone because the workspace run above must exclude hew-cabi.

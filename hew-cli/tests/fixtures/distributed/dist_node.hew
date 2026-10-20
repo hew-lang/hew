@@ -36,6 +36,7 @@ import std.encoding.utf8;
 
 import std.failure.{CrashNotification, CrashKind, DownTarget};
 
+import std.observe;
 import std.link_monitor.{DownNotification, DownReason, MonitorRef, PartitionPolicy, set_partition_policy,};
 
 // hew_node_api_unregister: the repoint_preserves_ref scenario re-points a
@@ -308,7 +309,19 @@ fn scenario_service_grants(kx: string, port: string) -> i64 {
         }
         returned
     };
-    assert(reused_service.calls().expect("same-session grant") == 2);
+    let same_session_calls = reused_service.calls();
+    match same_session_calls {
+        .Ok(value) => assert(value == 2),
+        .Err(error) => {
+            let routes = observe.read("node.routes") ?? -1;
+            let peers = observe.read("node.peers") ?? -1;
+            let alive = observe.read("swim.alive") ?? -1;
+            let suspect = observe.read("swim.suspect") ?? -1;
+            let dead = observe.read("swim.dead") ?? -1;
+            println(f"GRANT_TRACE same-session failure routes={routes} peers={peers} alive={alive} suspect={suspect} dead={dead}");
+            panic(f"same-session grant: {error}");
+        }
+    }
     assert(supplied_sum(reused_service) == 42);
     publish_atomic(kx, "service.disconnect", "1");
     let _ = wait_for_file(f"{kx}/service.disconnected");

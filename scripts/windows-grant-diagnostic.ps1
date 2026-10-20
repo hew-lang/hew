@@ -1,5 +1,5 @@
 # Diagnostic only: reuse a published SDK and the original two-process harness.
-param([ValidateSet('grants', 'process')] [string] $Mode = 'grants')
+param([ValidateSet('grants', 'process', 'grant-load')] [string] $Mode = 'grants')
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
@@ -19,6 +19,20 @@ foreach ($file in @($compiler, $runtime, $targetRuntime)) {
 }
 if ((Get-FileHash $runtime).Hash -ne (Get-FileHash $targetRuntime).Hash) {
     throw 'SDK runtime archive copies differ'
+}
+
+if ($Mode -eq 'grant-load') {
+    $env:HEW_GRANT_LOAD_SDK = $sdk
+    $env:HEW_GRANT_LOAD_EVIDENCE = $evidence
+    $loadMakefile = Join-Path $env:RUNNER_TEMP 'grant-load-diagnostic.mk'
+    @'
+.PHONY: grant-load-diagnostic
+grant-load-diagnostic:
+	python scripts/windows-grant-coload.py
+'@ | Set-Content $loadMakefile
+    & make SHELL=bash -f $loadMakefile grant-load-diagnostic 2>&1 |
+        Tee-Object -FilePath (Join-Path $evidence 'grant-load.log')
+    exit $LASTEXITCODE
 }
 
 if ($Mode -eq 'process') {
@@ -112,6 +126,7 @@ $allowedChanges = $allowedRuntimeChanges + @(
     'scripts/windows-grant-diagnostic.ps1',
     'hew-cli/tests/fixtures/distributed/dist_node.hew',
     'scripts/windows-process-diagnostic.py',
+    'scripts/windows-grant-coload.py',
     'tests/core-acceptance/cases/process-bounded-output.hew',
     'tests/core-acceptance/cases/process-run-suspends.hew',
     'tests/core-acceptance/cases/process-supervised-reap.hew',

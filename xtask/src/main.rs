@@ -387,6 +387,30 @@ fn sandbox_bytecode(args: &[String]) -> Result<()> {
     ];
     for (relative, generated) in outputs {
         let path = root.join(relative);
+        // Use the supported Make/Bash environment, including npm wrappers on Windows.
+        let mut formatter = std::process::Command::new("bash")
+            .args(["-c", "exec prettier --stdin-filepath \"$1\"", "prettier"])
+            .arg(&path)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| format!("prettier: {error}"))?;
+        {
+            use std::io::Write as _;
+            formatter
+                .stdin
+                .take()
+                .ok_or_else(|| "prettier stdin missing".to_string())?
+                .write_all(generated.as_bytes())
+                .map_err(|error| error.to_string())?;
+        }
+        let result = formatter
+            .wait_with_output()
+            .map_err(|error| error.to_string())?;
+        if !result.status.success() {
+            return Err("prettier failed for bytecode binding".to_string());
+        }
+        let generated = String::from_utf8(result.stdout).map_err(|error| error.to_string())?;
         if mode == "--write" {
             fs::write(&path, generated).map_err(|error| error.to_string())?;
         } else if fs::read_to_string(&path).map_err(|error| error.to_string())? != generated {

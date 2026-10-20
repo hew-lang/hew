@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,19 +11,40 @@ const ajv = new Ajv2020({
   strict: false,
   validateFormats: false,
   discriminator: true,
+  inlineRefs: false,
   code: { source: true, esm: true },
 });
 // Discriminator routing is a code-generation optimization; the public schema
 // remains standard JSON Schema and independent validators need no extension.
 for (const name of ["OpV1", "TermV1"])
   schema.$defs[name].discriminator = { propertyName: "op" };
-ajv.addSchema(schema);
-const generated = "// @ts-nocheck\n// Generated from the Rust instruction schema. Run make sandbox-bytecode.\n" +
+const definitions = {};
+function include(name) {
+  if (Object.hasOwn(definitions, name)) return;
+  definitions[name] = schema.$defs[name];
+  function dependencies(value) {
+    if (value === null || typeof value !== "object") return;
+    if (typeof value.$ref === "string" && value.$ref.startsWith("#/$defs/"))
+      include(value.$ref.slice("#/$defs/".length));
+    for (const child of Object.values(value)) dependencies(child);
+  }
+  dependencies(definitions[name]);
+}
+include("OpV1");
+include("TermV1");
+ajv.addSchema({ $id: schema.$id, $defs: definitions });
+const unformatted = "// @ts-nocheck\n// Generated from the Rust instruction schema. Run make sandbox-bytecode.\n" +
   standaloneCode(ajv, {
     validOperation: schema.$id + "#/$defs/OpV1",
     validTerminator: schema.$id + "#/$defs/TermV1",
   }) + "\n";
 const destination = path.join(root, "src/interpreter/v1/instruction-validator.generated.ts");
+const formatted = spawnSync("bash", ["-c", 'exec prettier --stdin-filepath "$1"', "prettier", destination], {
+  input: unformatted, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+});
+if (formatted.error) throw formatted.error;
+if (formatted.status !== 0) throw new Error("prettier failed for instruction validator");
+const generated = formatted.stdout;
 if (process.argv[2] === "--write") fs.writeFileSync(destination, generated);
 else if (process.argv[2] === "--check") {
   if (fs.readFileSync(destination, "utf8") !== generated) {

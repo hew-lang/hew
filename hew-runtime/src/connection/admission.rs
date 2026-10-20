@@ -385,7 +385,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         }
     };
 
-    publish_identity_connection_established(
+    if !publish_identity_connection_established(
         mgr,
         peer_hs.node_id,
         peer_route_slot,
@@ -396,7 +396,9 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         &publication_sync,
         &publication_removed,
         superseded_claim,
-    );
+    ) {
+        return -1;
+    }
 
     0
 }

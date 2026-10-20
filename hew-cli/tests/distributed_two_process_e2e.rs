@@ -213,6 +213,13 @@ impl Drop for ManagedChild {
         // after the client finishes (it otherwise sleeps to a safety ceiling).
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if std::thread::panicking() {
+            if let Some(mut stderr) = self.child.stderr.take() {
+                let mut diagnostics = String::new();
+                let _ = stderr.read_to_string(&mut diagnostics);
+                eprintln!("{} teardown stderr:\n{diagnostics}", self.label);
+            }
+        }
     }
 }
 

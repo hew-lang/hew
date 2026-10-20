@@ -289,3 +289,48 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
         assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
     }
 }
+
+/// The handshake can authenticate a pinned peer whose durable session is older
+/// than the cluster's retained session. Refusing publication must reach the
+/// caller of Node.connect instead of reporting an unusable connection.
+#[test]
+fn tcp_connect_reports_publication_refusal() {
+    let _guard = crate::runtime_test_guard();
+    let (node_a, _port_a, node_b, port_b) = start_authorized_tcp_pair(740, 741);
+    let publication_sync = Arc::new(Mutex::new(()));
+    let publication_removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: both test nodes stay alive until the test finishes. Retain a newer
+    // peer session in the cluster before the older authenticated peer dials.
+    unsafe {
+        assert_eq!(
+            crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+                (*node_a.as_ptr()).cluster,
+                741,
+                2,
+                1,
+                &publication_sync,
+                &publication_removed,
+            ),
+            1,
+        );
+        let target = CString::new(format!("741@127.0.0.1:{port_b}")).expect("connect target");
+        let status = hew_node_connect(node_a.as_ptr(), target.as_ptr());
+        let detail = last_error();
+        assert_eq!(
+            connection::hew_connmgr_count((*node_a.as_ptr()).conn_mgr),
+            0,
+            "refused publication must leave no installed connection"
+        );
+        assert_eq!(
+            status,
+            hew_cabi::node::NodeFailure::Refused as i32,
+            "publication refusal must reach Node.connect: {detail}"
+        );
+        assert!(
+            detail.contains("the cluster rejected session 1"),
+            "Node.connect must retain the publication refusal: {detail}"
+        );
+        assert_eq!(hew_node_stop(node_a.as_ptr()), 0);
+        assert_eq!(hew_node_stop(node_b.as_ptr()), 0);
+    }
+}

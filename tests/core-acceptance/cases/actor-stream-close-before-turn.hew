@@ -3,7 +3,8 @@ import std.stream;
 actor Producer {
     var total: i64 = 0;
 
-    receive fn hold(consume gate: stream.Stream<i64>) {
+    receive fn hold(consume gate: stream.Stream<i64>, consume ready: stream.Sink<i64>) {
+        ready.send(1).expect("holding turn entered");
         gate.recv().expect("release actor turn");
     }
 
@@ -20,7 +21,10 @@ actor Producer {
 fn main() {
     let producer = spawn Producer;
     let (release, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
-    mailbox(producer).hold(gate).expect("queue holding turn");
+    let (ready, entered): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("ready");
+    mailbox(producer).hold(gate, ready).expect("queue holding turn");
+    assert(entered.recv().expect("holding turn entered") == 1);
+    entered.close();
     let output = producer.never_started();
     output.close();
     release.send(1).expect("release holding turn");

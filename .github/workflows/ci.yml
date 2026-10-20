@@ -566,7 +566,7 @@ jobs:
           version: ${{ env.LLVM_VERSION }}
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: wasm32-wasip1
+          targets: wasm32-wasip1,wasm32-unknown-unknown
           cache-shared-key: corpus
       - uses: ./.github/actions/setup-wasm-pack
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -580,5 +580,5 @@ jobs:
           path: ${{ runner.temp }}/compiled-hew-download
       - name: Install compiled Hew artefacts
         run: bash scripts/ci-install-compiled-hew.sh "${{ runner.temp }}/compiled-hew-download/compiled-hew-linux.tar.gz"
-      - name: Check source corpus and sandbox parity
-        run: make -o hew-native -o wasm-runtime sandbox-parity hew-check-all
+      - name: Check sandbox unit tests, parity and source corpus
+        run: make -o hew-native -o wasm-runtime sandbox-vm-test sandbox-parity hew-check-all

@@ -146,23 +146,6 @@ impl LowerCtx {
                 },
             );
         }
-        // `instant::now() -> instant`. The static (no-receiver) call resolves
-        // by the joined callee name `"instant::now"`; `builtin_family` makes
-        // `lower_identifier` produce `ResolvedRef::Builtin(InstantNow)` so MIR
-        // reads `hew_instant_now` off the catalog bijection. `instant` is
-        // i64-backed, so the entry returns `I64`. No params (the runtime symbol
-        // reads the monotonic clock).
-        self.fn_registry.insert(
-            "instant::now".to_string(),
-            FnEntry {
-                id: SYNTHETIC_INSTANT_NOW_ITEM,
-                return_ty: ResolvedTy::I64,
-                param_tys: Vec::new(),
-                linkage: None,
-                type_params: Vec::new(),
-                builtin_family: Some(RuntimeCallFamily::InstantNow),
-            },
-        );
     }
 
     /// Seeds `fn_registry` entries for the pipe layout-witness recv/send

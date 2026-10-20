@@ -72,18 +72,6 @@ impl Checker {
         // no bare spelling for them (A409).
 
         // I/O and system
-        // `instant::now` has no source declaration, but it is an ordinary
-        // compiler-provided runtime call.  Register its joined parser spelling
-        // here so the checker publishes the same typed runtime target that
-        // HIR and MIR consume for every other builtin call.
-        self.register_builtin_fn(
-            "instant::now",
-            vec![],
-            Ty::Named {
-                args: vec![],
-                head: crate::TypeHead::Builtin(BuiltinType::Instant),
-            },
-        );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         for view in ["mailbox", "policy"] {
             self.register_builtin_fn(
@@ -767,7 +755,6 @@ impl Checker {
         // a runtime-looking name.
         // Namespace-qualified builtins retain their exact runtime row symbols.
         let runtime_symbol = match name {
-            "instant::now" => "hew_instant_now".to_string(),
             "Node::peer" => "hew_node_peer_new".to_string(),
             "Node::register" | "Node::lookup" => name.to_string(),
             _ => format!("hew_{name}"),

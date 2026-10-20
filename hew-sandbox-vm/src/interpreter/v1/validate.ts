@@ -210,6 +210,28 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       }
       const term = block.term;
+      if (
+        term.op === "runtime.call" &&
+        pkg.runtime_families[term.family]?.family === "TimestampNow"
+      ) {
+        const shape =
+          term.aggregate_result_shape == null
+            ? undefined
+            : pkg.aggregates[term.aggregate_result_shape];
+        if (
+          !shape ||
+          shape.builtin !== "Timestamp" ||
+          shape.fields.length !== 2
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "TimestampNow",
+            message: "timestamp clock lacks its checked result shape",
+            span: null,
+          };
+        }
+      }
       if (term.op === "timestamp.binary") {
         const both = term.lhs_timestamp && term.rhs_timestamp;
         const validOperation =

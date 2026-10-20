@@ -65,6 +65,7 @@ import {
   resolveExternShim,
   resolveRuntimeShim,
   type ShimHost,
+  type RuntimeShim,
 } from "./shims.js";
 import { admitPackage } from "./validate.js";
 
@@ -421,6 +422,7 @@ class ExecutorV1 {
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
+      unixTimeMillis: () => this.trace.virtualTimeMs,
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();
@@ -1976,11 +1978,7 @@ class ExecutorV1 {
   private callShim(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
-    shim: (
-      host: ShimHost,
-      args: VmValue[],
-      shape: VariantShape | null,
-    ) => VmValue,
+    shim: RuntimeShim,
   ): void {
     const args = term.args.map((operand) => this.boundary(act, operand));
     // A call that hands back its updated receiver names its value's shape as
@@ -1994,7 +1992,11 @@ class ExecutorV1 {
         : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
-      value = shim(this.host, args, shape);
+      const aggregateId =
+        term.op === "runtime.call" ? term.aggregate_result_shape : null;
+      const aggregate =
+        aggregateId == null ? null : (this.pkg.aggregates[aggregateId] ?? null);
+      value = shim(this.host, args, shape, aggregate);
     } catch (error) {
       if (error instanceof ShimFault) {
         this.keepInputs(act, term, args);

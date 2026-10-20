@@ -19,6 +19,7 @@ import {
 } from "../values.js";
 import { Mt19937, seededMt } from "./mt19937.js";
 import type {
+  AggregateShape,
   RuntimeFamilyEntry,
   RuntimeVariantRole,
   TrapName,
@@ -42,6 +43,7 @@ export class ShimFault extends Error {
 export interface ShimHost {
   /// A snapshot of the supplied process arguments, including argv[0].
   readonly argv: readonly string[];
+  unixTimeMillis(): number;
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   closePipe?(value: VmValue): void;
@@ -69,10 +71,12 @@ export interface ShimHost {
 
 /// `shape` is the `result_shape` the call names: the variant descriptor its
 /// result is built against, or `null` when the result is not an enum.
+/// `aggregate` is the checked record descriptor for an aggregate result.
 export type RuntimeShim = (
   host: ShimHost,
   args: VmValue[],
   shape: VariantShape | null,
+  aggregate: AggregateShape | null,
 ) => VmValue;
 
 /// Resolve a declared runtime family to its shim, or `undefined` when the VM
@@ -210,6 +214,36 @@ function printShim(detail: unknown): RuntimeShim | undefined {
 }
 
 const UNIT_FAMILY_SHIMS: Record<string, RuntimeShim | undefined> = {
+  TimestampNow: (host, _args, _variant, aggregate) => {
+    const millis = host.unixTimeMillis();
+    if (!Number.isFinite(millis))
+      throw new ShimFault("integer_overflow", "host wall clock is not finite");
+    const seconds = Math.floor(millis / 1000);
+    let nanos = Math.round((millis - seconds * 1000) * 1_000_000);
+    let whole = BigInt(seconds);
+    if (nanos === 1_000_000_000) {
+      whole += 1n;
+      nanos = 0;
+    }
+    if (
+      whole < -(1n << 63n) ||
+      whole >= 1n << 63n ||
+      nanos < 0 ||
+      nanos >= 1_000_000_000
+    )
+      throw new ShimFault(
+        "integer_overflow",
+        "host wall clock exceeds timestamp range",
+      );
+    if (!aggregate || aggregate.builtin !== "Timestamp")
+      throw new TypeError("timestamp clock lacks its aggregate descriptor");
+    return {
+      kind: "record",
+      typeId: aggregate.name,
+      shape: aggregate.id,
+      fields: [int(whole), int(BigInt(nanos))],
+    };
+  },
   StderrWrite: (host, args) => {
     host.writeStderr(text(args, 0));
     return UNIT;

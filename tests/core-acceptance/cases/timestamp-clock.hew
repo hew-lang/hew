@@ -1,0 +1,10 @@
+fn main() {
+    let start = instant.now();
+    let now = timestamp.now();
+    let (seconds, nanos) = now.unix_parts();
+    assert(nanos < 1000000000);
+    assert(timestamp.from_unix_parts(seconds, nanos).expect("normalized clock") == now);
+    assert(now != timestamp.from_unix_secs(0));
+    assert(start.elapsed() >= 0ns);
+    println("timestamp clock ok");
+}

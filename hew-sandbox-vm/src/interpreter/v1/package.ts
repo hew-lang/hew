@@ -524,6 +524,7 @@ export type TermV1 =
   | (TermBase &
       CallShape & {
         op: "runtime.call";
+        aggregate_result_shape?: number | null;
         shared_payload_type?: string;
         family: number;
         structural?: number | null;

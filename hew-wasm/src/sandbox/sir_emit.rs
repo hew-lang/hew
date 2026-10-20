@@ -566,6 +566,16 @@ impl<'m> Walker<'m> {
         }
     }
 
+    fn aggregate_result_shape(&self, result: &CallResult) -> serde_json::Value {
+        match result {
+            CallResult::Value(def) => self
+                .module
+                .aggregate_shape_for_type(&def.ty)
+                .map_or(serde_json::Value::Null, |shape| shape.id.0.into()),
+            CallResult::Unit | CallResult::Never => serde_json::Value::Null,
+        }
+    }
+
     /// The checked error envelope of a runtime-produced Result.
     fn error_shape(&self, result: &CallResult) -> serde_json::Value {
         let CallResult::Value(def) = result else {
@@ -1793,6 +1803,10 @@ impl<'m> Walker<'m> {
                     "normal": encode_edge(normal),
                     "unwind": encode_unwind(unwind),
                 });
+                let aggregate_shape = self.aggregate_result_shape(result);
+                if !aggregate_shape.is_null() {
+                    call["aggregate_result_shape"] = aggregate_shape;
+                }
                 if *family == hew_types::RuntimeCallFamily::RcNew {
                     call["shared_payload_type"] = serde_json::Value::String(
                         self.value_types

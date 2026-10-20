@@ -19303,6 +19303,21 @@
     },
     {
       "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_timestamp_now() -> HewTimestamp",
+        "wasm32-wasip1": "fn hew_timestamp_now() -> HewTimestamp"
+      },
+      "symbol": "hew_timestamp_now"
+    },
+    {
+      "availability": [
         "native"
       ],
       "classification": "non-declarable-stdlib",

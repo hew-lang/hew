@@ -8277,6 +8277,28 @@ prints as `5000000000ns`).
 `duration`, and `.elapsed()` and `.duration_since(earlier)` return the
 `duration` since an earlier stamp.
 
+**`timestamp`:** a wall-clock value represented by signed `i64` Unix seconds
+and a normalized `u32` nanosecond fraction less than one billion. Read the host
+wall clock with `timestamp.now()`. Construct values with
+`timestamp.from_unix_parts(seconds, nanos)` (which can fail with
+`TimestampError.InvalidNanoseconds`), or with `from_unix_secs`,
+`from_unix_millis`, `from_unix_micros` and `from_unix_nanos` taking an explicit
+`i64` unit count. `unix_parts()` returns the normalized pair;
+`unix_secs_floor()` returns its seconds component. `unix_millis_floor()`,
+`unix_micros_floor()` and `unix_nanos()` fail with `TimestampError.OutOfRange`
+when the chosen `i64` count cannot represent the value. Negative unit
+conversions round down: minus one nanosecond has parts `(-1, 999999999)`.
+
+`timestamp + duration`, `duration + timestamp` and `timestamp - duration`
+produce a timestamp. Subtracting two timestamps produces a duration and fails
+with integer overflow when the difference exceeds the duration range. Timestamp
+arithmetic also checks the full seconds range. These failures follow ordinary
+structured failure and cleanup rules. Timestamps support equality, ordering,
+hashing and data codecs, whose representation is a two-element sequence of
+seconds and nanoseconds. Fields and record construction are sealed; timestamps
+never implicitly convert to integers, durations or monotonic instants. Use
+`instant` for elapsed-time measurements and scheduling deadlines.
+
 **Suspension:** `sleep(d)` waits a span and `sleep_until(t)` waits until a
 monotonic deadline; both suspend the calling task or actor handler instead of
 blocking its worker, so sibling work continues while the timer runs and a

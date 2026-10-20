@@ -646,7 +646,6 @@ fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
         ("link", SYNTHETIC_LINK_ITEM),
         ("monitor", SYNTHETIC_MONITOR_ITEM),
         ("unlink", SYNTHETIC_UNLINK_ITEM),
-        ("instant::now", SYNTHETIC_INSTANT_NOW_ITEM),
         ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
         (
             "hew_stream_try_next_layout",

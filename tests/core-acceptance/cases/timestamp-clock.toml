@@ -1,0 +1,10 @@
+[[case]]
+id = "timestamp-clock"
+intent = "Native clock acquisition returns a normalized nominal timestamp through the target C aggregate ABI."
+source = "cases/timestamp-clock.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "timestamp clock ok\n"
+exit = 0

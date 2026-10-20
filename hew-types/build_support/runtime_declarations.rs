@@ -204,6 +204,7 @@ fn scalar_named(name: &str) -> &'static str {
         "bytes" => "Bytes",
         "duration" => "Duration",
         "instant" => "Instant",
+        "timestamp" => "Timestamp",
         "bool" => "Bool",
         other => panic!("unsupported direct runtime scalar {other}"),
     }
@@ -346,7 +347,11 @@ fn render_direct(
     } else {
         String::new()
     };
-    let result_kind = if result == "Instant" { "I64" } else { result };
+    let result_kind = match result {
+        "Instant" => "I64",
+        "Timestamp" => "BuiltinNominal(crate::BuiltinType::Timestamp)",
+        _ => result,
+    };
     let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
     (
         family.to_ascii_uppercase(),

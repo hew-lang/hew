@@ -46,6 +46,40 @@ test("runProgram preserves timestamp codec values and located errors", () => {
   assert.equal(result.stdout, "timestamp codecs ok\n");
 });
 
+test("timestamp.now uses the replay clock's Unix coordinate exactly once", () => {
+  const output = globalThis.__hewSandboxCompileToSandboxBytecode(`
+fn main() {
+    let (seconds, nanos) = timestamp.now().unix_parts();
+    println(f"{seconds}|{nanos}");
+}
+`, "sandbox-vm-export");
+  const compiled = typeof output === "string" ? JSON.parse(output) : output;
+  assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
+  for (const [epoch_ms, current_ms, expected] of [
+    [0, 0, "0|0\n"],
+    [1700000000000, 1700000000123, "1700000000|123000000\n"],
+    [-1000, -1, "-1|999000000\n"],
+    [-1000, -1001, "-2|999000000\n"],
+  ]) {
+    const trace = runBytecode(compiled.bytecode, {
+      replay: { virtual_clock: { epoch_ms, current_ms, tick_ms: 0 } },
+    });
+    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
+    assert.equal(trace.final_state.stdout.join(""), expected);
+  }
+  for (const current_ms of [NaN, Infinity, -Infinity]) {
+    const trace = runBytecode(compiled.bytecode, {
+      replay: { virtual_clock: { epoch_ms: 0, current_ms, tick_ms: 0 } },
+    });
+    assert.notEqual(trace.result, "ok");
+  }
+  const malformed = structuredClone(compiled.bytecode);
+  const clockCall = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
+    .find(term => term.op === "runtime.call" && malformed.runtime_families[term.family].family === "TimestampNow");
+  delete clockCall.aggregate_result_shape;
+  assert.equal(runBytecode(malformed).result, "sandbox_rejected");
+});
+
 test("serialized bytecode preserves supervisor child i64 bounds", () => {
   const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
     `

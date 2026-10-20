@@ -87,3 +87,10 @@ on across targets.
 
 The native-to-VM parity harness runs on Linux. Windows currently skips that
 Node-based harness; native and WASI checks are separate evidence.
+
+`timestamp.now()` reads the replay clock's `current_ms` as Unix milliseconds.
+That coordinate already includes `epoch_ms`; it is not added again. The default
+clock starts at the Unix epoch, and hosts can supply the existing replay clock
+to choose another coordinate. Clock acquisition has millisecond precision; stored
+timestamps and timestamp arithmetic retain nanosecond precision. Native programs
+read the operating system wall clock. Neither clock is a monotonic `instant`.

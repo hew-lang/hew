@@ -1023,6 +1023,15 @@ impl Display for TimestampError {
 impl Error for TimestampError {}
 
 impl timestamp {
+    /// Read the host wall clock as normalized Unix seconds and nanoseconds.
+    #[runtime(family = TimestampNow, authority = Ambient, lowering = direct, target = native, classification = stable, c_return = storage)]
+    #[extern_symbol(hew_timestamp_now)]
+    fn now() -> timestamp {
+        timestamp { seconds: 0, nanoseconds: 0 }
+    }
+}
+
+impl timestamp {
     /// Construct normalized Unix seconds and a nanosecond fraction.
     fn from_unix_parts(seconds: i64, nanos: u32) -> timestamp fails TimestampError {
         if nanos >= 1000000000 {

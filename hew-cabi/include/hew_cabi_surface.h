@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1653u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -7289,6 +7289,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
      "c_int\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_timestamp_now",
+     "{\"native\": \"fn hew_timestamp_now() -> HewTimestamp\", "
+     "\"wasm32-wasip1\": \"fn hew_timestamp_now() -> HewTimestamp\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable", "not-applicable",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_tls_attach_native",
      "{\"native\": \"fn hew_tls_attach_native( *mut HewTlsStream, "
      "NativeActorToken, AttachCallback, AttachCallback, ) -> i32\"}",

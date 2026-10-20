@@ -512,6 +512,7 @@ impl Checker {
             Ty::Bool => matches!(op, Op::BitAnd | Op::BitOr | Op::BitXor),
             Ty::String | Ty::Bytes => op == Op::Add,
             ty if ty.is_integer() => true,
+            ty if ty.is_timestamp() => matches!(op, Op::Add | Op::Subtract),
             ty => {
                 arithmetic
                     && (ty.is_numeric_literal()
@@ -1865,9 +1866,12 @@ impl Checker {
                 if let Some(op) = op {
                     self.check_compound_operator(*op, &target_ty, span);
                 }
-                let value_ty = self
-                    .rebind_inferred_closure_binding(&target.0, value, &target_ty)
-                    .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty));
+                let value_ty = if op.is_some() && self.subst.resolve(&target_ty).is_timestamp() {
+                    self.check_against(&value.0, &value.1, &Ty::Duration)
+                } else {
+                    self.rebind_inferred_closure_binding(&target.0, value, &target_ty)
+                        .unwrap_or_else(|| self.check_against(&value.0, &value.1, &target_ty))
+                };
                 if !first_store {
                     self.record_assignment_cleanup_effect(target, &target_ty);
                 }

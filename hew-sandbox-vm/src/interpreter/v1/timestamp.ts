@@ -9,13 +9,22 @@ const BILLION = 1_000_000_000n;
 const MIN_I64 = -(1n << 63n);
 const MAX_I64 = (1n << 63n) - 1n;
 
-function exactNanos(value: VmValue, timestamp: boolean): bigint {
+function exactNanos(
+  pkg: PackageV1,
+  value: VmValue,
+  timestamp: boolean,
+): bigint {
   if (!timestamp) {
-    if (value.kind !== "i64")
+    if (value.kind !== "i64" || value.value < MIN_I64 || value.value > MAX_I64)
       throw new TypeError("timestamp offset is not a duration");
     return value.value;
   }
-  if (value.kind !== "record" || value.fields.length !== 2)
+  if (
+    value.kind !== "record" ||
+    value.fields.length !== 2 ||
+    value.shape === undefined ||
+    pkg.aggregates[value.shape]?.builtin !== "Timestamp"
+  )
     throw new TypeError("timestamp lacks its normalized pair");
   const [seconds, nanos] = value.fields;
   if (
@@ -36,8 +45,8 @@ export function timestampBinary(
   lhs: VmValue,
   rhs: VmValue,
 ): VmValue | null {
-  const left = exactNanos(lhs, term.lhs_timestamp);
-  const right = exactNanos(rhs, term.rhs_timestamp);
+  const left = exactNanos(pkg, lhs, term.lhs_timestamp);
+  const right = exactNanos(pkg, rhs, term.rhs_timestamp);
   const exact = term.binary_op === "Add" ? left + right : left - right;
   if (term.shape === null) {
     return exact < MIN_I64 || exact > MAX_I64

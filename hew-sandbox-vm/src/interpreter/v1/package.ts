@@ -56,6 +56,7 @@ export interface AggregateShape {
   id: number;
   name: string;
   fields: string[];
+  builtin?: "Timestamp";
 }
 
 export interface VariantCase {

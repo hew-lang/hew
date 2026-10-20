@@ -294,9 +294,18 @@ impl Builder<'_, '_> {
             }
             HirExprKind::Unary { op, operand, .. } => {
                 let value = self.lower_read_operand(operand, "unary operand")?;
-                if *op == hew_parser::ast::UnaryOp::Negate && self.ty(&expr.ty).is_signed_integer()
+                let ty = self.ty(&expr.ty);
+                if *op == hew_parser::ast::UnaryOp::Negate
+                    && (ty.is_signed_integer() || ty == ResolvedTy::Duration)
                 {
-                    let zero = self.emit(expr, SemOpKind::ConstInteger(0))?;
+                    let zero = self.emit(
+                        expr,
+                        if ty == ResolvedTy::Duration {
+                            SemOpKind::ConstDuration(0)
+                        } else {
+                            SemOpKind::ConstInteger(0)
+                        },
+                    )?;
                     self.lower_checked_binary(
                         expr,
                         hew_parser::ast::BinaryOp::Subtract,

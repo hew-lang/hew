@@ -2859,12 +2859,27 @@ impl Checker {
         let saved_ordinal = self.current_item_ordinal;
         let saved_source = self.current_item_source.take();
         let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
+        // Register the whole source before checking bodies, so methods and
+        // helpers can refer to ordinary functions declared later in the file.
+        for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
+            self.current_item_ordinal = ordinal;
+            if matches!(item, Item::Function(_)) {
+                self.collect_function_item(item, span);
+            }
+        }
         for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
             self.current_item_ordinal = ordinal;
             if let Item::Function(function) = item {
-                // Retain the declared signature's annotation facts; its
-                // compiler-owned endpoint supplies execution, not the stub.
-                self.register_fn_sig(function);
+                // Compiler-owned endpoints have documentation stubs. Ordinary
+                // source helpers retain the same checked body facts as imports.
+                if self
+                    .named_item_declaration(function.name)
+                    .is_some_and(|declaration| {
+                        matches!(self.source_call_target(declaration), CallTarget::User(_))
+                    })
+                {
+                    self.check_function(function);
+                }
             }
             if let Item::Impl(implementation) = item {
                 // Runtime declarations have documentation stubs, not Hew bodies.
@@ -4043,6 +4058,16 @@ impl Checker {
                 )
             })
             .collect();
+        let source_function_targets = resolved_fn_sigs
+            .keys()
+            .filter(|declaration| self.defs.kind(**declaration) == crate::DeclarationKind::Function)
+            .map(|declaration| {
+                (
+                    *declaration,
+                    self.call_target_for_signature(self.defs.path(*declaration)),
+                )
+            })
+            .collect();
         let mut output = TypeCheckOutput {
             selected_builtin_program: self.selected_builtin_program.clone(),
             input_references: std::mem::take(&mut self.input_references),
@@ -4133,6 +4158,7 @@ impl Checker {
             fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            source_function_targets,
             imported_impl_body_facts,
             indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
             callable_argument_flows,

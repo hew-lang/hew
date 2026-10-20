@@ -1445,7 +1445,7 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
-        if self.resolved_builtin_type(name) == Some(BuiltinType::Timestamp)
+        if self.named_ty_for_key(name, vec![]).is_timestamp()
             && !self.checking_embedded_builtins
             && !self.checking_canonical_stdlib_source("std.builtins")
         {

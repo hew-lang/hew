@@ -754,6 +754,10 @@ pub struct TypeCheckOutput {
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Execution selected for each source free-function declaration. This
+    /// distinguishes ordinary bodies from compiler-owned documentation stubs
+    /// even when the declaration is used as a value rather than called.
+    pub source_function_targets: HashMap<crate::DefId, crate::check::dispatch::CallTarget>,
     /// Checked impl bodies keyed by their declaration. Each signature is
     /// finalised by the checker, and callees retain selected declaration IDs.
     /// Imported-body lowering consumes this fact instead of scanning names.

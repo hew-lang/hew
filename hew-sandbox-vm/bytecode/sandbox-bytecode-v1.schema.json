@@ -153,6 +153,9 @@
           "name": {
             "type": "string"
           },
+          "builtin": {
+            "enum": ["Timestamp"]
+          },
           "fields": {
             "type": "array",
             "items": {

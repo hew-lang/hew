@@ -2241,6 +2241,11 @@ pub fn lower_program(
         let saved_module = ctx.current_module_name.replace("std.builtins".to_string());
         let saved_injected = ctx.lowering_injected_items;
         ctx.lowering_injected_items = true;
+        let private_helpers = super::private_refs::collect_builtin_private_fn_closure(
+            &mut ctx,
+            builtins,
+            builtin_item_index,
+        );
         let saved_some = ctx
             .machine_ctor_registry
             .insert("Some".to_string(), ("Option".to_string(), 0));
@@ -2253,12 +2258,12 @@ pub fn lower_program(
             if let Item::Function(function) = item {
                 let declaration =
                     ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
-                let called = declaration.is_some_and(|declaration| {
-                    ctx.direct_call_targets.values().any(|target| {
-                        matches!(target, CallTarget::User(target) if *target == declaration)
-                    })
+                let ordinary = declaration.is_some_and(|declaration| {
+                    matches!(type_check_output.source_function_targets.get(&declaration),
+                        Some(CallTarget::User(target)) if *target == declaration)
                 });
-                if called {
+                if ordinary && (function.visibility.is_pub() || private_helpers.contains(&ordinal))
+                {
                     if let Some(function) = ctx.lower_fn(function, span.clone()) {
                         items.push(HirItem::Function(function));
                     }

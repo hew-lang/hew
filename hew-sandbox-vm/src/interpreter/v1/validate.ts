@@ -219,8 +219,14 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         const shape =
           term.shape === null ? undefined : pkg.aggregates[term.shape];
         if (
+          typeof term.lhs_timestamp !== "boolean" ||
+          typeof term.rhs_timestamp !== "boolean" ||
           !validOperation ||
-          (both ? term.shape !== null : !shape || shape.fields.length !== 2) ||
+          (both
+            ? term.shape !== null
+            : !shape ||
+              shape.fields.length !== 2 ||
+              shape.builtin !== "Timestamp") ||
           term.failures.length !== 1 ||
           term.failures[0]?.trap !== "integer_overflow"
         ) {

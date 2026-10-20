@@ -91,6 +91,13 @@ pub struct AggregateShape {
     pub id: u32,
     pub name: String,
     pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<AggregateBuiltin>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AggregateBuiltin {
+    Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1011,6 +1018,10 @@ impl<'m> Walker<'m> {
             .map(|shape| AggregateShape {
                 id: shape.id.0,
                 name: shape.aggregate_ty.user_facing().to_string(),
+                builtin: shape
+                    .aggregate_ty
+                    .is_builtin(hew_types::BuiltinType::Timestamp)
+                    .then_some(AggregateBuiltin::Timestamp),
                 fields: shape
                     .fields
                     .iter()

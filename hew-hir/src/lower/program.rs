@@ -1153,23 +1153,8 @@ pub fn lower_program(
             };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
-                hir_decl
-                    .consuming_methods
-                    .iter()
-                    .find(|m| m.as_str() == "close")
-                    .cloned()
-                    // W3.030 Q-α-B: a `#[resource]` whose `close` lives in a
-                    // sibling inherent-impl block must still register the
-                    // close-method symbol so the MIR elaborator's
-                    // `resource_drop_fn` emits `Some("<T>::close")` rather
-                    // than `None`. Without this fallback the type-class
-                    // table would record `(Resource, None)` for the broadened
-                    // surface and drop-elaboration would silently elide the
-                    // close call.
-                    .or_else(|| {
-                        ctx.inherent_close_signature(hir_decl.declaration)
-                            .map(|_| "close".to_string())
-                    })
+                ctx.inherent_close_signature(hir_decl.declaration)
+                    .map(|_| "close".to_string())
             } else {
                 None
             };
@@ -1318,15 +1303,8 @@ pub fn lower_program(
                                 continue;
                             };
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                                hir_decl
-                                    .consuming_methods
-                                    .iter()
-                                    .find(|m| m.as_str() == "close")
-                                    .cloned()
-                                    .or_else(|| {
-                                        ctx.inherent_close_signature(hir_decl.declaration)
-                                            .map(|_| "close".to_string())
-                                    })
+                                ctx.inherent_close_signature(hir_decl.declaration)
+                                    .map(|_| "close".to_string())
                             } else {
                                 None
                             };

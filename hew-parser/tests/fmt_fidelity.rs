@@ -338,9 +338,9 @@ fn comments_between_record_fields() {
 }
 
 #[test]
-fn comment_after_last_type_method() {
+fn comment_after_last_impl_method() {
     assert_faithful(
-        "type Counter {\n    n: i64;\n\n    fn get(c: Counter) -> i64 {\n        c.n\n    }\n    // after the last method\n}\n\nfn main() {}\n",
+        "type Counter {\n    n: i64;\n}\n\nimpl Counter {\n    fn get(c: Counter) -> i64 {\n        c.n\n    }\n    // after the last method\n}\n\nfn main() {}\n",
     );
 }
 

@@ -807,13 +807,6 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
                 count_idents_in_block(&method.body, counts);
             }
         }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(m) = body_item {
-                    count_idents_in_block(&m.body, counts);
-                }
-            }
-        }
         Item::Impl(i) => {
             for method in &i.methods {
                 count_idents_in_block(&method.body, counts);
@@ -849,6 +842,7 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
         }
         // Record fields contain only type annotations; no expression idents to count.
         Item::Record(_)
+        | Item::TypeDecl(_)
         | Item::Macro(_)
         | Item::MacroCall(_)
         | Item::Import(_)

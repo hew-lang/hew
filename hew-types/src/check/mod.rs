@@ -2290,8 +2290,7 @@ impl Checker {
                     .iter()
                     .filter_map(|item| match item {
                         hew_parser::ast::TypeBodyItem::Variant(variant) => Some(variant),
-                        hew_parser::ast::TypeBodyItem::Field { .. }
-                        | hew_parser::ast::TypeBodyItem::Method(_) => None,
+                        hew_parser::ast::TypeBodyItem::Field { .. } => None,
                     })
                     .enumerate()
                 {
@@ -2301,25 +2300,6 @@ impl Checker {
                         variant.name,
                         owner,
                         format!("{path}::{member_path} {}", variant.name),
-                        false,
-                    );
-                }
-                for (index, method) in decl
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
-                        hew_parser::ast::TypeBodyItem::Field { .. }
-                        | hew_parser::ast::TypeBodyItem::Variant(_) => None,
-                    })
-                    .enumerate()
-                {
-                    declare(
-                        Kind::TypeMethod,
-                        index,
-                        method.name,
-                        owner,
-                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
@@ -2644,22 +2624,6 @@ impl Checker {
                     span,
                     decl.type_params.as_deref().unwrap_or_default(),
                 );
-                for (index, method) in decl
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
-                        _ => None,
-                    })
-                    .enumerate()
-                {
-                    declare(
-                        Kind::TypeMethod,
-                        index,
-                        &method.fn_span,
-                        method.type_params.as_deref().unwrap_or_default(),
-                    );
-                }
             }
             Item::Record(decl) => declare(
                 Kind::Record,

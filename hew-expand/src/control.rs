@@ -1,6 +1,6 @@
 use hew_parser::ast::{
     condition_exprs_mut, Block, Expr, Ident, Item, MatchArm, Span, Spanned, Stmt, StringPart,
-    TraitItem, TypeBodyItem,
+    TraitItem,
 };
 use hew_parser::macro_syntax::{ExpansionId, ExpansionMap, Origin};
 
@@ -223,13 +223,6 @@ impl<'a> Control<'a> {
                 self.function_block(&mut function.body, &function.fn_span)?;
             }
             Item::Const(constant) => self.expr(&mut constant.value)?,
-            Item::TypeDecl(declaration) => {
-                for member in &mut declaration.body {
-                    if let TypeBodyItem::Method(function) = member {
-                        self.function_block(&mut function.body, &function.fn_span)?;
-                    }
-                }
-            }
             Item::Impl(declaration) => {
                 for function in &mut declaration.methods {
                     self.function_block(&mut function.body, &function.fn_span)?;
@@ -293,6 +286,7 @@ impl<'a> Control<'a> {
                 }
             }
             Item::Import(_)
+            | Item::TypeDecl(_)
             | Item::Macro(_)
             | Item::MacroCall(_)
             | Item::TypeAlias(_)

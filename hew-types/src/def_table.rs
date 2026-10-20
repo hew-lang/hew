@@ -32,7 +32,6 @@ pub enum DeclarationKind {
     Record,
     Trait,
     TraitMethod,
-    TypeMethod,
     ImplMethod,
     ImplBlock,
     Closure,

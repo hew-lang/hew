@@ -855,29 +855,6 @@ impl Parser<'_> {
         params
     }
 
-    /// Parse a parameter list, optionally accepting a `consume self` receiver.
-    ///
-    /// When `allow_consume_self` is true (type-body method context), a leading
-    /// `consume self` is recognised as a consuming-self receiver. The receiver
-    /// does not appear in the returned `Vec<Param>`; instead the boolean return
-    /// indicates its presence so the caller can record it in
-    /// `TypeDecl.consuming_methods`.
-    ///
-    /// `consume self` is only valid at the first-parameter position. If it
-    /// appears elsewhere (or `allow_consume_self` is false), it falls through
-    /// to the regular error path.
-    pub(crate) fn parse_params_with_receiver(
-        &mut self,
-        allow_consume_self: bool,
-    ) -> (Vec<Param>, bool) {
-        // Check for `consume self` at the first-parameter position.
-        let has_consume_self = allow_consume_self && self.eat_consume_self_receiver();
-
-        // Parse remaining ordinary parameters.
-        let params = self.parse_params();
-        (params, has_consume_self)
-    }
-
     /// Recognise and consume a `consume self` receiver at the current
     /// (first-parameter) position, returning `true` when one was eaten.
     ///
@@ -888,9 +865,7 @@ impl Parser<'_> {
     /// The optional trailing comma is also consumed so the following ordinary
     /// parameters parse cleanly.
     ///
-    /// Shared by `parse_params_with_receiver` (type-body methods) and
-    /// `parse_function` (inherent-impl methods) so both surfaces recognise the
-    /// receiver identically.
+    /// Used by `parse_function` for inherent-impl consuming receivers.
     pub(crate) fn eat_consume_self_receiver(&mut self) -> bool {
         if self.at_end() || self.peek() == Some(&Token::RightParen) {
             return false;

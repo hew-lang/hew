@@ -1309,6 +1309,13 @@ Pass strings and scalars without ceremony and keep using them. Concatenation wit
 
 ## Types — records and enums
 
+Type and enum bodies declare data. Put ordinary methods in a sibling `impl`
+block, including associated functions and methods that borrow, mutate or consume
+`self`. A method written inside the data declaration is a parse error; the
+diagnostic points to the required `impl TypeName { ... }` form. Trait default
+bodies, actor handlers and lifecycle methods, and machine bodies keep their own
+declaration forms.
+
 ### Record declaration, construction, field access
 
 ```hew
@@ -3803,7 +3810,7 @@ form; the fix-it rewrites it to `self`.
 `var self` works on both trait methods and inherent `impl` methods. In either
 case, call it through a `var` binding so the mutation updates the receiver.
 
-A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. When both the implementing type and its impl come from a directory module (for example, `import gm.{ Dog };`), inherited defaults are unavailable and the call reports `no method 'greet' on 'gm.Dog'`.
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. Defaults also work when the trait, implementing type and impl come from a directory module in a package (for example, `import gm.{ Dog };`), including defaults that call the type's required methods.
 
 ### Choosing between methods with the same name
 

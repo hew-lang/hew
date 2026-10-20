@@ -230,7 +230,6 @@ impl LowerCtx {
                     marker: ResourceMarker::None,
                     is_opaque: false,
                     is_indirect: false,
-                    consuming_methods: Vec::new(),
                     type_params: definition.type_params,
                     fields: Vec::new(),
                     variants,

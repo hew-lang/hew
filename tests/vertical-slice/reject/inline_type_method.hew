@@ -1,0 +1,6 @@
+type Cart {
+    items: Vec<string>;
+    fn count(self) -> i64 { self.items.len() }
+}
+
+fn main() {}

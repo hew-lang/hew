@@ -548,7 +548,7 @@ fn load_source(
                         .iter()
                         .filter_map(|item| match item {
                             TypeBodyItem::Variant(variant) => Some(variant.name.to_string()),
-                            _ => None,
+                            TypeBodyItem::Field { .. } => None,
                         })
                         .collect();
                     let qualified = qualified(source, decl.name.name.as_str());
@@ -560,18 +560,6 @@ fn load_source(
                             variants,
                         },
                     );
-                }
-                for item in decl.body {
-                    if let TypeBodyItem::Method(method) = item {
-                        let declaration = format!("{}::{}", decl.name, method.name);
-                        load_function_attributes(
-                            authority,
-                            source,
-                            &method,
-                            declaration,
-                            AuthorityDeclarationKind::Method,
-                        )?;
-                    }
                 }
             }
             Item::Trait(decl) => {

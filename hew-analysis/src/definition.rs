@@ -76,7 +76,7 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
             }
         }
 
-        // Search inside TypeDecl for fields, variants, and methods.
+        // Search inside TypeDecl for fields and variants.
         if let Item::TypeDecl(td) = item {
             for body_item in &td.body {
                 match body_item {
@@ -85,9 +85,6 @@ pub fn find_definition(source: &str, parse_result: &ParseResult, word: &str) -> 
                     }
                     TypeBodyItem::Variant(v) if v.name == Ident::new(word) => {
                         return Some(crate::util::find_name_span(source, span.start, word));
-                    }
-                    TypeBodyItem::Method(m) if m.name == Ident::new(word) => {
-                        return Some(crate::util::find_name_span(source, m.decl_span.start, word));
                     }
                     _ => {}
                 }
@@ -193,16 +190,6 @@ fn find_param_in_item(item: &Item, word: &str, offset: usize) -> Option<OffsetSp
             for method in &actor.methods {
                 if let Some(span) = find_param_in_method(method, word, offset) {
                     return Some(span);
-                }
-            }
-            None
-        }
-        Item::TypeDecl(type_decl) => {
-            for body_item in &type_decl.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    if let Some(span) = find_param_in_method(method, word, offset) {
-                        return Some(span);
-                    }
                 }
             }
             None
@@ -318,9 +305,6 @@ fn find_type_field_definition(
                     )
                     .end;
                 }
-                TypeBodyItem::Method(method) => {
-                    search_from = search_from.max(method.decl_span.end);
-                }
             }
         }
     }
@@ -404,8 +388,8 @@ mod tests {
     }
 
     #[test]
-    fn definition_type_method_uses_decl_span() {
-        let source = "type Counter {\n    value: i32;\n    fn foo(value: i32) -> i32 {\n        value\n    }\n}\n";
+    fn definition_impl_method_uses_decl_span() {
+        let source = "type Counter {\n    value: i32;\n}\nimpl Counter {\n    fn foo(value: i32) -> i32 {\n        value\n    }\n}\n";
         let pr = parse(source);
         let result = find_definition(source, &pr, "foo").expect("should find type method");
         let method_start = source.rfind("fn foo").expect("method should exist") + 3;

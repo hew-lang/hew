@@ -531,7 +531,6 @@ impl Checker {
                     };
                     members.extend(payload);
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
         self.validate_wire_type_encoding(identity.as_str(), members);
@@ -712,7 +711,6 @@ impl Checker {
                             .insert(variant.name.to_string(), VariantDef::Struct(variant_fields));
                     }
                 },
-                TypeBodyItem::Method(_) => {}
             }
         }
 
@@ -1164,7 +1162,6 @@ impl Checker {
                         }
                     }
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
 
@@ -1487,9 +1484,6 @@ impl Checker {
                             );
                         }
                     }
-                }
-                TypeBodyItem::Method(_) => {
-                    // Methods are handled in pass 2
                 }
             }
         }

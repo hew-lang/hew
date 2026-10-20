@@ -231,7 +231,6 @@ pub fn declaration_at(
                 output.defs.kind(id),
                 DeclarationKind::ActorReceive
                     | DeclarationKind::ActorMethod
-                    | DeclarationKind::TypeMethod
                     | DeclarationKind::ImplMethod
                     | DeclarationKind::TraitMethod
             ) =>
@@ -337,7 +336,7 @@ pub fn declaration_name_span(
                     .iter()
                     .filter_map(|part| match part {
                         TypeBodyItem::Field { name, ty, .. } => Some((name, ty)),
-                        _ => None,
+                        TypeBodyItem::Variant(_) => None,
                     })
                     .nth(index as usize)?;
                 enclosing_span.start..ty.1.start
@@ -366,23 +365,6 @@ pub fn declaration_name_span(
             .or_else(|| decl.methods.get(ordinal))?
             .decl_span
             .clone(),
-        (DeclarationKind::TypeMethod, Item::TypeDecl(decl)) => {
-            let methods: Vec<_> = decl
-                .body
-                .iter()
-                .filter_map(|part| match part {
-                    TypeBodyItem::Method(method) => Some(method),
-                    _ => None,
-                })
-                .collect();
-            methods
-                .iter()
-                .find(|method| method.fn_span == item_span)
-                .copied()
-                .or_else(|| methods.get(ordinal).copied())?
-                .decl_span
-                .clone()
-        }
         (DeclarationKind::ActorMethod, Item::Actor(decl)) => decl
             .methods
             .iter()
@@ -408,7 +390,7 @@ pub fn declaration_name_span(
             .iter()
             .filter_map(|part| match part {
                 TypeBodyItem::Variant(variant) => Some(variant),
-                _ => None,
+                TypeBodyItem::Field { .. } => None,
             })
             .nth(ordinal)?
             .span

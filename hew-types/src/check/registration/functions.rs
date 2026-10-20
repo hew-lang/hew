@@ -496,8 +496,12 @@ impl Checker {
                         // the impl site so mismatches surface where the user
                         // wrote them, not as a confusing "type does not satisfy
                         // trait" downstream. See LESSONS row `diagnostic-trust`.
-                        if let Some(tb) = id.trait_bound.as_ref() {
-                            self.check_impl_method_against_trait(type_name, tb, method, &sig);
+                        if let (Some(tb), Some(trait_ref)) =
+                            (id.trait_bound.as_ref(), impl_trait.as_ref())
+                        {
+                            self.check_impl_method_against_trait(
+                                type_name, tb, trait_ref, method, &sig,
+                            );
                         }
                         // When the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the
@@ -734,104 +738,6 @@ impl Checker {
                     }
                 }
             }
-            Item::TypeDecl(td) => {
-                // Register methods defined inside struct/enum bodies
-                for item in &td.body {
-                    if let TypeBodyItem::Method(method) = item {
-                        // An inline type-body method's signature can name the
-                        // enclosing type's generics (`type Holder<T> { fn f(...) -> T }`)
-                        // and its own (`fn idm<T>(...)`). Push BOTH so the whole
-                        // block — `register_fn_sig_with_name` AND the secondary
-                        // resolution below that rebuilds the `FnSig` for
-                        // `type_def.methods` (which runs outside the method's own
-                        // frame) — resolves them scope-locally: an out-of-scope
-                        // name is rejected at the annotation, while these
-                        // legitimate generics still resolve.
-                        let method_sig_scope = self.enter_primary_sig_scope(&[
-                            (td.type_params.as_ref(), td.where_clause.as_ref()),
-                            (method.type_params.as_ref(), method.where_clause.as_ref()),
-                        ]);
-                        let method_key = format!("{}::{}", td.name, method.name);
-                        // Inline type-body methods can declare their own
-                        // generics alongside the type's; the same shadow
-                        // refusal applies here as on `impl` blocks.
-                        if let Some(type_tps) = td.type_params.as_ref() {
-                            let enclosing: Vec<String> =
-                                type_tps.iter().map(|tp| tp.name.to_string()).collect();
-                            if !enclosing.is_empty() {
-                                let owner = Self::method_declaration_key(
-                                    &self.declaration_owner_key(td.name.name.as_str()),
-                                    method.name.name.as_str(),
-                                );
-                                self.reject_shadowing_method_type_params(
-                                    method.type_params.as_ref(),
-                                    &[(enclosing, format!("the type `{}`", td.name))],
-                                    &owner,
-                                    &method.decl_span,
-                                );
-                            }
-                        }
-                        self.register_fn_sig_with_name(&method_key, method, None);
-                        let skip =
-                            usize::from(method.params.first().is_some_and(|p| p.is_receiver));
-                        let param_names: Vec<String> = method
-                            .params
-                            .iter()
-                            .skip(skip)
-                            .map(|p| p.name.to_string())
-                            .collect();
-                        let params: Vec<Ty> = method
-                            .params
-                            .iter()
-                            .skip(skip)
-                            .map(|p| self.resolve_registered_annotation_ty_no_holes(&p.ty))
-                            .collect();
-                        let return_type = method.return_type.as_ref().map_or(Ty::Unit, |ret| {
-                            self.resolve_registered_annotation_ty_no_holes(ret)
-                        });
-                        self.exit_primary_sig_scope(method_sig_scope);
-                        let method_name = method.name;
-                        let type_name = td.name;
-                        if let Some((owner, member)) = self
-                            .lookup_declaration(&self.declaration_identity(type_name))
-                            .and_then(|owner| {
-                                self.defs
-                                    .member_of_kind(
-                                        owner,
-                                        method_name.name,
-                                        crate::DeclarationKind::TypeMethod,
-                                    )
-                                    .map(|member| (owner, member))
-                            })
-                        {
-                            self.file_dispatch_method(
-                                &Ty::named_head(
-                                    self.head_of_declaration(
-                                        crate::NominalId::from_minted_declaration(owner),
-                                    ),
-                                    Vec::new(),
-                                ),
-                                true,
-                                crate::check::dispatch_table::MethodOwner::Inherent,
-                                method_name.name,
-                                member,
-                            );
-                        }
-                        if let Some(type_def) = self.lookup_type_def_mut(type_name.name.as_str()) {
-                            type_def.methods.insert(
-                                method_name.to_string(),
-                                FnSig {
-                                    param_names,
-                                    params,
-                                    return_type,
-                                    associated: skip == 0,
-                                    ..FnSig::default()
-                                },
-                            );
-                        }
-                    }
-                }
-            }
             Item::Trait(td) => {
                 let trait_path = self.declaration_identity(td.name);
                 let Some(trait_id) = self.require_declaration_path(&trait_path, span) else {
@@ -879,13 +785,10 @@ impl Checker {
             }
             Item::Macro(_)
             | Item::MacroCall(_)
+            | Item::TypeDecl(_)
             | Item::TypeAlias(_)
             | Item::Machine(_)
-            | Item::Record(_) => {
-                // Records have no method body items in v0.5; method registration
-                // is a no-op here.  TODO(A-4): if records gain methods, register
-                // them via a `register_record_methods` pass here.
-            }
+            | Item::Record(_) => {}
         }
     }
 
@@ -931,9 +834,7 @@ impl Checker {
     /// authoritative for the names a signature is allowed to spell.
     ///
     /// `scopes` lists the enclosing type-param sets to push as ONE names-only
-    /// bounds frame (e.g. an actor/trait/type's `<T>`, and for inline type-body
-    /// methods the method's own `<T>` too, so the secondary resolution that
-    /// rebuilds the method's `FnSig` sees it). Pass `&[]` for items with no
+    /// bounds frame (e.g. an actor or trait's `<T>`). Pass `&[]` for items with no
     /// enclosing generics (free functions) or where the enclosing frame is
     /// already on the stack (impl methods, whose impl params `register_impl_method`
     /// pushes itself) — then only the scope-local flag is armed. Pair every

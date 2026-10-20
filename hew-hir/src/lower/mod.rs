@@ -820,8 +820,8 @@ struct LowerCtx {
     opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
     /// Resource declarations for which `check_resource_close_discipline`
     /// already pushed a user-facing close-discipline diagnostic
-    /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
-    /// `ResourceCloseSourceUnsupported`). `admit_resource_record_lifecycles`
+    /// (`ResourceMissingClose` or `ResourceCloseMustReturnUnit`).
+    /// `admit_resource_record_lifecycles`
     /// consults this set so it never re-derives the same missing-or-invalid
     /// close fact as a `CheckerBoundaryViolation`: that diagnostic means an
     /// HIR-internal invariant broke on a program this pass already believes

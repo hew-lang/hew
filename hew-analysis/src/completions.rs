@@ -4,7 +4,6 @@ use std::collections::{BTreeSet, HashSet};
 
 use hew_parser::ast::{
     Block, ConditionItem, Expr, Item, Pattern, Span, Spanned, Stmt, StringPart, TraitItem,
-    TypeBodyItem,
 };
 use hew_types::check::{FnSig, TypeDefKind};
 use hew_types::{method_resolution, TypeCheckOutput, VariantDef};
@@ -648,18 +647,6 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
                     }
                 }
             }
-            Item::TypeDecl(td) => {
-                for body_item in &td.body {
-                    if let TypeBodyItem::Method(method) = body_item {
-                        if span_contains_offset(&method.fn_span, offset) {
-                            for p in &method.params {
-                                locals.push(local_completion(p.name.name.as_str()));
-                            }
-                            collect_locals_from_block(&method.body, offset, &mut locals);
-                        }
-                    }
-                }
-            }
             Item::Impl(i) => {
                 for method in &i.methods {
                     if span_contains_offset(&method.fn_span, offset) {
@@ -697,6 +684,7 @@ fn collect_locals_at(parse_result: &hew_parser::ParseResult, offset: usize) -> V
             Item::Machine(m) => collect_machine_locals(m, offset, &mut locals),
             // Record fields carry no expressions; no locals to collect.
             Item::Record(_)
+            | Item::TypeDecl(_)
             | Item::Macro(_)
             | Item::MacroCall(_)
             | Item::Import(_)
@@ -1773,9 +1761,7 @@ fn example() {
     #[test]
     fn sibling_impl_method_params_do_not_leak() {
         let labels = labels_at_cursor(
-            r"type Box {
-    fn a(x: i32) {}
-}
+            r"type Box {}
 
 impl Box {
     fn a(x: i32) {}

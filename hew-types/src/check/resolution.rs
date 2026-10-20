@@ -1672,20 +1672,6 @@ impl Checker {
                             &format!("type `{}`", td.name),
                         ));
                     }
-
-                    for body_item in &td.body {
-                        if let TypeBodyItem::Method(method) = body_item {
-                            let method_name = format!("{}::{}", td.name, method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of method `{method_name}`"),
-                                ));
-                            }
-                        }
-                    }
                 }
                 Item::TypeAlias(type_alias) => {
                     // Fail closed only for user-written root `_` holes; nested holes

@@ -458,7 +458,6 @@ impl Parser<'_> {
             is_indirect: false,
             resource_marker: ResourceMarker::None,
             is_opaque: false,
-            consuming_methods: Vec::new(),
             lang_item: attrs
                 .iter()
                 .find(|a| a.name == "lang_item")

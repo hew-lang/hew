@@ -858,6 +858,8 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind")]
 pub enum ParseDiagnosticKind {
+    /// An ordinary method was declared inside a type or enum body.
+    TypeMethodInDecl,
     /// A reserved keyword was used as a declaration name.
     ReservedName,
     /// A declaration member needs a semicolon.
@@ -932,6 +934,7 @@ impl ParseDiagnosticKind {
     #[must_use]
     pub fn as_kind_str(&self) -> &'static str {
         match self {
+            Self::TypeMethodInDecl => "E_TYPE_METHOD_IN_DECL",
             Self::MemberTerminator => "E_MEMBER_TERMINATOR",
             Self::SeparatorAfterBody => "E_SEPARATOR_AFTER_BODY",
             Self::ListSeparator => "E_LIST_SEPARATOR",

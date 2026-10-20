@@ -674,7 +674,6 @@ mod non_root_module_inference_scope {
             resource_marker: hew_parser::ast::ResourceMarker::None,
             serial_case: None,
             is_opaque: false,
-            consuming_methods: Vec::new(),
             lang_item: None,
         };
         let impl_decl = ImplDecl {

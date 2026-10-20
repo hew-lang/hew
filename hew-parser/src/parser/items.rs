@@ -765,52 +765,6 @@ impl Parser<'_> {
         })
     }
 
-    /// Parse a method inside a type body, returning `(FnDecl, has_consuming_self)`.
-    ///
-    /// Unlike `parse_function`, this variant accepts `consume self` as the first
-    /// parameter. The boolean return indicates whether the method declared such a
-    /// receiver; callers record this in `TypeDecl.consuming_methods`.
-    pub(crate) fn parse_type_method(
-        &mut self,
-        fn_start: usize,
-        attributes: Vec<Attribute>,
-    ) -> Option<(FnDecl, bool)> {
-        let decl_start = self.peek_span().start;
-        let name = self.expect_ident()?;
-        let decl_end = self.peek_span().start;
-
-        let type_params = self.parse_opt_type_params()?;
-
-        self.expect(&Token::LeftParen)?;
-        let (params, has_consuming_self) = self.parse_params_with_receiver(true);
-        self.expect(&Token::RightParen)?;
-
-        let return_type = self.parse_opt_return_type()?;
-        let where_clause = self.parse_opt_where_clause()?;
-
-        let body = self.parse_block()?;
-        let fn_end = self.peek_span().start;
-
-        let decl = FnDecl {
-            origin: crate::ast::DeclarationOrigin::Authored,
-            attributes,
-            is_generator: false,
-            visibility: Visibility::Private,
-            name,
-            type_params,
-            params,
-            return_type,
-            where_clause,
-            body,
-            doc_comment: None,
-            decl_span: decl_start..decl_end,
-            fn_span: fn_start..fn_end,
-            intrinsic: None,
-            consumes_self: has_consuming_self,
-        };
-        Some((decl, has_consuming_self))
-    }
-
     pub(crate) fn is_type_alias_lookahead(&self) -> bool {
         self.is_type_alias_lookahead_at(self.pos)
     }
@@ -946,17 +900,16 @@ impl Parser<'_> {
         self.expect(&Token::LeftBrace)?;
 
         let mut body = Vec::new();
-        let mut consuming_methods = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
-            if let Some((item, has_consuming_self)) = self.parse_type_body_item(kind) {
-                if has_consuming_self {
-                    // Record the method name so the checker can validate ownership rules.
-                    if let TypeBodyItem::Method(ref m) = item {
-                        consuming_methods.push(m.name);
-                    }
-                }
+            if matches!(self.peek(), Some(Token::Fn | Token::Gen | Token::Pub)) {
+                self.report_type_method(name);
+                self.skip_type_method();
+                continue;
+            }
+            let before = self.pos;
+            if let Some(item) = self.parse_type_body_item(kind, name) {
                 body.push(item);
-            } else {
+            } else if self.pos == before {
                 let found = match self.peek() {
                     Some(tok) => format!("{tok}"),
                     None => "end of file".to_string(),
@@ -989,7 +942,6 @@ impl Parser<'_> {
             is_indirect: false,
             resource_marker,
             is_opaque,
-            consuming_methods,
             lang_item,
             serial_case,
         })
@@ -1112,16 +1064,71 @@ impl Parser<'_> {
         Some(decl)
     }
 
-    /// Parse one item in a type body, returning `(item, has_consuming_self)`.
-    ///
-    /// `has_consuming_self` is `true` only when the item is a method whose
-    /// first parameter is a `consume self` receiver.  The caller records
-    /// consuming method names in `TypeDecl.consuming_methods`.
+    /// Recover from a rejected method without consuming the enclosing type body.
+    fn report_type_method(&mut self, name: Ident) {
+        self.errors.push(ParseError {
+            message: "methods belong in an impl block [E_TYPE_METHOD_IN_DECL]".to_string(),
+            span: self.peek_span(),
+            hint: Some(format!("move this method to `impl {name} {{ ... }}`")),
+            severity: Severity::Error,
+            kind: ParseDiagnosticKind::TypeMethodInDecl,
+        });
+    }
+
+    /// Skip the rejected signature and its balanced body for recovery only.
+    fn skip_type_method(&mut self) {
+        let mut parens: usize = 0;
+        let mut brackets: usize = 0;
+        while !self.at_end() {
+            match self.peek() {
+                Some(Token::LeftParen) => {
+                    parens += 1;
+                    self.advance();
+                }
+                Some(Token::RightParen) => {
+                    parens = parens.saturating_sub(1);
+                    self.advance();
+                }
+                Some(Token::LeftBracket) => {
+                    brackets += 1;
+                    self.advance();
+                }
+                Some(Token::RightBracket) => {
+                    brackets = brackets.saturating_sub(1);
+                    self.advance();
+                }
+                Some(Token::LeftBrace) if parens == 0 && brackets == 0 => {
+                    self.advance();
+                    let mut depth = 1;
+                    while depth > 0 && !self.at_end() {
+                        match self.peek() {
+                            Some(Token::LeftBrace) => depth += 1,
+                            Some(Token::RightBrace) => depth -= 1,
+                            _ => {}
+                        }
+                        self.advance();
+                    }
+                    return;
+                }
+                Some(Token::Semicolon) if parens == 0 && brackets == 0 => {
+                    self.advance();
+                    return;
+                }
+                Some(Token::RightBrace) => return,
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Parse a field or variant in a type declaration.
     pub(crate) fn parse_type_body_item(
         &mut self,
         kind: TypeDeclKind,
-    ) -> Option<(TypeBodyItem, bool)> {
-        // Collect any doc comments before attributes or the field/variant/method
+        type_name: Ident,
+    ) -> Option<TypeBodyItem> {
+        // Collect any doc comments before attributes or the field/variant
         // itself. Support both `/// docs #[attr]` and `#[attr] /// docs`.
         let mut doc_comment = self.collect_doc_comments();
         // Capture the start of this item after doc-comment trivia is consumed.
@@ -1135,42 +1142,29 @@ impl Parser<'_> {
                     doc_comment = self.collect_doc_comments();
                 }
 
-                if self.peek() == Some(&Token::Fn) {
-                    // No attribute is legal on a method declared inline in a
-                    // `type { .. }` body (`#[extern_symbol]` belongs on an
-                    // `impl` method instead, `#[resource]`/`#[linear]` only
-                    // on the type declaration itself, and so on).
-                    self.validate_attributes_for(&attributes, AttrPosition::Unsupported);
-                    let fn_start = self.peek_span().start;
-                    self.advance();
-                    // Use parse_type_method so `consume self` receivers are accepted.
-                    let (mut method, has_consuming_self) =
-                        self.parse_type_method(fn_start, attributes)?;
-                    method.doc_comment = doc_comment;
-                    self.refuse_mark_after_body();
-                    Some((TypeBodyItem::Method(method), has_consuming_self))
-                } else {
-                    self.validate_attributes_for(&attributes, AttrPosition::Field);
-                    let name = self.expect_ident()?;
-                    self.expect(&Token::Colon)?;
-                    let ty = self.parse_type()?;
-                    self.expect_member_terminator("field");
-                    // peek_span().start is now the first token after the `,`,
-                    // which captures any trailing comment on this field's line in the
-                    // range item_start..item_end (comments are skipped by the lexer,
-                    // but extract_comments scans the raw source for them).
-                    let item_end = self.peek_span().start;
-                    Some((
-                        TypeBodyItem::Field {
-                            name,
-                            ty,
-                            attributes,
-                            doc_comment,
-                            span: item_start..item_end,
-                        },
-                        false,
-                    ))
+                if matches!(self.peek(), Some(Token::Fn | Token::Gen | Token::Pub)) {
+                    self.report_type_method(type_name);
+                    self.skip_type_method();
+                    return None;
                 }
+
+                self.validate_attributes_for(&attributes, AttrPosition::Field);
+                let name = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let ty = self.parse_type()?;
+                self.expect_member_terminator("field");
+                // peek_span().start is now the first token after the `,`,
+                // which captures any trailing comment on this field's line in the
+                // range item_start..item_end (comments are skipped by the lexer,
+                // but extract_comments scans the raw source for them).
+                let item_end = self.peek_span().start;
+                Some(TypeBodyItem::Field {
+                    name,
+                    ty,
+                    attributes,
+                    doc_comment,
+                    span: item_start..item_end,
+                })
             }
             TypeDeclKind::Enum => {
                 // Enum variant
@@ -1215,16 +1209,13 @@ impl Parser<'_> {
                 }
                 // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
-                Some((
-                    TypeBodyItem::Variant(VariantDecl {
-                        name,
-                        kind,
-                        tag,
-                        doc_comment,
-                        span: item_start..item_end,
-                    }),
-                    false,
-                ))
+                Some(TypeBodyItem::Variant(VariantDecl {
+                    name,
+                    kind,
+                    tag,
+                    doc_comment,
+                    span: item_start..item_end,
+                }))
             }
         }
     }

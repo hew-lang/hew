@@ -1113,11 +1113,12 @@ impl Checker {
         true
     }
 
-    /// Fail-closed fallback for an unknown collection method: try a user
-    /// `impl Trait for <collection>` body, then synthesize the arguments and
+    /// Resolve an ordinary standard-library inherent method, then a user
+    /// `impl Trait for <collection>` body. Otherwise synthesize arguments and
     /// emit the per-collection `no method `{m}` on {Collection}` diagnostic.
     pub(super) fn collection_method_fallback(
         &mut self,
+        receiver_expr: &Spanned<Expr>,
         kind: CollectionKind,
         cx: &CollectionTyCx,
         method: &str,
@@ -1129,6 +1130,34 @@ impl Checker {
         // bind the impl's type parameters from the element/key/value types and
         // project its `Output`/return — the builtin-vs-user asymmetry fix.
         let receiver = cx.receiver_with_args(kind);
+        if let crate::check::dispatch_table::MethodSelection::Unique(
+            crate::check::dispatch_table::MethodOwner::Inherent,
+            declaration,
+        ) = self.select_method(&receiver, method)
+        {
+            let standard_library = self.defs.module(declaration).is_some_and(|module| {
+                self.defs.module_package(module)
+                    == &crate::def_table::PackageOrigin::StandardLibrary
+            });
+            if standard_library {
+                if self
+                    .fn_sigs
+                    .get(&declaration)
+                    .is_some_and(|sig| sig.requires_mutable_receiver)
+                {
+                    self.check_mutable_method_receiver(
+                        receiver_expr,
+                        &format!("collection method `{method}`"),
+                        span,
+                    );
+                }
+                if let Some(return_type) =
+                    self.try_resolve_source_method(&receiver, method, args, span)
+                {
+                    return return_type;
+                }
+            }
+        }
         if let Some(ret_ty) =
             self.try_dispatch_primitive_trait_method(&receiver, method, args, span)
         {
@@ -1158,6 +1187,7 @@ impl Checker {
     /// delegates here.
     pub(in crate::check) fn check_collection_method(
         &mut self,
+        receiver_expr: &Spanned<Expr>,
         kind: CollectionKind,
         cx: &CollectionTyCx,
         method: &str,
@@ -1165,7 +1195,7 @@ impl Checker {
         span: &Span,
     ) -> Ty {
         let Some(desc) = collection_method_desc(kind, method) else {
-            return self.collection_method_fallback(kind, cx, method, args, span);
+            return self.collection_method_fallback(receiver_expr, kind, cx, method, args, span);
         };
         if let Some(arity) = desc.arity {
             self.check_arity(args, arity, &format!("`{}.{method}`", kind.name()), span);
@@ -1192,6 +1222,7 @@ impl Checker {
     /// to the witness type; missing impls emit `InvalidOperation`.
     pub(in crate::check) fn check_hashmap_method(
         &mut self,
+        receiver_expr: &Spanned<Expr>,
         type_args: &[Ty],
         method: &str,
         args: &[CallArg],
@@ -1278,11 +1309,19 @@ impl Checker {
             return Ty::option(val_ty);
         }
         let cx = CollectionTyCx::hashmap(key_ty, val_ty);
-        self.check_collection_method(CollectionKind::HashMap, &cx, method, args, span)
+        self.check_collection_method(
+            receiver_expr,
+            CollectionKind::HashMap,
+            &cx,
+            method,
+            args,
+            span,
+        )
     }
 
     pub(in crate::check) fn check_hashset_method(
         &mut self,
+        receiver_expr: &Spanned<Expr>,
         type_args: &[Ty],
         method: &str,
         args: &[CallArg],
@@ -1293,7 +1332,14 @@ impl Checker {
             .cloned()
             .unwrap_or(Ty::Var(TypeVar::fresh()));
         let cx = CollectionTyCx::hashset(elem_ty);
-        self.check_collection_method(CollectionKind::HashSet, &cx, method, args, span)
+        self.check_collection_method(
+            receiver_expr,
+            CollectionKind::HashSet,
+            &cx,
+            method,
+            args,
+            span,
+        )
     }
 
     pub(super) fn report_vec_contains_layout_equality_gate(

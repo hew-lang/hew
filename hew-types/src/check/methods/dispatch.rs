@@ -825,7 +825,7 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => self.check_hashmap_method(type_args, method, args, span),
+            ) => self.check_hashmap_method(receiver, type_args, method, args, span),
             // HashSet methods
             (
                 Ty::Named {
@@ -845,7 +845,7 @@ impl Checker {
                     } => args.as_slice(),
                     _ => type_args,
                 };
-                self.check_hashset_method(original_type_args, method, args, span)
+                self.check_hashset_method(receiver, original_type_args, method, args, span)
             }
             // Rc<T> methods
             (

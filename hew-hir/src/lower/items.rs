@@ -251,11 +251,19 @@ impl LowerCtx {
                         })
                 })
             });
-        let is_injected_timestamp_impl =
-            self.lowering_injected_items && builtin_impl_kind == Some(BuiltinType::Timestamp);
+        // The checked embedded program owns executable builtin methods,
+        // including generic receivers. Ordinary user impls never enter this
+        // injection path and retain the standard-library reservation below.
+        let is_injected_builtin_impl = self.lowering_injected_items
+            && decl.methods.iter().any(|method| {
+                self.source_declaration(&method.fn_span, hew_types::DeclarationKind::ImplMethod, 0)
+                    .is_some_and(|declaration| {
+                        self.impl_body_plan.compiler_selected.contains(&declaration)
+                    })
+            });
         if !target_is_alias
             && !is_duration_ctor_block
-            && !is_injected_timestamp_impl
+            && !is_injected_builtin_impl
             && !is_std_method_surface
             && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()

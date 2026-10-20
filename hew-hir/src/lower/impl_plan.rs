@@ -754,8 +754,7 @@ pub(super) fn injected_builtin_impl_symbol_owner(source_name: &str) -> &str {
 pub(super) fn is_builtin_source_body_impl(item: &Item) -> bool {
     matches!(item, Item::Impl(decl)
     if decl.trait_bound.is_none()
-        && decl.type_params.is_none()
-        && matches!(&decl.target_type.0, TypeExpr::Named { type_args: None, .. })
+        && matches!(&decl.target_type.0, TypeExpr::Named { .. })
         && !decl.methods.is_empty()
         && decl.methods.iter().all(|method| {
             !method.attributes.iter().any(|attr| attr.name == "extern_symbol")

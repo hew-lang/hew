@@ -460,30 +460,31 @@ fn impl_block_inherent_on_builtin_nominal_emits_fail_closed_shape_diagnostic() {
     //
     // Trait impls on builtins (`impl MyTrait for Vec<T>`) are deliberately
     // not covered by this guard — orphan-rule policing is a separate concern.
-    let output = lower_rejected_shape(
-        r"
-        impl<T> Vec<T> {
-            fn user_method(self) -> i32 {
-                0
-            }
-        }
-        ",
-    );
+    for (implementation, expected_shape) in [
+        ("impl<T> Vec<T>", "inherent impl on builtin nominal `Vec`"),
+        (
+            "impl<K, V> HashMap<K, V>",
+            "inherent impl on builtin nominal `HashMap`",
+        ),
+    ] {
+        let source = format!("{implementation} {{ fn user_method(self) -> i32 {{ 0 }} }}");
+        let output = lower_rejected_shape(&source);
 
-    let shape_diag = output.diagnostics.iter().find_map(|d| {
-        if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
-            Some(shape.clone())
-        } else {
-            None
-        }
-    });
-    assert_eq!(
-        shape_diag.as_deref(),
-        Some("inherent impl on builtin nominal `Vec`"),
-        "V0b must surface a precise shape diagnostic for inherent impls on \
+        let shape_diag = output.diagnostics.iter().find_map(|d| {
+            if let HirDiagnosticKind::ImplBlockShapeNotLowered { shape } = &d.kind {
+                Some(shape.clone())
+            } else {
+                None
+            }
+        });
+        assert_eq!(
+            shape_diag.as_deref(),
+            Some(expected_shape),
+            "V0b must surface a precise shape diagnostic for inherent impls on \
          builtin nominals; got diagnostics: {:#?}",
-        output.diagnostics,
-    );
+            output.diagnostics,
+        );
+    }
 }
 
 #[test]

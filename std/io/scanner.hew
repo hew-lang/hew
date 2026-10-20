@@ -231,11 +231,12 @@ pub fn text(sc: Scanner) -> string {
 // ── Convenience batch API ─────────────────────────────────────────────
 /// Return all lines from `s` as a `Vec<string>`.
 ///
-/// Strips `\r\n` and `\n` endings.  A trailing newline does not produce
+/// Strips `\r\n` and `\n` endings. A trailing newline does not produce
 /// a trailing empty element — only content lines are emitted (Go
-/// `bufio.Scanner` semantics).  An empty input returns an empty vector.
+/// `bufio.Scanner` semantics). An empty input returns an empty vector.
+/// Interior blank lines are preserved; a lone trailing `\r` is not stripped.
 ///
-/// For trailing-empty-element behaviour, use `std.().lines()`.
+/// For trailing-empty-element behaviour, use `string.lines()`.
 ///
 /// # Examples
 ///

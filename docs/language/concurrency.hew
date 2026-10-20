@@ -30,5 +30,6 @@
 //!
 //! `race` chooses the first completion, including an ordinary Err, and cleans up
 //! losers. `select` uses `value from source => ...` and `after duration => ...`.
-//! Task, timer and channel-receive selection are on the native path. Actor-call
-//! registration and stream selection remain pending at this checkpoint. Actor streams use ordinary `for`, without await.
+//! Task, timer, channel-receive and actor-call selection are on the native
+//! path. Stream selection remains unsupported at this checkpoint. Actor
+//! streams use ordinary `for`, without await.

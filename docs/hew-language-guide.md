@@ -447,6 +447,9 @@ fn main() {
 
 `0..n` iterates 0 through n-1; `0..=n` includes n. The loop binding may be a named identifier or `_` (wildcard). Use `_` when the loop body does not need the iteration value.
 
+Ranges are accepted as loop iterables and range selectors for indexing or
+slicing; they are not standalone values that can be stored in a binding.
+
 ### for x in collection
 
 ```hew
@@ -456,6 +459,15 @@ fn main() {
     var total = 0;
     for x in v { total += x; }
     println(total);   // 60
+}
+```
+
+For a fixed-size array, `[value; count]` repeats the value `count` times:
+
+```hew
+fn main() {
+    let zeros = [0; 4];
+    println(zeros[2]); // 0
 }
 ```
 
@@ -813,7 +825,7 @@ fn main() {
 }
 ```
 
-`.contains_key(k)` returns `bool`; `.remove(k)` returns `Option<V>` — the removed value if the key was present, or `None`. Consume it with `match`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
+`.contains_key(k)` returns `bool`; `.remove(k)` returns `Option<V>` — the removed value if the key was present, or `None`. Consume it with `match`. Nested string literals can appear inside interpolation expressions; bind a method result when that makes the expression easier to read. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
 
 ### Supported HashMap value types
 
@@ -2059,16 +2071,28 @@ actor Risky {
     }
     #[on(crash)]
     fn on_fail(info: CrashInfo) -> CrashAction {
-        panic("crash observed")
+        CrashAction.Restart
+    }
+    receive fn fail() {
+        panic("forced crash")
     }
     receive fn value() -> i64 {
         n
     }
 }
 
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child worker: Risky { n: 0 };
+}
+
 fn main() {
-    let r = spawn Risky { n: 0 };
-    let v = r.value();
+    let app = spawn App;
+    let worker = app.worker;
+    let _ = worker.fail(); // the Err completion makes the crash pending
+    restarted(worker);
+    let v = worker.value(); // the retained role handle resolves its replacement
     match v {
         .Ok(x) => println(f"n={x}"),
         .Err(_) => println("failed"),
@@ -2076,7 +2100,12 @@ fn main() {
 }
 ```
 
-Declare `#[on(crash)]` as `fn name(info: CrashInfo) -> CrashAction` and satisfy the return type with a diverging `panic(...)` body. The body is observation/logging only; supervisor restart policy drives behaviour.
+`#[on(crash)]` runs for a supervised child after a crash. Return
+`CrashAction.Restart` to request a replacement, or `CrashAction.GiveUp` to
+leave the role stopped. `restarted(role)` waits until that role is live again
+or permanently gone. The retained role handle resolves the current incarnation
+after a restart, and the replacement starts from the child declaration and
+configuration.
 
 ### Free functions callable from receive fns
 
@@ -2251,9 +2280,10 @@ terminal cleanup, including a stop someone else requested.
 Both delivery views apply to a lambda handle. `mailbox(handle)` submits one
 way, so it accepts only a lambda that owes its caller nothing; a lambda that
 returns a value is refused there, and the handle itself is how you wait for
-the reply. `policy(handle)` completes like the handle and chooses only how a
-full mailbox is answered. A lambda actor declares no mailbox, so both views
-default to `.Wait`.
+the reply. `handle(msg)` and the secondary spelling `handle.send(msg)` both
+wait for completion and return the same `Result`. `policy(handle)` completes
+like the handle and chooses only how a full mailbox is answered. A lambda
+actor declares no mailbox, so both views default to `.Wait`.
 
 ```hew
 fn main() {
@@ -3770,10 +3800,8 @@ value, and any later use of the binding is a use-after-consume error. Naming the
 first parameter after the target type (`fn greet(p: Person)`) is not a receiver
 form; the fix-it rewrites it to `self`.
 
-`var self` is available on trait methods. On an inherent `impl` method it is
-refused today (`E_LIMIT_INHERENT_VAR_SELF`), because an inherent method receives
-the value and the mutation would not reach the caller — declare the method on a
-trait with a `var self` receiver and implement that trait for your type.
+`var self` works on both trait methods and inherent `impl` methods. In either
+case, call it through a `var` binding so the mutation updates the receiver.
 
 A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. When both the implementing type and its impl come from a directory module (for example, `import gm.{ Dog };`), inherited defaults are unavailable and the call reports `no method 'greet' on 'gm.Dog'`.
 
@@ -4900,8 +4928,8 @@ fn main() {
 }
 ```
 
-Compile a pattern with `regex.new` (panics on bad syntax; use `try_new` for a
-`Result`). `capture(input, group)` / `capture_named(input, name)` return the
+Compile a pattern with `regex.new`; invalid syntax panics. `capture(input, group)` /
+`capture_named(input, name)` return the
 indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is the
 whole match. `find_all` returns every whole match as a `Vec<string>`;
 `find_all_submatch` returns a row-major `CaptureMatches` table — `rows.len()`

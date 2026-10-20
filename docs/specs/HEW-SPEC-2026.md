@@ -609,7 +609,10 @@ Both unit-returning and value-returning lambda actors use completion calls.
 `handle(msg)` waits for the handler and yields the actor completion envelope
 from §2.1.1. A unit-returning lambda can also receive one-way submissions via
 `mailbox(handle, on_full: .Reject)(msg)`. `policy(handle, on_full: .Reject)(msg)`
-selects completion admission. There is no lambda-specific `.send()` operation.
+selects completion admission. A lambda handle call such as `worker(msg)` waits
+for completion and returns `Result<R, ActorError>`. `.send(msg)` is a secondary spelling for that same
+completion call; it does not make delivery one-way. Use `mailbox(worker)` for
+one-way admission when the lambda does not return a reply.
 
 A lambda actor lowers to an ordinary actor declaration: captures become state
 fields and its body becomes one receive handler. Its handle supports
@@ -8194,7 +8197,8 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (lowered in `for` loop iterables, range indexing and the string `get(range)` form; standalone range values are not lowered). Open endpoints are admitted for range selectors. At the start of a literal item, `..expr` is the spread of §3.1
-14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
+14. Coalescing: `??`
+15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
 > **Bool bitwise operators:** `&`, `^` and `|` take two integers of one type, or two `bool`s. On `bool` they are logical operators that always evaluate both operands and yield `bool`; `&&` and `||` are the short-circuiting forms. A `bool` mixed with an integer is refused.
 

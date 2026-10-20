@@ -1,4 +1,6 @@
 # Diagnostic only: reuse a published SDK and the original two-process harness.
+param([ValidateSet('grants', 'process')] [string] $Mode = 'grants')
+
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 $repo = (Get-Location).Path
@@ -17,6 +19,20 @@ foreach ($file in @($compiler, $runtime, $targetRuntime)) {
 }
 if ((Get-FileHash $runtime).Hash -ne (Get-FileHash $targetRuntime).Hash) {
     throw 'SDK runtime archive copies differ'
+}
+
+if ($Mode -eq 'process') {
+    $env:HEW_PROCESS_DIAGNOSTIC_COMPILER = $compiler
+    $env:HEW_PROCESS_DIAGNOSTIC_EVIDENCE = $evidence
+    $processMakefile = Join-Path $env:RUNNER_TEMP 'process-diagnostic.mk'
+    @'
+.PHONY: process-diagnostic
+process-diagnostic:
+	python scripts/windows-process-diagnostic.py
+'@ | Set-Content $processMakefile
+    & make SHELL=bash -f $processMakefile process-diagnostic 2>&1 |
+        Tee-Object -FilePath (Join-Path $evidence 'process-diagnostic.log')
+    exit $LASTEXITCODE
 }
 
 # An immediate child preserves support::repo_root() without copying the harness.
@@ -94,7 +110,12 @@ $allowedRuntimeChanges = @(
 $allowedChanges = $allowedRuntimeChanges + @(
     '.github/workflows/release-gate.yml',
     'scripts/windows-grant-diagnostic.ps1',
-    'hew-cli/tests/fixtures/distributed/dist_node.hew'
+    'hew-cli/tests/fixtures/distributed/dist_node.hew',
+    'scripts/windows-process-diagnostic.py',
+    'tests/core-acceptance/cases/process-bounded-output.hew',
+    'tests/core-acceptance/cases/process-run-suspends.hew',
+    'tests/core-acceptance/cases/process-supervised-reap.hew',
+    'tests/core-acceptance/fixtures/process-probe.hew'
 )
 $sourceChanges = @(git diff --name-only $base HEAD)
 if ($LASTEXITCODE -ne 0 -or @($sourceChanges | Where-Object { $_ -notin $allowedChanges }).Count -ne 0) {

@@ -6,22 +6,11 @@ import std.io;
 
 import std.fs;
 
-fn alive(pid: string) -> bool {
-    let windows = match os.env("OS") {
-        .Some(name) => name == "Windows_NT",
-        .None => false,
-    };
-    let probe = if windows {
-        process.run_argv("powershell", ["-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction Stop | Out-Null"])
-    } else {
-        process.run_argv("kill", ["-0", pid])
-    };
-    probe.expect("process probe").status == process.ExitStatus.Exited(0)
-}
+import "../fixtures/process-probe.hew" as process_probe;
 
 fn reaped(marker: string) {
     let pid = fs.read(marker).expect("child wrote its PID");
-    assert(!alive(pid));
+    assert(!process_probe.alive(pid));
     fs.delete(marker).expect("remove PID marker");
 }
 
@@ -64,6 +53,7 @@ fn main() -> i32 {
         sleep(30s);
         return 0;
     }
+    assert(process_probe.alive(f"{os.pid()}"));
     let executable = args[0];
     let limits = process.CaptureLimits { timeout: 5s, max_output_bytes: 6 };
     var specification = command(executable, ["exact"]);

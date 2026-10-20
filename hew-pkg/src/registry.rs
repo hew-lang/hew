@@ -7,8 +7,23 @@ use sha2::{Digest, Sha256};
 
 use crate::package_fs::{CACHE_ARCHIVE_FILE, CACHE_METADATA_FILE};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum CacheOrigin {
+    Registry,
+    LocalPublication,
+}
+
+pub(crate) struct SourceProvenance {
+    pub(crate) origin: CacheOrigin,
+    pub(crate) registry: String,
+    pub(crate) archive_checksum: String,
+    pub(crate) archive: Vec<u8>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 struct CacheMetadata {
+    origin: CacheOrigin,
     name: String,
     version: String,
     registry: String,
@@ -19,7 +34,7 @@ struct CacheMetadata {
 pub(crate) fn source_provenance(
     root: &Path,
     manifest: &crate::manifest::HewManifest,
-) -> Result<Option<(String, String, Vec<u8>)>, String> {
+) -> Result<Option<SourceProvenance>, String> {
     let text = match std::fs::read_to_string(root.join(CACHE_METADATA_FILE)) {
         Ok(text) => text,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -41,11 +56,12 @@ pub(crate) fn source_provenance(
     {
         return Err("package provenance integrity check failed".to_string());
     }
-    Ok(Some((
-        metadata.registry,
-        metadata.registry_checksum,
+    Ok(Some(SourceProvenance {
+        origin: metadata.origin,
+        registry: metadata.registry,
+        archive_checksum: metadata.registry_checksum,
         archive,
-    )))
+    }))
 }
 
 /// An installed package discovered in the global registry.
@@ -246,7 +262,8 @@ impl Registry {
             Ok(metadata) => metadata,
             Err(_) => return Ok(None),
         };
-        if metadata.name != name
+        if metadata.origin != CacheOrigin::Registry
+            || metadata.name != name
             || metadata.version != version
             || metadata.registry != registry
             || metadata.registry_checksum != registry_checksum
@@ -303,6 +320,44 @@ impl Registry {
         registry_checksum: &str,
         archive: &[u8],
     ) -> Result<(), String> {
+        Self::write_source_metadata(
+            package_dir,
+            CacheOrigin::Registry,
+            registry,
+            name,
+            version,
+            registry_checksum,
+            archive,
+        )
+    }
+
+    pub(crate) fn write_local_metadata(
+        package_dir: &Path,
+        registry: &str,
+        name: &str,
+        version: &str,
+        archive: &[u8],
+    ) -> Result<(), String> {
+        Self::write_source_metadata(
+            package_dir,
+            CacheOrigin::LocalPublication,
+            registry,
+            name,
+            version,
+            &crate::tarball::checksum_bytes(archive),
+            archive,
+        )
+    }
+
+    fn write_source_metadata(
+        package_dir: &Path,
+        origin: CacheOrigin,
+        registry: &str,
+        name: &str,
+        version: &str,
+        registry_checksum: &str,
+        archive: &[u8],
+    ) -> Result<(), String> {
         let manifest = crate::manifest::parse_manifest(&package_dir.join("hew.toml"))
             .map_err(|error| format!("cannot validate unpacked {name}@{version}: {error}"))?;
         if manifest.package.name != name || manifest.package.version != version {
@@ -327,6 +382,7 @@ impl Registry {
             ));
         }
         let metadata = CacheMetadata {
+            origin,
             name: name.to_string(),
             version: version.to_string(),
             registry: registry.to_string(),
@@ -347,17 +403,13 @@ impl Registry {
         .map_err(|error| format!("cannot write cache metadata for {name}@{version}: {error}"))
     }
 
-    /// The tree checksum a verified registry fetch recorded for `package_dir`,
-    /// if `write_cache_metadata` ever populated it there. `None` covers both
-    /// an empty slot and one only ever populated by an unverified write (a
-    /// local publish's plain `tarball::unpack`, which writes no metadata
-    /// sidecar) — both are safe to overwrite; only a genuine prior registry
-    /// fetch is something a caller must not silently shadow.
+    /// The tree checksum retained by a verified registry generation. Local
+    /// publications never acquire this authority, even with identical bytes.
     #[must_use]
     pub(crate) fn verified_tree_checksum(package_dir: &Path) -> Option<String> {
         let text = std::fs::read_to_string(package_dir.join(CACHE_METADATA_FILE)).ok()?;
         let metadata: CacheMetadata = toml::from_str(&text).ok()?;
-        Some(metadata.tree_checksum)
+        (metadata.origin == CacheOrigin::Registry).then_some(metadata.tree_checksum)
     }
 
     /// Return the root path of this registry.

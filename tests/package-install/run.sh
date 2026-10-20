@@ -170,6 +170,8 @@ TMP="$(mktemp -d "${TMPDIR:-/tmp}/hew-package-install.XXXXXX")"
 trap 'rm -rf "${TMP}"' EXIT
 mkdir -p "${TMP}/logs"
 
+NATIVE_RUSTUP_HOME="${RUSTUP_HOME:-${HOME}/.rustup}"
+NATIVE_CARGO_HOME="${CARGO_HOME:-${HOME}/.cargo}"
 export HOME="${TMP}/home"
 mkdir -p "${HOME}"
 
@@ -389,3 +391,54 @@ if [[ "${lock_before}" != "${lock_after}" ]]; then
 fi
 assert_contains "${TMP}/logs/install-noop-2.log" "hew.lock is already up to date"
 echo "PASS package-install offline install is a no-op when nothing changed"
+
+# Local publication retains the archive that native source compilation reads;
+# exercise the ordinary package commands through a real linked Rust function.
+native_pkg="${TMP}/pkgs/localnative"
+write_package "${native_pkg}" "acme.localnative" "0.1.0" "0"
+mkdir -p "${native_pkg}/native"
+cat >>"${native_pkg}/hew.toml" <<'EOF_NATIVE_MANIFEST'
+
+[native]
+crate = "native"
+EOF_NATIVE_MANIFEST
+cat >"${native_pkg}/native/Cargo.toml" <<'EOF_NATIVE_CARGO'
+[workspace]
+[package]
+name = "local_native_probe"
+version = "0.1.0"
+edition = "2021"
+[lib]
+path = "lib.rs"
+crate-type = ["staticlib"]
+EOF_NATIVE_CARGO
+cat >"${native_pkg}/native/lib.rs" <<'EOF_NATIVE_RUST'
+#[no_mangle]
+pub extern "C" fn local_native_answer() -> i64 {
+    42
+}
+EOF_NATIVE_RUST
+cat >"${native_pkg}/localnative.hew" <<'EOF_NATIVE_HEW'
+extern "C" {
+    fn local_native_answer() -> i64;
+}
+
+pub fn answer() -> i64 {
+    unsafe { local_native_answer() }
+}
+EOF_NATIVE_HEW
+run_in "${native_pkg}" publish-native env \
+    RUSTUP_HOME="${NATIVE_RUSTUP_HOME}" CARGO_HOME="${NATIVE_CARGO_HOME}" \
+    "${HEW}" publish --local
+native_consumer="${TMP}/native-consumer"
+write_consumer "${native_consumer}" "acme.localnative" "0.1.0"
+run_in "${native_consumer}" install-native "${HEW}" install --offline
+assert_contains "${native_consumer}/hew.lock" 'source = "local"'
+run_in "${native_consumer}" install-native-locked "${HEW}" install --locked
+run_in "${native_consumer}" build-native env \
+    RUSTUP_HOME="${NATIVE_RUSTUP_HOME}" CARGO_HOME="${NATIVE_CARGO_HOME}" \
+    "${HEW}" build -o "${native_consumer}/native-consumer"
+"${native_consumer}/native-consumer" >"${TMP}/logs/run-native.out"
+printf '42\n' >"${TMP}/logs/run-native.expected"
+diff -u "${TMP}/logs/run-native.expected" "${TMP}/logs/run-native.out"
+echo "PASS package-install local native source builds and executes from its locked archive"

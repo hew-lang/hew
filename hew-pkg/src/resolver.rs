@@ -56,6 +56,11 @@ pub enum PackageSource {
         /// Canonical source identity.
         registry: String,
     },
+    /// An explicitly published local cache generation in a registry scope.
+    Local {
+        /// Cache lookup scope; this is not verified remote provenance.
+        registry: String,
+    },
     /// A package rooted at the given local directory.
     Path(PathBuf),
 }
@@ -848,7 +853,7 @@ impl<'a> ResolverPass<'a> {
         requirements: &[String],
     ) -> Result<Option<String>, ResolveError> {
         match source {
-            PackageSource::Registry { registry } => {
+            PackageSource::Registry { registry } | PackageSource::Local { registry } => {
                 let version = select_highest_matching_version(
                     registry,
                     &request.name,
@@ -889,7 +894,7 @@ impl<'a> ResolverPass<'a> {
         let key = (source.clone(), package.to_string(), version.to_string());
         if !self.manifest_cache.contains_key(&key) {
             match source {
-                PackageSource::Registry { registry } => {
+                PackageSource::Registry { registry } | PackageSource::Local { registry } => {
                     let root = self.pinned_registry_paths.map_or_else(
                         || {
                             let namespaced =
@@ -1187,7 +1192,10 @@ fn dependency_requests_from_manifest(
     parent_source: &PackageSource,
     sources: &RegistrySources,
 ) -> Result<Vec<DepRequest>, ResolveError> {
-    if let PackageSource::Registry { .. } = parent_source {
+    if matches!(
+        parent_source,
+        PackageSource::Registry { .. } | PackageSource::Local { .. }
+    ) {
         validate_registry_manifest(&manifest.package.name, manifest)?;
     }
     let active_features = resolve_active_features(manifest, state);
@@ -1200,7 +1208,7 @@ fn dependency_requests_from_manifest(
         }
 
         let inherited = match parent_source {
-            PackageSource::Registry { registry } => {
+            PackageSource::Registry { registry } | PackageSource::Local { registry } => {
                 Some((registry.as_str(), state.registry_selector.as_deref()))
             }
             PackageSource::Path(_) => None,
@@ -1211,8 +1219,11 @@ fn dependency_requests_from_manifest(
             root,
             inherited,
             sources,
-            matches!(parent_source, PackageSource::Registry { .. })
-                .then_some(manifest.package.name.as_str()),
+            matches!(
+                parent_source,
+                PackageSource::Registry { .. } | PackageSource::Local { .. }
+            )
+            .then_some(manifest.package.name.as_str()),
         )?;
         requests.push(DepRequest {
             name: name.clone(),
@@ -1347,7 +1358,7 @@ pub fn resolve_dependency_from_root(
     validate_package_name(package_name)?;
     let (source, _) = dependency_source(package_name, spec, root, None, sources, None)?;
     match source {
-        PackageSource::Registry { .. } => {
+        PackageSource::Registry { .. } | PackageSource::Local { .. } => {
             resolve_version(package_name, spec.version_req(), registry)
         }
         PackageSource::Path(path) => {

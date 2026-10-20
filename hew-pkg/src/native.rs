@@ -737,12 +737,13 @@ fn stage_registry_source(
     root: &Path,
     manifest: &HewManifest,
 ) -> Result<Option<std::sync::Arc<crate::atomic_fs::PinnedDir>>, String> {
-    let Some((_, _, archive)) = crate::registry::source_provenance(root, manifest)? else {
+    let Some(provenance) = crate::registry::source_provenance(root, manifest)? else {
         return Ok(None);
     };
     let slot = root.join("target/native-source");
     let staged = crate::atomic_fs::StagedDir::new(&slot).map_err(|error| error.to_string())?;
-    crate::tarball::unpack(&archive, staged.path()).map_err(|error| error.to_string())?;
+    crate::tarball::unpack(&provenance.archive, staged.path())
+        .map_err(|error| error.to_string())?;
     let pinned = staged
         .publish_pinned(&slot)
         .map_err(|error| error.to_string())?;

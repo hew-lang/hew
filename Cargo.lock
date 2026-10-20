@@ -2214,10 +2214,12 @@ dependencies = [
  "hew-runtime",
  "hew-types",
  "regex",
+ "schemars",
  "serde",
  "serde_json",
  "stacker",
  "strum",
+ "ts-rs",
 ]
 
 [[package]]

@@ -922,6 +922,7 @@ pub fn sequence_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 
 /// Ordinary vector value operations, independent of element representation.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecValueOp {
     #[default]
     New,
@@ -987,6 +988,7 @@ impl VecValueOp {
 
 /// Ordinary map operations with independently owned keys and values.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum MapValueOp {
     #[default]
     New,
@@ -1026,6 +1028,7 @@ impl MapValueOp {
 
 /// Ordinary set operations using the same element and receiver type templates.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum SetValueOp {
     #[default]
     New,
@@ -1054,6 +1057,7 @@ impl SetValueOp {
 
 /// Distinct owned serde representations; no normalization between formats.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum EncodingFormat {
     #[default]
     Json,
@@ -1096,7 +1100,8 @@ impl EncodingFormat {
 macro_rules! encoding_operations {
     ($($(#[$attr:meta])* $op:ident => $suffix:literal),+ $(,)?) => {
         #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
-        pub enum EncodingOp { $($(#[$attr])* $op),+ }
+        #[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
+pub enum EncodingOp { $($(#[$attr])* $op),+ }
 
         impl EncodingOp {
             #[must_use]
@@ -1292,6 +1297,7 @@ impl ConsumeVerdict {
 /// these onto a single `Generic` variant that reads the descriptor's
 /// `elem` field — out of scope here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecGetElem {
     #[default]
     Bool,
@@ -1322,6 +1328,7 @@ pub enum VecGetElem {
 /// matrix. `bool`, layout-managed, owned, and closure-pair paths remain
 /// distinct families because their ABI/ownership contracts differ.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecScalarElem {
     #[default]
     F32,
@@ -1338,6 +1345,7 @@ pub enum VecScalarElem {
 
 /// The scalar Vec operations that share the same element discriminator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecScalarOp {
     #[default]
     Push,
@@ -1350,6 +1358,7 @@ pub enum VecScalarOp {
 /// exist in the runtime. Other element representations use their dedicated
 /// layout/owned families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecContainsScalarElem {
     F64,
     #[default]
@@ -1363,6 +1372,7 @@ pub enum VecContainsScalarElem {
 /// does not have a bool path today; descriptor-backed record/tuple elements
 /// route through the `Layout`/`Owned` substrate variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecSliceElem {
     #[default]
     Bytesize,
@@ -1380,6 +1390,7 @@ pub enum VecSliceElem {
 /// `RuntimeCallFamily::MathIntrinsic(...)`; MIR carries that family on the
 /// call so codegen never re-derives the intrinsic from the callee string.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum MathIntrinsic {
     #[default]
     Sqrt,
@@ -1442,6 +1453,7 @@ impl MathIntrinsic {}
 /// `bswap`, `bitreverse`, `fshl`/`fshr`) parameterized on the receiver's
 /// width, carried separately as [`IntMethodWidth`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum IntBitOp {
     #[default]
     CountOnes,
@@ -1462,6 +1474,7 @@ pub enum IntBitOp {
 /// value's own bit width (`llvm.ctpop.i8`, `llvm.sadd.sat.i16`, …) and needs
 /// no runtime symbol per width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum IntMethodWidth {
     I8,
     I16,
@@ -1480,6 +1493,7 @@ pub enum IntMethodWidth {
 /// Scoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the
 /// `IntMethodWidth` gap for the narrower integer widths.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum FloatMethodOp {
     #[default]
     ToBits,
@@ -1495,6 +1509,7 @@ pub enum FloatMethodOp {
 /// select onto the saturated bound. `Checked*` results are `Option<T>`
 /// through the ordinary `VariantResult` physical form (see the row table).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum IntArithKind {
     #[default]
     WrappingAdd,
@@ -1515,6 +1530,7 @@ pub enum IntArithKind {
 /// Selected primitive print representation. Physical lowering carries this
 /// choice and the newline flag to the runtime's tagged print ABI.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum PrintKind {
     I32,
     #[default]

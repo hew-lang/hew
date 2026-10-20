@@ -26,6 +26,7 @@ use strum::EnumIter;
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
     Semaphore(super::SemaphoreOp),

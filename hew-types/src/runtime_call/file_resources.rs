@@ -52,6 +52,7 @@ impl FileReadHandleKind {
 
 /// Existing synchronous file adapters and their shared error channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, EnumIter, Default)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum FileReadOp {
     #[default]
     Open,

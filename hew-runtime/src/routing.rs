@@ -10,7 +10,8 @@ use std::sync::RwLock;
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 
-/// Return value used by internal route-slot probes when no connection is live.
+#[cfg(test)]
+/// Return value used by test route-slot probes when no connection is live.
 const HEW_ROUTE_MISSING: c_int = -1;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -301,14 +302,12 @@ pub(crate) unsafe fn hew_routing_lookup_location(
     }
 }
 
-/// Resolve a live route slot directly to its connection handle.
-///
-/// This remains an internal SWIM/reply-table convenience; route slots do not
-/// cross a runtime identity boundary.
+/// Inspect a live route slot for routing assertions.
 ///
 /// # Safety
 ///
 /// `table` must point to a live routing table.
+#[cfg(test)]
 pub(crate) unsafe fn hew_routing_conn_for_route_slot(
     table: *const HewRoutingTable,
     route_slot: u16,

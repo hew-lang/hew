@@ -947,10 +947,10 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
     }
 }
 
-fn await_observation_setup(operation: *mut monitor_link::HewNativeActorObservation) {
+fn await_observation_setup(operation: *mut crate::actor_observe::HewNativeActorObservation) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     // SAFETY: each fixture retains its unique operation until this helper returns.
-    while unsafe { monitor_link::hew_native_actor_observe_poll(operation) } == -1 {
+    while unsafe { crate::actor_observe::hew_native_actor_observe_poll(operation) } == -1 {
         assert!(
             std::time::Instant::now() < deadline,
             "peer setup acknowledgement timed out"
@@ -1038,30 +1038,34 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
             ..Default::default()
         };
         let previous = crate::execution_context::set_current_context(&raw mut context);
-        let monitor = monitor_link::hew_native_actor_observe_new(token, 0, waker.descriptor());
+        let monitor =
+            crate::actor_observe::hew_native_actor_observe_new(token, 0, waker.descriptor());
         await_observation_setup(monitor);
         let mut monitor_id = 0;
         assert_eq!(
-            monitor_link::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
+            crate::actor_observe::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
             0
         );
         assert_ne!(monitor_id, 0);
-        monitor_link::hew_native_actor_observe_free(monitor);
+        crate::actor_observe::hew_native_actor_observe_free(monitor);
 
         // A counterfeit grant cannot subscribe even though it has the exact Location.
-        let refused = monitor_link::hew_native_actor_observe_new(same, 0, waker.descriptor());
+        let refused =
+            crate::actor_observe::hew_native_actor_observe_new(same, 0, waker.descriptor());
         await_observation_setup(refused);
-        assert!(monitor_link::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0);
-        monitor_link::hew_native_actor_observe_free(refused);
+        assert!(
+            crate::actor_observe::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0
+        );
+        crate::actor_observe::hew_native_actor_observe_free(refused);
 
         // The reciprocal half completes before the original link is acknowledged.
-        let link = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        let link = crate::actor_observe::hew_native_actor_observe_new(token, 1, waker.descriptor());
         await_observation_setup(link);
         assert_eq!(
-            monitor_link::hew_native_actor_observe_take(link, &raw mut monitor_id),
+            crate::actor_observe::hew_native_actor_observe_take(link, &raw mut monitor_id),
             0
         );
-        monitor_link::hew_native_actor_observe_free(link);
+        crate::actor_observe::hew_native_actor_observe_free(link);
         crate::link::hew_native_actor_unlink(token);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while crate::runtime::rt_current()
@@ -1081,10 +1085,13 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
             1,
             "identity survives grant revocation"
         );
-        let revoked = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        let revoked =
+            crate::actor_observe::hew_native_actor_observe_new(token, 1, waker.descriptor());
         await_observation_setup(revoked);
-        assert!(monitor_link::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0);
-        monitor_link::hew_native_actor_observe_free(revoked);
+        assert!(
+            crate::actor_observe::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0
+        );
+        crate::actor_observe::hew_native_actor_observe_free(revoked);
         let _ = crate::execution_context::set_current_context(previous);
         assert_eq!(hew_actor_wait_poll(stopped), 0);
 

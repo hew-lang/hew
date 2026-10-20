@@ -664,6 +664,8 @@ pub mod actor_call_native;
 pub mod actor_caller;
 pub mod actor_group;
 pub mod actor_native;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod actor_observe;
 pub mod arena;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod duplex;

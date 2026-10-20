@@ -315,7 +315,7 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
 pub struct HewNativeActorWait {
     completion: Option<Arc<NativeActorCompletion>>,
     #[cfg(not(target_arch = "wasm32"))]
-    imported: Option<Box<crate::hew_node::monitor_link::HewNativeActorObservation>>,
+    imported: Option<Box<crate::actor_observe::HewNativeActorObservation>>,
     pub(crate) target: live_actors::ActorIncarnation,
     _waker: Arc<OwnedWaker>,
 }
@@ -429,9 +429,7 @@ pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) ->
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(operation) = &mut wait.imported {
         // SAFETY: the unique wait owner serializes polls of its setup operation.
-        unsafe {
-            crate::hew_node::monitor_link::hew_native_actor_observe_poll(&raw mut **operation)
-        };
+        unsafe { crate::actor_observe::hew_native_actor_observe_poll(&raw mut **operation) };
     }
     match &wait.completion {
         Some(completion) if completion.phase.load(Ordering::Acquire) != 2 => 0,

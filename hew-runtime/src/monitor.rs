@@ -1975,25 +1975,19 @@ mod tests {
             hew_actor_demonitor(id);
             assert!(!has_monitor_ref_in_any_index(id));
             let (_, wake) = crate::wake::blocking::Readiness::new();
-            let observation = crate::hew_node::monitor_link::hew_native_actor_observe_new(
-                token,
-                1,
-                wake.descriptor(),
-            );
+            let observation =
+                crate::actor_observe::hew_native_actor_observe_new(token, 1, wake.descriptor());
             assert_eq!(
-                crate::hew_node::monitor_link::hew_native_actor_observe_poll(observation),
+                crate::actor_observe::hew_native_actor_observe_poll(observation),
                 0
             );
             assert!(crate::link::has_links_for_actor((*watcher).id, watcher));
-            crate::hew_node::monitor_link::hew_native_actor_observe_free(observation);
+            crate::actor_observe::hew_native_actor_observe_free(observation);
             assert!(!crate::link::has_links_for_actor((*watcher).id, watcher));
             assert_eq!(crate::link::hew_native_actor_link(token), 0);
-            let duplicate = crate::hew_node::monitor_link::hew_native_actor_observe_new(
-                token,
-                1,
-                wake.descriptor(),
-            );
-            crate::hew_node::monitor_link::hew_native_actor_observe_free(duplicate);
+            let duplicate =
+                crate::actor_observe::hew_native_actor_observe_new(token, 1, wake.descriptor());
+            crate::actor_observe::hew_native_actor_observe_free(duplicate);
             assert!(
                 crate::link::has_links_for_actor((*watcher).id, watcher),
                 "cancelling a duplicate setup removed an existing link"

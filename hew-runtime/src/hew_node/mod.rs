@@ -527,7 +527,7 @@ enum PendingReplyKind {
     Setup(RemoteSetupKind, u64),
 }
 
-struct PendingReply {
+pub(crate) struct PendingReply {
     connection: ConnectionKey,
     request_id: u64,
     kind: PendingReplyKind,

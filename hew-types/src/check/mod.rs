@@ -2915,6 +2915,7 @@ impl Checker {
             warnings: self.warnings.clone(),
             user_clone_record_seeds: self.user_clone_record_seeds.clone(),
             expr_types: self.expr_types.clone(),
+            binding_types: self.binding_types.clone(),
             annotation_types: self.annotation_types.clone(),
             interpolation_display_types: self.interpolation_display_types.clone(),
             unrendered_assertion_operands: self.unrendered_assertion_operands.clone(),
@@ -3965,6 +3966,17 @@ impl Checker {
                 resolved_annotation_types.insert(site, ty);
             }
         }
+        let mut resolved_binding_types = HashMap::new();
+        for (binding, (ty, module)) in std::mem::take(&mut self.binding_types) {
+            self.current_module = module;
+            let ty = self.finalize_type_for_handoff(&ty);
+            if let Ok(ty) = ResolvedTy::from_ty(&ty) {
+                let ty = restore_member_opacity(ty, &self.defs, &|name| {
+                    self.class_declarations().is_opaque_type(name)
+                });
+                resolved_binding_types.insert(binding, ty);
+            }
+        }
         self.current_module = saved_module;
 
         // The §6.3 fact table describes an accepted program. A rejected one
@@ -4043,6 +4055,7 @@ impl Checker {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
+            resolved_binding_types,
             normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
             race_operands: std::mem::take(&mut self.race_operands),

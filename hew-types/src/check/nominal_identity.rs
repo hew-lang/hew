@@ -330,8 +330,15 @@ impl Checker {
         let Some(site) = self.scope_site() else {
             return;
         };
+        let id = binding.id;
+        let ty = binding.ty.clone();
+        if site.publish {
+            self.binding_types
+                .entry(id)
+                .or_insert_with(|| (ty, self.current_module.clone()));
+        }
         self.scopes
-            .record_resolution(site, span, super::scope::Resolution::Local(binding.id));
+            .record_resolution(site, span, super::scope::Resolution::Local(id));
     }
 
     /// Record the item prefix of a written value path. `Scope` stops at the

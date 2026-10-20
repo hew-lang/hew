@@ -461,6 +461,11 @@ pub struct TypeCheckOutput {
     /// supervisor's header parameters.
     pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Final checked types of authored lexical bindings, including unused
+    /// declarations and destructured components. Keys are the same identities
+    /// carried by `Resolution::Local`; readers never infer a declaration's
+    /// type from whichever use happens to be available.
+    pub resolved_binding_types: HashMap<TypeBindingId, ResolvedTy>,
     /// Interpolation operands checked for `Display` rendering. The value
     /// preserves alias identity for HIR dispatch, and the sites carry implicit
     /// trait-slot demand into callable planning.
@@ -3242,6 +3247,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) binding_types: HashMap<TypeBindingId, (Ty, Option<String>)>,
     pub(super) annotation_types: HashMap<SpanKey, (Ty, Option<String>)>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
@@ -4401,6 +4407,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            binding_types: HashMap::new(),
             annotation_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             unrendered_assertion_operands: HashSet::new(),

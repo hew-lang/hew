@@ -22,10 +22,23 @@ globalThis.__hewSandboxExecuteCodec = wasmModule.executeCodec ?? wasmModule.defa
 globalThis.__hewSandboxExecuteCalendar = wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
 
 test.after(() => {
-  fs.rmSync(wasmDir, { recursive: true, force: true });
-  delete globalThis.__hewSandboxCompileToSandboxBytecode;
-  delete globalThis.__hewSandboxExecuteCodec;
-  delete globalThis.__hewSandboxExecuteCalendar;
+  try {
+    const artifactDirectory = process.env.HEW_WASM_TEST_ARTIFACT_DIR;
+    if (artifactDirectory) {
+      // Retain the tested bindings for downstream provider checks. Copy only
+      // runtime artefacts; caller-owned destinations are never cleaned up.
+      fs.mkdirSync(artifactDirectory, { recursive: true });
+      for (const filename of ["hew_wasm.js", "hew_wasm_bg.wasm", "package.json"]) {
+        fs.copyFileSync(path.join(wasmDir, filename), path.join(artifactDirectory, filename));
+      }
+      console.log(`Retained VM bridge artefacts in ${artifactDirectory}`);
+    }
+  } finally {
+    fs.rmSync(wasmDir, { recursive: true, force: true });
+    delete globalThis.__hewSandboxCompileToSandboxBytecode;
+    delete globalThis.__hewSandboxExecuteCodec;
+    delete globalThis.__hewSandboxExecuteCalendar;
+  }
 });
 
 test("runProgram hello_world returns stdout and zero exit code", () => {

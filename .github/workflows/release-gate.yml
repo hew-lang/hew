@@ -36,9 +36,9 @@ on:
         type: string
         default: ""
       platforms:
-        description: "Run the full gate or resume Windows and Intel macOS qualification."
+        description: "Run the full gate or resume a platform subset for the same source."
         type: choice
-        options: [all, windows-intel-macos]
+        options: [all, linux-x86_64, windows-intel-macos]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -89,7 +89,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|windows-intel-macos) ;;
+            all|linux-x86_64|windows-intel-macos) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -119,7 +119,7 @@ jobs:
             printf '| Tested source commit | %s |\n' "${SOURCE_SHA}"
             printf '| Workflow commit | %s |\n' "${WORKFLOW_SHA}"
             printf '| Platform selection | %s |\n' "${PLATFORMS}"
-            if [[ "${PLATFORMS}" == windows-intel-macos ]]; then
+            if [[ "${PLATFORMS}" != all ]]; then
               echo
               echo 'Partial qualification: combine these results with successful full-gate jobs for this exact source commit, including sanitizers.'
             fi
@@ -141,7 +141,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -201,11 +201,9 @@ jobs:
     if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
-    # The passed surrounding work measured 2,053 s (~34 min), while the final
-    # gate was cancelled after more than 3,338 s (~56 min): over 89 min total.
-    # 120 min adds ~30 min for cold-runner completion and variance, while
-    # retaining a finite ceiling that still distinguishes a hung suite.
-    timeout-minutes: 120
+    # Bound the complete cold-runner sequence: workspace, native corpus,
+    # documentation, MQTT and browser execution.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -362,7 +360,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux-aarch64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
     # Workspace tests plus native core acceptance take about 44 minutes on
@@ -487,6 +485,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'linux-x86_64'
     name: Release Gate — macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
@@ -604,6 +603,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms != 'linux-x86_64'
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 240
@@ -714,7 +714,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
@@ -879,7 +879,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-aarch64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
     # This is an emulated QEMU leg; 300 minutes matches release.yml's

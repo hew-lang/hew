@@ -28,7 +28,7 @@ struct DependencyKey {
 #[derive(Debug)]
 struct DependencySeed {
     key: DependencyKey,
-    checker: Checker,
+    checker: Option<Checker>,
     lookup_footprint: std::collections::HashSet<String>,
 }
 
@@ -112,25 +112,31 @@ impl DependencyAnalysisCache {
             dependency_checker.prepare_program(&key.program, true);
             dependency_checker.check_dependency_bodies(&key.program);
             dependency_checker.check_embedded_builtin_impl_bodies(&key.program);
-            if !dependency_checker.errors.is_empty() {
-                return checker.check_program(program);
-            }
             if self.seeds.len() == MAX_CHECKPOINTS {
                 self.seeds.remove(0);
             }
             self.seeds.push(DependencySeed {
                 lookup_footprint: dependency_lookup_footprint(&key),
                 key,
-                checker: dependency_checker,
+                // An invalid dependency cannot seed a checker. Remember that
+                // exact snapshot so later roots go straight to full analysis
+                // rather than repeating an unsuccessful bootstrap first.
+                checker: dependency_checker
+                    .errors
+                    .is_empty()
+                    .then_some(dependency_checker),
             });
             self.seeds.len() - 1
         };
         let seed = &self.seeds[index];
-        if !root_registration_is_independent(program, &seed.lookup_footprint, &seed.checker) {
+        let Some(dependency_checker) = &seed.checker else {
+            return checker.check_program(program);
+        };
+        if !root_registration_is_independent(program, &seed.lookup_footprint, dependency_checker) {
             return checker.check_program(program);
         }
 
-        let mut fork = seed.checker.fork_dependency_state();
+        let mut fork = dependency_checker.fork_dependency_state();
         fork.input_provider.clone_from(&checker.input_provider);
         if let Some(provider) = &fork.input_provider {
             fork.module_registry

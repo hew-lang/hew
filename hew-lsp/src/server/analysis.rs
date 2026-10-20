@@ -207,6 +207,16 @@ pub(super) fn analyze_document(
     documents: &DashMap<Url, DocumentState>,
     extra_pkg_paths: &[std::path::PathBuf],
 ) -> DocumentState {
+    analyze_document_with_batch(uri, source, documents, extra_pkg_paths, None)
+}
+
+fn analyze_document_with_batch(
+    uri: &Url,
+    source: &str,
+    documents: &DashMap<Url, DocumentState>,
+    extra_pkg_paths: &[std::path::PathBuf],
+    batch: Option<&mut hew_compile::SourceAnalysisBatch>,
+) -> DocumentState {
     let line_offsets = compute_line_offsets(source);
     // An untitled buffer has no file to anchor module resolution, so it is
     // checked as a standalone source under the server's working directory.
@@ -217,9 +227,13 @@ pub(super) fn analyze_document(
         std::borrow::Cow::into_owned,
     );
 
-    let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
-    let mut state =
-        hew_compile::run_source_frontend(source, &root_path.display().to_string(), &options);
+    let label = root_path.display().to_string();
+    let mut state = if let Some(batch) = batch {
+        batch.run_source_frontend(source, &label)
+    } else {
+        let options = frontend_options(&root_path, source, documents, extra_pkg_paths);
+        hew_compile::run_source_frontend(source, &label, &options)
+    };
     let parse_result = state
         .parse_result
         .take()
@@ -354,6 +368,31 @@ pub(super) fn refresh_open_importers(
     // `visited` tracks every URI we have already queued or processed so that
     // diamond imports and import cycles don't cause infinite loops.
     let reverse_importer_index = build_reverse_importer_index(documents);
+    // Sources stay fixed throughout this refresh wave: replacing analysis below
+    // changes checker facts, never authored text. Reuse only the shared
+    // frontend's exact dependency checkpoints; each importer retains its real
+    // root and fresh mutable checker state. A later edit gets a new batch.
+    let mut sources = hew_compile::SourceSet::new();
+    for entry in documents {
+        if let Some(path) = entry.key().to_checked_file_path() {
+            sources.insert(path.into_owned(), entry.value().source.clone());
+        }
+    }
+    // A dependency already rejected by the checker cannot seed its importers.
+    // Keep the ordinary path rather than paying for a doomed bootstrap first.
+    let rejected = documents.get(target_uri).is_some_and(|document| {
+        document
+            .type_output
+            .as_ref()
+            .is_some_and(|output| !output.errors.is_empty())
+    });
+    let mut batch = (!rejected).then(|| {
+        hew_compile::SourceAnalysisBatch::new(hew_compile::FrontendOptions {
+            pkg_path: extra_pkg_paths.first().cloned(),
+            documents: sources,
+            ..hew_compile::FrontendOptions::default()
+        })
+    });
     let mut visited: HashSet<Url> = HashSet::from([target_uri.clone()]);
     let mut queue: VecDeque<Url> = VecDeque::from([target_uri.clone()]);
 
@@ -393,8 +432,13 @@ pub(super) fn refresh_open_importers(
             visited.insert(importer_uri.clone());
             publish_uris.insert(importer_uri.clone());
             publish_uris.extend(previous_diagnostic_uris);
-            let document =
-                analyze_document(&importer_uri, &importer_source, documents, extra_pkg_paths);
+            let document = analyze_document_with_batch(
+                &importer_uri,
+                &importer_source,
+                documents,
+                extra_pkg_paths,
+                batch.as_mut(),
+            );
             documents.insert(importer_uri.clone(), document);
             // Enqueue this importer so its own importers are refreshed too.
             queue.push_back(importer_uri);
@@ -918,6 +962,75 @@ pub(super) mod tests {
     use tower_lsp_server::ls_types::Position;
 
     use super::*;
+
+    #[test]
+    fn refresh_wave_rechecks_generic_bodies_effects_and_cleanup() {
+        let root = std::env::temp_dir().join("hew-lsp-refresh-wave");
+        let library_uri = Url::from_checked_file_path(root.join("greeting.hew")).unwrap();
+        let library = "pub fn identity<T>(value: T) -> T { value }\n";
+        let documents = DashMap::new();
+        super::refresh_document_and_dependents(&library_uri, library, &documents, &[]);
+        let numeric = "import greeting; fn main() { let xs: Vec<i64> = [1, 2]; let ys = xs.iter().map(|x: i64| greeting.identity(x)).collect(); println(f\"{ys[0]}\"); }";
+        let strings = "import greeting; fn main() { let xs: Vec<string> = [\"one\"]; let ys = xs.iter().map(|x: string| greeting.identity(x)).collect(); println(ys[0]); }";
+        let consumers: Vec<_> = [("numeric", numeric), ("strings", strings)]
+            .into_iter()
+            .map(|(name, source)| {
+                let uri = Url::from_checked_file_path(root.join(format!("{name}.hew"))).unwrap();
+                super::refresh_document_and_dependents(&uri, source, &documents, &[]);
+                (uri, source)
+            })
+            .collect();
+        let cleanup = "#[resource] type Lease {} impl Lease { fn close(consume self) {} } pub fn identity<T>(value: T) -> T { let lease = Lease {}; value }";
+        for (source, expect_error) in [
+            (library.to_owned(), false),
+            (library.replace("{ value }", "{ value + true }"), true),
+            (library.to_owned(), false),
+            (library.replace("{ value }", "{ sleep(1ms); value }"), true),
+            (library.to_owned(), false),
+            (cleanup.to_owned(), false),
+            (
+                cleanup.replace(
+                    "fn close(consume self) {}",
+                    "fn close(consume self) { sleep(1ms); }",
+                ),
+                true,
+            ),
+            (library.to_owned(), false),
+        ] {
+            super::refresh_document_and_dependents(&library_uri, &source, &documents, &[]);
+            for (uri, consumer) in &consumers {
+                let refreshed = documents.get(uri).unwrap();
+                let fresh = analyze_document(uri, consumer, &documents, &[]);
+                let diagnostics = |document: &DocumentState| {
+                    let mut messages: Vec<_> = document
+                        .diagnostics_by_uri
+                        .iter()
+                        .flat_map(|(uri, diagnostics)| {
+                            diagnostics.iter().map(move |diagnostic| {
+                                format!(
+                                    "{uri:?}:{}:{:?}:{:?}",
+                                    diagnostic.message, diagnostic.severity, diagnostic.range
+                                )
+                            })
+                        })
+                        .collect();
+                    messages.sort();
+                    messages
+                };
+                assert_eq!(diagnostics(&refreshed), diagnostics(&fresh));
+                assert_eq!(
+                    refreshed
+                        .diagnostics_by_uri
+                        .values()
+                        .flatten()
+                        .any(|diagnostic| diagnostic.severity == Some(DiagnosticSeverity::ERROR)),
+                    expect_error,
+                    "{uri:?}: {source}: {:?}",
+                    diagnostics(&refreshed)
+                );
+            }
+        }
+    }
 
     #[test]
     fn unsupported_hir_construct_is_identified_as_a_compiler_limitation() {

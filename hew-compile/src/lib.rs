@@ -9283,6 +9283,34 @@ mod source_analysis_batch_tests {
     }
 
     #[test]
+    fn invalid_dependencies_bootstrap_once_and_keep_complete_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("greeting.hew"),
+            "pub fn identity<T>(value: T) -> T { value + true }",
+        )
+        .unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        for (name, source) in [
+            (
+                "integer.hew",
+                "import greeting; fn main() -> i64 { greeting.identity(1) }",
+            ),
+            (
+                "string.hew",
+                "import greeting; fn main() -> string { greeting.identity(\"one\") }",
+            ),
+        ] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_some());
+        }
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.reused_roots(), 0);
+    }
+
+    #[test]
     fn cached_builtin_iterator_effects_match_the_complete_frontend() {
         let dir = tempfile::tempdir().unwrap();
         let options = test_options();

@@ -489,12 +489,12 @@ pub(super) fn publish_identity_connection_established(
     }
 
     if let Some(previous) = superseded.as_ref().filter(|previous| {
-        previous.state == ClaimState::Published
-            && previous.session_incarnation != peer_session_incarnation
+        previous.state == ClaimState::Published && previous.publication_token != publication_token
     }) {
-        crate::hew_node::fan_out_monitor_lost_for_session(
+        crate::hew_node::fan_out_monitor_lost_for_publication(
             peer_identity,
             previous.session_incarnation,
+            previous.publication_token,
         );
     }
 
@@ -726,6 +726,7 @@ pub(super) fn retire_identity_connection_publication(
     mgr: &HewConnMgr,
     peer_identity: Option<NodeId>,
     peer_route_slot: u16,
+    peer_session_incarnation: u32,
     conn_id: c_int,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
@@ -768,11 +769,14 @@ pub(super) fn retire_identity_connection_publication(
         };
     }
 
-    // Cross-node monitor connection-drop fan-out: the connection to
-    // `peer_node_id` is gone, so every local watcher of an actor on that node
-    // gets a MonitorLost DOWN — unless it already received a definitive
-    // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
-    crate::hew_node::fan_out_monitor_lost_for_identity(peer_identity);
+    // Settle monitor/link observations registered by this exact publication.
+    // A replacement publication may already own observations for the same
+    // identity and session, so cleanup must not fan out by identity alone.
+    crate::hew_node::fan_out_monitor_lost_for_publication(
+        peer_identity,
+        peer_session_incarnation,
+        publication_token,
+    );
 }
 
 #[cfg(test)]
@@ -787,6 +791,7 @@ pub(super) fn retire_connection_publication(
         mgr,
         Some(test_node_identity(peer_route_slot)),
         peer_route_slot,
+        1,
         conn_id,
         publication_token,
         publication_sync,

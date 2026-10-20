@@ -519,27 +519,25 @@ impl MonitorState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_monitor_downs_for_node(&self, remote_node: NodeId) -> Vec<MonitorDown> {
-        self.take_monitor_downs_matching(|target| target.node() == remote_node)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_monitor_downs_for_session(
+    pub(crate) fn take_monitor_downs_for_owner(
         &self,
         remote_node: NodeId,
         session_incarnation: u32,
+        publication: u64,
     ) -> Vec<MonitorDown> {
-        self.take_monitor_downs_matching(|target| {
-            target.node() == remote_node && target.incarnation() == session_incarnation
+        self.take_monitor_downs_matching(|target, authority| {
+            target.node() == remote_node
+                && target.incarnation() == session_incarnation
+                && authority.is_some_and(|authority| authority.publication == publication)
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn drain_remote_observations_for_shutdown(&self) {
-        for down in self.take_monitor_downs_matching(|_| true) {
+        for down in self.take_monitor_downs_matching(|_, _| true) {
             self.enqueue_shutdown(down);
         }
-        for down in self.take_link_downs_matching(|_| true) {
+        for down in self.take_link_downs_matching(|_, _| true) {
             crate::link::deliver_cross_node_link_exit(
                 down.local_actor_id,
                 down.target,
@@ -551,7 +549,10 @@ impl MonitorState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn take_monitor_downs_matching(&self, matches: impl Fn(Location) -> bool) -> Vec<MonitorDown> {
+    fn take_monitor_downs_matching(
+        &self,
+        matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
+    ) -> Vec<MonitorDown> {
         let mut observations = self
             .observations
             .lock()
@@ -562,7 +563,7 @@ impl MonitorState {
                 (
                     ObservationTarget::Remote(target),
                     WatcherAction::Monitor { watcher_actor_id },
-                ) if matches(target) => Some((
+                ) if matches(target, entry.authority) => Some((
                     monitor_id,
                     watcher_actor_id,
                     target,
@@ -587,23 +588,24 @@ impl MonitorState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_link_downs_for_node(&self, remote_node: NodeId) -> Vec<LinkDown> {
-        self.take_link_downs_matching(|target| target.node() == remote_node)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_link_downs_for_session(
+    pub(crate) fn take_link_downs_for_owner(
         &self,
         remote_node: NodeId,
         session_incarnation: u32,
+        publication: u64,
     ) -> Vec<LinkDown> {
-        self.take_link_downs_matching(|target| {
-            target.node() == remote_node && target.incarnation() == session_incarnation
+        self.take_link_downs_matching(|target, authority| {
+            target.node() == remote_node
+                && target.incarnation() == session_incarnation
+                && authority.is_some_and(|authority| authority.publication == publication)
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn take_link_downs_matching(&self, matches: impl Fn(Location) -> bool) -> Vec<LinkDown> {
+    fn take_link_downs_matching(
+        &self,
+        matches: impl Fn(Location, Option<ObservationAuthority>) -> bool,
+    ) -> Vec<LinkDown> {
         let mut observations = self
             .observations
             .lock()
@@ -617,7 +619,7 @@ impl MonitorState {
                         local_actor_id,
                         policy_tag,
                     },
-                ) if matches(target) => Some((
+                ) if matches(target, entry.authority) => Some((
                     monitor_id,
                     LinkDown {
                         local_actor_id,
@@ -886,23 +888,21 @@ impl MonitorState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn prune_remote_watchers_for_node(&self, dead_watcher: NodeId) -> usize {
-        self.prune_remote_watchers_matching(|watcher| watcher.node() == dead_watcher)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn prune_remote_watchers_for_session(
+    pub(crate) fn prune_remote_watchers_for_owner(
         &self,
         dead_watcher: NodeId,
         session_incarnation: u32,
+        publication: u64,
     ) -> usize {
-        self.prune_remote_watchers_matching(|watcher| {
-            watcher.node() == dead_watcher && watcher.incarnation() == session_incarnation
+        self.prune_remote_watchers_matching(|entry| {
+            entry.watcher.node() == dead_watcher
+                && entry.watcher.incarnation() == session_incarnation
+                && entry.publication == Some(publication)
         })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn prune_remote_watchers_matching(&self, matches: impl Fn(Location) -> bool) -> usize {
+    fn prune_remote_watchers_matching(&self, matches: impl Fn(RemoteWatcher) -> bool) -> usize {
         let mut targets = self
             .remote_targets
             .lock()
@@ -910,7 +910,7 @@ impl MonitorState {
         let mut pruned = 0;
         targets.retain(|_, watchers| {
             let before = watchers.len();
-            watchers.retain(|entry| !matches(entry.watcher));
+            watchers.retain(|entry| !matches(*entry));
             pruned += before - watchers.len();
             !watchers.is_empty()
         });
@@ -2910,6 +2910,42 @@ mod tests {
         assert_eq!(state.pending_observation_count(), 0);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn member_dead_claims_only_monitor_observations_for_its_publication() {
+        let state = MonitorState::new();
+        let node = NodeId::from_bytes([7; 16]);
+        let old_target = Location::new(node, 13, 1).unwrap();
+        let new_target = Location::new(node, 13, 1).unwrap();
+        for (id, target, publication) in [(41, old_target, 10), (42, new_target, 20)] {
+            state.insert_admitted_observation(
+                id,
+                target,
+                WatcherAction::Monitor {
+                    watcher_actor_id: 99,
+                },
+                ObservationAuthority {
+                    grant: 1,
+                    publication,
+                    watcher: remote_location(8, 99, 1),
+                },
+                None,
+            );
+        }
+
+        let retired = state.take_monitor_downs_for_owner(node, 1, 10);
+        assert_eq!(retired.len(), 1);
+        assert_eq!(retired[0].monitor_id, 41);
+        assert_eq!(retired[0].target, old_target);
+        assert_eq!(state.pending_observation_count(), 1);
+
+        let successor = state.take_monitor_downs_for_owner(node, 1, 20);
+        assert_eq!(successor.len(), 1);
+        assert_eq!(successor[0].monitor_id, 42);
+        assert_eq!(successor[0].target, new_target);
+        assert_eq!(state.pending_observation_count(), 0);
+    }
+
     #[test]
     fn close_wins_over_later_remote_terminal_delivery() {
         let state = MonitorState::new();
@@ -2920,26 +2956,6 @@ mod tests {
 
         assert_eq!(state.remove_remote_observation(monitor_id), Some(target));
         assert!(state.deliver_monitor_to_ref(monitor_id, target).is_none());
-    }
-
-    #[test]
-    fn session_loss_claims_only_the_matching_incarnation() {
-        let state = MonitorState::new();
-        let old = remote_location(4, 12, 1);
-        let current = remote_location(4, 12, 2);
-        let old_id = state
-            .register_remote_monitor(old, 22)
-            .expect("old monitor id");
-        let current_id = state
-            .register_remote_monitor(current, 23)
-            .expect("current monitor id");
-
-        let downs = state.take_monitor_downs_for_session(old.node(), old.incarnation());
-        assert_eq!(downs.len(), 1);
-        assert_eq!(downs[0].monitor_id, old_id);
-        assert_eq!(downs[0].target, old);
-        assert_eq!(state.pending_observation_count(), 1);
-        assert!(state.deliver_monitor_to_ref(current_id, current).is_some());
     }
 
     #[test]

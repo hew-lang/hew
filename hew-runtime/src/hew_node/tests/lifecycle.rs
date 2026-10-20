@@ -2,6 +2,32 @@
 
 use super::*;
 
+fn seed_authenticated_dead_peer(
+    cluster: &crate::cluster::HewCluster,
+    peer: u16,
+    session: u32,
+    publication: u64,
+    incarnation: u64,
+) {
+    assert!(cluster.admit_authenticated_session(peer, session));
+    let publication_sync = Arc::new(Mutex::new(()));
+    let publication_removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: the test owns this live cluster and retains the publication
+    // synchronization values for the duration of the call.
+    let published = unsafe {
+        crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+            std::ptr::from_ref(cluster).cast_mut(),
+            peer,
+            session,
+            publication,
+            &publication_sync,
+            &publication_removed,
+        )
+    };
+    assert_eq!(published, 1, "the authenticated publication should succeed");
+    cluster.seed_member_for_test(peer, crate::cluster::MEMBER_DEAD, incarnation);
+}
+
 #[test]
 fn accept_thread_stop_reports_panic_and_consumes_handle() {
     let _runtime_guard = crate::runtime_test_guard();
@@ -48,27 +74,27 @@ fn quarantine_insert_blocks_then_evict_clears() {
     let _guard = crate::runtime_test_guard();
     // Insert quarantines the peer at the dead incarnation; a same-or-lower
     // live incarnation is blocked, a higher live incarnation is not.
-    quarantine_insert(7, 5);
+    quarantine_insert(7, Some(1), 5);
     assert!(
-        quarantine_is_blocked(7, 5),
+        quarantine_is_blocked(7, Some(1), 5),
         "equal live incarnation is blocked"
     );
     assert!(
-        quarantine_is_blocked(7, 4),
+        quarantine_is_blocked(7, Some(1), 4),
         "lower live incarnation is blocked"
     );
     assert!(
-        !quarantine_is_blocked(7, 6),
+        !quarantine_is_blocked(7, Some(1), 6),
         "a live incarnation past the quarantined one is not blocked"
     );
     assert!(
-        !quarantine_is_blocked(8, 5),
+        !quarantine_is_blocked(8, Some(1), 5),
         "an unrelated node is not blocked"
     );
     // Eviction clears the entry.
-    quarantine_evict(7);
+    quarantine_evict(7, Some(1), 6);
     assert!(
-        !quarantine_is_blocked(7, 5),
+        !quarantine_is_blocked(7, Some(1), 5),
         "evicted node is sendable again"
     );
 }
@@ -102,31 +128,46 @@ fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
 #[test]
 fn quarantine_insert_is_monotonic() {
     let _guard = crate::runtime_test_guard();
-    quarantine_insert(9, 3);
+    quarantine_insert(9, Some(1), 3);
     // A higher-incarnation death overwrites.
-    quarantine_insert(9, 7);
+    quarantine_insert(9, Some(1), 7);
     assert!(
-        quarantine_is_blocked(9, 7),
+        quarantine_is_blocked(9, Some(1), 7),
         "blocked at the higher incarnation"
     );
     assert!(
-        quarantine_is_blocked(9, 6),
+        quarantine_is_blocked(9, Some(1), 6),
         "blocked below the higher incarnation"
     );
     // A lower-incarnation death never regresses the recorded incarnation.
-    quarantine_insert(9, 2);
+    quarantine_insert(9, Some(1), 2);
     assert!(
-        quarantine_is_blocked(9, 7),
+        quarantine_is_blocked(9, Some(1), 7),
         "a lower re-insert must not regress the quarantined incarnation"
     );
+}
+
+#[test]
+fn delayed_quarantine_from_old_owner_cannot_replace_successor() {
+    let _guard = crate::runtime_test_guard();
+    quarantine_insert(10, Some(2), 3);
+    quarantine_insert(10, Some(1), 99);
+    assert!(quarantine_is_blocked(10, Some(2), 3));
+    assert!(
+        !quarantine_is_blocked(10, Some(1), 99),
+        "a delayed old-session verdict cannot become the current quarantine owner"
+    );
+
+    quarantine_insert(10, Some(2), 5);
+    assert!(quarantine_is_blocked(10, Some(2), 5));
 }
 
 #[test]
 fn quarantine_evict_absent_node_is_noop() {
     let _guard = crate::runtime_test_guard();
     // No panic, no effect.
-    quarantine_evict(123);
-    assert!(!quarantine_is_blocked(123, 1));
+    quarantine_evict(123, Some(1), 1);
+    assert!(!quarantine_is_blocked(123, Some(1), 1));
 }
 
 /// Proving gate B: a `Quarantine`-policy send to a buried peer fails closed at
@@ -153,8 +194,8 @@ fn quarantine_blocks_send_under_policy_then_clears_on_evict() {
     // The peer is known to the cluster, buried (DEAD) at incarnation 5. Seed
     // the membership table so the live-incarnation lookup resolves, and record
     // the quarantine at the incarnation it died at.
-    cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
-    quarantine_insert(PEER, 5);
+    seed_authenticated_dead_peer(cluster, PEER, 1, 10, 5);
+    quarantine_insert(PEER, Some(1), 5);
 
     // Under a Quarantine policy the buried peer (live incarnation 5 <=
     // quarantined 5) is blocked.
@@ -186,7 +227,7 @@ fn quarantine_blocks_send_under_policy_then_clears_on_evict() {
     }
 
     // Evict (the readmission edge) clears the block under Quarantine too.
-    quarantine_evict(PEER);
+    quarantine_evict(PEER, Some(1), 6);
     {
         let mut ctx = crate::execution_context::HewExecutionContext {
             partition_policy: crate::execution_context::PartitionPolicy::Quarantine.to_slot(),
@@ -241,8 +282,8 @@ fn set_partition_policy_symbol_drives_the_quarantine_gate() {
     assert!(!node.cluster.is_null());
     // SAFETY: cluster is valid while the node is running.
     let cluster = unsafe { &*node.cluster };
-    cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
-    quarantine_insert(PEER, 5);
+    seed_authenticated_dead_peer(cluster, PEER, 1, 10, 5);
+    quarantine_insert(PEER, Some(1), 5);
 
     // Install a dispatch context with the DEFAULT (null) policy slot, then
     // drive the policy purely through the C-ABI setter.

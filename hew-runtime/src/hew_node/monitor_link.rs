@@ -1101,19 +1101,17 @@ pub(crate) fn handle_inbound_link_down(
     }
 }
 
-/// Fan out `MonitorLost` to every local watcher of an actor on a lost/dead node
-/// (connection-drop / SWIM-DEAD hook).
-///
-/// Called from the connection-drop retire hook and the SWIM `MEMBER_DEAD`
-/// fan-out. Each pending observation is removed before a `MonitorLost` record is
-/// queued, so a definitive DOWN and a partition signal cannot both win.
-///
-/// Also prunes the target-side `RemoteWatcher` entries registered by the dead
-/// node. When a watcher node dies, the actors it was watching on this node must
-/// not accumulate its now-stale watcher records indefinitely — only a definitive
-/// demonitor or the watched actor's own death normally removes them. Pruning here
-/// ensures the target-side table stays bounded under watcher-node churn.
-pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
+/// Resolve monitor/link observations and watcher registrations owned by one
+/// authenticated route publication. The observation table claims matching
+/// entries under its lock; notifications and link cascades run after it drops.
+pub(crate) fn fan_out_monitor_lost_for_member_owner(
+    dead_node_id: u16,
+    session_incarnation: Option<u32>,
+    publication: Option<u64>,
+) {
+    let (Some(session_incarnation), Some(publication)) = (session_incarnation, publication) else {
+        return;
+    };
     let dead_node = with_current_node_read(|guard| {
         let node = *guard as *const HewNode;
         if node.is_null() {
@@ -1122,58 +1120,32 @@ pub(crate) fn fan_out_monitor_lost_for_node(dead_node_id: u16) {
         // SAFETY: current-node read lock pins the node.
         unsafe { (*node).auth.node_id_for_route_slot(dead_node_id) }
     });
-    if let Some(dead_node) = dead_node {
-        fan_out_monitor_lost_for_identity(dead_node);
-    }
-}
-
-pub(crate) fn fan_out_monitor_lost_for_identity(dead_node: crate::node_identity::NodeId) {
-    let Some(rt) = crate::runtime::rt_current_opt() else {
+    let Some(dead_node) = dead_node else {
         return;
     };
-    let monitor_downs = rt.monitors.take_monitor_downs_for_node(dead_node);
-    for down in monitor_downs {
-        rt.monitors.enqueue_lost(down);
-    }
-    // Link half: fire the cross-node link cascade for every still-Pending LINK
-    // watcher on the dead node — the death-signal must fire on the PARTITION
-    // terminal cause too (firing only on a clean exit / crash would fail-open: a
-    // linked actor surviving its dead peer). For CrashLinked this synthesizes a
-    // HewSysMsg::Exit into the LOCAL linked actor's mailbox and crashes it. The
-    // one-shot slot makes this exactly-once vs a definitive CTRL_LINK_DOWN that
-    // may already have fired.
-    let link_downs = rt.monitors.take_link_downs_for_node(dead_node);
-    for down in link_downs {
-        let _ = crate::link::deliver_cross_node_link_exit(
-            down.local_actor_id,
-            down.target,
-            down.reason,
-            down.policy_tag,
-            down.crash_kind,
-        );
-    }
-    // Prune target-side watcher entries (monitor AND link) the dead node had
-    // registered, so the table stays bounded under node churn (target-side watcher
-    // prune; covers link watchers via the same map).
-    let _ = rt.monitors.prune_remote_watchers_for_node(dead_node);
+    fan_out_monitor_lost_for_publication(dead_node, session_incarnation, publication);
 }
 
-pub(crate) fn fan_out_monitor_lost_for_session(
+/// Settle observations and watcher registrations owned by one exact route
+/// publication. Claim matching entries while holding the observation-table
+/// lock, then deliver notifications and link cascades after releasing it.
+pub(crate) fn fan_out_monitor_lost_for_publication(
     dead_node: crate::node_identity::NodeId,
     session_incarnation: u32,
+    publication: u64,
 ) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    let monitor_downs = rt
-        .monitors
-        .take_monitor_downs_for_session(dead_node, session_incarnation);
+    let monitor_downs =
+        rt.monitors
+            .take_monitor_downs_for_owner(dead_node, session_incarnation, publication);
     for down in monitor_downs {
         rt.monitors.enqueue_lost(down);
     }
-    let link_downs = rt
-        .monitors
-        .take_link_downs_for_session(dead_node, session_incarnation);
+    let link_downs =
+        rt.monitors
+            .take_link_downs_for_owner(dead_node, session_incarnation, publication);
     for down in link_downs {
         let _ = crate::link::deliver_cross_node_link_exit(
             down.local_actor_id,
@@ -1183,91 +1155,62 @@ pub(crate) fn fan_out_monitor_lost_for_session(
             down.crash_kind,
         );
     }
-    let _ = rt
-        .monitors
-        .prune_remote_watchers_for_session(dead_node, session_incarnation);
+    let _ =
+        rt.monitors
+            .prune_remote_watchers_for_owner(dead_node, session_incarnation, publication);
 }
 
-/// Fail every pending remote ask routed to a SWIM-declared-DEAD node with
-/// [`AskError::Partition`].
+/// Node-side reaction to a SWIM-DEAD verdict: settle pending asks and monitors
+/// belonging to the captured owner, then quarantine only if that owner is still
+/// current.
 ///
-/// The cluster's recv-queue partition fan-out (`PartitionRegistry::on_member_dead`,
-/// `cluster.rs`) wakes a blocked `recv` to `PartitionDetected`, but it does not
-/// touch the reply table — so a pending remote *ask* to a peer the failure
-/// detector has declared dead (while its TCP socket may still be nominally open)
-/// would otherwise hang to the caller's own deadline. This is the request/reply
-/// analog of that recv-side seam: it resolves those pending asks IMMEDIATELY
-/// with the typed `Partition` cause instead of a silent wait-to-timeout.
-///
-/// The reply table is keyed by `(conn_mgr, conn_id)`; a remote ask registers
-/// under the connection the routing table resolves for the target node. We look
-/// up the dead node's connection the same way and fail every pending ask on it.
-///
-/// Exactly-once vs the connection-drop path: `fail_connection_with_reason`
-/// drains the matching entries under the table lock before failing them, so if
-/// the socket also drops (or already dropped), whichever verdict lands first
-/// resolves the ask and the second finds an empty map — no double wake. A node
-/// with no route to the dead peer (no pending asks) is a no-op.
-pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
-    with_current_node_read(|guard| {
-        let node_ptr = *guard as *const HewNode;
-        if node_ptr.is_null() {
-            return;
+/// Publication ownership keeps a delayed verdict from resolving a successor's
+/// asks; the session/publication pair scopes quarantine to the same connection.
+pub(crate) fn fail_remote_and_quarantine(
+    dead_node_id: u16,
+    session: Option<u32>,
+    publication: Option<u64>,
+    dead_incarnation: u64,
+) {
+    let owner_snapshot = with_current_node_read(|guard| {
+        let node = *guard as *const HewNode;
+        if node.is_null() {
+            return None;
         }
-        // SAFETY: the read lock pins CURRENT_NODE for the duration of this call.
-        let node = unsafe { &*node_ptr };
-        if node.routing_table.is_null() || node.conn_mgr.is_null() {
-            return;
+        // SAFETY: current-node read lock pins the cluster pointer.
+        let node = unsafe { &*node };
+        if node.conn_mgr.is_null() || node.cluster.is_null() {
+            return None;
         }
-        // SAFETY: routing_table is valid while the node is installed.
-        //
-        // Replacement-connection window: this lookup returns the CURRENT conn_id
-        // for `dead_node_id` at the time of the SWIM-DEAD verdict. If the routing
-        // table has already been updated to a replacement connection (old socket
-        // retired, new connection established and routed), `conn_id` here is the
-        // NEW conn's id. Pending asks on the OLD conn that are still draining in
-        // the old reader's cleanup will NOT be reached by this fan-out — they
-        // resolve via `reader_cleanup` → `ConnectionDropped` rather than
-        // `Partition`. This is already fail-closed (the dying reader does fail
-        // them; no ask can hang) and is a cosmetic reason-label mismatch only.
-        //
-        // The real fix — keying the reply table on (node_id, conn_generation) so
-        // a DEAD verdict can reach a retired conn's draining asks — requires a
-        // reply-table schema change and an exactly-once proof; it is deferred.
-        let conn_id = unsafe {
-            crate::routing::hew_routing_conn_for_route_slot(node.routing_table, dead_node_id)
-        };
-        if conn_id < 0 {
-            // No route to the dead peer on this node — no pending asks to fail.
-            return;
-        }
-        let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
-        if let Some(table) = reply_table_opt() {
-            table.fail_connection_with_reason(connection, AskError::Partition);
-        }
+        // SAFETY: node.cluster and node.conn_mgr remain live under the
+        // current-node read lock.
+        let (current_session, current_publication, _) =
+            unsafe { &*node.cluster }.member_owner(dead_node_id);
+        Some((
+            node.conn_mgr.cast_const(),
+            current_session == session && current_publication == publication,
+        ))
     });
-}
+    let Some((conn_mgr, current_owner)) = owner_snapshot else {
+        return;
+    };
 
-/// Node-side reaction to a SWIM-DEAD verdict: fail every pending remote ask to
-/// the dead peer AND quarantine it at the incarnation it died at.
-///
-/// Both per-peer tables react at the verdict: the reply-table fan-out resolves
-/// in-flight asks with [`AskError::Partition`], and the quarantine insert records
-/// `(node_id, incarnation)` so a `Quarantine`-policy send/ask to the peer fails
-/// closed until it rejoins at a strictly higher incarnation. The two
-/// `MEMBER_DEAD` seams in `cluster.rs` route through this single wrapper so
-/// neither can quarantine without also failing the asks, nor vice versa.
-pub(crate) fn fail_remote_and_quarantine(dead_node_id: u16, dead_incarnation: u64) {
-    fail_remote_asks_for_node(dead_node_id);
-    quarantine_insert(dead_node_id, dead_incarnation);
+    if let Some(publication) = publication {
+        if let Some(table) = reply_table_opt() {
+            table.fail_asks_for_publication(conn_mgr, publication, AskError::Partition);
+        }
+    }
+    if current_owner {
+        quarantine_insert(dead_node_id, session, dead_incarnation);
+    }
 }
 
 /// Node-side reaction to a strictly-higher-incarnation readmission: evict the
 /// returned peer from the quarantine set so it is sendable again. The admission
 /// gate (`cluster.rs`) has already proved the new incarnation is strictly higher,
 /// so the node side only clears.
-pub(crate) fn readmit_node_clear_quarantine(node_id: u16) {
-    quarantine_evict(node_id);
+pub(crate) fn readmit_node_clear_quarantine(node_id: u16, session: Option<u32>, incarnation: u64) {
+    quarantine_evict(node_id, session, incarnation);
 }
 
 pub(crate) fn poll_imported_observation(operation: &mut HewNativeActorObservation) -> bool {

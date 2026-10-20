@@ -86,9 +86,21 @@ fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossip
     cluster
         .take_swim_gossip(cluster.max_gossip_per_msg())
         .into_iter()
-        .filter_map(|(route_slot, state, incarnation)| {
+        .filter_map(|(route_slot, session, state, incarnation)| {
             Some(SwimGossipEntry {
-                member: node_session_for_route(mgr, cluster, route_slot)?,
+                // A membership event keeps the durable session that was
+                // current when it was staged. Never stamp it with a later
+                // remote session from the route table. Local self-refutation
+                // events have no remote session and use this manager's own
+                // authenticated identity.
+                member: if route_slot == mgr.local_node_id {
+                    node_session_for_route(mgr, cluster, route_slot)?
+                } else {
+                    crate::envelope::NodeSessionIdentity {
+                        node_id: mgr.auth.node_id_for_route_slot(route_slot)?,
+                        session_incarnation: session?,
+                    }
+                },
                 state,
                 incarnation,
             })

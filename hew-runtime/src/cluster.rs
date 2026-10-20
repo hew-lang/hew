@@ -45,14 +45,13 @@
     reason = "FFI entry-point module; SAFETY documented at fn signature."
 )]
 
-use crate::duplex::Queue;
 use crate::node_identity::{HewLocation, Location};
 use crate::phi_accrual::PhiAccrualDetector;
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Mutex};
 
 // ── Member states ──────────────────────────────────────────────────────
 
@@ -119,6 +118,9 @@ struct MemberEvent {
     new_state: i32,
     /// Incarnation number.
     incarnation: u64,
+    /// Durable session captured when this event was staged. Gossip must never
+    /// borrow a later session for an older SWIM event.
+    session: Option<u32>,
     /// How many times this event has been piggybacked.
     dissemination_count: u32,
 }
@@ -234,6 +236,12 @@ struct MemberTransition {
     node_id: u16,
     state: i32,
     incarnation: u64,
+    /// Durable authenticated session that owned this membership version when
+    /// it was staged. `None` represents legacy membership without a session.
+    session: Option<u32>,
+    /// Current route publication at staging time, when one exists. Side effects
+    /// that target a connection must revalidate this exact owner.
+    publication_token: Option<u64>,
     is_new_member: bool,
     old_state: Option<i32>,
     publication: PublicationTransition,
@@ -388,15 +396,6 @@ pub struct HewCluster {
     /// in `compute_tick_transitions`, but the detector itself is owned
     /// here, not by the protocol.
     detectors: Mutex<HashMap<u16, PhiAccrualDetector>>,
-    /// Partition registry for the partition-injection seam.
-    ///
-    /// When a peer transitions to `MEMBER_DEAD`, the cluster calls
-    /// `partition_registry.on_member_dead(node_id)` to fan out
-    /// `RecvError::PartitionDetected` to all registered queues.
-    ///
-    /// `None` (the default) means no queues are registered and the
-    /// fan-out is a no-op — backward-compatible with all existing callers.
-    partition_registry: Option<Arc<PartitionRegistry>>,
     /// Test-only park point between a guarded transition's authorization and
     /// its emission (see `guarded_emission_rendezvous`).
     #[cfg(test)]
@@ -541,109 +540,6 @@ pub trait ClusterProtocol: Send + Sync + std::fmt::Debug {
     /// thread can both drive the cluster through shared references without
     /// `&mut`-aliasing the same `HewCluster`.
     fn next_ping_target(&self, alive_members: &[u16]) -> Option<u16>;
-
-    /// Called when a peer node transitions to DEAD.
-    ///
-    /// Implementations use this to drive the partition-injection seam:
-    /// any local resources (e.g. duplexes registered in a `PartitionRegistry`)
-    /// bound to `node_id` should be signalled with
-    /// [`RecvError::PartitionDetected`] so blocked receivers wake with a
-    /// typed failure.
-    ///
-    /// Default: no-op. Implementors that need partition fan-out override this
-    /// method or register a `PartitionRegistry` on `HewCluster` directly.
-    ///
-    /// # Contract
-    ///
-    /// - Called exactly once per DEAD transition per node.
-    /// - Called outside any cluster mutex.
-    /// - Must not re-enter the cluster.
-    fn on_member_dead(&self, _node_id: u16) {}
-}
-
-// ── PartitionRegistry ──────────────────────────────────────────────────
-
-/// Maps remote `node_id`s to queues that receive on behalf of that node.
-///
-/// When the cluster declares a node DEAD, `on_member_dead` walks the
-/// registry for that node, upgrades each `Weak<Queue>` (dropping dead ones),
-/// and calls `Queue::force_partition()` on the live ones. Blocked receivers
-/// wake with `RecvError::PartitionDetected`.
-///
-/// # Fail-closed contract
-///
-/// - Dead `Weak` refs are pruned on every `register_remote_queue` and
-///   `on_member_dead` pass — no unbounded memory growth.
-/// - `force_partition` on a live queue MUST resolve any pending `recv`
-///   to `Err(RecvError::PartitionDetected)` (enforced by `Queue`).
-/// - A `force_partition` on an already-dropped queue is silently discarded
-///   (the `Weak` upgrade fails; that is the correct no-op path).
-/// - If the registry has no entry for a dead node (no queues were bound),
-///   `on_member_dead` is a no-op — not an error.
-///
-/// # CP-3 forward flag
-///
-/// C3 (SWIM driver, Phase 5) calls `on_member_dead` through
-/// `ClusterProtocol::on_member_dead`; A5 (Phase 3) plugs in the datagram
-/// transport that drives SWIM events. C2 owns only the seam shape.
-#[derive(Debug, Default)]
-pub struct PartitionRegistry {
-    /// Node-ID → weak refs to all queues receiving from that node.
-    queues: Mutex<HashMap<u16, Vec<Weak<Queue>>>>,
-}
-
-impl PartitionRegistry {
-    /// Create a new, empty registry.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Register a queue as receiving data from `node_id`.
-    ///
-    /// When `node_id` is declared DEAD, `force_partition` will be called
-    /// on this queue. The registry holds only a `Weak` ref — it does not
-    /// extend the queue's lifetime.
-    ///
-    /// Dead weak refs for this `node_id` are pruned on entry.
-    pub fn register_remote_queue(&self, node_id: u16, queue: Weak<Queue>) {
-        let mut map = self.queues.lock_or_recover();
-        let slot = map.entry(node_id).or_default();
-        // Prune dead refs before appending; keeps the slot compact.
-        slot.retain(|w| w.strong_count() > 0);
-        slot.push(queue);
-    }
-
-    /// Fan out a partition signal to every live queue registered for `node_id`.
-    ///
-    /// Dead `Weak` refs are pruned from the slot as a side effect.
-    /// If no queues are registered for `node_id`, this is a no-op (not an error).
-    ///
-    /// This is the core partition-injection seam: call it from
-    /// `ClusterProtocol::on_member_dead` or from the `MEMBER_DEAD` callback
-    /// in [`HewCluster`].
-    pub fn on_member_dead(&self, node_id: u16) {
-        let upgraded = {
-            let mut map = self.queues.lock_or_recover();
-            let Some(slot) = map.get_mut(&node_id) else {
-                return;
-            };
-            // Upgrade live refs and prune dead ones atomically under the lock.
-            let live: Vec<Arc<Queue>> = slot.iter().filter_map(Weak::upgrade).collect();
-            slot.retain(|w| w.strong_count() > 0);
-            live
-        };
-        // Call force_partition outside the lock so the queue's own mutex
-        // is not nested under the registry mutex.
-        if upgraded.is_empty() {
-            eprintln!(
-                "[partition] MEMBER_DEAD node_id={node_id}: no live queues registered (no-op)"
-            );
-        }
-        for queue in &upgraded {
-            queue.force_partition();
-        }
-    }
 }
 
 // ── SimpleSwim: the v0.5 ClusterProtocol implementation ───────────────
@@ -812,7 +708,6 @@ impl HewCluster {
             last_tick_ms: AtomicU64::new(0),
             protocol: Box::new(SimpleSwim::new()),
             detectors: Mutex::new(HashMap::new()),
-            partition_registry: None,
             #[cfg(test)]
             guarded_emission_probe: Mutex::new(None),
             #[cfg(test)]
@@ -820,16 +715,6 @@ impl HewCluster {
             #[cfg(test)]
             guarded_membership_callback_probe: Mutex::new(None),
         }
-    }
-
-    /// Install a `PartitionRegistry` on this cluster.
-    ///
-    /// Once installed, every `MEMBER_DEAD` transition fans out
-    /// `RecvError::PartitionDetected` to all queues registered in the
-    /// registry for the dead node. Installing a second registry replaces
-    /// the first.
-    pub fn set_partition_registry(&mut self, registry: Arc<PartitionRegistry>) {
-        self.partition_registry = Some(registry);
     }
 
     /// Add or update a member in the membership list.
@@ -845,6 +730,8 @@ impl HewCluster {
         node_id: u16,
         state: i32,
         incarnation: u64,
+        session: Option<u32>,
+        publication_token: Option<u64>,
         addr: &[u8],
         gossip_announced: bool,
     ) -> Option<MemberTransition> {
@@ -884,6 +771,8 @@ impl HewCluster {
                     node_id,
                     state,
                     incarnation,
+                    session,
+                    publication_token,
                     is_new_member: false,
                     old_state: Some(old_state),
                     publication: PublicationTransition::Plain,
@@ -909,6 +798,8 @@ impl HewCluster {
             node_id,
             state,
             incarnation,
+            session,
+            publication_token,
             is_new_member: true,
             old_state: None,
             publication: PublicationTransition::Plain,
@@ -923,6 +814,49 @@ impl HewCluster {
         }
         pending.draining = true;
         true
+    }
+
+    /// Whether a staged transition still belongs to the peer's current
+    /// authenticated route owner. SWIM state and incarnation are deliberately
+    /// not compared here: FIFO delivery must retain legitimate same-session
+    /// history such as SUSPECT followed by DEAD.
+    fn transition_owner_is_current(&self, transition: &MemberTransition) -> bool {
+        if self
+            .sessions
+            .lock_or_recover()
+            .get(&transition.node_id)
+            .copied()
+            != transition.session
+        {
+            return false;
+        }
+        self.connection_tokens
+            .lock_or_recover()
+            .current
+            .get(&transition.node_id)
+            .copied()
+            == transition.publication_token
+    }
+
+    fn transition_membership_epoch_is_current(&self, transition: &MemberTransition) -> bool {
+        let sessions = self.sessions.lock_or_recover();
+        if sessions.get(&transition.node_id).copied() != transition.session {
+            return false;
+        }
+        let tokens = self.connection_tokens.lock_or_recover();
+        let publication_matches =
+            tokens.current.get(&transition.node_id).copied() == transition.publication_token;
+        if !publication_matches {
+            return false;
+        }
+        if transition.state != MEMBER_DEAD {
+            return true;
+        }
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .find(|member| member.node_id == transition.node_id)
+            .is_some_and(|member| member.incarnation == transition.incarnation)
     }
 
     fn drain_member_transitions(&self) {
@@ -1160,6 +1094,13 @@ impl HewCluster {
     }
 
     fn deliver_member_transition(&self, transition: &MemberTransition) {
+        if !self.transition_owner_is_current(transition) {
+            self.settle_superseded_member_owner(transition);
+            return;
+        }
+        if !self.transition_membership_epoch_is_current(transition) {
+            return;
+        }
         let membership_event = transition.membership_event();
         // Present for the whole of the observable delivery below when the
         // transition is a claimed guarded one. It is both the registration a
@@ -1256,14 +1197,20 @@ impl HewCluster {
         // behind it. Ungated transitions have no token to retire and always run
         // the full sequence.
         let may_emit = || {
-            in_flight
-                .as_ref()
-                .is_none_or(GuardedDeliveryInFlight::may_emit)
+            self.transition_membership_epoch_is_current(transition)
+                && in_flight
+                    .as_ref()
+                    .is_none_or(GuardedDeliveryInFlight::may_emit)
         };
         if !may_emit() {
             return;
         }
-        self.emit_event(transition.node_id, transition.state, transition.incarnation);
+        self.emit_event(
+            transition.node_id,
+            transition.state,
+            transition.incarnation,
+            transition.session,
+        );
         if !may_emit() {
             return;
         }
@@ -1286,30 +1233,49 @@ impl HewCluster {
         self.apply_member_transition_side_effects(transition);
     }
 
+    /// A stale DEAD may settle resources that still carry its exact owner, but
+    /// it must not publish membership, gossip, or terminal state against the
+    /// replacement route.
+    fn settle_superseded_member_owner(&self, transition: &MemberTransition) {
+        if transition.state != MEMBER_DEAD {
+            return;
+        }
+        crate::hew_node::fan_out_monitor_lost_for_member_owner(
+            transition.node_id,
+            transition.session,
+            transition.publication_token,
+        );
+        crate::hew_node::fail_remote_and_quarantine(
+            transition.node_id,
+            transition.session,
+            transition.publication_token,
+            transition.incarnation,
+        );
+    }
+
     /// Run the per-peer-table reactions a delivered transition triggers: the
-    /// `MEMBER_DEAD` fan-outs (partition recv-queue, protocol, cross-node
-    /// monitors, pending asks + quarantine) and the readmission eviction. Kept
-    /// separate from the publication-token bookkeeping in
+    /// `MEMBER_DEAD` fan-outs (owner-scoped monitors, pending asks and
+    /// quarantine) and the readmission eviction. Kept separate from the
+    /// publication-token bookkeeping in
     /// `deliver_member_transition` so each stays a single, readable concern.
     fn apply_member_transition_side_effects(&self, transition: &MemberTransition) {
-        // Partition-injection seam: fan out PartitionDetected to all queues
-        // registered for this node when it transitions to DEAD.
         if transition.state == MEMBER_DEAD {
-            if let Some(registry) = &self.partition_registry {
-                registry.on_member_dead(transition.node_id);
-            }
-            self.protocol.on_member_dead(transition.node_id);
-            // Cross-node monitor SWIM-DEAD fan-out: the peer is gone, so arm
-            // MonitorLost for every still-pending local watcher of an actor on
-            // it (exactly-once; a prior definitive DOWN wins).
-            crate::hew_node::fan_out_monitor_lost_for_node(transition.node_id);
-            // Pending-ask SWIM-DEAD fan-out + quarantine: the recv-queue seam
-            // above wakes blocked recvs to PartitionDetected; this resolves every
-            // pending remote ask routed to the dead peer with AskError::Partition
-            // immediately (instead of hanging to the caller's deadline) AND
-            // quarantines the peer at the incarnation it died at so a
-            // Quarantine-policy send/ask fails closed until it rejoins higher.
-            crate::hew_node::fail_remote_and_quarantine(transition.node_id, transition.incarnation);
+            // Settle only cross-node monitor/link state owned by the captured
+            // route publication. A prior definitive DOWN wins exactly once.
+            crate::hew_node::fan_out_monitor_lost_for_member_owner(
+                transition.node_id,
+                transition.session,
+                transition.publication_token,
+            );
+            // Resolve asks owned by this publication and quarantine its durable
+            // session/incarnation so Quarantine-policy sends fail closed until
+            // a valid readmission.
+            crate::hew_node::fail_remote_and_quarantine(
+                transition.node_id,
+                transition.session,
+                transition.publication_token,
+                transition.incarnation,
+            );
         }
         // Readmission seam: a buried peer (DEAD or LEFT) returning ALIVE is the
         // strictly-higher-incarnation rejoin the admission gate already authorized
@@ -1319,13 +1285,19 @@ impl HewCluster {
         if transition.state == MEMBER_ALIVE
             && matches!(transition.old_state, Some(MEMBER_DEAD | MEMBER_LEFT))
         {
-            crate::hew_node::readmit_node_clear_quarantine(transition.node_id);
+            crate::hew_node::readmit_node_clear_quarantine(
+                transition.node_id,
+                transition.session,
+                transition.incarnation,
+            );
         }
     }
 
     fn upsert_member(&self, node_id: u16, state: i32, incarnation: u64, addr: &[u8]) {
         let mut should_drain = false;
         {
+            let sessions = self.sessions.lock_or_recover();
+            let tokens = self.connection_tokens.lock_or_recover();
             let mut members = self.members.lock_or_recover();
             // Gossip path: `incarnation` is what a peer announced, so a strictly
             // higher one may readmit a buried node.
@@ -1334,6 +1306,8 @@ impl HewCluster {
                 node_id,
                 state,
                 incarnation,
+                sessions.get(&node_id).copied(),
+                tokens.current.get(&node_id).copied(),
                 addr,
                 true,
             ) {
@@ -1357,6 +1331,7 @@ impl HewCluster {
         let mut should_drain = false;
         let accepted = {
             let mut sessions = self.sessions.lock_or_recover();
+            let tokens = self.connection_tokens.lock_or_recover();
             let mut members = self.members.lock_or_recover();
             let current_session = sessions.get(&node_id).copied();
             let member_index = members.iter().position(|member| member.node_id == node_id);
@@ -1380,6 +1355,8 @@ impl HewCluster {
                             node_id,
                             MEMBER_ALIVE,
                             next_incarnation,
+                            Some(session),
+                            tokens.current.get(&node_id).copied(),
                             &[],
                             false,
                         ) {
@@ -1401,6 +1378,8 @@ impl HewCluster {
                             node_id,
                             state: MEMBER_ALIVE,
                             incarnation: 1,
+                            session: Some(session),
+                            publication_token: tokens.current.get(&node_id).copied(),
                             is_new_member: false,
                             old_state: Some(old_state),
                             publication: PublicationTransition::Plain,
@@ -1420,6 +1399,8 @@ impl HewCluster {
                             node_id,
                             state: MEMBER_ALIVE,
                             incarnation: 1,
+                            session: Some(session),
+                            publication_token: tokens.current.get(&node_id).copied(),
                             is_new_member: true,
                             old_state: None,
                             publication: PublicationTransition::Plain,
@@ -1448,6 +1429,23 @@ impl HewCluster {
         self.sessions.lock_or_recover().get(&node_id).copied()
     }
 
+    /// Durable session, current route publication and SWIM incarnation for a
+    /// peer, read under the membership lock order used by publication.
+    pub(crate) fn member_owner(&self, node_id: u16) -> (Option<u32>, Option<u64>, Option<u64>) {
+        let sessions = self.sessions.lock_or_recover();
+        let tokens = self.connection_tokens.lock_or_recover();
+        let members = self.members.lock_or_recover();
+        let incarnation = members
+            .iter()
+            .find(|member| member.node_id == node_id)
+            .map(|member| member.incarnation);
+        (
+            sessions.get(&node_id).copied(),
+            tokens.current.get(&node_id).copied(),
+            incarnation,
+        )
+    }
+
     /// Seed a member directly into the table without running the transition
     /// dispatch fan-outs. Used by cross-module tests that need the membership
     /// table to resolve a live incarnation for a node without also triggering the
@@ -1471,7 +1469,7 @@ impl HewCluster {
     }
 
     /// Emit a gossip event.
-    fn emit_event(&self, node_id: u16, new_state: i32, incarnation: u64) {
+    fn emit_event(&self, node_id: u16, new_state: i32, incarnation: u64, session: Option<u32>) {
         let mut events = self.events.lock_or_recover();
         // Deduplicate: remove older event for this node.
         events.retain(|e| e.node_id != node_id);
@@ -1483,6 +1481,7 @@ impl HewCluster {
             node_id,
             new_state,
             incarnation,
+            session,
             dissemination_count: 0,
         });
     }
@@ -1634,10 +1633,12 @@ impl HewCluster {
         let suspect_timeout_ms = u64::from(self.config.suspect_timeout_ms);
         let ping_timeout_ms = u64::from(self.config.ping_timeout_ms);
 
-        // Membership, publication and detector evidence must describe the
-        // same instant. Publication takes tokens → members; heartbeat updates
-        // take members → detectors. Release all guards before protocol work.
-        let (member_snapshot, publication_snapshot, phi_snapshot) = {
+        // Membership, durable session, publication and detector evidence must
+        // describe the same instant. Publication takes sessions → tokens →
+        // members; heartbeat updates take members → detectors. Release all
+        // guards before protocol work.
+        let (member_snapshot, session_snapshot, publication_snapshot, phi_snapshot) = {
+            let sessions = self.sessions.lock_or_recover();
             let tokens = self.connection_tokens.lock_or_recover();
             let members = self.members.lock_or_recover();
             let detectors = self.detectors.lock_or_recover();
@@ -1645,7 +1646,12 @@ impl HewCluster {
                 .iter()
                 .map(|(id, detector)| (*id, (detector.phi(now_ms), detector.is_warm())))
                 .collect();
-            (members.clone(), tokens.current.clone(), phi)
+            (
+                members.clone(),
+                sessions.clone(),
+                tokens.current.clone(),
+                phi,
+            )
         };
 
         // Delegate the transition decision to the protocol strategy.
@@ -1666,6 +1672,7 @@ impl HewCluster {
             else {
                 continue;
             };
+            let sessions = self.sessions.lock_or_recover();
             let tokens = self.connection_tokens.lock_or_recover();
             let mut members = self.members.lock_or_recover();
             let current = members.iter().find(|m| m.node_id == change.node_id);
@@ -1673,8 +1680,8 @@ impl HewCluster {
                 member.state == observed.state
                     && member.incarnation == observed.incarnation
                     && member.last_seen_ms == observed.last_seen_ms
-            }) || tokens.current.get(&change.node_id)
-                != publication_snapshot.get(&change.node_id)
+            }) || sessions.get(&change.node_id) != session_snapshot.get(&change.node_id)
+                || tokens.current.get(&change.node_id) != publication_snapshot.get(&change.node_id)
             {
                 continue;
             }
@@ -1683,6 +1690,8 @@ impl HewCluster {
                 change.node_id,
                 change.new_state,
                 change.incarnation,
+                session_snapshot.get(&change.node_id).copied(),
+                publication_snapshot.get(&change.node_id).copied(),
                 &[],
                 false,
             ) {
@@ -1701,6 +1710,8 @@ impl HewCluster {
     fn notify_connection_lost(&self, node_id: u16) {
         let mut should_drain = false;
         let known_member = {
+            let sessions = self.sessions.lock_or_recover();
+            let tokens = self.connection_tokens.lock_or_recover();
             let mut members = self.members.lock_or_recover();
             let member = members
                 .iter()
@@ -1716,6 +1727,8 @@ impl HewCluster {
                         node_id,
                         MEMBER_SUSPECT,
                         incarnation,
+                        sessions.get(&node_id).copied(),
+                        tokens.current.get(&node_id).copied(),
                         &[],
                         false,
                     ) {
@@ -1748,6 +1761,7 @@ impl HewCluster {
             // authorized-but-unemitted ALIVE from outliving this retirement;
             // the drain lock is deliberately not held across either, because
             // holding it across an emit deadlocks.
+            let sessions = self.sessions.lock_or_recover();
             let mut tokens = self.connection_tokens.lock_or_recover();
             let is_current = matches!(
                 tokens.current.get(&node_id),
@@ -1804,6 +1818,8 @@ impl HewCluster {
                             node_id,
                             MEMBER_SUSPECT,
                             incarnation,
+                            sessions.get(&node_id).copied(),
+                            None,
                             &[],
                             false,
                         ) {
@@ -1847,6 +1863,8 @@ impl HewCluster {
     fn notify_connection_established(&self, node_id: u16) {
         let mut should_drain = false;
         let known_member = {
+            let sessions = self.sessions.lock_or_recover();
+            let tokens = self.connection_tokens.lock_or_recover();
             let mut members = self.members.lock_or_recover();
             let member = members
                 .iter()
@@ -1868,6 +1886,8 @@ impl HewCluster {
                         node_id,
                         MEMBER_ALIVE,
                         incarnation,
+                        sessions.get(&node_id).copied(),
+                        tokens.current.get(&node_id).copied(),
                         &[],
                         false,
                     ) {
@@ -1895,6 +1915,7 @@ impl HewCluster {
     fn notify_connection_established_for_token(&self, node_id: u16, publication_token: u64) {
         let mut should_drain = false;
         let known_member = {
+            let sessions = self.sessions.lock_or_recover();
             let mut tokens = self.connection_tokens.lock_or_recover();
             tokens.current.insert(node_id, publication_token);
 
@@ -1918,6 +1939,8 @@ impl HewCluster {
                         node_id,
                         MEMBER_ALIVE,
                         incarnation,
+                        sessions.get(&node_id).copied(),
+                        Some(publication_token),
                         &[],
                         false,
                     ) {
@@ -2063,19 +2086,25 @@ impl HewCluster {
     /// Drain up to `max_count` pending membership-gossip entries for
     /// piggybacking on an outbound SWIM frame (C6 infection-style export).
     ///
-    /// Returns `(node_id, state, incarnation)` triples. The caller maps these
-    /// onto the wire `SwimGossipEntry` type; the cluster stays decoupled from
-    /// the wire codec. Dissemination counters are advanced and exhausted
+    /// Returns `(node_id, session, state, incarnation)` tuples. The caller maps
+    /// these onto the wire `SwimGossipEntry` type; the cluster stays decoupled
+    /// from the wire codec. Dissemination counters are advanced and exhausted
     /// events pruned, exactly as [`Self::take_registry_gossip`] does for
-    /// registry events.
-    pub fn take_swim_gossip(&self, max_count: usize) -> Vec<(u16, i32, u64)> {
+    /// registry events. This internal wire-facing drain preserves the session
+    /// captured by each event and is not part of the host ABI.
+    pub(crate) fn take_swim_gossip(&self, max_count: usize) -> Vec<(u16, Option<u32>, i32, u64)> {
         let mut events = self.events.lock_or_recover();
         let mut result = Vec::with_capacity(max_count.min(events.len()));
         for event in events.iter_mut() {
             if result.len() >= max_count {
                 break;
             }
-            result.push((event.node_id, event.new_state, event.incarnation));
+            result.push((
+                event.node_id,
+                event.session,
+                event.new_state,
+                event.incarnation,
+            ));
             event.dissemination_count += 1;
         }
         events.retain(|e| e.dissemination_count < 8);
@@ -2107,8 +2136,10 @@ impl HewCluster {
                 continue;
             }
             let mut should_drain = false;
+            let mut superseded_owner = None;
             {
                 let mut sessions = self.sessions.lock_or_recover();
+                let mut tokens = self.connection_tokens.lock_or_recover();
                 let mut members = self.members.lock_or_recover();
                 match sessions.get(&node_id).copied() {
                     Some(current) if session < current => continue,
@@ -2118,6 +2149,8 @@ impl HewCluster {
                             node_id,
                             state,
                             incarnation,
+                            Some(session),
+                            tokens.current.get(&node_id).copied(),
                             &[],
                             true,
                         ) {
@@ -2125,11 +2158,33 @@ impl HewCluster {
                         }
                     }
                     _ => {
+                        let old_session = sessions.get(&node_id).copied();
                         sessions.insert(node_id, session);
                         let old_state = members
                             .iter()
                             .find(|member| member.node_id == node_id)
                             .map(|member| member.state);
+                        let old_incarnation = members
+                            .iter()
+                            .find(|member| member.node_id == node_id)
+                            .map(|member| member.incarnation)
+                            .unwrap_or(0);
+                        // Gossip proves a newer durable session but carries no
+                        // connection authority. Retire every predecessor marker
+                        // and cancel any guarded delivery before staging it.
+                        let old_publication = tokens.current.remove(&node_id);
+                        let pending_publication = tokens.pending_emissions.remove(&node_id);
+                        let visible_publication = tokens.visible.remove(&node_id);
+                        for publication in
+                            [old_publication, pending_publication, visible_publication]
+                                .into_iter()
+                                .flatten()
+                        {
+                            Self::cancel_guarded_delivery(&mut tokens, node_id, publication);
+                        }
+                        if let Some(publication) = old_publication {
+                            superseded_owner = Some((old_session, publication, old_incarnation));
+                        }
                         if let Some(member) =
                             members.iter_mut().find(|member| member.node_id == node_id)
                         {
@@ -2150,12 +2205,27 @@ impl HewCluster {
                             node_id,
                             state,
                             incarnation,
+                            session: Some(session),
+                            publication_token: None,
                             is_new_member: old_state.is_none(),
                             old_state,
                             publication: PublicationTransition::Plain,
                         });
                     }
                 }
+            }
+            if let Some((old_session, publication, old_incarnation)) = superseded_owner {
+                crate::hew_node::fan_out_monitor_lost_for_member_owner(
+                    node_id,
+                    old_session,
+                    Some(publication),
+                );
+                crate::hew_node::fail_remote_and_quarantine(
+                    node_id,
+                    old_session,
+                    Some(publication),
+                    old_incarnation,
+                );
             }
             if should_drain {
                 self.drain_member_transitions();
@@ -2199,7 +2269,7 @@ impl HewCluster {
                 Ok(_) => {
                     // Enqueue a fresh ALIVE-about-self gossip event so the
                     // refutation is disseminated on the next outbound frame.
-                    self.emit_event(local, MEMBER_ALIVE, next);
+                    self.emit_event(local, MEMBER_ALIVE, next, None);
                     return Some(next);
                 }
                 Err(observed) => current = observed,
@@ -2445,28 +2515,6 @@ pub(crate) unsafe fn hew_cluster_test_fire_membership_callback(
     });
 }
 
-/// Install a [`PartitionRegistry`] on the cluster.
-///
-/// After installation, every `MEMBER_DEAD` transition fans out
-/// `RecvError::PartitionDetected` to all queues registered in `registry`
-/// for the dead node. Passing the same registry to multiple clusters is
-/// allowed; each cluster holds an `Arc` clone.
-///
-/// # Safety
-///
-/// `cluster` must be a valid pointer returned by [`hew_cluster_new`].
-pub unsafe fn hew_cluster_set_partition_registry(
-    cluster: *mut HewCluster,
-    registry: Arc<PartitionRegistry>,
-) {
-    if cluster.is_null() {
-        return;
-    }
-    // SAFETY: caller guarantees `cluster` is valid.
-    let cluster = unsafe { &mut *cluster };
-    cluster.set_partition_registry(registry);
-}
-
 /// Register a callback for registry gossip events.
 ///
 /// The callback receives `(name, location, is_add, user_data)`.
@@ -2689,6 +2737,8 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                         node_id,
                         state: MEMBER_ALIVE,
                         incarnation: 1,
+                        session: Some(session),
+                        publication_token: Some(publication_token),
                         is_new_member: false,
                         old_state: Some(state),
                         publication: PublicationTransition::Plain,
@@ -2717,6 +2767,8 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                     node_id,
                     MEMBER_ALIVE,
                     incarnation,
+                    Some(session),
+                    Some(publication_token),
                     &[],
                     false,
                 ) {
@@ -2752,6 +2804,8 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                     node_id,
                     state: MEMBER_ALIVE,
                     incarnation: 1,
+                    session: Some(session),
+                    publication_token: Some(publication_token),
                     is_new_member: true,
                     old_state: None,
                     publication: PublicationTransition::Plain,
@@ -2926,6 +2980,9 @@ pub fn snapshot_members_json(cluster: &HewCluster) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[path = "terminal_session_queue.rs"]
+    mod terminal_session_queue;
     use crate::node_identity::NodeId;
 
     fn make_config(node_id: u16) -> ClusterConfig {
@@ -3156,7 +3213,6 @@ mod tests {
             swim: SimpleSwim,
             computed: std::sync::mpsc::Sender<()>,
             resume: Mutex<std::sync::mpsc::Receiver<()>>,
-            declared_dead: Arc<AtomicBool>,
         }
 
         impl ClusterProtocol for PausedTick {
@@ -3171,9 +3227,6 @@ mod tests {
             }
             fn next_ping_target(&self, members: &[u16]) -> Option<u16> {
                 self.swim.next_ping_target(members)
-            }
-            fn on_member_dead(&self, _node: u16) {
-                self.declared_dead.store(true, Ordering::Release);
             }
             fn compute_tick_transitions(
                 &self,
@@ -3207,7 +3260,6 @@ mod tests {
 
         let (computed_tx, computed_rx) = std::sync::mpsc::channel();
         let (resume_tx, resume_rx) = std::sync::mpsc::channel();
-        let declared_dead = Arc::new(AtomicBool::new(false));
         let mut cluster = HewCluster::new(ClusterConfig {
             local_node_id: 1,
             ping_timeout_ms: 100,
@@ -3218,7 +3270,6 @@ mod tests {
             swim: SimpleSwim::new(),
             computed: computed_tx,
             resume: Mutex::new(resume_rx),
-            declared_dead: Arc::clone(&declared_dead),
         });
         cluster.upsert_member(2, initial_state, 1, b"10.0.0.1:9000");
         cluster.sessions.lock_or_recover().insert(2, 1);
@@ -3269,10 +3320,6 @@ mod tests {
                 event.new_state != MEMBER_SUSPECT && event.new_state != MEMBER_DEAD
             }),
             "a discarded decision must not emit fault gossip"
-        );
-        assert!(
-            !declared_dead.load(Ordering::Acquire),
-            "a discarded decision must not run the partition callback"
         );
     }
 
@@ -4176,6 +4223,8 @@ mod tests {
                 2,
                 MEMBER_ALIVE,
                 2,
+                None,
+                Some(2),
                 &[],
                 false,
             )
@@ -4520,9 +4569,9 @@ mod tests {
     #[test]
     fn emit_event_deduplicates_by_node_id() {
         let cluster = HewCluster::new(make_config(1));
-        cluster.emit_event(2, MEMBER_ALIVE, 1);
-        cluster.emit_event(3, MEMBER_ALIVE, 1);
-        cluster.emit_event(2, MEMBER_SUSPECT, 2);
+        cluster.emit_event(2, MEMBER_ALIVE, 1, None);
+        cluster.emit_event(3, MEMBER_ALIVE, 1, None);
+        cluster.emit_event(2, MEMBER_SUSPECT, 2, None);
 
         let events = cluster.events.lock().unwrap();
         // Node 2's first event should be replaced.
@@ -4539,7 +4588,7 @@ mod tests {
         for i in 0..MAX_GOSSIP_EVENTS {
             #[expect(clippy::cast_possible_truncation, reason = "test values fit in u16")]
             let node_id = (i + 100) as u16;
-            cluster.emit_event(node_id, MEMBER_ALIVE, 1);
+            cluster.emit_event(node_id, MEMBER_ALIVE, 1, None);
         }
         {
             let events = cluster.events.lock().unwrap();
@@ -4547,7 +4596,7 @@ mod tests {
         }
 
         // One more should evict the oldest (node 100).
-        cluster.emit_event(999, MEMBER_ALIVE, 1);
+        cluster.emit_event(999, MEMBER_ALIVE, 1, None);
         let events = cluster.events.lock().unwrap();
         assert_eq!(events.len(), MAX_GOSSIP_EVENTS);
         assert!(
@@ -4919,13 +4968,14 @@ mod tests {
         let cluster = HewCluster::new(make_config(1));
         // A membership transition queues a gossip event.
         cluster.upsert_member(2, MEMBER_ALIVE, 3, b"10.0.0.2:9000");
-        cluster.emit_event(2, MEMBER_DEAD, 5);
+        cluster.emit_event(2, MEMBER_DEAD, 5, None);
 
         let gossip = cluster.take_swim_gossip(8);
         assert!(
-            gossip
-                .iter()
-                .any(|&(n, s, i)| n == 2 && s == MEMBER_DEAD && i == 5),
+            gossip.iter().any(|&(n, session, s, i)| n == 2
+                && session.is_none()
+                && s == MEMBER_DEAD
+                && i == 5),
             "exported gossip must carry the DEAD transition: {gossip:?}"
         );
     }
@@ -5043,7 +5093,7 @@ mod tests {
         assert!(
             gossip
                 .iter()
-                .any(|&(n, s, i)| n == 1 && s == MEMBER_ALIVE && i == new_inc),
+                .any(|&(n, _, s, i)| n == 1 && s == MEMBER_ALIVE && i == new_inc),
             "refutation must enqueue an ALIVE-about-self gossip event: {gossip:?}"
         );
     }

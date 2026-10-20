@@ -213,7 +213,7 @@ pub(crate) struct NodeSlot {
     /// peer rejoins at a strictly higher incarnation, which evicts the entry. Per
     /// runtime, isolated like `reply_table`; written from the SWIM-DEAD verdict and
     /// the readmission dispatch, read on the send/ask path.
-    quarantine: PoisonSafe<HashMap<u16, u64>>,
+    quarantine: PoisonSafe<HashMap<u16, QuarantineEntry>>,
     /// Process-local route slot embedded in local actor IDs. Route slot zero
     /// remains the local-dispatch sentinel.
     local_route_slot: AtomicU16,
@@ -398,12 +398,31 @@ fn reply_table_opt() -> Option<&'static ReplyRoutingTable> {
 /// Fail-closed on no installed runtime (the SWIM-DEAD verdict runs from the
 /// connection-reader / SWIM-driver threads, where a runtime may not be installed)
 /// — there is no quarantine set to write, so the call is a no-op.
-fn quarantine_insert(node_id: u16, incarnation: u64) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QuarantineEntry {
+    session: Option<u32>,
+    incarnation: u64,
+}
+
+fn quarantine_insert(node_id: u16, session: Option<u32>, incarnation: u64) {
     if let Some(rt) = crate::runtime::rt_current_opt() {
         rt.node.quarantine.access(|set| {
-            let entry = set.entry(node_id).or_insert(incarnation);
-            if incarnation > *entry {
-                *entry = incarnation;
+            let candidate = QuarantineEntry {
+                session,
+                incarnation,
+            };
+            match set.get_mut(&node_id) {
+                Some(entry) if entry.session > candidate.session => {}
+                Some(entry) if entry.session == candidate.session => {
+                    if candidate.incarnation > entry.incarnation {
+                        *entry = candidate;
+                    }
+                }
+                Some(entry) if entry.session < candidate.session => *entry = candidate,
+                Some(_) => {}
+                None => {
+                    set.insert(node_id, candidate);
+                }
             }
         });
     }
@@ -418,21 +437,28 @@ fn quarantine_insert(node_id: u16, incarnation: u64) {
 /// — though in practice the readmission dispatch evicts the entry first, so the
 /// incarnation compare is the belt to eviction's suspenders. Returns `false` when
 /// no runtime is installed (nothing to consult).
-fn quarantine_is_blocked(node_id: u16, live_incarnation: u64) -> bool {
+fn quarantine_is_blocked(node_id: u16, session: Option<u32>, live_incarnation: u64) -> bool {
     crate::runtime::rt_current_opt().is_some_and(|rt| {
-        rt.node
-            .quarantine
-            .access(|set| set.get(&node_id).is_some_and(|&q| live_incarnation <= q))
+        rt.node.quarantine.access(|set| {
+            set.get(&node_id).is_some_and(|entry| {
+                entry.session == session && live_incarnation <= entry.incarnation
+            })
+        })
     })
 }
 
 /// Evict a peer from the quarantine set on its strictly-higher-incarnation
 /// readmission, so it is sendable again. A no-op if the peer is not quarantined.
 /// Fail-closed on no runtime.
-fn quarantine_evict(node_id: u16) {
+fn quarantine_evict(node_id: u16, session: Option<u32>, incarnation: u64) {
     if let Some(rt) = crate::runtime::rt_current_opt() {
         rt.node.quarantine.access(|set| {
-            set.remove(&node_id);
+            if set.get(&node_id).is_some_and(|entry| {
+                entry.session < session
+                    || (entry.session == session && entry.incarnation < incarnation)
+            }) {
+                set.remove(&node_id);
+            }
         });
     }
 }
@@ -457,12 +483,18 @@ fn quarantine_blocks_send(node: &HewNode, target_node_id: u16) -> bool {
         // No cluster to resolve a live incarnation: if the set holds the peer at
         // any incarnation, block (fail-closed). Passing 0 as the live incarnation
         // ensures no quarantined entry can ever be considered cleared.
-        return quarantine_is_blocked(target_node_id, 0);
+        return crate::runtime::rt_current_opt().is_some_and(|rt| {
+            rt.node
+                .quarantine
+                .access(|set| set.contains_key(&target_node_id))
+        });
     }
     // SAFETY: node.cluster is valid while the node is installed.
     let cluster = unsafe { &*node.cluster };
-    let live_incarnation = cluster.member_incarnation(target_node_id).unwrap_or(0);
-    quarantine_is_blocked(target_node_id, live_incarnation)
+    let live_session = cluster.member_session(target_node_id);
+    let incarnation = cluster.member_incarnation(target_node_id);
+    let live_incarnation = incarnation.unwrap_or(0);
+    quarantine_is_blocked(target_node_id, live_session, live_incarnation)
 }
 
 // ---------------------------------------------------------------------------
@@ -687,6 +719,40 @@ impl ReplyRoutingTable {
                 .iter()
                 .filter_map(|(&request_id, pending)| {
                     (pending.connection == connection).then_some(request_id)
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| map.remove(&request_id))
+                .collect::<Vec<_>>()
+        };
+        for pending in pending {
+            Self::fail_pending_with_reason(&pending, ask_error);
+        }
+    }
+
+    /// Fail asks owned by one authenticated connection-manager publication.
+    /// Publication tokens are unique within a manager and remain attached to
+    /// pending entries after their route is replaced, so both values identify
+    /// the owner even when another manager has issued the same token.
+    fn fail_asks_for_publication(
+        &self,
+        conn_mgr: *const HewConnMgr,
+        publication: u64,
+        ask_error: AskError,
+    ) {
+        let conn_mgr = conn_mgr.cast::<()>() as usize;
+        let pending = {
+            let mut map = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let request_ids = map
+                .iter()
+                .filter_map(|(&request_id, pending)| {
+                    (pending.connection.conn_mgr == conn_mgr
+                        && pending.kind == PendingReplyKind::Ask(publication))
+                    .then_some(request_id)
                 })
                 .collect::<Vec<_>>();
             request_ids

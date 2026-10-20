@@ -14,8 +14,8 @@
 //! ticker:
 //!
 //! 1. calls `hew_cluster_tick`, which advances phi-accrual, escalates
-//!    SUSPECT→DEAD on timeout, fans out `PartitionDetected` and fires
-//!    `on_member_dead`, and returns the next direct-probe target;
+//!    SUSPECT→DEAD on timeout, delivers owned terminal effects and returns
+//!    the next direct-probe target;
 //! 2. sends a direct `PING` (carrying piggybacked membership gossip) to that
 //!    target over the connection mesh;
 //! 3. issues up to K indirect `PING_REQ` probes for the same target through
@@ -360,7 +360,7 @@ unsafe fn run_one_period(node: *mut HewNode) {
     let conn_ptr: *mut HewConnMgr = node_ref.conn_mgr;
 
     // 1. Advance the protocol: phi-accrual consultation, SUSPECT→DEAD
-    //    escalation, partition fan-out + on_member_dead, dead-route pruning.
+    //    escalation, owner-scoped terminal effects and dead-route pruning.
     //    Returns the next direct-probe target (0 = none).
     // SAFETY: cluster pointer is owned by the live node.
     let target = unsafe { cluster::hew_cluster_tick(cluster_ptr) };

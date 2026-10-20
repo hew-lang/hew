@@ -514,6 +514,7 @@ pub(super) fn remove_connection(
         Some((
             conn.peer_node_id,
             conn.peer_identity,
+            conn.peer_session_incarnation,
             conn.publication_token,
             Arc::clone(&conn.publication_sync),
             Arc::clone(&conn.publication_removed),
@@ -523,6 +524,7 @@ pub(super) fn remove_connection(
     let Some((
         peer_node_id,
         peer_identity,
+        peer_session_incarnation,
         publication_token,
         publication_sync,
         publication_removed,
@@ -672,6 +674,7 @@ pub(super) fn remove_connection(
         mgr,
         peer_identity,
         peer_node_id,
+        peer_session_incarnation,
         conn_id,
         publication_token,
         &publication_sync,

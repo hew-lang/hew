@@ -197,15 +197,10 @@ pub(super) fn dist_test_probe_enabled() -> bool {
 /// returning the number of asks it resolved (`0` when none are pending yet, `-1`
 /// when no runtime is installed).
 ///
-/// The drain seam behind the test-only partition probe. Drives the in-flight
-/// pending-ask fail-closed path on demand through the SAME reply-table seam the
-/// SWIM-DEAD fan-out ([`fail_remote_asks_for_node`]) reaches via
-/// `fail_connection_with_reason(.., Partition)` — instead of waiting on the OS
-/// socket-teardown detector and the SWIM failure detector, whose latency is
-/// unbounded under host load. It mirrors how the in-process test
-/// `swim_dead_wakes_pending_remote_ask_with_partition` calls the fan-out directly
-/// once the ask registers, letting the two-process partition fixture exercise the
-/// typed fail-closed verdict deterministically rather than racing real time.
+/// The drain seam behind the test-only partition probe. It resolves pending
+/// asks on demand instead of waiting on socket teardown or SWIM timing, whose
+/// latency is unbounded under host load. The in-process SWIM test exercises the
+/// production owner-scoped verdict path directly.
 ///
 /// Draining under the table lock is atomic against a racing reply: an entry this
 /// drain removes is guaranteed to wake with `Partition` (a late reply finds no

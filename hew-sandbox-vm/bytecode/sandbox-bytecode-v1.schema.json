@@ -1,6 +1,184 @@
 {
-  "$comment": "Generated from the envelope schema and Rust instruction DTOs; run make sandbox-bytecode",
+  "$comment": "Generated from the Rust package and instruction DTOs; run make sandbox-bytecode",
   "$defs": {
+    "Actor": {
+      "description": "One demanded actor: its state seats, its lifecycle callables and the\nhandlers its mailbox dispatches, all as function indexes.",
+      "properties": {
+        "coalesce": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Coalesce"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "crash": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "crash_action": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "crash_info": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "crash_kind": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "down": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "exit": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "handlers": {
+          "items": {
+            "$ref": "#/$defs/ActorHandler"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "init": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "mailbox_capacity": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "max_heap_bytes": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "name": {
+          "type": "string"
+        },
+        "overflow": {
+          "type": "string"
+        },
+        "start": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "state_fields": {
+          "items": {
+            "$ref": "#/$defs/ActorField"
+          },
+          "type": "array"
+        },
+        "stop": {
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "state_fields",
+        "stop",
+        "handlers",
+        "overflow"
+      ],
+      "type": "object"
+    },
+    "ActorField": {
+      "properties": {
+        "deferred": {
+          "type": "boolean"
+        },
+        "mutable": {
+          "type": "boolean"
+        }
+      },
+      "required": ["mutable", "deferred"],
+      "type": "object"
+    },
+    "ActorHandler": {
+      "properties": {
+        "callable": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "every_ns": {
+          "format": "int64",
+          "type": ["integer", "null"]
+        },
+        "fallible": {
+          "type": "boolean"
+        },
+        "message_id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "result_shape": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "streams": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "message_id",
+        "callable",
+        "params",
+        "streams",
+        "fallible"
+      ],
+      "type": "object"
+    },
     "ActorOperation": {
       "oneOf": [
         {
@@ -386,6 +564,41 @@
       "required": ["actor", "message", "policy", "sealed"],
       "type": "object"
     },
+    "AggregateBuiltin": {
+      "enum": ["Timestamp"],
+      "type": "string"
+    },
+    "AggregateShape": {
+      "properties": {
+        "builtin": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AggregateBuiltin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "name", "fields"],
+      "type": "object"
+    },
     "ArrayValueOp": {
       "enum": ["Len", "Index", "IndexBorrow", "Set"],
       "type": "string"
@@ -431,6 +644,33 @@
       ],
       "type": "string"
     },
+    "Block": {
+      "properties": {
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ops": {
+          "items": {
+            "$ref": "#/$defs/OpV1"
+          },
+          "type": "array"
+        },
+        "params": {
+          "items": {
+            "$ref": "#/$defs/ValueDef"
+          },
+          "type": "array"
+        },
+        "term": {
+          "$ref": "#/$defs/TermV1"
+        }
+      },
+      "required": ["id", "params", "ops", "term"],
+      "type": "object"
+    },
     "BoundaryDecision": {
       "enum": ["borrow", "borrow_mut", "copy", "move", "snapshot"],
       "type": "string"
@@ -467,6 +707,10 @@
       "enum": ["never"],
       "type": "string"
     },
+    "Capability": {
+      "enum": ["Eq", "Hash", "Less", "LessEqual", "Greater", "GreaterEqual"],
+      "type": "string"
+    },
     "CheckedFailure": {
       "properties": {
         "edge": {
@@ -479,9 +723,142 @@
       "required": ["trap", "edge"],
       "type": "object"
     },
+    "Closure": {
+      "properties": {
+        "entries": {
+          "items": {
+            "$ref": "#/$defs/ClosureEntry"
+          },
+          "type": "array"
+        },
+        "fields": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["id", "entries", "fields"],
+      "type": "object"
+    },
+    "ClosureEntry": {
+      "properties": {
+        "body": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "specialization": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        }
+      },
+      "required": ["body"],
+      "type": "object"
+    },
+    "Coalesce": {
+      "properties": {
+        "fallback": {
+          "type": "string"
+        },
+        "keys": {
+          "items": {
+            "$ref": "#/$defs/CoalesceKey"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["fallback", "keys"],
+      "type": "object"
+    },
+    "CoalesceKey": {
+      "properties": {
+        "message": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "param": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["message", "param"],
+      "type": "object"
+    },
     "CodecDirection": {
       "enum": ["encode", "decode", "test_input"],
       "type": "string"
+    },
+    "CodecShape": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "description": "The compiler's structural plan, with child indices preserving recursion.",
+      "properties": {
+        "aggregates": {
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": ["integer", "null"]
+          },
+          "type": "array"
+        },
+        "grouped_payloads": {
+          "description": "Synthetic tuple or record groups expand into separate enum payload fields.",
+          "items": {
+            "type": "boolean"
+          },
+          "type": "array"
+        },
+        "names": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/Node"
+          },
+          "type": "array"
+        },
+        "root": {
+          "format": "uint",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "variants": {
+          "items": {
+            "format": "uint32",
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": ["integer", "null"]
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "root",
+        "nodes",
+        "names",
+        "aggregates",
+        "variants",
+        "grouped_payloads"
+      ],
+      "title": "Shape",
+      "type": "object"
     },
     "DecodedCodec": {
       "properties": {
@@ -602,6 +979,44 @@
       ],
       "type": "string"
     },
+    "Entry": {
+      "properties": {
+        "exit": {
+          "$ref": "#/$defs/EntryExit"
+        },
+        "function": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["function", "exit"],
+      "type": "object"
+    },
+    "EntryExit": {
+      "enum": ["unit", "status"],
+      "type": "string"
+    },
+    "Extern": {
+      "properties": {
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "native_capability": {
+          "description": "The capability manifest's label for a native-only runtime endpoint,\nso a refusal can name what needs native execution. Admission still\nkeys on `symbol` alone.",
+          "type": ["string", "null"]
+        },
+        "symbol": {
+          "type": "string"
+        }
+      },
+      "required": ["id", "symbol"],
+      "type": "object"
+    },
     "FileReadOp": {
       "description": "Existing synchronous file adapters and their shared error channel.",
       "enum": [
@@ -623,6 +1038,48 @@
       "description": "`f64` bit/classification methods (`x.to_bits()`, `x.is_nan()`, …).\nScoped to `f64`: `RuntimeValueKind` has no `F32` kind yet, matching the\n`IntMethodWidth` gap for the narrower integer widths.",
       "enum": ["ToBits", "IsNan", "IsFinite", "IsInfinite", "IsSignNegative"],
       "type": "string"
+    },
+    "Function": {
+      "properties": {
+        "actor_construction": {
+          "type": "boolean"
+        },
+        "blocks": {
+          "items": {
+            "$ref": "#/$defs/Block"
+          },
+          "type": "array"
+        },
+        "entry": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "params": {
+          "items": {
+            "$ref": "#/$defs/ValueDef"
+          },
+          "type": "array"
+        },
+        "places": {
+          "items": {
+            "$ref": "#/$defs/Place"
+          },
+          "type": "array"
+        }
+      },
+      "required": ["id", "name", "params", "entry", "places", "blocks"],
+      "type": "object"
     },
     "IndirectInvocation": {
       "properties": {
@@ -718,6 +1175,26 @@
     "JoinMode": {
       "enum": ["wait", "cancel_losers", "propagate_fault"],
       "type": "string"
+    },
+    "Key": {
+      "properties": {
+        "flags": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "tag": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        }
+      },
+      "required": ["name", "flags"],
+      "type": "object"
     },
     "MapValueOp": {
       "description": "Ordinary map operations with independently owned keys and values.",
@@ -840,6 +1317,219 @@
       },
       "required": ["operation"],
       "type": "object"
+    },
+    "Node": {
+      "oneOf": [
+        {
+          "enum": ["Unit", "Bool", "Char", "String", "Bytes"],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Signed": {
+              "properties": {
+                "max": {
+                  "format": "int64",
+                  "type": "integer"
+                },
+                "min": {
+                  "format": "int64",
+                  "type": "integer"
+                }
+              },
+              "required": ["min", "max"],
+              "type": "object"
+            }
+          },
+          "required": ["Signed"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Unsigned": {
+              "properties": {
+                "max": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["max"],
+              "type": "object"
+            }
+          },
+          "required": ["Unsigned"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Float": {
+              "properties": {
+                "bits": {
+                  "format": "uint8",
+                  "maximum": 255,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["bits"],
+              "type": "object"
+            }
+          },
+          "required": ["Float"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Tuple": {
+              "items": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["Tuple"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Array": {
+              "properties": {
+                "element": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "len": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["element", "len"],
+              "type": "object"
+            }
+          },
+          "required": ["Array"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Sequence": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["Sequence"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Set": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["Set"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Map": {
+              "properties": {
+                "key": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "value": {
+                  "format": "uint",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": ["key", "value"],
+              "type": "object"
+            }
+          },
+          "required": ["Map"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Record": {
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "$ref": "#/$defs/Key"
+                  },
+                  {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": "integer"
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["Record"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Variant": {
+              "items": {
+                "maxItems": 2,
+                "minItems": 2,
+                "prefixItems": [
+                  {
+                    "$ref": "#/$defs/Key"
+                  },
+                  {
+                    "format": "uint",
+                    "minimum": 0,
+                    "type": ["integer", "null"]
+                  }
+                ],
+                "type": "array"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["Variant"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "Option": {
+              "format": "uint",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["Option"],
+          "type": "object"
+        }
+      ]
     },
     "Nonfinite": {
       "enum": ["nan", "inf", "-inf"],
@@ -2348,6 +3038,163 @@
       "enum": ["none", "owned", "guaranteed"],
       "type": "string"
     },
+    "Place": {
+      "description": "A semantic place carries exactly the fields needed by its storage origin.",
+      "oneOf": [
+        {
+          "properties": {
+            "id": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "origin": {
+              "const": "local",
+              "type": "string"
+            }
+          },
+          "required": ["origin", "id"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "id": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "origin": {
+              "const": "runtime",
+              "type": "string"
+            }
+          },
+          "required": ["origin", "id"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "base": {
+              "$ref": "#/$defs/PlaceBase"
+            },
+            "field": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "origin": {
+              "const": "aggregate",
+              "type": "string"
+            },
+            "shape": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
+            }
+          },
+          "required": ["origin", "id", "base", "field"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "environment": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "field": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "origin": {
+              "const": "capture",
+              "type": "string"
+            }
+          },
+          "required": ["origin", "id", "environment", "field"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "environment": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "field": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "id": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "initialized": {
+              "type": "boolean"
+            },
+            "origin": {
+              "const": "actor_state",
+              "type": "string"
+            }
+          },
+          "required": ["origin", "id", "environment", "field", "initialized"],
+          "type": "object"
+        }
+      ]
+    },
+    "PlaceBase": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "place": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["place"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "value": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["value"],
+          "type": "object"
+        }
+      ]
+    },
     "PrintKind": {
       "description": "Selected primitive print representation. Physical lowering carries this\nchoice and the newline flag to the runtime's tagged print ABI.",
       "enum": ["I32", "I64", "U8", "U32", "U64", "F64", "Bool", "Str"],
@@ -2381,6 +3228,131 @@
         }
       },
       "type": "object"
+    },
+    "Resource": {
+      "description": "Resource destruction follows the compiler-authored close contract.",
+      "oneOf": [
+        {
+          "properties": {
+            "close": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "record",
+              "type": "string"
+            },
+            "shape": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ty": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "shape", "ty", "close"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "close": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "opaque",
+              "type": "string"
+            },
+            "ty": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "ty", "close"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "nominal",
+              "type": "string"
+            },
+            "release": {
+              "type": "string"
+            },
+            "ty": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "ty", "release"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "task",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "actor_call",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "actor_request",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "generator",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "stream",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "sink",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        }
+      ]
     },
     "RuntimeFamilyEntry": {
       "additionalProperties": false,
@@ -5049,7 +6021,9 @@
           "type": "string"
         },
         "id": {
-          "$ref": "#/$defs/id"
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
         }
       },
       "required": ["id", "family"],
@@ -5066,6 +6040,10 @@
       },
       "required": ["budget"],
       "type": "object"
+    },
+    "SchemaVersion": {
+      "enum": ["hew.sandbox.bytecode.v1"],
+      "type": "string"
     },
     "SelectDetail": {
       "properties": {
@@ -5168,6 +6146,188 @@
       "required": ["park"],
       "type": "object"
     },
+    "StructuralCase": {
+      "properties": {
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/StructuralField"
+          },
+          "type": "array"
+        },
+        "kind": {
+          "$ref": "#/$defs/StructuralCaseKind"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name", "kind", "fields"],
+      "type": "object"
+    },
+    "StructuralCaseKind": {
+      "enum": ["unit", "tuple", "struct"],
+      "type": "string"
+    },
+    "StructuralField": {
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "recipe": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["name", "recipe"],
+      "type": "object"
+    },
+    "StructuralRecipe": {
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "scalar",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "unit",
+              "type": "string"
+            }
+          },
+          "required": ["kind"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "callee": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "kind": {
+              "const": "display",
+              "type": "string"
+            }
+          },
+          "required": ["kind", "callee"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "identity",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "name"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "tuple",
+              "type": "string"
+            },
+            "members": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["kind", "members"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "vector",
+              "type": "string"
+            },
+            "members": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["kind", "members"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "map",
+              "type": "string"
+            },
+            "members": {
+              "items": {
+                "format": "uint32",
+                "maximum": 4294967295,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": "array"
+            }
+          },
+          "required": ["kind", "members"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "fields": {
+              "items": {
+                "$ref": "#/$defs/StructuralField"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "record",
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": ["kind", "name", "fields"],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cases": {
+              "items": {
+                "$ref": "#/$defs/StructuralCase"
+              },
+              "type": "array"
+            },
+            "kind": {
+              "const": "enum",
+              "type": "string"
+            }
+          },
+          "required": ["kind", "cases"],
+          "type": "object"
+        }
+      ]
+    },
     "SubmissionShapes": {
       "properties": {
         "failure": {
@@ -5189,6 +6349,121 @@
           "type": ["integer", "null"]
         }
       },
+      "type": "object"
+    },
+    "SupervisedRole": {
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "actor": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["actor"],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "supervisor": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": ["supervisor"],
+          "type": "object"
+        }
+      ]
+    },
+    "Supervisor": {
+      "description": "One demanded supervisor: its restart policy and the children it starts.",
+      "properties": {
+        "children": {
+          "items": {
+            "$ref": "#/$defs/SupervisorChild"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_restarts": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "startup_order": {
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "strategy": {
+          "type": "string"
+        },
+        "window_secs": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["id", "strategy", "max_restarts", "window_secs", "children"],
+      "type": "object"
+    },
+    "SupervisorChild": {
+      "properties": {
+        "dependencies": {
+          "default": [],
+          "items": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "is_pool": {
+          "type": "boolean"
+        },
+        "name": {
+          "type": "string"
+        },
+        "restart": {
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/SupervisedRole",
+          "description": "The role this child plays, as `{\"actor\": id}` or `{\"supervisor\": id}`."
+        },
+        "spawn": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "stop_config": {
+          "format": "uint",
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "stop_ns": {
+          "format": "int64",
+          "type": ["integer", "null"]
+        }
+      },
+      "required": ["name", "role", "restart", "spawn"],
       "type": "object"
     },
     "SupervisorPoolOp": {
@@ -6636,6 +7911,69 @@
       ],
       "type": "string"
     },
+    "ValueCapabilityPlan": {
+      "description": "The checker's selection for one `(type, capability)` pair.\n\n`callable` names a user implementation; its absence is the derived\nstructural operation, which the VM performs over its own value\nrepresentation.",
+      "properties": {
+        "callable": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": ["integer", "null"]
+        },
+        "capability": {
+          "$ref": "#/$defs/Capability"
+        },
+        "components": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/ValueComponentCapabilities"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ty": {
+          "type": "string"
+        },
+        "variants": {
+          "items": {
+            "items": {
+              "$ref": "#/$defs/ValueComponentCapabilities"
+            },
+            "type": "array"
+          },
+          "type": ["array", "null"]
+        }
+      },
+      "required": ["id", "capability", "ty"],
+      "type": "object"
+    },
+    "ValueComponentCapabilities": {
+      "properties": {
+        "ordering": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ValueOrderingCapabilities"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "selected": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["selected"],
+      "type": "object"
+    },
     "ValueDef": {
       "properties": {
         "own": {
@@ -6649,6 +7987,51 @@
         }
       },
       "required": ["value", "own"],
+      "type": "object"
+    },
+    "ValueOrderingCapabilities": {
+      "properties": {
+        "greater": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "greater_equal": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "less": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "less_equal": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": ["less", "less_equal", "greater", "greater_equal"],
+      "type": "object"
+    },
+    "VariantCase": {
+      "properties": {
+        "fields": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name", "fields"],
       "type": "object"
     },
     "VariantResultShapes": {
@@ -6667,6 +8050,274 @@
         }
       },
       "required": ["error", "error_len"],
+      "type": "object"
+    },
+    "VariantShape": {
+      "properties": {
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/VariantCase"
+          },
+          "type": "array"
+        },
+        "id": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "name": {
+          "type": "string"
+        },
+        "runtime_tags": {
+          "additionalProperties": false,
+          "default": {},
+          "properties": {
+            "ActorErrorConnectionDropped": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorDead": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorEncodeFailed": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorFailed": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorNodeNotRunning": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorPartition": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorRefused": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorRejected": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorRoutingFailed": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorTimedOut": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ActorErrorTrapped": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CallerActor": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CallerNode": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CallerTask": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CallerTimer": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindFault": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindHandlerFailed": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindHeapExceeded": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindPartitionDetected": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "CrashKindTimerOverdue": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "DeliveryAccepted": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "DeliveryDiscarded": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "LinkErrorNoContext": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "OptionNone": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "OptionSome": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ResultErr": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "ResultOk": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorBackpressure": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorCancelled": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorClosed": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorDead": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorFull": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorInvalidMessage": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorLocalShutdown": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorPartition": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorStaleRef": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorTimedOut": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorUnauthorized": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorVersionMismatch": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorWriteTimedOut": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "required": ["id", "name", "cases"],
       "type": "object"
     },
     "VecContainsScalarElem": {
@@ -6802,493 +8453,73 @@
         }
       ]
     },
-    "actor": {
-      "additionalProperties": false,
-      "properties": {
-        "coalesce": {
-          "additionalProperties": false,
-          "properties": {
-            "fallback": {
-              "type": "string"
-            },
-            "keys": {
-              "items": {
-                "additionalProperties": false,
-                "properties": {
-                  "message": {
-                    "$ref": "#/$defs/id"
-                  },
-                  "param": {
-                    "$ref": "#/$defs/id"
-                  }
-                },
-                "required": ["message", "param"],
-                "type": "object"
-              },
-              "type": "array"
-            }
-          },
-          "required": ["fallback", "keys"],
-          "type": "object"
-        },
-        "crash": {
-          "$ref": "#/$defs/id"
-        },
-        "crash_action": {
-          "$ref": "#/$defs/id"
-        },
-        "crash_info": {
-          "$ref": "#/$defs/id"
-        },
-        "crash_kind": {
-          "$ref": "#/$defs/id"
-        },
-        "down": {
-          "$ref": "#/$defs/id"
-        },
-        "exit": {
-          "$ref": "#/$defs/id"
-        },
-        "handlers": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "callable": {
-                "$ref": "#/$defs/id"
-              },
-              "every_ns": {
-                "type": "integer"
-              },
-              "fallible": {
-                "type": "boolean"
-              },
-              "message_id": {
-                "$ref": "#/$defs/id"
-              },
-              "name": {
-                "type": "string"
-              },
-              "params": {
-                "$ref": "#/$defs/id"
-              },
-              "result_shape": {
-                "minimum": 0,
-                "type": ["integer", "null"]
-              },
-              "streams": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "name",
-              "message_id",
-              "callable",
-              "params",
-              "streams",
-              "fallible",
-              "result_shape"
-            ],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "id": {
-          "$ref": "#/$defs/id"
-        },
-        "init": {
-          "$ref": "#/$defs/id"
-        },
-        "mailbox_capacity": {
-          "$ref": "#/$defs/id"
-        },
-        "max_heap_bytes": {
-          "$ref": "#/$defs/id"
-        },
-        "name": {
-          "minLength": 1,
-          "type": "string"
-        },
-        "overflow": {
-          "type": "string"
-        },
-        "start": {
-          "$ref": "#/$defs/id"
-        },
-        "state_fields": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "deferred": {
-                "type": "boolean"
-              },
-              "mutable": {
-                "type": "boolean"
-              }
-            },
-            "required": ["mutable", "deferred"],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "stop": {
-          "items": {
-            "$ref": "#/$defs/id"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "id",
-        "name",
-        "state_fields",
-        "stop",
-        "handlers",
-        "overflow"
-      ],
-      "type": "object"
-    },
-    "block": {
-      "additionalProperties": false,
+    "Vtable": {
       "properties": {
         "id": {
-          "$ref": "#/$defs/id"
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
         },
-        "ops": {
+        "slots": {
           "items": {
-            "$ref": "#/$defs/op"
+            "$ref": "#/$defs/VtableSlot"
           },
           "type": "array"
-        },
-        "params": {
-          "items": {
-            "$ref": "#/$defs/valueDef"
-          },
-          "type": "array"
-        },
-        "term": {
-          "$ref": "#/$defs/term"
         }
       },
-      "required": ["id", "params", "ops", "term"],
+      "required": ["id", "slots"],
       "type": "object"
     },
-    "boundary": {
-      "additionalProperties": false,
+    "VtableSlot": {
       "properties": {
-        "decision": {
-          "enum": ["borrow", "borrow_mut", "copy", "move", "snapshot"]
+        "callee": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
         },
-        "value": {
-          "$ref": "#/$defs/id"
-        }
-      },
-      "required": ["value", "decision"],
-      "type": "object"
-    },
-    "edge": {
-      "additionalProperties": false,
-      "properties": {
-        "args": {
-          "items": {
-            "$ref": "#/$defs/operand"
-          },
-          "type": "array"
+        "method": {
+          "type": "string"
         },
-        "to": {
-          "$ref": "#/$defs/id"
-        }
-      },
-      "required": ["to", "args"],
-      "type": "object"
-    },
-    "function": {
-      "additionalProperties": false,
-      "properties": {
-        "actor_construction": {
+        "receiver": {
+          "$ref": "#/$defs/BoundaryDecision",
+          "description": "How the erased receiver crosses the dispatch boundary. A `dyn.call`\npasses the wrapped value to the callee's `self` parameter under this\ndecision, which the verifier proves matches the boundary the concrete\ntype was erased under."
+        },
+        "receiver_handback": {
           "type": "boolean"
         },
-        "blocks": {
-          "items": {
-            "$ref": "#/$defs/block"
-          },
-          "type": "array"
-        },
-        "entry": {
-          "$ref": "#/$defs/id"
-        },
-        "id": {
-          "$ref": "#/$defs/id"
-        },
-        "name": {
-          "type": "string"
-        },
-        "params": {
-          "items": {
-            "$ref": "#/$defs/valueDef"
-          },
-          "type": "array"
-        },
-        "places": {
-          "items": {
-            "additionalProperties": false,
-            "properties": {
-              "base": {
-                "type": "object"
-              },
-              "environment": {
-                "$ref": "#/$defs/id"
-              },
-              "field": {
-                "minimum": 0,
-                "type": "integer"
-              },
-              "id": {
-                "$ref": "#/$defs/id"
-              },
-              "initialized": {
-                "type": "boolean"
-              },
-              "origin": {
-                "enum": [
-                  "local",
-                  "aggregate",
-                  "capture",
-                  "runtime",
-                  "actor_state"
-                ]
-              },
-              "shape": {
-                "$ref": "#/$defs/id"
-              }
-            },
-            "required": ["id", "origin"],
-            "type": "object"
-          },
-          "type": "array"
+        "slot": {
+          "format": "uint32",
+          "maximum": 4294967295,
+          "minimum": 0,
+          "type": "integer"
         }
       },
-      "required": ["id", "name", "params", "entry", "places", "blocks"],
-      "type": "object"
-    },
-    "id": {
-      "minimum": 0,
-      "type": "integer"
-    },
-    "op": {
-      "$ref": "#/$defs/OpV1"
-    },
-    "operand": {
-      "$ref": "#/$defs/id"
-    },
-    "own": {
-      "enum": ["none", "owned", "guaranteed"]
-    },
-    "result": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "const": "never"
-        },
-        {
-          "$ref": "#/$defs/valueDef"
-        }
-      ]
-    },
-    "span": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "additionalProperties": false,
-          "properties": {
-            "end": {
-              "minimum": 0,
-              "type": "integer"
-            },
-            "start": {
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "required": ["start", "end"],
-          "type": "object"
-        }
-      ]
-    },
-    "specialization": {
-      "oneOf": [
-        {
-          "type": "null"
-        },
-        {
-          "$ref": "#/$defs/id"
-        }
-      ]
-    },
-    "supervisor": {
-      "additionalProperties": false,
-      "properties": {
-        "children": {
-          "items": {
-            "additionalProperties": false,
-            "not": {
-              "properties": {
-                "stop_config": {},
-                "stop_ns": {}
-              },
-              "required": ["stop_ns", "stop_config"]
-            },
-            "properties": {
-              "dependencies": {
-                "items": {
-                  "$ref": "#/$defs/id"
-                },
-                "type": "array",
-                "uniqueItems": true
-              },
-              "is_pool": {
-                "type": "boolean"
-              },
-              "name": {
-                "type": "string"
-              },
-              "pool_count": {
-                "$ref": "#/$defs/id"
-              },
-              "restart": {
-                "type": "string"
-              },
-              "role": {
-                "oneOf": [
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "actor": {
-                        "$ref": "#/$defs/id"
-                      }
-                    },
-                    "required": ["actor"],
-                    "type": "object"
-                  },
-                  {
-                    "additionalProperties": false,
-                    "properties": {
-                      "supervisor": {
-                        "$ref": "#/$defs/id"
-                      }
-                    },
-                    "required": ["supervisor"],
-                    "type": "object"
-                  }
-                ]
-              },
-              "spawn": {
-                "$ref": "#/$defs/id"
-              },
-              "stop_config": {
-                "$ref": "#/$defs/id"
-              },
-              "stop_ns": {
-                "minimum": 0,
-                "type": ["integer", "null"]
-              }
-            },
-            "required": ["name", "role", "restart", "spawn"],
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "id": {
-          "$ref": "#/$defs/id"
-        },
-        "max_restarts": {
-          "$ref": "#/$defs/id"
-        },
-        "startup_order": {
-          "items": {
-            "$ref": "#/$defs/id"
-          },
-          "type": "array",
-          "uniqueItems": true
-        },
-        "strategy": {
-          "type": "string"
-        },
-        "window_secs": {
-          "$ref": "#/$defs/id"
-        }
-      },
-      "required": ["id", "strategy", "max_restarts", "window_secs", "children"],
-      "type": "object"
-    },
-    "term": {
-      "$ref": "#/$defs/TermV1"
-    },
-    "trap": {
-      "enum": [
-        "integer_overflow",
-        "divide_by_zero",
-        "shift_out_of_range",
-        "vector_bounds",
-        "actor_refused"
-      ]
-    },
-    "valueDef": {
-      "additionalProperties": false,
-      "properties": {
-        "own": {
-          "$ref": "#/$defs/own"
-        },
-        "value": {
-          "$ref": "#/$defs/id"
-        }
-      },
-      "required": ["value", "own"],
+      "required": ["slot", "method", "callee", "receiver"],
       "type": "object"
     }
   },
   "$id": "https://hew.sh/schemas/sandbox/bytecode-v1.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "additionalProperties": false,
-  "description": "A projection of verified ownership SIR. See package-v1.md and opcodes-v1.md.",
   "properties": {
     "actors": {
+      "default": [],
       "items": {
-        "$ref": "#/$defs/actor"
+        "$ref": "#/$defs/Actor"
       },
       "type": "array"
     },
     "aggregates": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "builtin": {
-            "enum": ["Timestamp"]
-          },
-          "fields": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          },
-          "id": {
-            "$ref": "#/$defs/id"
-          },
-          "name": {
-            "type": "string"
-          }
-        },
-        "required": ["id", "name", "fields"],
-        "type": "object"
+        "$ref": "#/$defs/AggregateShape"
       },
       "type": "array"
     },
     "bytes": {
       "items": {
         "items": {
+          "format": "uint8",
           "maximum": 255,
           "minimum": 0,
           "type": "integer"
@@ -7299,34 +8530,7 @@
     },
     "closures": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "entries": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "body": {
-                  "$ref": "#/$defs/id"
-                },
-                "specialization": {
-                  "$ref": "#/$defs/specialization"
-                }
-              },
-              "required": ["body", "specialization"],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "fields": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "id": {
-            "$ref": "#/$defs/id"
-          }
-        },
-        "required": ["id", "entries", "fields"],
-        "type": "object"
+        "$ref": "#/$defs/Closure"
       },
       "type": "array"
     },
@@ -7337,55 +8541,34 @@
       "type": "array"
     },
     "compiler_version": {
-      "minLength": 1,
       "type": "string"
     },
     "entry": {
-      "additionalProperties": false,
-      "properties": {
-        "exit": {
-          "enum": ["unit", "status"]
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Entry"
         },
-        "function": {
-          "$ref": "#/$defs/id"
+        {
+          "type": "null"
         }
-      },
-      "required": ["function", "exit"],
-      "type": "object"
+      ]
     },
     "externs": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "$ref": "#/$defs/id"
-          },
-          "native_capability": {
-            "minLength": 1,
-            "type": "string"
-          },
-          "symbol": {
-            "minLength": 1,
-            "type": "string"
-          }
-        },
-        "required": ["id", "symbol"],
-        "type": "object"
+        "$ref": "#/$defs/Extern"
       },
       "type": "array"
     },
     "functions": {
       "items": {
-        "$ref": "#/$defs/function"
+        "$ref": "#/$defs/Function"
       },
       "type": "array"
     },
     "hew_version": {
-      "minLength": 1,
       "type": "string"
     },
     "profile": {
-      "minLength": 1,
       "type": "string"
     },
     "regex_patterns": {
@@ -7395,39 +8578,9 @@
       "type": "array"
     },
     "resources": {
+      "default": [],
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "close": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "kind": {
-            "enum": [
-              "record",
-              "opaque",
-              "nominal",
-              "task",
-              "actor_call",
-              "actor_request",
-              "generator",
-              "stream",
-              "sink"
-            ]
-          },
-          "release": {
-            "type": "string"
-          },
-          "shape": {
-            "minimum": 0,
-            "type": "integer"
-          },
-          "ty": {
-            "type": "string"
-          }
-        },
-        "required": ["kind"],
-        "type": "object"
+        "$ref": "#/$defs/Resource"
       },
       "type": "array"
     },
@@ -7438,7 +8591,7 @@
       "type": "array"
     },
     "schema_version": {
-      "const": "hew.sandbox.bytecode.v1"
+      "$ref": "#/$defs/SchemaVersion"
     },
     "strings": {
       "items": {
@@ -7447,34 +8600,21 @@
       "type": "array"
     },
     "structural_render": {
+      "default": [],
       "items": {
-        "properties": {
-          "kind": {
-            "enum": [
-              "scalar",
-              "unit",
-              "display",
-              "identity",
-              "tuple",
-              "vector",
-              "map",
-              "record",
-              "enum"
-            ]
-          }
-        },
-        "required": ["kind"],
-        "type": "object"
+        "$ref": "#/$defs/StructuralRecipe"
       },
       "type": "array"
     },
     "supervisors": {
+      "default": [],
       "items": {
-        "$ref": "#/$defs/supervisor"
+        "$ref": "#/$defs/Supervisor"
       },
       "type": "array"
     },
     "suspend_kinds": {
+      "description": "Every suspension kind the instruction stream reaches, so load-time\nadmission stays a walk of the package's own manifest.",
       "items": {
         "$ref": "#/$defs/SuspensionKind"
       },
@@ -7482,115 +8622,19 @@
     },
     "value_capabilities": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "callable": {
-            "$ref": "#/$defs/id"
-          },
-          "capability": {
-            "enum": ["Eq", "Hash"]
-          },
-          "components": {
-            "items": {
-              "$ref": "#/$defs/id"
-            },
-            "type": "array"
-          },
-          "id": {
-            "$ref": "#/$defs/id"
-          },
-          "ty": {
-            "type": "string"
-          },
-          "variants": {
-            "items": {
-              "items": {
-                "$ref": "#/$defs/id"
-              },
-              "type": "array"
-            },
-            "type": "array"
-          }
-        },
-        "required": ["id", "capability", "ty"],
-        "type": "object"
+        "$ref": "#/$defs/ValueCapabilityPlan"
       },
       "type": "array"
     },
     "variants": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "cases": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "fields": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "name": {
-                  "type": "string"
-                }
-              },
-              "required": ["name", "fields"],
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "id": {
-            "$ref": "#/$defs/id"
-          },
-          "name": {
-            "type": "string"
-          },
-          "runtime_tags": {
-            "additionalProperties": {
-              "$ref": "#/$defs/id"
-            },
-            "type": "object"
-          }
-        },
-        "required": ["id", "name", "cases"],
-        "type": "object"
+        "$ref": "#/$defs/VariantShape"
       },
       "type": "array"
     },
     "vtables": {
       "items": {
-        "additionalProperties": false,
-        "properties": {
-          "id": {
-            "$ref": "#/$defs/id"
-          },
-          "slots": {
-            "items": {
-              "additionalProperties": false,
-              "properties": {
-                "callee": {
-                  "$ref": "#/$defs/id"
-                },
-                "method": {
-                  "type": "string"
-                },
-                "receiver": {
-                  "enum": ["copy", "borrow", "borrow_mut", "move"]
-                },
-                "slot": {
-                  "minimum": 0,
-                  "type": "integer"
-                }
-              },
-              "required": ["slot", "method", "callee", "receiver"],
-              "type": "object"
-            },
-            "type": "array"
-          }
-        },
-        "required": ["id", "slots"],
-        "type": "object"
+        "$ref": "#/$defs/Vtable"
       },
       "type": "array"
     }
@@ -7605,14 +8649,14 @@
     "regex_patterns",
     "aggregates",
     "variants",
+    "closures",
+    "vtables",
+    "value_capabilities",
     "runtime_families",
     "externs",
     "suspend_kinds",
-    "functions",
-    "value_capabilities",
-    "closures",
-    "vtables"
+    "functions"
   ],
-  "title": "Hew Sandbox Bytecode Package v1",
+  "title": "Package",
   "type": "object"
 }

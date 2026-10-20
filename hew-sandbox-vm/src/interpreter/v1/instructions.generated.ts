@@ -1,4 +1,15 @@
-// Generated from hew-wasm/src/sandbox/bytecode.rs. Run make sandbox-bytecode.
+// Generated from the Rust sandbox package and instruction types. Run make sandbox-bytecode.
+export type ActorField = { mutable: boolean; deferred: boolean };
+export type ActorHandler = {
+  name: string;
+  message_id: number;
+  every_ns?: number | null;
+  callable: number;
+  params: number;
+  streams: boolean;
+  fallible: boolean;
+  result_shape: number | null;
+};
 export type ActorOperation =
   | { op: "identity" }
   | { op: "spawn"; actor: number }
@@ -28,6 +39,32 @@ export type ActorProtocol = {
   policy: SendPolicy;
   sealed: boolean;
 };
+export type ActorShape = {
+  id: number;
+  name: string;
+  state_fields: Array<ActorField>;
+  init?: number | null;
+  start?: number | null;
+  stop: Array<number>;
+  crash?: number | null;
+  crash_info?: number | null;
+  crash_kind?: number | null;
+  crash_action?: number | null;
+  exit?: number | null;
+  down?: number | null;
+  handlers: Array<ActorHandler>;
+  mailbox_capacity?: number | null;
+  overflow: string;
+  coalesce?: Coalesce | null;
+  max_heap_bytes?: number | null;
+};
+export type AggregateBuiltin = "Timestamp";
+export type AggregateShape = {
+  id: number;
+  name: string;
+  fields: Array<string>;
+  builtin?: AggregateBuiltin | null;
+};
 export type ArrayValueOp = "Len" | "Index" | "IndexBorrow" | "Set";
 export type AskDetail = {
   actor: number;
@@ -48,6 +85,12 @@ export type AsyncIoOp =
   | "TlsWrite"
   | "FileRead"
   | "FileWrite";
+export type BlockV1 = {
+  id: number;
+  params: Array<ValueDef>;
+  ops: Array<OpV1>;
+  term: TermV1;
+};
 export type BoundaryDecision =
   | "borrow"
   | "borrow_mut"
@@ -57,8 +100,52 @@ export type BoundaryDecision =
 export type BoundaryOperand = { value: number; decision: BoundaryDecision };
 export type CallResult = null | CallResultNever | ValueDef;
 export type CallResultNever = "never";
+export type Capability =
+  | "Eq"
+  | "Hash"
+  | "Less"
+  | "LessEqual"
+  | "Greater"
+  | "GreaterEqual";
 export type CheckedFailure = { trap: TrapName; edge: Edge };
+export type ClosureEntry = { body: number; specialization: number | null };
+export type ClosureShape = {
+  id: number;
+  entries: Array<ClosureEntry>;
+  fields: number;
+};
+export type Coalesce = { fallback: string; keys: Array<CoalesceKey> };
+export type CoalesceKey = { message: number; param: number };
 export type CodecDirection = "encode" | "decode" | "test_input";
+export type CodecKey = { name: string; tag: number | null; flags: number };
+export type CodecNode =
+  | "Unit"
+  | "Bool"
+  | { Signed: { min: number; max: number } }
+  | { Unsigned: { max: number } }
+  | { Float: { bits: number } }
+  | "Char"
+  | "String"
+  | "Bytes"
+  | { Tuple: Array<number> }
+  | { Array: { element: number; len: number } }
+  | { Sequence: number }
+  | { Set: number }
+  | { Map: { key: number; value: number } }
+  | { Record: Array<[CodecKey, number]> }
+  | { Variant: Array<[CodecKey, number | null]> }
+  | { Option: number };
+export type CodecShape = {
+  root: number;
+  nodes: Array<CodecNode>;
+  names: Array<string>;
+  aggregates: Array<number | null>;
+  variants: Array<number | null>;
+  /**
+   * Synthetic tuple or record groups expand into separate enum payload fields.
+   */
+  grouped_payloads: Array<boolean>;
+};
 export type DecodedCodec = {
   shape: number;
   ok: number;
@@ -102,6 +189,18 @@ export type EncodingOp =
   | "ArrayPush"
   | "Clone"
   | "Free";
+export type EntryExit = "unit" | "status";
+export type EntryPlan = { function: number; exit: EntryExit };
+export type ExternEntry = {
+  id: number;
+  symbol: string;
+  /**
+   * The capability manifest's label for a native-only runtime endpoint,
+   * so a refusal can name what needs native execution. Admission still
+   * keys on `symbol` alone.
+   */
+  native_capability?: string | null;
+};
 export type FileReadOp =
   | "Open"
   | "IsValid"
@@ -120,6 +219,15 @@ export type FloatMethodOp =
   | "IsFinite"
   | "IsInfinite"
   | "IsSignNegative";
+export type FunctionV1 = {
+  actor_construction?: boolean;
+  id: number;
+  name: string;
+  params: Array<ValueDef>;
+  entry: number;
+  places: Array<PlaceDecl>;
+  blocks: Array<BlockV1>;
+};
 export type IndirectInvocation = {
   receiver: BoundaryOperand;
   specialization: number | null;
@@ -387,6 +495,53 @@ export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
     }
 );
 export type Own = "none" | "owned" | "guaranteed";
+export type PackageV1 = {
+  codecs?: Array<string>;
+  structural_render: Array<StructuralRecipe>;
+  resources: Array<Resource>;
+  schema_version: SchemaVersion;
+  hew_version: string;
+  compiler_version: string;
+  profile: string;
+  entry?: EntryPlan | null;
+  strings: Array<string>;
+  bytes: Array<Array<number>>;
+  regex_patterns: Array<string>;
+  aggregates: Array<AggregateShape>;
+  variants: Array<VariantShape>;
+  closures: Array<ClosureShape>;
+  actors: Array<ActorShape>;
+  supervisors: Array<SupervisorShape>;
+  vtables: Array<VtableShape>;
+  value_capabilities: Array<ValueCapability>;
+  runtime_families: Array<RuntimeFamilyEntry>;
+  externs: Array<ExternEntry>;
+  /**
+   * Every suspension kind the instruction stream reaches, so load-time
+   * admission stays a walk of the package's own manifest.
+   */
+  suspend_kinds: Array<Extract<TermV1, { op: "suspend" }>["kind"]>;
+  functions: Array<FunctionV1>;
+};
+export type PlaceBase = { place: number } | { value: number };
+export type PlaceDecl =
+  | { origin: "local"; id: number }
+  | { origin: "runtime"; id: number }
+  | {
+      origin: "aggregate";
+      id: number;
+      base: PlaceBase;
+      shape?: number | null;
+      field: number;
+    }
+  | { origin: "capture"; id: number; environment: number; field: number }
+  | {
+      origin: "actor_state";
+      id: number;
+      environment: number;
+      field: number;
+      initialized: boolean;
+    };
 export type PrintKind =
   | "I32"
   | "I64"
@@ -402,6 +557,16 @@ export type RequestShapes = {
   message: number | null;
   request: number | null;
 };
+export type Resource =
+  | { kind: "record"; shape: number; ty: string; close: number }
+  | { kind: "opaque"; ty: string; close: number }
+  | { kind: "nominal"; ty: string; release: string }
+  | { kind: "task" }
+  | { kind: "actor_call" }
+  | { kind: "actor_request" }
+  | { kind: "generator" }
+  | { kind: "stream" }
+  | { kind: "sink" };
 export type RuntimeCallFamily =
   | { AsyncIo: AsyncIoOp }
   | { Semaphore: SemaphoreOp }
@@ -662,7 +827,49 @@ export type RuntimeCallFamily =
   | "VecSetOwnedMove"
   | { VecSliceRange: VecSliceElem }
   | "VtableDispatchPanicOnOob";
+export type RuntimeVariantRole =
+  | "CrashKindFault"
+  | "CrashKindHeapExceeded"
+  | "CrashKindPartitionDetected"
+  | "CrashKindHandlerFailed"
+  | "CrashKindTimerOverdue"
+  | "OptionSome"
+  | "OptionNone"
+  | "ResultOk"
+  | "ResultErr"
+  | "ActorErrorRejected"
+  | "ActorErrorFailed"
+  | "ActorErrorTrapped"
+  | "ActorErrorRefused"
+  | "CallerActor"
+  | "CallerTask"
+  | "CallerTimer"
+  | "CallerNode"
+  | "ActorErrorDead"
+  | "ActorErrorTimedOut"
+  | "ActorErrorNodeNotRunning"
+  | "ActorErrorRoutingFailed"
+  | "ActorErrorEncodeFailed"
+  | "ActorErrorConnectionDropped"
+  | "ActorErrorPartition"
+  | "SendErrorFull"
+  | "SendErrorClosed"
+  | "SendErrorPartition"
+  | "SendErrorStaleRef"
+  | "SendErrorLocalShutdown"
+  | "SendErrorCancelled"
+  | "SendErrorVersionMismatch"
+  | "SendErrorBackpressure"
+  | "SendErrorDead"
+  | "SendErrorUnauthorized"
+  | "SendErrorInvalidMessage"
+  | "SendErrorTimedOut"
+  | "SendErrorWriteTimedOut"
+  | "DeliveryAccepted"
+  | "DeliveryDiscarded"
+  | "LinkErrorNoContext";
 export type SafepointDetail = { budget: number };
+export type SchemaVersion = "hew.sandbox.bytecode.v1";
 export type SelectDetail = { has_timeout: boolean; order: SelectionOrder };
 export type SelectionOrder = "source" | "completion";
 export type SemaphoreAcquireDetail = { operation: SemaphoreOp };
@@ -686,12 +893,51 @@ export type SetValueOp =
 export type SpanV1 = { start: number; end: number };
 export type StreamNextDetail = { park: boolean };
 export type StreamSendDetail = { park: boolean };
+export type StructuralCase = {
+  name: string;
+  kind: StructuralCaseKind;
+  fields: Array<StructuralField>;
+};
+export type StructuralCaseKind = "unit" | "tuple" | "struct";
+export type StructuralField = { name: string; recipe: number };
+export type StructuralRecipe =
+  | { kind: "scalar" }
+  | { kind: "unit" }
+  | { kind: "display"; callee: number }
+  | { kind: "identity"; name: string }
+  | { kind: "tuple"; members: Array<number> }
+  | { kind: "vector"; members: Array<number> }
+  | { kind: "map"; members: Array<number> }
+  | { kind: "record"; name: string; fields: Array<StructuralField> }
+  | { kind: "enum"; cases: Array<StructuralCase> };
 export type SubmissionShapes = {
   success: number | null;
   failure: number | null;
   reason: number | null;
 };
+export type SupervisedRole = { actor: number } | { supervisor: number };
+export type SupervisorChild = {
+  name: string;
+  dependencies: Array<number>;
+  /**
+   * The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
+   */
+  role: SupervisedRole;
+  restart: string;
+  stop_ns?: number | null;
+  stop_config?: number | null;
+  is_pool?: boolean;
+  spawn: number;
+};
 export type SupervisorPoolOp = "Len" | "Member" | "Get";
+export type SupervisorShape = {
+  id: number;
+  strategy: string;
+  max_restarts: number;
+  window_secs: number;
+  children: Array<SupervisorChild>;
+  startup_order?: Array<number>;
+};
 export type SwitchArm = {
   variant: number;
   fields: Array<ValueDef>;
@@ -906,8 +1152,33 @@ export type TrapName =
   | "shift_out_of_range"
   | "vector_bounds"
   | "actor_refused";
+export type ValueCapability = {
+  id: number;
+  capability: Capability;
+  ty: string;
+  callable?: number | null;
+  components: Array<ValueComponentCapabilities>;
+  variants?: Array<Array<ValueComponentCapabilities>> | null;
+};
+export type ValueComponentCapabilities = {
+  selected: number;
+  ordering?: ValueOrderingCapabilities | null;
+};
 export type ValueDef = { value: number; own: Own };
+export type ValueOrderingCapabilities = {
+  less: number;
+  less_equal: number;
+  greater: number;
+  greater_equal: number;
+};
+export type VariantCase = { name: string; fields: Array<string> };
 export type VariantResultShapes = { error: number; error_len: number };
+export type VariantShape = {
+  id: number;
+  name: string;
+  cases: Array<VariantCase>;
+  runtime_tags: { [key in RuntimeVariantRole]?: number };
+};
 export type VecContainsScalarElem = "F64" | "I32" | "I64" | "Str";
 export type VecGetElem =
   | "Bool"
@@ -965,6 +1236,20 @@ export type VecValueOp =
   | "SliceFrom"
   | "Append"
   | "Join";
+export type VtableShape = { id: number; slots: Array<VtableSlot> };
+export type VtableSlot = {
+  slot: number;
+  method: string;
+  callee: number;
+  /**
+   * How the erased receiver crosses the dispatch boundary. A `dyn.call`
+   * passes the wrapped value to the callee's `self` parameter under this
+   * decision, which the verifier proves matches the boundary the concrete
+   * type was erased under.
+   */
+  receiver: BoundaryDecision;
+  receiver_handback?: boolean;
+};
 type RuntimeIdentity<T> = T extends string
   ? { family: T; detail?: null }
   : { [K in keyof T]: { family: K; detail: T[K] } }[keyof T];

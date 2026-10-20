@@ -1912,10 +1912,12 @@ dependencies = [
  "base64 0.22.1",
  "ciborium",
  "rmp-serde",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
  "toml",
+ "ts-rs",
 ]
 
 [[package]]

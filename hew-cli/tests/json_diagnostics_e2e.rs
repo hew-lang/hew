@@ -287,14 +287,28 @@ fn check_fix_dry_run_then_apply_preserves_effects_and_runs_both_profiles() {
         "unused initializer and binding stay in scope"
     );
     for level in ["0", "2"] {
+        let binary = dir
+            .path()
+            .join(format!("fixed-o{level}{}", std::env::consts::EXE_SUFFIX));
         let mut command = Command::new(hew_binary());
         command
             .current_dir(dir.path())
-            .args(["run", "--opt-level", level, path.to_str().unwrap()]);
-        let output = support::run_bounded_command(command, "run applied diagnostic fixes");
+            .arg("build")
+            .arg(&path)
+            .args(["--opt-level", level, "-o"])
+            .arg(&binary);
+        let built = support::run_bounded_command(command, "build applied diagnostic fixes");
+        assert!(built.status.success(), "{}", describe_output(&built));
+        let output =
+            support::run_bounded_command(Command::new(&binary), "run applied diagnostic fixes");
         assert!(output.status.success(), "{}", describe_output(&output));
         assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n4\n");
     }
+    let mut command = Command::new(hew_binary());
+    command.current_dir(dir.path()).arg("run").arg(&path);
+    let output = support::run_bounded_command(command, "hew run after applying fixes");
+    assert!(output.status.success(), "{}", describe_output(&output));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n4\n");
 }
 
 #[test]

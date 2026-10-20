@@ -224,8 +224,23 @@ impl SourceSet<'_> {
                 SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp
             );
             if assembly || fresh_dependencies(&object, &depfile).is_none() {
-                compile_one(&toolchain.driver, args, &path, &object, &depfile, language)
-                    .map_err(|stderr| self.compile_error(source, &stderr))?;
+                let debug_object_name = (toolchain.os == NativeOs::Windows
+                    && language != SourceLanguage::Assembly
+                    && hew_compile::source_path_policy()
+                        .prefixes()
+                        .next()
+                        .is_some())
+                .then(|| format!("{source}{}", toolchain.object_suffix));
+                compile_one(
+                    &toolchain.driver,
+                    args,
+                    &path,
+                    &object,
+                    &depfile,
+                    language,
+                    debug_object_name.as_deref(),
+                )
+                .map_err(|stderr| self.compile_error(source, &stderr))?;
             }
             refuse_reserved_symbols(&object, &format!("`{source}`"), self.package)?;
             out.dependencies.push(path);
@@ -253,7 +268,8 @@ impl SourceSet<'_> {
 
     fn args(&self, toolchain: &NativeToolchain, language: SourceLanguage) -> Vec<String> {
         let mut args = toolchain.flags.clone();
-        for (source, display) in hew_compile::source_path_policy().prefixes().rev() {
+        let paths = hew_compile::source_path_policy();
+        for (source, display) in paths.prefixes().rev() {
             args.push(format!(
                 "-ffile-prefix-map={}={}",
                 source.display(),
@@ -286,6 +302,14 @@ impl SourceSet<'_> {
             SourceLanguage::Cxx => &self.inputs.cxxflags,
             SourceLanguage::Assembly | SourceLanguage::AssemblyWithCpp => &self.inputs.asflags,
         });
+        if toolchain.os == NativeOs::Windows && paths.prefixes().next().is_some() {
+            // COFF timestamps and the raw compiler command are outside prefix
+            // mapping. Keep debug records without embedding these build inputs.
+            args.push("-mno-incremental-linker-compatible".to_string());
+            if language != SourceLanguage::Assembly {
+                args.push("-gno-codeview-command-line".to_string());
+            }
+        }
         args
     }
 
@@ -371,6 +395,7 @@ fn compile_one(
     object: &Path,
     depfile: &Path,
     language: SourceLanguage,
+    debug_object_name: Option<&str>,
 ) -> Result<(), String> {
     let parent = object
         .parent()
@@ -388,6 +413,12 @@ fn compile_one(
         .arg(source)
         .arg("-o")
         .arg(&object_tmp);
+    if let Some(name) = debug_object_name {
+        // S_OBJNAME describes the logical object, not its atomic temporary file.
+        command
+            .arg("-Xclang")
+            .arg(format!("-object-file-name={name}"));
+    }
     if language != SourceLanguage::Assembly {
         command.arg("-MMD").arg("-MF").arg(&depfile_tmp);
     }
@@ -1064,6 +1095,74 @@ mod tests {
         )
         .unwrap();
         (dir, manifest)
+    }
+
+    #[test]
+    fn trimmed_coff_objects_are_reproducible_across_roots() {
+        use object::{Object as _, ObjectSection as _};
+
+        let dir = tempfile::tempdir().unwrap();
+        let roots = [
+            dir.path().join("first"),
+            dir.path().join("a longer second root"),
+        ];
+        let manifest: HewManifest = toml::from_str(
+            "[package]\nname = \"paths\"\nversion = \"0.1.0\"\n\n[native]\nsources = [\"native/path.c\"]\n\
+             cflags = [\"-gcodeview-command-line\", \"-mincremental-linker-compatible\"]\n",
+        )
+        .unwrap();
+        for root in &roots {
+            std::fs::create_dir_all(root.join("native")).unwrap();
+            std::fs::write(
+                root.join("native/path.c"),
+                "const char *source_path = __FILE__; int answer(int n) { return n + 40; }\n",
+            )
+            .unwrap();
+        }
+        for profile in ["-O0", "-O2"] {
+            let mut objects = Vec::new();
+            for root in &roots {
+                let mut paths = hew_compile::SourcePathPolicy::default();
+                paths.insert(root, Path::new("."));
+                let _paths = paths.enter();
+                let toolchain = NativeToolchain {
+                    target: "x86_64-pc-windows-msvc".to_string(),
+                    lockfile: None,
+                    os: NativeOs::Windows,
+                    driver: "clang".to_string(),
+                    flags: [
+                        "-target",
+                        "x86_64-pc-windows-msvc",
+                        profile,
+                        "-g",
+                        "-fms-runtime-lib=dll",
+                    ]
+                    .map(str::to_string)
+                    .to_vec(),
+                    object_suffix: ".obj",
+                };
+                let built = build(root, &manifest, &toolchain).unwrap().unwrap();
+                let bytes = std::fs::read(&built.inputs[0]).unwrap();
+                let object = object::File::parse(bytes.as_slice()).unwrap();
+                assert_eq!(object.format(), object::BinaryFormat::Coff);
+                assert!(object.section_by_name(".debug$T").is_some());
+                let symbols = object.section_by_name(".debug$S").unwrap();
+                let symbols = symbols.data().unwrap();
+                assert!(symbols
+                    .windows(b"native/path.c.obj".len())
+                    .any(|s| s == b"native/path.c.obj"));
+                assert_eq!(
+                    u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                    0,
+                    "COFF timestamp"
+                );
+                objects.push(bytes);
+            }
+            assert!(
+                objects[0] == objects[1],
+                "{profile}: trimmed COFF object bytes across roots"
+            );
+        }
     }
 
     #[test]

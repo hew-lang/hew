@@ -38,7 +38,7 @@ on:
       platforms:
         description: "Run the full gate or resume a platform subset for the same source."
         type: choice
-        options: [all, linux-x86_64, windows-intel-macos]
+        options: [all, linux-x86_64, windows-x86_64, windows-intel-macos]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -89,7 +89,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|linux-x86_64|windows-intel-macos) ;;
+            all|linux-x86_64|windows-x86_64|windows-intel-macos) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -485,7 +485,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'linux-x86_64'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
     name: Release Gate — macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false

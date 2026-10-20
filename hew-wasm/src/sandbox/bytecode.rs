@@ -1139,8 +1139,6 @@ fn discriminator_names(
     reason = "keeps derived schema composition and runtime identity adaptation together"
 )]
 pub fn package_schema() -> Result<serde_json::Value, String> {
-    let mut envelope = schemars::schema_for!(super::package::Package).to_value();
-    envelope["$id"] = "https://hew.sh/schemas/sandbox/bytecode-v1.schema.json".into();
     fn integer_ranges(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(object) => {
@@ -1159,6 +1157,8 @@ pub fn package_schema() -> Result<serde_json::Value, String> {
             _ => {}
         }
     }
+    let mut envelope = schemars::schema_for!(super::package::Package).to_value();
+    envelope["$id"] = "https://hew.sh/schemas/sandbox/bytecode-v1.schema.json".into();
     integer_ranges(&mut envelope);
     let definitions = envelope
         .get_mut("$defs")

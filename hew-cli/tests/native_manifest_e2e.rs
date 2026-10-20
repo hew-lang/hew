@@ -103,37 +103,7 @@ fn trimmed_package_paths_are_stable_across_roots() {
         write_c_package(root);
         write(&root.join("native/calc.c"), "#include <stdio.h>\n#include \"calc.h\"\nint32_t calc_answer(int32_t extra) { fprintf(stderr, \"%s\\n\", __FILE__); return CALC_BASE + extra; }\n");
     }
-    let original_roots: Vec<_> = roots
-        .iter()
-        .enumerate()
-        .map(|(index, root)| {
-            // Exercise debug source identity independently of invocation spelling.
-            #[cfg(unix)]
-            {
-                let alias = dir.path().join(format!("source alias {index}"));
-                std::os::unix::fs::symlink(root, &alias).unwrap();
-                alias
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = index;
-                root.clone()
-            }
-        })
-        .collect();
-    let original: Vec<_> = original_roots
-        .iter()
-        .map(|root| emit_package_paths(root, &["--release", "--no-trim-paths"]))
-        .collect();
-    assert_ne!(original[0].0, original[1].0);
-    for (root, (_, llvm)) in original_roots.iter().zip(&original) {
-        let directory = llvm_debug_directory(llvm, "main.hew");
-        assert_eq!(
-            directory.canonicalize().expect("untrimmed debug directory"),
-            root.canonicalize().unwrap(),
-            "untrimmed debug source directory: {directory:?}\n{llvm}"
-        );
-    }
+    assert_untrimmed_debug_source(&roots);
     for flags in [&["--trim-paths"][..], &["--release"][..]] {
         let objects: Vec<_> = roots
             .iter()
@@ -217,6 +187,35 @@ fn trimmed_package_paths_are_stable_across_roots() {
     }
     #[cfg(target_os = "linux")]
     assert_remapped_debug_source(dir.path(), &roots);
+}
+
+fn assert_untrimmed_debug_source(roots: &[PathBuf; 2]) {
+    // Exercise debug source identity independently of invocation spelling.
+    #[cfg(unix)]
+    let original_roots: Vec<_> = roots
+        .iter()
+        .enumerate()
+        .map(|(index, root)| {
+            let alias = root.parent().unwrap().join(format!("source alias {index}"));
+            std::os::unix::fs::symlink(root, &alias).unwrap();
+            alias
+        })
+        .collect();
+    #[cfg(not(unix))]
+    let original_roots = roots.to_vec();
+    let original: Vec<_> = original_roots
+        .iter()
+        .map(|root| emit_package_paths(root, &["--release", "--no-trim-paths"]))
+        .collect();
+    assert_ne!(original[0].0, original[1].0);
+    for (root, (_, llvm)) in original_roots.iter().zip(&original) {
+        let directory = llvm_debug_directory(llvm, "main.hew");
+        assert_eq!(
+            directory.canonicalize().expect("untrimmed debug directory"),
+            root.canonicalize().unwrap(),
+            "untrimmed debug source directory: {directory:?}\n{llvm}"
+        );
+    }
 }
 
 // LLVM can render Windows separators differently from the fixture spelling.

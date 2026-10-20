@@ -722,6 +722,37 @@ impl IntoIterator for string {
 }
 
 // ---------------------------------------------------------------------------
+// HashMap — source-defined collection conveniences
+// ---------------------------------------------------------------------------
+impl<K: Hash + Eq, V: Clone> HashMap<K, V> {
+    /// Return an independent value, computing and inserting it only when absent.
+    /// A factory failure occurs before the map is changed.
+    pub fn get_or_insert_with(var self, consume key: K, factory: fn() -> V) -> V {
+        match self.get(key) {
+            .Some(value) => value,
+            .None => {
+                let value = factory();
+                self.insert(key, value.clone());
+                value
+            }
+        }
+    }
+
+    /// Replace an existing value using an independent copy, returning the new value.
+    /// An absent key skips the callback. Callback failure preserves the old entry.
+    pub fn update(var self, consume key: K, transform: fn(V) -> V) -> Option<V> {
+        match self.get(key) {
+            .Some(previous) => {
+                let value = transform(previous);
+                self.insert(key, value.clone());
+                .Some(value)
+            }
+            .None => .None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HashMapIter — concrete IntoIterator impl for HashMap<K, V>
 // ---------------------------------------------------------------------------
 /// An owned snapshot cursor over a map's paired keys and values.

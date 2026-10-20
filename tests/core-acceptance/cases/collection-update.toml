@@ -1,0 +1,11 @@
+[[case]]
+id = "collection-update"
+intent = "Source-defined generic map conveniences preserve lazy callbacks, value snapshots, absence and callback-fault cleanup."
+source = "cases/collection-update.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "factory coffee\nupdate coffee\nclosed update\nupdate recovered\nclosed factory\nfactory recovered\nclosed record\nrecord recovered\ncollection update ok\n"
+stderr = ""
+exit = 0

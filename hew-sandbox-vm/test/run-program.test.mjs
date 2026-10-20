@@ -100,6 +100,20 @@ test("runProgram hello_world returns stdout and zero exit code", () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
+test("source-defined collection updates preserve ownership and callback recovery", () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/collection-update.hew"),
+    "utf8",
+  );
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(
+    result.stdout,
+    "factory coffee\nupdate coffee\nclosed update\nupdate recovered\nclosed factory\nfactory recovered\nclosed record\nrecord recovered\ncollection update ok\n",
+  );
+});
+
 test("runProgram preserves timestamp codec values and located errors", () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/timestamp-codecs.hew"),

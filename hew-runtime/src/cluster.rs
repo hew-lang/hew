@@ -1645,7 +1645,14 @@ impl HewCluster {
                 .iter()
                 .map(|(id, detector)| (*id, (detector.phi(now_ms), detector.is_warm())))
                 .collect();
-            (members.clone(), tokens.current.clone(), phi)
+            // The local member is observable membership, not a remote failure
+            // detector input: it has no peer connection or heartbeat to await.
+            let remote_members = members
+                .iter()
+                .filter(|member| member.node_id != self.config.local_node_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            (remote_members, tokens.current.clone(), phi)
         };
 
         // Delegate the transition decision to the protocol strategy.
@@ -1951,7 +1958,10 @@ impl HewCluster {
             let members = self.members.lock_or_recover();
             members
                 .iter()
-                .filter(|m| m.state == MEMBER_ALIVE || m.state == MEMBER_SUSPECT)
+                .filter(|m| {
+                    m.node_id != self.config.local_node_id
+                        && (m.state == MEMBER_ALIVE || m.state == MEMBER_SUSPECT)
+                })
                 .map(|m| m.node_id)
                 .collect()
         };
@@ -3116,32 +3126,47 @@ mod tests {
     }
 
     #[test]
-    fn tick_suspects_and_kills() {
+    fn local_member_is_never_probed_or_timed_out() {
         let cluster = HewCluster::new(ClusterConfig {
             local_node_id: 1,
             ping_timeout_ms: 100,
             suspect_timeout_ms: 300,
             ..ClusterConfig::default()
         });
-        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
-        {
-            let mut members = cluster.members.lock().unwrap();
-            members[0].last_seen_ms = 0;
+        // Node startup joins its own route slot before admitting remote peers.
+        cluster.upsert_member(1, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.2:9000");
+        for member in cluster.members.lock().unwrap().iter_mut() {
+            member.last_seen_ms = 0;
         }
+        let initial = (
+            cluster.next_ping_target(),
+            cluster.member_state(1),
+            cluster.member_state(2),
+        );
 
-        // Advance time past ping timeout → should become suspect.
         cluster.tick(150);
-        {
-            let members = cluster.members.lock().unwrap();
-            assert_eq!(members[0].state, MEMBER_SUSPECT);
-        }
+        let suspected = (
+            cluster.next_ping_target(),
+            cluster.member_state(1),
+            cluster.member_state(2),
+        );
 
-        // Advance time past suspect timeout → should become dead.
         cluster.tick(500);
-        {
-            let members = cluster.members.lock().unwrap();
-            assert_eq!(members[0].state, MEMBER_DEAD);
-        }
+        let terminal = (
+            cluster.next_ping_target(),
+            cluster.member_state(1),
+            cluster.member_state(2),
+        );
+        assert_eq!(
+            [initial, suspected, terminal],
+            [
+                (Some(2), MEMBER_ALIVE, MEMBER_ALIVE),
+                (Some(2), MEMBER_ALIVE, MEMBER_SUSPECT),
+                (None, MEMBER_ALIVE, MEMBER_DEAD),
+            ],
+            "only remote members may be probed or declared suspect or dead"
+        );
     }
 
     /// Pause the real SWIM decision after its snapshot, then refresh the peer

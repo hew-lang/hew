@@ -2796,11 +2796,8 @@ impl Checker {
         self.finish_program(program, normalized_program.as_ref())
     }
 
-    /// Check embedded executable bodies only when the ordinary module walk
-    /// did not own them. Declaration registration and body facts share the
-    /// selected source and its original item ordinals.
-    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
-        if self.checking_embedded_builtins
+    fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
+        !(self.checking_embedded_builtins
             || program.module_graph.as_ref().is_some_and(|graph| {
                 graph
                     .modules
@@ -2813,8 +2810,14 @@ impl Checker {
                             )
                         })
                     })
-            })
-        {
+            }))
+    }
+
+    /// Check embedded executable bodies only when the ordinary module walk
+    /// did not own them. Declaration registration and body facts share the
+    /// selected source and its original item ordinals.
+    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
+        if !self.owns_embedded_builtin_bodies(program) {
             return;
         }
         let builtin_program = self.builtin_program();
@@ -2823,14 +2826,6 @@ impl Checker {
         let saved_ordinal = self.current_item_ordinal;
         let saved_source = self.current_item_source.take();
         let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
-        // Register the whole source before checking bodies, so methods and
-        // helpers can refer to ordinary functions declared later in the file.
-        for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
-            self.current_item_ordinal = ordinal;
-            if matches!(item, Item::Function(_)) {
-                self.collect_function_item(item, span);
-            }
-        }
         for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
             self.current_item_ordinal = ordinal;
             if let Item::Function(function) = item {
@@ -3259,6 +3254,7 @@ impl Checker {
         self.select_builtin_program(program);
         self.mint_source_declaration_identities(program);
         self.register_builtins();
+        self.register_embedded_builtin_function_signatures(program);
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);

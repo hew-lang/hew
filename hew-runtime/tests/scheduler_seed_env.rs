@@ -47,6 +47,19 @@ fn wait_for_trace_len(expected: usize) {
     }
 }
 
+fn parse_trace_lines(stdout: &[u8]) -> Vec<String> {
+    let stdout = String::from_utf8(stdout.to_vec()).expect("helper output is UTF-8");
+    let trace = stdout
+        .lines()
+        .filter_map(|line| line.split_once("TRACE ").map(|(_, value)| value.to_owned()))
+        .collect::<Vec<_>>();
+    assert!(
+        trace.iter().any(|line| line.starts_with("seed=")),
+        "helper trace omitted its scheduler seed: {trace:?}"
+    );
+    trace
+}
+
 fn trace_lines(seed: Option<&str>) -> Vec<String> {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
@@ -67,11 +80,7 @@ fn trace_lines(seed: Option<&str>) -> Vec<String> {
     let output = command.output().unwrap();
     assert!(output.status.success(), "helper failed: {output:?}");
 
-    String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .filter_map(|line| line.strip_prefix("TRACE ").map(str::to_owned))
-        .collect()
+    parse_trace_lines(&output.stdout)
 }
 
 fn trace_with_stderr(seed: &str) -> (Vec<String>, String) {
@@ -87,11 +96,7 @@ fn trace_with_stderr(seed: &str) -> (Vec<String>, String) {
         .unwrap();
     assert!(output.status.success(), "helper failed: {output:?}");
 
-    let trace = String::from_utf8(output.stdout)
-        .unwrap()
-        .lines()
-        .filter_map(|line| line.strip_prefix("TRACE ").map(str::to_owned))
-        .collect();
+    let trace = parse_trace_lines(&output.stdout);
     (trace, String::from_utf8(output.stderr).unwrap())
 }
 

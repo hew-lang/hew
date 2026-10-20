@@ -152,3 +152,49 @@ test("negative supervisor stop deadlines reject before construction or host effe
   assert.deepEqual(trace.final_state.stdout, []);
   assert.equal(calls, 0);
 });
+
+test("unknown actor and supervisor policies reject before execution", () => {
+  const supervisor = JSON.parse(
+    fs.readFileSync(
+      new URL(
+        "../fixtures/19-supervisor-restart/bytecode.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(runBytecode(supervisor).result, "ok");
+  for (const mutate of [
+    (pkg) => {
+      pkg.actors[0].overflow = "invent_overflow";
+    },
+    (pkg) => {
+      pkg.supervisors[0].strategy = "invent_strategy";
+    },
+    (pkg) => {
+      pkg.supervisors[0].children[0].restart = "invent_restart";
+    },
+  ]) {
+    const pkg = structuredClone(supervisor);
+    mutate(pkg);
+    rejected(pkg);
+  }
+  const counter = JSON.parse(
+    fs.readFileSync(
+      new URL("../fixtures/15-actor-counter/bytecode.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  counter.actors[0].overflow = "coalesce";
+  counter.actors[0].coalesce = {
+    fallback: "drop_new",
+    keys: [{ message: 0, param: 0 }],
+  };
+  assert.equal(
+    runBytecode(counter).result,
+    "ok",
+    "the recorded actor executes with a valid coalescing key",
+  );
+  counter.actors[0].coalesce.fallback = "invent_fallback";
+  rejected(counter);
+});

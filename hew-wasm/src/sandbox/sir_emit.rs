@@ -764,9 +764,9 @@ impl<'m> Walker<'m> {
                         })
                         .collect::<Result<Vec<_>, EmitError>>()?,
                     mailbox_capacity: actor.mailbox_capacity,
-                    overflow: overflow_name(actor.overflow).to_string(),
+                    overflow: actor_overflow(actor.overflow),
                     coalesce: actor.coalesce.as_ref().map(|coalesce| Coalesce {
-                        fallback: coalesce_fallback_name(coalesce.fallback).to_string(),
+                        fallback: coalesce_fallback(coalesce.fallback),
                         keys: coalesce
                             .keys
                             .iter()
@@ -801,7 +801,7 @@ impl<'m> Walker<'m> {
                 } = supervisor;
                 Ok(Supervisor {
                     id: id.0,
-                    strategy: strategy_name(*strategy).to_string(),
+                    strategy: restart_strategy(*strategy),
                     max_restarts: *max_restarts,
                     window_secs: *window_secs,
                     startup_order: startup_order.clone(),
@@ -828,7 +828,7 @@ impl<'m> Walker<'m> {
                                         SupervisedRole::Supervisor(supervisor.0)
                                     }
                                 },
-                                restart: restart_name(*restart).to_string(),
+                                restart: restart_policy(*restart),
                                 stop_ns: match *stop_deadline {
                                     hew_sir::SemStopDeadline::Literal(ns) => u64::try_from(ns).ok(),
                                     _ => None,
@@ -2224,38 +2224,38 @@ const fn observation_name(kind: hew_sir::LocalObservationKind) -> &'static str {
     }
 }
 
-const fn overflow_name(overflow: hew_sir::SemActorOverflow) -> &'static str {
+const fn actor_overflow(overflow: hew_sir::SemActorOverflow) -> ActorOverflow {
     match overflow {
-        hew_sir::SemActorOverflow::Block => "block",
-        hew_sir::SemActorOverflow::DropNew => "drop_new",
-        hew_sir::SemActorOverflow::DropOld => "drop_old",
-        hew_sir::SemActorOverflow::Fail => "fail",
-        hew_sir::SemActorOverflow::Coalesce => "coalesce",
+        hew_sir::SemActorOverflow::Block => ActorOverflow::Block,
+        hew_sir::SemActorOverflow::DropNew => ActorOverflow::DropNew,
+        hew_sir::SemActorOverflow::DropOld => ActorOverflow::DropOld,
+        hew_sir::SemActorOverflow::Fail => ActorOverflow::Fail,
+        hew_sir::SemActorOverflow::Coalesce => ActorOverflow::Coalesce,
     }
 }
 
-const fn coalesce_fallback_name(fallback: hew_sir::SemCoalesceFallback) -> &'static str {
+const fn coalesce_fallback(fallback: hew_sir::SemCoalesceFallback) -> CoalesceFallback {
     match fallback {
-        hew_sir::SemCoalesceFallback::DropNew => "drop_new",
-        hew_sir::SemCoalesceFallback::DropOld => "drop_old",
-        hew_sir::SemCoalesceFallback::Fail => "fail",
+        hew_sir::SemCoalesceFallback::DropNew => CoalesceFallback::DropNew,
+        hew_sir::SemCoalesceFallback::DropOld => CoalesceFallback::DropOld,
+        hew_sir::SemCoalesceFallback::Fail => CoalesceFallback::Fail,
     }
 }
 
-const fn strategy_name(strategy: hew_sir::SemRestartStrategy) -> &'static str {
+const fn restart_strategy(strategy: hew_sir::SemRestartStrategy) -> RestartStrategy {
     match strategy {
-        hew_sir::SemRestartStrategy::OneForOne => "one_for_one",
-        hew_sir::SemRestartStrategy::OneForAll => "one_for_all",
-        hew_sir::SemRestartStrategy::RestForOne => "rest_for_one",
-        hew_sir::SemRestartStrategy::SimpleOneForOne => "simple_one_for_one",
+        hew_sir::SemRestartStrategy::OneForOne => RestartStrategy::OneForOne,
+        hew_sir::SemRestartStrategy::OneForAll => RestartStrategy::OneForAll,
+        hew_sir::SemRestartStrategy::RestForOne => RestartStrategy::RestForOne,
+        hew_sir::SemRestartStrategy::SimpleOneForOne => RestartStrategy::SimpleOneForOne,
     }
 }
 
-const fn restart_name(policy: hew_sir::SemRestartPolicy) -> &'static str {
+const fn restart_policy(policy: hew_sir::SemRestartPolicy) -> RestartPolicy {
     match policy {
-        hew_sir::SemRestartPolicy::Permanent => "permanent",
-        hew_sir::SemRestartPolicy::Transient => "transient",
-        hew_sir::SemRestartPolicy::Temporary => "temporary",
+        hew_sir::SemRestartPolicy::Permanent => RestartPolicy::Permanent,
+        hew_sir::SemRestartPolicy::Transient => RestartPolicy::Transient,
+        hew_sir::SemRestartPolicy::Temporary => RestartPolicy::Temporary,
     }
 }
 

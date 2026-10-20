@@ -33,6 +33,12 @@ export type ActorOperation =
   | { op: "supervisor_spawn"; supervisor: number }
   | { op: "supervisor_child"; supervisor: number; child: number }
   | { op: "supervisor_pool_view"; supervisor: number; child: number };
+export type ActorOverflow =
+  | "block"
+  | "drop_new"
+  | "drop_old"
+  | "fail"
+  | "coalesce";
 export type ActorProtocol = {
   actor: number;
   message: number;
@@ -54,7 +60,7 @@ export type ActorShape = {
   down?: number | null;
   handlers: Array<ActorHandler>;
   mailbox_capacity?: number | null;
-  overflow: string;
+  overflow: ActorOverflow;
   coalesce?: Coalesce | null;
   max_heap_bytes?: number | null;
 };
@@ -114,7 +120,8 @@ export type ClosureShape = {
   entries: Array<ClosureEntry>;
   fields: number;
 };
-export type Coalesce = { fallback: string; keys: Array<CoalesceKey> };
+export type Coalesce = { fallback: CoalesceFallback; keys: Array<CoalesceKey> };
+export type CoalesceFallback = "drop_new" | "drop_old" | "fail";
 export type CoalesceKey = { message: number; param: number };
 export type CodecDirection = "encode" | "decode" | "test_input";
 export type CodecKey = { name: string; tag: number | null; flags: number };
@@ -567,6 +574,12 @@ export type Resource =
   | { kind: "generator" }
   | { kind: "stream" }
   | { kind: "sink" };
+export type RestartPolicy = "permanent" | "transient" | "temporary";
+export type RestartStrategy =
+  | "one_for_one"
+  | "one_for_all"
+  | "rest_for_one"
+  | "simple_one_for_one";
 export type RuntimeCallFamily =
   | { AsyncIo: AsyncIoOp }
   | { Semaphore: SemaphoreOp }
@@ -923,7 +936,7 @@ export type SupervisorChild = {
    * The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
    */
   role: SupervisedRole;
-  restart: string;
+  restart: RestartPolicy;
   stop_ns?: number | null;
   stop_config?: number | null;
   is_pool?: boolean;
@@ -932,7 +945,7 @@ export type SupervisorChild = {
 export type SupervisorPoolOp = "Len" | "Member" | "Get";
 export type SupervisorShape = {
   id: number;
-  strategy: string;
+  strategy: RestartStrategy;
   max_restarts: number;
   window_secs: number;
   children: Array<SupervisorChild>;

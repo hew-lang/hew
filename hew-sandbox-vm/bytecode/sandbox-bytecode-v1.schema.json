@@ -83,7 +83,7 @@
           "type": "string"
         },
         "overflow": {
-          "type": "string"
+          "$ref": "#/$defs/ActorOverflow"
         },
         "start": {
           "format": "uint32",
@@ -540,6 +540,10 @@
         }
       ]
     },
+    "ActorOverflow": {
+      "enum": ["block", "drop_new", "drop_old", "fail", "coalesce"],
+      "type": "string"
+    },
     "ActorProtocol": {
       "properties": {
         "actor": {
@@ -768,7 +772,7 @@
     "Coalesce": {
       "properties": {
         "fallback": {
-          "type": "string"
+          "$ref": "#/$defs/CoalesceFallback"
         },
         "keys": {
           "items": {
@@ -779,6 +783,10 @@
       },
       "required": ["fallback", "keys"],
       "type": "object"
+    },
+    "CoalesceFallback": {
+      "enum": ["drop_new", "drop_old", "fail"],
+      "type": "string"
     },
     "CoalesceKey": {
       "properties": {
@@ -3353,6 +3361,19 @@
           "type": "object"
         }
       ]
+    },
+    "RestartPolicy": {
+      "enum": ["permanent", "transient", "temporary"],
+      "type": "string"
+    },
+    "RestartStrategy": {
+      "enum": [
+        "one_for_one",
+        "one_for_all",
+        "rest_for_one",
+        "simple_one_for_one"
+      ],
+      "type": "string"
     },
     "RuntimeFamilyEntry": {
       "additionalProperties": false,
@@ -6411,7 +6432,7 @@
           "type": "array"
         },
         "strategy": {
-          "type": "string"
+          "$ref": "#/$defs/RestartStrategy"
         },
         "window_secs": {
           "format": "uint32",
@@ -6426,7 +6447,6 @@
     "SupervisorChild": {
       "properties": {
         "dependencies": {
-          "default": [],
           "items": {
             "format": "uint",
             "minimum": 0,
@@ -6441,7 +6461,7 @@
           "type": "string"
         },
         "restart": {
-          "type": "string"
+          "$ref": "#/$defs/RestartPolicy"
         },
         "role": {
           "$ref": "#/$defs/SupervisedRole",

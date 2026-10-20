@@ -129,12 +129,47 @@ pub struct Actor {
     pub handlers: Vec<ActorHandler>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mailbox_capacity: Option<u32>,
-    pub overflow: String,
+    pub overflow: ActorOverflow,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub coalesce: Option<Coalesce>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null")]
     pub max_heap_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum ActorOverflow {
+    Block,
+    DropNew,
+    DropOld,
+    Fail,
+    Coalesce,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum CoalesceFallback {
+    DropNew,
+    DropOld,
+    Fail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartStrategy {
+    OneForOne,
+    OneForAll,
+    RestForOne,
+    SimpleOneForOne,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema, TS)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartPolicy {
+    Permanent,
+    Transient,
+    Temporary,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
@@ -159,7 +194,7 @@ pub struct ActorHandler {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct Coalesce {
-    pub fallback: String,
+    pub fallback: CoalesceFallback,
     pub keys: Vec<CoalesceKey>,
 }
 
@@ -174,7 +209,7 @@ pub struct CoalesceKey {
 #[ts(rename = "SupervisorShape")]
 pub struct Supervisor {
     pub id: u32,
-    pub strategy: String,
+    pub strategy: RestartStrategy,
     pub max_restarts: u32,
     pub window_secs: u32,
     pub children: Vec<SupervisorChild>,
@@ -185,12 +220,12 @@ pub struct Supervisor {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 pub struct SupervisorChild {
     pub name: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(optional, as = "Option<_>")]
     pub dependencies: Vec<usize>,
     /// The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
     pub role: SupervisedRole,
-    pub restart: String,
+    pub restart: RestartPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null")]
     #[schemars(range(max = i64::MAX))]

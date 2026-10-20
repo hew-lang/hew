@@ -163,7 +163,7 @@ mod failure_surface_lockstep_tests {
             .iter()
             .filter_map(|item| match item {
                 hew_parser::ast::TypeBodyItem::Field { name, .. } => Some(name.name.as_str()),
-                _ => None,
+                hew_parser::ast::TypeBodyItem::Variant(_) => None,
             })
             .collect();
         assert_eq!(

@@ -213,7 +213,7 @@ function lateConstructorPackage(stopNs) {
     block(
       1,
       [],
-      call({ op: "stop" }, [{ value: 9, decision: "borrow" }], null, 2),
+      call({ op: "stop", supervisor: 0 }, [{ value: 9, decision: "borrow" }], null, 2),
     ),
     block(2, [], {
       op: "return",

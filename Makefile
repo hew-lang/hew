@@ -627,9 +627,9 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # Deterministic generated repository artifacts. Behavioral ratchets remain
 # owned by their named test targets; they are intentionally not re-recorded by
 # a generic command from observed compiler output.
-baselines: wasm-capability playground-manifest sandbox-fixtures licenses cabi-surface
+baselines: sandbox-bytecode wasm-capability playground-manifest sandbox-fixtures licenses cabi-surface
 
-baselines-check: wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
@@ -1743,3 +1743,14 @@ clean: ## Develop: remove generated build and test artifacts
 		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
 		"$(CURDIR)/.tmp/scanner-test-input.txt" \
 		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"
+
+
+.PHONY: sandbox-bytecode sandbox-bytecode-check
+LINT_GATES += sandbox-bytecode-check
+sandbox-bytecode: sandbox-vm-deps ## Generate: Rust-owned sandbox instruction types and schema
+	cargo run -p xtask -- sandbox-bytecode --write
+	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --write
+
+sandbox-bytecode-check: sandbox-vm-deps ## Check: generated sandbox instruction types and schema
+	cargo run -p xtask -- sandbox-bytecode --check
+	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --check

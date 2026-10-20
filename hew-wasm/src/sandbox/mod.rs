@@ -3,6 +3,7 @@
 //! The shared frontend produces verified ownership SIR. The VM admits the
 //! resulting package before executing any instruction.
 
+pub mod bytecode;
 pub mod sir_emit;
 
 /// The shipped standard-library sources, as `("std/<relative path>", source)`.

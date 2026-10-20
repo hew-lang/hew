@@ -560,7 +560,7 @@ class ExecutorV1 {
     args: VmValue[],
     caller: Activation | null,
     result: CallResult,
-    normal: Edge | undefined,
+    normal: Edge | null | undefined,
     unwind: Edge | null,
     context?: FrameContext,
   ): Activation {
@@ -591,7 +591,8 @@ class ExecutorV1 {
     for (const block of fn.blocks) {
       block.params.forEach(record);
       for (const op of block.ops) {
-        if (op.dst != null && op.own === "none") trivial.add(op.dst);
+        if ("dst" in op && op.dst != null && op.own === "none")
+          trivial.add(op.dst);
       }
       const term = block.term;
       if ("result" in term && term.result && term.result !== "never")
@@ -618,7 +619,7 @@ class ExecutorV1 {
       parked: [],
       caller,
       result,
-      normal,
+      normal: normal ?? undefined,
       unwind,
     };
   }
@@ -877,7 +878,7 @@ class ExecutorV1 {
       case "aggregate.make":
         this.define(act, op.dst, {
           kind: "record",
-          typeId: this.aggregateName(op.shape),
+          typeId: op.shape === null ? "" : this.aggregateName(op.shape),
           shape: op.shape ?? undefined,
           fields: op.fields.map((id) => this.read(act, id)),
         });
@@ -1472,8 +1473,12 @@ class ExecutorV1 {
         this.define(act, op.dst, { kind: "task", id: task.id });
         return;
       }
-      default:
-        throw new Error(`opcode ${op.op} has no sequential executor`);
+      case "actor.ingress_adapter":
+        throw new Error("actor ingress adapters are not admitted in the VM");
+      default: {
+        const exhaustive: never = op;
+        throw new Error("unhandled instruction: " + String(exhaustive));
+      }
     }
   }
 
@@ -2183,7 +2188,7 @@ class ExecutorV1 {
   /// A shim returned: bind the call's result on its normal edge and continue.
   private completeShim(
     act: Activation,
-    term: TermV1 & { result: CallResult; normal?: Edge },
+    term: TermV1 & Pick<Extract<TermV1, { op: "call" }>, "result" | "normal">,
     value: VmValue,
   ): void {
     if (!term.normal) {
@@ -4182,8 +4187,12 @@ class ExecutorV1 {
           id: act.context.actor.id,
         });
         return;
-      default:
-        throw new Error(`actor operation ${operation.op} has no executor`);
+      case "local_observation":
+        throw new Error("actor observations are not admitted in the VM");
+      default: {
+        const exhaustive: never = operation;
+        throw new Error("unhandled actor operation: " + String(exhaustive));
+      }
     }
   }
 
@@ -4219,7 +4228,7 @@ class ExecutorV1 {
       error: string | null,
       closeFault?: Fault | null,
     ) => boolean,
-    shapes?: RequestShapes,
+    shapes?: RequestShapes | null,
     selectedTarget?: (actor: ActorInstance) => void,
   ): (done: (fault: Fault | null) => void) => void {
     let settled = false;

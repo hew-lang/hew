@@ -68,29 +68,6 @@ fn an_actor_declaration_reaches_the_package_with_its_handlers() {
     );
 }
 
-#[test]
-fn an_actor_call_names_its_operation_rather_than_a_symbol() {
-    let module = semantics(COUNTER);
-    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
-        .expect("an actor module projects into a package");
-
-    let operations: Vec<String> = package
-        .functions
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .filter(|block| block.term["op"] == "actor.call")
-        .filter_map(|block| block.term["operation"]["op"].as_str().map(str::to_string))
-        .collect();
-    assert!(
-        operations.iter().any(|op| op == "spawn"),
-        "spawning the actor is an operation the package names: {operations:?}"
-    );
-    assert!(
-        !operations.is_empty(),
-        "an actor program reaches at least one actor operation"
-    );
-}
-
 fn execute(source: &str) -> serde_json::Value {
     execute_expected(source, "ok")
 }

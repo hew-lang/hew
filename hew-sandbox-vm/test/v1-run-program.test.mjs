@@ -124,11 +124,16 @@ test("runProgram reports a load-time refusal rather than an empty run", () => {
   );
 });
 
-test("an unknown opcode is an invalid package and executes no output", () => {
-  const bytecode = v1Package();
-  bytecode.functions[0].blocks[1].ops.push({ op: "unrecognized.opcode" });
-  const result = withCompiler(bytecode, () => runProgram("", ""));
-  assert.equal(result.status, "sandbox_rejected");
-  assert.equal(result.stdout, "");
-  assert.equal(result.sandbox_rejections[0].category, "invalid_package");
+test("unknown instructions and terminators reject the package before output", () => {
+  for (const corrupt of [
+    (bytecode) => bytecode.functions[0].blocks[1].ops.push({ op: "unrecognized.opcode" }),
+    (bytecode) => { bytecode.functions[0].blocks[1].term.op = "unrecognized.terminator"; },
+  ]) {
+    const bytecode = v1Package();
+    corrupt(bytecode);
+    const result = withCompiler(bytecode, () => runProgram("", ""));
+    assert.equal(result.status, "sandbox_rejected");
+    assert.equal(result.stdout, "");
+    assert.equal(result.sandbox_rejections[0].category, "invalid_package");
+  }
 });

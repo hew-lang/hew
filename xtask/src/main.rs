@@ -52,6 +52,7 @@ fn run() -> Result<()> {
         Some("ratchet") => ratchet::run(&args[1..]),
         Some("core-acceptance") => core_acceptance::run(&args[1..]),
         Some("ir-size") => ir_size::run(&args[1..]),
+        Some("sandbox-bytecode") => sandbox_bytecode(&args[1..]),
         Some("runtime-declarations") => runtime_declarations(&args[1..]),
         Some("--help" | "-h") => {
             print_usage();
@@ -95,6 +96,7 @@ fn usage() -> String {
         "",
         "commands:",
         "  sandbox-fixtures  update or validate sandbox bytecode fixtures",
+        "  sandbox-bytecode  write or check derived instruction bindings",
         "  ratchet           check|issues against the unified expected-failure ledger",
         "  core-acceptance   run audited native cases at O0 and O2",
         "  ir-size           compare O2 LLVM instruction counts with ir-budget.tsv",
@@ -357,4 +359,39 @@ fn write_json_if_changed(path: &Path, value: &Value) -> Result<bool> {
             Ok(true)
         }
     }
+}
+
+fn sandbox_bytecode(args: &[String]) -> Result<()> {
+    let [mode] = args else {
+        return Err("sandbox-bytecode requires --write or --check".to_string());
+    };
+    if mode != "--write" && mode != "--check" {
+        return Err("sandbox-bytecode requires --write or --check".to_string());
+    }
+    let root = workspace_root()?;
+    let envelope_path = root.join("hew-sandbox-vm/bytecode/package-v1.envelope.schema.json");
+    let envelope = read_json(&envelope_path)?;
+    let schema = hew_wasm::sandbox::bytecode::package_schema(envelope)?;
+    let outputs = [
+        (
+            "hew-sandbox-vm/src/interpreter/v1/instructions.generated.ts",
+            hew_wasm::sandbox::bytecode::typescript()?,
+        ),
+        (
+            "hew-sandbox-vm/bytecode/sandbox-bytecode-v1.schema.json",
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())?
+            ),
+        ),
+    ];
+    for (relative, generated) in outputs {
+        let path = root.join(relative);
+        if mode == "--write" {
+            fs::write(&path, generated).map_err(|error| error.to_string())?;
+        } else if fs::read_to_string(&path).map_err(|error| error.to_string())? != generated {
+            return Err(format!("{relative} is stale; run make sandbox-bytecode"));
+        }
+    }
+    Ok(())
 }

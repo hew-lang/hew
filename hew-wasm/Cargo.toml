@@ -39,6 +39,9 @@ wasm-bindgen = "0.2.128"
 js-sys = "0.3"
 serde.workspace = true
 serde_json.workspace = true
+schemars = "1.2"
+# The present-null deserializer preserves wire presence; it does not change TS types.
+ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 
 [dev-dependencies]
 assert_cmd = "2"

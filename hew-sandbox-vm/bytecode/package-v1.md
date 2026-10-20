@@ -312,3 +312,19 @@ that index with the record value's shape, never its display name. Built-in
 resource kinds use their VM lifecycle protocol.
 Close can run while a frame is suspended in cleanup, and its failure follows
 the original SIR fault edge after the remaining owners drain.
+
+## Instruction contract generation
+
+The concrete Rust operation and terminator types in
+hew-wasm/src/sandbox/bytecode.rs own the instruction wire representation.
+Make sandbox-bytecode generates the TypeScript discriminated unions, opcode
+admission identities, JSON Schema instruction definitions and standalone loader
+validators. Make sandbox-bytecode-check verifies freshness and runs in lint and
+baseline checks. The envelope schema remains in package-v1.envelope.schema.json.
+
+The SIR projection and VM dispatches are exhaustive over their typed inputs.
+External instruction payloads are validated before capability admission and
+execution. This validates wire representations; the compiler's ownership and
+cleanup proofs remain in SIR. Runtime-family and suspension-detail registration
+are separate contracts. Existing v1 optional fields, including the distinction
+between omitted and null fields, remain compatible.

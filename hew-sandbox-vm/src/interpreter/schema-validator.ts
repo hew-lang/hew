@@ -1,3 +1,7 @@
+import {
+  validOperation,
+  validTerminator,
+} from "./v1/instruction-validator.generated.js";
 import { isPackageV1, type PackageV1 } from "./v1/package.js";
 
 export class BytecodeValidationError extends Error {
@@ -54,6 +58,14 @@ export function validateBytecodePackage(input: unknown): PackageV1 {
         typeof block.term.op !== "string"
       )
         errors.push("malformed block");
+      else {
+        for (const op of block.ops) {
+          if (!validOperation(op))
+            errors.push("malformed instruction in block " + block.id);
+        }
+        if (!validTerminator(block.term))
+          errors.push("malformed terminator in block " + block.id);
+      }
     }
   }
   if (errors.length) throw new BytecodeValidationError(errors);

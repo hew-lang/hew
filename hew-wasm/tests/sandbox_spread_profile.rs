@@ -54,7 +54,7 @@ fn vector_call_counts(package: &SandboxBytecodePackageV1, operation: &str) -> us
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .filter(|block| block.term["op"] == "runtime.call" && block.term["family"] == family.id)
+        .filter(|block| matches!(block.term.kind, hew_wasm::sandbox::bytecode::TermKind::RuntimeCall { family: id, .. } if id == family.id))
         .count()
 }
 

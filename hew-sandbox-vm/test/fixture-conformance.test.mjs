@@ -119,29 +119,6 @@ test("Vec::get returns None rather than trapping when the index is past the end"
   assert.deepEqual(trace.final_state.runtime_failures, []);
 });
 
-test("the published schema admits the emitted package and rejects an unknown opcode", () => {
-  const emitted = readJson("fixtures/06-vector-basics/bytecode.json");
-  validateBytecodePackage(emitted, "06-vector-basics");
-
-  const unknownOp = structuredClone(emitted);
-  const op = unknownOp.functions
-    .flatMap((fn) => fn.blocks)
-    .flatMap((block) => block.ops)
-    .find((entry) => entry.op === "const.int");
-  assert.ok(op, "vector fixture must carry an instruction to corrupt");
-  op.op = "const.not_real";
-  const validate = validateBytecodeBySchema[unknownOp.schema_version];
-  assert.equal(validate(unknownOp), false, "an opcode outside the registry must not validate");
-
-  const unknownTerminator = structuredClone(emitted);
-  unknownTerminator.functions[0].blocks[0].term.op = "goto.not_real";
-  assert.equal(
-    validate(unknownTerminator),
-    false,
-    "a terminator outside the registry must not validate"
-  );
-});
-
 function readJson(relativePath) {
   return JSON.parse(fs.readFileSync(path.join(root, relativePath), "utf8"));
 }

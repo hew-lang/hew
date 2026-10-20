@@ -11,6 +11,7 @@
 
 import type { SandboxRejection } from "../types.js";
 import type { PackageV1 } from "./package.js";
+import { OP_NAMES, TERM_NAMES } from "./instructions.generated.js";
 import {
   SUPPORTED_NATIVE_IO,
   SUPPORTED_SUSPEND_KINDS,
@@ -22,104 +23,8 @@ const UNSUPPORTED = "sandbox.capability.unsupported";
 const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
 const NATIVE_SUSPENSIONS = new Set(["NativeIo", "Read", "Accept"]);
 
-const OPS = new Set([
-  "coverage.hit",
-  "const.int",
-  "const.bool",
-  "const.float",
-  "const.char",
-  "const.unit",
-  "const.duration",
-  "const.str",
-  "const.bytes",
-  "copy_value",
-  "fork",
-  "move",
-  "destroy_value",
-  "begin_borrow",
-  "end_borrow",
-  "finish_linear_receiver",
-  "alloc_place",
-  "store.init",
-  "store.assign",
-  "load.copy",
-  "load.take",
-  "load.borrow",
-  "end_lifetime",
-  "tuple.make",
-  "tuple.get",
-  "aggregate.make",
-  "aggregate.project_copy",
-  "aggregate.project_borrow",
-  "destructure",
-  "array.make",
-  "array.repeat",
-  "variant.make",
-  "variant.is",
-  "variant.project_copy",
-  "variant.project_borrow",
-  "variant.destructure",
-  "unary",
-  "binary",
-  "cast",
-  "str.eq",
-  "bytes.eq",
-  "function.make",
-  "closure.make",
-  "generator.make",
-  "callable.coerce",
-  "dyn.make",
-  "register_defer",
-  "stream.pipe",
-  "task_scope.enter",
-  "task_scope.close",
-  "task.spawn",
-  "task.invoke",
-  "task.race",
-]);
-const TERMS = new Set([
-  "goto",
-  "branch",
-  "switch.variant",
-  "return",
-  "checked.binary",
-  "dyn.call",
-  "call",
-  "indirect.call",
-  "actor.call",
-  "runtime.call",
-  "extern.call",
-  "value.call",
-  "wire.codec",
-  "panic",
-  "checked_raise",
-  "trap",
-  "cleanup.dispatch",
-  "enter_defer",
-  "finish_defer",
-  "recover_fault",
-  "resume_unwind",
-  "suspend",
-  "unreachable",
-]);
-
-const ACTOR_OPS = new Set([
-  "identity",
-  "spawn",
-  "self_handle",
-  "stop",
-  "terminate",
-  "await_stopped",
-  "await_restarted",
-  "call_start",
-  "call_take",
-  "submit",
-  "stream_start",
-  "timer_schedule",
-  "supervisor_spawn",
-  "supervisor_child",
-  "supervisor_pool_view",
-]);
+const OPS: ReadonlySet<string> = new Set(OP_NAMES);
+const TERMS: ReadonlySet<string> = new Set(TERM_NAMES);
 
 function capabilityMessage(capability: string, native: boolean): string {
   const nativeFeatures: Record<string, string> = {
@@ -188,7 +93,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       if (
         block.term.op === "actor.call" &&
-        !ACTOR_OPS.has(block.term.operation.op)
+        block.term.operation.op === "local_observation"
       )
         return unavailable(`actor.${block.term.operation.op}`);
       if (

@@ -67,12 +67,18 @@ pub(super) fn reserve_identity_claim(
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     loop {
-        // A delayed automatic retry may replace only the exact retired
-        // publication that scheduled it. Check under the reservation lock:
-        // a pre-connect check alone leaves a handshake/publication race.
-        if predecessor.is_some_and(|owner| {
-            owner.node_id != node_id || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
-        }) {
+        // A provisional admission may abort and restore the exact retired
+        // predecessor. Let it use the bounded wait below before deciding
+        // whether this retry lost its publication authority.
+        let reserved = map
+            .get(&node_id)
+            .is_some_and(|claim| claim.state == ClaimState::Reserved);
+        if !reserved
+            && predecessor.is_some_and(|owner| {
+                owner.node_id != node_id
+                    || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
+            })
+        {
             return ClaimReservation::Rejected(format!(
                 "stale reconnect predecessor for NodeId {node_id}"
             ));

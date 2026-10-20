@@ -9,6 +9,7 @@ use std::time::Duration;
 use rand::rng;
 use rand::RngExt;
 
+use crate::peer_binding::ClaimState;
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 
@@ -179,14 +180,18 @@ pub(super) enum ReconnectAttemptOutcome {
     Cancelled,
 }
 
-fn reconnect_is_current(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
+fn reconnect_may_retry(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
     !mgr.reconnect_shutdown.load(Ordering::Acquire)
         && mgr
             .claims
             .0
             .lock_or_recover()
             .get(&plan.predecessor.node_id)
-            .is_some_and(|claim| plan.predecessor.matches(claim))
+            .is_some_and(|claim| {
+                // A provisional successor can still abort and restore the
+                // predecessor; only a resolved claim can obsolete this retry.
+                claim.state == ClaimState::Reserved || plan.predecessor.matches(claim)
+            })
 }
 
 /// Runs one reconnect attempt: connect, replay the pinned peer identity
@@ -206,7 +211,7 @@ pub(super) fn reconnect_attempt(
     let Some(mgr) = (unsafe { mgr_ptr.as_ref() }) else {
         return ReconnectAttemptOutcome::Cancelled;
     };
-    if !reconnect_is_current(mgr, plan) {
+    if !reconnect_may_retry(mgr, plan) {
         return ReconnectAttemptOutcome::Cancelled;
     }
     let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
@@ -248,7 +253,7 @@ pub(super) fn reconnect_attempt(
         // transport connection on all failure paths, including a
         // pinned-identity mismatch) and has already recorded the specific
         // rejection reason via set_last_error.
-        return if reconnect_is_current(mgr, plan) {
+        return if reconnect_may_retry(mgr, plan) {
             ReconnectAttemptOutcome::Rejected
         } else {
             ReconnectAttemptOutcome::Cancelled

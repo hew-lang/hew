@@ -303,6 +303,11 @@ fn stale_reconnect_cannot_replace_newer_publication() {
         else {
             panic!("current retired predecessor must permit reconnect");
         };
+        assert_eq!(
+            reconnect_attempt(mgr_ptr, &plan, 10, 1),
+            ReconnectAttemptOutcome::TransportError,
+            "a provisional successor must not cancel retry before it resolves"
+        );
         abort_identity_claim(mgr, identity, 11, 101, superseded);
         mgr.reconnect_shutdown.store(true, Ordering::Release);
         assert_eq!(

@@ -138,7 +138,14 @@ unsafe fn defer_construction_event(
                 _ => None,
             };
             if let Some(event) = event {
-                admit_child_event(sup, event);
+                if !admit_child_event(sup, event) {
+                    // Cancellation may close admission after dispatch observed
+                    // running. This delivered envelope still owns its record.
+                    crate::exit_status::settle_supervised_fault(
+                        event.record(),
+                        FaultRuling::Unrecovered,
+                    );
+                }
                 return true;
             }
         }
@@ -962,6 +969,91 @@ pub(crate) fn stop_local_supervisor(
 mod tests {
     use super::*;
     use crate::execution_context::{HewExecutionContext, TestExecutionContext};
+
+    #[test]
+    fn supervisor_cancelled_construction_settles_refused_delivered_events() {
+        let _runtime = crate::runtime_test_guard();
+        // SAFETY: this test exclusively owns the supervisor and typed envelopes
+        // through the forced dispatch/cancellation/admission interleaving.
+        unsafe {
+            let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5);
+            (*sup).constructing.store(true, Ordering::Release);
+            (*sup).running.store(1, Ordering::Release);
+            let records =
+                std::array::from_fn::<_, 3, _>(|_| crate::exit_status::open_supervised_fault());
+            let role = crate::exit_status::RoleKey {
+                owner: (*sup).local_pid_id,
+                slot: 0,
+                nested: false,
+            };
+            for record in records {
+                crate::exit_status::attribute_supervised_fault(record, vec![role]);
+            }
+            let mut events = [
+                ConstructionEvent::Actor(ChildEvent {
+                    child_index: 0,
+                    child_id: 123,
+                    exit_state: HewActorState::Crashed as i32,
+                    end_reason: crate::internal::types::ActorEndReason::from_terminal(
+                        HewActorState::Crashed as i32,
+                        false,
+                    ),
+                    crash_code: 212,
+                    fault_record: records[0].as_raw(),
+                }),
+                ConstructionEvent::Escalated(ChildSupervisorEscalation {
+                    supervisor_index: 0,
+                    child_token: (*sup).local_pid_id,
+                    exit_state: HewActorState::Crashed as i32,
+                    crash_code: 212,
+                    fault_record: records[1].as_raw(),
+                }),
+                ConstructionEvent::Delayed(DelayedRestartEvent {
+                    child_identity: 1,
+                    fault_record: records[2].as_raw(),
+                }),
+            ];
+            // Dispatch has passed its running check when stop publishes
+            // cancellation and drains the phase buffer before event admission.
+            assert_eq!((*sup).running.load(Ordering::Acquire), 1);
+            publish_supervisor_cancellation(sup);
+            assert!((*sup)
+                .roster
+                .lock_or_recover()
+                .construction_events
+                .is_empty());
+            for (event, record) in events.iter_mut().zip(records) {
+                assert!(crate::exit_status::supervised_fault_is_open(record));
+                let (kind, data, size) = match event {
+                    ConstructionEvent::Actor(payload) => (
+                        HewSysMsg::ChildCrashed,
+                        std::ptr::from_mut(payload).cast(),
+                        std::mem::size_of_val(payload),
+                    ),
+                    ConstructionEvent::Escalated(payload) => (
+                        HewSysMsg::ChildSupervisorEscalated,
+                        std::ptr::from_mut(payload).cast(),
+                        std::mem::size_of_val(payload),
+                    ),
+                    ConstructionEvent::Delayed(payload) => (
+                        HewSysMsg::DelayedRestart,
+                        std::ptr::from_mut(payload).cast(),
+                        std::mem::size_of_val(payload),
+                    ),
+                    ConstructionEvent::Stopped(_) => unreachable!(),
+                };
+                assert!(defer_construction_event(sup, kind, data, size));
+                assert!(!crate::exit_status::supervised_fault_is_open(record));
+                assert!((*sup)
+                    .roster
+                    .lock_or_recover()
+                    .construction_events
+                    .is_empty());
+            }
+            assert!(!crate::exit_status::role_has_unsettled_fault(role));
+            hew_supervisor_stop(sup);
+        }
+    }
 
     static CHILD_STOP_ORDER: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 

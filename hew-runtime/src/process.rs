@@ -1112,6 +1112,38 @@ mod tests {
     }
 
     #[test]
+    #[cfg(windows)]
+    fn dropping_a_running_child_terminates_the_exact_process() {
+        use std::os::windows::io::{AsHandle, AsRawHandle};
+        use windows_sys::Win32::Foundation::{WAIT_OBJECT_0, WAIT_TIMEOUT};
+        use windows_sys::Win32::System::Threading::WaitForSingleObject;
+
+        let child = start("ping", &["-n", "61", "127.0.0.1"], 1);
+        assert!(!child.is_null());
+        // SAFETY: the test owns the child; retain its exact process identity
+        // across cleanup, independently of PID reuse or object retention.
+        let process = unsafe { &*child }
+            .state
+            .lock_or_recover()
+            .child
+            .as_handle()
+            .try_clone_to_owned()
+            .unwrap();
+        // SAFETY: the retained handle names the live child process.
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+            WAIT_TIMEOUT
+        );
+        // SAFETY: drop consumes the owned child exactly once.
+        unsafe { hew_process_drop(child) };
+        // SAFETY: the duplicate remains valid after the child's owner closes.
+        assert_eq!(
+            unsafe { WaitForSingleObject(process.as_raw_handle(), 0) },
+            WAIT_OBJECT_0
+        );
+    }
+
+    #[test]
     fn pipes_are_taken_once_and_only_when_piped() {
         #[cfg(windows)]
         let (program, args) = ("cmd", vec!["/C", "exit 0"]);

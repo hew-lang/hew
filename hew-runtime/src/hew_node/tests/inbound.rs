@@ -574,13 +574,20 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     // SAFETY: the test retains both authenticated nodes through every admission.
     let peer_id = unsafe { (*peer.as_ptr()).auth.node_identity().unwrap() };
     let address = CString::new(format!("365@127.0.0.1:{port}")).unwrap();
-    for _ in 0..2 {
-        // SAFETY: each connect publishes a fresh authenticated connection.
-        unsafe {
-            connect_with_retry(peer.as_ptr(), &address);
-            wait_for_handshake(peer.as_ptr(), node.as_ptr());
-        }
-        let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+    let mut previous_publication = None;
+    for iteration in 0..2 {
+        // SAFETY: both authenticated nodes remain live through the reconnect.
+        unsafe { connect_with_retry(peer.as_ptr(), &address) };
+        // The old connection can remain authenticated while its replacement is
+        // being published. Wait for the receiver's new claim before exporting.
+        let claim = loop {
+            if let Some(claim) = connection::claim_send_by_identity(manager, peer_id, None) {
+                if Some(claim.publication_token) != previous_publication {
+                    break claim;
+                }
+            }
+            thread::yield_now();
+        };
         let publication = claim.publication_token;
         let location = connection::local_location_for_actor(manager, actor_id).unwrap();
         // SAFETY: the test retains this actor throughout both publication checks.
@@ -609,10 +616,14 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             crate::request_deadline::RequestDeadline::default(),
             crate::request_state::RequestKind::CallReject,
         );
-        assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
+        assert_eq!(
+            manager.inbound_ask_active.load(Ordering::Acquire),
+            1,
+            "admission at iteration {iteration}, publication {publication}, previous {previous_publication:?}"
+        );
         for (target, connection, request) in [
             (actor_id + 1, publication, 42),
-            (actor_id, publication - 1, 42),
+            (actor_id, previous_publication.unwrap_or(0), 42),
             (actor_id, publication, 43),
         ] {
             manager.inbound_asks.withdraw(target, connection, request);
@@ -622,6 +633,7 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
         manager.inbound_asks.withdraw(actor_id, publication, 42);
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
+        previous_publication = Some(publication);
     }
     // SAFETY: the queued requests have released their ownership above.
     unsafe {

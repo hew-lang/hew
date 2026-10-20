@@ -634,6 +634,10 @@ struct PendingGroupRestart {
     /// Each failure the restart answers, with the crash record it rules on.
     failures: Vec<(RestartChildRole, FaultRecord)>,
     stopping: Vec<StoppedIncarnation>,
+    #[cfg(not(target_arch = "wasm32"))]
+    construction: Option<native::NativeReconstruction>,
+    #[cfg(not(target_arch = "wasm32"))]
+    readiness: Arc<ConstructionReadiness>,
     /// Registered with every completion in `stopping`; the registrations are
     /// weak, so this is what keeps them live.
     waker: Arc<crate::wake::OwnedWaker>,
@@ -643,10 +647,15 @@ impl PendingGroupRestart {
     fn new(sup: *mut HewSupervisor) -> Self {
         // SAFETY: the caller keeps `sup` live; the direct id is immutable.
         let supervisor = unsafe { (*sup).local_pid_id };
+        let readiness = Arc::new(ConstructionReadiness::default());
         Self {
             failures: Vec::new(),
             stopping: Vec::new(),
-            waker: group_restart_waker(supervisor),
+            #[cfg(not(target_arch = "wasm32"))]
+            construction: None,
+            waker: group_restart_waker(supervisor, Arc::clone(&readiness)),
+            #[cfg(not(target_arch = "wasm32"))]
+            readiness,
         }
     }
 
@@ -688,32 +697,72 @@ impl PendingGroupRestart {
     }
 }
 
-/// A waker that signals [`HewSysMsg::GroupRestart`] to one supervisor through
-/// its stable handle, so a completion never reaches a closed supervisor.
+/// Readiness survives mailbox closure so the unique teardown owner can drain
+/// a cancelled constructor without relying on another supervisor dispatch.
+#[derive(Default)]
+struct ConstructionReadiness {
+    ready: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl ConstructionReadiness {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn clear(&self) {
+        *self.ready.lock_or_recover() = false;
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait(&self, deadline: Instant) {
+        if crate::driver::active() {
+            crate::driver::drain_poll(Duration::ZERO);
+        } else {
+            let ready = self.ready.lock_or_recover();
+            if !*ready {
+                drop(self.changed.wait_timeout_or_recover(
+                    ready,
+                    deadline.saturating_duration_since(Instant::now()),
+                ));
+            }
+        }
+    }
+}
+
+/// A readiness signal reaches both the live supervisor and a teardown owner
+/// after mailbox admission closes. Neither path owns a frame pointer.
 fn group_restart_waker(
     supervisor: crate::lifetime::local_handles::HewLocalPidId,
+    readiness: Arc<ConstructionReadiness>,
 ) -> Arc<crate::wake::OwnedWaker> {
-    type Target = crate::lifetime::local_handles::HewLocalPidId;
-    unsafe extern "C" fn group_restart_wake(context: *mut c_void) {
-        // SAFETY: every descriptor holder retains this allocation.
-        signal_group_restart(unsafe { *context.cast::<Target>() });
+    struct Target {
+        supervisor: crate::lifetime::local_handles::HewLocalPidId,
+        readiness: Arc<ConstructionReadiness>,
     }
-    unsafe extern "C" fn group_restart_retain(context: *mut c_void) {
+    unsafe extern "C" fn wake(context: *mut c_void) {
+        // SAFETY: every descriptor holder retains this target allocation.
+        let target = unsafe { &*context.cast::<Target>() };
+        *target.readiness.ready.lock_or_recover() = true;
+        target.readiness.changed.notify_one();
+        signal_group_restart(target.supervisor);
+    }
+    unsafe extern "C" fn retain(context: *mut c_void) {
         // SAFETY: the descriptor contract requires a live Arc reference.
         unsafe { Arc::increment_strong_count(context.cast::<Target>()) };
     }
-    unsafe extern "C" fn group_restart_release(context: *mut c_void) {
+    unsafe extern "C" fn release(context: *mut c_void) {
         // SAFETY: consumes exactly one reference acquired by retain.
         unsafe { Arc::decrement_strong_count(context.cast::<Target>()) };
     }
-    let target = Arc::new(supervisor);
+    let target = Arc::new(Target {
+        supervisor,
+        readiness,
+    });
     let descriptor = crate::wake::HewWaker {
         context: Arc::as_ptr(&target).cast_mut().cast(),
-        wake: group_restart_wake,
-        retain: group_restart_retain,
-        release: group_restart_release,
+        wake,
+        retain,
+        release,
     };
-    // SAFETY: `target` keeps the allocation live during retain.
+    // SAFETY: target keeps the allocation live during retain.
     Arc::new(unsafe { crate::wake::OwnedWaker::retain(&descriptor) })
 }
 
@@ -906,6 +955,7 @@ enum ConstructionEvent {
     Actor(ChildEvent),
     Escalated(ChildSupervisorEscalation),
     Stopped(ChildSupervisorStopped),
+    Delayed(DelayedRestartEvent),
 }
 
 impl ConstructionEvent {
@@ -914,6 +964,7 @@ impl ConstructionEvent {
             Self::Actor(event) => event.fault_record,
             Self::Escalated(event) => event.fault_record,
             Self::Stopped(_) => 0,
+            Self::Delayed(event) => event.fault_record,
         })
     }
 
@@ -944,6 +995,17 @@ impl ConstructionEvent {
                         HewSysMsg::ChildSupervisorEscalated,
                         (&raw const event).cast_mut().cast(),
                         std::mem::size_of::<ChildSupervisorEscalation>(),
+                    )
+                }
+            }
+            Self::Delayed(event) => {
+                // SAFETY: admission copies this typed payload into the mailbox.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::DelayedRestart,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<DelayedRestartEvent>(),
                     )
                 }
             }
@@ -1550,14 +1612,14 @@ fn run_restart_timer_released_hook_for_test() {
     }
 }
 
-unsafe fn close_supervisor_access(
+/// Close admission immediately; the teardown claim retains allocation ownership
+/// while its suspended constructor releases pins before their final drain.
+unsafe fn begin_supervisor_access_close(
     sup: *mut HewSupervisor,
-    timeout: Duration,
-) -> Option<ClosedSupervisorAccess> {
-    #[cfg(all(test, not(target_arch = "wasm32")))]
-    if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
-        return None;
-    }
+) -> Option<(
+    Arc<crate::lifetime::local_handles::SupervisorControl>,
+    *const crate::lifetime::local_handles::LocalHandles,
+)> {
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`;
     // copy scalars without creating a whole-supervisor reference.
     let (runtime_ptr, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
@@ -1579,13 +1641,23 @@ unsafe fn close_supervisor_access(
     if won_close {
         run_supervisor_close_hook_for_test();
     }
+    Some((control, &raw const runtime.local_handles))
+}
+
+unsafe fn close_supervisor_access(
+    sup: *mut HewSupervisor,
+    timeout: Duration,
+) -> Option<ClosedSupervisorAccess> {
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
+        return None;
+    }
+    // SAFETY: the caller retains the allocation through admission closure/drain.
+    let (control, handles) = unsafe { begin_supervisor_access_close(sup) }?;
     if !control.wait_for_pins(timeout) {
         return None;
     }
-    Some(ClosedSupervisorAccess {
-        control,
-        handles: &raw const runtime.local_handles,
-    })
+    Some(ClosedSupervisorAccess { control, handles })
 }
 
 unsafe fn begin_supervisor_teardown(
@@ -1730,15 +1802,17 @@ struct InternalChildSpec {
     native_spawn: Option<HewNativeChildSpawnFn>,
 }
 
-/// Spawn one incarnation of a declared native child from the supervisor's
-/// config. Returns its stable handle, or `INVALID` with the refusal in the
-/// fault slot.
-pub type HewNativeChildSpawnFn =
-    unsafe extern "C-unwind" fn(
-        crate::lifetime::local_handles::HewLocalPidId,
-        *const c_void,
-        *mut *mut crate::fault::HewFault,
-    ) -> crate::lifetime::local_handles::HewLocalPidId;
+/// Begin one declared child invocation. The caller retains config and output
+/// storage through final suspension and destroys the returned LLVM frame before
+/// releasing the coroutine state. A synchronous adapter returns null after
+/// publishing its ordinary private status into `state`.
+pub type HewNativeChildSpawnFn = unsafe extern "C-unwind" fn(
+    crate::lifetime::local_handles::HewLocalPidId,
+    *const c_void,
+    *mut crate::lifetime::local_handles::HewLocalPidId,
+    *mut *mut crate::fault::HewFault,
+    *mut crate::coro_state::HewCoroState,
+) -> *mut c_void;
 
 /// One state-drop descriptor shared by every immutable template generation.
 /// The setter may arrive after the initial generation was constructed; an
@@ -2673,6 +2747,8 @@ fn should_fail_delayed_restart_arm() -> bool {
 mod child;
 mod crash;
 mod lifecycle;
+#[cfg(not(target_arch = "wasm32"))]
+mod native;
 mod pool;
 mod restart;
 mod role;
@@ -2681,6 +2757,8 @@ mod teardown;
 pub use child::*;
 pub(crate) use crash::*;
 pub use lifecycle::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::*;
 pub use pool::*;
 pub(crate) use restart::*;
 pub use role::*;

@@ -12,6 +12,7 @@
 //! A supervised reference is a canonical runtime role token: every
 //! use re-resolves the current incarnation through the supervisor.
 
+use super::suspend::call_value;
 use super::*;
 use hew_mir::physical::{ParamCarrier, StorageId};
 use hew_mir::physical::{
@@ -51,7 +52,7 @@ fn role_kind(role: &SemSupervisedRole) -> u64 {
     kind as u64
 }
 
-/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name and deadline.
+/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name, deadline and startup rank.
 fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     ctx.struct_type(
@@ -238,9 +239,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         Ok(())
     }
 
-    /// `fn(config) -> handle`: one incarnation of a declared child. A faulted
-    /// spawn returns the invalid handle, which the runtime charges to the
-    /// restart budget instead of publishing a dead-looking child.
+    /// Start one declared incarnation using its checked callable ABI. The runtime
+    /// owns the output, fault and completion state until the returned frame ends.
     fn emit_supervisor_child_spawn(
         &self,
         supervisor: &SemSupervisor,
@@ -253,21 +253,24 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let word = self.ctx.ptr_sized_int_type(&target, None);
         let function = self.llvm.add_function(
             &symbol(supervisor, &format!("child_{child}_spawn")),
-            word.fn_type(&[word.into(), ptr.into(), ptr.into()], false),
+            ptr.fn_type(
+                &[word.into(), ptr.into(), ptr.into(), ptr.into(), ptr.into()],
+                false,
+            ),
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
         let owner = function.get_first_param().unwrap().into_int_value();
         let config = function.get_nth_param(1).unwrap().into_pointer_value();
-        let fault = function.get_nth_param(2).unwrap().into_pointer_value();
-        let handle_layout = spawn.return_layout.as_ref().ok_or_else(|| {
-            CodegenError::FailClosed("child spawn callable produces no handle".into())
-        })?;
-        let handle_ty = llvm_type(self.ctx, &handle_layout.repr)?;
-        let handle = builder
-            .build_alloca(handle_ty, "spawn.handle")
-            .llvm_ctx("allocate child handle")?;
+        let handle = function.get_nth_param(2).unwrap().into_pointer_value();
+        let fault = function.get_nth_param(3).unwrap().into_pointer_value();
+        let state = function.get_nth_param(4).unwrap().into_pointer_value();
+        if spawn.return_layout.is_none() {
+            return Err(CodegenError::FailClosed(
+                "child spawn callable produces no handle".into(),
+            ));
+        }
         if spawn.params.len() != supervisor.config.len() + 1 {
             return Err(CodegenError::FailClosed(
                 "child spawn callable does not take the supervisor config".into(),
@@ -294,39 +297,33 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         }
         arguments.push(handle.into());
         arguments.push(fault.into());
-        let status = builder
-            .build_call(self.functions[&spawn.id], &arguments, "spawn.status")
-            .llvm_ctx("spawn one declared child incarnation")?
-            .try_as_basic_value()
-            .basic()
-            .ok_or_else(|| CodegenError::FailClosed("child spawn returned void".into()))?
-            .into_int_value();
-        let spawned = self.ctx.append_basic_block(function, "spawn.ok");
-        let failed = self.ctx.append_basic_block(function, "spawn.failed");
-        let ok = builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                status,
-                self.ctx.i32_type().const_zero(),
-                "spawn.succeeded",
-            )
-            .llvm_ctx("check child spawn outcome")?;
-        builder
-            .build_conditional_branch(ok, spawned, failed)
-            .llvm_ctx("publish only a spawned child")?;
-        builder.position_at_end(failed);
-        // The refusal stays in the caller's slot: construction reports it and
-        // a restart releases it.
-        builder
-            .build_return(Some(&word.const_zero()))
-            .llvm_ctx("report a refused child spawn")?;
-        builder.position_at_end(spawned);
-        let value = builder
-            .build_load(handle_ty, handle, "spawn.token")
-            .llvm_ctx("load the new child handle")?;
-        builder
-            .build_return(Some(&value))
-            .llvm_ctx("publish the new child handle")?;
+        if spawn.is_resumable {
+            arguments.push(state.into());
+            let frame = call_value(&builder, self.ramps[&spawn.id], &arguments, "spawn.frame")?;
+            builder
+                .build_return(Some(&frame))
+                .llvm_ctx("return declared child continuation")?;
+        } else {
+            let status = call_value(
+                &builder,
+                self.functions[&spawn.id],
+                &arguments,
+                "spawn.status",
+            )?;
+            let finish = get_or_declare_external(
+                &self.llvm,
+                "hew_coro_state_finish",
+                self.ctx
+                    .i32_type()
+                    .fn_type(&[ptr.into(), self.ctx.i32_type().into()], false),
+            )?;
+            builder
+                .build_call(finish, &[state.into(), status.into()], "")
+                .llvm_ctx("publish synchronous child outcome")?;
+            builder
+                .build_return(Some(&ptr.const_null()))
+                .llvm_ctx("finish synchronous child construction")?;
+        }
         Ok(())
     }
 }
@@ -357,6 +354,75 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 .map(Some),
             _ => Ok(None),
         }
+    }
+
+    /// Construction cancellation is a drain: retain the operation and config
+    /// until the runtime has joined callbacks and rolled back adopted children.
+    fn poll_supervisor_construction(
+        &self,
+        operation: PointerValue<'ctx>,
+    ) -> CodegenResult<IntValue<'ctx>> {
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("supervisor construction requires a resumable body".into())
+        })?;
+        let ptr = self.ctx.ptr_type(AddressSpace::default());
+        let poll_fn = get_or_declare_external(
+            self.llvm,
+            "hew_supervisor_native_spawn_poll",
+            self.ctx
+                .i32_type()
+                .fn_type(&[ptr.into(), self.ctx.i32_type().into()], false),
+        )?;
+        let poll = self.ctx.append_basic_block(self.value, "supervisor.poll");
+        let pending = self
+            .ctx
+            .append_basic_block(self.value, "supervisor.pending");
+        let complete = self
+            .ctx
+            .append_basic_block(self.value, "supervisor.complete");
+        self.builder
+            .build_unconditional_branch(poll)
+            .llvm_ctx("poll supervisor construction")?;
+        self.builder.position_at_end(poll);
+        let cancelled = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let ready = call_value(
+            &self.builder,
+            poll_fn,
+            &[operation.into(), cancelled.into()],
+            "supervisor.ready",
+        )?
+        .into_int_value();
+        let ready = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                ready,
+                self.ctx.i32_type().const_zero(),
+                "supervisor.final",
+            )
+            .llvm_ctx("check supervisor quiescence")?;
+        self.builder
+            .build_conditional_branch(ready, complete, pending)
+            .llvm_ctx("wait for construction and rollback")?;
+        self.builder.position_at_end(pending);
+        frame.suspend(self.ctx, &self.builder, poll, frame.invalid_destroy)?;
+        self.builder.position_at_end(complete);
+        let target = TargetData::create(&self.module.target.data_layout);
+        let word = self.ctx.ptr_sized_int_type(&target, None);
+        let take = get_or_declare_external(
+            self.llvm,
+            "hew_supervisor_native_spawn_take",
+            word.fn_type(&[ptr.into(), ptr.into()], false),
+        )?;
+        let token = call_value(
+            &self.builder,
+            take,
+            &[operation.into(), self.active_fault.into()],
+            "supervisor.token",
+        )?
+        .into_int_value();
+        self.free_handle("hew_supervisor_native_spawn_free", operation)?;
+        Ok(token)
     }
 
     fn supervisor(&self, id: SupervisorId) -> CodegenResult<&SemSupervisor> {
@@ -487,8 +553,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         };
         let spawn = get_or_declare_external(
             self.llvm,
-            "hew_supervisor_native_spawn",
-            word.fn_type(
+            "hew_supervisor_native_spawn_new",
+            ptr.fn_type(
                 &[
                     self.ctx.i32_type().into(),
                     self.ctx.i32_type().into(),
@@ -503,7 +569,21 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 false,
             ),
         )?;
-        let token = self
+        let frame = self.frame.as_ref().ok_or_else(|| {
+            CodegenError::FailClosed("supervisor construction requires a resumable body".into())
+        })?;
+        let wake = get_or_declare_external(
+            self.llvm,
+            "hew_coro_state_waker",
+            ptr.fn_type(&[ptr.into()], false),
+        )?;
+        let waker = call_value(
+            &self.builder,
+            wake,
+            &[frame.state.into()],
+            "supervisor.waker",
+        )?;
+        let operation = self
             .builder
             .build_call(
                 spawn,
@@ -525,9 +605,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     children.into(),
                     word.const_int(u64::from(child_count), false).into(),
                     pool_count.into(),
-                    self.active_fault.into(),
+                    waker.into(),
                 ],
-                "supervisor.token",
+                "supervisor.operation",
             )
             .llvm_ctx("construct the declared supervisor")?
             .try_as_basic_value()
@@ -535,7 +615,13 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .ok_or_else(|| {
                 CodegenError::FailClosed("supervisor construction returned void".into())
             })?
-            .into_int_value();
+            .into_pointer_value();
+        // `new` adopts the config on every path. No cancellation or suspension
+        // may leave its transferred source owners available for caller cleanup.
+        for source in sources {
+            self.clear_owned(*source)?;
+        }
+        let token = self.poll_supervisor_construction(operation)?;
         self.store(result, token.into())?;
         let refused = self
             .builder

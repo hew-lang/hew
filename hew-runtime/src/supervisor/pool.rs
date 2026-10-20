@@ -515,7 +515,7 @@ fn register_native_child(
 /// Register declaration slots and project the compiler's startup permutation
 /// onto their stable runtime identities. No callbacks run under this lock.
 #[cfg(not(target_arch = "wasm32"))]
-fn register_native_roster(
+pub(super) fn register_native_roster(
     roster: &mut SupervisorRoster,
     children: &[HewNativeChildSpec],
     declarations: &[(usize, &HewNativeChildSpec)],
@@ -544,7 +544,7 @@ fn register_native_roster(
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn release_unadopted_config(
+pub(super) unsafe fn release_unadopted_config(
     config: *mut c_void,
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
 ) {
@@ -561,28 +561,36 @@ unsafe fn release_unadopted_config(
 /// Install one freshly constructed incarnation into its registered declaration.
 /// The caller owns construction and keeps the parent alive.
 #[cfg(not(target_arch = "wasm32"))]
-unsafe fn adopt_native_child(
+pub(super) unsafe fn adopt_native_child(
     sup: *mut HewSupervisor,
     index: usize,
     role_kind: c_int,
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> bool {
     if role_kind == ROLE_KIND_SUPERVISOR {
-        if let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) {
-            let nested = pin.supervisor();
-            // SAFETY: the adapter transferred this fresh subtree and the pin
-            // protects it while its parent ownership edge is installed.
-            unsafe {
-                (*nested).parent = sup;
-                (*nested).index_in_parent = index;
-                crate::shutdown::hew_shutdown_unregister_supervisor(nested);
-            }
-            // SAFETY: construction retains the parent allocation.
-            let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-            roster.child_supervisors[index] = nested;
-            roster.child_supervisor_tokens[index] = token;
-            return true;
+        let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(token) else {
+            return false;
+        };
+        let nested = pin.supervisor();
+        // SAFETY: construction retains the parent while the publish lock
+        // serializes its cancellation snapshot and the ownership-edge store.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        // SAFETY: Construction retains the parent; its roster lock serializes this child publication with cancellation.
+        if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+            return false;
         }
+        // SAFETY: the result transfers this fresh subtree, protected by its pin.
+        unsafe {
+            (*nested).parent = sup;
+            (*nested).index_in_parent = index;
+            crate::shutdown::hew_shutdown_unregister_supervisor(nested);
+        }
+        roster.child_supervisors[index] = nested;
+        roster.child_supervisor_tokens[index] = token;
+        return true;
+    }
+    if role_kind != ROLE_KIND_ACTOR {
+        return false;
     }
     let actor = if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
         ptr::null_mut()
@@ -592,6 +600,12 @@ unsafe fn adopt_native_child(
             .unwrap_or(ptr::null_mut())
     };
     if actor.is_null() {
+        return false;
+    }
+    // SAFETY: construction retains the parent throughout this publication.
+    let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: Construction retains the parent; its roster lock serializes this child publication with cancellation.
+    if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
         return false;
     }
     // SAFETY: the adapter returned a live, published actor and this thread
@@ -607,139 +621,8 @@ unsafe fn adopt_native_child(
             (*actor).supervisor_child_index = index as i32;
         }
     }
-    {
-        // SAFETY: construction still owns the roster.
-        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
-        guard.children[index] = actor;
-    }
+    roster.children[index] = actor;
     true
-}
-
-/// Construct a declared supervisor: adopt its config, spawn every declared
-/// child in dependency order and start supervising.
-///
-/// A child that cannot be spawned fails the whole construction — a supervisor
-/// with a slot nothing can fill would report every send as "restarting"
-/// forever. On failure the supervisor and every child already spawned are torn
-/// down, the config is released through `config_drop`, and `INVALID` is
-/// returned with `fault` set.
-///
-/// # Safety
-///
-/// `config` is a unique allocation `config_drop` can release, or null.
-/// `children` is readable for `child_count` entries and `fault` is a writable,
-/// initially null fault slot.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_native_spawn(
-    strategy: c_int,
-    max_restarts: c_int,
-    window_secs: c_int,
-    config: *mut c_void,
-    config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
-    children: *const HewNativeChildSpec,
-    child_count: usize,
-    pool_count: i64,
-    fault: *mut *mut crate::fault::HewFault,
-) -> crate::lifetime::local_handles::HewLocalPidId {
-    let invalid = crate::lifetime::local_handles::HewLocalPidId::INVALID;
-    let refuse = |code| {
-        // SAFETY: the generated caller provides a writable empty fault slot.
-        unsafe { *fault = crate::fault::hew_fault_new(code) };
-        invalid
-    };
-    let is_pool = strategy == STRATEGY_SIMPLE_ONE_FOR_ONE;
-    if (is_pool && (!(1..=i64::from(i32::MAX)).contains(&pool_count) || child_count != 1))
-        || (!is_pool && pool_count != 0)
-    {
-        // SAFETY: construction still owns the config before adoption.
-        unsafe { release_unadopted_config(config, config_drop) };
-        // SAFETY: the caller provides a writable, empty fault slot.
-        unsafe {
-            *fault = Box::into_raw(Box::new(crate::fault::HewFault::with_message(
-                crate::internal::types::HEW_TRAP_USER_PANIC,
-                "supervisor pool count must be between 1 and 2147483647".into(),
-            )));
-        }
-        return invalid;
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the validated count is positive and bounded by i32::MAX"
-    )]
-    let members = if is_pool { pool_count as usize } else { 1 };
-    // SAFETY: construction has no preconditions.
-    let sup = unsafe { hew_supervisor_new(strategy, max_restarts, window_secs) };
-    if sup.is_null() {
-        // SAFETY: construction still owns the config before adoption.
-        unsafe { release_unadopted_config(config, config_drop) };
-        return refuse(crate::internal::types::HewError::ErrOom as i32);
-    }
-    {
-        // SAFETY: the fresh allocation is not yet reachable by another thread.
-        let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
-        guard.config_buf = config;
-        guard.config_drop_fn = config_drop;
-    }
-    // SAFETY: the caller supplies `child_count` readable child specs.
-    let children = unsafe { std::slice::from_raw_parts(children, child_count) };
-    let mut declarations: Vec<_> = children.iter().enumerate().collect();
-    declarations.sort_unstable_by_key(|(_, child)| child.startup_rank);
-    if declarations
-        .iter()
-        .enumerate()
-        .any(|(rank, (_, child))| child.startup_rank as usize != rank)
-    {
-        // SAFETY: failed construction owns the parent and adopted config.
-        unsafe { hew_supervisor_stop(sup) };
-        return refuse(crate::internal::types::HewError::ErrOom as i32);
-    }
-    // Register every declaration before callbacks can project a sibling role.
-    let slots = {
-        // SAFETY: construction owns the parent until publication.
-        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-        register_native_roster(&mut roster, children, &declarations, members, is_pool)
-    };
-    let Some(slots) = slots else {
-        // SAFETY: construction owns this partial roster and its config.
-        unsafe { hew_supervisor_stop(sup) };
-        return refuse(crate::internal::types::HewError::ErrOom as i32);
-    };
-    // Stable sibling roles may be used by a dependent init/start. The parent
-    // remains private until all constructors finish; its dispatch actor starts
-    // below, so it cannot race construction with a group restart.
-    // SAFETY: construction still uniquely owns the fresh supervisor.
-    unsafe { (*sup).constructing.store(true, Ordering::Release) };
-    for (declaration, child) in declarations {
-        for &index in &slots[declaration] {
-            // The initial spawn runs the adapter directly so its refusal reaches
-            // this caller instead of the restart path's discard.
-            // SAFETY: the caller supplies a writable, initially null fault slot.
-            let token = unsafe { (child.spawn)((*sup).local_pid_id, config.cast_const(), fault) };
-            // SAFETY: construction owns this parent and fresh adapter result.
-            if !unsafe { adopt_native_child(sup, index, child.role_kind, token) } {
-                // SAFETY: nothing published this supervisor's handle yet, so this
-                // teardown is unobservable; it releases the config and the
-                // children that did spawn.
-                unsafe { hew_supervisor_stop(sup) };
-                // SAFETY: the adapter already named the refusal unless it never
-                // reached one, in which case the slot is still the caller's null.
-                if unsafe { (*fault).is_null() } {
-                    return refuse(crate::internal::types::HewError::ErrOom as i32);
-                }
-                return invalid;
-            }
-        }
-    }
-    // SAFETY: every declared child occupies its slot.
-    if unsafe { hew_supervisor_start(sup) } != 0 {
-        // SAFETY: start failed before publication; teardown owns the rest.
-        unsafe { hew_supervisor_stop(sup) };
-        return refuse(crate::internal::types::HewError::ErrOom as i32);
-    }
-    // SAFETY: `hew_supervisor_new` published this allocation's token.
-    unsafe { (*sup).local_pid_id }
 }
 
 /// Read the immutable extent of a native pool from its owning roster.
@@ -1169,50 +1052,76 @@ mod tests {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn native_wiring_registers_declarations_then_constructs_dependencies_and_rolls_back() {
-        use super::{hew_supervisor_native_spawn, HewNativeChildSpec, ROLE_KIND_ACTOR};
-        static DROPS: AtomicUsize = AtomicUsize::new(0);
-        static CALLS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
-        unsafe extern "C" fn drop_config(_config: *mut c_void) {
+    mod native_wiring_fixture {
+        use super::*;
+        pub(super) static DROPS: AtomicUsize = AtomicUsize::new(0);
+        pub(super) static CALLS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+        pub(super) unsafe extern "C" fn drop_config(_config: *mut c_void) {
             DROPS.fetch_add(1, Ordering::SeqCst);
         }
-        unsafe extern "C-unwind" fn prerequisite(
+        pub(super) unsafe extern "C-unwind" fn prerequisite(
             owner: crate::lifetime::local_handles::HewLocalPidId,
             config: *const c_void,
+            result: *mut crate::lifetime::local_handles::HewLocalPidId,
             _fault: *mut *mut crate::fault::HewFault,
-        ) -> crate::lifetime::local_handles::HewLocalPidId {
-            let pin = crate::lifetime::local_handles::pin_current_supervisor(owner).unwrap();
-            // SAFETY: the pin retains the supervisor for this roster snapshot.
-            assert_eq!(unsafe { hew_supervisor_is_running(pin.supervisor()) }, 0);
-            let roster = unsafe { &(*pin.supervisor()).roster }.lock_or_recover();
-            assert_eq!(roster.child_specs.len(), 2);
-            assert_eq!(roster.child_specs[0].identity, 1);
-            assert_eq!(roster.child_specs[1].identity, 2);
-            drop(roster);
-            CALLS.lock().unwrap().push(1);
-            // SAFETY: the fixture provides its live one-byte config.
-            if unsafe { *config.cast::<u8>() } == 1 {
-                return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+            state: *mut crate::coro_state::HewCoroState,
+        ) -> *mut c_void {
+            let token = (|| {
+                let pin = crate::lifetime::local_handles::pin_current_supervisor(owner).unwrap();
+                // SAFETY: the pin retains the supervisor for this roster snapshot.
+                assert_eq!(unsafe { hew_supervisor_is_running(pin.supervisor()) }, 0);
+                let roster = unsafe { &(*pin.supervisor()).roster }.lock_or_recover();
+                assert_eq!(roster.child_specs.len(), 2);
+                assert_eq!(roster.child_specs[0].identity, 1);
+                assert_eq!(roster.child_specs[1].identity, 2);
+                drop(roster);
+                CALLS.lock().unwrap().push(1);
+                // SAFETY: the fixture provides its live one-byte config.
+                if unsafe { *config.cast::<u8>() } == 1 {
+                    return crate::lifetime::local_handles::HewLocalPidId::INVALID;
+                }
+                // SAFETY: an empty legacy actor owns no state fields or handlers.
+                let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
+                // SAFETY: successful spawn publishes the direct token.
+                unsafe { (*actor).local_pid_id }
+            })();
+            // SAFETY: the invocation owns its output and completion slots.
+            unsafe {
+                *result = token;
+                crate::coro_state::hew_coro_state_finish(state, 0);
             }
-            // SAFETY: an empty legacy actor owns no state fields or handlers.
-            let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
-            // SAFETY: successful spawn publishes the direct token.
-            unsafe { (*actor).local_pid_id }
+            std::ptr::null_mut()
         }
-        unsafe extern "C-unwind" fn dependent(
+        pub(super) unsafe extern "C-unwind" fn dependent(
             owner: crate::lifetime::local_handles::HewLocalPidId,
             _config: *const c_void,
+            result: *mut crate::lifetime::local_handles::HewLocalPidId,
             _fault: *mut *mut crate::fault::HewFault,
-        ) -> crate::lifetime::local_handles::HewLocalPidId {
-            CALLS.lock().unwrap().push(0);
-            let sibling = super::hew_supervisor_native_role_owner(owner, 1, false);
-            assert!(crate::supervisor::current_actor_role_identity(sibling).is_some());
-            // SAFETY: an empty legacy actor owns no state fields or handlers.
-            let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
-            // SAFETY: successful spawn publishes the direct token.
-            unsafe { (*actor).local_pid_id }
+            state: *mut crate::coro_state::HewCoroState,
+        ) -> *mut c_void {
+            let token = {
+                CALLS.lock().unwrap().push(0);
+                let sibling = crate::supervisor::hew_supervisor_native_role_owner(owner, 1, false);
+                assert!(crate::supervisor::current_actor_role_identity(sibling).is_some());
+                // SAFETY: an empty legacy actor owns no state fields or handlers.
+                let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
+                // SAFETY: successful spawn publishes the direct token.
+                unsafe { (*actor).local_pid_id }
+            };
+            // SAFETY: the invocation owns its output and completion slots.
+            unsafe {
+                *result = token;
+                crate::coro_state::hew_coro_state_finish(state, 0);
+            }
+            std::ptr::null_mut()
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn native_wiring_registers_declarations_then_constructs_dependencies_and_rolls_back() {
+        use super::{native_spawn_for_test, HewNativeChildSpec, ROLE_KIND_ACTOR};
+        use native_wiring_fixture::{dependent, drop_config, prerequisite, CALLS, DROPS};
         let _runtime = crate::runtime_test_guard();
         for (fail, malformed_order) in [(false, false), (true, false), (false, true)] {
             DROPS.store(0, Ordering::SeqCst);
@@ -1244,7 +1153,7 @@ mod tests {
                 let config = crate::mem::buf_try_alloc(1).cast::<u8>();
                 *config = u8::from(fail);
                 let mut fault = ptr::null_mut();
-                let token = hew_supervisor_native_spawn(
+                let token = native_spawn_for_test(
                     STRATEGY_ONE_FOR_ONE,
                     3,
                     5,
@@ -1283,7 +1192,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn invalid_native_pool_count_releases_config_without_spawning() {
-        use super::{hew_supervisor_native_spawn, HewNativeChildSpec, ROLE_KIND_ACTOR};
+        use super::{native_spawn_for_test, HewNativeChildSpec, ROLE_KIND_ACTOR};
         static DROPS: AtomicUsize = AtomicUsize::new(0);
         static SPAWNS: AtomicUsize = AtomicUsize::new(0);
         unsafe extern "C" fn drop_config(_config: *mut c_void) {
@@ -1292,10 +1201,20 @@ mod tests {
         unsafe extern "C-unwind" fn spawn_child(
             _owner: crate::lifetime::local_handles::HewLocalPidId,
             _config: *const c_void,
+            result: *mut crate::lifetime::local_handles::HewLocalPidId,
             _fault: *mut *mut crate::fault::HewFault,
-        ) -> crate::lifetime::local_handles::HewLocalPidId {
-            SPAWNS.fetch_add(1, Ordering::SeqCst);
-            crate::lifetime::local_handles::HewLocalPidId::INVALID
+            state: *mut crate::coro_state::HewCoroState,
+        ) -> *mut c_void {
+            let token = {
+                SPAWNS.fetch_add(1, Ordering::SeqCst);
+                crate::lifetime::local_handles::HewLocalPidId::INVALID
+            };
+            // SAFETY: the invocation owns its output and completion slots.
+            unsafe {
+                *result = token;
+                crate::coro_state::hew_coro_state_finish(state, 0);
+            }
+            std::ptr::null_mut()
         }
         let _runtime = crate::runtime_test_guard();
         DROPS.store(0, Ordering::SeqCst);
@@ -1318,7 +1237,7 @@ mod tests {
                 let config = crate::mem::buf_try_alloc(1).cast::<c_void>();
                 assert!(!config.is_null());
                 let mut fault = ptr::null_mut();
-                let token = hew_supervisor_native_spawn(
+                let token = native_spawn_for_test(
                     STRATEGY_SIMPLE_ONE_FOR_ONE,
                     3,
                     5,

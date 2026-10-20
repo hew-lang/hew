@@ -1,0 +1,59 @@
+import std.fs;
+import std.os;
+
+actor Ledger {
+    let label: string;
+    receive fn read() -> i64 { label.len() }
+    receive fn fail() { panic("file-backed reconstruction"); }
+}
+
+actor Checkout {
+    let backend: Ledger;
+    let size: i64;
+    init(store: Ledger, path: string) {
+        self.backend = store;
+        let input = fs.open_read(path).expect("open constructor input");
+        let data = input.read().expect("await constructor file I/O");
+        self.size = data.len();
+        assert(store.read().expect("sibling during file constructor") == 6);
+    }
+    receive fn read() -> i64 { size + backend.read().expect("retained sibling") }
+    receive fn fail() { panic("file-backed checkout reconstruction"); }
+}
+
+supervisor Backend(path: string) {
+    child checkout: Checkout { path: path } wired_to: { store: ledger };
+    child ledger: Ledger { label: "ledger" };
+}
+
+actor Frontend {
+    let backend: Backend;
+    init(store: Backend) {
+        self.backend = store;
+        assert(store.checkout.read().expect("nested constructor role") == 15);
+    }
+    receive fn read() -> i64 { backend.checkout.read().expect("nested role") }
+}
+
+supervisor Application(path: string) {
+    child frontend: Frontend wired_to: { store: backend };
+    child backend: Backend { path: path };
+}
+
+fn main() {
+    let path = f"{os.temp_dir()}/hew-supervisor-construction-{os.pid()}.bin";
+    fs.write(path, "file data").expect("write constructor input");
+    let app = spawn Application { path: path };
+    let checkout = app.backend.checkout;
+    assert(app.frontend.read().expect("initial file constructor") == 15);
+    let _ = app.backend.ledger.fail();
+    restarted(app.backend.ledger);
+    assert(checkout.read().expect("retained checkout role") == 15);
+    let _ = checkout.fail();
+    restarted(checkout);
+    assert(checkout.read().expect("repeated file constructor") == 15);
+    assert(app.frontend.read().expect("after file reconstruction") == 15);
+    stop(app); stopped(app);
+    fs.delete(path).expect("remove constructor input");
+    println("file-backed supervisor construction");
+}

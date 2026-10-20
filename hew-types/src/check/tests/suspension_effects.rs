@@ -4,6 +4,29 @@ use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
 #[test]
+fn supervisor_construction_requires_a_suspending_callable_slot() {
+    let source = r"
+        actor Worker { receive fn ping() {} }
+        supervisor Tree { child worker: Worker; }
+        fn construct() -> Tree { spawn Tree }
+        fn main() { let factory: fn[suspends]() -> Tree = construct; }
+    ";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let synchronous = source.replace("fn[suspends]()", "fn()");
+    let output = check_source(&synchronous);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert!(
+        output.errors[0]
+            .message
+            .contains("function `construct` suspends via `supervisor construction`"),
+        "{:?}",
+        output.errors
+    );
+    assert!(output.errors[0].message.contains("write `fn[suspends]`"));
+}
+
+#[test]
 fn recursive_generic_parameter_swaps_keep_finite_instances_precise() {
     let source = r#"
 fn swap<A, B>(consume first: A, consume second: B, n: i64) {

@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1652u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1655u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1655] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -6984,11 +6984,26 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
      "u32, *const HewWaker, c_int, ) -> *mut HewNativeActorWait\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_supervisor_native_spawn",
-     "{\"native\": \"fn hew_supervisor_native_spawn( c_int, c_int, c_int, *mut "
-     "c_void, Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, *const "
-     "HewNativeChildSpec, usize, i64, *mut *mut HewFault, ) -> "
-     "HewLocalPidId\"}",
+    {"hew_supervisor_native_spawn_free",
+     "{\"native\": \"fn hew_supervisor_native_spawn_free( *mut "
+     "HewSupervisorConstruction)\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_spawn_new",
+     "{\"native\": \"fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, "
+     "*mut c_void, Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, *const "
+     "HewNativeChildSpec, usize, i64, *const HewWaker, ) -> *mut "
+     "HewSupervisorConstruction\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_spawn_poll",
+     "{\"native\": \"fn hew_supervisor_native_spawn_poll( *mut "
+     "HewSupervisorConstruction, c_int, ) -> c_int\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_supervisor_native_spawn_take",
+     "{\"native\": \"fn hew_supervisor_native_spawn_take( *mut "
+     "HewSupervisorConstruction, *mut *mut HewFault, ) -> HewLocalPidId\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_nested_get",

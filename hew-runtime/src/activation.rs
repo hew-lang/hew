@@ -567,65 +567,12 @@ unsafe fn resume_suspended_activation(actor: *mut HewActor) {
         }
     }
 }
-/// A queue-to-activation handoff retains the original exclusive owner and
-/// shutdown claim until the joined host callback has completely returned.
-#[cfg(not(target_arch = "wasm32"))]
-struct HostedSupervisorActivation {
-    ownership: ActivationOwnership<'static>,
-    runtime: *const crate::runtime::RuntimeInner,
-    handoff: crate::scheduler::ActivationClaim,
-}
-
-// SAFETY: the exclusive activation guard retains the actor allocation across
-// threads. The handoff claim prevents runtime cleanup until this joined job
-// finishes, and the callback installs that exact runtime before using it.
-#[cfg(not(target_arch = "wasm32"))]
-unsafe impl Send for HostedSupervisorActivation {}
-
-#[cfg(not(target_arch = "wasm32"))]
-unsafe extern "C" fn run_hosted_supervisor_activation(data: *mut c_void) {
-    // SAFETY: successful pool admission transfers exactly this boxed job.
-    let job = unsafe { Box::from_raw(data.cast::<HostedSupervisorActivation>()) };
-    // SAFETY: the handoff claim retains this runtime until after guard restore.
-    let runtime = unsafe { crate::runtime::enter(&*job.runtime) };
-    let HostedSupervisorActivation {
-        ownership, handoff, ..
-    } = *job;
-    let actor = std::ptr::from_ref(ownership.actor).cast_mut();
-    activate_owned_actor(actor, ownership);
-    drop(runtime);
-    drop(handoff);
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn host_supervisor_activation(actor: *mut HewActor, ownership: ActivationOwnership<'static>) {
-    let runtime = crate::runtime::rt_current();
-    let job = Box::new(HostedSupervisorActivation {
-        ownership,
-        runtime: std::ptr::from_ref(runtime),
-        handoff: crate::scheduler::ActivationClaim::new(),
-    });
-    let job = Box::into_raw(job);
-    // SAFETY: the joined callback consumes this exact box; its activation guard
-    // and handoff claim retain every runtime input until the callback returns.
-    let status = unsafe {
-        crate::blocking_pool::submit_on_worker(
-            runtime.blocking_pool(),
-            run_hosted_supervisor_activation,
-            job.cast(),
-        )
-    };
-    if status != 0 {
-        // SAFETY: refused admission neither queued nor invoked this job.
-        let job = unsafe { Box::from_raw(job) };
-        // SAFETY: the returned job still owns this supervisor activation.
-        unsafe { crate::supervisor::refuse_hosted_activation(actor) };
-        drop(job);
-    }
-}
-
 /// Activate an actor: CAS state to `Running`, drain messages up to budget,
 /// then transition back to `Idle` or re-enqueue as `Runnable`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "actor activation state machine with multiple CAS transitions"
+)]
 pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
     if actor.is_null() {
         return;
@@ -660,22 +607,6 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
     // SAFETY: dispatch_active is now published and keeps free from finalizing.
     unsafe { release_scheduler_queue_ref(actor) };
 
-    #[cfg(not(target_arch = "wasm32"))]
-    if a.activation_host == crate::actor::ActivationHost::Supervisor {
-        host_supervisor_activation(actor, activation_ownership);
-        return;
-    }
-    activate_owned_actor(actor, activation_ownership);
-}
-
-/// Run the original activation transaction after its exclusive owner is claimed.
-#[expect(
-    clippy::too_many_lines,
-    reason = "actor activation state machine with multiple CAS transitions"
-)]
-fn activate_owned_actor(actor: *mut HewActor, activation_ownership: ActivationOwnership<'_>) {
-    // SAFETY: activation ownership retains the allocation throughout this body.
-    let a = unsafe { &*actor };
     // Mark the activation owned BEFORE the state load/CAS so `dispatch_active`
     // is already
     // published the instant this actor can become `Running` and thus

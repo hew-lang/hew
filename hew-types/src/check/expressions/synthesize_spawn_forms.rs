@@ -2093,6 +2093,9 @@ impl Checker {
                 .type_def_at(&name)
                 .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
             {
+                // Initial construction may await child callbacks and rollback,
+                // independently of any particular child's inferred effects.
+                self.mark_body_suspends("supervisor construction");
                 "supervisor"
             } else {
                 "actor"

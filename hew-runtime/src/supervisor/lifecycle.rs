@@ -41,6 +41,12 @@ unsafe fn settle_stopped_child_event(kind: HewSysMsg, data: *mut c_void, data_si
                 // SAFETY: the privileged system envelope has this typed size.
                 Some(unsafe { (*data.cast::<ChildSupervisorEscalation>()).fault_record })
             }
+            HewSysMsg::DelayedRestart
+                if data_size >= std::mem::size_of::<DelayedRestartEvent>() =>
+            {
+                // SAFETY: the privileged system envelope has this typed size.
+                Some(unsafe { (*data.cast::<DelayedRestartEvent>()).fault_record })
+            }
             _ => None,
         }
     };
@@ -86,6 +92,61 @@ unsafe fn dispatch_child_supervisor_escalated(
     wake_restart_waiters(sup);
 }
 
+/// Keep the existing supervision policy serialized while a constructor waits.
+unsafe fn defer_construction_event(
+    sup: *mut HewSupervisor,
+    kind: HewSysMsg,
+    data: *mut c_void,
+    data_size: usize,
+) -> bool {
+    // SAFETY: dispatch retains the parent and its envelope; every payload read
+    // below checks the corresponding typed size before the copied handoff.
+    unsafe {
+        // A resumed constructor still owns this supervisor turn's policy. Events
+        // queued before its first suspension join the same typed phase buffer.
+        if (*sup).constructing.load(Ordering::Acquire) {
+            let event = match kind {
+                HewSysMsg::ChildStopped | HewSysMsg::ChildCrashed
+                    if !data.is_null() && data_size >= std::mem::size_of::<ChildEvent>() =>
+                {
+                    Some(ConstructionEvent::Actor(*data.cast::<ChildEvent>()))
+                }
+                HewSysMsg::ChildSupervisorEscalated
+                    if !data.is_null()
+                        && data_size >= std::mem::size_of::<ChildSupervisorEscalation>() =>
+                {
+                    Some(ConstructionEvent::Escalated(
+                        *data.cast::<ChildSupervisorEscalation>(),
+                    ))
+                }
+                HewSysMsg::ChildSupervisorStopped
+                    if !data.is_null()
+                        && data_size >= std::mem::size_of::<ChildSupervisorStopped>() =>
+                {
+                    Some(ConstructionEvent::Stopped(
+                        *data.cast::<ChildSupervisorStopped>(),
+                    ))
+                }
+                HewSysMsg::DelayedRestart
+                    if !data.is_null()
+                        && data_size >= std::mem::size_of::<DelayedRestartEvent>() =>
+                {
+                    Some(ConstructionEvent::Delayed(
+                        *data.cast::<DelayedRestartEvent>(),
+                    ))
+                }
+                _ => None,
+            };
+            if let Some(event) = event {
+                admit_child_event(sup, event);
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
 pub(crate) unsafe fn supervisor_sys_dispatch_impl(
     _ctx: *mut crate::execution_context::HewExecutionContext,
     state: *mut c_void,
@@ -113,6 +174,11 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
     if unsafe { (*sup).running.load(Ordering::Acquire) } == 0 {
         // SAFETY: this dispatch owns the validated system envelope.
         unsafe { settle_stopped_child_event(kind, data, data_size) };
+        return;
+    }
+
+    // SAFETY: this dispatch retains both parent and validated typed envelope.
+    if unsafe { defer_construction_event(sup, kind, data, data_size) } {
         return;
     }
 
@@ -458,6 +524,12 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int {
     cabi_guard!(sup.is_null(), -1);
+    // Cancellation that wins before this publication point refuses start.
+    // Later cancellation is an ordinary stop of the published supervisor.
+    // SAFETY: the caller retains the fresh parent through publication.
+    if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+        return -1;
+    }
     // SAFETY: caller guarantees sup is valid and start is a construction edge.
     unsafe { (*sup).running.store(1, Ordering::Release) };
 
@@ -485,7 +557,6 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // `self_actor` slot is still null.
     unsafe {
         actor::hew_actor_set_sys_dispatch(self_actor, Some(supervisor_sys_dispatch));
-        (*self_actor).activation_host = crate::actor::ActivationHost::Supervisor;
     }
 
     // Override the actor's state to point to our supervisor struct directly
@@ -513,19 +584,6 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: start retains both allocations until buffered admission finishes.
     unsafe { flush_construction_events(sup, self_actor) };
     0
-}
-
-/// Close a supervisor whose serialized activation could not reach its host.
-/// # Safety
-/// The caller owns this supervisor actor's activation throughout the refusal.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) unsafe fn refuse_hosted_activation(actor: *mut HewActor) {
-    // SAFETY: this hosting fact is installed only on the supervisor's own actor.
-    let sup = unsafe { (*actor).state.cast::<HewSupervisor>() };
-    request_supervisor_shutdown(sup);
-    wake_restart_waiters(sup);
-    // SAFETY: activation ownership retains the actor through terminal cleanup.
-    unsafe { actor::hew_actor_trap(actor, crate::internal::types::HewError::ErrOom as i32) };
 }
 
 /// Notify the supervisor that a supervised child ACTOR has stopped or crashed.
@@ -685,9 +743,9 @@ pub(crate) unsafe fn finish_claimed_supervisor(
     }
     run_supervisor_teardown_hook_for_test();
     // SAFETY: teardown ownership is uniquely claimed by the caller.
-    unsafe { stop_supervisor_owned(sup, &teardown) };
+    let complete = unsafe { stop_supervisor_owned(sup, &teardown) };
     drop(teardown);
-    true
+    complete
 }
 
 /// Ownership transferred from a nonblocking supervisor request to the
@@ -723,21 +781,6 @@ pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
     preclaimed: bool,
 ) {
     request_supervisor_shutdown(sup);
-    // SAFETY: the caller's teardown lease keeps runtime cleanup from reclaiming
-    // the live allocation or its runtime authority during access closure.
-    if unsafe { close_supervisor_access(sup, SUPERVISOR_PIN_DRAIN_TIMEOUT) }.is_none() {
-        // A recursively detached child no longer has a parent-owned root. Hand
-        // every still-live top-level allocation back to canonical cleanup before
-        // this lease can release the cleanup barrier.
-        // SAFETY: access closure failed closed, so `sup` remains allocated.
-        if unsafe { (*sup).parent.is_null() } {
-            // SAFETY: the still-live allocation has no parent root and remains
-            // valid until canonical cleanup consumes the restored root.
-            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
-        }
-        set_last_error("hew_supervisor_stop: handle pins did not drain");
-        return;
-    }
     if !preclaimed && !claim_supervisor_teardown(sup) {
         // Another owner holds teardown. One that handed the allocation back
         // to canonical cleanup keeps its claim, and the caller may have taken
@@ -750,6 +793,14 @@ pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
             // cleanup consumes the restored root.
             unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
         }
+        return;
+    }
+    // Retire the public route before the teardown handoff, while leaving pin
+    // reclamation to the owner after its constructor cleanup has completed.
+    // SAFETY: the claimed teardown owner retains this parent through closure.
+    if unsafe { begin_supervisor_access_close(sup) }.is_none() {
+        // SAFETY: closure failed without consuming this claimed allocation.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
         return;
     }
     // SAFETY: teardown ownership was claimed above and remains unique.
@@ -885,17 +936,6 @@ pub(crate) fn stop_local_supervisor(
         unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
     }
     drop(pin);
-    if !defer && !control.wait_for_pins(SUPERVISOR_PIN_DRAIN_TIMEOUT) {
-        // Restore canonical cleanup ownership for a top-level allocation whose
-        // operation could not safely reach reclamation.
-        if top_level {
-            // SAFETY: timeout is fail-closed, so `sup` remains allocated.
-            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
-        }
-        release_supervisor_teardown(sup);
-        set_last_error("supervisor token stop: handle pins did not drain");
-        return 2;
-    }
     // Reclamation removes the registry's final control reference. Do not keep
     // the token-stop owner's local reference alive across the teardown lease:
     // runtime cleanup may proceed as soon as that lease is relinquished and

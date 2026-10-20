@@ -57,7 +57,6 @@ fn idle_actor(mailbox: *mut HewMailbox) -> *mut HewActor {
         terminate_called: AtomicBool::new(false),
         terminate_finished: AtomicBool::new(false),
         dispatch_active: AtomicBool::new(false),
-        activation_host: crate::actor::ActivationHost::Scheduler,
         error_code: AtomicI32::new(0),
         supervisor: ptr::null_mut(),
         supervisor_child_index: -1,

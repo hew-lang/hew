@@ -13,7 +13,7 @@ pub(crate) enum RestartChildRole {
 }
 
 impl RestartChildRole {
-    fn identity(self) -> u64 {
+    pub(super) fn identity(self) -> u64 {
         match self {
             Self::Actor(identity) | Self::Supervisor { identity, .. } => identity,
         }
@@ -82,7 +82,7 @@ unsafe fn restart_roles_for_strategy(
 ///
 /// # Safety
 /// `sup` remains live throughout the restart and its callbacks.
-unsafe fn restart_children_for_strategy(
+pub(super) unsafe fn restart_children_for_strategy(
     sup: *mut HewSupervisor,
     strategy: c_int,
     failed: RestartChildRole,
@@ -131,6 +131,11 @@ unsafe fn advance_group_restart(
     strategy: c_int,
     mut group: PendingGroupRestart,
 ) -> Option<(bool, Vec<(RestartChildRole, FaultRecord)>)> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if group.construction.is_some() {
+        // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+        return unsafe { advance_native_construction(sup, group) };
+    }
     let mut roles = Vec::new();
     let mut restartable = true;
     for &(failed, _) in &group.failures {
@@ -158,6 +163,18 @@ unsafe fn advance_group_restart(
     spawn_deferred_restart_free(deferred);
     group.release_finished();
     if group.stopping.is_empty() {
+        #[cfg(not(target_arch = "wasm32"))]
+        // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+        if !unsafe { &(*sup).roster }
+            .lock_or_recover()
+            .native_startup_order
+            .is_empty()
+        {
+            // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+            group.construction = Some(unsafe { native::NativeReconstruction::new(sup, &roles) });
+            // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+            return unsafe { advance_native_construction(sup, group) };
+        }
         // SAFETY: the caller keeps `sup` live through the spawns.
         let restarted = unsafe { restart_group(sup, &roles) };
         return Some((restarted, group.failures));
@@ -169,6 +186,35 @@ unsafe fn advance_group_restart(
         .lock_or_recover()
         .pending_group_restart = Some(group);
     None
+}
+
+/// Resume the construction phase of the same pending group transaction.
+#[cfg(not(target_arch = "wasm32"))]
+unsafe fn advance_native_construction(
+    sup: *mut HewSupervisor,
+    mut group: PendingGroupRestart,
+) -> Option<(bool, Vec<(RestartChildRole, FaultRecord)>)> {
+    group.readiness.clear();
+    // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+    let complete = unsafe {
+        group
+            .construction
+            .as_mut()
+            .expect("construction phase")
+            .poll(sup, &group.waker)
+    };
+    let Some(complete) = complete else {
+        // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+        unsafe { &(*sup).roster }
+            .lock_or_recover()
+            .pending_group_restart = Some(group);
+        return None;
+    };
+    group.construction.take();
+    // Release deferred notifications only after the complete construction wave.
+    // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
+    unsafe { flush_construction_events(sup, (*sup).self_actor) };
+    Some((complete, group.failures))
 }
 
 /// Stop the incarnation occupying one role of a group restart and hand it to
@@ -274,24 +320,8 @@ fn stop_detached_nested_supervisor(
 /// # Safety
 /// `sup` remains live throughout the spawns.
 unsafe fn restart_group(sup: *mut HewSupervisor, roles: &[RestartChildRole]) -> bool {
-    let mut roles = roles.to_vec();
-    let ordered;
-    {
-        // SAFETY: the caller keeps the supervisor live through this snapshot.
-        let roster = unsafe { &(*sup).roster }.lock_or_recover();
-        ordered = !roster.native_startup_order.is_empty();
-        if ordered {
-            roles.sort_unstable_by_key(|role| {
-                roster
-                    .native_startup_order
-                    .iter()
-                    .position(|identity| *identity == role.identity())
-                    .unwrap_or(usize::MAX)
-            });
-        }
-    }
     let mut complete = true;
-    for role in roles {
+    for &role in roles {
         complete &= match role {
             RestartChildRole::Actor(identity) => {
                 // SAFETY: the stable identity refuses any concurrent retirement.
@@ -302,9 +332,6 @@ unsafe fn restart_group(sup: *mut HewSupervisor, roles: &[RestartChildRole]) -> 
                 !unsafe { restart_child_supervisor_from_spec(sup, index) }.is_null()
             }
         };
-        if ordered && !complete {
-            break;
-        }
     }
     complete
 }

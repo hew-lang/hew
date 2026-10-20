@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn supervisor_stop_request_observers_wait_through_config_cleanup() {
-        use crate::supervisor::{hew_supervisor_native_spawn, hew_supervisor_stop_native};
+        use crate::supervisor::{hew_supervisor_stop_native, native_spawn_for_test};
         use std::ffi::c_void;
 
         struct PausedConfigDrop {
@@ -624,7 +624,7 @@ mod tests {
                 drops: drops.clone(),
             });
             let mut fault = std::ptr::null_mut();
-            let token = hew_supervisor_native_spawn(
+            let token = native_spawn_for_test(
                 0,
                 3,
                 5,
@@ -807,7 +807,7 @@ mod tests {
     )]
     fn parent_closed_waits_for_a_concurrent_nested_cleanup_owner() {
         use crate::supervisor::{
-            hew_local_pid_supervisor_stop, hew_supervisor_native_spawn, HewNativeChildSpec,
+            hew_local_pid_supervisor_stop, native_spawn_for_test, HewNativeChildSpec,
         };
         use std::ffi::c_void;
 
@@ -833,10 +833,20 @@ mod tests {
         unsafe extern "C-unwind" fn adopt_child(
             _owner: local_handles::HewLocalPidId,
             config: *const c_void,
+            result: *mut crate::lifetime::local_handles::HewLocalPidId,
             _fault: *mut *mut crate::fault::HewFault,
-        ) -> local_handles::HewLocalPidId {
-            // SAFETY: this initial-spawn adapter transfers the prepared child once.
-            unsafe { (*config.cast::<ParentConfig>()).child }
+            state: *mut crate::coro_state::HewCoroState,
+        ) -> *mut c_void {
+            let token = {
+                // SAFETY: this initial-spawn adapter transfers the prepared child once.
+                unsafe { (*config.cast::<ParentConfig>()).child }
+            };
+            // SAFETY: the invocation owns its output and completion slots.
+            unsafe {
+                *result = token;
+                crate::coro_state::hew_coro_state_finish(state, 0);
+            }
+            std::ptr::null_mut()
         }
 
         let _rt = crate::runtime_test_guard();
@@ -853,7 +863,7 @@ mod tests {
                 release: release.clone(),
             });
             let mut fault = std::ptr::null_mut();
-            let child = hew_supervisor_native_spawn(
+            let child = native_spawn_for_test(
                 0,
                 3,
                 5,
@@ -880,7 +890,7 @@ mod tests {
                 stop_ns: -1,
                 startup_rank: 0,
             }];
-            let parent = hew_supervisor_native_spawn(
+            let parent = native_spawn_for_test(
                 0,
                 3,
                 5,

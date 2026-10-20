@@ -1010,16 +1010,6 @@ pub const HEW_PRIORITY_LOW: i32 = 2;
 /// drop function that releases.
 pub type HewStateCloneFn = unsafe extern "C-unwind" fn(*const c_void) -> *mut c_void;
 
-/// The runtime owner selects where an entire serialized activation executes.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(u8)]
-pub(crate) enum ActivationHost {
-    #[default]
-    Scheduler,
-    /// Supervision may synchronously host constructors that await other actors.
-    Supervisor,
-}
-
 /// Actor struct layout. MUST match the C definition exactly.
 ///
 /// The `sched_link_next` field (intrusive MPSC next pointer) MUST be the
@@ -1136,9 +1126,6 @@ pub struct HewActor {
     /// scheduler is cooperative single-threaded, so no concurrent free can race
     /// an activation.
     pub dispatch_active: AtomicBool,
-
-    /// Immutable after publication; the activation owner consumes this fact.
-    pub(crate) activation_host: ActivationHost,
 
     /// Error code set by `hew_actor_trap` (0 = no error).
     pub error_code: AtomicI32,

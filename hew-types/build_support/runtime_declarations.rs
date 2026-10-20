@@ -252,6 +252,14 @@ fn validate_borrowed_bytes(
     has_bytes
 }
 
+fn runtime_value_kind(ty: &str) -> &str {
+    match ty {
+        "Instant" => "I64",
+        "Timestamp" => "BuiltinNominal(crate::BuiltinType::Timestamp)",
+        _ => ty,
+    }
+}
+
 fn render_direct(
     module: &str,
     receiver: &str,
@@ -333,7 +341,7 @@ fn render_direct(
         .map(|p| {
             format!(
                 "A {{ ty: K::{}, effect: E::{} }}",
-                if *p == "Instant" { "I64" } else { p },
+                runtime_value_kind(p),
                 if *p == "Bytes" { "Borrow" } else { "Copy" }
             )
         })
@@ -347,11 +355,7 @@ fn render_direct(
     } else {
         String::new()
     };
-    let result_kind = match result {
-        "Instant" => "I64",
-        "Timestamp" => "BuiltinNominal(crate::BuiltinType::Timestamp)",
-        _ => result,
-    };
+    let result_kind = runtime_value_kind(result);
     let rust = format!("DeclaredDirectRuntimeMethod {{ signature: super::CanonicalStdlibExternSignature {{ module: {module:?}, signature_key: {signature_key:?}, symbol: {symbol:?}, family: Some(RuntimeCallFamily::{family}), params: &[{logical}], result: super::CanonicalExternTy::{result} }}, params: &[{physical}], target: DeclaredRuntimeTarget::Native, row: RuntimeOpRow {{ authority: super::RuntimeAuthority::{authority}, symbol: {symbol:?}, contract: Some(RuntimeSemanticContract {{ arguments: &[{arguments}], result: R::BitCopy(K::{result_kind}), failures: &[] }}), staging: RuntimeStaging::Declared, abi_shape: RuntimeCallAbiShape::Other, physical: RuntimePhysicalForm::Direct, c_return: RuntimeCReturn::{c_return} }} }}");
     (
         family.to_ascii_uppercase(),

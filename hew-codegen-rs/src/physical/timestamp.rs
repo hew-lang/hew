@@ -86,6 +86,10 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             (i128::from(i64::MIN), i128::from(i64::MAX))
         };
         let wide = exact.get_type();
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "LLVM i128 constants use two low-to-high u64 limbs"
+        )]
         let constant = |value: i128| {
             let bits = value.cast_unsigned();
             wide.const_int_arbitrary_precision(&[bits as u64, (bits >> 64) as u64])
@@ -133,6 +137,16 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 "timestamp",
             );
         }
+        let pair = self.normalized_timestamp_value(exact, result)?;
+        self.emit_checked_choice(overflow, pair, result, normal, failure, "timestamp")
+    }
+
+    fn normalized_timestamp_value(
+        &self,
+        exact: IntValue<'ctx>,
+        result: StorageId,
+    ) -> CodegenResult<StructValue<'ctx>> {
+        let wide = exact.get_type();
         let billion = wide.const_int(1_000_000_000, false);
         let quotient = self
             .builder
@@ -194,6 +208,6 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             .build_insert_value(pair, nanos, 1, "timestamp.result")
             .llvm_ctx("store timestamp fraction")?
             .into_struct_value();
-        self.emit_checked_choice(overflow, pair, result, normal, failure, "timestamp")
+        Ok(pair)
     }
 }

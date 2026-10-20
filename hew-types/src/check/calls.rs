@@ -1586,6 +1586,17 @@ impl Checker {
             .map(|declaration| self.source_call_target(declaration))
     }
 
+    /// Select a static runtime method through its checked declaration, including
+    /// the same canonical source provenance required by receiver methods.
+    fn associated_runtime_target_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::RuntimeCallFamily> {
+        let sig = self.fn_sig(signature_key).filter(|sig| sig.associated)?;
+        let spec = sig.extern_symbol.as_ref()?;
+        self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
+    }
+
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1609,16 +1620,8 @@ impl Checker {
         // Associated runtime methods use the same checked declaration and
         // provenance contract as receiver methods. No synthetic callee spelling
         // is needed merely because a method has no receiver.
-        if let Some(sig) = self.fn_sig(signature_key).filter(|sig| sig.associated) {
-            if let Some(spec) = &sig.extern_symbol {
-                if let Some(family) = self.canonical_std_io_runtime_method_family(
-                    signature_key,
-                    &spec.template.raw,
-                    sig,
-                ) {
-                    return CallTarget::Runtime(family);
-                }
-            }
+        if let Some(family) = self.associated_runtime_target_for_signature(signature_key) {
+            return CallTarget::Runtime(family);
         }
         // Ordinary associated methods retain their selected source identity.
         if !self.fn_def_spans.contains_key(signature_key)

@@ -370,7 +370,7 @@ pub enum DataKind<A, V> {
         value: ResolvedTy,
     },
     /// A normalized Unix-seconds/nanoseconds pair. The wire sequence has
-    /// exactly two fields and rejects fractions outside 0..1_000_000_000.
+    /// exactly two fields and rejects fractions outside `0..1_000_000_000`.
     Timestamp {
         shape: A,
         fields: Vec<ResolvedTy>,

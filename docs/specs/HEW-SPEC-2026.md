@@ -432,8 +432,8 @@ language contracts:
   stream over a pipe, device or terminal, are not select sources yet
   (§6.4.5).
 - Native supervision supports declared children and pools of them, with a checked
-  runtime `count:` expression. Sibling wiring and parts of the shutdown-deadline
-  contract remain incomplete (§5).
+  runtime `count:` expression. Parts of the shutdown-deadline contract remain
+  incomplete (§5).
 - Captured WASI execution can still expose an internal trap tag as its exit
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
 - Resource-close checking covers inherent methods; trait-method checking has
@@ -6348,6 +6348,23 @@ fn main() {
   - `wired_to: { <param>: <sibling>, ... }` (optional) — passes a sibling
     child's handle to this child's init param.
 - Child actor types must be declared before the supervisor.
+
+**Sibling wiring (normative).** A `wired_to` key names an actor init
+parameter; its value names a sibling declared in the same supervisor.
+Explicit keys, wired keys and defaults together bind the ordinary actor
+construction arguments. A key cannot be supplied twice, including once
+explicitly and once through wiring. The sibling's complete instantiated role
+type must match the parameter type. Unknown names, self-wiring and dependency
+cycles are compile-time errors.
+
+Children start after their wired prerequisites, with declaration order breaking
+ties. Forward sibling references are allowed. The argument is an ordinary
+stable role: retaining it follows the sibling's current incarnation after a
+restart. A dependent's own restart reruns init from its declaration and retained
+supervisor configuration. A group reconstruction applies the same startup order
+to its members. Restart-group membership and reverse-declaration shutdown order
+remain defined by the supervisor strategy. Wiring is a construction dependency;
+it adds no ongoing health cascade or cleanup-lifetime guarantee.
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
 beside `restart:` and `stop:` in the child's clause namespace, and the

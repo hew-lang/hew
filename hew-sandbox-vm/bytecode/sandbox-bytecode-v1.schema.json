@@ -878,6 +878,11 @@
         "window_secs": {
           "$ref": "#/$defs/id"
         },
+        "startup_order": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/id" }
+        },
         "children": {
           "type": "array",
           "items": {
@@ -894,6 +899,11 @@
             "properties": {
               "name": {
                 "type": "string"
+              },
+              "dependencies": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": { "$ref": "#/$defs/id" }
               },
               "role": {
                 "oneOf": [
@@ -928,6 +938,9 @@
               },
               "stop_config": {
                 "$ref": "#/$defs/id"
+              },
+              "is_pool": {
+                "type": "boolean"
               },
               "pool_count": {
                 "$ref": "#/$defs/id"

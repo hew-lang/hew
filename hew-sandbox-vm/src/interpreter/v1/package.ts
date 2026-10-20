@@ -660,11 +660,13 @@ export interface ActorShape {
 
 export interface SupervisorShape {
   id: number;
+  startup_order?: number[];
   strategy: string;
   max_restarts: number;
   window_secs: number;
   children: Array<{
     name: string;
+    dependencies?: number[];
     role: { actor: number } | { supervisor: number };
     restart: string;
     stop_ns?: number | null;

@@ -265,6 +265,34 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
           };
         timerResources.add(operation.resource);
       }
+      if (
+        term.op === "actor.call" &&
+        term.operation.op === "supervisor_spawn"
+      ) {
+        const id = term.operation.supervisor;
+        const supervisor = pkg.supervisors?.find((layout) => layout.id === id);
+        const config =
+          term.args.length -
+          (supervisor?.children.some((child) => child.is_pool) ? 1 : 0);
+        if (
+          !supervisor ||
+          config < 0 ||
+          supervisor.children.some((child) => {
+            const params = pkg.functions.find(
+              (fn) => fn.id === child.spawn,
+            )?.params;
+            return !params || ![config, config + 1].includes(params.length);
+          })
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.supervisor_constructor",
+            capability: null,
+            message:
+              "supervisor constructor signature does not match its config",
+            span: null,
+          };
+      }
       if (term.op === "suspend") {
         const mandatoryClose = (pkg.resources ?? []).some(
           (resource) => resource.close === function_.id,
@@ -369,6 +397,70 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     if (actor.exit != null || actor.down != null)
       return unavailable("actor.local_observation");
     if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");
+  }
+
+  for (const supervisor of pkg.supervisors ?? []) {
+    const order =
+      supervisor.startup_order === undefined
+        ? supervisor.children.map((_child, index) => index)
+        : supervisor.startup_order;
+    if (
+      !Array.isArray(order) ||
+      supervisor.children.some(
+        (child) =>
+          child.dependencies !== undefined &&
+          (!Array.isArray(child.dependencies) ||
+            new Set(child.dependencies).size !== child.dependencies.length),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_startup_order",
+        capability: null,
+        message:
+          "supervisor startup order and dependencies must be arrays of unique children",
+        span: null,
+      };
+    const ranks = new Map(order.map((child, rank) => [child, rank]));
+    if (
+      order.length !== supervisor.children.length ||
+      ranks.size !== order.length ||
+      order.some(
+        (child) =>
+          !Number.isInteger(child) ||
+          child < 0 ||
+          child >= supervisor.children.length,
+      ) ||
+      supervisor.children.some((child, index) =>
+        (child.dependencies ?? []).some(
+          (dependency) =>
+            !Number.isInteger(dependency) ||
+            dependency < 0 ||
+            !ranks.has(dependency) ||
+            ranks.get(dependency)! >= ranks.get(index)!,
+        ),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_startup_order",
+        capability: null,
+        message:
+          "supervisor startup order must precede each declared dependency",
+        span: null,
+      };
+    if (
+      supervisor.children.some(
+        (child) => !pkg.functions.some((fn) => fn.id === child.spawn),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_constructor",
+        capability: null,
+        message: "supervisor child has no constructor callable",
+        span: null,
+      };
   }
 
   for (const entry of pkg.runtime_families) {

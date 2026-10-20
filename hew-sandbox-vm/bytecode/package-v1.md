@@ -264,6 +264,19 @@ accident.
 The `actors` table projects SIR state seats, lifecycle callables, receive
 members and mailbox policy. `supervisors` projects declared children and their
 spawn callables; a child role resolves its current incarnation on every use.
+The optional `startup_order` lists child declaration indices in the compiler's
+construction order. Each child's optional `dependencies` lists its prerequisite
+declarations; the loader checks that the supplied order places them first.
+Restart groups restrict this order to their existing members, while shutdown
+retains reverse declaration order.
+
+A current child constructor takes the owning supervisor role followed by the
+borrowed configuration parameters. Earlier v1 packages have config-only
+constructors and omit startup/dependency fields. They retain declaration-order
+construction. The VM distinguishes the two callable ABIs by their actual
+parameter counts against the supplied config; any other arity is invalid.
+A pending constructor remains owned by its supervisor until it completes or
+cancellation drains it, before child/configuration cleanup proceeds.
 
 An `actor_state` place reaches the `environment` value's field. A parked turn
 retains that state receiver and its activation stack; a reply queues its resume

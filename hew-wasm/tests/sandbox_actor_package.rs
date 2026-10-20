@@ -248,6 +248,53 @@ fn main() {
 }
 
 #[test]
+fn wired_supervisors_keep_sibling_roles_and_declaration_restart_membership() {
+    for case in [
+        "supervisor-wired-sibling-restart",
+        "supervisor-wired-declaration-restarts",
+        "supervisor-wired-nested-prerequisite",
+        "supervisor-wired-declaration-shutdown",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_construction_cancellation_drains_before_recovery() {
+    for case in [
+        "supervisor-wired-construction-cancel",
+        "supervisor-wired-stop-during-reconstruction",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_construction_preserves_caught_prerequisite_faults() {
+    for case in [
+        "supervisor-wired-caught-init-crash",
+        "supervisor-wired-caught-start-crash",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_failed_init_rolls_back_a_caught_prerequisite_fault() {
+    let trace = execute_expected(
+        include_str!(
+            "../../tests/core-acceptance/cases/supervisor-wired-caught-crash-rollback.hew"
+        ),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "caught\n");
+    assert_eq!(
+        trace["final_state"]["runtime_failures"][0]["message"],
+        "dependent init failed"
+    );
+}
+
+#[test]
 fn supervisor_children_execute_their_declared_spawn_functions() {
     let trace = execute(include_str!(
         "../../examples/playground/concurrency/supervisor.hew"

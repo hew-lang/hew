@@ -239,11 +239,15 @@ pub struct Supervisor {
     pub max_restarts: u32,
     pub window_secs: u32,
     pub children: Vec<SupervisorChild>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub startup_order: Vec<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SupervisorChild {
     pub name: String,
+    #[serde(default)]
+    pub dependencies: Vec<usize>,
     /// The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
     pub role: serde_json::Value,
     pub restart: String,
@@ -966,18 +970,40 @@ impl<'m> Walker<'m> {
             .supervisors
             .iter()
             .map(|supervisor| {
+                let hew_sir::SemSupervisor {
+                    id,
+                    declaration: _,
+                    handle_ty: _,
+                    interceptor_chain: _,
+                    config: _,
+                    strategy,
+                    max_restarts,
+                    window_secs,
+                    children,
+                    startup_order,
+                } = supervisor;
                 Ok(Supervisor {
-                    id: supervisor.id.0,
-                    strategy: strategy_name(supervisor.strategy).to_string(),
-                    max_restarts: supervisor.max_restarts,
-                    window_secs: supervisor.window_secs,
-                    children: supervisor
-                        .children
+                    id: id.0,
+                    strategy: strategy_name(*strategy).to_string(),
+                    max_restarts: *max_restarts,
+                    window_secs: *window_secs,
+                    startup_order: startup_order.clone(),
+                    children: children
                         .iter()
                         .map(|child| {
+                            let hew_sir::SemSupervisorChild {
+                                name,
+                                dependencies,
+                                role,
+                                restart,
+                                stop_deadline,
+                                pool_count,
+                                spawn,
+                            } = child;
                             Ok(SupervisorChild {
-                                name: child.name.clone(),
-                                role: match child.role {
+                                name: name.clone(),
+                                dependencies: dependencies.clone(),
+                                role: match role {
                                     hew_sir::SemSupervisedRole::Actor(actor) => {
                                         serde_json::json!({ "actor": actor.0 })
                                     }
@@ -985,17 +1011,17 @@ impl<'m> Walker<'m> {
                                         serde_json::json!({ "supervisor": supervisor.0 })
                                     }
                                 },
-                                restart: restart_name(child.restart).to_string(),
-                                stop_ns: match child.stop_deadline {
+                                restart: restart_name(*restart).to_string(),
+                                stop_ns: match *stop_deadline {
                                     hew_sir::SemStopDeadline::Literal(ns) if ns >= 0 => Some(ns),
                                     _ => None,
                                 },
-                                stop_config: match child.stop_deadline {
+                                stop_config: match *stop_deadline {
                                     hew_sir::SemStopDeadline::Config(index) => Some(index),
                                     _ => None,
                                 },
-                                is_pool: child.pool_count.is_some(),
-                                spawn: self.function_id(child.spawn)?,
+                                is_pool: pool_count.is_some(),
+                                spawn: self.function_id(*spawn)?,
                             })
                         })
                         .collect::<Result<Vec<_>, EmitError>>()?,

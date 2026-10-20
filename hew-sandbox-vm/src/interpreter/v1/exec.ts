@@ -221,6 +221,7 @@ interface SupervisorInstance {
   offsets: number[];
   recovering: Set<number>;
   restartBusy: boolean;
+  constructor: FrameContext | null;
   pendingRestarts: Array<{ child: number; debts: number[] }>;
   spent: Set<number>;
   completed: boolean;
@@ -3554,7 +3555,21 @@ class ExecutorV1 {
         this.trace.allocateId("actor", actor.id, act.context.id);
         this.trace.snapshot("actor.spawn", { actor_id: actor.id });
         const handle: VmValue = { kind: "actor", id: actor.id };
+        act.context.cancel = (
+          fault = {
+            kind: "panic",
+            message: "actor construction cancelled",
+            cancelled: true,
+          },
+        ) => {
+          actor.closing = true;
+          if (actor.active) {
+            actor.active.pendingCancellation ??= fault;
+            actor.active.cancel?.(actor.active.pendingCancellation);
+          }
+        };
         const failed = (fault: Fault) => {
+          act.context.cancel = undefined;
           actor.active = null;
           actor.alive = false;
           actor.constructing = false;
@@ -3598,6 +3613,7 @@ class ExecutorV1 {
           }
           actor.constructing = false;
           actor.active = null;
+          act.context.cancel = undefined;
           act.rcOwner = null;
           actor.busy = false;
           this.startPeriodicTimers(actor);
@@ -3994,7 +4010,8 @@ class ExecutorV1 {
           ),
           offsets: layout.children.map((_child, index) => index),
           recovering: new Set(),
-          restartBusy: false,
+          restartBusy: true,
+          constructor: null,
           pendingRestarts: [],
           spent: new Set(),
           completed: false,
@@ -4009,21 +4026,38 @@ class ExecutorV1 {
         this.trace.allocateId("supervisor", owner.id, act.context.id);
         this.trace.snapshot("supervisor.spawn", { supervisor_id: owner.id });
         this.running = false;
-        let child = 0;
+        const order = this.supervisorStartupOrder(owner);
+        let fault: Fault | null = null;
+        const fail = (cause: Fault) => {
+          if (fault) return;
+          fault = cause;
+          owner.closed.push(() => {
+            act.context.cancel = undefined;
+            this.raiseFault(act, fault!, term.unwind);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+          if (owner.constructor)
+            owner.constructor.pendingCancellation ??= cause;
+          this.stopSupervisor(owner);
+        };
+        act.context.cancel = (
+          cause = {
+            kind: "panic",
+            message: "construction cancelled",
+            cancelled: true,
+          },
+        ) => fail(cause);
         const next = () => {
-          if (child < owner.children.length) {
-            this.startChild(owner, child++, next, (fault) => {
-              owner.closed.push(() => {
-                this.raiseFault(act, fault, term.unwind);
-                this.scheduler.enqueue(act.context.id, () =>
-                  this.runFrame(act),
-                );
-              });
-              this.stopSupervisor(owner);
-            });
+          const child = order.shift();
+          if (child !== undefined) {
+            this.startChild(owner, child, next, fail);
           } else {
+            act.context.cancel = undefined;
+            owner.restartBusy = false;
             this.completeShim(act, term, { kind: "supervisor", id: owner.id });
             this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            const pending = owner.pendingRestarts.shift();
+            if (pending) this.restartChild(owner, pending.child, pending.debts);
           }
         };
         next();
@@ -4801,6 +4835,20 @@ class ExecutorV1 {
     return owner;
   }
 
+  private supervisorStartupOrder(owner: SupervisorInstance): number[] {
+    const declarations =
+      owner.layout.startup_order ??
+      owner.layout.children.map((_child, index) => index);
+    return declarations.flatMap((declaration) => {
+      const offset = owner.offsets[declaration]!;
+      const end = owner.offsets[declaration + 1] ?? owner.children.length;
+      return Array.from(
+        { length: end - offset },
+        (_value, index) => offset + index,
+      );
+    });
+  }
+
   private startChild(
     owner: SupervisorInstance,
     child: number,
@@ -4808,11 +4856,33 @@ class ExecutorV1 {
     failed: (fault: Fault) => void,
   ): void {
     const spec = owner.specs[child]!;
-    this.invokeFrame(
+    const arity = this.functionAt(spec.spawn).params.length;
+    // Packages predating sibling wiring have config-only constructors. Their
+    // actual callable signature, rather than a source name, selects that ABI.
+    const args =
+      arity === owner.config.length + 1
+        ? [{ kind: "supervisor" as const, id: owner.id }, ...owner.config]
+        : arity === owner.config.length
+          ? owner.config
+          : null;
+    if (!args)
+      throw new Error(
+        "supervisor constructor signature does not match its config",
+      );
+    owner.constructor = this.invokeFrame(
       null,
       spec.spawn,
-      owner.config,
+      args,
       (value) => {
+        owner.constructor = null;
+        if (!owner.alive) {
+          this.stopChild(
+            value,
+            () => this.finishSupervisorStop(owner),
+            owner.terminating,
+          );
+          return;
+        }
         owner.children[child] = value;
         if (value.kind === "actor")
           this.actorFor(value).supervisor = { owner, child };
@@ -4826,7 +4896,11 @@ class ExecutorV1 {
         });
         done();
       },
-      failed,
+      (fault) => {
+        owner.constructor = null;
+        if (!owner.alive) this.finishSupervisorStop(owner);
+        else failed(fault);
+      },
     );
   }
 
@@ -4935,7 +5009,9 @@ class ExecutorV1 {
         stop();
       });
     };
-    const starting = [...affected];
+    const starting = this.supervisorStartupOrder(owner).filter((index) =>
+      affected.includes(index),
+    );
     const start = () => {
       if (!owner.alive) {
         owner.restartBusy = false;
@@ -5039,6 +5115,19 @@ class ExecutorV1 {
     }
     if (!owner.alive) return;
     owner.alive = false;
+    if (owner.constructor) {
+      owner.constructor.pendingCancellation ??= {
+        kind: "panic",
+        message: "supervisor construction cancelled",
+        cancelled: true,
+      };
+      owner.constructor.cancel?.(owner.constructor.pendingCancellation);
+      return;
+    }
+    this.finishSupervisorStop(owner);
+  }
+
+  private finishSupervisorStop(owner: SupervisorInstance): void {
     let childIndex = owner.children.length - 1;
     const next = () => {
       owner.teardownCancelTimer?.();

@@ -817,6 +817,55 @@ fn sandbox_graduation_corpus_is_fully_covered() {
 // native toolchain and WASI target separately; Linux owns this VM contract.
 #[cfg(unix)]
 #[test]
+fn supervisor_wiring_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "supervisor-wired-sibling-restart",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-sibling-restart.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-declaration-restarts",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-declaration-restarts.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-nested-prerequisite",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-nested-prerequisite.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-declaration-shutdown",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-declaration-shutdown.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-construction-cancel",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-construction-cancel.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-stop-during-reconstruction",
+            source_rel:
+                "tests/core-acceptance/cases/supervisor-wired-stop-during-reconstruction.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-caught-init-crash",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-caught-init-crash.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-caught-start-crash",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-caught-start-crash.hew",
+        },
+        ParityCase {
+            test_name: "supervisor-wired-caught-crash-rollback",
+            source_rel: "tests/core-acceptance/cases/supervisor-wired-caught-crash-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn playground_sources_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

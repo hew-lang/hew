@@ -1040,7 +1040,9 @@ mod tests {
                         std::ptr::from_mut(payload).cast(),
                         std::mem::size_of_val(payload),
                     ),
-                    ConstructionEvent::Stopped(_) => unreachable!(),
+                    ConstructionEvent::Stopped(_) => {
+                        unreachable!("fixture covers only fault-bearing events")
+                    }
                 };
                 assert!(defer_construction_event(sup, kind, data, size));
                 assert!(!crate::exit_status::supervised_fault_is_open(record));

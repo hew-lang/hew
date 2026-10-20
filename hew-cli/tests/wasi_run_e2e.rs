@@ -479,6 +479,7 @@ fn supervised_actor_lifecycle_runs_under_wasi() {
         "supervisor-stop-waits-for-stop-hooks",
         "driver-supervisor-backoff-cancel",
         "actor-start-fault-contained",
+        "actor-periodic-handlers",
     ]);
 }
 

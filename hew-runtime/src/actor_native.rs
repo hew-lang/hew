@@ -356,13 +356,26 @@ fn drain_to_quiescence() -> i32 {
         if !crate::supervisor::roots::stop_registered_supervisors() {
             return 1;
         }
-        let actors = crate::lifetime::live_actors::snapshot_live_actor_ptrs();
-        for &actor in &actors {
-            // SAFETY: the single driver owns these tracked allocations.
-            unsafe { crate::actor::hew_actor_request_stop(actor) };
+        // Root teardown can enqueue detached incarnation frees. Drain them
+        // before selecting the remaining process-owned actors.
+        crate::driver::run_to_quiescence();
+        let actors = crate::lifetime::live_actors::snapshot_live_incarnations();
+        for &target in &actors {
+            crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
+                // SAFETY: the exact incarnation pin protects this stop request.
+                unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
+            });
         }
-        for actor in actors {
-            // SAFETY: actor free drives its checked cleanup before retirement.
+        for target in actors {
+            let actor = crate::lifetime::live_actors::with_live_incarnation(
+                target,
+                crate::lifetime::live_actors::ActorPin::as_ptr,
+            );
+            let Some(actor) = actor else { continue };
+            // SAFETY: the single driver cannot retire this freshly resolved
+            // actor before free takes over. Release the lookup pin first so
+            // free can drain admitted pins; never retain another actor address
+            // across the scheduler progress made by this call.
             if unsafe { crate::actor::hew_actor_free(actor) } != 0 {
                 return 1;
             }

@@ -546,8 +546,6 @@ pub(crate) struct ActorIncarnation {
     spawn_serial: u64,
 }
 
-// The whole surface is the native wake edge: wasm32 has its own cooperative
-// scheduler, reply channel and mailbox, and never resolves an incarnation.
 impl ActorIncarnation {
     /// No wake target.
     ///
@@ -680,6 +678,26 @@ pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
             .map(|m| m.values().map(|entry| entry.actor.0).collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// Copy exact incarnations before cooperative cleanup advances the driver.
+/// Each entry must be resolved again before touching its current allocation.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn snapshot_live_incarnations() -> Vec<ActorIncarnation> {
+    with_live_actors_opt(|map| {
+        map.as_ref()
+            .map(|actors| {
+                actors
+                    .values()
+                    .map(|entry| {
+                        // SAFETY: the registry lock retains this tracked allocation.
+                        unsafe { ActorIncarnation::of(entry.actor.0) }
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     })
     .unwrap_or_default()

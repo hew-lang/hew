@@ -325,9 +325,8 @@ impl Checker {
         // ── 3. Strategy / pool consistency ──────────────────────────────────
         self.check_supervisor_strategy_pool(sd, span);
 
-        // ── 4. wired_to key resolution + type compatibility ──────────────────
-
-        // ── 5. Dependency cycle detection ────────────────────────────────────
+        // Resolve sibling identities and a deterministic dependency-first order.
+        // The ordinary spawn checker below binds keys and checks complete types.
         self.check_supervisor_wired_to_cycles(sd, span);
 
         // ── 7. Intensity restart-budget sanity ──────────────────────────────
@@ -439,55 +438,7 @@ impl Checker {
             let Some(identity) = self.resolve_checked_supervisor_child(sd, child, span) else {
                 continue;
             };
-            self.env.push_scope();
-            let mut args = child.args.clone();
-            let bindings = self
-                .supervisor_wiring
-                .get(&SpanKey::in_module(&child.span, self.current_module_idx))
-                .cloned()
-                .unwrap_or_default();
-            for (key, sibling) in bindings {
-                let target = &sd.children[sibling];
-                let sibling_ty = self
-                    .expr_types
-                    .get(&SpanKey::in_module(&target.span, self.current_module_idx))
-                    .cloned()
-                    .unwrap_or(Ty::Error);
-                if !self
-                    .actor_init_params
-                    .get(&identity)
-                    .is_some_and(|params| params.iter().any(|param| param.name == key))
-                {
-                    self.report_error(TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch }, &child.span,
-                        format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: `{identity}.init` has no parameter `{key}`"));
-                }
-                let name = Ident::new(&format!("__hew_wired_{index}_{sibling}"));
-                self.env
-                    .define_param_with_span(name, sibling_ty, false, child.span.clone());
-                args.push((Ident::new(&key), (Expr::Ident(name), child.span.clone())));
-            }
-            let target = (Expr::Ident(Ident::new(&identity)), child.span.clone());
-            let first_error = self.errors.len();
-            let handle = self.check_spawn(
-                &target,
-                &child.type_args,
-                &args,
-                &child.arg_labels,
-                &child.span,
-            );
-            for error in &mut self.errors[first_error..] {
-                if error.span == child.span
-                    && matches!(error.kind, TypeErrorKind::Mismatch { .. })
-                    && child.wired_to.is_some()
-                {
-                    error.kind = TypeErrorKind::SupervisorError {
-                        subkind: SupervisorErrorKind::WiredToTypeMismatch,
-                    };
-                    error.message =
-                        format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: {}", error.message);
-                }
-            }
-            self.env.pop_scope();
+            let handle = self.check_supervisor_child_init_args(sd, child, &identity);
             self.record_type(&child.span, &handle);
             if let Some(child_ty) = handle.as_actor_handle() {
                 // Keyed by the declaration identity, as registration writes it:
@@ -521,6 +472,65 @@ impl Checker {
         }
 
         self.env.pop_scope();
+    }
+
+    /// Bind explicit values and typed wiring operands through ordinary spawn rules.
+    fn check_supervisor_child_init_args(
+        &mut self,
+        sd: &SupervisorDecl,
+        child: &hew_parser::ast::ChildSpec,
+        identity: &str,
+    ) -> Ty {
+        let mut args = child.args.clone();
+        let mut typed_arguments = std::collections::HashMap::new();
+        let bindings = self
+            .supervisor_wiring
+            .get(&SpanKey::in_module(&child.span, self.current_module_idx))
+            .cloned()
+            .unwrap_or_default();
+        for (key, sibling) in bindings {
+            let target = &sd.children[sibling];
+            let sibling_ty = self
+                .expr_types
+                .get(&SpanKey::in_module(&target.span, self.current_module_idx))
+                .cloned()
+                .unwrap_or(Ty::Error);
+            if !self
+                .actor_init_params
+                .get(identity)
+                .is_some_and(|params| params.iter().any(|param| param.name == key))
+            {
+                self.report_error(TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch }, &child.span,
+                format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: `{identity}.init` has no parameter `{key}`"));
+            }
+            typed_arguments.insert(args.len(), sibling_ty);
+            args.push((
+                Ident::new(&key),
+                (Expr::Tuple(Vec::new()), child.span.clone()),
+            ));
+        }
+        let target = (Expr::Ident(Ident::new(identity)), child.span.clone());
+        let first_error = self.errors.len();
+        let handle = self.check_spawn_with_typed_arguments(
+            &target,
+            &child.type_args,
+            &args,
+            &child.arg_labels,
+            &child.span,
+            &typed_arguments,
+        );
+        for error in &mut self.errors[first_error..] {
+            if error.span == child.span
+                && matches!(error.kind, TypeErrorKind::Mismatch { .. })
+                && child.wired_to.is_some()
+            {
+                error.kind = TypeErrorKind::SupervisorError {
+                    subkind: SupervisorErrorKind::WiredToTypeMismatch,
+                };
+                error.message = format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: {}", error.message);
+            }
+        }
+        handle
     }
 
     /// Validate the `count:` clause on every `pool` child declaration.
@@ -795,11 +805,27 @@ impl Checker {
                 bindings,
             );
         }
-        let mut order = Vec::new();
-        while let Some(index) = (0..sd.children.len()).find(|index| {
-            !order.contains(index) && dependencies[*index].iter().all(|dep| order.contains(dep))
-        }) {
+        let mut dependents = vec![Vec::new(); sd.children.len()];
+        let mut pending: Vec<_> = dependencies.iter().map(Vec::len).collect();
+        for (child, siblings) in dependencies.iter().enumerate() {
+            for sibling in siblings {
+                dependents[*sibling].push(child);
+            }
+        }
+        let mut ready: std::collections::BTreeSet<_> = pending
+            .iter()
+            .enumerate()
+            .filter_map(|(index, count)| (*count == 0).then_some(index))
+            .collect();
+        let mut order = Vec::with_capacity(sd.children.len());
+        while let Some(index) = ready.pop_first() {
             order.push(index);
+            for dependent in &dependents[index] {
+                pending[*dependent] -= 1;
+                if pending[*dependent] == 0 {
+                    ready.insert(*dependent);
+                }
+            }
         }
         if order.len() != sd.children.len() {
             self.report_error(

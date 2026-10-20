@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-declaration-shutdown"
+intent = "Wiring changes startup order while shutdown remains the reverse of declaration order."
+source = "cases/supervisor-wired-declaration-shutdown.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ledger start\ncheckout start\ntail start\ntail stop\nledger stop\ncheckout stop\n"
+stderr = ""
+exit = 0

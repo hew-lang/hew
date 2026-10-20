@@ -450,3 +450,18 @@ supervisor Shop(seed: Ledger<i64>) {{ {declaration} }}
         assert!(output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::SpawnArgDuplicate | TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch })), "{:#?}", output.errors);
     }
 }
+
+#[test]
+fn supervisor_wiring_does_not_capture_source_configuration_names() {
+    let output = check_source(
+        r#"
+actor Ledger<T> { let value: T; receive fn get() -> T { value } }
+actor Checkout<T> { let count: i64; init(backend: Ledger<T>) {} receive fn ping() {} }
+supervisor Shop<T>(__hew_wired_0_1: i64, seed: T) {
+    child checkout: Checkout<T> { count: __hew_wired_0_1 } wired_to: { backend: ledger };
+    child ledger: Ledger<T> { value: seed };
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

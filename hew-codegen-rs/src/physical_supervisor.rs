@@ -866,6 +866,7 @@ mod abi_tests {
                 ctx.i64_type().into(),
                 ctx.i32_type().into(),
                 ptr.into(),
+                ctx.i32_type().into(),
             ],
             false,
         );

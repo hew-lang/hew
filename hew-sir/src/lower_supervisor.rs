@@ -1,6 +1,6 @@
 //! Demanded supervisor declarations and their boundaries.
 //!
-//! Each declared child gets a spawn callable `fn(config...) -> handle` whose
+//! Each declared child gets a spawn callable `fn(supervisor, config...) -> handle` whose
 //! body is the child's `spawn` with the declared init arguments. The
 //! supervisor runs it for the initial spawn and for every restart, so a
 //! restarted child re-runs init and start against the same config.
@@ -200,6 +200,13 @@ impl InstanceService<'_> {
                 self.register_child_spawn(id, index, &source, child, handle, &substitution)?;
             children.push(SemSupervisorChild {
                 name: child.name.clone(),
+                dependencies: child
+                    .wiring
+                    .iter()
+                    .map(|(_, sibling)| *sibling)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
                 role,
                 restart,
                 stop_deadline: stop_deadline(child, &source, role)?,
@@ -232,7 +239,7 @@ impl InstanceService<'_> {
         Ok(id)
     }
 
-    /// `fn(config...) -> handle { spawn Child { init args } }`, lowered and
+    /// `fn(supervisor, config...) -> handle { spawn Child { init args } }`, lowered and
     /// verified like any function. The config parameters are lent, so an owned
     /// init argument is copied into each incarnation.
     fn register_child_spawn(

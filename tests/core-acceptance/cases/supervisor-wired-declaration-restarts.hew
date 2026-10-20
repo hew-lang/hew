@@ -1,0 +1,61 @@
+actor Ledger {
+    let label: string;
+    receive fn read() -> i64 { label.len() }
+    receive fn fail() { panic("ledger restart"); }
+}
+
+actor Checkout {
+    let ledger: Ledger;
+    var count: i64;
+    let label: string = "default";
+    init(backend: Ledger, initial: i64) {
+        self.ledger = backend;
+        self.count = initial;
+        match backend.read() {
+            .Ok(value) => { assert(value == 6); }
+            .Err(_) => { panic("prerequisite unavailable during init"); }
+        }
+    }
+    receive fn next() -> i64 {
+        count = count + 1;
+        match ledger.read() {
+            .Ok(value) => count + value + label.len(),
+            .Err(_) => -100,
+        }
+    }
+    receive fn fail() { panic("checkout restart"); }
+}
+
+actor Tail {
+    var count: i64 = 0;
+    receive fn next() -> i64 { count = count + 1; count }
+}
+
+supervisor Shop(seed: string) {
+    strategy: rest_for_one;
+    intensity: 5 within 60s;
+    child checkout: Checkout { initial: 10 } wired_to: { backend: ledger };
+    child ledger: Ledger { label: seed };
+    child tail: Tail;
+}
+
+fn main() -> i64 {
+    let shop = spawn Shop { seed: "ledger" };
+    let other = spawn Shop { seed: "ledger" };
+    let checkout = shop.checkout;
+    let ledger = shop.ledger;
+    assert(shop.tail.next() == .Ok(1));
+    assert(checkout.next() == .Ok(24));
+    let _ = ledger.fail();
+    restarted(ledger);
+    assert(checkout.next() == .Ok(25));
+    assert(shop.tail.next() == .Ok(1));
+    assert(other.checkout.next() == .Ok(24));
+    let _ = checkout.fail();
+    restarted(checkout);
+    assert(shop.tail.next() == .Ok(1));
+    assert(checkout.next() == .Ok(24));
+    stop(shop); stopped(shop);
+    stop(other); stopped(other);
+    0
+}

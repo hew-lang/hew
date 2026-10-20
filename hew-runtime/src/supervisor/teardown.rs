@@ -64,15 +64,19 @@ pub(crate) fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
     }
     // A pending group restart will never run. Its stopped incarnations stay
     // with the roster until teardown frees them; its records settle now.
-    let records = {
+    let (records, construction_events) = {
         // SAFETY: callers keep `sup` live; no roster reference is held here.
         let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-        roster
+        let records = roster
             .pending_group_restart
             .as_mut()
             .map(|group| std::mem::take(&mut group.failures))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (records, std::mem::take(&mut roster.construction_events))
     };
+    for event in construction_events {
+        crate::exit_status::settle_supervised_fault(event.record(), FaultRuling::Unrecovered);
+    }
     for (_, record) in records {
         crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
     }

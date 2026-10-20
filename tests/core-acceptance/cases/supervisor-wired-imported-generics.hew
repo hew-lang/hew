@@ -1,0 +1,15 @@
+import supervisor_wired_imports.accounts as bank;
+
+supervisor Shop<T>(seed: T) {
+    child checkout: bank.Checkout wired_to: { backend: ledger };
+    child ledger: bank.Ledger<T> { value: seed };
+}
+fn main() {
+    let numbers = spawn Shop { seed: 47 };
+    let words = spawn Shop { seed: "owned text" };
+    assert(numbers.checkout.get().expect("number checkout") == 47);
+    assert(words.checkout.get().expect("word checkout") == "owned text");
+    stop(words); stopped(words);
+    stop(numbers); stopped(numbers);
+    println("imported generic wiring");
+}

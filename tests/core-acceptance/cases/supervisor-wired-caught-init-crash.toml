@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-caught-init-crash"
+intent = "A prerequisite fault caught by dependent init remains owned by normal supervisor recovery after private construction."
+source = "cases/supervisor-wired-caught-init-crash.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "caught\nrecovered\n"
+stderr = "hew: failure: UserPanic (212): construction ledger crash\nhew: actor crash in Ledger.fail (actor 1): UserPanic\n"
+exit = 0

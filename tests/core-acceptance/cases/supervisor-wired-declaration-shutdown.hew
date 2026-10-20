@@ -1,0 +1,22 @@
+actor Ledger {
+    let label: string;
+    receive fn ping() {}
+    #[on(start)] fn started() { println(label + " start"); }
+    #[on(stop)] fn stopping() { println(label + " stop"); }
+}
+actor Checkout {
+    let ledger: Ledger;
+    init(backend: Ledger) { self.ledger = backend; }
+    #[on(start)] fn started() { println("checkout start"); }
+    #[on(stop)] fn stopping() { println("checkout stop"); }
+    receive fn ping() {}
+}
+supervisor Shop(seed: string) {
+    child checkout: Checkout wired_to: { backend: ledger };
+    child ledger: Ledger { label: seed };
+    child tail: Ledger { label: "tail" };
+}
+fn main() {
+    let shop = spawn Shop { seed: "ledger" };
+    stop(shop); stopped(shop);
+}

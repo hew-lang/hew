@@ -637,7 +637,7 @@ impl HirRecordDecl {
 /// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorDecl {
-    /// Borrow-free supervisor token supplied to each incarnation constructor.
+    /// Owning supervisor handle supplied to each incarnation constructor.
     pub owner: HirBinding,
     pub startup_order: Vec<usize>,
     /// Stateless interceptor instantiated inside each declared child turn.
@@ -669,6 +669,8 @@ pub struct HirSupervisorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorChild {
     pub name: String,
+    /// Checked wiring: init argument index and sibling declaration index.
+    pub wiring: Vec<(usize, usize)>,
     /// Complete checked child handle, including any supervisor type parameters.
     pub ty: ResolvedTy,
     pub restart_policy: Option<HirRestartPolicy>,

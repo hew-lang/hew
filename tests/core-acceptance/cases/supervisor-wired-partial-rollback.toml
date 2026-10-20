@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-partial-rollback"
+intent = "A later prerequisite start failure rolls back an earlier live child and retained configuration without constructing the dependent."
+source = "cases/supervisor-wired-partial-rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "observer stop\n"
+stderr = "hew: failure: UserPanic (212): prerequisite start failed\n"
+exit = 1

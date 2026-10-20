@@ -106,12 +106,14 @@ impl LowerCtx {
                     .iter()
                     .map(|(name, expr)| (name.to_string(), self.lower_expr(expr, IntentKind::Read)))
                     .collect();
+                let mut wiring = Vec::new();
                 for (key, sibling_index) in self
                     .supervisor_wiring
                     .get(&self.mk_key(&child.span))
                     .cloned()
                     .unwrap_or_default()
                 {
+                    wiring.push((init_args.len(), sibling_index));
                     let sibling = &decl.children[sibling_index];
                     let site = self.ids.site();
                     self.supervisor_child_slots.insert(
@@ -151,6 +153,7 @@ impl LowerCtx {
                 }
                 Some(HirSupervisorChild {
                     name: child.name.to_string(),
+                    wiring,
                     ty: child_ty,
                     restart_policy: child.restart.map(|r| match r {
                         RestartPolicy::Permanent => HirRestartPolicy::Permanent,

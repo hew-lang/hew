@@ -900,6 +900,121 @@ pub(crate) struct ChildSupervisorStopped {
     child_token: crate::lifetime::local_handles::HewLocalPidId,
 }
 
+/// Lifecycle mailbox inputs retained until native constructors have finished.
+#[derive(Clone, Copy)]
+enum ConstructionEvent {
+    Actor(ChildEvent),
+    Escalated(ChildSupervisorEscalation),
+    Stopped(ChildSupervisorStopped),
+}
+
+impl ConstructionEvent {
+    fn record(self) -> FaultRecord {
+        FaultRecord::from_raw(match self {
+            Self::Actor(event) => event.fault_record,
+            Self::Escalated(event) => event.fault_record,
+            Self::Stopped(_) => 0,
+        })
+    }
+
+    /// The caller keeps the parent actor live through mailbox admission.
+    unsafe fn send(self, target: *mut HewActor) -> bool {
+        match self {
+            Self::Actor(event) => {
+                let kind = if event.exit_state == HewActorState::Crashed as c_int {
+                    HewSysMsg::ChildCrashed
+                } else {
+                    HewSysMsg::ChildStopped
+                };
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        kind,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildEvent>(),
+                    )
+                }
+            }
+            Self::Escalated(event) => {
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::ChildSupervisorEscalated,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildSupervisorEscalation>(),
+                    )
+                }
+            }
+            Self::Stopped(event) => {
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::ChildSupervisorStopped,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildSupervisorStopped>(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Admit an ordinary lifecycle event without dispatching beside constructors.
+/// The caller retains the parent until this synchronous handoff completes.
+unsafe fn admit_child_event(sup: *mut HewSupervisor, event: ConstructionEvent) -> bool {
+    // SAFETY: the caller keeps the supervisor live for this phase observation.
+    if unsafe { (*sup).constructing.load(Ordering::Acquire) } {
+        // SAFETY: the caller keeps the supervisor live through this admission.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        // The phase closes under this same lock, after its mailbox handoff.
+        // SAFETY: the caller keeps both atomic fields live.
+        if unsafe { (*sup).constructing.load(Ordering::Acquire) } {
+            // SAFETY: cancellation closes admission before draining this buffer.
+            if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+                return false;
+            }
+            roster.construction_events.push(event);
+            return true;
+        }
+    }
+    // Construction publishes self_actor before its release of constructing.
+    // SAFETY: the caller retains the parent and its child-notification target.
+    let target = unsafe { (*sup).self_actor };
+    if target.is_null() {
+        return false;
+    }
+    // SAFETY: the parent retains its dispatch actor through this admission.
+    unsafe { event.send(target) }
+}
+
+/// Complete construction's event handoff before enabling direct notifications.
+unsafe fn flush_construction_events(sup: *mut HewSupervisor, target: *mut HewActor) {
+    loop {
+        let events = {
+            // SAFETY: start retains the parent through this phase transition.
+            let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+            if roster.construction_events.is_empty() {
+                // SAFETY: release publishes self_actor to later direct senders.
+                unsafe { (*sup).constructing.store(false, Ordering::Release) };
+                return;
+            }
+            std::mem::take(&mut roster.construction_events)
+        };
+        for event in events {
+            // SAFETY: start retains the parent and its initialized dispatch actor.
+            if unsafe { (*sup).cancelled.load(Ordering::Acquire) || !event.send(target) } {
+                crate::exit_status::settle_supervised_fault(
+                    event.record(),
+                    FaultRuling::Unrecovered,
+                );
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Supervisor init function type (for nested supervisor restart)
 // ---------------------------------------------------------------------------
@@ -974,6 +1089,7 @@ pub(crate) struct SupervisorRoster {
     next_child_spec_identity: u64,
     /// Compiler-provided construction order, expressed in stable declaration identities.
     native_startup_order: Vec<u64>,
+    construction_events: Vec<ConstructionEvent>,
     child_supervisors: Vec<*mut HewSupervisor>,
     child_supervisor_tokens: Vec<crate::lifetime::local_handles::HewLocalPidId>,
     child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
@@ -1918,11 +2034,6 @@ fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     // SAFETY: caller guarantees the child and its non-null parent edge remain
     // live through this synchronous notification; copy only scalar fields.
     let (parent, index_in_parent) = unsafe { ((*sup).parent, (*sup).index_in_parent) };
-    // SAFETY: caller guarantees parent is valid.
-    let parent_actor = unsafe { (*parent).self_actor };
-    if parent_actor.is_null() {
-        return false;
-    }
     let Ok(supervisor_index) = u32::try_from(index_in_parent) else {
         eprintln!(
             "[supervisor] refusing to escalate: child-supervisor index {index_in_parent} exceeds u32"
@@ -1942,15 +2053,8 @@ fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     };
     // SAFETY: caller keeps `sup` live while this scalar tracing id is copied.
     let sup_actor_id = supervisor_actor_id(sup);
-    // SAFETY: parent.self_actor is valid.
-    let accepted = unsafe {
-        actor::send_system_message(
-            parent_actor,
-            HewSysMsg::ChildSupervisorEscalated,
-            (&raw const event).cast::<c_void>().cast_mut(),
-            std::mem::size_of::<ChildSupervisorEscalation>(),
-        )
-    };
+    // SAFETY: the child retains its parent through this synchronous handoff.
+    let accepted = unsafe { admit_child_event(parent, ConstructionEvent::Escalated(event)) };
 
     // Observability (read-only side effect, AFTER the escalation decision and
     // dispatch): record that this supervisor escalated to its parent. Never

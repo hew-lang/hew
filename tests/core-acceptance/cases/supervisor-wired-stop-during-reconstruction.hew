@@ -1,0 +1,52 @@
+actor Gate {
+    var attempts: i64 = 0;
+    var dependents: i64 = 0;
+    var released: bool = false;
+    receive fn attempt() -> i64 { attempts = attempts + 1; attempts }
+    receive fn started() { dependents = dependents + 1; }
+    receive fn attempt_count() -> i64 { attempts }
+    receive fn dependent_count() -> i64 { dependents }
+    receive fn release() { released = true; }
+    receive fn is_released() -> bool { released }
+}
+actor Ledger {
+    let label: string;
+    init(gate: Gate, seed: string) {
+        self.label = seed;
+        if gate.attempt().expect("record construction") > 1 {
+            while !gate.is_released().expect("construction gate") { sleep(1ms); }
+        }
+    }
+    receive fn read() -> i64 { label.len() }
+    receive fn fail() { panic("stop during ledger reconstruction"); }
+}
+actor Checkout {
+    let backend: Ledger;
+    let label: string;
+    init(store: Ledger, gate: Gate, seed: string) {
+        self.backend = store;
+        self.label = seed;
+        gate.started().expect("record dependent construction");
+    }
+    receive fn read() -> i64 { backend.read().expect("ledger") + label.len() }
+}
+supervisor Shop(gate: Gate, seed: string) {
+    strategy: one_for_all;
+    intensity: 3 within 60s;
+    child checkout: Checkout { gate: gate, seed: seed } wired_to: { store: ledger };
+    child ledger: Ledger { gate: gate, seed: seed };
+}
+fn main() {
+    let gate = spawn Gate;
+    let shop = spawn Shop { gate: gate, seed: "owned config".to_upper() };
+    assert(shop.checkout.read().expect("initial checkout") == 24);
+    let _ = shop.ledger.fail();
+    while gate.attempt_count().expect("construction entered") < 2 { sleep(1ms); }
+    stop(shop);
+    gate.release().expect("release cancelled construction");
+    stopped(shop);
+    assert(gate.attempt_count().expect("attempt count") == 2);
+    assert(gate.dependent_count().expect("dependent did not reconstruct") == 1);
+    stop(gate); stopped(gate);
+    println("cancelled reconstruction");
+}

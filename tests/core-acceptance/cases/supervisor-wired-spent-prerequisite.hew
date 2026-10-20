@@ -1,0 +1,31 @@
+actor Ledger {
+    receive fn read() -> i64 { 7 }
+}
+actor Checkout {
+    let ledger: Ledger;
+    var count: i64 = 0;
+    init(backend: Ledger) { self.ledger = backend; }
+    receive fn read() -> i64 {
+        count = count + 1;
+        match ledger.read() { .Ok(value) => count + value, .Err(_) => count }
+    }
+    receive fn fail() { panic("checkout restart with spent prerequisite"); }
+}
+supervisor Shop {
+    intensity: 3 within 60s;
+    child checkout: Checkout wired_to: { backend: ledger };
+    child ledger: Ledger restart: temporary;
+}
+fn main() {
+    let shop = spawn Shop;
+    let checkout = shop.checkout;
+    let ledger = shop.ledger;
+    assert(checkout.read().expect("initial checkout") == 8);
+    stop(ledger); stopped(ledger);
+    restarted(ledger);
+    assert(checkout.read().expect("spent prerequisite is an ordinary role") == 2);
+    let _ = checkout.fail();
+    restarted(checkout);
+    assert(checkout.read().expect("fresh checkout retains spent role") == 1);
+    stop(shop); stopped(shop);
+}

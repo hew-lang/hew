@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-stop-during-reconstruction"
+intent = "Stopping a supervisor while prerequisite init is suspended prevents dependent reconstruction and releases retained configuration and the unpublished incarnation."
+source = "cases/supervisor-wired-stop-during-reconstruction.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "cancelled reconstruction\n"
+stderr = "hew: failure: UserPanic (212): stop during ledger reconstruction\nhew: actor crash in Ledger.fail (actor 2): UserPanic\n"
+exit = 1

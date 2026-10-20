@@ -2044,3 +2044,19 @@ fn stale_member_lock_is_ignored_and_left_out_of_the_archive() {
     let raw = hew_pkg::tarball::pack(&member, &[], &[]).unwrap();
     assert!(raw.files.iter().any(|file| file == Path::new("hew.lock")));
 }
+
+#[test]
+fn prepared_plan_retains_the_stored_source_archive_identity() {
+    let mock = MockRegistry::start();
+    let (_dir, package) = packed(1);
+    let stored = reencoded(&package.archive.data);
+    let stored_checksum = hew_pkg::tarball::checksum_bytes(&stored);
+    mock.seed(&stored, &KeyPair::generate());
+    let plan = publish::prepare_remote(&mock.client(), std::slice::from_ref(&package)).unwrap();
+    assert_eq!(plan.sources()[0].source_checksum(), stored_checksum);
+    assert_ne!(
+        plan.sources()[0].source_checksum(),
+        package.archive.checksum
+    );
+    assert_eq!(mock.puts(), 0);
+}

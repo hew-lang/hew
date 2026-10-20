@@ -164,6 +164,73 @@ impl PackedPackage {
     }
 }
 
+/// The registry comparison of one prepared source package.
+#[derive(Debug)]
+pub struct PreparedSource<'a> {
+    package: &'a PackedPackage,
+    source_checksum: String,
+    skip: Option<Skip>,
+}
+
+impl PreparedSource<'_> {
+    /// The archive identity native attachments must refer to. When an existing
+    /// source has the same tree with different compression, this is its stored
+    /// checksum, not the newly packed archive's checksum.
+    #[must_use]
+    pub fn source_checksum(&self) -> &str {
+        &self.source_checksum
+    }
+}
+
+/// A publication whose entire source set has been compared before any upload.
+#[derive(Debug)]
+pub struct PreparedPublication<'a> {
+    sources: Vec<PreparedSource<'a>>,
+}
+
+impl<'a> PreparedPublication<'a> {
+    /// Read-only source identities selected by the registry comparison.
+    #[must_use]
+    pub fn sources(&self) -> &[PreparedSource<'a>] {
+        &self.sources
+    }
+}
+
+#[derive(Debug)]
+struct PublishedSource {
+    checksum: String,
+    skip: Skip,
+}
+
+/// Compare all sources with the registry, retaining its canonical archive
+/// identities. Report every source drift before authentication or uploads.
+///
+/// # Errors
+/// Returns a registry query or source drift error.
+pub fn prepare_remote<'a>(
+    api_client: &client::RegistryClient,
+    packages: &'a [PackedPackage],
+) -> Result<PreparedPublication<'a>, PublishError> {
+    let mut sources = Vec::new();
+    let mut drift = Vec::new();
+    for package in packages {
+        match compare_with_registry(api_client, package) {
+            Ok(published) => sources.push(PreparedSource {
+                package,
+                source_checksum: published.as_ref().map_or_else(
+                    || package.archive.checksum.clone(),
+                    |source| source.checksum.clone(),
+                ),
+                skip: published.map(|source| source.skip),
+            }),
+            Err(error @ PublishError::Drift { .. }) => drift.push(error),
+            Err(error) => return Err(error),
+        }
+    }
+    PublishError::combine(drift)?;
+    Ok(PreparedPublication { sources })
+}
+
 /// Validate, check and pack the package rooted at `root`. Offline.
 ///
 /// # Errors
@@ -488,20 +555,27 @@ pub fn publish_all(
     sleep: &dyn Fn(Duration),
     report: &mut dyn FnMut(&PackedPackage, &Outcome),
 ) -> Result<(), PublishError> {
-    let mut skips = Vec::new();
-    let mut drift = Vec::new();
-    for package in packages {
-        match compare_with_registry(&api_client, package) {
-            Ok(skip) => skips.push(skip),
-            Err(error @ PublishError::Drift { .. }) => drift.push(error),
-            Err(error) => return Err(error),
-        }
-    }
-    PublishError::combine(drift)?;
+    let publication = prepare_remote(&api_client, packages)?;
+    publish_prepared(api_client, &publication, dry_run, auth, sleep, report)
+}
 
+/// Execute a prepared publication through the one authentication and upload
+/// authority. A dry run reports the same plan without acquiring credentials.
+///
+/// # Errors
+/// Returns an authentication, upload or readback error.
+pub fn publish_prepared(
+    api_client: client::RegistryClient,
+    publication: &PreparedPublication<'_>,
+    dry_run: bool,
+    auth: &mut dyn Auth,
+    sleep: &dyn Fn(Duration),
+    report: &mut dyn FnMut(&PackedPackage, &Outcome),
+) -> Result<(), PublishError> {
     let mut uploads = Vec::new();
-    for (package, skip) in packages.iter().zip(skips) {
-        match skip {
+    for source in &publication.sources {
+        let package = source.package;
+        match source.skip {
             Some(skip) => report(package, &Outcome::Skipped(skip)),
             None if dry_run => report(package, &Outcome::WouldPublish),
             None => uploads.push(package),
@@ -550,7 +624,7 @@ fn upload(
         Ok(()) => {}
         Err(conflict @ ApiError::Server { status: 409, .. }) => {
             return match compare_with_registry(api_client, package)? {
-                Some(skip) => Ok(Outcome::Skipped(skip)),
+                Some(source) => Ok(Outcome::Skipped(source.skip)),
                 // The registry reported the version taken but does not serve it.
                 None => Err(PublishError::Remote(conflict)),
             };
@@ -573,7 +647,7 @@ fn upload(
 fn compare_with_registry(
     api_client: &client::RegistryClient,
     package: &PackedPackage,
-) -> Result<Option<Skip>, PublishError> {
+) -> Result<Option<PublishedSource>, PublishError> {
     let (name, version) = (package.name(), package.version());
     let record = match api_client.get_package_version(name, version) {
         Ok(record) => record,
@@ -582,7 +656,10 @@ fn compare_with_registry(
     };
     let local = &package.archive.checksum;
     if record.cksum == *local {
-        return Ok(Some(Skip::Identical));
+        return Ok(Some(PublishedSource {
+            checksum: record.cksum,
+            skip: Skip::Identical,
+        }));
     }
     let dl = record.dl.as_deref().ok_or_else(|| {
         PublishError::Query(format!(
@@ -607,7 +684,10 @@ fn compare_with_registry(
         })
     };
     if tree(&stored, "the registry")? == tree(&package.archive.data, "the local")? {
-        Ok(Some(Skip::SameTree))
+        Ok(Some(PublishedSource {
+            checksum: record.cksum,
+            skip: Skip::SameTree,
+        }))
     } else {
         Err(PublishError::Drift {
             name: name.to_string(),

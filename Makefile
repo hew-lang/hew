@@ -1083,6 +1083,12 @@ test-cabi:
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
+# Source/native publication policy uses the in-process loopback registry; it
+# does not need compiler/runtime or sandbox artefacts.
+.PHONY: test-package-publish
+test-package-publish:
+	$(TEST_RUN_ENV) cargo nextest run --profile ci -p hew-pkg --test test_publish
+
 test-compiler-pipeline: test-artifacts
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
 		-p hew-lexer \

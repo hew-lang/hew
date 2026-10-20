@@ -454,3 +454,44 @@ fn inherited_impl_signature_keeps_missing_supertrait_diagnostic_independent() {
         output.errors
     );
 }
+
+#[test]
+fn inherited_impl_signature_checks_every_applied_ancestor() {
+    let declarations = "trait Value<T> { fn value(self) -> T; }
+        trait Numbers: Value<i64> {}
+        trait Words: Value<string> {}
+        trait Both: Numbers + Words {}
+        type Fixed {}
+        impl Value<i64> for Fixed { fn value(self) -> i64 { 7 } }
+        impl Value<string> for Fixed { fn value(self) -> string { \"seven\" } }
+        impl Numbers for Fixed {}
+        impl Words for Fixed {}";
+    let control = typecheck_isolated(&format!("{declarations} impl Both for Fixed {{}}"));
+    assert!(control.errors.is_empty(), "{:#?}", control.errors);
+    for method in [
+        "fn value(self) -> i64 { 7 }",
+        "fn value(self) -> string { \"seven\" }",
+    ] {
+        let output = typecheck_isolated(&format!(
+            "{declarations} impl Both for Fixed {{ {method} }}"
+        ));
+        assert!(
+            has_trait_impl_sig_mismatch(&output, "return type"),
+            "{:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn index_shorthand_infers_get_and_at_signature_arguments() {
+    let output = typecheck_embedded_builtins_isolated(
+        "type Grid { value: i64; }
+         impl Index for Grid {
+             type Output = i64;
+             fn get(self, index: i64) -> Option<i64> { .Some(self.value + index) }
+             fn at(self, index: i64) -> i64 { self.value + index }
+         }",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

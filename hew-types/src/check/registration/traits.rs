@@ -1277,12 +1277,6 @@ impl Checker {
     /// * the receiver-skip stripped a different number of params on either
     ///   side because the impl elided the receiver (treat as receiver-kind
     ///   mismatch and report).
-    #[allow(
-        clippy::too_many_lines,
-        reason = "single-source-of-truth for the impl-vs-trait sig comparison; \
-                  factoring would obscure the substitution / projection / \
-                  renaming order that the comparison depends on"
-    )]
     pub(in crate::check) fn check_impl_method_against_trait(
         &mut self,
         type_name: &str,
@@ -1342,6 +1336,43 @@ impl Checker {
         let Some(declaring) = self.declaring_trait_of(primary, method.name.name.as_str()) else {
             return;
         };
+        let Some(impl_self) = self.current_impl_target() else {
+            return;
+        };
+        // A declaration can be reached with different arguments through two
+        // supertraits. An inline method must satisfy every application, rather
+        // than whichever path the traversal happens to visit first.
+        for declaring_bound in self
+            .applied_trait_closure(implemented_trait, Some(&impl_self))
+            .into_iter()
+            .filter(|bound| bound.trait_id == declaring)
+        {
+            self.check_impl_method_against_applied_trait(
+                type_name,
+                trait_bound,
+                &declaring_bound,
+                method,
+                impl_sig,
+            );
+        }
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single-source-of-truth for the impl-vs-trait sig comparison; \
+                  factoring would obscure the substitution / projection / \
+                  renaming order that the comparison depends on"
+    )]
+    fn check_impl_method_against_applied_trait(
+        &mut self,
+        type_name: &str,
+        trait_bound: &TraitBound,
+        declaring_bound: &TraitRef,
+        method: &FnDecl,
+        impl_sig: &FnSig,
+    ) {
+        let trait_name = trait_bound.path.to_string();
+        let declaring = declaring_bound.trait_id;
         let Some(trait_info) = self.trait_info(declaring).cloned() else {
             return;
         };
@@ -1363,23 +1394,13 @@ impl Checker {
         let Some(impl_self) = self.current_impl_target() else {
             return;
         };
-        // An inherited method uses its declaring trait's applied arguments,
-        // including substitutions along every supertrait edge. The primary
-        // impl's written arguments may have a different order and shape.
-        let Some(declaring_bound) = self
-            .applied_trait_closure(implemented_trait, Some(&impl_self))
-            .into_iter()
-            .find(|bound| bound.trait_id == declaring)
-        else {
-            return;
-        };
         let mut trait_param_map: HashMap<crate::ParamHead, Ty> = trait_info
             .type_params
             .iter()
             .copied()
-            .zip(declaring_bound.args)
+            .zip(declaring_bound.args.iter().cloned())
             .collect();
-        if implemented_trait.args.is_empty()
+        if declaring_bound.args.is_empty()
             && self.lang_trait(crate::LangItem::Index) == Some(declaring)
             && trait_info.type_params.len() == 1
             && matches!(method.name.name.as_str(), "get" | "at")

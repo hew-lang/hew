@@ -260,13 +260,17 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded_claimed(
     unsafe { send_preencoded_on_manager(&*mgr, conn_id, publication_token, data, len) }
 }
 
-/// Return the connection ID of the first active connection whose handshake
-/// identified the peer as `node_id`. Returns -1 if not found.
+/// Inspect the first active physical connection to `node_id` in a test.
+/// Returns -1 if no active transport exists; this does not select a route owner.
 ///
 /// # Safety
 ///
 /// `mgr` must be a valid pointer for the duration of the call.
-pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_id: u16) -> c_int {
+#[cfg(test)]
+pub(crate) unsafe fn first_active_connection_for_test(
+    mgr: *const HewConnMgr,
+    node_id: u16,
+) -> c_int {
     if mgr.is_null() {
         return -1;
     }

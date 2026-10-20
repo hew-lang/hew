@@ -119,7 +119,7 @@ fn tcp_dial_refuses_plaintext_and_previous_protocol_peers() {
         unsafe {
             let mgr = (*node.as_ptr()).conn_mgr;
             assert_eq!(connection::hew_connmgr_count(mgr), 0);
-            assert!(connection::hew_connmgr_conn_id_for_node(mgr, 711) < 0);
+            assert!(connection::first_active_connection_for_test(mgr, 711) < 0);
         }
         assert!(
             peer.join().expect("plaintext peer thread").is_empty(),
@@ -265,7 +265,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
     // SAFETY: node_a is live; the location and marker are valid for the call.
     let rc = unsafe {
         let mgr = (*node_a.as_ptr()).conn_mgr;
-        let conn_id = connection::hew_connmgr_conn_id_for_node(mgr, 731);
+        let conn_id = connection::first_active_connection_for_test(mgr, 731);
         connection::claim_send_to_location(&*mgr, conn_id, location)
             .expect("authenticated target claim")
             .send(&clear)

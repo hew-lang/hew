@@ -14,9 +14,7 @@ use crate::set_last_error;
 use super::control::authenticated_peer_identity;
 use super::handshake::supports_gossip;
 use super::peer::authenticated_peer_node_id_for_conn;
-use super::send::{
-    claim_send_to_route, hew_connmgr_conn_id_for_node, hew_connmgr_feature_flags_for_node,
-};
+use super::send::{claim_send_to_route, hew_connmgr_feature_flags_for_node};
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
 
 /// Encode a SWIM control frame from a payload.

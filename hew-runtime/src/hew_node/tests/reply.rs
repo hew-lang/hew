@@ -738,7 +738,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
                 peer.auth.session_incarnation().unwrap(),
             )
             .unwrap(),
-            connection::hew_connmgr_conn_id_for_node(manager, 741),
+            connection::first_active_connection_for_test(manager, 741),
         )
     };
     register_test_u32_codec(test_dispatch(), 7, c"tests.Backpressure.request");

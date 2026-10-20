@@ -58,7 +58,8 @@ export function executeCalendar(
     unknown
   >;
   if (
-    ![0, 1, 2, 3].includes(Number(result.status)) ||
+    typeof result.status !== "number" ||
+    ![0, 1, 2, 3].includes(result.status) ||
     typeof result.message !== "string"
   )
     throw new Error("calendar bridge returned an invalid result");
@@ -68,6 +69,8 @@ export function executeCalendar(
     shape: shape.id,
     fields: shape.fields.map((field) => {
       const value = result[field];
+      if (result.status === 0 && value === undefined)
+        throw new Error("calendar bridge omitted a successful result field");
       if (field === "message" || field === "text")
         return stringValue(value === undefined ? "" : String(value));
       return {

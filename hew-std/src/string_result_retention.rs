@@ -444,7 +444,7 @@ fn jwt_and_password_results_are_transferred() {
 }
 
 #[test]
-fn datetime_and_cron_results_are_transferred() {
+fn calendar_format_result_is_transferred() {
     let format = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
     assert_managed_transferred(
         "hew_calendar_format",
@@ -459,19 +459,6 @@ fn datetime_and_cron_results_are_transferred() {
         },
         |text| assert_eq!(text, "1970-01-01T00:00:00Z"),
     );
-
-    let source = ManagedString::new("0 15 10 * * * *");
-    // SAFETY: source owns a live managed cron expression.
-    let cron = unsafe { crate::time::cron::hew_cron_parse(source.as_ptr()) };
-    assert!(!cron.is_null());
-    assert_managed_transferred(
-        "hew_cron_to_string",
-        // SAFETY: cron stays live through the measurement.
-        || unsafe { crate::time::cron::hew_cron_to_string(cron) },
-        |text| assert!(!text.is_empty()),
-    );
-    // SAFETY: to_string borrowed the live cron handle.
-    unsafe { crate::time::cron::hew_cron_free(cron) };
 }
 
 #[test]

@@ -3,7 +3,6 @@
 // meets `WouldBlock` arms readiness at once, and the reactor wakes at once.
 import std.net;
 
-
 fn echo(listener: net.Listener) {
     let conn = listener.accept().expect("accept");
     loop {

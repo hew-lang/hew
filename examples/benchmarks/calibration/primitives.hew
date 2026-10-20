@@ -2,7 +2,6 @@ import std.os;
 
 import std.string;
 
-
 fn scalar(iterations: i64) -> i64 {
     var state = 1;
     for r in 0..iterations {

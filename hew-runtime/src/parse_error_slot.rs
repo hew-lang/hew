@@ -58,7 +58,6 @@ pub enum ErrorSlotKind {
     Yaml,
     Toml,
     Json,
-    Cron,
     Compress,
     Msgpack,
     Xml,

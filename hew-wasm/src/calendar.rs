@@ -18,7 +18,7 @@ struct Request {
 pub fn execute_calendar(request: &str) -> String {
     let result = serde_json::from_str::<Request>(request)
         .map_err(|error| Error::Parse(error.to_string()))
-        .and_then(execute);
+        .and_then(|request| execute(&request));
     match result {
         Ok(value) => value,
         Err(error) => json!({"status": error.code(), "message": error.to_string()}),
@@ -26,7 +26,7 @@ pub fn execute_calendar(request: &str) -> String {
     .to_string()
 }
 
-fn execute(request: Request) -> Result<Value, Error> {
+fn execute(request: &Request) -> Result<Value, Error> {
     let arg = |index: usize| {
         request
             .args

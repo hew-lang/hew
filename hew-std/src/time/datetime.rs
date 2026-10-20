@@ -39,7 +39,7 @@ pub struct HewCalendarPartsResult {
     pub message: *mut HewString,
 }
 
-fn error_fields(error: Error) -> (i32, *mut HewString) {
+fn error_fields(error: &Error) -> (i32, *mut HewString) {
     (error.code(), string_from_str(&error.to_string()))
 }
 
@@ -52,7 +52,7 @@ fn time_result(result: Result<(i64, u32), Error>) -> HewCalendarTimeResult {
             message: std::ptr::null_mut(),
         },
         Err(error) => {
-            let (status, message) = error_fields(error);
+            let (status, message) = error_fields(&error);
             HewCalendarTimeResult {
                 status,
                 seconds: 0,
@@ -81,7 +81,7 @@ pub unsafe extern "C" fn hew_calendar_format(
             message: std::ptr::null_mut(),
         },
         Err(error) => {
-            let (status, message) = error_fields(error);
+            let (status, message) = error_fields(&error);
             HewCalendarTextResult {
                 status,
                 text: std::ptr::null_mut(),
@@ -128,7 +128,7 @@ pub extern "C" fn hew_calendar_components(
             message: std::ptr::null_mut(),
         },
         Err(error) => {
-            let (status, message) = error_fields(error);
+            let (status, message) = error_fields(&error);
             HewCalendarPartsResult {
                 status,
                 message,

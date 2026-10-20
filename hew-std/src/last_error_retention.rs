@@ -15,7 +15,7 @@
 //!
 //! Each symbol names its own inducer. The slots backed by
 //! [`hew_runtime::parse_error_slot`] are driven directly through that public
-//! storage; the three with a module-private thread-local (`cron`, `xml`,
+//! storage; the two with a module-private thread-local (`xml`,
 //! `msgpack`) are driven through a public entry point instead. All of them are
 //! deterministic and free of I/O.
 //!
@@ -29,7 +29,6 @@ use hew_cabi::string::{string_as_str, string_release, HewString};
 use hew_runtime::parse_error_slot::{set_error, ErrorSlotKind};
 
 /// The diagnostics the two module-private slots hold once their inducer runs.
-const CRON_PARSE_ERROR: &str = "cron parse error: not a cron expression\n^\nThe 'Seconds' field does not support using names. 'not' specified.";
 const XML_PARSE_ERROR: &str = "xml: parse error";
 
 /// Run R1/R2/R3 against one `-> string` export and assert the returned buffer
@@ -204,23 +203,6 @@ fn quic_last_error_result_is_transferred() {
         "hew_quic_last_error",
         ErrorSlotKind::Quic,
         crate::quic::hew_quic_last_error,
-    );
-}
-
-/// `cron` keeps its message in a module-private thread-local, so the inducer is
-/// the public parse entry point rejecting an expression.
-#[test]
-fn cron_last_error_result_is_transferred() {
-    let expression = ManagedString::new("not a cron expression");
-    let induce = || {
-        // SAFETY: `expression` owns a live managed string for the call.
-        unsafe { crate::time::cron::hew_cron_parse(expression.as_ptr()) };
-    };
-    assert_result_is_transferred(
-        "hew_cron_last_error",
-        &induce,
-        CRON_PARSE_ERROR,
-        crate::time::cron::hew_cron_last_error,
     );
 }
 

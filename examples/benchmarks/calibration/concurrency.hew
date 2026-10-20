@@ -5,7 +5,6 @@ import std.os;
 
 import std.string;
 
-
 type Measurement {
     elapsed_ns: i64;
     checksum: i64;

@@ -34,6 +34,12 @@ fn timestamp_from_system_time(time: std::time::SystemTime) -> HewTimestamp {
 /// Return the current wall-clock time as normalized Unix seconds and nanoseconds.
 #[no_mangle]
 pub extern "C" fn hew_timestamp_now() -> HewTimestamp {
+    if crate::generator::enabled() {
+        return HewTimestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+    }
     timestamp_from_system_time(std::time::SystemTime::now())
 }
 

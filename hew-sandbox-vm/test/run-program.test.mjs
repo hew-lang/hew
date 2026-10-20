@@ -305,3 +305,33 @@ test("runProgram shares checked UTC calendar semantics with native", () => {
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp calendar ok\n");
 });
+
+
+test("runProgram executes the shared source cron parser and search", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-cron.hew"), "utf8");
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp cron ok\n");
+});
+
+
+test("calendar extern results require their checked record descriptor", () => {
+  const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+    'import std.time.datetime; fn main() { println(datetime.to_iso8601(timestamp.from_unix_secs(0)).expect("calendar")); }',
+    "sandbox-vm-export"
+  );
+  const compiled = typeof output === "string" ? JSON.parse(output) : output;
+  assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
+  for (const mismatch of ["missing", "reordered"]) {
+    const malformed = structuredClone(compiled.bytecode);
+    const call = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
+      .find(term => term.op === "extern.call" && malformed.externs[term.extern].symbol === "hew_calendar_format");
+    assert.ok(call);
+    if (mismatch === "missing") delete call.aggregate_result_shape;
+    else malformed.aggregates[call.aggregate_result_shape].fields.reverse();
+    const trace = runBytecode(malformed, { calendarBridge: globalThis.__hewSandboxExecuteCalendar });
+    assert.equal(trace.result, "sandbox_rejected");
+    assert.deepEqual(trace.final_state.stdout, []);
+  }
+});

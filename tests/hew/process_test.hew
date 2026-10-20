@@ -6,7 +6,6 @@ import std.process;
 
 import std.string;
 
-
 fn cleanup_file(file_path: string) {
     if fs.exists(file_path) {
         let _ = fs.delete(file_path);

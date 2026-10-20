@@ -36,11 +36,6 @@ toml.workspace = true
 # wasm build, where their crates do not compile.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 argon2 = "0.6"
-chrono = { version = "0.4.45", default-features = false, features = [
-  "clock",
-  "std",
-] }
-cron = "0.17"
 ed25519-dalek = { version = "3", default-features = false, features = [
   "digest",
   "fast",

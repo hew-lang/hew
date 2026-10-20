@@ -6,7 +6,6 @@ import std.path;
 
 import std.process;
 
-
 // ── combine ─────────────────────────────────────────────────────────────
 #[test]
 fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {

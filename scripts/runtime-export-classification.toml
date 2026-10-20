@@ -893,12 +893,6 @@ stable-stdlib = [
   "hew_calendar_format",
   "hew_calendar_from_parts",
   "hew_calendar_parse",
-  "hew_cron_free",
-  "hew_cron_is_valid",
-  "hew_cron_last_error",
-  "hew_cron_next_hew",
-  "hew_cron_parse",
-  "hew_cron_to_string",
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
@@ -4748,50 +4742,6 @@ result-retention = "transferred"
 symbol = "hew_uuid_v7"
 result = "fresh"
 params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_cron_free"
-result = "none"
-params = ["consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_is_valid"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_last_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_cron_next_hew"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_parse"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_cron_free"
-discharge-depth = "shallow"
-
-[[ownership.contracts]]
-symbol = "hew_cron_to_string"
-result = "fresh"
-params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"

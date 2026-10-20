@@ -4,8 +4,6 @@ import std.semaphore;
 
 import std.deque;
 
-import std.time.cron;
-
 import std.net.http;
 
 import std.net.http.http_client;
@@ -31,11 +29,6 @@ fn use_semaphore(consume value: semaphore.Semaphore) {
 fn use_deque(consume value: deque.Deque) {
     value.close();
     let _ = value.len();
-}
-
-fn use_cron(consume value: cron.Expr) {
-    value.close();
-    let _ = value.to_string();
 }
 
 fn use_request(consume value: http.Request) {

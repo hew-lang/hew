@@ -9,7 +9,6 @@
 //! }
 //! ```
 
-
 /// Supplied by the benchmark dispatcher.
 pub type Bencher {
 }

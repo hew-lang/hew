@@ -1,6 +1,5 @@
 import std.testing;
 
-
 actor Worker {
     receive fn crash_me() {
         panic("restart the child");

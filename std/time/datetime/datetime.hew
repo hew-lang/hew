@@ -13,6 +13,7 @@ pub enum DateTimeError {
     Format(string);
     Parse(string);
 }
+
 impl Error for DateTimeError {}
 
 impl Display for DateTimeError {
@@ -68,9 +69,15 @@ type CalendarPartsResult {
 fn checked(status: i32, message: string) fails DateTimeError {
     match status {
         0 => {}
-        1 => { return error DateTimeError.Range(message); }
-        3 => { return error DateTimeError.Format(message); }
-        _ => { return error DateTimeError.Parse(message); }
+        1 => {
+            return error DateTimeError.Range(message);
+        }
+        3 => {
+            return error DateTimeError.Format(message);
+        }
+        _ => {
+            return error DateTimeError.Parse(message);
+        }
     }
 }
 
@@ -83,7 +90,9 @@ fn checked_time(result: CalendarTimeResult) -> timestamp fails DateTimeError {
 /// seconds with %.f or %.9f. Calendar output uses UTC.
 pub fn format(value: timestamp, pattern: string) -> string fails DateTimeError {
     let (seconds, nanos) = value.unix_parts();
-    let result = unsafe { hew_calendar_format(seconds, nanos, pattern) };
+    let result = unsafe {
+        hew_calendar_format(seconds, nanos, pattern)
+    };
     checked(result.status, result.message)?;
     result.text
 }
@@ -91,48 +100,69 @@ pub fn format(value: timestamp, pattern: string) -> string fails DateTimeError {
 /// Parse strftime-formatted text. A missing offset means UTC; an explicit
 /// offset is converted to UTC. Fractional seconds retain nanosecond precision.
 pub fn parse(text: string, pattern: string) -> timestamp fails DateTimeError {
-    checked_time(unsafe { hew_calendar_parse(text, pattern) })?
+    checked_time(unsafe {
+        hew_calendar_parse(text, pattern)
+    })?
 }
 
 /// Extract the UTC civil fields of a timestamp.
 pub fn components(value: timestamp) -> Components fails DateTimeError {
     let (seconds, nanos) = value.unix_parts();
-    let result = unsafe { hew_calendar_components(seconds, nanos) };
+    let result = unsafe {
+        hew_calendar_components(seconds, nanos)
+    };
     checked(result.status, result.message)?;
-    Components {
-        year: result.year, month: result.month, day: result.day,
-        hour: result.hour, minute: result.minute, second: result.second,
-        nanosecond: result.nanosecond, weekday: result.weekday,
-        days_in_month: result.days_in_month
-    }
+    Components { year: result.year, month: result.month, day: result.day, hour: result.hour, minute: result.minute, second: result.second, nanosecond: result.nanosecond, weekday: result.weekday, days_in_month: result.days_in_month }
 }
 
 /// Construct a UTC timestamp from civil fields, checking their ranges.
 pub fn from_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, nanosecond: u32) -> timestamp fails DateTimeError {
-    checked_time(unsafe { hew_calendar_from_parts(year, month, day, hour, minute, second, nanosecond) })?
+    checked_time(unsafe {
+        hew_calendar_from_parts(year, month, day, hour, minute, second, nanosecond)
+    })?
 }
 
 /// Extract the UTC year.
-pub fn year(value: timestamp) -> i64 fails DateTimeError { (components(value)?).year }
+pub fn year(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).year
+}
 /// Extract the UTC month (1–12).
-pub fn month(value: timestamp) -> i64 fails DateTimeError { (components(value)?).month }
+pub fn month(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).month
+}
 /// Extract the UTC day of month.
-pub fn day(value: timestamp) -> i64 fails DateTimeError { (components(value)?).day }
+pub fn day(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).day
+}
 /// Extract the UTC hour (0–23).
-pub fn hour(value: timestamp) -> i64 fails DateTimeError { (components(value)?).hour }
+pub fn hour(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).hour
+}
 /// Extract the UTC minute (0–59).
-pub fn minute(value: timestamp) -> i64 fails DateTimeError { (components(value)?).minute }
+pub fn minute(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).minute
+}
 /// Extract the UTC second (0–59).
-pub fn second(value: timestamp) -> i64 fails DateTimeError { (components(value)?).second }
+pub fn second(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).second
+}
 /// Return the UTC weekday (Monday = 0, Sunday = 6).
-pub fn weekday(value: timestamp) -> i64 fails DateTimeError { (components(value)?).weekday }
+pub fn weekday(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).weekday
+}
 
 /// Add elapsed 24-hour days, with ordinary checked duration arithmetic.
-pub fn add_days(value: timestamp, days: i64) -> timestamp { value + days * 24h }
+pub fn add_days(value: timestamp, days: i64) -> timestamp {
+    value + days * 24h
+}
 /// Add elapsed hours.
-pub fn add_hours(value: timestamp, hours: i64) -> timestamp { value + hours * 1h }
+pub fn add_hours(value: timestamp, hours: i64) -> timestamp {
+    value + hours * 1h
+}
 /// Return whole elapsed seconds, truncating towards zero.
-pub fn diff_secs(a: timestamp, b: timestamp) -> i64 { (a - b).secs() }
+pub fn diff_secs(a: timestamp, b: timestamp) -> i64 {
+    (a - b).secs()
+}
 
 /// Format UTC ISO 8601, preserving the nonzero nanosecond fraction.
 pub fn to_iso8601(value: timestamp) -> string fails DateTimeError {

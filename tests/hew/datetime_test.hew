@@ -24,10 +24,7 @@ fn test_try_parse_full_timestamp_formats_back_to_date() {
 #[test]
 fn test_try_parse_invalid_timestamp_returns_err() {
     match datetime.parse("not-a-date", "%Y-%m-%dT%H:%M:%SZ") {
-        .Ok(value) => {
-            panic(f"expected invalid parse to fail, got {value}");
-            assert(value == timestamp.from_unix_secs(0));
-        }
+        .Ok(_) => panic("expected invalid parse to fail"),
         .Err(.Parse(message)) => assert(!message.is_empty()),
         .Err(other) => panic(f"expected a parse failure, got {other}"),
     }

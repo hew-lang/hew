@@ -1,0 +1,10 @@
+[[case]]
+id = "timestamp-cron"
+intent = "Source cron values preserve grammar and advance fields over typed UTC timestamps beyond 2100."
+source = "cases/timestamp-cron.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+exit = 0
+stdout = "timestamp cron ok\n"

@@ -124,12 +124,7 @@ fn parse_error(error: chrono::ParseError) -> Error {
 /// Returns a range error for moments outside the supported calendar.
 pub fn components(seconds: i64, nanoseconds: u32) -> Result<Components, Error> {
     let value = datetime(seconds, nanoseconds)?;
-    let date = value.date_naive();
-    // At most four probes, including the maximum supported calendar month.
-    let days_in_month = (28..=31)
-        .rev()
-        .find(|day| NaiveDate::from_ymd_opt(date.year(), date.month(), *day).is_some())
-        .expect("every valid month has at least 28 days");
+    let days_in_month = u32::from(value.num_days_in_month());
     Ok(Components {
         year: i64::from(value.year()),
         month: value.month(),
@@ -170,6 +165,32 @@ pub fn from_components(
         .and_hms_nano_opt(hour, minute, second, nanosecond)
         .ok_or_else(|| Error::Parse("invalid time of day".into()))?;
     parts(value.and_utc())
+}
+
+/// Construct UTC Unix parts from signed civil fields.
+///
+/// # Errors
+/// Returns the calendar or component error without truncating negative fields.
+pub fn from_parts(
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    nanosecond: u32,
+) -> Result<(i64, u32), Error> {
+    let field =
+        |value| u32::try_from(value).map_err(|_| Error::Parse("invalid calendar component".into()));
+    from_components(
+        year,
+        field(month)?,
+        field(day)?,
+        field(hour)?,
+        field(minute)?,
+        field(second)?,
+        nanosecond,
+    )
 }
 
 #[cfg(test)]
@@ -224,34 +245,11 @@ mod tests {
         }
         assert_eq!(components(i64::MIN, 0), Err(Error::Range));
         assert_eq!(components(i64::MAX, 0), Err(Error::Range));
-        assert_eq!(from_components(262143, 1, 1, 0, 0, 0, 0), Err(Error::Range));
+        assert_eq!(
+            from_components(262_143, 1, 1, 0, 0, 0, 0),
+            Err(Error::Range)
+        );
         assert!(matches!(format(0, 0, "%Q"), Err(Error::Format(_))));
         assert!(matches!(format(0, 0, "%#z"), Err(Error::Format(_))));
     }
-}
-
-/// Construct UTC Unix parts from signed civil fields.
-///
-/// # Errors
-/// Returns the calendar or component error without truncating negative fields.
-pub fn from_parts(
-    year: i64,
-    month: i64,
-    day: i64,
-    hour: i64,
-    minute: i64,
-    second: i64,
-    nanosecond: u32,
-) -> Result<(i64, u32), Error> {
-    let field =
-        |value| u32::try_from(value).map_err(|_| Error::Parse("invalid calendar component".into()));
-    from_components(
-        year,
-        field(month)?,
-        field(day)?,
-        field(hour)?,
-        field(minute)?,
-        field(second)?,
-        nanosecond,
-    )
 }

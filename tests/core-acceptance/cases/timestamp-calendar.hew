@@ -11,8 +11,7 @@ fn main() {
     assert(fields.year == 2400 && fields.month == 2 && fields.day == 29);
     assert(fields.hour == 12 && fields.minute == 34 && fields.second == 56);
     assert(fields.nanosecond == 123456789 && fields.days_in_month == 29);
-    assert(datetime.parse(datetime.format(leap_day, "%Y/%m/%d %H:%M:%S%.9f").expect("format"),
-        "%Y/%m/%d %H:%M:%S%.9f").expect("parse") == leap_day);
+    assert(datetime.parse(datetime.format(leap_day, "%Y/%m/%d %H:%M:%S%.9f").expect("format"), "%Y/%m/%d %H:%M:%S%.9f").expect("parse") == leap_day);
     let wide = datetime.from_parts(12000, 1, 1, 0, 0, 0, 1).expect("wide year");
     assert(datetime.parse_iso8601(datetime.to_iso8601(wide).expect("wide text")).expect("wide parse") == wide);
     match datetime.components(timestamp.from_unix_secs(9223372036854775807)) {

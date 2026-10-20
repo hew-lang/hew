@@ -3,6 +3,8 @@ extern "rt" {
 }
 
 fn main() {
-    let now = unsafe { hew_timestamp_now() };
+    let now = unsafe {
+        hew_timestamp_now()
+    };
     println(now.unix_secs_floor());
 }

@@ -66,8 +66,8 @@ fn attach_controlling_terminal(command: &mut Command) -> File {
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(result, 0, "create pseudo-terminal");

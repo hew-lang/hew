@@ -359,7 +359,7 @@ fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
 
         // The guarded retry must wait for the provisional admission's outcome.
         std::thread::sleep(std::time::Duration::from_millis(100));
-        let waited = !returned.load(Ordering::Acquire);
+        let blocked_until_resolution = !returned.load(Ordering::Acquire);
         if publish_successor {
             assert!(publish_claim(mgr, 42, 100, 100));
         } else {
@@ -370,7 +370,7 @@ fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
         free_claim_test_mgr(mgr_ptr, transport);
 
         assert!(
-            waited,
+            blocked_until_resolution,
             "retry returned before the provisional claim resolved"
         );
         assert_eq!(reserved, !publish_successor);

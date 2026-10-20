@@ -1225,6 +1225,10 @@ fn connection_drop_wakes_pending_remote_ask() {
 /// open so the only thing that resolves the ask is the failure-detector
 /// verdict — distinct from `ConnectionDropped`.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exercise pending ask, SWIM death and cleanup in one owned node lifecycle"
+)]
 fn swim_dead_wakes_pending_remote_ask_with_partition() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;

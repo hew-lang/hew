@@ -44,6 +44,10 @@ impl SendCluster {
     }
 }
 
+#[expect(
+    clippy::type_complexity,
+    reason = "compare the existing callback and gossip tuple shapes in one snapshot"
+)]
 fn terminal_transition_result(
     new_session: bool,
     same_session_reconnect: bool,

@@ -82,6 +82,7 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     // And A's membership view must record B as DEAD.
     // SAFETY: A's cluster is still live.
     unsafe { wait_for_member_state_at_least(node_a.as_ptr(), NODE_B, crate::cluster::MEMBER_DEAD) };
+    // SAFETY: node A still owns its live cluster until the stop below.
     let state = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
     assert_eq!(
         state,

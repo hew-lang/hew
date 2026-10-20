@@ -92,24 +92,46 @@ fn write_c_package(root: &Path) {
 fn trimmed_package_paths_are_stable_across_roots() {
     require_codegen();
     let dir = workspace();
+    let source_root = dir.path().join("sources");
+    std::fs::create_dir(&source_root).unwrap();
     let roots = [
-        dir.path().join("first"),
-        dir.path().join("a longer second root"),
+        source_root.join("first"),
+        source_root.join("a longer second root"),
     ];
     for root in &roots {
         std::fs::create_dir_all(root).unwrap();
         write_c_package(root);
         write(&root.join("native/calc.c"), "#include <stdio.h>\n#include \"calc.h\"\nint32_t calc_answer(int32_t extra) { fprintf(stderr, \"%s\\n\", __FILE__); return CALC_BASE + extra; }\n");
     }
-    let original: Vec<_> = roots
+    let original_roots: Vec<_> = roots
+        .iter()
+        .enumerate()
+        .map(|(index, root)| {
+            // Exercise debug source identity independently of invocation spelling.
+            #[cfg(unix)]
+            {
+                let alias = dir.path().join(format!("source alias {index}"));
+                std::os::unix::fs::symlink(root, &alias).unwrap();
+                alias
+            }
+            #[cfg(not(unix))]
+            {
+                let _ = index;
+                root.clone()
+            }
+        })
+        .collect();
+    let original: Vec<_> = original_roots
         .iter()
         .map(|root| emit_package_paths(root, &["--release", "--no-trim-paths"]))
         .collect();
     assert_ne!(original[0].0, original[1].0);
-    for (root, (_, llvm)) in roots.iter().zip(&original) {
-        assert!(
-            llvm.contains(&llvm_string_contents(root.to_str().unwrap())),
-            "untrimmed debug source"
+    for (root, (_, llvm)) in original_roots.iter().zip(&original) {
+        let directory = llvm_debug_directory(llvm, "main.hew");
+        assert_eq!(
+            directory.canonicalize().expect("untrimmed debug directory"),
+            root.canonicalize().unwrap(),
+            "untrimmed debug source directory: {directory:?}\n{llvm}"
         );
     }
     for flags in [&["--trim-paths"][..], &["--release"][..]] {
@@ -119,6 +141,11 @@ fn trimmed_package_paths_are_stable_across_roots() {
             .collect();
         assert!(objects[0].0 == objects[1].0, "trimmed object bytes");
         assert_eq!(objects[0].1, objects[1].1, "trimmed LLVM");
+        assert_eq!(
+            llvm_debug_directory(&objects[0].1, "main.hew"),
+            Path::new("."),
+            "trimmed source directory"
+        );
         for root in &roots {
             assert!(!objects[0]
                 .1
@@ -190,6 +217,36 @@ fn trimmed_package_paths_are_stable_across_roots() {
     }
     #[cfg(target_os = "linux")]
     assert_remapped_debug_source(dir.path(), &roots);
+}
+
+// LLVM can render Windows separators differently from the fixture spelling.
+// Verify the actual DIFile directory identifies the original source tree.
+fn llvm_debug_directory(llvm: &str, filename: &str) -> PathBuf {
+    let prefix = format!(
+        "!DIFile(filename: \"{}\", directory: \"",
+        llvm_string_contents(filename)
+    );
+    let encoded = llvm
+        .lines()
+        .find_map(|line| {
+            let (_, rest) = line.split_once(&prefix)?;
+            rest.split_once('"').map(|(directory, _)| directory)
+        })
+        .unwrap_or_else(|| panic!("missing debug file {filename}:\n{llvm}"));
+    let mut bytes = Vec::new();
+    let mut remaining = encoded.as_bytes();
+    while let Some((&byte, rest)) = remaining.split_first() {
+        if byte == b'\\' {
+            assert!(rest.len() >= 2, "truncated LLVM escape: {encoded}");
+            let hex = std::str::from_utf8(&rest[..2]).unwrap();
+            bytes.push(u8::from_str_radix(hex, 16).expect("LLVM hexadecimal escape"));
+            remaining = &rest[2..];
+        } else {
+            bytes.push(byte);
+            remaining = rest;
+        }
+    }
+    PathBuf::from(String::from_utf8(bytes).expect("UTF-8 debug directory"))
 }
 
 fn llvm_string_contents(value: &str) -> String {

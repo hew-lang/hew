@@ -125,7 +125,10 @@ fn assert_tool_commands(command: impl Fn() -> Command) {
             .output()
             .expect("tool help");
         assert!(help.status.success(), "{tool}: {help:?}");
-        assert!(String::from_utf8_lossy(&help.stdout).contains(&format!("hew {tool}")));
+        assert!(
+            String::from_utf8_lossy(&help.stdout).contains(&format!("hew {tool}")),
+            "{tool}: {help:?}"
+        );
         let version = command()
             .args([tool, "--version"])
             .output()

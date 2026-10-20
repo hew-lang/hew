@@ -67,11 +67,12 @@ fn relative(path: &Path, cwd: Option<&Path>) -> PathBuf {
     if let Ok(rest) = path.strip_prefix(cwd) {
         return rest.to_path_buf();
     }
-    // Sources arrive canonical; the working directory may be spelled through
-    // a symbolic link.
+    // Resolve both sides: Windows canonical paths carry a verbatim prefix,
+    // and either side may use a symbolic link or a short directory name.
     cwd.canonicalize()
         .ok()
-        .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+        .zip(path.canonicalize().ok())
+        .and_then(|(cwd, path)| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
         .unwrap_or_else(|| path.to_path_buf())
 }
 
@@ -109,6 +110,53 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).unwrap(),
             "build/app: \\\n  main.hew \\\n  src/my\\ bridge.c\n\nmain.hew:\n\nsrc/my\\ bridge.c:\n"
+        );
+    }
+
+    #[test]
+    fn existing_prerequisite_is_relative_to_the_same_physical_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("main.hew");
+        std::fs::write(&source, "fn main() {}\n").unwrap();
+        // Canonicalization adds the Windows verbatim prefix. The caller can
+        // still supply an ordinary path to the very same file.
+        assert_eq!(
+            relative(&source, Some(&dir.path().canonicalize().unwrap())),
+            Path::new("main.hew")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prerequisite_through_a_symlink_is_relative_to_its_physical_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let physical = dir.path().join("physical");
+        std::fs::create_dir(&physical).unwrap();
+        std::fs::write(physical.join("main.hew"), "fn main() {}\n").unwrap();
+        let alias = dir.path().join("alias");
+        std::os::unix::fs::symlink(&physical, &alias).unwrap();
+        assert_eq!(
+            relative(&alias.join("main.hew"), Some(&physical)),
+            Path::new("main.hew")
+        );
+        assert_eq!(
+            relative(&alias.join("main.hew"), Some(dir.path())),
+            Path::new("alias/main.hew"),
+            "preserve a usable relative symlink spelling"
+        );
+    }
+
+    #[test]
+    fn missing_prerequisites_keep_their_lexical_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("generated.h");
+        assert_eq!(
+            relative(&missing, Some(dir.path())),
+            Path::new("generated.h")
+        );
+        assert_eq!(
+            relative(&missing, Some(&dir.path().join("elsewhere"))),
+            missing
         );
     }
 

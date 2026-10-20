@@ -828,3 +828,65 @@ fn hew_add_dry_run_writes_nothing() {
         "hew add --dry-run must not write hew.toml"
     );
 }
+
+/// A virtual workspace changes module search roots, but a quoted file import
+/// and its selected sibling imports still name the original declarations.
+#[test]
+fn file_imports_keep_nominal_owners_inside_virtual_workspaces() {
+    require_codegen();
+    for virtual_workspace in [false, true] {
+        let dir = workspace();
+        for name in ["model", "tests", "app"] {
+            std::fs::create_dir(dir.path().join(name)).expect("create fixture directory");
+        }
+        write_package(&dir.path().join("app"), "dummy", "main.hew", "");
+        if virtual_workspace {
+            std::fs::write(
+                dir.path().join("hew.toml"),
+                "[workspace]\nmembers = [\"app\"]\n",
+            )
+            .expect("write virtual workspace");
+        }
+        std::fs::write(
+            dir.path().join("model/data.hew"),
+            "pub type Value { data: i64; }\npub type Tape { value: Value; }\n",
+        )
+        .expect("write sibling nominal declarations");
+        std::fs::write(
+            dir.path().join("model/model.hew"),
+            "import data.{Tape, Value};\n\
+             type Context { tape: Tape; }\n\
+             pub fn answer() -> i64 {\n\
+                 let value = Value { data: 42 };\n\
+                 let context = Context { tape: Tape { value } };\n\
+                 context.tape.value.data\n\
+             }\n",
+        )
+        .expect("write same-stem directory entry");
+        std::fs::write(
+            dir.path().join("tests/main.hew"),
+            "import \"../model/model.hew\";\nfn main() { println(answer()); }\n",
+        )
+        .expect("write quoted file importer");
+        let mut command = Command::new(hew_binary());
+        command
+            .args(["check", "tests/main.hew"])
+            .current_dir(dir.path());
+        let checked = run_bounded_command(command, "check nested nominal imports");
+        assert!(checked.status.success(), "{}", describe_output(&checked));
+        for level in ["0", "2"] {
+            let binary = binary_in(dir.path(), &format!("nominal-o{level}"));
+            let mut command = Command::new(hew_binary());
+            command
+                .args(["build", "tests/main.hew", "--opt-level", level, "-o"])
+                .arg(&binary)
+                .current_dir(dir.path());
+            let built = run_bounded_command(command, "build nested nominal imports");
+            assert!(built.status.success(), "{}", describe_output(&built));
+            let run = run_bounded_command(Command::new(&binary), "run nested nominal imports");
+            assert!(run.status.success(), "{}", describe_output(&run));
+            assert_eq!(run.stdout, b"42\n");
+            assert!(run.stderr.is_empty(), "{}", describe_output(&run));
+        }
+    }
+}

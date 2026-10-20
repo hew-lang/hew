@@ -2345,9 +2345,10 @@ fn package_module_path(name: &str) -> ModulePath {
 }
 
 /// The anchor of `file` (spec 3.5.1): the std root for a file under
-/// `<std root>/std/`, otherwise the nearest directory at or above the file
-/// holding `hew.toml`, otherwise none. A path that is not absolute names no
-/// file on disk (an editor or browser buffer) and has no package.
+/// `<std root>/std/`, otherwise the nearest manifest if it declares `[package]`.
+/// A virtual workspace is a search boundary, not a package anchor. A path
+/// that is not absolute names no file on disk (an editor or browser buffer)
+/// and has no package.
 fn anchor_for(
     file: &Path,
     std_roots: &[PathBuf],
@@ -2367,12 +2368,13 @@ fn anchor_for(
     else {
         return Ok(ModuleAnchor::Loose);
     };
-    let name = load_manifest_from(dir, documents)?
-        .and_then(|manifest| manifest.package)
-        .map(|package| package_module_path(&package.name));
+    let Some(package) = load_manifest_from(dir, documents)?.and_then(|manifest| manifest.package)
+    else {
+        return Ok(ModuleAnchor::Loose);
+    };
     Ok(ModuleAnchor::Package {
         dir: dir.to_path_buf(),
-        name,
+        name: Some(package_module_path(&package.name)),
     })
 }
 
@@ -5474,6 +5476,44 @@ mod tests {
         let of_util = membership(&dir.path().join("util.hew"));
         assert_eq!(of_util.role, MembershipRole::Single);
         assert_eq!(of_util.module, super::ModulePath::new(["app", "util"]));
+    }
+
+    #[test]
+    fn virtual_workspaces_preserve_loose_file_membership() {
+        let dir = tempfile::tempdir().expect("create loose-file fixture");
+        let model = dir.path().join("model");
+        fs::create_dir(&model).expect("create same-stem directory");
+        let entry = write_source(&model, "model.hew", "pub fn answer() -> i64 { 42 }\n");
+        let peer = write_source(&model, "peer.hew", "fn broken() -> i64 { \"wrong\" }\n");
+        for manifest in [None, Some("[workspace]\nmembers = []\n")] {
+            if let Some(manifest) = manifest {
+                write_toml(dir.path(), manifest);
+            }
+            check_file(&entry, &FrontendOptions::default())
+                .expect("loose entry must not include a sibling's type error");
+            let failure = check_file(&peer, &FrontendOptions::default())
+                .expect_err("checking the loose sibling must report its own type error");
+            assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. })
+            )));
+        }
+
+        write_package_manifest(dir.path());
+        let failure = check_file(&entry, &FrontendOptions::default())
+            .expect_err("an actual package's entry must include its peer's type error");
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .filename
+                .as_deref()
+                .is_some_and(|file| Path::new(file).ends_with(Path::new("model").join("peer.hew")))
+                && matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. })
+                )
+        }));
     }
 
     #[test]

@@ -1977,8 +1977,9 @@ file belongs to depends only on where it sits relative to its **anchor**, a
 directory the code carries with it:
 
 - the standard-library root, for a file under `<std root>/std/`;
-- otherwise the nearest directory at or above the file that holds `hew.toml`
-  (the file's package);
+- otherwise the nearest directory at or above the file holding `hew.toml`,
+  if that manifest declares `[package]` (the file's package); a virtual
+  workspace manifest is a search boundary, not a package anchor;
 - otherwise nothing: the file is **loose**.
 
 The anchor directory's own name is never read. Renaming a checkout, installing

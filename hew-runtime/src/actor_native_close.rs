@@ -45,19 +45,18 @@ impl NativeActorCompletion {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn crash_action(&self) -> Option<i32> {
         self.crash
             .filter(|_| self.phase.load(Ordering::Acquire) >= 2)
             .map(|_| self.crash_action.load(Ordering::Relaxed))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_finished(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+
     pub(crate) fn cleanup_in_progress(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 3)
     }
@@ -126,7 +125,6 @@ impl NativeActorCompletion {
     /// Wake `waker` when this incarnation's terminal cleanup finishes. The
     /// registration is weak, and one made after the finish never fires, so the
     /// caller keeps the waker and checks [`Self::is_finished`] afterwards.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn wake_on_finish(&self, waker: &Arc<OwnedWaker>) {
         self.ready.register(waker);
     }
@@ -235,7 +233,6 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             ),
             completion.close_fault_payload().as_ref(),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         if !actor.supervisor.is_null() {
             if let Ok(child_index) = u32::try_from(actor.supervisor_child_index) {
                 // SAFETY: the supervisor remains the child's parent through
@@ -279,7 +276,6 @@ pub extern "C" fn hew_actor_stop_native(token: local_handles::HewLocalPidId) {
         });
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
             live_actors::with_actor_send_by_identity(id, serial, |actor| {
@@ -300,7 +296,6 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
         });
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
             live_actors::with_actor_send_by_identity(id, serial, |actor| {
@@ -325,7 +320,6 @@ pub struct HewNativeActorWait {
 pub(crate) struct NativeWaitTarget {
     pub(crate) completion: Arc<NativeActorCompletion>,
     pub(crate) actor: live_actors::ActorIncarnation,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) supervisor_token: Option<local_handles::HewLocalPidId>,
 }
 
@@ -376,7 +370,6 @@ pub unsafe extern "C" fn hew_actor_wait_new(
             _waker: owned,
         }));
     }
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some((owner, slot, kind)) = local_handles::current_actor_role_owner_slot(token) {
         // SAFETY: the caller retains the descriptor during role resolution.
         return unsafe {
@@ -398,7 +391,6 @@ pub unsafe extern "C" fn hew_actor_wait_new(
                     completion,
                     // SAFETY: the send guard keeps this actor live during capture.
                     actor: unsafe { live_actors::ActorIncarnation::of(actor) },
-                    #[cfg(not(target_arch = "wasm32"))]
                     supervisor_token: None,
                 })
         })
@@ -406,7 +398,6 @@ pub unsafe extern "C" fn hew_actor_wait_new(
     });
     // A supervised child's completion is reachable through the local-PID
     // control table, which is native-only; wasm32 admits no supervisor.
-    #[cfg(not(target_arch = "wasm32"))]
     let target = target.or_else(|| {
         local_handles::current_supervisor_completion(token).map(|completion| NativeWaitTarget {
             completion,

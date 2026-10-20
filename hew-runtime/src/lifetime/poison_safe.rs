@@ -26,7 +26,6 @@
 //! `&Mutex<T>` or `&RwLock<T>`. Raw `.lock()` / `.read()` / `.write()`
 //! on a wrapped global is unreachable by type.
 
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::RwLock;
 use std::sync::{Mutex, PoisonError, TryLockError};
 
@@ -94,12 +93,10 @@ impl<T> PoisonSafe<T> {
 /// Use [`PoisonSafeRw::read_access`] for shared-read access,
 /// [`PoisonSafeRw::access`] for exclusive-write access, and
 /// [`PoisonSafeRw::try_access`] for non-blocking write attempts.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct PoisonSafeRw<T> {
     inner: RwLock<T>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl<T> PoisonSafeRw<T> {
     /// Construct a new `PoisonSafeRw<T>` wrapping `value`.
     pub(crate) const fn new(value: T) -> Self {
@@ -110,6 +107,7 @@ impl<T> PoisonSafeRw<T> {
 
     /// Shared-read access that fails closed on poison.
     #[inline]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read<R>(&self, f: impl FnOnce(&T) -> R) -> Result<R, PoisonedLock> {
         match self.inner.read() {
             Ok(guard) => Ok(f(&*guard)),
@@ -120,6 +118,7 @@ impl<T> PoisonSafeRw<T> {
     /// Shared-read access. Blocks until a read lock is available.
     /// Recovers from poison transparently.
     #[inline]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read_access<R>(&self, f: impl FnOnce(&T) -> R) -> R {
         let guard = self.inner.read().unwrap_or_else(PoisonError::into_inner);
         f(&*guard)
@@ -127,6 +126,7 @@ impl<T> PoisonSafeRw<T> {
 
     /// Exclusive-write access that fails closed on poison.
     #[inline]
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn write<R>(&self, f: impl FnOnce(&mut T) -> R) -> Result<R, PoisonedLock> {
         match self.inner.write() {
             Ok(mut guard) => Ok(f(&mut *guard)),
@@ -171,9 +171,7 @@ mod tests {
     use super::*;
     // `Arc`, `Barrier`, and `thread` are only used by the contention tests,
     // which are gated off of `wasm32-wasip1` (no working `thread::spawn`).
-    #[cfg(not(target_arch = "wasm32"))]
     use std::sync::{Arc, Barrier};
-    #[cfg(not(target_arch = "wasm32"))]
     use std::thread;
 
     #[test]
@@ -194,7 +192,6 @@ mod tests {
     // (it only depends on `PoisonError::into_inner`), so verifying it on the
     // host targets is sufficient. See `scheduler_wasm.rs` for the same
     // pattern applied to `#[should_panic]` tests.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_recovers_and_access_returns_value() {
         let ps = PoisonSafe::new(Vec::<u32>::new());
@@ -226,7 +223,6 @@ mod tests {
     // See `poison_safe_recovers_and_access_returns_value` for why this
     // test is gated off of `wasm32`: `panic = "abort"` on wasm makes
     // `catch_unwind` unable to observe the panic that produces the poison.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_rw_recovers_from_write_panic() {
         let ps = PoisonSafeRw::new(0u32);
@@ -252,7 +248,6 @@ mod tests {
     // these tests cover are exercised through real runtime use on every
     // target, and are otherwise trivially correct (`try_lock` / `try_write`
     // plus poison matching), so host-only coverage is sufficient.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_try_access_returns_none_on_contention() {
         let ps = Arc::new(PoisonSafe::new(0u32));
@@ -287,7 +282,6 @@ mod tests {
 
     // See `poison_safe_try_access_returns_none_on_contention` for why this
     // is gated off of `wasm32-wasip1`.
-    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn poison_safe_rw_try_access_returns_none_on_contention() {
         let ps = Arc::new(PoisonSafeRw::new(0u32));

@@ -664,7 +664,6 @@ pub mod actor_call_native;
 pub mod actor_caller;
 pub mod actor_group;
 pub mod actor_native;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod actor_observe;
 pub mod arena;
 #[cfg(not(target_arch = "wasm32"))]
@@ -698,7 +697,6 @@ pub mod timer_wheel;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hew_node;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod supervisor;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod transport;
@@ -724,10 +722,8 @@ pub mod deterministic;
 /// process-local `monitor` authority.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod env;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod link;
 pub mod metrics;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod monitor;
 pub mod observe;
 /// Peer authentication authority: binds an authenticated peer credential
@@ -740,7 +736,6 @@ pub mod peer_binding;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod phi_accrual;
 pub mod pid;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod pool;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod process;

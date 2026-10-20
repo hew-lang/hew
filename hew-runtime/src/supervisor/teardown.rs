@@ -11,15 +11,12 @@ pub(crate) fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
     }
     // SAFETY: callers guarantee a live allocation; copy its stable authority
     // without creating a whole-supervisor reference.
-    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime.is_null() {
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    if handles.is_null() {
         return false;
     }
     // SAFETY: a live supervisor's runtime authority outlives its control.
-    let Some(control) = (unsafe { &*runtime })
-        .local_handles
-        .supervisor_control_for_raw(token, sup)
-    else {
+    let Some(control) = (unsafe { &*handles }).supervisor_control_for_raw(token, sup) else {
         return false;
     };
     control.claim_teardown()
@@ -31,15 +28,12 @@ pub(crate) fn release_supervisor_teardown(sup: *mut HewSupervisor) {
     }
     // SAFETY: only used to roll back a failed deferred-spawn attempt while the
     // supervisor is still live and owned by the caller.
-    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime.is_null() {
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    if handles.is_null() {
         return;
     }
     // SAFETY: the live allocation keeps its runtime authority installed.
-    if let Some(control) = (unsafe { &*runtime })
-        .local_handles
-        .supervisor_control_for_raw(token, sup)
-    {
+    if let Some(control) = (unsafe { &*handles }).supervisor_control_for_raw(token, sup) {
         control.release_teardown();
     }
 }
@@ -64,7 +58,6 @@ pub(crate) fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
     }
     // The completion owns only an independent cancellation registration; no
     // external caller touches the suspended frame or its borrowed config.
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some(completion) =
         // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
         crate::lifetime::local_handles::current_supervisor_completion(unsafe {
@@ -123,7 +116,11 @@ pub(crate) fn mark_child_spec_spent(sup: *mut HewSupervisor, identity: u64) {
 
 #[inline]
 fn supervisor_quiescence_expired(deadline: Instant) -> bool {
-    scheduler::shutdown_requested() || Instant::now() >= deadline
+    #[cfg(not(target_arch = "wasm32"))]
+    if scheduler::shutdown_requested() {
+        return true;
+    }
+    Instant::now() >= deadline
 }
 
 fn actor_is_supervisor_quiescent(actor: *mut HewActor) -> bool {
@@ -359,7 +356,6 @@ pub(crate) fn take_nested_supervisor_roster(
 
 /// The self actor has quiesced, transferring its pending invocation to this
 /// unique teardown owner. Keep siblings/config live until typed cleanup ends.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) unsafe fn drain_cancelled_native_group(
     sup: *mut HewSupervisor,
     deadline: Instant,
@@ -445,7 +441,6 @@ pub(crate) unsafe fn stop_supervisor_owned(
         return false;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
     if !unsafe { drain_cancelled_native_group(sup, quiescence_deadline) } {
         set_last_error("supervisor teardown retained an unfinished constructor");
@@ -471,10 +466,10 @@ pub(crate) unsafe fn stop_supervisor_owned(
     request_supervisor_shutdown(sup);
     // SAFETY: the supervisor retains its runtime and stable control until
     // this unique teardown owner publishes completion.
-    let runtime = unsafe { &*(*sup).runtime };
+    let handles = unsafe { &*(*sup).handles };
     // SAFETY: this unique teardown owner keeps the supervisor live.
     let token = unsafe { (*sup).local_pid_id };
-    let Some(control) = runtime.local_handles.supervisor_control_for_raw(token, sup) else {
+    let Some(control) = handles.supervisor_control_for_raw(token, sup) else {
         set_last_error("supervisor teardown lost its stable control");
         // SAFETY: no ownership was consumed and the root remains live.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
@@ -544,9 +539,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
         match entry {
             TeardownChild::Supervisor { pointer, token } => {
                 retain_nested_completion(&raw mut *s, token);
-                let nested_control = runtime
-                    .local_handles
-                    .supervisor_control_for_raw(token, pointer);
+                let nested_control = handles.supervisor_control_for_raw(token, pointer);
                 if control.terminating() {
                     if let Some(nested_control) = nested_control.as_ref() {
                         nested_control.request_terminate();
@@ -578,7 +571,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
                 if child.is_null() {
                     continue;
                 }
-                if !scheduler::actor_progress_available() {
+                if !actor_progress_available() {
                     // Canonical cleanup may own a worker-less runtime after
                     // shutdown. Preserve its synchronous terminal contract;
                     // no queued request could run there.
@@ -1232,4 +1225,15 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
     }
 
     new_child
+}
+
+fn actor_progress_available() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        scheduler::actor_progress_available()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        true
+    }
 }

@@ -131,7 +131,6 @@ unsafe fn advance_group_restart(
     strategy: c_int,
     mut group: PendingGroupRestart,
 ) -> Option<(bool, Vec<(RestartChildRole, FaultRecord)>)> {
-    #[cfg(not(target_arch = "wasm32"))]
     if group.construction.is_some() {
         // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
         return unsafe { advance_native_construction(sup, group) };
@@ -163,7 +162,6 @@ unsafe fn advance_group_restart(
     spawn_deferred_restart_free(deferred);
     group.release_finished();
     if group.stopping.is_empty() {
-        #[cfg(not(target_arch = "wasm32"))]
         // SAFETY: This serialized supervisor dispatch retains the parent and exclusively owns its pending restart transaction.
         if !unsafe { &(*sup).roster }
             .lock_or_recover()
@@ -189,7 +187,6 @@ unsafe fn advance_group_restart(
 }
 
 /// Resume the construction phase of the same pending group transaction.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn advance_native_construction(
     sup: *mut HewSupervisor,
     mut group: PendingGroupRestart,

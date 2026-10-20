@@ -1,0 +1,27 @@
+actor Broken {
+    var label: string = "owned before start";
+    #[on(start)]
+    fn started() {
+        label = label.to_upper();
+        sleep(1ms);
+        panic("start failed after suspension");
+    }
+    receive fn read() -> string { label }
+}
+
+actor Builder {
+    receive fn construct() -> string {
+        let child = spawn Broken;
+        child.read().expect("started child")
+    }
+}
+
+fn main() {
+    let builder = spawn Builder;
+    match builder.construct() {
+        .Ok(_) => panic("failed startup returned a child"),
+        .Err(_) => println("startup fault contained"),
+    }
+    stopped(builder);
+    println("caller survived startup rollback");
+}

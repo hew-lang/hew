@@ -639,7 +639,6 @@ unsafe fn msg_node_alloc_sys(
             crate::tracing::system_context(),
             crate::actor_caller::HewCallerStamp::default(),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         if !node.is_null() {
             (*(*node).envelope).ingress_drop = Some(crate::cow_envelope::IngressDrop {
                 message: msg_type,

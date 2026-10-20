@@ -20,5 +20,4 @@ pub(crate) mod local_handles;
 pub(crate) mod poison_safe;
 
 pub(crate) use poison_safe::PoisonSafe;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use poison_safe::PoisonSafeRw;

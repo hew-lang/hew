@@ -479,7 +479,6 @@ unsafe fn spawn_actor_internal(config: ActorSpawnConfig) -> *mut HewActor {
 ///   null when `state_size` is 0.
 /// - `dispatch` will be called from worker threads with the actor's
 ///   state pointer.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn(
     state: *mut c_void,
@@ -531,7 +530,6 @@ pub unsafe extern "C" fn hew_actor_spawn(
 ///
 /// - `opts` must be a valid pointer to a [`HewActorOpts`].
 /// - Same state/dispatch requirements as [`hew_actor_spawn`].
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut HewActor {
     if opts.is_null() {
@@ -640,7 +638,6 @@ pub unsafe extern "C" fn hew_actor_spawn_opts(opts: *const HewActorOpts) -> *mut
 ///   [`HewStateCloneFn`] contract).
 /// - After this call returns, the caller MUST NOT free or otherwise touch
 ///   `cloned_state`; ownership has transferred.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_spawn_opts_adopt(
     opts: *const HewActorOpts,

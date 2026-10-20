@@ -304,11 +304,8 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
             if terminal == HewActorState::Crashed as i32 {
                 if let Some(start) = completion.crash {
                     let code = actor.error_code.load(Ordering::Acquire);
-                    #[cfg(not(target_arch = "wasm32"))]
                     // SAFETY: terminal ownership retains this incarnation and tree.
                     let stop_ns = unsafe { crate::supervisor::actor_stop_budget(actor) };
-                    #[cfg(target_arch = "wasm32")]
-                    let stop_ns = crate::actor::DEFAULT_STOP_BUDGET_NS;
                     work.crash = Some(HewNativeCrashContext {
                         state: actor.state,
                         kind: crate::internal::types::ExitReason::from_error_code(code)

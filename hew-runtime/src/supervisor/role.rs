@@ -35,7 +35,6 @@ fn fire_role_ask_pinned_submit_hook() {
 /// Name a [`ChildSlotReason`] discriminant for the role-ask refusal
 /// diagnostic. Fail-closed: an out-of-range discriminant (ABI drift) names
 /// itself as such rather than borrowing a real reason's name.
-#[cfg(not(target_arch = "wasm32"))]
 const fn child_slot_reason_name(reason: u8) -> &'static str {
     match reason {
         r if r == ChildSlotReason::Ok as u8 => "Ok",
@@ -54,7 +53,6 @@ const fn child_slot_reason_name(reason: u8) -> &'static str {
 /// diagnostic surface (the tag semantics of the classified lookup ABIs —
 /// contrast the tag-unchecked handle extraction the retired token path
 /// performed, which collapsed every non-Live state into a token-0 send).
-#[cfg(not(target_arch = "wasm32"))]
 fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
     set_last_error(format!(
         "stable-role ask refused: child slot {key} is {}",
@@ -97,7 +95,6 @@ fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
 /// reachable in production; the serial match is what keeps wrong-actor delivery
 /// unrepresentable at this seam regardless. Both scalars are copied out under
 /// `roster`; no pointer crosses the lock boundary.
-#[cfg(not(target_arch = "wasm32"))]
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
     key: u32,
@@ -182,7 +179,6 @@ fn role_resolve_current_child_id(
 
 /// Resolve a stable actor role to its current exact incarnation. The caller
 /// must still pin and compare the full spawn serial before acting on it.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_actor_role_identity(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> Option<(u64, u64)> {
@@ -239,18 +235,6 @@ pub unsafe extern "C" fn hew_supervisor_role_send(
         ));
         crate::internal::types::HewError::ErrActorStopped as i32
     })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_send(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-) -> i32 {
-    crate::internal::types::HewError::ErrActorStopped as i32
 }
 
 /// Cooperatively submit a bounded `overflow block` tell through a stable
@@ -329,22 +313,6 @@ pub unsafe extern "C" fn hew_supervisor_role_await_send(
         }
     }
     rc
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_await_send(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _sender: *mut HewActor,
-    _slot: *mut crate::read_slot::HewReadSlot,
-    _out_actor_id: *mut u64,
-    _out_registration_id: *mut u64,
-) -> c_int {
-    crate::internal::types::HewError::ErrActorStopped as i32
 }
 
 /// Submit an ask with a caller-owned reply channel through a fungible
@@ -448,38 +416,9 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
 
 /// Supervisors are unavailable on the wasm runtime; the owner-scoped role ask
 /// keeps symbol parity and fails closed exactly like the lookup twin above.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_ask_with_channel(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _ch: *mut c_void,
-) -> i32 {
-    // Same TLS classification contract as the native refusal paths: the
-    // with-channel caller binds its Err kind from the ask-error slot.
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
-    crate::internal::types::HewError::ErrActorStopped as i32
-}
 
 /// Supervisors are unavailable on the wasm runtime; the blocking role ask
 /// keeps symbol parity and fails closed to a null reply.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_ask(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-) -> *mut c_void {
-    // Null reply + classified error slot, matching the native blocking twin's
-    // `actor_ask_null_actor_stopped` refusal surface.
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
-    ptr::null_mut()
-}
 
 /// Look up a nested child supervisor by its compile-time-assigned slot index.
 ///
@@ -719,7 +658,6 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
 /// A native coroutine observes one stable role without blocking the driver.
 /// The root pin stays live until cancellation or completion; nested owners are
 /// resolved afresh because their allocations can be replaced while waiting.
-#[cfg(not(target_arch = "wasm32"))]
 pub struct HewNativeRestartWait {
     root_pin: Option<crate::lifetime::local_handles::SupervisorPin>,
     /// Stable supervisor-role tokens and their slots, from root to owner.
@@ -729,7 +667,6 @@ pub struct HewNativeRestartWait {
     waker: Arc<crate::wake::OwnedWaker>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for HewNativeRestartWait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewNativeRestartWait")
@@ -746,7 +683,6 @@ impl std::fmt::Debug for HewNativeRestartWait {
 ///
 /// # Safety
 /// `waker` obeys the retained native wake contract.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
     owner: crate::lifetime::local_handles::HewLocalPidId,
@@ -789,7 +725,6 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
 /// Direct handles have no replacement and complete immediately.
 /// # Safety
 /// `waker` obeys the retained native wake contract.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_restart_wait_new(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -823,7 +758,6 @@ pub unsafe extern "C" fn hew_actor_restart_wait_new(
 ///
 /// # Safety
 /// `wait` remains live and uniquely owned by the caller.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
     wait: *const HewNativeRestartWait,
@@ -895,7 +829,6 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn restart_wait_owner_ending(sup: *mut HewSupervisor) -> bool {
     // SAFETY: the caller holds a supervisor pin through both atomic reads.
     unsafe {
@@ -903,7 +836,6 @@ fn restart_wait_owner_ending(sup: *mut HewSupervisor) -> bool {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn restart_wait_owner_is_current(
     role: Option<crate::lifetime::local_handles::HewLocalPidId>,
     sup: *mut HewSupervisor,
@@ -918,7 +850,6 @@ fn restart_wait_owner_is_current(
 ///
 /// # Safety
 /// The caller transfers its unique wait owner.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewNativeRestartWait) {
     // SAFETY: the caller relinquishes the unique owner.

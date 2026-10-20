@@ -267,7 +267,7 @@ fn actor_handler_panic_is_contained_on_native_and_wasi() {
 fn main() {
     let crasher = spawn Crasher;
     match crasher.fail() {
-        .Ok(_) => println("contained"),
+        .Ok(_) => panic("faulting handler returned a value"),
         .Err(_) => println("contained"),
     }
     println("survived");
@@ -511,11 +511,7 @@ fn actor_start_panic_remains_module_fatal_on_production_wasi() {
 
 #[test]
 fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
-    require_codegen();
-    require_wasi_runner();
-    let output_dir = tempdir();
-    let root = repo_root().join("tests/core-acceptance");
-    for name in [
+    assert_native_wasi_cases(&[
         "task-call-values",
         "fork-outlives-timed-select",
         "select-first-completion",
@@ -524,7 +520,31 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
         "select-actor-lifecycle",
         "task-nested-deadline",
         "race-unobserved-result-cleanup",
-    ] {
+    ]);
+}
+
+#[test]
+fn supervised_actor_lifecycle_runs_under_wasi() {
+    assert_native_wasi_cases(&[
+        "supervisor-restart-one-for-one",
+        "actor-typed-notifications",
+        "actor-notification-hooks-suspend",
+        "supervisor-wired-start-fault",
+        "actor-init-deferred-supervised-fault",
+        "supervisor-role-observations",
+        "supervisor-wired-stop-during-reconstruction",
+        "supervisor-stop-waits-for-stop-hooks",
+        "driver-supervisor-backoff-cancel",
+        "actor-start-fault-contained",
+    ]);
+}
+
+fn assert_native_wasi_cases(names: &[&str]) {
+    require_codegen();
+    require_wasi_runner();
+    let output_dir = tempdir();
+    let root = repo_root().join("tests/core-acceptance");
+    for name in names {
         let manifest = fs::read_to_string(root.join(format!("cases/{name}.toml")))
             .expect("shared acceptance manifest");
         let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
@@ -598,11 +618,13 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
                     } else {
                         // WASI has no profiler name registry; compare the fault
                         // itself, before the actor context diagnostic.
-                        assert_eq!(
-                            actual.lines().next(),
-                            stderr.lines().next(),
-                            "{name} {target} O{level}"
-                        );
+                        let faults = |text: &str| {
+                            text.lines()
+                                .filter(|line| !line.starts_with("hew: actor crash in "))
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(faults(&actual), faults(stderr), "{name} {target} O{level}");
                     }
                 }
             }

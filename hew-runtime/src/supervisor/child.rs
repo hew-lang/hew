@@ -417,7 +417,6 @@ pub(crate) fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildL
 /// complete classified lookup; the child token is copied under `roster`.
 /// A restart after return retires that exact token, so a subsequent token send
 /// fails closed instead of retargeting reused storage.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_local_pid_supervisor_child_get(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -434,14 +433,6 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
 
 /// Supervisors are unavailable on the wasm runtime; retain an exact symbol so
 /// runtime-family parity stays exhaustive while codegen rejects the substrate.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_local_pid_supervisor_child_get(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-) -> ChildLookupResult {
-    ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
-}
 
 /// Test-only hook fired inside [`role_resolve_current_child_id`] in the gap
 /// between resolving the current child slot and returning its ID — with

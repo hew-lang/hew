@@ -325,10 +325,18 @@ pub unsafe extern "C" fn hew_supervisor_new(
     max_restarts: c_int,
     window_secs: c_int,
 ) -> *mut HewSupervisor {
+    #[cfg(not(target_arch = "wasm32"))]
     let runtime = crate::runtime::rt_current();
+    let handles = crate::lifetime::local_handles::current_handles()
+        .expect("supervisor construction requires its local handle authority");
+    #[cfg(not(target_arch = "wasm32"))]
+    let runtime_id = runtime.runtime_id();
+    #[cfg(target_arch = "wasm32")]
+    let runtime_id = crate::runtime_id::RuntimeId::DEFAULT;
     let sup = Box::new(HewSupervisor {
+        #[cfg(not(target_arch = "wasm32"))]
         runtime: runtime as *const crate::runtime::RuntimeInner,
-        handles: &raw const runtime.local_handles,
+        handles: std::ptr::from_ref(handles),
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         strategy,
         max_restarts,
@@ -365,9 +373,8 @@ pub unsafe extern "C" fn hew_supervisor_new(
         native_restart_wakers: crate::wake::ReadinessRegistrations::default(),
     });
     let raw = Box::into_raw(sup); // ALLOCATOR-PAIRING: GlobalAlloc
-    let publication = match crate::lifetime::local_handles::begin_supervisor_publication_in(
-        &runtime.local_handles,
-    ) {
+    let publication = match crate::lifetime::local_handles::begin_supervisor_publication_in(handles)
+    {
         Ok(publication) => publication,
         Err(error) => {
             set_last_error(format!(
@@ -378,7 +385,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             return ptr::null_mut();
         }
     };
-    match publication.register_supervisor(runtime.runtime_id(), raw) {
+    match publication.register_supervisor(runtime_id, raw) {
         Ok(token) => {
             // SAFETY: `raw` remains exclusively construction-owned here.
             unsafe { (*raw).local_pid_id = token };
@@ -780,9 +787,9 @@ pub(crate) unsafe fn finish_claimed_supervisor(
 /// deterministic driver's ready list. The teardown lease keeps runtime
 /// cleanup from reclaiming the allocation before this entry runs.
 pub(crate) struct QueuedSupervisorStop {
-    supervisor: *mut HewSupervisor,
-    root_unregistered: bool,
-    teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
+    pub(super) supervisor: *mut HewSupervisor,
+    pub(super) root_unregistered: bool,
+    pub(super) teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 }
 
 // SAFETY: the teardown lease protects the supervisor allocation across the

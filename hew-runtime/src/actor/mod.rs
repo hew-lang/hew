@@ -1427,13 +1427,6 @@ pub(crate) unsafe fn record_dispatch_state_drop_consumed(actor: *mut HewActor) {
 /// `actor` must remain live for the write and either be unpublished or already
 /// lack typed-drop authority. This must never revoke an owning incarnation's
 /// cleanup obligation. A published shallow child is protected by its roster.
-// KEEP(wasm32): production caller in supervisor.rs marks a shallow-template
-// restart incarnation as borrowing state from the persistent child spec.
-// lib.rs gates `pub mod supervisor` behind
-// `#[cfg(not(target_arch = "wasm32"))]` while `pub mod actor` is ungated — the
-// same asymmetry already annotated elsewhere in this file. The bit it writes,
-// `HewActor::state_drop_borrowed`, is READ on both targets.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording borrowed state provenance");
@@ -1455,11 +1448,6 @@ pub(crate) unsafe fn mark_state_drop_borrowed(actor: *mut HewActor) {
 /// `actor` must be the live child whose former template alias was just broken.
 /// Its fields must be eligible for ownership transfer, never explicitly borrowed
 /// from an external owner under the supervisor's borrowed-state contract.
-// KEEP(wasm32): production caller is `hew_supervisor_set_child_state_clone` in
-// the native-only supervisor module; it flips provenance to owned once the
-// template deep-clone breaks the alias. Same cfg asymmetry as
-// `mark_state_drop_borrowed`.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
     if actor.is_null() {
         eprintln!("fatal: null actor while recording owned state provenance");
@@ -1471,18 +1459,12 @@ pub(crate) unsafe fn mark_state_drop_owned(actor: *mut HewActor) {
         .store(false, Ordering::Release);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
     let token = actor
         .suspended_cancel_token
         .swap(std::ptr::null_mut(), Ordering::AcqRel);
     if !token.is_null() {
-        // `task_scope` is native-only, and so is the suspend edge that stashes
-        // a token, so nothing on wasm32 writes this slot. The wasm build
-        // therefore cannot reach a non-null token, and asserts that rather than
-        // silently dropping a retained reference if that ever changes.
         // SAFETY: the actor slot owns a retained task-scope cancellation token.
-        #[cfg(not(target_arch = "wasm32"))]
         unsafe {
             crate::cancel_token::hew_cancel_token_release(token.cast());
         }
@@ -1498,7 +1480,6 @@ pub(crate) fn clear_suspended_cancel_token(actor: &HewActor) {
 /// rather than repeating the `cfg` split at every call site.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_parked_activation_reply(actor: &HewActor) {
-    #[cfg(not(target_arch = "wasm32"))]
     crate::activation::retire_suspended_reply_channel(actor);
 }
 

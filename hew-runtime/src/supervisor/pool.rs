@@ -340,7 +340,6 @@ pub unsafe extern "C" fn hew_supervisor_pool_child_get(
 /// member is restarting or permanently stopped; the later role send/ask is the
 /// sole liveness authority and fails closed there. Dynamic PID-set pools have
 /// no stable supervisor child slot and are rejected.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_local_pid_supervisor_pool_child_ref_get(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -368,16 +367,6 @@ pub extern "C" fn hew_local_pid_supervisor_pool_child_ref_get(
     // The descriptor word is an integer, not a dereferenceable actor pointer.
     let descriptor = std::ptr::with_exposed_provenance_mut::<HewActor>(static_slot);
     ChildLookupResult::live(descriptor)
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_local_pid_supervisor_pool_child_ref_get(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _pool_key: u32,
-    _index: u64,
-) -> ChildLookupResult {
-    ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
 }
 
 /// Return the number of live members in a pool slot.
@@ -514,7 +503,6 @@ fn register_native_child(
 
 /// Register declaration slots and project the compiler's startup permutation
 /// onto their stable runtime identities. No callbacks run under this lock.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn register_native_roster(
     roster: &mut SupervisorRoster,
     children: &[HewNativeChildSpec],
@@ -543,7 +531,6 @@ pub(super) fn register_native_roster(
     Some(slots)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) unsafe fn release_unadopted_config(
     config: *mut c_void,
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
@@ -560,7 +547,6 @@ pub(super) unsafe fn release_unadopted_config(
 
 /// Install one freshly constructed incarnation into its registered declaration.
 /// The caller owns construction and keeps the parent alive.
-#[cfg(not(target_arch = "wasm32"))]
 pub(super) unsafe fn adopt_native_child(
     sup: *mut HewSupervisor,
     index: usize,
@@ -629,7 +615,6 @@ pub(super) unsafe fn adopt_native_child(
 ///
 /// # Safety
 /// `fault` is writable and initially null.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_pool_count(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -664,7 +649,6 @@ pub unsafe extern "C" fn hew_supervisor_native_pool_count(
 /// # Safety
 ///
 /// `out_tag` is writable or null.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_child(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -684,7 +668,6 @@ pub unsafe extern "C" fn hew_supervisor_native_child(
 }
 
 /// Retain a stable nested owner path for another declared child projection.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_supervisor_native_role_owner(
     owner: crate::lifetime::local_handles::HewLocalPidId,
@@ -763,7 +746,6 @@ pub(crate) unsafe fn snapshot_role_wait_targets(
 /// Request a transition for the nested supervisor selected by a stable role.
 /// The parent notification is installed before teardown so a normal stop can
 /// refill a permanent child slot.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_supervisor_native_role_request(
     owner: crate::lifetime::local_handles::HewLocalPidId,

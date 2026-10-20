@@ -21,6 +21,7 @@ use super::*;
 /// incomplete tree remains registered and its runtime/actors must stay alive
 /// rather than being freed unsafely. There is no automatic retry; an embedder
 /// may explicitly invoke cleanup again after the borrower drains.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool {
     // Workers have joined, so canonical cleanup exclusively owns any pending
     // constructor. Its cancellation cleanup must release retained role pins

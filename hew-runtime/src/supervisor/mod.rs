@@ -23,6 +23,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewSy
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 use crate::set_last_error;
 use crate::timer_wheel::{
@@ -634,9 +635,7 @@ struct PendingGroupRestart {
     /// Each failure the restart answers, with the crash record it rules on.
     failures: Vec<(RestartChildRole, FaultRecord)>,
     stopping: Vec<StoppedIncarnation>,
-    #[cfg(not(target_arch = "wasm32"))]
     construction: Option<native::NativeReconstruction>,
-    #[cfg(not(target_arch = "wasm32"))]
     readiness: Arc<ConstructionReadiness>,
     /// Registered with every completion in `stopping`; the registrations are
     /// weak, so this is what keeps them live.
@@ -651,10 +650,8 @@ impl PendingGroupRestart {
         Self {
             failures: Vec::new(),
             stopping: Vec::new(),
-            #[cfg(not(target_arch = "wasm32"))]
             construction: None,
             waker: group_restart_waker(supervisor, Arc::clone(&readiness)),
-            #[cfg(not(target_arch = "wasm32"))]
             readiness,
         }
     }
@@ -706,12 +703,10 @@ struct ConstructionReadiness {
 }
 
 impl ConstructionReadiness {
-    #[cfg(not(target_arch = "wasm32"))]
     fn clear(&self) {
         *self.ready.lock_or_recover() = false;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, deadline: Instant) {
         if crate::driver::active() {
             crate::driver::drain_poll(Duration::ZERO);
@@ -1179,6 +1174,7 @@ unsafe impl Send for SupervisorRoster {}
 /// Supervisor managing a set of child actors.
 pub struct HewSupervisor {
     /// Runtime authority that owns this allocation's stable handle control.
+    #[cfg(not(target_arch = "wasm32"))]
     runtime: *const crate::runtime::RuntimeInner,
     /// Exact local-handle authority retained until supervisor teardown drains.
     handles: *const crate::lifetime::local_handles::LocalHandles,
@@ -1232,6 +1228,7 @@ const SUPERVISOR_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Canonical cleanup runs after workers have stopped, but an in-flight
 /// delayed-restart callback can still hold a raw supervisor borrow. Its
 /// bounded lease retains the allocation instead of freeing under that borrow.
+#[cfg(not(target_arch = "wasm32"))]
 const SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
@@ -1962,10 +1959,12 @@ struct DeferredFree(*mut HewActor);
 unsafe impl Send for DeferredFree {}
 
 /// Wrapper to stop an exhausted child supervisor off the scheduler thread.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug)]
 struct DeferredSupervisorStop(*mut HewSupervisor);
 // SAFETY: ownership is transferred to the background thread after the parent
 // replaces its slot with a fresh child supervisor.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Send for DeferredSupervisorStop {}
 
 // ---------------------------------------------------------------------------
@@ -2561,16 +2560,19 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> Faul
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn stop_owned_deferred_supervisor(
     deferred: DeferredSupervisorStop,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 ) {
     // SAFETY: the claimed supervisor and its owning runtime remain live until
     // this teardown lease is released; leave that runtime before releasing it.
+    #[cfg(not(target_arch = "wasm32"))]
     let context = unsafe { crate::runtime::enter(&*(*deferred.0).runtime) };
     // SAFETY: teardown ownership was claimed by the caller before this thread
     // was spawned, so this background thread is the unique destructor.
     unsafe { stop_supervisor_owned(deferred.0, &teardown) };
+    #[cfg(not(target_arch = "wasm32"))]
     drop(context);
     drop(teardown);
 }
@@ -2588,23 +2590,35 @@ fn spawn_owned_deferred_supervisor_stop(
         return false;
     }
 
-    let sup_addr = sup as usize;
-    if let Ok(handle) = std::thread::Builder::new()
-        .name("deferred-sup-stop".into())
-        .spawn(move || {
-            stop_owned_deferred_supervisor(
-                DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
-                teardown,
-            );
-        })
+    #[cfg(target_arch = "wasm32")]
     {
-        // Register the teardown thread so `cleanup_all_actors` joins it
-        // before sweeping the actors this thread still dereferences.
-        crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+        crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
+            supervisor: sup,
+            root_unregistered: false,
+            teardown,
+        });
         true
-    } else {
-        eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
-        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let sup_addr = sup as usize;
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("deferred-sup-stop".into())
+            .spawn(move || {
+                stop_owned_deferred_supervisor(
+                    DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
+                    teardown,
+                );
+            })
+        {
+            // Register the teardown thread so `cleanup_all_actors` joins it
+            // before sweeping the actors this thread still dereferences.
+            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+            true
+        } else {
+            eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
+            false
+        }
     }
 }
 
@@ -2621,26 +2635,33 @@ fn spawn_deferred_restart_free(deferred: Vec<DeferredFree>) {
     if deferred.is_empty() {
         return;
     }
-    match std::thread::Builder::new()
-        .name("deferred-free".into())
-        .spawn(move || {
-            for d in deferred {
-                // SAFETY: actor was stopped; supervisor no longer references it.
-                // Explicit provenance plus the actor's one-shot
-                // `state_drop_consumed` bit decide typed-drop authority. A
-                // stopped fresh sibling did not consume crash escrow, a
-                // sibling that did is already marked, and a shallow-template
-                // borrower never owned it; the common path handles all three.
-                unsafe { actor::hew_actor_free(d.0) };
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::driver::publish_actor_free(deferred.into_iter().map(|actor| actor.0).collect());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::thread::Builder::new()
+            .name("deferred-free".into())
+            .spawn(move || {
+                for d in deferred {
+                    // SAFETY: actor was stopped; supervisor no longer references it.
+                    // Explicit provenance plus the actor's one-shot
+                    // `state_drop_consumed` bit decide typed-drop authority. A
+                    // stopped fresh sibling did not consume crash escrow, a
+                    // sibling that did is already marked, and a shallow-template
+                    // borrower never owned it; the common path handles all three.
+                    unsafe { actor::hew_actor_free(d.0) };
+                }
+            }) {
+            Ok(handle) => {
+                // Register the teardown thread so `cleanup_all_actors` joins it
+                // before sweeping the actors this thread still dereferences.
+                crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
             }
-        }) {
-        Ok(handle) => {
-            // Register the teardown thread so `cleanup_all_actors` joins it
-            // before sweeping the actors this thread still dereferences.
-            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
-        }
-        Err(_) => {
-            eprintln!("hew: warning: failed to spawn deferred-free thread");
+            Err(_) => {
+                eprintln!("hew: warning: failed to spawn deferred-free thread");
+            }
         }
     }
 }
@@ -2738,7 +2759,6 @@ fn should_fail_delayed_restart_arm() -> bool {
 mod child;
 mod crash;
 mod lifecycle;
-#[cfg(not(target_arch = "wasm32"))]
 mod native;
 mod pool;
 mod restart;
@@ -2747,9 +2767,10 @@ pub(crate) mod roots;
 mod teardown;
 
 pub use child::*;
-pub(crate) use crash::*;
-pub use lifecycle::*;
 #[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crash::free_supervisor_resources;
+pub use crash::hew_supervisor_handle_crash;
+pub use lifecycle::*;
 pub use native::*;
 pub use pool::*;
 pub(crate) use restart::*;

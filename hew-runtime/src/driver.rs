@@ -240,8 +240,9 @@ enum Participant {
     Root(Arc<Readiness>),
     /// An admitted supervisor teardown. Teardown may step the driver while
     /// children finish, but its source-level requester has already returned.
-    #[cfg(not(target_arch = "wasm32"))]
     SupervisorStop(crate::supervisor::QueuedSupervisorStop),
+    #[cfg(target_arch = "wasm32")]
+    ActorFree(Vec<*mut crate::actor::HewActor>),
     #[cfg(not(target_arch = "wasm32"))]
     Shutdown,
 }
@@ -316,7 +317,6 @@ pub(crate) fn publish_root(readiness: Arc<Readiness>) {
 }
 
 /// Enqueue a supervisor teardown after the source-level stop request returns.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn publish_supervisor_stop(stop: crate::supervisor::QueuedSupervisorStop) {
     publish(Participant::SupervisorStop(stop));
 }
@@ -380,8 +380,14 @@ fn run_participant(participant: Participant) {
         Participant::Actor(actor) => activate_queued_actor(actor),
         Participant::Task(task) => task.poll(),
         Participant::Root(readiness) => readiness.picked(),
-        #[cfg(not(target_arch = "wasm32"))]
         Participant::SupervisorStop(stop) => stop.run(),
+        #[cfg(target_arch = "wasm32")]
+        Participant::ActorFree(actors) => {
+            for actor in actors {
+                // SAFETY: the queue entry owns these detached incarnations.
+                unsafe { crate::actor::hew_actor_free(actor) };
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         Participant::Shutdown => crate::shutdown::hew_shutdown_initiate(0),
     }
@@ -507,7 +513,6 @@ pub(crate) fn run_to_quiescence() {
 /// The shutdown drain's poll: where the threaded runtime sleeps while workers
 /// finish, the driver runs the work itself, moving the clock to the next timer
 /// once nothing is ready so cleanup that sleeps still completes.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn drain_poll(interval: std::time::Duration) {
     if !active() {
         std::thread::sleep(interval);
@@ -544,4 +549,9 @@ mod tests {
         assert!(parse_config("schedule=chaos").is_err());
         assert!(parse_config("seed").is_err());
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn publish_actor_free(actors: Vec<*mut crate::actor::HewActor>) {
+    publish(Participant::ActorFree(actors));
 }

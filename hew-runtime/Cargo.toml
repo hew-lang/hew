@@ -67,6 +67,7 @@ clone-failure-test = []
 composition-test = []
 
 [dependencies]
+rand = "0.10.1"
 # CBOR envelope framing (ciborium, RFC 8949); CDDL schema in schemas/envelope.cddl.
 ciborium = "0.2"
 # Serde derive support for the CBOR envelope types (W1+).
@@ -97,7 +98,6 @@ finl_unicode = { version = "=1.5.0", default-features = false, features = [
 cap-std = "4.0.3"
 crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
-rand = "0.10.1"
 socket2 = "0.6.4"
 snow = "0.10"
 tempfile.workspace = true

@@ -275,7 +275,7 @@
         {
           "comment": "Control flow",
           "name": "keyword.control.hew",
-          "match": "\\b(after|await|await_restart|break|continue|defer|else|for|from|if|in|loop|match|race|return|scope|select|while|yield)\\b"
+          "match": "\\b(after|await|break|continue|defer|else|for|from|if|in|loop|match|race|return|scope|select|while|yield)\\b"
         },
         {
           "comment": "Declarations",
@@ -352,7 +352,7 @@
         {
           "comment": "Primitive types",
           "name": "storage.type.primitive.hew",
-          "match": "\\b(bool|bytes|char|duration|instant|string)\\b"
+          "match": "\\b(bool|bytes|char|duration|instant|string|timestamp)\\b"
         },
         {
           "comment": "Generic / collection types",

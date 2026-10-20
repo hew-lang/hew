@@ -817,6 +817,9 @@ pub struct HostOperation {
     }
 
     fn render_playground_json(&self) -> String {
+        if self.playground_wasi.is_empty() {
+            return "[]\n".to_string();
+        }
         let mut out = String::from("[\n");
         for (index, row) in self.playground_wasi.iter().enumerate() {
             out.push_str("  {\n");

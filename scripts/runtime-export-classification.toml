@@ -502,6 +502,7 @@ stable = [
   "hew_process_signalled",
   "hew_process_start",
   "hew_process_start_shell",
+  "hew_process_start_with_options",
   "hew_process_status",
   "hew_process_take_pipe",
   "hew_process_wait_error",
@@ -3759,6 +3760,24 @@ discharge-depth = "shallow"
 symbol = "hew_process_start"
 result = "fresh"
 params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_process_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
+symbol = "hew_process_start_with_options"
+result = "fresh"
+params = [
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+]
 release-symbol = "hew_process_drop"
 discharge-depth = "shallow"
 

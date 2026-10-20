@@ -513,6 +513,8 @@ generate_functions = [
   "std.process.run",
   "std.process.run_argv",
   "std.process.start",
+  "std.process.start_with_options",
+  "std.process.Command.output_with_options",
   "std.process.Child.wait",
   "std.process.Child.try_wait",
   "std.process.Child.terminate",
@@ -521,6 +523,7 @@ generate_functions = [
 generate_endpoints = [
   "hew_process_start_shell",
   "hew_process_start",
+  "hew_process_start_with_options",
   "hew_process_exit_stream",
   "hew_process_poll",
   "hew_process_signal",
@@ -530,6 +533,8 @@ deterministic_functions = [
   "std.process.run",
   "std.process.run_argv",
   "std.process.start",
+  "std.process.start_with_options",
+  "std.process.Command.output_with_options",
   "std.process.Child.wait",
   "std.process.Child.try_wait",
   "std.process.Child.terminate",
@@ -538,6 +543,7 @@ deterministic_functions = [
 deterministic_endpoints = [
   "hew_process_start_shell",
   "hew_process_start",
+  "hew_process_start_with_options",
   "hew_process_exit_stream",
   "hew_process_poll",
   "hew_process_signal",

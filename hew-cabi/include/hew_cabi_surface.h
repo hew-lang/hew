@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1640u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1641u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1640] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1641] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4941,6 +4941,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1640] = {
     {"hew_process_start_shell",
      "{\"native\": \"fn hew_process_start_shell( *const HewString) -> *mut "
      "HewProcess\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_process_start_with_options",
+     "{\"native\": \"fn hew_process_start_with_options( *const HewString, *mut "
+     "HewVec, i32, i32, i32, bool, *mut HewVec, *mut HewVec, bool, *const "
+     "HewString, ) -> *mut HewProcess\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_process_status",

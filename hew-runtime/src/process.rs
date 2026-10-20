@@ -239,6 +239,81 @@ pub unsafe extern "C" fn hew_process_start(
     spawn_child(command, &program, stdin, stdout, stderr, CONTEXT)
 }
 
+/// Start a child with per-child environment and working-directory options.
+///
+/// `inherit` preserves the parent's environment when true; otherwise the child
+/// starts with an empty environment. Parallel `names` and `values` vectors apply
+/// bindings in order (last wins, using the host's name comparison). `has_cwd`
+/// distinguishes inheritance from an explicit `cwd`. No parent state changes.
+/// Validation diagnostics never include environment values.
+///
+/// Returns the same owned handle as [`hew_process_start`], or null with a
+/// diagnostic. Stdio, exit watching, cancellation and reaping are unchanged.
+///
+/// # Safety
+///
+/// `program` and `cwd` must be live managed handles or null (empty). `args`,
+/// `names` and `values` must be null or valid string-backed [`HewVec`] pointers.
+#[no_mangle]
+pub unsafe extern "C" fn hew_process_start_with_options(
+    program: *const HewString,
+    args: *mut HewVec,
+    stdin: i32,
+    stdout: i32,
+    stderr: i32,
+    inherit: bool,
+    names: *mut HewVec,
+    values: *mut HewVec,
+    has_cwd: bool,
+    cwd: *const HewString,
+) -> *mut HewProcess {
+    const CONTEXT: &str = "hew_process_start_with_options";
+    if refused_for_shutdown(CONTEXT) {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: all input owners are borrowed through this ABI call.
+    let inputs = unsafe {
+        (
+            process_input(program, CONTEXT),
+            hewvec_string_args(args, CONTEXT),
+            hewvec_string_args(names, CONTEXT),
+            hewvec_string_args(values, CONTEXT),
+        )
+    };
+    let (Some(program), Some(args), Some(names), Some(values)) = inputs else {
+        return std::ptr::null_mut();
+    };
+    if names.len() != values.len() {
+        crate::set_last_error(format!("{CONTEXT}: environment vector lengths differ"));
+        return std::ptr::null_mut();
+    }
+    if names
+        .iter()
+        .any(|name| name.is_empty() || name.contains('='))
+    {
+        crate::set_last_error(format!("{CONTEXT}: invalid environment variable name"));
+        return std::ptr::null_mut();
+    }
+    let mut command = Command::new(&program);
+    command.args(args);
+    if !inherit {
+        command.env_clear();
+    }
+    command.envs(names.into_iter().zip(values));
+    if has_cwd {
+        // SAFETY: cwd is borrowed through this ABI call.
+        let Some(cwd) = (unsafe { process_input(cwd, CONTEXT) }) else {
+            return std::ptr::null_mut();
+        };
+        if cwd.is_empty() {
+            crate::set_last_error(format!("{CONTEXT}: empty working directory"));
+            return std::ptr::null_mut();
+        }
+        command.current_dir(cwd);
+    }
+    spawn_child(command, &program, stdin, stdout, stderr, CONTEXT)
+}
+
 /// Start a captured shell command without waiting for it to finish.
 ///
 /// The shell follows the same platform contract as `std.process.run`.
@@ -641,6 +716,203 @@ mod tests {
             assert_eq!(hew_process_poll(child), 1);
             (hew_process_signalled(child), hew_process_status(child))
         }
+    }
+
+    fn start_options(
+        program: &str,
+        args: &[&str],
+        inherit: bool,
+        bindings: &[(&str, &str)],
+        cwd: Option<&str>,
+    ) -> *mut HewProcess {
+        let program = ManagedString::new(program);
+        let directory = ManagedString::new(cwd.unwrap_or_default());
+        let args = string_vec(args);
+        let names = string_vec(&bindings.iter().map(|(name, _)| *name).collect::<Vec<_>>());
+        let values = string_vec(&bindings.iter().map(|(_, value)| *value).collect::<Vec<_>>());
+        // SAFETY: all managed inputs remain live until the call returns.
+        unsafe {
+            let child = hew_process_start_with_options(
+                program.as_ptr(),
+                args,
+                1,
+                2,
+                2,
+                inherit,
+                names,
+                values,
+                cwd.is_some(),
+                directory.as_ptr(),
+            );
+            for vector in [args, names, values] {
+                crate::vec::hew_vec_free(vector);
+            }
+            child
+        }
+    }
+
+    #[test]
+    fn options_reject_invalid_inputs_without_disclosing_values() {
+        let secret = "environment-value-not-for-diagnostics";
+        for bindings in [
+            vec![("", secret)],
+            vec![("BAD=NAME", secret)],
+            vec![("BAD\0NAME", secret)],
+            vec![("NAME", "environment-value-not-for-diagnostics\0")],
+        ] {
+            assert!(start_options("unused", &[], false, &bindings, None).is_null());
+            // SAFETY: this thread's failed call populated the last-error slot.
+            unsafe {
+                assert!(!read_last_error().contains(secret));
+                crate::hew_clear_error();
+            }
+        }
+        for directory in ["", "bad\0directory"] {
+            assert!(start_options("unused", &[], true, &[], Some(directory)).is_null());
+        }
+        let program = ManagedString::new("unused");
+        let names = string_vec(&["NAME"]);
+        // SAFETY: a valid name vector with mismatched empty values is refused.
+        unsafe {
+            assert!(hew_process_start_with_options(
+                program.as_ptr(),
+                std::ptr::null_mut(),
+                1,
+                2,
+                2,
+                false,
+                names,
+                std::ptr::null_mut(),
+                false,
+                std::ptr::null(),
+            )
+            .is_null());
+            assert!(read_last_error().contains("lengths differ"));
+            crate::vec::hew_vec_free(names);
+            crate::hew_clear_error();
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn options_isolate_concurrent_children_and_preserve_parent() {
+        use std::io::Read;
+
+        let parent_path = std::env::var_os("PATH");
+        let parent_binding = std::env::var_os("HEW_CHILD_ONLY");
+        let parent_cwd = std::env::current_dir().unwrap();
+        let child_cwd = std::env::temp_dir();
+        let child_cwd = child_cwd.to_str().unwrap();
+        // A clear environment also removes PATH. Absolute executable paths
+        // avoid depending on the host's search fallback for this test.
+        let inherited = start_options(
+            "/bin/sh",
+            &[
+                "-c",
+                "test \"${PATH+x}\" = x && test \"$HEW_CHILD_ONLY\" = inherited",
+            ],
+            true,
+            &[("HEW_CHILD_ONLY", "inherited")],
+            None,
+        );
+        let cleared = start_options(
+            "/bin/sh",
+            &[
+                "-c",
+                "test -z \"${HOME+x}\" && test \"$HEW_CHILD_ONLY\" = cleared",
+            ],
+            false,
+            &[
+                ("HEW_CHILD_ONLY", "replaced"),
+                ("HEW_CHILD_ONLY", "cleared"),
+            ],
+            Some(child_cwd),
+        );
+        assert!(!inherited.is_null());
+        assert!(!cleared.is_null());
+        assert_eq!(wait(inherited), (false, 0));
+        assert_eq!(wait(cleared), (false, 0));
+        // SAFETY: both returned handles belong to this test.
+        unsafe {
+            hew_process_drop(inherited);
+            hew_process_drop(cleared);
+        }
+        let directory = start_options("/bin/pwd", &[], false, &[], Some(child_cwd));
+        assert!(!directory.is_null());
+        // SAFETY: this test owns the child and has not taken stdout.
+        unsafe {
+            let mut output = String::new();
+            (*directory)
+                .state
+                .lock_or_recover()
+                .child
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert_eq!(wait(directory), (false, 0));
+            assert_eq!(
+                std::path::Path::new(output.trim()).canonicalize().unwrap(),
+                std::path::Path::new(child_cwd).canonicalize().unwrap()
+            );
+            hew_process_drop(directory);
+        }
+        assert_eq!(std::env::var_os("PATH"), parent_path);
+        assert_eq!(std::env::var_os("HEW_CHILD_ONLY"), parent_binding);
+        assert_eq!(std::env::current_dir().unwrap(), parent_cwd);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn options_empty_environment_and_failed_launch_release_resources() {
+        use std::io::Read;
+
+        let empty = start_options("/usr/bin/env", &[], false, &[], None);
+        assert!(!empty.is_null());
+        // SAFETY: this test owns the child and has not taken stdout.
+        unsafe {
+            let mut output = String::new();
+            (*empty)
+                .state
+                .lock_or_recover()
+                .child
+                .stdout
+                .take()
+                .unwrap()
+                .read_to_string(&mut output)
+                .unwrap();
+            assert_eq!(wait(empty), (false, 0));
+            assert!(output.is_empty());
+            hew_process_drop(empty);
+            for _ in 0..16 {
+                assert!(start_options(
+                    "/bin/sh",
+                    &[],
+                    false,
+                    &[("CHILD_ONLY", "private")],
+                    Some("/hew-process-directory-that-does-not-exist"),
+                )
+                .is_null());
+                assert!(!read_last_error().contains("private"));
+                assert!(start_options(
+                    "/hew-process-program-that-does-not-exist",
+                    &[],
+                    false,
+                    &[],
+                    None,
+                )
+                .is_null());
+                // Null handles from a failed spawn have the usual drop contract.
+                hew_process_drop(std::ptr::null_mut());
+            }
+            crate::hew_clear_error();
+        }
+        let next = start_options("/bin/sh", &["-c", "exit 9"], false, &[], None);
+        assert!(!next.is_null());
+        assert_eq!(wait(next), (false, 9));
+        // SAFETY: this test owns the final successful handle.
+        unsafe { hew_process_drop(next) };
     }
 
     #[test]

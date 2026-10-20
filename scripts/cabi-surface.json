@@ -13059,6 +13059,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_process_start_with_options( *const HewString, *mut HewVec, i32, i32, i32, bool, *mut HewVec, *mut HewVec, bool, *const HewString, ) -> *mut HewProcess"
+      },
+      "symbol": "hew_process_start_with_options"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_process_status( *mut HewProcess) -> i64"
       },
       "symbol": "hew_process_status"

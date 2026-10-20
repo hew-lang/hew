@@ -725,6 +725,10 @@ impl HewCluster {
     /// raising a SUSPECT peer back to ALIVE). Only a genuinely peer-announced,
     /// strictly higher incarnation may readmit a DEAD/LEFT node: a local reconnect
     /// is not proof the buried peer is back, so it can never resurrect it.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "stage every membership field under its owning lock"
+    )]
     fn stage_member_transition_locked(
         members: &mut Vec<ClusterMember>,
         node_id: u16,
@@ -1093,9 +1097,13 @@ impl HewCluster {
         *self.guarded_membership_callback_probe.lock_or_recover() = probe;
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "authorize and gate each membership effect against one publication"
+    )]
     fn deliver_member_transition(&self, transition: &MemberTransition) {
         if !self.transition_owner_is_current(transition) {
-            self.settle_superseded_member_owner(transition);
+            Self::settle_superseded_member_owner(transition);
             return;
         }
         if !self.transition_membership_epoch_is_current(transition) {
@@ -1230,13 +1238,13 @@ impl HewCluster {
         if !may_emit() {
             return;
         }
-        self.apply_member_transition_side_effects(transition);
+        Self::apply_member_transition_side_effects(transition);
     }
 
     /// A stale DEAD may settle resources that still carry its exact owner, but
     /// it must not publish membership, gossip, or terminal state against the
     /// replacement route.
-    fn settle_superseded_member_owner(&self, transition: &MemberTransition) {
+    fn settle_superseded_member_owner(transition: &MemberTransition) {
         if transition.state != MEMBER_DEAD {
             return;
         }
@@ -1258,7 +1266,7 @@ impl HewCluster {
     /// quarantine) and the readmission eviction. Kept separate from the
     /// publication-token bookkeeping in
     /// `deliver_member_transition` so each stays a single, readable concern.
-    fn apply_member_transition_side_effects(&self, transition: &MemberTransition) {
+    fn apply_member_transition_side_effects(transition: &MemberTransition) {
         if transition.state == MEMBER_DEAD {
             // Settle only cross-node monitor/link state owned by the captured
             // route publication. A prior definitive DOWN wins exactly once.
@@ -2120,6 +2128,10 @@ impl HewCluster {
     /// affected peer. Entries about the local node are ignored here — local
     /// state is authoritative and self-refutation is handled separately by
     /// [`Self::refute_if_suspected`].
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fold gossip and retire predecessor authority in one lock transaction"
+    )]
     pub fn apply_swim_gossip(&self, entries: &[(u16, u32, i32, u64)]) {
         let local = self.config.local_node_id;
         for &(node_id, session, state, incarnation) in entries {
@@ -2167,8 +2179,7 @@ impl HewCluster {
                         let old_incarnation = members
                             .iter()
                             .find(|member| member.node_id == node_id)
-                            .map(|member| member.incarnation)
-                            .unwrap_or(0);
+                            .map_or(0, |member| member.incarnation);
                         // Gossip proves a newer durable session but carries no
                         // connection authority. Retire every predecessor marker
                         // and cancel any guarded delivery before staging it.

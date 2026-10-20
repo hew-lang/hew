@@ -1,0 +1,63 @@
+import std.time.cron;
+import std.time.datetime;
+
+fn moment(text: string) -> timestamp {
+    datetime.parse_iso8601(text).expect("valid fixture timestamp")
+}
+
+fn main() {
+    let start = moment("2024-01-01T00:00:00Z");
+    let minute = cron.parse("* * * * *");
+    assert(minute.next(start) == start + 1m);
+    assert(minute.next(start + 1ns) == start + 1m);
+    assert(cron.parse("*/15 * * * * *").next(start) == start + 15s);
+    assert(cron.parse("******").next(start) == start + 1s);
+    assert(cron.parse("@hourly").next(start) == start + 1h);
+    assert(cron.parse("@weekly").next(start) == moment("2024-01-07T00:00:00Z"));
+    assert(cron.parse("0 0 0 1 * Monday").next(start) == moment("2024-04-01T00:00:00Z"));
+    assert(cron.parse("0 0 0 29 February *").next(moment("2099-01-01T00:00:00Z")) == moment("2104-02-29T00:00:00Z"));
+    assert(cron.parse("0 0 0 1 1 * */3").next(start) == moment("2027-01-01T00:00:00Z"));
+    assert(cron.parse("0 0 0 1 1 * 50000").next(start) == moment("+50000-01-01T00:00:00Z"));
+    assert(cron.parse("@yearly").next(moment("1959-12-31T23:59:59.999999999Z")) == moment("1960-01-01T00:00:00Z"));
+    assert(cron.parse("0 0 0 ? Jan-Mar/2 Mon-Fri").next(start) == moment("2024-01-02T00:00:00Z"));
+    assert(cron.parse("@yearly").next(moment("-0002-12-31T23:59:59Z")) == moment("-0001-01-01T00:00:00Z"));
+    let last = datetime.from_parts(262142, 12, 31, 23, 59, 59, 999999999).expect("last calendar second");
+    match cron.parse("* * * * * *").try_next(last) {
+        .Err(.CalendarRange(_)) => {}
+        _ => panic("expected calendar boundary"),
+    }
+    match cron.parse("0 0 0 1 1 * 262142").try_next(last) {
+        .Err(.NoNextOccurrence(_)) => {}
+        _ => panic("expected finite boundary exhaustion"),
+    }
+    match cron.parse("0 0 0 1 1 * */9223372036854775807").try_next(start) {
+        .Err(.CalendarRange(_)) => {}
+        _ => panic("expected checked wide step"),
+    }
+    let copy = minute;
+    assert(copy.next(start + 1m) == start + 2m);
+    assert(minute.next(start) == start + 1m);
+    for bad in ["nope", "*/0 * * * *", "* * * * 0", "* * * * 8", "? * * * * *", "0 0 0 * Foo *", "0 0 0 * * Mon/2", "0 0 0 31-1 * *", "0 0 0 1 1 * 2025-2024", "0 0 0 * Jan-6 *", "* /15 * * * * *", "0 0 0 1, * * *"] {
+        match cron.try_parse(bad) {
+            .Err(.InvalidInput(message)) => assert(!message.is_empty()),
+            _ => panic("expected invalid cron grammar"),
+        }
+    }
+    match cron.parse("0 0 0 1 1 * 2024").try_next(moment("2025-01-01T00:00:00Z")) {
+        .Err(.NoNextOccurrence(_)) => {}
+        _ => panic("expected exhausted finite schedule"),
+    }
+    match minute.try_next(timestamp.from_unix_secs(9223372036854775807)) {
+        .Err(.CalendarRange(_)) => {}
+        _ => panic("expected input calendar range error"),
+    }
+    match cron.parse("0 0 0 1 1 * 300000").try_next(start) {
+        .Err(.CalendarRange(_)) => {}
+        _ => panic("expected future calendar range error"),
+    }
+    match cron.parse("0 0 0 30 Feb *").try_next(start) {
+        .Err(.NoNextOccurrence(_)) => {}
+        _ => panic("expected impossible recurring schedule"),
+    }
+    println("timestamp cron ok");
+}

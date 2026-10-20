@@ -47,6 +47,8 @@ mod resource_close_consume;
 mod scope_resolution;
 #[path = "registry_core/supervisor_check.rs"]
 mod supervisor_check;
+#[path = "registry_core/timestamp.rs"]
+mod timestamp;
 #[path = "registry_core/user_generic_type_decl_checker_test.rs"]
 mod user_generic_type_decl_checker_test;
 #[path = "registry_core/veciter_intoiterator_surface.rs"]

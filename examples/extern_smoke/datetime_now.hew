@@ -1,10 +1,10 @@
 extern "rt" {
-    fn hew_datetime_now_ms() -> i64;
+    fn hew_timestamp_now() -> timestamp;
 }
 
 fn main() {
-    let now: i64 = unsafe {
-        hew_datetime_now_ms()
+    let now = unsafe {
+        hew_timestamp_now()
     };
-    println(now);
+    println(now.unix_secs_floor());
 }

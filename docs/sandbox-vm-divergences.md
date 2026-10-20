@@ -87,3 +87,18 @@ on across targets.
 
 The native-to-VM parity harness runs on Linux. Windows currently skips that
 Node-based harness; native and WASI checks are separate evidence.
+
+`timestamp.now()` reads the replay clock's `current_ms` as Unix milliseconds.
+That coordinate already includes `epoch_ms`; it is not added again. The default
+clock starts at the Unix epoch, and hosts can supply the existing replay clock
+to choose another coordinate. Clock acquisition has millisecond precision; stored
+timestamps and timestamp arithmetic retain nanosecond precision. Native programs
+read the operating system wall clock. Neither clock is a monotonic `instant`.
+
+
+Calendar operations use the same pure Chrono engine on native and sandbox
+hosts. Hosts supply the initialized `executeCalendar` export from
+`@hew-lang/wasm` as `calendarBridge`. Decimal-string integer transport
+preserves normalized Unix seconds and nanoseconds. Calendar results and owned
+error messages follow the checked source record descriptors; formatting,
+offset normalization, leap-second rejection and range errors share one engine.

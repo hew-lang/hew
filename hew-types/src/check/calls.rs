@@ -1586,6 +1586,17 @@ impl Checker {
             .map(|declaration| self.source_call_target(declaration))
     }
 
+    /// Select a static runtime method through its checked declaration, including
+    /// the same canonical source provenance required by receiver methods.
+    fn associated_runtime_target_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::RuntimeCallFamily> {
+        let sig = self.fn_sig(signature_key).filter(|sig| sig.associated)?;
+        let spec = sig.extern_symbol.as_ref()?;
+        self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
+    }
+
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1606,14 +1617,13 @@ impl Checker {
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
         }
-        // An impl method with no source span of its own is still a declared
-        // implementation: publish its declaration identity.  The declaring
-        // module is not part of this decision — a `duration` constructor
-        // declared in `std/builtins.hew` is as much a direct call as a user
-        // impl method, and both emit a body.  What IS part of it is the typed
-        // builtin registry: a spelling registered there (`instant::now`) is
-        // metadata for a compiler-known endpoint, so it keeps the target that
-        // registry published rather than acquiring a body it does not have.
+        // Associated runtime methods use the same checked declaration and
+        // provenance contract as receiver methods. No synthetic callee spelling
+        // is needed merely because a method has no receiver.
+        if let Some(family) = self.associated_runtime_target_for_signature(signature_key) {
+            return CallTarget::Runtime(family);
+        }
+        // Ordinary associated methods retain their selected source identity.
         if !self.fn_def_spans.contains_key(signature_key)
             && !self.builtin_call_targets.contains_key(signature_key)
         {

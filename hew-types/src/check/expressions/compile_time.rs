@@ -455,7 +455,7 @@ fn embed_constant(
             }
             ConstantValue::Map(entries)
         }
-        DataKind::Record { fields, .. } => {
+        DataKind::Record { fields, .. } | DataKind::Timestamp { fields, .. } => {
             let (_, named) = facts.record_fields(ty).map_err(embed_invalid)?;
             let values = children(fields, embed_sequence(bridge)?)?;
             ConstantValue::Record(

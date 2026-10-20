@@ -155,6 +155,7 @@ pub enum RuntimeCallFamily {
     InstantDurationSince,
     InstantElapsed,
     InstantNow,
+    TimestampNow,
 
     // --- Math intrinsics ---------------------------------------------------
     // User-visible callee identities carried on MIR `Terminator::Call`; not
@@ -485,6 +486,7 @@ pub enum CanonicalExternTy {
     VecChar,
     Duration,
     Instant,
+    Timestamp,
 }
 
 impl CanonicalExternTy {
@@ -501,6 +503,10 @@ impl CanonicalExternTy {
             Self::Instant => matches!(
                 ty,
                 crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Instant), args, .. } if args.is_empty()
+            ),
+            Self::Timestamp => matches!(
+                ty,
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Timestamp), args, .. } if args.is_empty()
             ),
             Self::VecString => matches!(
                 ty,

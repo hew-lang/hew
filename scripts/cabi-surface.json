@@ -2989,6 +2989,58 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_components( i64, u32, ) -> HewCalendarPartsResult"
+      },
+      "symbol": "hew_calendar_components"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_format( i64, u32, *const HewString, ) -> HewCalendarTextResult"
+      },
+      "symbol": "hew_calendar_format"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_from_parts( i64, i64, i64, i64, i64, i64, u32, ) -> HewCalendarTimeResult"
+      },
+      "symbol": "hew_calendar_from_parts"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_parse( *const HewString, *const HewString, ) -> HewCalendarTimeResult"
+      },
+      "symbol": "hew_calendar_parse"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -5281,110 +5333,6 @@
       "availability": [
         "native"
       ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_free( *mut HewCronExpr)"
-      },
-      "symbol": "hew_cron_free"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_is_valid( *const HewCronExpr) -> bool"
-      },
-      "symbol": "hew_cron_is_valid"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_last_error() -> *mut HewString"
-      },
-      "symbol": "hew_cron_last_error"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_next( *const HewCronExpr, i64, *mut i64, ) -> i32"
-      },
-      "symbol": "hew_cron_next"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_next_hew( *const HewCronExpr, i64, ) -> HewCronNextResult"
-      },
-      "symbol": "hew_cron_next_hew"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "unclassified-stdlib",
-      "extent": "length-or-count",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_next_n( *const HewCronExpr, i64, i32, *mut i64, *mut i32, ) -> i32"
-      },
-      "symbol": "hew_cron_next_n"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_parse( *const HewString) -> *mut HewCronExpr"
-      },
-      "symbol": "hew_cron_parse"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_cron_to_string( *const HewCronExpr) -> *mut HewString"
-      },
-      "symbol": "hew_cron_to_string"
-    },
-    {
-      "availability": [
-        "native"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
@@ -5393,162 +5341,6 @@
         "native": "fn hew_cwd() -> *mut HewString"
       },
       "symbol": "hew_cwd"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_day( i64) -> i64"
-      },
-      "symbol": "hew_datetime_day"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_format( i64, *const HewString, ) -> *mut HewString"
-      },
-      "symbol": "hew_datetime_format"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_hour( i64) -> i64"
-      },
-      "symbol": "hew_datetime_hour"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_last_error() -> *mut HewString"
-      },
-      "symbol": "hew_datetime_last_error"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_minute( i64) -> i64"
-      },
-      "symbol": "hew_datetime_minute"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_month( i64) -> i64"
-      },
-      "symbol": "hew_datetime_month"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_now_ms() -> i64"
-      },
-      "symbol": "hew_datetime_now_ms"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_now_nanos() -> i64"
-      },
-      "symbol": "hew_datetime_now_nanos"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_parse( *const HewString, *const HewString) -> i64"
-      },
-      "symbol": "hew_datetime_parse"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_second( i64) -> i64"
-      },
-      "symbol": "hew_datetime_second"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_weekday( i64) -> i64"
-      },
-      "symbol": "hew_datetime_weekday"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_year( i64) -> i64"
-      },
-      "symbol": "hew_datetime_year"
     },
     {
       "availability": [
@@ -5864,6 +5656,21 @@
         "wasm32-wasip1": "fn hew_de_tuple_begin( *mut c_void, u32)"
       },
       "symbol": "hew_de_tuple_begin"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_de_u64( *mut c_void, u64) -> u64",
+        "wasm32-wasip1": "fn hew_de_u64( *mut c_void, u64) -> u64"
+      },
+      "symbol": "hew_de_u64"
     },
     {
       "availability": [
@@ -19324,6 +19131,21 @@
         "wasm32-wasip1": "fn hew_timer_wheel_tick( *mut HewTimerWheel) -> c_int"
       },
       "symbol": "hew_timer_wheel_tick"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_timestamp_now() -> HewTimestamp",
+        "wasm32-wasip1": "fn hew_timestamp_now() -> HewTimestamp"
+      },
+      "symbol": "hew_timestamp_now"
     },
     {
       "availability": [

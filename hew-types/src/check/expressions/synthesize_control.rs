@@ -1898,6 +1898,8 @@ impl Checker {
                     || right_resolved.is_duration()
                     || left_resolved.is_instant()
                     || right_resolved.is_instant()
+                    || left_resolved.is_timestamp()
+                    || right_resolved.is_timestamp()
                 {
                     return self.check_duration_arithmetic(
                         op,

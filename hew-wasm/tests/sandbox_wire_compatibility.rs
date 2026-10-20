@@ -50,3 +50,26 @@ fn recorded_v1_instructions_round_trip_without_wire_changes() {
         "the compatibility oracle must read external packages"
     );
 }
+
+#[test]
+fn aggregate_result_descriptors_preserve_wire_presence() {
+    for (operation, identity) in [("runtime.call", "family"), ("extern.call", "extern")] {
+        let mut call = serde_json::json!({
+            "op": operation,
+            "args": [],
+            "result": null,
+            "normal": null,
+            "unwind": null,
+            "result_shape": null,
+        });
+        call[identity] = 0.into();
+        for descriptor in [None, Some(Value::Null), Some(7.into())] {
+            let mut input = call.clone();
+            if let Some(descriptor) = descriptor {
+                input["aggregate_result_shape"] = descriptor;
+            }
+            let typed: TermV1 = serde_json::from_value(input.clone()).expect("external call");
+            assert_eq!(serde_json::to_value(typed).expect("encoded call"), input);
+        }
+    }
+}

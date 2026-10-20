@@ -92,6 +92,13 @@ pub struct AggregateShape {
     pub id: u32,
     pub name: String,
     pub fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub builtin: Option<AggregateBuiltin>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AggregateBuiltin {
+    Timestamp,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -559,6 +566,16 @@ impl<'m> Walker<'m> {
             CallResult::Value(def) => self
                 .module
                 .variant_shape_for_type(&def.ty)
+                .map(|shape| shape.id.0),
+            CallResult::Unit | CallResult::Never => None,
+        }
+    }
+
+    fn aggregate_result_shape(&self, result: &CallResult) -> Option<u32> {
+        match result {
+            CallResult::Value(def) => self
+                .module
+                .aggregate_shape_for_type(&def.ty)
                 .map(|shape| shape.id.0),
             CallResult::Unit | CallResult::Never => None,
         }
@@ -1044,6 +1061,10 @@ impl<'m> Walker<'m> {
             .map(|shape| AggregateShape {
                 id: shape.id.0,
                 name: shape.aggregate_ty.user_facing().to_string(),
+                builtin: shape
+                    .aggregate_ty
+                    .is_builtin(hew_types::BuiltinType::Timestamp)
+                    .then_some(AggregateBuiltin::Timestamp),
                 fields: shape
                     .fields
                     .iter()
@@ -1723,6 +1744,60 @@ impl<'m> Walker<'m> {
                 normal,
                 failures,
                 ..
+            } if self
+                .value_types
+                .get(&lhs.value)
+                .is_some_and(|ty| ty.is_builtin(hew_types::BuiltinType::Timestamp))
+                || self
+                    .value_types
+                    .get(&rhs.value)
+                    .is_some_and(|ty| ty.is_builtin(hew_types::BuiltinType::Timestamp)) =>
+            {
+                let shape = if result.ty.is_builtin(hew_types::BuiltinType::Timestamp) {
+                    Some(
+                        self.module
+                            .aggregate_shape_for_type(&result.ty)
+                            .ok_or_else(|| {
+                                EmitError::new("timestamp result lacks its aggregate shape")
+                            })?
+                            .id
+                            .0,
+                    )
+                } else {
+                    None
+                };
+                wire::TermKind::TimestampBinary {
+                    binary_op: match op {
+                        hew_parser::ast::BinaryOp::Add => wire::TimestampBinaryOp::Add,
+                        hew_parser::ast::BinaryOp::Subtract => wire::TimestampBinaryOp::Subtract,
+                        _ => return Err(EmitError::new("invalid checked timestamp operation")),
+                    },
+                    lhs: operand(lhs),
+                    rhs: operand(rhs),
+                    lhs_timestamp: self.value_types[&lhs.value]
+                        .is_builtin(hew_types::BuiltinType::Timestamp),
+                    rhs_timestamp: self.value_types[&rhs.value]
+                        .is_builtin(hew_types::BuiltinType::Timestamp),
+                    shape,
+                    result: value_def(result),
+                    normal: encode_edge(normal),
+                    failures: failures
+                        .iter()
+                        .map(|failure| wire::CheckedFailure {
+                            trap: trap_kind(failure.kind),
+                            edge: encode_edge(&failure.edge),
+                        })
+                        .collect(),
+                }
+            }
+            SemTerminator::CheckedBinary {
+                op,
+                lhs,
+                rhs,
+                result,
+                normal,
+                failures,
+                ..
             } => wire::TermKind::CheckedBinary {
                 binary_op: format!("{op:?}"),
                 lhs: operand(lhs),
@@ -1857,7 +1932,7 @@ impl<'m> Walker<'m> {
                     .is_some_and(hew_types::RuntimeSemanticContract::preserves_inputs_on_failure)
                     .then_some(true);
                 wire::TermKind::RuntimeCall {
-                    aggregate_result_shape: None,
+                    aggregate_result_shape: self.aggregate_result_shape(result).map(Some),
                     args: boundaries(args),
                     result: call_result(result),
                     normal: Some(Some(encode_edge(normal))),
@@ -1894,7 +1969,7 @@ impl<'m> Walker<'m> {
                 unwind,
                 ..
             } => wire::TermKind::ExternCall {
-                aggregate_result_shape: None,
+                aggregate_result_shape: self.aggregate_result_shape(result).map(Some),
                 args: boundaries(args),
                 result: call_result(result),
                 normal: Some(Some(encode_edge(normal))),

@@ -36,10 +36,11 @@ fn main() {
     println(u.to_string());
 
     // A borrowed format string with an owned result, and a text transform.
-    match datetime.format(0, "%Y-%m-%dT%H:%M:%SZ") {
+    match datetime.format(timestamp.from_unix_secs(0), "%Y-%m-%dT%H:%M:%SZ") {
         .Ok(text) => println(text),
         .Err(.Format(reason)) => println("format failed: " + reason),
         .Err(.Parse(reason)) => println("parse failed: " + reason),
+        .Err(.Range(reason)) => println("range failed: " + reason),
     }
     println(markdown.to_html_safe("# title").trim());
 

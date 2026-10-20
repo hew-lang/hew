@@ -58,3 +58,7 @@ Pass its initialized `executeCodec` export as `runBytecode`'s `codecBridge`
 option. The Node test host loads that package automatically; in a source
 checkout, run `make wasm` to build `hew-wasm/pkg` first. An explicit
 `HEW_WASM_MODULE` module URL can select another build of the same package.
+
+UTC calendar operations also require the initialized `executeCalendar`
+export as `calendarBridge`. Both hosts use the shared Chrono calendar engine;
+the bridge preserves integer seconds and nanoseconds exactly.

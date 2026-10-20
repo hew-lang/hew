@@ -161,6 +161,7 @@ impl TypeFactService {
                 args,
                 ..
             } => match (builtin, args.as_slice()) {
+                (BuiltinType::Timestamp, []) => None,
                 (BuiltinType::Vec, [element]) => member("[]".to_string(), element, visiting),
                 (BuiltinType::HashSet, [element]) => {
                     if !self.is_codec_key(element, param) {

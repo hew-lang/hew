@@ -4,8 +4,6 @@ import std.semaphore;
 
 import std.deque;
 
-import std.time.cron;
-
 import std.net.url;
 
 import std.encoding.xml;
@@ -20,8 +18,6 @@ fn main() -> i64 {
     sem.close();
     let queue = deque.new();
     queue.close();
-    let schedule = cron.parse("* * * * *");
-    schedule.close();
     let parsed_url = url.parse("https://example.com");
     parsed_url.close();
     let node = match xml.parse("<root/>") {

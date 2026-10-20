@@ -3,7 +3,7 @@
 //! This crate contains the Rust-backed implementation for all std modules, so
 //! the workspace builds one staticlib (`libhew_std.a`) and `hew-lib` carries one
 //! stdlib dependency. Each module keeps its own
-//! `#[no_mangle]` C ABI symbols (`hew_json_*`, `hew_http_*`, `hew_cron_*`, …) in
+//! `#[no_mangle]` C ABI symbols (`hew_json_*`, `hew_http_*`, `hew_calendar_*`, …) in
 //! the shared global namespace; the linker's per-function dead-strip prunes
 //! whichever modules a program does not reference, so consolidation is
 //! symbol-transparent and per-program pruning is preserved.

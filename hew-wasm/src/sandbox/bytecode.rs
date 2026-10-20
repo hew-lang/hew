@@ -478,6 +478,12 @@ pub struct SubmissionShapes {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
+pub enum TimestampBinaryOp {
+    Add,
+    Subtract,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "op")]
 pub enum TermKind {
     #[serde(rename = "return")]
@@ -505,6 +511,18 @@ pub enum TermKind {
         normal: Edge,
         failures: Vec<CheckedFailure>,
         ty: String,
+    },
+    #[serde(rename = "timestamp.binary")]
+    TimestampBinary {
+        binary_op: TimestampBinaryOp,
+        lhs: u32,
+        rhs: u32,
+        lhs_timestamp: bool,
+        rhs_timestamp: bool,
+        shape: Option<u32>,
+        result: ValueDef,
+        normal: Edge,
+        failures: Vec<CheckedFailure>,
     },
     #[serde(rename = "unreachable")]
     Unreachable {},

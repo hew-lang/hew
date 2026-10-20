@@ -61,11 +61,8 @@ impl SemWirePlans {
                 return Err(bad(plan));
             }
             match &plan.kind {
-                SemWireKind::Record {
-                    shape,
-                    table,
-                    fields,
-                } => {
+                SemWireKind::Record { shape, fields, .. }
+                | SemWireKind::Timestamp { shape, fields, .. } => {
                     let shape = records
                         .get(shape.0 as usize)
                         .filter(|shape| shape.aggregate_ty == plan.ty)
@@ -76,9 +73,12 @@ impl SemWirePlans {
                             .iter()
                             .zip(fields)
                             .any(|(field, ty)| field.ty != *ty)
-                        || table
-                            .as_ref()
-                            .is_some_and(|table| table.members.len() != fields.len())
+                        || matches!(&plan.kind, SemWireKind::Record { table: Some(table), .. }
+                            if table.members.len() != fields.len())
+                        || matches!(&plan.kind, SemWireKind::Timestamp { nanoseconds_max, .. }
+                            if !plan.ty.is_builtin(hew_types::BuiltinType::Timestamp)
+                                || fields != &[ResolvedTy::I64, ResolvedTy::U32]
+                                || *nanoseconds_max != hew_types::data_plan::TIMESTAMP_NANOSECONDS_MAX)
                     {
                         return Err(bad(plan));
                     }

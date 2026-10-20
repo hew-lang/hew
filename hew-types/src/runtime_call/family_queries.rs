@@ -795,6 +795,7 @@ impl RuntimeCallFamily {
             | F::InstantDurationSince
             | F::InstantElapsed
             | F::InstantNow
+            | F::TimestampNow
             | F::MathIntrinsic(_)
             | F::IntMethod(_, _)
             | F::IntArith(_, _)

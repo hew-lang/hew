@@ -9,139 +9,125 @@ kind = "check"
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 23
+line = 21
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 28
+line = 26
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 33
+line = 31
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 38
+line = 36
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 43
+line = 41
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 48
+line = 46
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 53
+line = 51
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 58
+line = 56
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "error"
 code = "UseAfterMove"
-line = 63
-column = 13
-message = "use of moved value `value`"
-
-[[case.expected.diagnostics]]
-severity = "error"
-code = "UseAfterMove"
-line = 68
+line = 61
 column = 13
 message = "use of moved value `value`"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 21
+line = 19
 column = 1
 message = "function `use_glob` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 26
+line = 24
 column = 1
 message = "function `use_semaphore` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 31
+line = 29
 column = 1
 message = "function `use_deque` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 36
-column = 1
-message = "function `use_cron` is never called"
-
-[[case.expected.diagnostics]]
-severity = "warning"
-code = "dead_code"
-line = 41
+line = 34
 column = 1
 message = "function `use_request` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 46
+line = 39
 column = 1
 message = "function `use_response` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 51
+line = 44
 column = 1
 message = "function `use_event` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 56
+line = 49
 column = 1
 message = "function `use_url` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 61
+line = 54
 column = 1
 message = "function `use_protobuf` is never called"
 
 [[case.expected.diagnostics]]
 severity = "warning"
 code = "dead_code"
-line = 66
+line = 59
 column = 1
 message = "function `use_xml` is never called"

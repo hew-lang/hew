@@ -73,6 +73,7 @@ mod loop_chunks;
 mod module_emitter;
 mod runtime_calls;
 mod text;
+mod timestamp;
 mod value_emitter;
 
 use c_abi::{get_or_declare_external, get_or_declare_external_widened, Widen};

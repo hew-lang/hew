@@ -32,7 +32,9 @@ pub mod sandbox;
 use std::fmt;
 
 use serde::{de::DeserializeOwned, Serialize};
+mod calendar;
 mod codec;
+pub use calendar::execute_calendar;
 mod inputs;
 pub use codec::execute_codec;
 

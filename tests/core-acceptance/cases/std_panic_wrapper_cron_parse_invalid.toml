@@ -10,5 +10,5 @@ HEW_WORKERS = "4"
 
 [case.expected]
 stdout = ""
-stderr = "hew: failure: UserPanic (212): cron.parse: invalid expression `nope`: cron parse error: nope\n^\nThe 'Seconds' field does not support using names. 'nope' specified.\n"
+stderr = "hew: failure: UserPanic (212): cron.parse: invalid expression `nope`: cron requires five, six or seven fields\n"
 exit = 1

@@ -158,6 +158,9 @@
             "items": {
               "type": "string"
             }
+          },
+          "builtin": {
+            "enum": ["Timestamp"]
           }
         }
       }

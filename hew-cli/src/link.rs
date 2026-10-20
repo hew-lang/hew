@@ -258,7 +258,7 @@ pub(crate) fn link_executable_with_hew_lib(
 
     // `libhew.a` is the SINGLE provider of runtime + stdlib symbols on the
     // native link line — `hew-lib` depends on both `hew-runtime` and `hew-std`,
-    // so direct extern declarations naming `hew_datetime_*` and similar
+    // so direct extern declarations naming `hew_calendar_*` and similar
     // stable-stdlib symbols resolve from it. A second stdlib archive
     // (`libhew_std.a`) used to be probed in best-effort here; it embeds its own
     // full copy of hew-runtime (cargo staticlib packaging bundles transitive

@@ -1,4 +1,4 @@
-//! Monotonic clock, blocking sleep and duration arithmetic.
+//! Wall and monotonic clocks, blocking sleep and duration arithmetic.
 //!
 //! Compiled on every target: the C ABI here reads a clock and does integer
 //! arithmetic, and `wasm32-wasip1` supplies both through wasi-libc. Suspending
@@ -10,6 +10,38 @@
 )]
 
 pub use crate::duration::{hew_milliseconds, hew_seconds, HewDuration};
+
+pub use hew_cabi::time::HewTimestamp;
+
+fn timestamp_from_system_time(time: std::time::SystemTime) -> HewTimestamp {
+    let nanos = match time.duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => {
+            i128::from(elapsed.as_secs()) * 1_000_000_000 + i128::from(elapsed.subsec_nanos())
+        }
+        Err(before) => {
+            let elapsed = before.duration();
+            -(i128::from(elapsed.as_secs()) * 1_000_000_000 + i128::from(elapsed.subsec_nanos()))
+        }
+    };
+    HewTimestamp {
+        seconds: i64::try_from(nanos.div_euclid(1_000_000_000))
+            .expect("system clock exceeds timestamp seconds range"),
+        nanoseconds: u32::try_from(nanos.rem_euclid(1_000_000_000))
+            .expect("normalized nanosecond fraction fits u32"),
+    }
+}
+
+/// Return the current wall-clock time as normalized Unix seconds and nanoseconds.
+#[no_mangle]
+pub extern "C" fn hew_timestamp_now() -> HewTimestamp {
+    if crate::generator::enabled() {
+        return HewTimestamp {
+            seconds: 0,
+            nanoseconds: 0,
+        };
+    }
+    timestamp_from_system_time(std::time::SystemTime::now())
+}
 
 // ---------------------------------------------------------------------------
 // Sleep / Clock
@@ -94,10 +126,11 @@ pub unsafe extern "C" fn hew_instant_now() -> i64 {
         return 0;
     }
     crate::driver::initialize_clock();
-    let ms = crate::deterministic::simtime_now().unwrap_or_else(monotonic_ms);
-    i64::try_from(ms)
-        .unwrap_or(i64::MAX)
-        .saturating_mul(1_000_000)
+    let nanos = crate::deterministic::simtime_now()
+        .map_or_else(crate::monotonic::monotonic_ns, |ms| {
+            ms.saturating_mul(1_000_000)
+        });
+    i64::try_from(nanos).unwrap_or(i64::MAX)
 }
 
 /// Return elapsed nanoseconds since `instant_ns`.
@@ -207,6 +240,32 @@ mod tests {
     use super::*;
     use std::ffi::c_int;
 
+    #[test]
+    fn wall_clock_normalizes_both_sides_of_epoch() {
+        use std::time::{Duration, UNIX_EPOCH};
+        for (offset, seconds, nanoseconds) in [
+            (-1_000_000_001_i64, -2, 999_999_999),
+            (-1_000_000_000, -1, 0),
+            (-1, -1, 999_999_999),
+            (0, 0, 0),
+            (1_000_000_001, 1, 1),
+        ] {
+            let magnitude = Duration::from_nanos(offset.unsigned_abs());
+            let time = if offset < 0 {
+                UNIX_EPOCH - magnitude
+            } else {
+                UNIX_EPOCH + magnitude
+            };
+            assert_eq!(
+                timestamp_from_system_time(time),
+                HewTimestamp {
+                    seconds,
+                    nanoseconds
+                }
+            );
+        }
+    }
+
     // -- Duration -----------------------------------------------------------
 
     #[test]
@@ -268,6 +327,21 @@ mod tests {
         let t1 = monotonic_ms();
         let t2 = monotonic_ms();
         assert!(t2 >= t1);
+    }
+
+    #[test]
+    fn instant_retains_the_shared_monotonic_clocks_nanosecond_precision() {
+        for _ in 0..16 {
+            let before = crate::monotonic::monotonic_ns();
+            // SAFETY: the clock has no preconditions.
+            let actual = unsafe { hew_instant_now() };
+            let after = crate::monotonic::monotonic_ns();
+            let actual = u64::try_from(actual).expect("process clock is non-negative");
+            assert!(
+                (before..=after).contains(&actual),
+                "instant {actual}ns falls outside its shared clock samples {before}..={after}"
+            );
+        }
     }
 
     #[test]

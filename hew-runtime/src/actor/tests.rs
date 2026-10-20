@@ -7130,8 +7130,8 @@ fn hew_actor_free_clears_parse_error_slots() {
         // Inject errors for all four error kinds.
         crate::parse_error_slot::__set_error_for_actor(
             actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Datetime,
-            "datetime error",
+            crate::parse_error_slot::ErrorSlotKind::Xml,
+            "XML error",
         );
         crate::parse_error_slot::__set_error_for_actor(
             actor_id,
@@ -7152,7 +7152,7 @@ fn hew_actor_free_clears_parse_error_slots() {
         // Verify they are present before free.
         assert!(crate::parse_error_slot::__get_error_for_actor(
             actor_id,
-            crate::parse_error_slot::ErrorSlotKind::Datetime
+            crate::parse_error_slot::ErrorSlotKind::Xml
         )
         .is_some());
 
@@ -7164,7 +7164,7 @@ fn hew_actor_free_clears_parse_error_slots() {
 
         // All four slots must now be empty.
         for kind in [
-            crate::parse_error_slot::ErrorSlotKind::Datetime,
+            crate::parse_error_slot::ErrorSlotKind::Xml,
             crate::parse_error_slot::ErrorSlotKind::Yaml,
             crate::parse_error_slot::ErrorSlotKind::Toml,
             crate::parse_error_slot::ErrorSlotKind::Json,

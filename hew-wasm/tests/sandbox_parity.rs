@@ -813,6 +813,21 @@ fn sandbox_graduation_corpus_is_fully_covered() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn timestamp_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "timestamp_values",
+            source_rel: "tests/core-acceptance/cases/timestamp-values.hew",
+        },
+        "",
+    );
+}
+
 // This integration test executes the Node sandbox VM. Windows CI covers the
 // native toolchain and WASI target separately; Linux owns this VM contract.
 #[cfg(unix)]

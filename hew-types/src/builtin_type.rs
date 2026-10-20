@@ -84,6 +84,8 @@ pub enum BuiltinType {
     /// the checker only so `instant::now()` / `.elapsed()` / `.duration_since()`
     /// dispatch to the `impl instant` block rather than the integer methods.
     Instant,
+    /// A normalized Unix wall-clock moment, distinct from a monotonic instant.
+    Timestamp,
     Trap,
     CancellationToken,
 }
@@ -234,6 +236,7 @@ builtin_types! {
     Unit => "Unit",
     Duration => "duration",
     Instant => "instant",
+    Timestamp => "timestamp",
     Trap => "Trap",
     CancellationToken => "CancellationToken",
 }
@@ -390,6 +393,7 @@ impl BuiltinType {
             // marker and the class table agree by construction rather than by
             // a recorded exception.
             | Self::Instant
+            | Self::Timestamp
             | Self::Unit
             | Self::Duration
             | Self::Range
@@ -512,6 +516,7 @@ impl BuiltinType {
             | Self::Unit
             | Self::Duration
             | Self::Instant
+            | Self::Timestamp
             | Self::Trap
             | Self::CancellationToken
             // An actor handle carries the actor declaration's own type
@@ -560,6 +565,7 @@ impl BuiltinType {
     #[must_use]
     pub const fn source_owned_path(self) -> Option<&'static str> {
         match self {
+            Self::Timestamp => Some("std.builtins.timestamp"),
             Self::CrashInfo => Some("std.failure.CrashInfo"),
             Self::CrashAction => Some("std.failure.CrashAction"),
             Self::CrashNotification => Some("std.failure.CrashNotification"),
@@ -672,6 +678,7 @@ pub fn lookup_builtin_type(name: &str) -> Option<BuiltinType> {
         }
         // The identity carriers' bodyless surface stubs in `std/builtins.hew`
         // name the carriers themselves.
+        "std.builtins.timestamp" => return Some(BuiltinType::Timestamp),
         "std.builtins.NodeId" => return Some(BuiltinType::NodeId),
         "std.builtins.Location" => return Some(BuiltinType::Location),
         _ => {}

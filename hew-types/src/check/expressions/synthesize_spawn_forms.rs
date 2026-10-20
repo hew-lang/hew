@@ -302,6 +302,17 @@ impl Checker {
                 Ty::Error
             }
             Ty::Named { head, args } => {
+                if head.builtin() == Some(BuiltinType::Timestamp)
+                    && !self.checking_embedded_builtins
+                    && !self.checking_canonical_stdlib_source("std.builtins")
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "timestamp fields are private; use unix_parts() or an explicit Unix-unit conversion".to_string(),
+                    );
+                    return Ty::Error;
+                }
                 let name = head.registry_key();
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.
@@ -1434,6 +1445,18 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
+        if self.named_ty_for_key(name, vec![]).is_timestamp()
+            && !self.checking_embedded_builtins
+            && !self.checking_canonical_stdlib_source("std.builtins")
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "timestamp construction requires an explicit Unix-unit or Unix-parts constructor"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
         let canonical_owner_is_current_source = name
             .rsplit_once('.')

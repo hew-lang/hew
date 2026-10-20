@@ -258,6 +258,7 @@ pub enum BuiltinTy {
     Duration,
     /// `instant` — i64 nanosecond monotonic timestamp; ABI-identical to `i64`.
     Instant,
+    Timestamp,
     /// Source-owned node configuration record consumed by `Node::start`.
     NodeConfig,
     /// Result<(), `NodeError`> returned by public node lifecycle operations.
@@ -273,6 +274,9 @@ impl BuiltinTy {
             BuiltinTy::I32 => ResolvedTy::I32,
             // `instant` is an i64 nanosecond timestamp at the ABI boundary.
             BuiltinTy::I64 | BuiltinTy::Instant => ResolvedTy::I64,
+            BuiltinTy::Timestamp => {
+                ResolvedTy::named_builtin(hew_types::BuiltinType::Timestamp, vec![])
+            }
             BuiltinTy::Isize => ResolvedTy::Isize,
             BuiltinTy::U8 => ResolvedTy::U8,
             BuiltinTy::U16 => ResolvedTy::U16,
@@ -2573,6 +2577,7 @@ pub static CATALOG: std::sync::LazyLock<Vec<BuiltinEntry>> = std::sync::LazyLock
             CanonicalExternTy::I64 | CanonicalExternTy::Duration | CanonicalExternTy::Instant => {
                 BuiltinTy::I64
             }
+            CanonicalExternTy::Timestamp => BuiltinTy::Timestamp,
             CanonicalExternTy::Bool => BuiltinTy::Bool,
             CanonicalExternTy::Bytes => BuiltinTy::Bytes,
             CanonicalExternTy::U8 => BuiltinTy::U8,

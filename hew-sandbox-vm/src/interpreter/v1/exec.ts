@@ -48,6 +48,7 @@ import type {
 } from "./package.js";
 import { runtimeTag } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
+import { timestampBinary } from "./timestamp.js";
 import {
   selectedValue,
   collectionOperation,
@@ -64,6 +65,7 @@ import {
   resolveExternShim,
   resolveRuntimeShim,
   type ShimHost,
+  type RuntimeShim,
 } from "./shims.js";
 import { admitPackage } from "./validate.js";
 
@@ -421,6 +423,8 @@ class ExecutorV1 {
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
+      unixTimeMillis: () => this.trace.virtualTimeMs,
+      calendarBridge: options.calendarBridge,
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();
@@ -1552,6 +1556,26 @@ class ExecutorV1 {
           term.value ? this.boundary(act, term.value) : UNIT,
         );
         return;
+      case "timestamp.binary": {
+        const outcome = timestampBinary(
+          this.pkg,
+          term,
+          this.read(act, term.lhs),
+          this.read(act, term.rhs),
+        );
+        if (outcome === null) {
+          const failure = term.failures.find(
+            (edge) => edge.trap === "integer_overflow",
+          );
+          if (!failure)
+            throw new Error("timestamp arithmetic lacks its overflow edge");
+          this.takeEdge(act, failure.edge);
+        } else {
+          this.define(act, term.result.value, outcome);
+          this.takeEdge(act, term.normal);
+        }
+        return;
+      }
       case "checked.binary": {
         const failure = checkedFailure(
           term.binary_op,
@@ -1961,11 +1985,7 @@ class ExecutorV1 {
   private callShim(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
-    shim: (
-      host: ShimHost,
-      args: VmValue[],
-      shape: VariantShape | null,
-    ) => VmValue,
+    shim: RuntimeShim,
   ): void {
     const args = term.args.map((operand) => this.boundary(act, operand));
     // A call that hands back its updated receiver names its value's shape as
@@ -1979,7 +1999,10 @@ class ExecutorV1 {
         : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
-      value = shim(this.host, args, shape);
+      const aggregateId = term.aggregate_result_shape;
+      const aggregate =
+        aggregateId == null ? null : (this.pkg.aggregates[aggregateId] ?? null);
+      value = shim(this.host, args, shape, aggregate);
     } catch (error) {
       if (error instanceof ShimFault) {
         this.keepInputs(act, term, args);

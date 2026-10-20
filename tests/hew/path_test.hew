@@ -6,8 +6,6 @@ import std.path;
 
 import std.process;
 
-import std.time.datetime;
-
 // ── combine ─────────────────────────────────────────────────────────────
 #[test]
 fn test_combine_avoids_double_slash_when_left_has_trailing_slash() {
@@ -235,7 +233,7 @@ fn test_extension_with_heap_input() {
 // #44: `GlobResult.get` narrowed the `i64` index to `i32` before the native
 // range check, so index `2^32` wrapped to slot 0 and returned a real path.
 fn glob_scratch_dir(name: string) -> string {
-    f"tests/hew/_glob_{name}_{datetime.now_nanos()}"
+    f"tests/hew/_glob_{name}_{instant.now()}"
 }
 
 fn chmod_dir(mode: string, dir: string) -> i64 {

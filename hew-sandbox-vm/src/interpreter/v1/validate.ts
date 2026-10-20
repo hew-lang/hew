@@ -1,3 +1,4 @@
+import { calendarResultFields } from "./calendar.js";
 /// Load-time admission for a verified SIR package.
 ///
 /// The package declares what it needs: `runtime_families` names every runtime
@@ -114,6 +115,81 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       }
       const term = block.term;
+      if (
+        term.op === "runtime.call" &&
+        pkg.runtime_families[term.family]?.family === "TimestampNow"
+      ) {
+        const shape =
+          term.aggregate_result_shape == null
+            ? undefined
+            : pkg.aggregates[term.aggregate_result_shape];
+        if (
+          !shape ||
+          shape.builtin !== "Timestamp" ||
+          shape.fields.length !== 2
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "TimestampNow",
+            message: "timestamp clock lacks its checked result shape",
+            span: null,
+          };
+        }
+      }
+      if (term.op === "extern.call") {
+        const symbol = pkg.externs[term.extern]?.symbol ?? "";
+        const fields = calendarResultFields(symbol);
+        if (fields) {
+          const shape =
+            term.aggregate_result_shape == null
+              ? undefined
+              : pkg.aggregates[term.aggregate_result_shape];
+          if (
+            !shape ||
+            shape.fields.length !== fields.length ||
+            shape.fields.some((field, index) => field !== fields[index])
+          ) {
+            return {
+              category: "invalid_package",
+              code: "sandbox.package.calendar_shape",
+              capability: symbol,
+              message: "calendar operation lacks its checked result shape",
+              span: null,
+            };
+          }
+        }
+      }
+      if (term.op === "timestamp.binary") {
+        const both = term.lhs_timestamp && term.rhs_timestamp;
+        const validOperation =
+          (term.binary_op === "Add" &&
+            term.lhs_timestamp !== term.rhs_timestamp) ||
+          (term.binary_op === "Subtract" && term.lhs_timestamp);
+        const shape =
+          term.shape === null ? undefined : pkg.aggregates[term.shape];
+        if (
+          typeof term.lhs_timestamp !== "boolean" ||
+          typeof term.rhs_timestamp !== "boolean" ||
+          !validOperation ||
+          (both
+            ? term.shape !== null
+            : !shape ||
+              shape.fields.length !== 2 ||
+              shape.builtin !== "Timestamp") ||
+          term.failures.length !== 1 ||
+          term.failures[0]?.trap !== "integer_overflow"
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "timestamp.binary",
+            message:
+              "timestamp arithmetic lacks its checked operands, result shape or overflow edge",
+            span: null,
+          };
+        }
+      }
       if (
         term.op === "runtime.call" &&
         pkg.runtime_families[term.family]?.family === "BytesDecodeUtf8"

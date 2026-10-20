@@ -19,11 +19,13 @@ globalThis.__hewSandboxCompileToSandboxBytecode =
   wasmModule.compileToSandboxBytecode ?? wasmModule.default?.compileToSandboxBytecode;
 assert.equal(typeof globalThis.__hewSandboxCompileToSandboxBytecode, "function");
 globalThis.__hewSandboxExecuteCodec = wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
+globalThis.__hewSandboxExecuteCalendar = wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
 
 test.after(() => {
   fs.rmSync(wasmDir, { recursive: true, force: true });
   delete globalThis.__hewSandboxCompileToSandboxBytecode;
   delete globalThis.__hewSandboxExecuteCodec;
+  delete globalThis.__hewSandboxExecuteCalendar;
 });
 
 test("runProgram hello_world returns stdout and zero exit code", () => {
@@ -33,6 +35,51 @@ test("runProgram hello_world returns stdout and zero exit code", () => {
   assert.equal(result.stdout, "Hello, sandbox!\n");
   assert.equal(result.exit_code, 0);
   assert.deepEqual(result.diagnostics, []);
+});
+
+test("runProgram preserves timestamp codec values and located errors", () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/timestamp-codecs.hew"),
+    "utf8"
+  );
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp codecs ok\n");
+});
+
+test("timestamp.now uses the replay clock's Unix coordinate exactly once", () => {
+  const output = globalThis.__hewSandboxCompileToSandboxBytecode(`
+fn main() {
+    let (seconds, nanos) = timestamp.now().unix_parts();
+    println(f"{seconds}|{nanos}");
+}
+`, "sandbox-vm-export");
+  const compiled = typeof output === "string" ? JSON.parse(output) : output;
+  assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
+  for (const [epoch_ms, current_ms, expected] of [
+    [0, 0, "0|0\n"],
+    [1700000000000, 1700000000123, "1700000000|123000000\n"],
+    [-1000, -1, "-1|999000000\n"],
+    [-1000, -1001, "-2|999000000\n"],
+  ]) {
+    const trace = runBytecode(compiled.bytecode, {
+      replay: { virtual_clock: { epoch_ms, current_ms, tick_ms: 0 } },
+    });
+    assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
+    assert.equal(trace.final_state.stdout.join(""), expected);
+  }
+  for (const current_ms of [NaN, Infinity, -Infinity]) {
+    const trace = runBytecode(compiled.bytecode, {
+      replay: { virtual_clock: { epoch_ms: 0, current_ms, tick_ms: 0 } },
+    });
+    assert.notEqual(trace.result, "ok");
+  }
+  const malformed = structuredClone(compiled.bytecode);
+  const clockCall = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
+    .find(term => term.op === "runtime.call" && malformed.runtime_families[term.family].family === "TimestampNow");
+  delete clockCall.aggregate_result_shape;
+  assert.equal(runBytecode(malformed).result, "sandbox_rejected");
 });
 
 test("serialized bytecode preserves supervisor child i64 bounds", () => {
@@ -249,3 +296,42 @@ fn main() { var fresh = Ticket { id: 1 }; ${body} }
     assert.equal(result.stdout, expected);
   });
 }
+
+
+test("runProgram shares checked UTC calendar semantics with native", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-calendar.hew"), "utf8");
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp calendar ok\n");
+});
+
+
+test("runProgram executes the shared source cron parser and search", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-cron.hew"), "utf8");
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp cron ok\n");
+});
+
+
+test("calendar extern results require their checked record descriptor", () => {
+  const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+    'import std.time.datetime; fn main() { println(datetime.to_iso8601(timestamp.from_unix_secs(0)).expect("calendar")); }',
+    "sandbox-vm-export"
+  );
+  const compiled = typeof output === "string" ? JSON.parse(output) : output;
+  assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
+  for (const mismatch of ["missing", "reordered"]) {
+    const malformed = structuredClone(compiled.bytecode);
+    const call = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
+      .find(term => term.op === "extern.call" && malformed.externs[term.extern].symbol === "hew_calendar_format");
+    assert.ok(call);
+    if (mismatch === "missing") delete call.aggregate_result_shape;
+    else malformed.aggregates[call.aggregate_result_shape].fields.reverse();
+    const trace = runBytecode(malformed, { calendarBridge: globalThis.__hewSandboxExecuteCalendar });
+    assert.equal(trace.result, "sandbox_rejected");
+    assert.deepEqual(trace.final_state.stdout, []);
+  }
+});

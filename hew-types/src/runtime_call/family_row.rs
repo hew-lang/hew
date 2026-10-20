@@ -831,6 +831,7 @@ impl RuntimeCallFamily {
             Self::InstantDurationSince => declared::INSTANTDURATIONSINCE.row,
             Self::InstantElapsed => declared::INSTANTELAPSED.row,
             Self::InstantNow => declared::INSTANTNOW.row,
+            Self::TimestampNow => declared::TIMESTAMPNOW.row,
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "sqrt",

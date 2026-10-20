@@ -1,0 +1,10 @@
+[[case]]
+id = "timestamp-calendar"
+intent = "Typed UTC calendar precision, offsets, checked range and owned errors agree across hosts."
+source = "cases/timestamp-calendar.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+exit = 0
+stdout = "timestamp calendar ok\n"

@@ -5,8 +5,6 @@ import std.os;
 
 import std.string;
 
-import std.time.datetime;
-
 type Measurement {
     elapsed_ns: i64;
     checksum: i64;
@@ -42,7 +40,7 @@ fn client(counter: Counter, iterations: i64) -> i64 {
 
 fn task_ready(iterations: i64, size: i64) -> Measurement {
     var sum = 0;
-    let start = datetime.now_nanos();
+    let start = instant.now();
     var offset = 0;
     while offset < iterations {
         let end = if offset + size < iterations {
@@ -60,19 +58,19 @@ fn task_ready(iterations: i64, size: i64) -> Measurement {
         }
         offset = end;
     }
-    Measurement { elapsed_ns: datetime.now_nanos() - start, checksum: sum, latencies_ns: Vec.new() }
+    Measurement { elapsed_ns: start.elapsed().nanos(), checksum: sum, latencies_ns: Vec.new() }
 }
 
 fn actor_roundtrip(iterations: i64, measure_latencies: bool) -> Measurement {
     let counter = spawn Counter { count: 0 };
     var samples: Vec<i64> = Vec.new();
     var sum = 0;
-    let start = datetime.now_nanos();
+    let start = instant.now();
     for index in 0..iterations {
         if measure_latencies {
-            let before = datetime.now_nanos();
+            let before = instant.now();
             sum += increment(counter);
-            let elapsed = datetime.now_nanos() - before;
+            let elapsed = before.elapsed().nanos();
             if index < 10000 {
                 samples.push(elapsed);
             }
@@ -80,7 +78,7 @@ fn actor_roundtrip(iterations: i64, measure_latencies: bool) -> Measurement {
             sum += increment(counter);
         }
     }
-    let elapsed = datetime.now_nanos() - start;
+    let elapsed = start.elapsed().nanos();
     stop(counter);
     stopped(counter);
     Measurement { elapsed_ns: elapsed, checksum: sum, latencies_ns: samples }
@@ -91,7 +89,7 @@ fn actor_fanout(iterations: i64, size: i64) -> Measurement {
     for _ in 0..size {
         counters.push(spawn Counter { count: 0 });
     }
-    let start = datetime.now_nanos();
+    let start = instant.now();
     var clients = [fork client(counters[0], iterations)];
     for index in 1..size {
         clients.push(fork client(counters[index], iterations));
@@ -101,7 +99,7 @@ fn actor_fanout(iterations: i64, size: i64) -> Measurement {
     for value in sums {
         sum += value;
     }
-    let elapsed = datetime.now_nanos() - start;
+    let elapsed = start.elapsed().nanos();
     for counter in counters {
         stop(counter);
         stopped(counter);
@@ -111,11 +109,11 @@ fn actor_fanout(iterations: i64, size: i64) -> Measurement {
 
 fn timer(iterations: i64) -> Measurement {
     var samples: Vec<i64> = Vec.new();
-    let start = datetime.now_nanos();
+    let start = instant.now();
     for index in 0..iterations {
-        let before = datetime.now_nanos();
+        let before = instant.now();
         sleep(1ms);
-        let overshoot = datetime.now_nanos() - before - 1000000;
+        let overshoot = before.elapsed().nanos() - 1000000;
         if index < 10000 {
             samples.push(if overshoot > 0 {
                 overshoot
@@ -124,7 +122,7 @@ fn timer(iterations: i64) -> Measurement {
             });
         }
     }
-    Measurement { elapsed_ns: datetime.now_nanos() - start, checksum: iterations, latencies_ns: samples }
+    Measurement { elapsed_ns: start.elapsed().nanos(), checksum: iterations, latencies_ns: samples }
 }
 
 fn main() {

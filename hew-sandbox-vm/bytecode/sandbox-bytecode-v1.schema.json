@@ -2294,6 +2294,65 @@
         },
         {
           "properties": {
+            "binary_op": {
+              "$ref": "#/$defs/TimestampBinaryOp"
+            },
+            "failures": {
+              "items": {
+                "$ref": "#/$defs/CheckedFailure"
+              },
+              "type": "array"
+            },
+            "lhs": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "lhs_timestamp": {
+              "type": "boolean"
+            },
+            "normal": {
+              "$ref": "#/$defs/Edge"
+            },
+            "op": {
+              "const": "timestamp.binary",
+              "type": "string"
+            },
+            "result": {
+              "$ref": "#/$defs/ValueDef"
+            },
+            "rhs": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "rhs_timestamp": {
+              "type": "boolean"
+            },
+            "shape": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
+            }
+          },
+          "required": [
+            "op",
+            "binary_op",
+            "lhs",
+            "rhs",
+            "lhs_timestamp",
+            "rhs_timestamp",
+            "result",
+            "normal",
+            "failures"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
             "op": {
               "const": "unreachable",
               "type": "string"
@@ -3164,6 +3223,10 @@
       "enum": ["reject", "drop_newest"],
       "type": "string"
     },
+    "TimestampBinaryOp": {
+      "enum": ["Add", "Subtract"],
+      "type": "string"
+    },
     "TrapName": {
       "enum": [
         "integer_overflow",
@@ -3670,6 +3733,9 @@
       "items": {
         "additionalProperties": false,
         "properties": {
+          "builtin": {
+            "enum": ["Timestamp"]
+          },
           "fields": {
             "items": {
               "type": "string"

@@ -4232,36 +4232,55 @@ fn main() {
 }
 ```
 
-### std.time.datetime — timestamps and date arithmetic
+### std.time.datetime — timestamps and UTC calendar views
 
 ```hew
 import std.time.datetime;
+
 fn main() {
-    let now = datetime.now_ms();             // i64 epoch milliseconds
-    println(datetime.to_iso8601(now));       // 2026-06-23T18:42:22Z
-    match datetime.format(now, "%Y-%m-%d") {
-        .Ok(text) => println(text),
-        .Err(error) => println(f"format error: {error}"),
-    }
+    let started = instant.now();
+    let now: timestamp = timestamp.now();
+    println(datetime.to_iso8601(now).expect("calendar range"));
 
-    println(datetime.year(now));    // 2026
-    println(datetime.month(now));   // 6
-    println(datetime.day(now));     // 23
-    println(datetime.hour(now));    // 18
-    println(datetime.minute(now));  // 42
+    let fields = datetime.components(now).expect("calendar range");
+    println(fields.year);
+    println(fields.month);
+    println(fields.day);
 
-    let tomorrow = datetime.add_days(now, 1);
-    let diff = datetime.diff_secs(tomorrow, now);
-    println(diff);                  // 86400
-
-    match datetime.parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
-        .Ok(ts) => println(datetime.year(ts)),   // 2026
-        .Err(e) => println(f"parse error: {e}"),
-    }
+    let tomorrow = now + 24h;
+    assert(tomorrow - now == 24h);
+    let parsed = datetime.parse_iso8601("2026-01-01T01:30:00.123456789+01:30")
+        .expect("valid datetime");
+    assert(datetime.to_iso8601(parsed).expect("calendar range")
+        == "2026-01-01T00:00:00.123456789Z");
+    println(started.elapsed());
 }
 ```
 
-Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
+`timestamp` stores normalized signed Unix seconds and a nanosecond fraction.
+Use `timestamp.now()` for wall time and `instant.now()` for monotonic elapsed
+time. Neither converts implicitly to an integer or to the other clock.
+
+Calendar operations return checked `DateTimeError.Range`, `Format` or `Parse`
+errors. They use Chrono's proleptic Gregorian calendar, years -262143 through
++262142; timestamps outside that range remain valid but cannot be converted
+to civil fields. `components` and the individual `year`, `month`, `day`,
+`hour`, `minute`, `second` and `weekday` accessors all use UTC. Monday is
+weekday zero. `from_parts` checks a UTC year, month, day, hour, minute, second
+and nanosecond fraction.
+
+`format(value, pattern)` and `parse(text, pattern)` use Chrono's strftime
+dialect. `%.f` preserves a nonzero fractional second; `%.9f` always prints
+nine fractional digits. Parsing requires enough fields to determine a full
+date and time. Missing offsets mean UTC; explicit numeric offsets normalize
+to UTC. `to_iso8601` preserves fractional precision and `parse_iso8601`
+accepts Z or a numeric offset. Unix time excludes leap seconds, so a parsed
+leap second returns an error.
+
+`add_days` adds elapsed 24-hour durations, `add_hours` adds elapsed hours,
+and `diff_secs` returns whole elapsed seconds truncated towards zero.
+These operations use checked duration arithmetic; they do not imply named
+time-zone or daylight-saving rules.
 
 ### std.deque — double-ended queue
 

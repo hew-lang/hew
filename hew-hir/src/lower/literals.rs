@@ -244,7 +244,8 @@ impl LowerCtx {
             UnaryOp::Negate => {
                 operand_ty == result_ty
                     && (Self::resolved_is_integer(operand_ty)
-                        || Self::resolved_is_float(operand_ty))
+                        || Self::resolved_is_float(operand_ty)
+                        || *operand_ty == ResolvedTy::Duration)
             }
             UnaryOp::BitNot => operand_ty == result_ty && Self::resolved_is_integer(operand_ty),
             UnaryOp::RawDeref => false,

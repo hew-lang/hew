@@ -262,7 +262,6 @@ which mechanism applies and the order of the per-handle migration PRs.
 | `std/path` | `GlobResult` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Independent glob-result allocation; no child-transfer methods. |
 | `std/semaphore` | `Semaphore` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Independent runtime allocation; acquire/release borrow the handle. |
 | `std/deque` | `Deque` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Stores `i64` values only; no child handle transfer. |
-| `std/time/cron` | `Expr` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Parsed expression is an independent allocation. |
 | `std/net/url` | `Url` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Read-mostly; `resolve` returns a new independent URL allocation. |
 | `std/encoding/protobuf` | `Message` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | Scalar/string field setters do not consume another message handle. |
 | `std/encoding/xml` | `Node` | `close()` | 1 — per-call resource | C + H | **B-1 safe set — landed** | `get_child` returns a cloned node allocation; no child-transfer builder exists. |
@@ -389,7 +388,6 @@ by the PR itself; this spec fixes the *shape*.
 | `path.GlobResult` | `result.free()` removed; `result.close()` releases early | fielded `#[resource]` wrapper around `GlobResultHandle` | existing resource drop emission |
 | `semaphore.Semaphore` | `sem.free()` removed; `sem.close()` releases early | fielded `#[resource]` wrapper around `SemaphoreHandle` | existing resource drop emission |
 | `deque.Deque` | `dq.free()` removed; `dq.close()` releases early | fielded `#[resource]` wrapper around `DequeHandle` | existing resource drop emission |
-| `cron.Expr` | `expr.free()` removed; `expr.close()` releases early | fielded `#[resource]` wrapper around `ExprHandle` | existing resource drop emission |
 | `url.Url` | `url.free()` removed; `url.close()` releases early | fielded `#[resource]` wrapper around `UrlHandle` | existing resource drop emission |
 | `protobuf.Message` | `msg.free()` removed; `msg.close()` releases early | fielded `#[resource]` wrapper around `MessageHandle` | existing resource drop emission |
 | `xml.Node` | `node.free()` removed; `node.close()` releases early | fielded `#[resource]` wrapper around `NodeHandle` | existing resource drop emission |

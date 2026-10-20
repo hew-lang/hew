@@ -274,6 +274,18 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
       failures: Array<CheckedFailure>;
       ty: string;
     }
+  | {
+      op: "timestamp.binary";
+      binary_op: TimestampBinaryOp;
+      lhs: number;
+      rhs: number;
+      lhs_timestamp: boolean;
+      rhs_timestamp: boolean;
+      shape: number | null;
+      result: ValueDef;
+      normal: Edge;
+      failures: Array<CheckedFailure>;
+    }
   | { op: "unreachable" }
   | {
       op: "call";
@@ -413,6 +425,7 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
     }
 );
 export type TimerSendPolicy = "reject" | "drop_newest";
+export type TimestampBinaryOp = "Add" | "Subtract";
 export type TrapName =
   | "integer_overflow"
   | "divide_by_zero"
@@ -483,6 +496,7 @@ export const TERM_NAMES = [
   "branch",
   "switch.variant",
   "checked.binary",
+  "timestamp.binary",
   "unreachable",
   "call",
   "indirect.call",

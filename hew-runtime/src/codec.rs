@@ -540,6 +540,17 @@ pub unsafe extern "C" fn hew_de_int(r: *mut c_void, bits: u32, signed: i8) -> i6
     }
 }
 
+/// Read an unsigned integer under the checked data plan's inclusive bound.
+/// The shared source reader supplies the located error and the reader latches it.
+///
+/// # Safety
+/// `r` is a live reader.
+#[no_mangle]
+pub unsafe extern "C" fn hew_de_u64(r: *mut c_void, maximum: u64) -> u64 {
+    // SAFETY: per contract.
+    unsafe { reader(r) }.pull(0, |source| source.read_u64(maximum))
+}
+
 /// # Safety
 /// `r` is a live reader.
 #[no_mangle]

@@ -82,14 +82,30 @@ fn annotation_lowering_requires_the_checked_type_at_its_source_site() {
 
 #[test]
 fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
+    assert_private_helper_closure(false);
+}
+
+#[test]
+fn builtin_private_helpers_follow_function_values_and_transitive_uses() {
+    assert_private_helper_closure(true);
+}
+
+fn assert_private_helper_closure(builtin: bool) {
     use hew_parser::module::{Module, ModuleGraph, ModulePath};
 
-    let imported = hew_parser::parse(
-        "fn hidden() -> i64 { 99 } fn leaf() -> i64 { 7 } \
+    let helpers = "fn hidden() -> i64 { 99 } fn leaf() -> i64 { 7 } \
          fn helper() -> i64 { let f = leaf; f() } \
-         pub fn run() -> i64 { let hidden = || 2; hidden() + helper() }",
-    );
-    let mut root = hew_parser::parse("import helpers; fn main() { println(helpers.run()); }");
+         pub fn run() -> i64 { let hidden = || 2; hidden() + helper() }";
+    let imported = hew_parser::parse(&if builtin {
+        format!("{}\n{helpers}", include_str!("../../../std/builtins.hew"))
+    } else {
+        helpers.to_string()
+    });
+    let owner = if builtin { "std.builtins" } else { "helpers" };
+    let binding = if builtin { "builtins" } else { "helpers" };
+    let mut root = hew_parser::parse(&format!(
+        "import {owner}; fn main() {{ println({binding}.run()); }}",
+    ));
     assert!(imported.errors.is_empty(), "{:?}", imported.errors);
     assert!(root.errors.is_empty(), "{:?}", root.errors);
     let Item::Import(import) = &mut root.program.items[0].0 else {
@@ -97,7 +113,7 @@ fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
     };
     import.resolved_items = Some(imported.program.items.clone().into());
     let root_id = ModulePath::root();
-    let imported_id = ModulePath::new(["helpers"]);
+    let imported_id = ModulePath::new(owner.split('.'));
     let mut graph = ModuleGraph::new(root_id.clone());
     for (id, items) in [
         (imported_id.clone(), imported.program.items),
@@ -105,10 +121,15 @@ fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
     ] {
         graph
             .add_module(Module {
+                source_paths: if builtin && id == imported_id {
+                    vec![std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                        .join("../std/builtins.hew")]
+                } else {
+                    vec![]
+                },
                 id,
                 items,
                 imports: vec![],
-                source_paths: vec![],
                 doc: None,
             })
             .unwrap();
@@ -128,13 +149,14 @@ fn imported_private_helpers_follow_resolved_uses_and_ignore_shadowed_names() {
             _ => None,
         })
         .collect();
-    for name in ["helpers.helper", "helpers.leaf"] {
+    for leaf in ["helper", "leaf"] {
+        let name = format!("{owner}.{leaf}");
         assert!(
-            declarations.contains(&output.defs.lookup_path(name).unwrap()),
+            declarations.contains(&output.defs.lookup_path(&name).unwrap()),
             "{name}"
         );
     }
-    assert!(!declarations.contains(&output.defs.lookup_path("helpers.hidden").unwrap()));
+    assert!(!declarations.contains(&output.defs.lookup_path(&format!("{owner}.hidden")).unwrap()));
 }
 
 #[test]
@@ -624,7 +646,6 @@ fn synthetic_builtin_sentinel_ids_are_pairwise_distinct() {
         ("link", SYNTHETIC_LINK_ITEM),
         ("monitor", SYNTHETIC_MONITOR_ITEM),
         ("unlink", SYNTHETIC_UNLINK_ITEM),
-        ("instant::now", SYNTHETIC_INSTANT_NOW_ITEM),
         ("hew_stream_next_layout", SYNTHETIC_STREAM_NEXT_LAYOUT_ITEM),
         (
             "hew_stream_try_next_layout",

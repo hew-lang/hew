@@ -26,6 +26,7 @@ workspace = true
 wasm-opt = ["-O1", "--enable-bulk-memory"]
 
 [dependencies]
+hew-calendar = { path = "../hew-calendar" }
 hew-analysis = { path = "../hew-analysis" }
 hew-codec = { path = "../hew-codec" }
 hew-compile = { path = "../hew-compile" }

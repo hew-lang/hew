@@ -65,14 +65,13 @@ impl Drop for HewCoroSleep {
     }
 }
 
-unsafe fn start_on_wheel(
-    duration_ns: i64,
-    now_ms: u64,
+unsafe fn start_at_wheel(
+    deadline_ms: Option<u64>,
     waker: &HewWaker,
     wheel: *mut HewTimerWheel,
 ) -> *mut HewCoroSleep {
     let ready = Arc::new(SleepReady {
-        status: AtomicI32::new(if duration_ns <= 0 {
+        status: AtomicI32::new(if deadline_ms.is_none() {
             CoroStatus::Complete as i32
         } else {
             CoroStatus::Pending as i32
@@ -81,18 +80,13 @@ unsafe fn start_on_wheel(
         waker: unsafe { OwnedWaker::retain(waker) },
     });
     let mut timer = HewTimerHandle::null();
-    if duration_ns > 0 {
+    if let Some(deadline_ms) = deadline_ms {
         if wheel.is_null() {
             ready
                 .status
                 .store(CoroStatus::Fault as i32, Ordering::Release);
         } else {
             let callback = Arc::into_raw(ready.clone()).cast_mut().cast();
-            // The wheel cursor may lag behind the caller's clock while its
-            // ticker is parked. Anchor the delay to the sampled clock, not
-            // that cursor, so catching up cannot complete a new sleep early.
-            let deadline_ms =
-                now_ms.saturating_add(duration_ns.cast_unsigned().div_ceil(1_000_000));
             // SAFETY: the caller supplies a live wheel. The callback owns the
             // transferred Arc even if the timer fires before this call returns.
             timer = unsafe {
@@ -112,6 +106,33 @@ unsafe fn start_on_wheel(
         wheel,
         timer,
     }))
+}
+
+unsafe fn start_on_wheel(
+    duration_ns: i64,
+    now_ms: u64,
+    waker: &HewWaker,
+    wheel: *mut HewTimerWheel,
+) -> *mut HewCoroSleep {
+    // Anchor the delay to the sampled clock, since the wheel cursor can lag.
+    let deadline = (duration_ns > 0)
+        .then(|| now_ms.saturating_add(duration_ns.cast_unsigned().div_ceil(1_000_000)));
+    // SAFETY: the caller supplies a live wheel and descriptor.
+    unsafe { start_at_wheel(deadline, waker, wheel) }
+}
+
+unsafe fn start_until_on_wheel(
+    deadline_ns: i64,
+    now_ns: i64,
+    waker: &HewWaker,
+    wheel: *mut HewTimerWheel,
+) -> *mut HewCoroSleep {
+    // Round the absolute deadline up. Rounding only the remaining duration
+    // could arm a timer early when the clock sample falls between wheel ticks.
+    let deadline = (deadline_ns > now_ns).then(|| deadline_ns.cast_unsigned().div_ceil(1_000_000));
+    // SAFETY: the caller supplies a live wheel and descriptor. An elapsed
+    // deadline completes without registering a timer.
+    unsafe { start_at_wheel(deadline, waker, wheel) }
 }
 
 /// Start a nonblocking sleep using the existing process-wide timer wheel.
@@ -162,13 +183,9 @@ pub unsafe extern "C" fn hew_coro_sleep_until_new(
     } else {
         std::ptr::null_mut()
     };
-    // Keep the original sample: re-sampling after computing the remainder
-    // would extend the deadline by any time spent preparing the operation.
-    // hew_instant_now is a non-negative millisecond clock expressed in ns.
-    let sampled_millis = now_ns.cast_unsigned() / 1_000_000;
     // SAFETY: the wheel is runtime-owned and the caller keeps its descriptor
-    // live. A non-positive remainder completes without registering a timer.
-    unsafe { start_on_wheel(remaining_ns, sampled_millis, &*waker, wheel) }
+    // live. Use the original clock sample so registration cannot extend a wait.
+    unsafe { start_until_on_wheel(deadline_ns, now_ns, &*waker, wheel) }
 }
 
 /// Poll sleep completion without blocking an actor worker.
@@ -260,6 +277,27 @@ mod tests {
             assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Pending as i32);
             assert!(!ready.take_ready());
             timer_wheel_tick_to(wheel, now + 51);
+            assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Complete as i32);
+            assert!(ready.take_ready());
+            hew_coro_sleep_free(sleep);
+            hew_timer_wheel_free(wheel);
+        }
+    }
+
+    #[test]
+    fn absolute_sleep_never_rounds_a_fractional_deadline_down() {
+        let (ready, waker) = Readiness::new();
+        // SAFETY: the test owns the wheel and operation. Explicit nanosecond
+        // samples exercise the sub-millisecond boundary without wall time.
+        unsafe {
+            let wheel = hew_timer_wheel_new();
+            let base = timer_wheel_cursor_ms(wheel);
+            let now = i64::try_from(base).unwrap() * 1_000_000 + 900_000;
+            let sleep = start_until_on_wheel(now + 200_000, now, waker.descriptor(), wheel);
+            timer_wheel_tick_to(wheel, base + 1);
+            assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Pending as i32);
+            assert!(!ready.take_ready());
+            timer_wheel_tick_to(wheel, base + 2);
             assert_eq!(hew_coro_sleep_status(sleep), CoroStatus::Complete as i32);
             assert!(ready.take_ready());
             hew_coro_sleep_free(sleep);

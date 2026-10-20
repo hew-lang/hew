@@ -2902,7 +2902,7 @@ mod tests {
     #[test]
     fn generator_admits_files_arguments_and_seeded_services() {
         check_source(
-            "import std.fs; import std.os; import std.random; import std.time.datetime;\nfn main() { let args = os.args(); println(args.len()); let text = fs.read(\"schema.json\").expect(\"read\"); let _ = fs.write(\"generated/model.hew\", text); println(random.random()); println(datetime.now_ms()); }",
+            "import std.fs; import std.os; import std.random;\nfn main() { let args = os.args(); println(args.len()); let text = fs.read(\"schema.json\").expect(\"read\"); let _ = fs.write(\"generated/model.hew\", text); println(random.random()); println(instant.now().elapsed().nanos()); }",
             HostAdmission::Generate,
         ).unwrap();
     }

@@ -845,6 +845,7 @@ impl Parser<'_> {
                 Stmt::Loop { label: None, body }
             }
             Some(Token::While) => {
+                let keyword_start = self.peek_span().start;
                 self.advance();
                 let mut conditions = self.parse_condition()?;
                 if conditions
@@ -861,8 +862,10 @@ impl Parser<'_> {
                     let ConditionItem::Expr(condition) = conditions.remove(0) else {
                         unreachable!("a condition with no `let` operand is one expression")
                     };
+                    let header_span = Some(keyword_start..self.last_token_end);
                     let body = self.parse_block()?;
                     Stmt::While {
+                        header_span,
                         label: None,
                         condition,
                         body,
@@ -973,7 +976,11 @@ impl Parser<'_> {
             }
         };
 
-        let end = self.peek_span().start;
+        let end = if matches!(stmt, Stmt::Match { .. }) {
+            self.last_token_end
+        } else {
+            self.peek_span().start
+        };
         Some((stmt, start..end))
     }
 
@@ -989,6 +996,7 @@ impl Parser<'_> {
 
         let stmt = match self.peek() {
             Some(Token::While) => {
+                let keyword_start = self.peek_span().start;
                 self.advance();
                 let mut conditions = self.parse_condition()?;
                 if conditions
@@ -1005,8 +1013,10 @@ impl Parser<'_> {
                     let ConditionItem::Expr(condition) = conditions.remove(0) else {
                         unreachable!("a condition with no `let` operand is one expression")
                     };
+                    let header_span = Some(keyword_start..self.last_token_end);
                     let body = self.parse_block()?;
                     Stmt::While {
+                        header_span,
                         label: Some(label),
                         condition,
                         body,
@@ -1041,7 +1051,11 @@ impl Parser<'_> {
             }
         };
 
-        let end = self.peek_span().start;
+        let end = if matches!(stmt, Stmt::Match { .. }) {
+            self.last_token_end
+        } else {
+            self.peek_span().start
+        };
         Some((stmt, start..end))
     }
 

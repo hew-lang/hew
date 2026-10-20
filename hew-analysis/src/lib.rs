@@ -30,21 +30,7 @@ use serde::{Deserialize, Serialize};
 
 // ── Span ─────────────────────────────────────────────────────────────
 
-/// A byte-offset span, independent of any LSP position encoding.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OffsetSpan {
-    pub start: usize,
-    pub end: usize,
-}
-
-impl From<hew_parser::ast::Span> for OffsetSpan {
-    fn from(span: hew_parser::ast::Span) -> Self {
-        Self {
-            start: span.start,
-            end: span.end,
-        }
-    }
-}
+pub use hew_parser::diagnostic::{DiagnosticFix as CodeAction, OffsetSpan, TextEdit as RenameEdit};
 
 // ── Hover ────────────────────────────────────────────────────────────
 
@@ -155,13 +141,6 @@ pub mod token_modifiers {
 }
 
 // ── Rename ───────────────────────────────────────────────────────────
-
-/// A single text edit for a rename operation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RenameEdit {
-    pub span: OffsetSpan,
-    pub new_text: String,
-}
 
 /// A rename conflict: applying the rename would introduce a name clash.
 ///
@@ -293,13 +272,4 @@ pub struct SignatureInfo {
 pub struct ParameterInfo {
     pub label_start: u32,
     pub label_end: u32,
-}
-
-// ── Code actions ─────────────────────────────────────────────────────
-
-/// A code action with its associated text edits.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CodeAction {
-    pub title: String,
-    pub edits: Vec<RenameEdit>,
 }

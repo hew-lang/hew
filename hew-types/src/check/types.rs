@@ -1738,6 +1738,8 @@ pub(super) struct ActorFieldInfo {
     pub is_mutable: bool,
     /// Span of the field's type annotation (the declaration line).
     pub decl_span: Span,
+    /// Exact authored spelling that would make the field mutable.
+    pub mutable_fix: Option<hew_parser::diagnostic::DiagnosticFix>,
     /// `init` owns the field's first store (D447): no default, assigned in
     /// the init body. A spawn cannot name it.
     pub deferred: bool,

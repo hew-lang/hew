@@ -445,7 +445,7 @@ fn module_qualified_call_rejects_private_body_only_signature() {
     );
 
     let receiver = (Expr::Ident(Ident::new("mymod")), 0..5);
-    let ty = checker.check_method_call(&receiver, "secret", &[], &(0..12));
+    let ty = checker.check_method_call(&receiver, "secret", None, &[], &(0..12));
 
     assert_eq!(ty, Ty::Error);
     assert!(
@@ -474,7 +474,7 @@ fn module_qualified_call_accepts_exported_signature() {
     );
 
     let receiver = (Expr::Ident(Ident::new("mymod")), 0..5);
-    let ty = checker.check_method_call(&receiver, "visible", &[], &(0..13));
+    let ty = checker.check_method_call(&receiver, "visible", None, &[], &(0..13));
 
     assert_eq!(ty, Ty::I64);
     assert!(

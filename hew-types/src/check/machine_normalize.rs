@@ -890,6 +890,7 @@ impl Builder {
                 let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
                 let body = self.expr(Expr::Literal(Literal::String(state.name.to_string())));
                 MatchArm {
+                    append_separator: None,
                     pattern,
                     guard: None,
                     body,
@@ -984,6 +985,7 @@ impl Builder {
                 let pattern = self.pattern(Ident::new(name), &[], "");
                 let body = self.variant(Ident::new(name), Vec::new(), Vec::new());
                 MatchArm {
+                    append_separator: None,
                     pattern,
                     guard: None,
                     body,
@@ -1221,6 +1223,7 @@ impl Builder {
                 });
                 let selected = self.block(vec![input], selected);
                 event_arms.push(MatchArm {
+                    append_separator: None,
                     pattern: event_pattern,
                     guard: None,
                     body: selected,
@@ -1233,6 +1236,7 @@ impl Builder {
             });
             let body = self.block(locals, dispatch);
             state_arms.push(MatchArm {
+                append_separator: None,
                 pattern,
                 guard: None,
                 body,
@@ -1369,6 +1373,7 @@ impl Builder {
             let result = self.state_value(machine, next);
             let body = self.block(locals, result);
             arms.push(MatchArm {
+                append_separator: None,
                 pattern,
                 guard: None,
                 body,

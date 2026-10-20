@@ -214,6 +214,7 @@ impl Checker {
                     let ty = self.check_field_access_with_type_args(
                         object,
                         field.0.name.as_str(),
+                        Some(&field.1),
                         Some(type_args),
                         span,
                     );
@@ -260,7 +261,7 @@ impl Checker {
             // span so HIR lowering can reuse the `.clone()` lowering path.
             // Types with no clone path fail closed downstream with the existing
             // clone diagnostic.
-            Expr::Clone(operand) => self.check_method_call(operand, "clone", &[], span),
+            Expr::Clone(operand) => self.check_method_call(operand, "clone", None, &[], span),
 
             // Call
             Expr::Call {
@@ -288,7 +289,13 @@ impl Checker {
                 method,
                 args,
             } => {
-                let ty = self.check_method_call(receiver, method.0.name.as_str(), args, span);
+                let ty = self.check_method_call(
+                    receiver,
+                    method.0.name.as_str(),
+                    Some(&method.1),
+                    args,
+                    span,
+                );
                 if !matches!(&ty, Ty::Error) {
                     self.record_value_path_resolution(&receiver.0, &receiver.1);
                     self.record_call_resolution(span, &method.1, true);
@@ -302,7 +309,7 @@ impl Checker {
                 let ty = self
                     .qualified_constant_type(object, field, span)
                     .unwrap_or_else(|| {
-                        self.check_field_access(object, field.0.name.as_str(), span)
+                        self.check_field_access(object, field.0.name.as_str(), Some(&field.1), span)
                     });
                 if !matches!(&ty, Ty::Error) {
                     self.record_value_path_resolution(expr, span);
@@ -439,7 +446,11 @@ impl Checker {
                     fields,
                     type_args.as_deref(),
                     base.as_deref(),
-                    span,
+                    super::synthesize_spawn_forms::StructInitSite {
+                        path,
+                        field_labels,
+                        span,
+                    },
                 );
                 if !matches!(&ty, Ty::Error) {
                     self.resolve_type_path_head(path);
@@ -1389,6 +1400,7 @@ impl Checker {
             let uninitialized = binding.init_state == crate::env::InitState::Unassigned;
             let initialization_suggestions =
                 uninitialized.then(|| Self::deferred_local_suggestions(name, binding));
+            let initialization_fixes = uninitialized.then(|| Self::deferred_local_fixes(binding));
             let moved_at = binding.moved_at.clone();
             let ty = binding.ty.clone();
             let def_span = binding
@@ -1429,6 +1441,7 @@ impl Checker {
                         (self.errors.last_mut(), initialization_suggestions)
                     {
                         error.suggestions = suggestions;
+                        error.fixes = initialization_fixes.unwrap_or_default();
                         if let Some(declaration) = def_span.clone() {
                             error.notes.push((
                                 declaration,

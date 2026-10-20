@@ -181,6 +181,7 @@ impl Checker {
                 continue;
             }
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InferenceFailed,
                 span: entry.span,

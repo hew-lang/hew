@@ -4435,6 +4435,23 @@ Prefer a `pub const` over a zero-argument wrapper function
 shorter, makes the value's constancy visible at the call site, and avoids a
 function-call indirection for something that never varies.
 
+### Applying diagnostic fixes
+
+Preview safe edits with `hew check --fix --dry-run main.hew`, then apply them
+with `hew check --fix main.hew`. The compiler rechecks changed sources. Automatic
+application selects only a single `machine_applicable` alternative per diagnostic
+and stays within the selected package or loose module. Dependencies, the standard
+library and generated files are left for their owners.
+
+`hew check --format json` includes each diagnostic's exact `source_hash` and
+`fixes`: a title, applicability and byte-range edits. Editors use the same
+producer-owned alternatives with document versions and UTF-16 positions. Spelling
+choices and underscore-prefix suggestions require a programmer's choice;
+`has_placeholders` actions such as missing match arms require completing the
+inserted body. Neither is applied automatically. Conflicting edits or changed
+inputs stop application before writing. Each file is replaced atomically; an I/O
+failure reports which files were updated and which remain.
+
 ### Suppressing a lint
 
 ```hew

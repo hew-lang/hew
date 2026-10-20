@@ -71,6 +71,7 @@ fn find_in_stmt(
             label,
             condition,
             body,
+            ..
         } => {
             if let Some(candidate) = candidate_from_condition(&condition.0) {
                 try_flag(ctx, levels, &candidate, label.as_ref(), body, span, out);

@@ -1794,7 +1794,18 @@ fn macro_type_origin(
     program: &Program,
     mut diagnostic: hew_types::TypeError,
 ) -> hew_types::TypeError {
+    // Expansion attribution may fall back to the whole invocation. Such an
+    // origin is useful for reporting, but is not an exact editable range.
+    diagnostic.fixes.retain(|fix| {
+        fix.edits.iter().all(|edit| {
+            program
+                .expansions
+                .source_origin(&(edit.span.start..edit.span.end))
+                .is_none()
+        })
+    });
     if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+        diagnostic.fixes.clear();
         if let Some((invocation_path, invocation_span)) =
             program.expansions.invocation_origin(&diagnostic.span)
         {

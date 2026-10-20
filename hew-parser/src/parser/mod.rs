@@ -473,6 +473,7 @@ fn split_string_parts(
             if let Some(msg) = unescape_err {
                 let abs_off = inner_offset + chars[idx].0;
                 errors.push(ParseError {
+                    fixes: Vec::new(),
                     message: msg.to_string(),
                     span: abs_off..abs_off + consumed,
                     hint: None,
@@ -511,6 +512,7 @@ fn split_string_parts(
                 if let Some(&(_, '{')) = chars.get(idx) {
                     let abs_open = inner_offset + byte_pos;
                     errors.push(ParseError {
+                        fixes: Vec::new(),
                         message: "f-string interpolation opened with `{{`; literal braces in Hew \
                              use `\\{` and `\\}`, not `{{` and `}}`"
                             .to_string(),
@@ -592,6 +594,7 @@ fn split_string_parts(
             };
             if expr_text.trim().is_empty() {
                 errors.push(ParseError {
+                    fixes: Vec::new(),
                     message: "empty interpolation expression".to_string(),
                     span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
                     hint: None,
@@ -614,6 +617,7 @@ fn split_string_parts(
                     });
                 } else {
                     errors.push(ParseError {
+                        fixes: Vec::new(),
                         message: "failed to parse interpolation expression".to_string(),
                         span: (inner_offset + expr_start_byte)..(inner_offset + expr_end_byte),
                         hint: None,
@@ -970,6 +974,8 @@ impl ParseDiagnosticKind {
 
 #[derive(Debug, Clone)]
 pub struct ParseError {
+    /// Exact fix alternatives produced with the diagnostic.
+    pub fixes: Vec<crate::diagnostic::DiagnosticFix>,
     pub message: String,
     pub span: Span,
     /// Optional actionable suggestion for fixing the error.

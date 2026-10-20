@@ -3818,6 +3818,7 @@ impl<'a> Formatter<'a> {
                 label,
                 condition,
                 body,
+                ..
             } => {
                 self.write_indent();
                 if let Some(label) = label {

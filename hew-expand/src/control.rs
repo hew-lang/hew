@@ -374,6 +374,7 @@ impl<'a> Control<'a> {
                 label,
                 condition,
                 body,
+                ..
             } => {
                 self.expr(condition)?;
                 self.loop_block(label, body, span)?;

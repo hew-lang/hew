@@ -1316,6 +1316,20 @@ impl Checker {
                     name: f.name.to_string(),
                     is_mutable: f.is_mutable,
                     decl_span: f.ty.1.clone(),
+                    mutable_fix: Some(hew_parser::diagnostic::DiagnosticFix::replace(
+                        format!("Declare `{}` with `var`", f.name),
+                        if f.span.start == f.name_span.start {
+                            f.span.start..f.span.start
+                        } else {
+                            f.span.start..f.span.start + 3
+                        },
+                        if f.span.start == f.name_span.start {
+                            "var "
+                        } else {
+                            "var"
+                        },
+                        hew_parser::diagnostic::Applicability::MaybeIncorrect,
+                    )),
                     deferred: deferred_fields
                         .iter()
                         .any(|deferred| deferred == f.name.name.as_str()),
@@ -1789,11 +1803,10 @@ impl Checker {
         }
     }
 
-    pub(super) fn deferred_local_suggestions(
-        name: &str,
+    pub(super) fn deferred_local_initializer(
         binding: &crate::env::Binding,
-    ) -> Vec<String> {
-        let initializer = if binding.is_mutable {
+    ) -> Option<&'static str> {
+        if binding.is_mutable {
             match &binding.ty {
                 Ty::I8
                 | Ty::I16
@@ -1830,7 +1843,34 @@ impl Checker {
             }
         } else {
             None
-        };
+        }
+    }
+
+    pub(super) fn deferred_local_fixes(
+        binding: &crate::env::Binding,
+    ) -> Vec<hew_parser::diagnostic::DiagnosticFix> {
+        binding
+            .declaration
+            .as_ref()
+            .and_then(|decl| decl.initializer_site)
+            .zip(Self::deferred_local_initializer(binding))
+            .map(|(position, value)| {
+                hew_parser::diagnostic::DiagnosticFix::replace(
+                    format!("Initialize with `{value}`"),
+                    position..position,
+                    format!(" = {value}"),
+                    hew_parser::diagnostic::Applicability::MaybeIncorrect,
+                )
+            })
+            .into_iter()
+            .collect()
+    }
+
+    pub(super) fn deferred_local_suggestions(
+        name: &str,
+        binding: &crate::env::Binding,
+    ) -> Vec<String> {
+        let initializer = Self::deferred_local_initializer(binding);
         initializer.map_or_else(
             || {
                 vec![format!(
@@ -1853,6 +1893,7 @@ impl Checker {
             let mut error = TypeError::new(TypeErrorKind::LocalConditionalInit, span.clone(),
                 format!("E_LOCAL_CONDITIONAL_INIT: local `{name}` is initialized on only some reaching paths; initialize it in every arm or before the branch"));
             error.suggestions = Self::deferred_local_suggestions(&name, &binding);
+            error.fixes = Self::deferred_local_fixes(&binding);
             if let Some(declaration) = binding.def_span {
                 error = error.with_note(declaration, "binding declared without a value here");
             }

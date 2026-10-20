@@ -93,12 +93,19 @@ impl Checker {
             let declaration = root
                 .and_then(|root| self.env.lookup_ref(root))
                 .and_then(|binding| binding.def_span.clone());
+            let fix = root
+                .and_then(|root| self.env.lookup_ref(root))
+                .and_then(|binding| binding.declaration.as_ref())
+                .and_then(crate::env::BindingDeclaration::mutable_fix);
             let error_index = self.errors.len();
             self.report_error(
                 TypeErrorKind::MutabilityError,
                 span,
                 format!("{description} requires a mutable binding receiver; {label} is not declared with `var`"),
             );
+            if let Some(error) = self.errors.get_mut(error_index) {
+                error.fixes.extend(fix);
+            }
             if let (Some(declaration), Some(error)) =
                 (declaration, self.errors.get_mut(error_index))
             {
@@ -125,21 +132,30 @@ impl Checker {
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
+        method_span: Option<&Span>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        self.check_method_call_with_type_args(receiver, method, None, args, span)
+        self.check_method_call_with_type_args(receiver, method, method_span, None, args, span)
     }
 
     pub(in crate::check) fn check_method_call_with_type_args(
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
+        method_span: Option<&Span>,
         explicit_type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
     ) -> Ty {
-        let result = self.check_method_call_inner(receiver, method, explicit_type_args, args, span);
+        let result = self.check_method_call_inner(
+            receiver,
+            method,
+            method_span,
+            explicit_type_args,
+            args,
+            span,
+        );
         let result = self.finish_actor_receive_call(receiver, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
@@ -242,6 +258,7 @@ impl Checker {
         &mut self,
         receiver: &Spanned<Expr>,
         method: &str,
+        method_span: Option<&Span>,
         explicit_type_args: Option<&[Spanned<TypeExpr>]>,
         args: &[CallArg],
         span: &Span,
@@ -269,14 +286,31 @@ impl Checker {
                     let (expr, arg_span) = arg.expr();
                     self.synthesize(expr, arg_span);
                 }
-                self.report_error(
+                let receiver_ty = self.named_ty_for_key(&head.canonical_type, Vec::new());
+                let candidates = crate::method_resolution::collect_method_sigs_for_receiver(
+                    &self.defs,
+                    &self.type_defs,
+                    self.sigs(),
+                    &receiver_ty,
+                );
+                let similar = crate::error::find_similar(
+                    method,
+                    candidates
+                        .iter()
+                        .filter(|(_, signature)| signature.associated)
+                        .map(|(name, _)| name.as_str()),
+                );
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedFunction,
                     span,
+                    method_span,
                     format!(
                         "no associated function `{method}` on `{}`",
                         head.canonical_type
                     ),
+                    similar,
                 );
+
                 return Ty::Error;
             }
         }
@@ -765,9 +799,10 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedMethod,
                     span,
+                    method_span,
                     format!("no method `{method}` on `CancellationToken`"),
                     self.similar_methods(&resolved, method),
                 );
@@ -1505,9 +1540,10 @@ impl Checker {
                     let (expr, sp) = arg.expr();
                     self.synthesize(expr, sp);
                 }
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedMethod,
                     span,
+                    method_span,
                     format!("no method `{method}` on `{}`", resolved.user_facing()),
                     self.similar_methods(resolved, method),
                 );
@@ -1674,9 +1710,10 @@ impl Checker {
                             let (expr, sp) = arg.expr();
                             self.synthesize(expr, sp);
                         }
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedMethod,
                             span,
+                            method_span,
                             format!("no method `{method}` on `{}`", resolved.user_facing()),
                             self.similar_methods(&receiver_ty, method),
                         );
@@ -2408,9 +2445,10 @@ impl Checker {
                 } else {
                     self.similar_methods(&resolved, method)
                 };
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedMethod,
                     span,
+                    method_span,
                     format!("no method `{method}` on `{}`", resolved.user_facing()),
                     suggestions,
                 );

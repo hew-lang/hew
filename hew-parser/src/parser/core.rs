@@ -34,6 +34,7 @@ impl<'src> Parser<'src> {
             let span = (s.start + offset)..(s.end + offset);
             if matches!(t, Token::Error) {
                 errors.push(ParseError {
+                    fixes: Vec::new(),
                     message: "unexpected character".to_string(),
                     span,
                     hint: None,
@@ -80,6 +81,7 @@ impl<'src> Parser<'src> {
                     )
                 };
                 errors.push(ParseError {
+                    fixes: Vec::new(),
                     message,
                     span: span.clone(),
                     hint: Some(hint),
@@ -489,6 +491,7 @@ impl<'src> Parser<'src> {
 
     pub(crate) fn error_at(&mut self, message: String, span: Span) {
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: None,
@@ -509,6 +512,7 @@ impl<'src> Parser<'src> {
         hint: impl Into<String>,
     ) {
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: Some(hint.into()),
@@ -533,7 +537,24 @@ impl<'src> Parser<'src> {
         hint: impl Into<String>,
         kind: ParseDiagnosticKind,
     ) {
+        use crate::diagnostic::{Applicability, DiagnosticFix};
+        let replacement = match kind {
+            ParseDiagnosticKind::MemberTerminator => Some(("Insert `;` separator", ";")),
+            ParseDiagnosticKind::ListSeparator => Some(("Insert `,` separator", ",")),
+            ParseDiagnosticKind::SeparatorAfterBody => Some(("Remove extra separator", "")),
+            ParseDiagnosticKind::ActorFieldBinding => {
+                Some(("Declare immutable actor state", "let "))
+            }
+            _ => None,
+        };
+        let fixes = replacement
+            .into_iter()
+            .map(|(title, text)| {
+                DiagnosticFix::replace(title, span.clone(), text, Applicability::MachineApplicable)
+            })
+            .collect();
         self.errors.push(ParseError {
+            fixes,
             message,
             span,
             hint: Some(hint.into()),
@@ -549,6 +570,7 @@ impl<'src> Parser<'src> {
         hint: impl Into<String>,
     ) {
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message: message.into(),
             span,
             hint: Some(hint.into()),
@@ -577,6 +599,7 @@ impl<'src> Parser<'src> {
         let got = got.into();
         let message = format!("expected {expected}, found {got}");
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: None,
@@ -596,6 +619,7 @@ impl<'src> Parser<'src> {
         let got = got.into();
         let message = format!("expected {expected}, found {got}");
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: Some(hint.into()),
@@ -607,6 +631,7 @@ impl<'src> Parser<'src> {
     pub(crate) fn error_unexpected_eof(&mut self, context: impl std::fmt::Display) {
         let span = self.peek_span();
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message: format!("unexpected end of input, expected {context}"),
             span,
             hint: None,
@@ -618,6 +643,7 @@ impl<'src> Parser<'src> {
     pub(crate) fn error_invalid_literal(&mut self, message: String) {
         let span = self.peek_span();
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: None,
@@ -630,6 +656,7 @@ impl<'src> Parser<'src> {
         let got = got.into();
         let span = self.peek_span();
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message: format!("expected expression, found {got}"),
             span,
             hint: None,
@@ -665,6 +692,7 @@ impl<'src> Parser<'src> {
             None => (format!("expected pattern, found {got}"), None),
         };
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint,
@@ -680,6 +708,7 @@ impl<'src> Parser<'src> {
     ) {
         let span = self.peek_span();
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: Some(hint.into()),
@@ -768,6 +797,7 @@ impl<'src> Parser<'src> {
 
     pub(crate) fn warning_at(&mut self, message: String, span: Span) {
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message,
             span,
             hint: None,

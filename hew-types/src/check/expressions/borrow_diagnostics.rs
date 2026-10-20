@@ -355,6 +355,7 @@ impl Checker {
             )
         };
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::BorrowedParamReturn,
             span: span.clone(),
@@ -1044,6 +1045,7 @@ impl Checker {
         let via_note =
             via_binding.map_or_else(String::new, |b| format!(" (via let-binding `{b}`)"));
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::InvalidOperation,
             span: span.clone(),

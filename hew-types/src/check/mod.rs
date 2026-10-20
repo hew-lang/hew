@@ -3513,6 +3513,12 @@ impl Checker {
                 }
                 if !self.scopes.import_used(import.site) {
                     self.warnings.push(TypeError {
+                        fixes: vec![hew_parser::diagnostic::DiagnosticFix::replace(
+                            "Remove unused import",
+                            import.span.clone(),
+                            "",
+                            hew_parser::diagnostic::Applicability::MachineApplicable,
+                        )],
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedImport,
                         span: import.span.clone(),
@@ -4189,8 +4195,19 @@ impl Checker {
         if let Some(normalized) = normalized_program {
             normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
+                // Generated extents can map to a whole authored declaration,
+                // rather than an exact editable token. Keep their prose but do
+                // not publish a replacement against that coarse origin.
+                diagnostic.fixes.retain(|fix| {
+                    fix.edits.iter().all(|edit| {
+                        normalized
+                            .source_span(&(edit.span.start..edit.span.end))
+                            .is_none()
+                    })
+                });
                 if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();
+                    diagnostic.fixes.clear();
                 }
             }
             Self::project_machine_expr_types(normalized, &mut output.expr_types);
@@ -4530,6 +4547,7 @@ impl Checker {
             LintLevel::Deny => crate::error::Severity::Error,
         };
         let diag = TypeError {
+            fixes: Vec::new(),
             severity,
             kind: TypeErrorKind::Lint(id),
             span: span.clone(),
@@ -5594,6 +5612,7 @@ pub(crate) fn emit_unresolved_closure_diagnostics(
         if !capture_facts.contains_key(&key) {
             let name = hint_name.clone().unwrap_or_else(|| "<closure>".to_string());
             out.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::ClosureCaptureModeUnresolved { name: name.clone() },
                 span: span.clone(),
@@ -5610,6 +5629,7 @@ pub(crate) fn emit_unresolved_closure_diagnostics(
         }
         if !escape_facts.contains_key(&key) {
             out.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::ClosureEscapeKindUnresolved,
                 span: span.clone(),

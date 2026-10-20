@@ -440,6 +440,12 @@ impl DebugArgs {
 
 #[derive(Debug, Args)]
 pub struct CheckArgs {
+    /// Apply unambiguous machine-applicable diagnostic fixes in selected sources.
+    #[arg(long)]
+    pub fix: bool,
+    /// Show files that would be fixed without writing them.
+    #[arg(long, requires = "fix")]
+    pub dry_run: bool,
     /// Input .hew file, or a package directory. Omit it to check the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,

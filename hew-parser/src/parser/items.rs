@@ -1067,6 +1067,7 @@ impl Parser<'_> {
     /// Recover from a rejected method without consuming the enclosing type body.
     fn report_type_method(&mut self, name: Ident) {
         self.errors.push(ParseError {
+            fixes: Vec::new(),
             message: "methods belong in an impl block [E_TYPE_METHOD_IN_DECL]".to_string(),
             span: self.peek_span(),
             hint: Some(format!("move this method to `impl {name} {{ ... }}`")),
@@ -1672,7 +1673,7 @@ impl Parser<'_> {
                     .iter()
                     .any(|error| matches!(error.kind, ParseDiagnosticKind::ImportGlobRemoved))
                 {
-                    self.errors.push(ParseError {
+                    self.errors.push(ParseError { fixes: Vec::new(),
                         message: "E_IMPORT_GLOB_REMOVED: glob imports have been removed; import explicit names with `import path.{ Name };`".to_string(),
                         span: self.peek_span(),
                         hint: Some(

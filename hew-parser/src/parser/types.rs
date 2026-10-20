@@ -778,6 +778,7 @@ impl Parser<'_> {
                         // allowed; reaching here means the surrounding item
                         // has no receiver to consume.
                         self.errors.push(ParseError {
+                            fixes: Vec::new(),
                             message: "`consume self` is only valid as the receiver of a method"
                                 .to_string(),
                             span: span.clone(),
@@ -809,6 +810,7 @@ impl Parser<'_> {
                     continue;
                 }
                 self.errors.push(ParseError {
+                    fixes: Vec::new(),
                     message: "`self` is not a valid parameter name in Hew; \
                               write bare `self`, `var self` or `consume self` as the \
                               first parameter of a trait or impl method"

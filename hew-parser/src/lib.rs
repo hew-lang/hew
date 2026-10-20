@@ -2,6 +2,7 @@
 
 pub mod ast;
 pub mod ast_eq;
+pub mod diagnostic;
 pub mod fmt;
 pub mod init_analysis;
 pub mod loop_analysis;

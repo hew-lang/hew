@@ -84,10 +84,20 @@ fn respell_unit(
         .map(|(_, _, text)| text.to_string())
         .collect();
     let mut diagnostics = before.to_vec();
+    let mut refused = std::collections::BTreeMap::new();
     for _ in 0..PASSES {
         let mut changed = false;
-        for ((_, path, _), text) in members.iter().zip(current.iter_mut()) {
-            let respelled = apply_bare_variant_fixes(text, &reported_in(&diagnostics, path));
+        for ((index, path, _), text) in members.iter().zip(current.iter_mut()) {
+            if refused.contains_key(index) {
+                continue;
+            }
+            let respelled = match apply_bare_variant_fixes(text, &reported_in(&diagnostics, path)) {
+                Ok(respelled) => respelled,
+                Err(error) => {
+                    refused.insert(*index, error.to_string());
+                    continue;
+                }
+            };
             if respelled != *text {
                 changed = true;
                 *text = respelled;
@@ -103,7 +113,14 @@ fn respell_unit(
         .iter()
         .zip(current)
         .map(|(&(index, path, text), respelled)| {
-            let outcome = if respelled == text {
+            let outcome = if let Some(reason) = refused.remove(&index) {
+                Err(VariantRefusal {
+                    file: path.to_path_buf(),
+                    line: 1,
+                    column: 1,
+                    reason,
+                })
+            } else if respelled == text {
                 Ok(respelled)
             } else {
                 let after = reported_in(&diagnostics, path);
@@ -140,7 +157,7 @@ struct FileDiagnostic {
     kind: TypeErrorKind,
     message: String,
     span: std::ops::Range<usize>,
-    suggestions: Vec<String>,
+    fixes: hew_analysis::code_actions::DiagnosticInfo,
 }
 
 /// The type diagnostics a check of `root` reports, with the file each is in.
@@ -174,7 +191,10 @@ fn unit_diagnostics(root: &Path, documents: &SourceSet, units: &mut CheckUnits) 
                     kind: error.kind,
                     message: error.message,
                     span: error.span,
-                    suggestions: error.suggestions,
+                    fixes: hew_analysis::code_actions::DiagnosticInfo::new(
+                        diagnostic.source.as_deref().unwrap_or_default(),
+                        error.fixes,
+                    ),
                 },
             )),
             FrontendDiagnosticKind::Parse(_)
@@ -203,37 +223,17 @@ fn reported_in(
 }
 
 /// Apply the checker's fix-it at every `E_BARE_VARIANT_EXPR` site.
-fn apply_bare_variant_fixes(source: &str, diagnostics: &[FileDiagnostic]) -> String {
-    let mut edits: Vec<_> = diagnostics
+fn apply_bare_variant_fixes(
+    source: &str,
+    diagnostics: &[FileDiagnostic],
+) -> Result<String, hew_analysis::code_actions::EditError> {
+    let fixes = diagnostics
         .iter()
         .filter(|diagnostic| diagnostic.kind == TypeErrorKind::BareVariantExpr)
-        .flat_map(|diagnostic| {
-            let info = hew_analysis::code_actions::DiagnosticInfo {
-                kind: Some(diagnostic.kind.as_kind_str().to_string()),
-                message: diagnostic.message.clone(),
-                span: hew_analysis::OffsetSpan {
-                    start: diagnostic.span.start,
-                    end: diagnostic.span.end,
-                },
-                suggestions: diagnostic.suggestions.clone(),
-            };
-            hew_analysis::code_actions::build_code_actions(source, &[info])
-        })
-        .flat_map(|action| action.edits)
-        .collect();
-    edits.sort_by_key(|edit| std::cmp::Reverse(edit.span.start));
-    edits.dedup_by_key(|edit| edit.span.start);
-    let mut respelled = source.to_string();
-    let mut floor = usize::MAX;
-    for edit in edits {
-        // A site nested in one already edited waits for the next pass.
-        if edit.span.end > floor {
-            continue;
-        }
-        respelled.replace_range(edit.span.start..edit.span.end, &edit.new_text);
-        floor = edit.span.start;
-    }
-    respelled
+        .map(|diagnostic| diagnostic.fixes.clone())
+        .collect::<Vec<_>>();
+    hew_analysis::code_actions::machine_applicable_edits(source, &fixes)
+        .and_then(|edits| hew_analysis::code_actions::apply_edits(source, &edits))
 }
 
 /// The first diagnostic in `after` whose code occurs more often than in

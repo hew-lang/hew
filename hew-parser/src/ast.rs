@@ -782,6 +782,10 @@ pub enum Stmt {
     },
     While {
         label: Option<Ident>,
+        /// Written keyword and condition extent, including grouping punctuation.
+        /// Absent for synthetic or deserialized syntax.
+        #[serde(skip)]
+        header_span: Option<Span>,
         condition: Spanned<Expr>,
         body: Block,
     },
@@ -1104,6 +1108,10 @@ impl<'de> serde::Deserialize<'de> for Literal {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchArm {
+    /// Site for a comma needed before appending another arm; absent when the
+    /// authored body already has a separator or closes with a brace.
+    #[serde(skip)]
+    pub append_separator: Option<usize>,
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,

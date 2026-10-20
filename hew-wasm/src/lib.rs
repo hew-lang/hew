@@ -103,7 +103,7 @@ pub fn parse_source(source: &str) -> Result<String, JsValue> {
         let parse_result = hew_parser::parse(source);
         Ok(ParseSourceResult {
             ast: parse_result.program,
-            diagnostics: convert_parse_diagnostics(parse_result.errors),
+            diagnostics: convert_parse_diagnostics(parse_result.errors, source),
         })
     })
 }
@@ -365,7 +365,8 @@ pub fn inlay_hints(source: &str) -> Result<String, JsValue> {
 /// Get code actions for given diagnostics JSON. Returns JSON array of `CodeAction`.
 ///
 /// `diagnostics_json` should be a JSON array of `DiagnosticInfo` objects:
-/// `[{ "kind": "UndefinedVariable", "message": "...", "span": { "start": 0, "end": 5 }, "suggestions": [] }]`
+/// Each object carries the `source_hash` and producer-owned `fixes` from
+/// `analyze` or `parse_source`. Stale source snapshots produce no actions.
 ///
 /// # Errors
 ///
@@ -374,8 +375,24 @@ pub fn inlay_hints(source: &str) -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn code_actions(source: &str, diagnostics_json: &str) -> Result<String, JsValue> {
     export_json("code_actions", || {
-        let diags: Vec<hew_analysis::code_actions::DiagnosticInfo> =
+        #[derive(serde::Deserialize)]
+        struct ActionDiagnostic {
+            #[serde(flatten)]
+            info: hew_analysis::code_actions::DiagnosticInfo,
+            source_module: Option<String>,
+        }
+        let diags: Vec<ActionDiagnostic> =
             deserialize_json("code_actions", "diagnostics_json", diagnostics_json)?;
+        let diags = diags
+            .into_iter()
+            .filter(|diagnostic| {
+                diagnostic
+                    .source_module
+                    .as_deref()
+                    .is_none_or(|origin| origin == "playground.hew")
+            })
+            .map(|diagnostic| diagnostic.info)
+            .collect::<Vec<_>>();
         Ok(hew_analysis::code_actions::build_code_actions(
             source, &diags,
         ))
@@ -508,6 +525,9 @@ struct WasmNote {
 /// Diagnostic reported by the WASM analysis pipeline.
 #[derive(Serialize)]
 struct WasmDiagnostic {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_hash: Option<String>,
+    fixes: Vec<hew_parser::diagnostic::DiagnosticFix>,
     severity: String,
     phase: &'static str,
     message: String,
@@ -604,6 +624,8 @@ fn collect_semantic_diagnostics(
     match result {
         Ok(_) => Vec::new(),
         Err(error) => vec![WasmDiagnostic {
+            source_hash: None,
+            fixes: Vec::new(),
             severity: "error".to_string(),
             phase: "sir",
             message: error.to_string(),
@@ -722,6 +744,8 @@ fn parse_error_to_wasm(err: hew_parser::ParseError) -> WasmDiagnostic {
     };
     let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
+        source_hash: None,
+        fixes: err.fixes,
         severity: severity.to_string(),
         phase: "parse",
         message: err.message,
@@ -815,6 +839,8 @@ fn hir_diagnostic_to_wasm(diag: hew_hir::HirDiagnostic) -> WasmDiagnostic {
         })
         .collect();
     WasmDiagnostic {
+        source_hash: None,
+        fixes: Vec::new(),
         severity: "error".to_string(),
         phase: "hir",
         message: diag.note,
@@ -835,6 +861,8 @@ fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
     };
     let span = WasmSpan::from_span(&err.span);
     WasmDiagnostic {
+        source_hash: None,
+        fixes: err.fixes,
         severity: severity.to_string(),
         phase: "typecheck",
         message: err.message,
@@ -858,8 +886,18 @@ fn type_error_to_wasm(err: hew_types::error::TypeError) -> WasmDiagnostic {
     }
 }
 
-fn convert_parse_diagnostics(parse_errors: Vec<hew_parser::ParseError>) -> Vec<WasmDiagnostic> {
-    parse_errors.into_iter().map(parse_error_to_wasm).collect()
+fn convert_parse_diagnostics(
+    parse_errors: Vec<hew_parser::ParseError>,
+    source: &str,
+) -> Vec<WasmDiagnostic> {
+    parse_errors
+        .into_iter()
+        .map(|error| {
+            let mut diagnostic = parse_error_to_wasm(error);
+            diagnostic.source_hash = Some(hew_analysis::code_actions::source_hash(source));
+            diagnostic
+        })
+        .collect()
 }
 
 fn convert_diagnostics(
@@ -872,6 +910,10 @@ fn convert_diagnostics(
 
 fn frontend_diagnostic_to_wasm(diagnostic: hew_compile::FrontendDiagnostic) -> WasmDiagnostic {
     use hew_compile::FrontendDiagnosticKind as Kind;
+    let source_hash = diagnostic
+        .source
+        .as_deref()
+        .map(hew_analysis::code_actions::source_hash);
     let mut converted = match diagnostic.kind {
         Kind::Parse(error) => parse_error_to_wasm(error),
         Kind::Type(error) => type_error_to_wasm(error),
@@ -879,6 +921,8 @@ fn frontend_diagnostic_to_wasm(diagnostic: hew_compile::FrontendDiagnostic) -> W
         Kind::Message(message) => {
             let span = WasmSpan::from_span(&message.span.unwrap_or(0..0));
             WasmDiagnostic {
+                source_hash: None,
+                fixes: Vec::new(),
                 severity: "error".into(),
                 phase: "frontend",
                 message: message.message,
@@ -903,6 +947,7 @@ fn frontend_diagnostic_to_wasm(diagnostic: hew_compile::FrontendDiagnostic) -> W
         }
     };
     converted.source_module = diagnostic.filename;
+    converted.source_hash = source_hash;
     converted
 }
 
@@ -959,11 +1004,13 @@ fn run_format(source: &str) -> FormatResult {
         .any(|err| matches!(err.severity, hew_parser::Severity::Error));
     let checked =
         (!has_fatal_error).then(|| hew_parser::fmt::format_checked(source, &parse_result.program));
-    let mut diagnostics = convert_parse_diagnostics(parse_result.errors);
+    let mut diagnostics = convert_parse_diagnostics(parse_result.errors, source);
     let formatted = match checked {
         Some(Ok(formatted)) => Some(formatted),
         Some(Err(error)) => {
             diagnostics.push(WasmDiagnostic {
+                source_hash: None,
+                fixes: Vec::new(),
                 severity: "error".to_string(),
                 phase: "format",
                 message: format!("formatter refused to rewrite the source: {error}"),
@@ -1448,15 +1495,47 @@ mod tests {
     #[test]
     fn code_actions_from_json() {
         let source = "let x = foob;";
-        let diags_json = r#"[{
-            "kind": "UndefinedVariable",
-            "message": "undefined variable `foob`",
-            "span": { "start": 8, "end": 12 },
-            "suggestions": ["`food`"]
-        }]"#;
-        let result = ok(code_actions(source, diags_json));
+        let info = hew_analysis::code_actions::DiagnosticInfo::new(
+            source,
+            vec![hew_parser::diagnostic::DiagnosticFix::replace(
+                "Replace with `food`",
+                8..12,
+                "food",
+                hew_parser::diagnostic::Applicability::MaybeIncorrect,
+            )],
+        );
+        let result = ok(code_actions(
+            source,
+            &serde_json::to_string(&[info]).unwrap(),
+        ));
         let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
         assert!(!parsed.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn code_actions_refuse_imported_origins_and_stale_buffers() {
+        let source = "fn main() { var n = 4; println(n); }";
+        let analysis: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        let mut diagnostics = analysis["diagnostics"].clone();
+        assert!(
+            !serde_json::from_str::<Vec<hew_parser::diagnostic::DiagnosticFix>>(&ok(code_actions(
+                source,
+                &diagnostics.to_string()
+            )))
+            .unwrap()
+            .is_empty()
+        );
+        for diagnostic in diagnostics.as_array_mut().unwrap() {
+            diagnostic["source_module"] = serde_json::json!("dependency.hew");
+        }
+        assert_eq!(ok(code_actions(source, &diagnostics.to_string())), "[]");
+        assert_eq!(
+            ok(code_actions(
+                &format!("// shifted\n{source}"),
+                &analysis["diagnostics"].to_string()
+            )),
+            "[]"
+        );
     }
 
     #[test]
@@ -1718,11 +1797,8 @@ mod tests {
 
     /// Full `analyze()` → `code_actions()` round-trip through the browser-bridge seam.
     ///
-    /// The browser playground calls `analyze()`, extracts diagnostics (which now
-    /// carry `suggestions`), converts the span shape (`start_offset`/`end_offset`
-    /// → `span: {start, end}`), then calls `code_actions()`.  This test
-    /// exercises that full path to prove suggestions produced by the type checker
-    /// survive in a form that yields real code actions with exact span fidelity.
+    /// The browser forwards the diagnostics from `analyze()` unchanged to
+    /// `code_actions()`. The producer's replacement span survives the round-trip.
     #[test]
     fn analyze_suggestions_flow_through_to_code_actions() {
         // `fooo` is an undefined *variable* reference (not a call) so the
@@ -1756,18 +1832,8 @@ mod tests {
             "expected `foo` in suggestions for `fooo`; got: {suggestions:?}"
         );
 
-        // Reconstruct the DiagnosticInfo-format JSON that the browser bridge
-        // assembles: convert start_offset/end_offset → span.{start,end}.
-        let diag_info_json = serde_json::json!([{
-            "kind":    undef_diag["kind"].as_str().unwrap(),
-            "message": undef_diag["message"].as_str().unwrap(),
-            "span": {
-                "start": undef_diag["start_offset"].as_u64().unwrap(),
-                "end":   undef_diag["end_offset"].as_u64().unwrap(),
-            },
-            "suggestions": suggestions,
-        }])
-        .to_string();
+        // The bridge forwards the producer payload unchanged.
+        let diag_info_json = serde_json::json!([undef_diag]).to_string();
 
         let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
@@ -1937,17 +2003,8 @@ mod tests {
             "expected `foo` in suggestions for `fooo()`; got: {suggestions:?}"
         );
 
-        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
-        let diag_info_json = serde_json::json!([{
-            "kind":    undef_diag["kind"].as_str().unwrap(),
-            "message": undef_diag["message"].as_str().unwrap(),
-            "span": {
-                "start": undef_diag["start_offset"].as_u64().unwrap(),
-                "end":   undef_diag["end_offset"].as_u64().unwrap(),
-            },
-            "suggestions": suggestions,
-        }])
-        .to_string();
+        // The bridge forwards the producer payload unchanged.
+        let diag_info_json = serde_json::json!([undef_diag]).to_string();
 
         let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
@@ -2036,17 +2093,8 @@ mod tests {
             "expected `foo` in suggestions for `fooo<i64>()`; got: {suggestions:?}"
         );
 
-        // Reconstruct the DiagnosticInfo JSON the browser bridge would send.
-        let diag_info_json = serde_json::json!([{
-            "kind":    undef_diag["kind"].as_str().unwrap(),
-            "message": undef_diag["message"].as_str().unwrap(),
-            "span": {
-                "start": undef_diag["start_offset"].as_u64().unwrap(),
-                "end":   undef_diag["end_offset"].as_u64().unwrap(),
-            },
-            "suggestions": suggestions,
-        }])
-        .to_string();
+        // The bridge forwards the producer payload unchanged.
+        let diag_info_json = serde_json::json!([undef_diag]).to_string();
 
         let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
@@ -2114,13 +2162,8 @@ mod tests {
         let source = "fn foo() {} fn main() { fooo /*keep*/ <i64>(); }";
         //                                       ^   ^          ^
         //                                      24  28         45 = end of ')'
-        let diag_info_json = serde_json::json!([{
-            "kind": "UndefinedFunction",
-            "message": "undefined function `fooo`",
-            "span": { "start": 24, "end": 45 },
-            "suggestions": ["foo"],
-        }])
-        .to_string();
+        let analysis: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        let diag_info_json = analysis["diagnostics"].to_string();
 
         let actions_json = ok(code_actions(source, &diag_info_json));
         let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
@@ -2158,79 +2201,35 @@ mod tests {
         );
     }
 
-    /// Browser-bridge: `code_actions()` for a qualified-path typo
-    /// (`Vec.neww()` → `Vec.new()`).
-    ///
-    /// The edit must span the full dotted callee path `Vec.neww` and leave
-    /// the argument list untouched.
     #[test]
-    fn code_actions_qualified_path_replaces_full_callee_path() {
-        let source = "fn main() { let _ = Vec.neww(); }";
-        //                                   ^       ^
-        //                                  20      29 = start of '('
-
-        // DiagnosticInfo as the browser bridge would construct it.
-        let diag_info_json = serde_json::json!([{
-            "kind":    "UndefinedFunction",
-            "message": "undefined function `Vec.neww`",
-            "span":    { "start": 20, "end": 31 },   // full Vec.neww() span
-            "suggestions": ["Vec.new"],
-        }])
-        .to_string();
-
-        let actions_json = ok(code_actions(source, &diag_info_json));
-        let actions: serde_json::Value = serde_json::from_str(&actions_json).unwrap();
-        let actions_arr = actions.as_array().unwrap();
-
+    fn code_actions_associated_path_replaces_its_authored_method_token() {
+        let source = "type Factory {} impl Factory { fn create() -> i64 { 42 } } fn main() { println(Factory.creat()); }";
+        let analysis: serde_json::Value = serde_json::from_str(&ok(analyze(source))).unwrap();
+        let actions: Vec<hew_parser::diagnostic::DiagnosticFix> = serde_json::from_str(&ok(
+            code_actions(source, &analysis["diagnostics"].to_string()),
+        ))
+        .unwrap();
+        let fix = actions
+            .iter()
+            .find(|fix| fix.edits.iter().any(|edit| edit.new_text == "create"))
+            .unwrap_or_else(|| panic!("{}", analysis["diagnostics"]));
         assert_eq!(
-            actions_arr.len(),
-            1,
-            "expected exactly one action; got: {actions_json}"
+            &source[fix.edits[0].span.start..fix.edits[0].span.end],
+            "creat"
         );
-
-        let action = &actions_arr[0];
-        assert_eq!(
-            action["title"].as_str().unwrap(),
-            "Replace with `Vec.new`",
-            "action title must include the full suggested path"
-        );
-
-        let edit = &action["edits"].as_array().unwrap()[0];
-        let edit_start = usize::try_from(edit["span"]["start"].as_u64().unwrap()).unwrap();
-        let edit_end = usize::try_from(edit["span"]["end"].as_u64().unwrap()).unwrap();
-        let new_text = edit["new_text"].as_str().unwrap();
-
-        assert_eq!(
-            new_text, "Vec.new",
-            "replacement must be the full suggested path"
-        );
-        // The edit must cover `Vec.neww` (the full callee path), not just `Vec`.
-        assert_eq!(
-            &source[edit_start..edit_end],
-            "Vec.neww",
-            "edit span must cover the entire callee path, not just the first segment"
-        );
-
-        // Applying the edit must preserve the argument list.
-        let corrected = format!(
-            "{}{}{}",
-            &source[..edit_start],
-            new_text,
-            &source[edit_end..]
-        );
-        assert_eq!(
-            corrected, "fn main() { let _ = Vec.new(); }",
-            "applying the edit must yield Vec.new() with parentheses intact"
+        let updated = hew_analysis::code_actions::apply_edits(source, &fix.edits).unwrap();
+        assert!(updated.contains("Factory.create()"));
+        let checked: serde_json::Value = serde_json::from_str(&ok(analyze(&updated))).unwrap();
+        assert!(
+            !checked["diagnostics"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|diagnostic| diagnostic["severity"] == "error"),
+            "{checked}"
         );
     }
 
-    // ── Empty-result encoding contract ──────────────────────────────────────
-    //
-    // Convention (see crate-level doc):
-    //   - Optional scalar / single-object → `"null"` when absent.
-    //   - Collections                     → `"[]"`  when absent.
-
-    /// `hover` at a whitespace offset has no result; must return the JSON null literal.
     #[test]
     fn hover_empty_result_is_null() {
         // Hover on a space — no token, so None is returned.

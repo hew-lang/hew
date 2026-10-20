@@ -23,6 +23,12 @@ use crate::BuiltinType;
 use hew_parser::ast::FieldLabel;
 use std::collections::VecDeque;
 
+pub(in crate::check) struct StructInitSite<'a> {
+    pub path: &'a hew_parser::ast::Path,
+    pub field_labels: &'a [hew_parser::ast::FieldLabel],
+    pub span: &'a Span,
+}
+
 impl Checker {
     /// A resource destructor owns its receiver and may transfer one field to
     /// the external release operation. Close-body cleanup retains every field
@@ -54,9 +60,10 @@ impl Checker {
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
+        field_span: Option<&Span>,
         span: &Span,
     ) -> Ty {
-        self.check_field_access_with_type_args(object, field, None, span)
+        self.check_field_access_with_type_args(object, field, field_span, None, span)
     }
 
     #[expect(
@@ -67,6 +74,7 @@ impl Checker {
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
+        field_span: Option<&Span>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
@@ -95,9 +103,10 @@ impl Checker {
                 field,
                 self.current_actor_fields.iter().map(|f| f.name.as_str()),
             );
-            self.report_error_with_suggestions(
+            self.report_error_with_suggestions_at(
                 TypeErrorKind::UndefinedField,
                 span,
+                field_span,
                 format!("actor state has no field `{field}`"),
                 similar,
             );
@@ -374,9 +383,10 @@ impl Checker {
                             .chain(children.pools.iter())
                             .map(|(name, _)| name.as_str());
                         let similar = crate::error::find_similar(field, names);
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedField,
                             span,
+                            field_span,
                             format!(
                                 "supervisor `{}` has no child named `{field}`",
                                 sup_head.registry_key()
@@ -401,9 +411,10 @@ impl Checker {
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedField,
                             span,
+                            field_span,
                             format!("no field `{field}` on type `{name}`"),
                             similar,
                         );
@@ -1126,8 +1137,17 @@ impl Checker {
         fields: &[(Ident, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
         base: Option<&Spanned<Expr>>,
-        span: &Span,
+        site: StructInitSite<'_>,
     ) -> Ty {
+        let span = site.span;
+        let name_span = site
+            .path
+            .segments
+            .as_slice()
+            .first()
+            .filter(|_| site.path.segments.len() == 1)
+            .map(|segment| &segment.1);
+
         let resolved = matches!(
             resolution,
             Some(
@@ -1274,9 +1294,10 @@ impl Checker {
                                 )
                             })
                             .unwrap_or_default();
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedType,
                             span,
+                            name_span,
                             format!("module `{module_short}` has no exported type `{type_name}`"),
                             similar,
                         );
@@ -1335,9 +1356,10 @@ impl Checker {
                                 )
                             })
                             .unwrap_or_default();
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedType,
                             span,
+                            name_span,
                             format!("module `{module_short}` has no exported type `{type_name}`"),
                             similar,
                         );
@@ -1517,7 +1539,7 @@ impl Checker {
                     .or_insert_with(|| Ty::Var(TypeVar::fresh()));
             }
 
-            for (field_name, (expr, es)) in fields {
+            for (field_index, (field_name, (expr, es))) in fields.iter().enumerate() {
                 if let Some(declared_ty) = td.fields.get(field_name.name.as_str()) {
                     // Substitute already-inferred type params into the expected type.
                     // Use parallel substitution so a swap map {"A": B, "B": A} does not
@@ -1549,9 +1571,10 @@ impl Checker {
                         field_name.name.as_str(),
                         td.fields.keys().map(String::as_str),
                     );
-                    self.report_error_with_suggestions(
+                    self.report_error_with_suggestions_at(
                         TypeErrorKind::UndefinedField,
                         span,
+                        site.field_labels.get(field_index).map(|label| &label.span),
                         format!(
                             "no field `{field_name}` on {} `{name}`",
                             value_type_kind_label(td.kind)
@@ -1650,7 +1673,7 @@ impl Checker {
                 }
             }
 
-            for (field_name, (expr, es)) in fields {
+            for (field_index, (field_name, (expr, es))) in fields.iter().enumerate() {
                 if let Some((_, declared_ty)) = variant_fields
                     .iter()
                     .find(|(n, _)| n == field_name.name.as_str())
@@ -1681,9 +1704,10 @@ impl Checker {
                         field_name.name.as_str(),
                         variant_fields.iter().map(|(n, _)| n.as_str()),
                     );
-                    self.report_error_with_suggestions(
+                    self.report_error_with_suggestions_at(
                         TypeErrorKind::UndefinedField,
                         span,
+                        site.field_labels.get(field_index).map(|label| &label.span),
                         format!("no field `{field_name}` on variant `{name}`"),
                         similar,
                     );
@@ -1727,9 +1751,10 @@ impl Checker {
                     .chain(self.type_aliases.keys().map(|id| self.defs.path(*id)))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
-            self.report_error_with_suggestions(
+            self.report_error_with_suggestions_at(
                 TypeErrorKind::UndefinedType,
                 span,
+                name_span,
                 format!("undefined type `{}`", name.replace("::", ".")),
                 similar,
             );

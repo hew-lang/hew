@@ -936,6 +936,7 @@ impl Checker {
             return;
         }
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::BorrowedParamReturn,
             span: span.clone(),

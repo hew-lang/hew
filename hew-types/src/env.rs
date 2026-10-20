@@ -210,6 +210,28 @@ fn loop_carried_moves(scope: &LoopScope) -> Vec<LoopCarriedMove> {
     carried
 }
 
+/// Written declaration sites retained by the lexical binding that owns them.
+#[derive(Debug, Clone)]
+pub struct BindingDeclaration {
+    pub name_span: Span,
+    pub keyword_span: Option<Span>,
+    pub initializer_site: Option<usize>,
+}
+
+impl BindingDeclaration {
+    #[must_use]
+    pub fn mutable_fix(&self) -> Option<hew_parser::diagnostic::DiagnosticFix> {
+        self.keyword_span.clone().map(|span| {
+            hew_parser::diagnostic::DiagnosticFix::replace(
+                "Change `let` to `var`",
+                span,
+                "var",
+                hew_parser::diagnostic::Applicability::MaybeIncorrect,
+            )
+        })
+    }
+}
+
 /// A binding in the type environment.
 #[derive(Debug, Clone)]
 pub struct Binding {
@@ -266,6 +288,8 @@ pub struct Binding {
     pub(crate) capture_consumption: crate::ClosureCaptureConsumption,
     /// Source span of the definition, for diagnostics. None for synthetic bindings.
     pub def_span: Option<Span>,
+    /// Exact written sites for diagnostic edits; absent for synthetic bindings.
+    pub declaration: Option<BindingDeclaration>,
     /// Source span used **only** for outer-scope shadowing classification
     /// (see `check_shadowing`), independent of `def_span`.
     ///
@@ -531,6 +555,7 @@ pub struct ScopeWarning {
     /// The bound value's type, so the diagnostic layer can suppress the
     /// unused-binding lint for RAII handle types (their drop is the use).
     pub ty: Ty,
+    pub declaration: Option<BindingDeclaration>,
 }
 
 /// The kind of scope-level warning.
@@ -879,6 +904,7 @@ impl TypeEnv {
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
+                    declaration: None,
                     def_span: None,
                     shadow_span: None,
                     origin: BindingOrigin::Synthetic,
@@ -969,6 +995,23 @@ impl TypeEnv {
             .map(|binding| binding.id)
     }
 
+    /// Record exact declaration sites while the owning AST binding is in hand.
+    pub fn set_binding_declaration(
+        &mut self,
+        name: impl LexicalName,
+        declaration: BindingDeclaration,
+    ) {
+        let name = name.lexical_key();
+        if let Some(binding) = self
+            .scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.get_mut(&name))
+        {
+            binding.declaration = Some(declaration);
+        }
+    }
+
     /// Define a user-visible variable with a source span for diagnostics.
     pub fn define_with_span(
         &mut self,
@@ -1001,6 +1044,7 @@ impl TypeEnv {
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
+                    declaration: None,
                     def_span: Some(span.clone()),
                     shadow_span: Some(span),
                     origin: BindingOrigin::Local,
@@ -1100,6 +1144,7 @@ impl TypeEnv {
                     observing_reads: 0,
                     mutation: MutationState::Unwritten,
                     capture_consumption: crate::ClosureCaptureConsumption::Retained,
+                    declaration: None,
                     def_span: None,
                     shadow_span: Some(span),
                     origin,
@@ -1621,6 +1666,7 @@ impl TypeEnv {
                             span: span.clone(),
                             kind: ScopeWarningKind::VarParamMutationLost,
                             ty: binding.ty.clone(),
+                            declaration: binding.declaration.clone(),
                         });
                     }
                 }
@@ -1632,6 +1678,7 @@ impl TypeEnv {
                     span: arm.clone(),
                     kind: ScopeWarningKind::TaskOutlivesTimedSelect,
                     ty: binding.ty.clone(),
+                    declaration: binding.declaration.clone(),
                 });
             }
             if binding.read_count == 0 {
@@ -1640,6 +1687,7 @@ impl TypeEnv {
                     span: span.clone(),
                     kind: ScopeWarningKind::Unused,
                     ty: binding.ty.clone(),
+                    declaration: binding.declaration.clone(),
                 });
             } else if binding.is_mutable && !binding.is_written() {
                 warnings.push(ScopeWarning {
@@ -1647,6 +1695,7 @@ impl TypeEnv {
                     span: span.clone(),
                     kind: ScopeWarningKind::NeverMutated,
                     ty: binding.ty.clone(),
+                    declaration: binding.declaration.clone(),
                 });
             }
         }

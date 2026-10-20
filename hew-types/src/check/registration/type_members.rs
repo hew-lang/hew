@@ -1721,6 +1721,7 @@ impl Checker {
         if let (Some(min_v), Some(v)) = (min_version, version) {
             if min_v > v {
                 self.errors.push(TypeError {
+                    fixes: Vec::new(),
                     severity: Severity::Error,
                     kind: TypeErrorKind::InvalidOperation,
                     span: decl_span.clone(),
@@ -1740,6 +1741,7 @@ impl Checker {
                 if version.is_none() {
                     // since has no effect without a schema version
                     self.warnings.push(TypeError {
+                        fixes: Vec::new(),
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
                         span: decl_span.clone(),
@@ -1758,6 +1760,7 @@ impl Checker {
                 if let Some(v) = version {
                     if since > v {
                         self.errors.push(TypeError {
+                            fixes: Vec::new(),
                             severity: Severity::Error,
                             kind: TypeErrorKind::InvalidOperation,
                             span: decl_span.clone(),
@@ -1778,6 +1781,7 @@ impl Checker {
             if let Some(v) = version {
                 if v > 1 && fm.since.is_none() && !fm.is_optional {
                     self.warnings.push(TypeError {
+                        fixes: Vec::new(),
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
                         span: decl_span.clone(),

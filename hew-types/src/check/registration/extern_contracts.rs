@@ -332,7 +332,7 @@ impl Checker {
                 established.declaring_source.as_ref(),
             )
             .or_else(|| established.declaring_module.clone());
-        self.errors.push(TypeError {
+        self.errors.push(TypeError { fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::ConflictingExternDeclaration {
                 symbol_name: source_symbol.to_string(),
@@ -452,6 +452,7 @@ impl Checker {
             for f in &eb.functions {
                 if !stable.contains(f.name.name.as_str()) {
                     self.errors.push(TypeError {
+                        fixes: Vec::new(),
                         severity: crate::error::Severity::Error,
                         kind: TypeErrorKind::ExternRtSymbolUnclassified {
                             symbol_name: f.name.to_string(),

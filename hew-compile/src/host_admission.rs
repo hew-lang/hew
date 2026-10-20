@@ -3003,6 +3003,42 @@ mod tests {
     }
 
     #[test]
+    fn process_options_require_host_admission() {
+        let source = r#"
+import std.process as child;
+
+#[test]
+fn launch() {
+    let _ = child.start_with_options(
+        child.command("unused", []),
+        child.inherited_options(),
+    );
+}
+
+fn main() { launch(); }
+"#;
+        // Check the source is valid for native execution before testing the
+        // three restricted entry points. The test never executes a child.
+        check_source(source, HostAdmission::Off).unwrap();
+        let selection = selected_test(source, "launch");
+        for (admission, code) in [
+            (HostAdmission::Generate, "E_GENERATE_HOST_OPERATION"),
+            (
+                HostAdmission::ProcessEntry,
+                "E_DETERMINISTIC_HOST_OPERATION",
+            ),
+            (
+                HostAdmission::Tests(vec![selection]),
+                "E_DETERMINISTIC_HOST_OPERATION",
+            ),
+        ] {
+            let failure = check_source(source, admission).unwrap_err();
+            assert!(failure.contains(code), "{failure}");
+            assert!(failure.contains("process-execution"), "{failure}");
+        }
+    }
+
+    #[test]
     fn process_entry_refuses_reachable_tcp_listen() {
         let source = "import std.net;\n\nfn helper() {\n    match net.listen(\":0\") {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n\nfn main() {\n    helper();\n}\n";
         let failure = check_source(source, HostAdmission::ProcessEntry).unwrap_err();

@@ -3251,10 +3251,10 @@
               "type": "integer"
             },
             "ty": {
-              "type": "string"
+              "type": ["string", "null"]
             }
           },
-          "required": ["kind", "shape", "ty", "close"],
+          "required": ["kind", "shape", "close"],
           "type": "object"
         },
         {
@@ -3270,10 +3270,10 @@
               "type": "string"
             },
             "ty": {
-              "type": "string"
+              "type": ["string", "null"]
             }
           },
-          "required": ["kind", "ty", "close"],
+          "required": ["kind", "close"],
           "type": "object"
         },
         {
@@ -3286,10 +3286,10 @@
               "type": "string"
             },
             "ty": {
-              "type": "string"
+              "type": ["string", "null"]
             }
           },
-          "required": ["kind", "ty", "release"],
+          "required": ["kind", "release"],
           "type": "object"
         },
         {

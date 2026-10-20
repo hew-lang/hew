@@ -497,8 +497,8 @@ export type OpV1 = { own?: Own | null; span?: SpanV1 | null | null } & (
 export type Own = "none" | "owned" | "guaranteed";
 export type PackageV1 = {
   codecs?: Array<string>;
-  structural_render: Array<StructuralRecipe>;
-  resources: Array<Resource>;
+  structural_render?: Array<StructuralRecipe>;
+  resources?: Array<Resource>;
   schema_version: SchemaVersion;
   hew_version: string;
   compiler_version: string;
@@ -510,8 +510,8 @@ export type PackageV1 = {
   aggregates: Array<AggregateShape>;
   variants: Array<VariantShape>;
   closures: Array<ClosureShape>;
-  actors: Array<ActorShape>;
-  supervisors: Array<SupervisorShape>;
+  actors?: Array<ActorShape>;
+  supervisors?: Array<SupervisorShape>;
   vtables: Array<VtableShape>;
   value_capabilities: Array<ValueCapability>;
   runtime_families: Array<RuntimeFamilyEntry>;
@@ -558,9 +558,9 @@ export type RequestShapes = {
   request: number | null;
 };
 export type Resource =
-  | { kind: "record"; shape: number; ty: string; close: number }
-  | { kind: "opaque"; ty: string; close: number }
-  | { kind: "nominal"; ty: string; release: string }
+  | { kind: "record"; shape: number; ty?: string | null; close: number }
+  | { kind: "opaque"; ty?: string | null; close: number }
+  | { kind: "nominal"; ty?: string | null; release: string }
   | { kind: "task" }
   | { kind: "actor_call" }
   | { kind: "actor_request" }
@@ -918,7 +918,7 @@ export type SubmissionShapes = {
 export type SupervisedRole = { actor: number } | { supervisor: number };
 export type SupervisorChild = {
   name: string;
-  dependencies: Array<number>;
+  dependencies?: Array<number>;
   /**
    * The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
    */
@@ -1157,7 +1157,7 @@ export type ValueCapability = {
   capability: Capability;
   ty: string;
   callable?: number | null;
-  components: Array<ValueComponentCapabilities>;
+  components?: Array<ValueComponentCapabilities>;
   variants?: Array<Array<ValueComponentCapabilities>> | null;
 };
 export type ValueComponentCapabilities = {
@@ -1177,7 +1177,7 @@ export type VariantShape = {
   id: number;
   name: string;
   cases: Array<VariantCase>;
-  runtime_tags: { [key in RuntimeVariantRole]?: number };
+  runtime_tags?: { [key in RuntimeVariantRole]?: number };
 };
 export type VecContainsScalarElem = "F64" | "I32" | "I64" | "Str";
 export type VecGetElem =

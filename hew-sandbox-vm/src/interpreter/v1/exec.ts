@@ -425,7 +425,7 @@ class ExecutorV1 {
     policy: "round_robin" | "chaos",
     private readonly options: RunOptions,
   ) {
-    const pkg = admission.package;
+    const pkg = admission.bytecode;
     this.pkg = pkg;
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
@@ -3677,7 +3677,7 @@ class ExecutorV1 {
         // Construction enters the same interpreter loop as its caller. Only
         // a real suspension queues work and advances deterministic scheduling.
         const start = () => {
-          if (layout.start !== undefined)
+          if (layout.start != null)
             actor.active = this.invokeFrame(
               actor,
               layout.start,
@@ -3689,7 +3689,7 @@ class ExecutorV1 {
             );
           else started();
         };
-        if (layout.init !== undefined)
+        if (layout.init != null)
           actor.active = this.invokeFrame(
             actor,
             layout.init,
@@ -3845,7 +3845,7 @@ class ExecutorV1 {
             );
           } else {
             if (
-              actor.layout.mailbox_capacity !== undefined &&
+              actor.layout.mailbox_capacity != null &&
               actor.mailbox.length >= actor.layout.mailbox_capacity
             ) {
               actor.admission.push(admit);
@@ -4368,7 +4368,7 @@ class ExecutorV1 {
       selectedTarget?.(actor);
       if (settled || closing) return;
       const full =
-        actor.layout.mailbox_capacity !== undefined &&
+        actor.layout.mailbox_capacity != null &&
         actor.mailbox.length >= actor.layout.mailbox_capacity;
       if (full) {
         if (protocol.policy === "reject") {
@@ -4468,7 +4468,7 @@ class ExecutorV1 {
   ): "accepted" | "discarded" | "full" | "closed" {
     if (!actor.alive || actor.closing) return "closed";
     const full =
-      actor.layout.mailbox_capacity !== undefined &&
+      actor.layout.mailbox_capacity != null &&
       actor.mailbox.length >= actor.layout.mailbox_capacity;
     let declared = full ? actor.layout.overflow : null;
     const discard = (lost: ActorMessage) => {
@@ -4804,7 +4804,7 @@ class ExecutorV1 {
       );
     };
     const runHook = () => {
-      if (actor.layout.crash !== undefined) {
+      if (actor.layout.crash != null) {
         const [code, message] = faultInfo(fault);
         const info: VmValue = {
           kind: "record",
@@ -5161,7 +5161,7 @@ class ExecutorV1 {
     child: number,
   ): number | null {
     const spec = owner.specs[child]!;
-    if (spec.stop_config !== undefined) {
+    if (spec.stop_config != null) {
       const duration = owner.config[spec.stop_config];
       if (duration?.kind !== "i64" || duration.value < 0n)
         throw new Error("child stop budget is not a non-negative duration");

@@ -1,7 +1,8 @@
 // @ts-nocheck
 // Generated from the complete Rust package schema. Run make sandbox-bytecode.
-"use strict";
-export const validPackage = validate52;
+import type { ValidateFunction } from "ajv";
+("use strict");
+export const validPackage: ValidateFunction = validate52;
 const schema19 = {
   $comment:
     "Generated from the Rust package and instruction DTOs; run make sandbox-bytecode",
@@ -2718,9 +2719,9 @@ const schema19 = {
               minimum: 0,
               type: "integer",
             },
-            ty: { type: "string" },
+            ty: { type: ["string", "null"] },
           },
-          required: ["kind", "shape", "ty", "close"],
+          required: ["kind", "shape", "close"],
           type: "object",
         },
         {
@@ -2732,18 +2733,18 @@ const schema19 = {
               type: "integer",
             },
             kind: { const: "opaque", type: "string" },
-            ty: { type: "string" },
+            ty: { type: ["string", "null"] },
           },
-          required: ["kind", "ty", "close"],
+          required: ["kind", "close"],
           type: "object",
         },
         {
           properties: {
             kind: { const: "nominal", type: "string" },
             release: { type: "string" },
-            ty: { type: "string" },
+            ty: { type: ["string", "null"] },
           },
-          required: ["kind", "ty", "release"],
+          required: ["kind", "release"],
           type: "object",
         },
         {
@@ -48142,9 +48143,9 @@ const schema79 = {
           minimum: 0,
           type: "integer",
         },
-        ty: { type: "string" },
+        ty: { type: ["string", "null"] },
       },
-      required: ["kind", "shape", "ty", "close"],
+      required: ["kind", "shape", "close"],
       type: "object",
     },
     {
@@ -48156,18 +48157,18 @@ const schema79 = {
           type: "integer",
         },
         kind: { const: "opaque", type: "string" },
-        ty: { type: "string" },
+        ty: { type: ["string", "null"] },
       },
-      required: ["kind", "ty", "close"],
+      required: ["kind", "close"],
       type: "object",
     },
     {
       properties: {
         kind: { const: "nominal", type: "string" },
         release: { type: "string" },
-        ty: { type: "string" },
+        ty: { type: ["string", "null"] },
       },
-      required: ["kind", "ty", "release"],
+      required: ["kind", "release"],
       type: "object",
     },
     {
@@ -48231,7 +48232,6 @@ function validate254(
       if (
         (data.kind === undefined && (missing0 = "kind")) ||
         (data.shape === undefined && (missing0 = "shape")) ||
-        (data.ty === undefined && (missing0 = "ty")) ||
         (data.close === undefined && (missing0 = "close"))
       ) {
         const err0 = {
@@ -48417,14 +48417,15 @@ function validate254(
             }
             if (valid1) {
               if (data.ty !== undefined) {
+                let data3 = data.ty;
                 const _errs9 = errors;
-                if (typeof data.ty !== "string") {
+                if (typeof data3 !== "string" && data3 !== null) {
                   const err9 = {
                     instancePath: instancePath + "/ty",
                     schemaPath: "#/oneOf/0/properties/ty/type",
                     keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
+                    params: { type: schema79.oneOf[0].properties.ty.type },
+                    message: "must be string,null",
                   };
                   if (vErrors === null) {
                     vErrors = [err9];
@@ -48473,7 +48474,6 @@ function validate254(
       let missing1;
       if (
         (data.kind === undefined && (missing1 = "kind")) ||
-        (data.ty === undefined && (missing1 = "ty")) ||
         (data.close === undefined && (missing1 = "close"))
       ) {
         const err11 = {
@@ -48594,14 +48594,15 @@ function validate254(
           }
           if (valid2) {
             if (data.ty !== undefined) {
+              let data6 = data.ty;
               const _errs17 = errors;
-              if (typeof data.ty !== "string") {
+              if (typeof data6 !== "string" && data6 !== null) {
                 const err17 = {
                   instancePath: instancePath + "/ty",
                   schemaPath: "#/oneOf/1/properties/ty/type",
                   keyword: "type",
-                  params: { type: "string" },
-                  message: "must be string",
+                  params: { type: schema79.oneOf[1].properties.ty.type },
+                  message: "must be string,null",
                 };
                 if (vErrors === null) {
                   vErrors = [err17];
@@ -48654,7 +48655,6 @@ function validate254(
         let missing2;
         if (
           (data.kind === undefined && (missing2 = "kind")) ||
-          (data.ty === undefined && (missing2 = "ty")) ||
           (data.release === undefined && (missing2 = "release"))
         ) {
           const err19 = {
@@ -48732,14 +48732,15 @@ function validate254(
             }
             if (valid3) {
               if (data.ty !== undefined) {
+                let data9 = data.ty;
                 const _errs25 = errors;
-                if (typeof data.ty !== "string") {
+                if (typeof data9 !== "string" && data9 !== null) {
                   const err23 = {
                     instancePath: instancePath + "/ty",
                     schemaPath: "#/oneOf/2/properties/ty/type",
                     keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
+                    params: { type: schema79.oneOf[2].properties.ty.type },
+                    message: "must be string,null",
                   };
                   if (vErrors === null) {
                     vErrors = [err23];
@@ -75623,7 +75624,7 @@ validate52.evaluated = {
   dynamicProps: false,
   dynamicItems: false,
 };
-export const validCodecShape = validate340;
+export const validCodecShape: ValidateFunction = validate340;
 const schema119 = {
   $schema: "https://json-schema.org/draft/2020-12/schema",
   description:

@@ -18,8 +18,15 @@ export class BytecodeValidationError extends Error {
 export function validateBytecodePackage(input: unknown): CheckedPackage {
   try {
     const decoded: unknown = structuredClone(input);
-    if (!validPackage(decoded))
-      throw new Error("malformed sandbox bytecode package");
+    if (!validPackage(decoded)) {
+      const reasons = (validPackage.errors ?? []).map(
+        (issue: { instancePath: string; message?: string }) =>
+          `${issue.instancePath || "/"} ${issue.message ?? "invalid value"}`,
+      );
+      throw new Error(
+        reasons.join("; ") || "malformed sandbox bytecode package",
+      );
+    }
     const pkg = decoded as PackageV1;
     validatePackageGraph(pkg);
     return pkg as CheckedPackage;

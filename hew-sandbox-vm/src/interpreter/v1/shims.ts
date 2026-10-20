@@ -263,7 +263,7 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
 
 export function resolveExtern(entry: {
   symbol: string;
-  native_capability?: string;
+  native_capability?: string | null;
 }): Ordinary | Refused {
   const registration = Object.hasOwn(EXTERN_SHIMS, entry.symbol)
     ? EXTERN_SHIMS[entry.symbol]
@@ -271,8 +271,8 @@ export function resolveExtern(entry: {
   if (typeof registration === "function") return ordinary(registration);
   return (
     registration ?? {
-      ...refused(entry.symbol, entry.native_capability !== undefined),
-      description: entry.native_capability,
+      ...refused(entry.symbol, entry.native_capability != null),
+      description: entry.native_capability ?? undefined,
     }
   );
 }

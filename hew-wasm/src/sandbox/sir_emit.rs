@@ -447,15 +447,15 @@ impl<'m> Walker<'m> {
                             })?
                             .id
                             .0,
-                        ty: ty.user_facing().to_string(),
+                        ty: Some(ty.user_facing().to_string()),
                         close: self.function_id(*close)?,
                     },
                     ResourceRelease::OpaqueClose { close, .. } => Resource::Opaque {
-                        ty: ty.user_facing().to_string(),
+                        ty: Some(ty.user_facing().to_string()),
                         close: self.function_id(*close)?,
                     },
                     ResourceRelease::Nominal { release, .. } => Resource::Nominal {
-                        ty: ty.user_facing().to_string(),
+                        ty: Some(ty.user_facing().to_string()),
                         release: release.symbol.to_owned(),
                     },
                     ResourceRelease::Task => Resource::Task,

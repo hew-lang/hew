@@ -28,7 +28,7 @@ const UNSUPPORTED = "sandbox.capability.unsupported";
 /// The executor can only be constructed after structural/reference checks and
 /// the canonical host registration have both accepted the same package.
 export class AdmittedPackage {
-  private constructor(readonly package: CheckedPackage) {}
+  private constructor(readonly bytecode: CheckedPackage) {}
 
   static load(
     pkg: CheckedPackage,

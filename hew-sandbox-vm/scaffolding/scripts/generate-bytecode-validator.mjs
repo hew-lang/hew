@@ -35,10 +35,14 @@ suspension.discriminator = { propertyName: "kind" };
 ajv.addSchema(schema);
 const unformatted =
   "// @ts-nocheck\n// Generated from the complete Rust package schema. Run make sandbox-bytecode.\n" +
+  'import type { ValidateFunction } from "ajv";\n' +
   standaloneCode(ajv, {
     validPackage: schema.$id,
     validCodecShape: schema.$id + "#/$defs/CodecShape",
-  }) +
+  }).replace(
+    /export const (validPackage|validCodecShape)\s*=/g,
+    "export const $1: ValidateFunction =",
+  ) +
   "\n";
 const destination = path.join(
   root,

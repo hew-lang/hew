@@ -21,6 +21,7 @@ function rejected(pkg) {
   );
   assert.equal(trace.final_state.step_count, 0);
   assert.deepEqual(trace.final_state.stdout, []);
+  return trace;
 }
 
 test("complete package validation rejects malformed tables before execution", () => {
@@ -43,7 +44,12 @@ test("complete package validation rejects malformed tables before execution", ()
   ]) {
     const pkg = structuredClone(original);
     mutate(pkg);
-    rejected(pkg);
+    const trace = rejected(pkg);
+    if (pkg.actors?.[0] === null)
+      assert.match(
+        trace.final_state.sandbox_rejections[0].message,
+        /\/actors\/0.*object/,
+      );
   }
 });
 

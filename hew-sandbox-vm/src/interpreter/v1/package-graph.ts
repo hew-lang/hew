@@ -212,7 +212,13 @@ export function validatePackageGraph(pkg: PackageV1): void {
   // vocabulary is generated from the same Rust carrier used by native codecs.
   const codecs = (pkg.codecs ?? []).map((encoded, index) => {
     const decoded: unknown = JSON.parse(encoded);
-    require(validCodecShape(decoded), `codec ${index} has a malformed shape`);
+    if (!validCodecShape(decoded)) {
+      const reasons = (validCodecShape.errors ?? []).map(
+        (issue: { instancePath: string; message?: string }) =>
+          `${issue.instancePath || "/"} ${issue.message ?? "invalid value"}`,
+      );
+      throw new Error(`codec ${index}: ${reasons.join("; ")}`);
+    }
     const shape = decoded as CodecShape;
     const node = (id: number) => at(shape.nodes, id, "codec node");
     node(shape.root);

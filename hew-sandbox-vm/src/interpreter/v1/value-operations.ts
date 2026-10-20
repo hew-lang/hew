@@ -125,7 +125,7 @@ export function* selectedValue(
 ): ValueProgram {
   const plan = pkg.value_capabilities[id];
   if (!plan) throw new Error(`selected value plan ${id} is missing`);
-  if (plan.callable !== undefined)
+  if (plan.callable != null)
     return yield { kind: "call", callee: plan.callable, args };
   const [left, right] = args;
   if (!left) throw new Error("selected value operation has no receiver");

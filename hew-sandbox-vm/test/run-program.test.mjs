@@ -11,31 +11,51 @@ import { assertFixtureTrace } from "./support/fixture-trace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(root, "..");
-const wasmDir = fs.mkdtempSync(path.join(os.tmpdir(), "hew-wasm-"));
+// A supplied build is an immutable test input. This lets the VM qualify
+// compatibility with an independently produced compiler without rebuilding it.
+const reusedBindings = process.env.HEW_WASM_TEST_BINDINGS_DIR;
+const wasmDir = reusedBindings
+  ? path.resolve(reusedBindings)
+  : fs.mkdtempSync(path.join(os.tmpdir(), "hew-wasm-"));
 
 process.env.HEWPATH = repoRoot;
 buildSandboxWasmBridge();
-const wasmModule = await import(pathToFileURL(path.join(wasmDir, "hew_wasm.js")).href);
+const wasmModule = await import(
+  pathToFileURL(path.join(wasmDir, "hew_wasm.js")).href
+);
 globalThis.__hewSandboxCompileToSandboxBytecode =
-  wasmModule.compileToSandboxBytecode ?? wasmModule.default?.compileToSandboxBytecode;
-assert.equal(typeof globalThis.__hewSandboxCompileToSandboxBytecode, "function");
-globalThis.__hewSandboxExecuteCodec = wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
-globalThis.__hewSandboxExecuteCalendar = wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
+  wasmModule.compileToSandboxBytecode ??
+  wasmModule.default?.compileToSandboxBytecode;
+assert.equal(
+  typeof globalThis.__hewSandboxCompileToSandboxBytecode,
+  "function",
+);
+globalThis.__hewSandboxExecuteCodec =
+  wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
+globalThis.__hewSandboxExecuteCalendar =
+  wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
 
 test.after(() => {
   try {
     const artifactDirectory = process.env.HEW_WASM_TEST_ARTIFACT_DIR;
-    if (artifactDirectory) {
+    if (artifactDirectory && !reusedBindings) {
       // Retain the tested bindings for downstream provider checks. Copy only
       // runtime artefacts; caller-owned destinations are never cleaned up.
       fs.mkdirSync(artifactDirectory, { recursive: true });
-      for (const filename of ["hew_wasm.js", "hew_wasm_bg.wasm", "package.json"]) {
-        fs.copyFileSync(path.join(wasmDir, filename), path.join(artifactDirectory, filename));
+      for (const filename of [
+        "hew_wasm.js",
+        "hew_wasm_bg.wasm",
+        "package.json",
+      ]) {
+        fs.copyFileSync(
+          path.join(wasmDir, filename),
+          path.join(artifactDirectory, filename),
+        );
       }
       console.log(`Retained VM bridge artefacts in ${artifactDirectory}`);
     }
   } finally {
-    fs.rmSync(wasmDir, { recursive: true, force: true });
+    if (!reusedBindings) fs.rmSync(wasmDir, { recursive: true, force: true });
     delete globalThis.__hewSandboxCompileToSandboxBytecode;
     delete globalThis.__hewSandboxExecuteCodec;
     delete globalThis.__hewSandboxExecuteCalendar;
@@ -49,10 +69,15 @@ for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
   if (!fs.existsSync(path.join(fixture, "bytecode.json"))) continue;
   test(`freshly compiled fixture replay: ${dir}`, () => {
     const source = fs.readFileSync(path.join(fixture, "main.hew"), "utf8");
-    const output = globalThis.__hewSandboxCompileToSandboxBytecode(source, "sandbox-vm-export");
+    const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+      source,
+      "sandbox-vm-export",
+    );
     const compiled = typeof output === "string" ? JSON.parse(output) : output;
     assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
-    const expected = JSON.parse(fs.readFileSync(path.join(fixture, "expected.trace.json"), "utf8"));
+    const expected = JSON.parse(
+      fs.readFileSync(path.join(fixture, "expected.trace.json"), "utf8"),
+    );
     const actual = runBytecode(compiled.bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
@@ -64,7 +89,10 @@ for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
 }
 
 test("runProgram hello_world returns stdout and zero exit code", () => {
-  const source = fs.readFileSync(path.join(root, "fixtures/01-hello-world/main.hew"), "utf8");
+  const source = fs.readFileSync(
+    path.join(root, "fixtures/01-hello-world/main.hew"),
+    "utf8",
+  );
   const result = runProgram(source, "");
 
   assert.equal(result.stdout, "Hello, sandbox!\n");
@@ -75,7 +103,7 @@ test("runProgram hello_world returns stdout and zero exit code", () => {
 test("runProgram preserves timestamp codec values and located errors", () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/timestamp-codecs.hew"),
-    "utf8"
+    "utf8",
   );
   const result = runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
@@ -84,12 +112,15 @@ test("runProgram preserves timestamp codec values and located errors", () => {
 });
 
 test("timestamp.now uses the replay clock's Unix coordinate exactly once", () => {
-  const output = globalThis.__hewSandboxCompileToSandboxBytecode(`
+  const output = globalThis.__hewSandboxCompileToSandboxBytecode(
+    `
 fn main() {
     let (seconds, nanos) = timestamp.now().unix_parts();
     println(f"{seconds}|{nanos}");
 }
-`, "sandbox-vm-export");
+`,
+    "sandbox-vm-export",
+  );
   const compiled = typeof output === "string" ? JSON.parse(output) : output;
   assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
   for (const [epoch_ms, current_ms, expected] of [
@@ -111,8 +142,14 @@ fn main() {
     assert.notEqual(trace.result, "ok");
   }
   const malformed = structuredClone(compiled.bytecode);
-  const clockCall = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
-    .find(term => term.op === "runtime.call" && malformed.runtime_families[term.family].family === "TimestampNow");
+  const clockCall = malformed.functions
+    .flatMap((fn) => fn.blocks)
+    .map((block) => block.term)
+    .find(
+      (term) =>
+        term.op === "runtime.call" &&
+        malformed.runtime_families[term.family].family === "TimestampNow",
+    );
   delete clockCall.aggregate_result_shape;
   assert.equal(runBytecode(malformed).result, "sandbox_rejected");
 });
@@ -137,17 +174,26 @@ fn main() {
     println(match tree.bounds.bounds() { .Ok(value) => value, .Err(_) => "error" });
 }
 `,
-    "sandbox-vm-export"
+    "sandbox-vm-export",
   );
-  const compiled = typeof compileOutput === "string" ? JSON.parse(compileOutput) : compileOutput;
+  const compiled =
+    typeof compileOutput === "string"
+      ? JSON.parse(compileOutput)
+      : compileOutput;
 
-  assert.ok(compiled.diagnostics.every((diagnostic) => diagnostic.severity !== "error"), JSON.stringify(compiled.diagnostics));
+  assert.ok(
+    compiled.diagnostics.every((diagnostic) => diagnostic.severity !== "error"),
+    JSON.stringify(compiled.diagnostics),
+  );
   assert.ok(compiled.bytecode, "compiler should emit bytecode");
   const bytecode = JSON.parse(JSON.stringify(compiled.bytecode));
   assert.equal(bytecode.schema_version, "hew.sandbox.bytecode.v1");
   const trace = runBytecode(bytecode);
   assert.equal(trace.result, "ok");
-  assert.equal(trace.final_state.stdout.join(""), "9223372036854775807|-9223372036854775808\n");
+  assert.equal(
+    trace.final_state.stdout.join(""),
+    "9223372036854775807|-9223372036854775808\n",
+  );
 });
 
 test("runProgram reads two stdin lines from the page input buffer byte-cleanly", () => {
@@ -161,7 +207,7 @@ fn main() {
     println(f"{first}|{second}");
 }
 `,
-    "héw\r\nbytes\n"
+    "héw\r\nbytes\n",
   );
 
   assert.equal(result.stdout, "héw|bytes\n");
@@ -186,7 +232,7 @@ fn main() {
     }
 }
 `,
-    "one\n\ntwo\r\nthree"
+    "one\n\ntwo\r\nthree",
   );
 
   assert.equal(result.stdout, "[one]\n[]\n[two]\n[three]\nend\n");
@@ -207,7 +253,7 @@ fn main() {
     println(after);
 }
 `,
-    "a\r\n\nb\r\nc"
+    "a\r\n\nb\r\nc",
   );
 
   assert.equal(result.stdout, "a|[\nb\r\nc]\n<none>\n");
@@ -227,75 +273,123 @@ fn main() {
     println(b);
 }
 `,
-    "sandbox-vm-export"
+    "sandbox-vm-export",
   );
-  const bytecode = typeof compiled === "string" ? JSON.parse(compiled).bytecode : compiled.bytecode;
-  const trace = runBytecode(bytecode, { replay: { inputs: [{ kind: "stdin", data: "x\ny\n" }] } });
+  const bytecode =
+    typeof compiled === "string"
+      ? JSON.parse(compiled).bytecode
+      : compiled.bytecode;
+  const trace = runBytecode(bytecode, {
+    replay: { inputs: [{ kind: "stdin", data: "x\ny\n" }] },
+  });
   // A read suspends, so the scheduler records its steps alongside; stdin is
   // persisted once, as given, and each read records the line it consumed.
   const stdin = (input) => input.kind === "stdin";
-  assert.deepEqual(trace.replay.inputs.filter(stdin), [{ kind: "stdin", data: "x\ny\n" }]);
+  assert.deepEqual(trace.replay.inputs.filter(stdin), [
+    { kind: "stdin", data: "x\ny\n" },
+  ]);
   assert.deepEqual(
     trace.events
       .filter((event) => event.type === "replay.input")
       .map((event) => event.replay_input)
       .filter(stdin),
-    [{ kind: "stdin", data: "x\n" }, { kind: "stdin", data: "y\n" }]
+    [
+      { kind: "stdin", data: "x\n" },
+      { kind: "stdin", data: "y\n" },
+    ],
   );
   assert.deepEqual(trace.final_state.stdout, ["x\n", "y\n"]);
 });
 
 test("compute-only loops and recursion yield, cancel and close their owners", () => {
-  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/compute-safepoints.hew"), "utf8");
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/compute-safepoints.hew"),
+    "utf8",
+  );
   const result = runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
-  assert.equal(result.stdout, "peer progressed\ndeferred loop 10000\nclosed loop\n7\npeer progressed\ndeferred recursion 10000\nclosed recursion\n7\ndeferred actor 10000\nclosed actor\nactor stopped\nclosed deadline\ndeadline recovered\nrollback:ORIGINAL\nmachine deadline recovered\n");
+  assert.equal(
+    result.stdout,
+    "peer progressed\ndeferred loop 10000\nclosed loop\n7\npeer progressed\ndeferred recursion 10000\nclosed recursion\n7\ndeferred actor 10000\nclosed actor\nactor stopped\nclosed deadline\ndeadline recovered\nrollback:ORIGINAL\nmachine deadline recovered\n",
+  );
 });
 
 test("authored close helpers yield without abandoning explicit or implicit release", () => {
-  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/compute-close-safepoints.hew"), "utf8");
+  const source = fs.readFileSync(
+    path.join(
+      repoRoot,
+      "tests/core-acceptance/cases/compute-close-safepoints.hew",
+    ),
+    "utf8",
+  );
   const result = runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
-  assert.equal(result.stdout, "peer progressed\nfinished 40000\nclosed explicit\n7\npeer progressed\nfinished 40000\nclosed implicit\n7\n");
+  assert.equal(
+    result.stdout,
+    "peer progressed\nfinished 40000\nclosed explicit\n7\npeer progressed\nfinished 40000\nclosed implicit\n7\n",
+  );
 });
 
 test("runProgram parse errors return diagnostics and do not execute cached bytecode", () => {
-  const result = runProgram("fn main( {\n    println(\"nope\");\n}\n", "");
+  const result = runProgram('fn main( {\n    println("nope");\n}\n', "");
 
   assert.notEqual(result.exit_code, 0);
   assert.equal(result.stdout, "");
   assert.ok(result.diagnostics.length > 0);
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.phase === "parse"));
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.phase === "parse"),
+  );
 });
 
 test("runProgram type errors return diagnostics and do not execute", () => {
-  const result = runProgram("fn main() {\n    let x: i64 = \"oops\";\n    println(x);\n}\n", "");
+  const result = runProgram(
+    'fn main() {\n    let x: i64 = "oops";\n    println(x);\n}\n',
+    "",
+  );
 
   assert.notEqual(result.exit_code, 0);
   assert.equal(result.stdout, "");
   assert.ok(result.diagnostics.length > 0);
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.phase === "typecheck"));
+  assert.ok(
+    result.diagnostics.some((diagnostic) => diagnostic.phase === "typecheck"),
+  );
 });
 
 test("runProgram panics map to non-zero exit code and a trap diagnostic", () => {
-  const result = runProgram("fn main() {\n    panic(\"sandbox panic\");\n}\n", "");
+  const result = runProgram(
+    'fn main() {\n    panic("sandbox panic");\n}\n',
+    "",
+  );
 
   assert.notEqual(result.exit_code, 0);
-  assert.ok(result.diagnostics.some((diagnostic) => diagnostic.phase === "run" && diagnostic.trap_kind === "panic"));
+  assert.ok(
+    result.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.phase === "run" && diagnostic.trap_kind === "panic",
+    ),
+  );
 });
 
 function buildSandboxWasmBridge() {
+  if (reusedBindings) {
+    console.log(`Using existing VM bridge bindings from ${wasmDir}`);
+    return;
+  }
   const mode = process.env.HEW_WASM_PACK_MODE;
-  const args = ["build", path.join(repoRoot, "hew-wasm"), "--target", "nodejs", "--dev", "--out-dir", wasmDir];
+  const args = [
+    "build",
+    path.join(repoRoot, "hew-wasm"),
+    "--target",
+    "nodejs",
+    "--dev",
+    "--out-dir",
+    wasmDir,
+  ];
   if (mode) args.push("--mode", mode);
-  const result = spawnSync(
-    "wasm-pack",
-    args,
-    {
-      cwd: repoRoot,
-      encoding: "utf8"
-    }
-  );
+  const result = spawnSync("wasm-pack", args, {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 
@@ -332,40 +426,51 @@ fn main() { var fresh = Ticket { id: 1 }; ${body} }
   });
 }
 
-
 test("runProgram shares checked UTC calendar semantics with native", () => {
-  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-calendar.hew"), "utf8");
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/timestamp-calendar.hew"),
+    "utf8",
+  );
   const result = runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp calendar ok\n");
 });
 
-
 test("runProgram executes the shared source cron parser and search", () => {
-  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-cron.hew"), "utf8");
+  const source = fs.readFileSync(
+    path.join(repoRoot, "tests/core-acceptance/cases/timestamp-cron.hew"),
+    "utf8",
+  );
   const result = runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp cron ok\n");
 });
 
-
 test("calendar extern results require their checked record descriptor", () => {
   const output = globalThis.__hewSandboxCompileToSandboxBytecode(
     'import std.time.datetime; fn main() { println(datetime.to_iso8601(timestamp.from_unix_secs(0)).expect("calendar")); }',
-    "sandbox-vm-export"
+    "sandbox-vm-export",
   );
   const compiled = typeof output === "string" ? JSON.parse(output) : output;
   assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
   for (const mismatch of ["missing", "reordered"]) {
     const malformed = structuredClone(compiled.bytecode);
-    const call = malformed.functions.flatMap(fn => fn.blocks).map(block => block.term)
-      .find(term => term.op === "extern.call" && malformed.externs[term.extern].symbol === "hew_calendar_format");
+    const call = malformed.functions
+      .flatMap((fn) => fn.blocks)
+      .map((block) => block.term)
+      .find(
+        (term) =>
+          term.op === "extern.call" &&
+          malformed.externs[term.extern].symbol === "hew_calendar_format",
+      );
     assert.ok(call);
     if (mismatch === "missing") delete call.aggregate_result_shape;
     else malformed.aggregates[call.aggregate_result_shape].fields.reverse();
-    const trace = runBytecode(malformed, { calendarBridge: globalThis.__hewSandboxExecuteCalendar });
+    const trace = runBytecode(malformed, {
+      calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+    });
     assert.equal(trace.result, "sandbox_rejected");
     assert.deepEqual(trace.final_state.stdout, []);
   }

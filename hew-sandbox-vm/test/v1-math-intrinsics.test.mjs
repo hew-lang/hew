@@ -15,8 +15,22 @@ import { runBytecode } from "../dist/interpreter/index.js";
 function mathPackage(key, args, printKind) {
   const ops = args.map((arg, at) =>
     arg.kind === "int"
-      ? { op: "const.int", dst: at, value: arg.value, ty: arg.ty ?? "i64", span: null }
-      : { op: "const.float", dst: at, value: arg.value, ty: "f64", span: null }
+      ? {
+          op: "const.int",
+          dst: at,
+          value: arg.value,
+          ty: arg.ty ?? "i64",
+          span: null,
+        }
+      : {
+          op: "const.float",
+          dst: at,
+          ...(Number.isNaN(arg.value)
+            ? { nonfinite: "nan" }
+            : { value: arg.value }),
+          ty: "f64",
+          span: null,
+        },
   );
 
   return {
@@ -32,7 +46,7 @@ function mathPackage(key, args, printKind) {
     variants: [],
     runtime_families: [
       { id: 0, family: "MathIntrinsic", detail: key },
-      { id: 1, family: "Print", detail: { kind: printKind, newline: true } }
+      { id: 1, family: "Print", detail: { kind: printKind, newline: true } },
     ],
     externs: [],
     suspend_kinds: [],
@@ -59,8 +73,8 @@ function mathPackage(key, args, printKind) {
               result_shape: null,
               normal: { to: 1, args: [] },
               unwind: null,
-              span: null
-            }
+              span: null,
+            },
           },
           {
             id: 1,
@@ -74,13 +88,18 @@ function mathPackage(key, args, printKind) {
               result_shape: null,
               normal: { to: 2, args: [] },
               unwind: null,
-              span: null
-            }
+              span: null,
+            },
           },
-          { id: 2, params: [], ops: [], term: { op: "return", value: null, span: null } }
-        ]
-      }
-    ]
+          {
+            id: 2,
+            params: [],
+            ops: [],
+            term: { op: "return", value: null, span: null },
+          },
+        ],
+      },
+    ],
   };
 }
 
@@ -88,9 +107,18 @@ function math(key, args, printKind = "F64") {
   const trace = runBytecode(mathPackage(key, args, printKind), {
     fixtureId: "math-intrinsic",
     traceId: "trace:math-intrinsic",
-    replay: { seed: 1, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
+    replay: {
+      seed: 1,
+      step_budget: 1000,
+      virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
+      inputs: [],
+    },
   });
-  assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
+  assert.equal(
+    trace.result,
+    "ok",
+    JSON.stringify(trace.final_state.runtime_failures),
+  );
   return trace.final_state.stdout.join("").trim();
 }
 
@@ -180,19 +208,32 @@ test("copysign and the signed zeros match native", () => {
 test("the integer intrinsics work in the integer domain", () => {
   assert.equal(int64("AbsI64", [i(-5)]), "5");
   assert.equal(int64("AbsI64", [i(5)]), "5");
-  assert.equal(int64("AbsI64", [i("-9223372036854775807")]), "9223372036854775807");
+  assert.equal(
+    int64("AbsI64", [i("-9223372036854775807")]),
+    "9223372036854775807",
+  );
   assert.equal(int64("MinI64", [i(3), i(7)]), "3");
   assert.equal(int64("MaxI64", [i(3), i(7)]), "7");
   // Beyond the JS safe range, so a float-domain implementation would lose
   // digits here.
-  assert.equal(int64("MaxI64", [i("9007199254740993"), i("9007199254740992")]), "9007199254740993");
+  assert.equal(
+    int64("MaxI64", [i("9007199254740993"), i("9007199254740992")]),
+    "9007199254740993",
+  );
 });
 
 test("fma is fused: the product is not rounded before the addend arrives", () => {
   // Native reads 4.93038e-32 for the fused form and 0 for the unfused one, so
   // this case fails on any implementation that computes a * b + c in two
   // roundings.
-  assert.equal(math("Fma", [f(1.0000000000000002), f(1.0000000000000002), f(-1.0000000000000004)]), "4.93038e-32");
+  assert.equal(
+    math("Fma", [
+      f(1.0000000000000002),
+      f(1.0000000000000002),
+      f(-1.0000000000000004),
+    ]),
+    "4.93038e-32",
+  );
 });
 
 test("an unknown math intrinsic is rejected as malformed bytecode", () => {
@@ -201,19 +242,27 @@ test("an unknown math intrinsic is rejected as malformed bytecode", () => {
       ...mathPackage("Sqrt", [f(16)], "F64"),
       runtime_families: [
         { id: 0, family: "MathIntrinsic", detail: "NotAnIntrinsic" },
-        { id: 1, family: "Print", detail: { kind: "F64", newline: true } }
-      ]
+        { id: 1, family: "Print", detail: { kind: "F64", newline: true } },
+      ],
     },
     {
       fixtureId: "math-reject",
       traceId: "trace:math-reject",
-      replay: { seed: 1, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
-    }
+      replay: {
+        seed: 1,
+        step_budget: 1000,
+        virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
+        inputs: [],
+      },
+    },
   );
 
   assert.equal(trace.result, "sandbox_rejected");
   assert.deepEqual(trace.final_state.stdout, []);
   assert.equal(trace.final_state.step_count, 0);
-  assert.equal(trace.final_state.sandbox_rejections[0].category, "invalid_package");
+  assert.equal(
+    trace.final_state.sandbox_rejections[0].category,
+    "invalid_package",
+  );
   assert.equal(trace.final_state.sandbox_rejections[0].capability, null);
 });

@@ -12,8 +12,10 @@ pub struct Package {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub codecs: Vec<String>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub structural_render: Vec<StructuralRecipe>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub resources: Vec<Resource>,
     pub schema_version: SchemaVersion,
     pub hew_version: String,
@@ -28,8 +30,10 @@ pub struct Package {
     pub variants: Vec<VariantShape>,
     pub closures: Vec<Closure>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub actors: Vec<Actor>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub supervisors: Vec<Supervisor>,
     pub vtables: Vec<Vtable>,
     pub value_capabilities: Vec<ValueCapabilityPlan>,
@@ -73,6 +77,7 @@ pub struct VariantShape {
     pub name: String,
     pub cases: Vec<VariantCase>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub runtime_tags: BTreeMap<RuntimeVariantRole, u32>,
 }
 
@@ -181,6 +186,7 @@ pub struct Supervisor {
 pub struct SupervisorChild {
     pub name: String,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub dependencies: Vec<usize>,
     /// The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
     pub role: SupervisedRole,
@@ -230,6 +236,7 @@ pub struct ValueCapabilityPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub callable: Option<u32>,
     #[serde(default)]
+    #[ts(optional, as = "Option<_>")]
     pub components: Vec<ValueComponentCapabilities>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variants: Option<Vec<Vec<ValueComponentCapabilities>>>,
@@ -406,9 +413,22 @@ pub enum SupervisedRole {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema, TS)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Resource {
-    Record { shape: u32, ty: String, close: u32 },
-    Opaque { ty: String, close: u32 },
-    Nominal { ty: String, release: String },
+    Record {
+        shape: u32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ty: Option<String>,
+        close: u32,
+    },
+    Opaque {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ty: Option<String>,
+        close: u32,
+    },
+    Nominal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ty: Option<String>,
+        release: String,
+    },
     Task,
     ActorCall,
     ActorRequest,

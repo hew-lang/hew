@@ -1088,6 +1088,7 @@ mod tests {
     #[test]
     fn supervisor_discarded_clean_stop_preserves_successful_exit() {
         let _runtime = crate::runtime_test_guard();
+        crate::exit_status::reset_process_exit_status();
         // SAFETY: the test owns each mailbox and its copied lifecycle payload.
         unsafe {
             for reclaim_before_free in [false, true] {
@@ -1127,6 +1128,7 @@ mod tests {
         // no activation can consume a notification before its terminal drain.
         unsafe {
             for reclaim_before_free in [false, true] {
+                crate::exit_status::reset_process_exit_status();
                 let sup = hew_supervisor_new(STRATEGY_ONE_FOR_ONE, 3, 5);
                 let role = crate::exit_status::RoleKey {
                     owner: (*sup).local_pid_id,
@@ -1205,6 +1207,7 @@ mod tests {
                 assert!(!crate::exit_status::role_has_unsettled_fault(role));
                 assert_eq!(crate::exit_status::final_exit_code(0), 1);
                 hew_supervisor_stop(sup);
+                crate::exit_status::reset_process_exit_status();
             }
         }
     }

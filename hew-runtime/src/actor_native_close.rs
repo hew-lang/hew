@@ -56,7 +56,6 @@ impl NativeActorCompletion {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-
     pub(crate) fn cleanup_in_progress(&self) -> bool {
         matches!(self.phase.load(Ordering::Acquire), 1 | 3)
     }

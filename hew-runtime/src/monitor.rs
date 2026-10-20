@@ -2030,10 +2030,6 @@ mod tests {
 
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "keeps target retirement and terminal observation in one scenario"
-    )]
     fn native_monitor_reclaimed_target_preserves_terminal_cause_and_context() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: empty actors are test-owned; no scheduler workers execute them.

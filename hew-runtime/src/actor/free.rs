@@ -94,7 +94,7 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
     #[cfg(not(target_arch = "wasm32"))]
     // SAFETY: name retirement requires only the actor identity.
     unsafe {
-        crate::hew_node::unregister_actor_names(actor_id)
+        crate::hew_node::unregister_actor_names(actor_id);
     };
     crate::parse_error_slot::clear_all_for_actor(actor_id);
 }

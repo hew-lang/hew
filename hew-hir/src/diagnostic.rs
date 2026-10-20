@@ -400,7 +400,7 @@ pub enum HirDiagnosticKind {
         /// (e.g. `"path.basename"`).
         suggested_qualified: String,
     },
-    /// The target has no actor/supervisor runtime ABI. Native x86_64/aarch64
+    /// The target has no actor/supervisor runtime ABI. Native `x86_64`/`aarch64`
     /// workers and the WASI cooperative driver provide the checked ABI;
     /// other architectures are rejected before linking.
     TargetCoroutineUnsupported {

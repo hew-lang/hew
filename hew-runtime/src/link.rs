@@ -273,8 +273,8 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
         Some(crate::lifetime::local_handles::ObservedActorTarget::Role {
             incarnation: None,
             ..
-        }) => {}
-        None => {}
+        })
+        | None => {}
     }
 }
 

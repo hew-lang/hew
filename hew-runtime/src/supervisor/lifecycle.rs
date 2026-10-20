@@ -316,6 +316,10 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
 
 /// Create a new supervisor.
 ///
+/// # Panics
+///
+/// Panics if the current execution has no local handle authority.
+///
 /// # Safety
 ///
 /// No preconditions.

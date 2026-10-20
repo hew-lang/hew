@@ -112,7 +112,7 @@ pub unsafe extern "C" fn hew_native_actor_observe_new(
                     &mut operation,
                     &imported,
                     waker,
-                )
+                );
             };
             return Box::into_raw(Box::new(operation));
         }

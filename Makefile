@@ -654,8 +654,10 @@ unicode-tables: ## Generate: export native Unicode character operations for the 
 unicode-tables-check: ## Check: verify sandbox Unicode tables match the native runtime
 	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
 
+HEW_NATIVE_BIN ?= $(DEBUG_HEW)
+
 sandbox-vm-test: sandbox-vm-deps
-	npm --prefix hew-sandbox-vm test
+	HEW_NATIVE_BIN="$(HEW_NATIVE_BIN)" npm --prefix hew-sandbox-vm test
 
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.

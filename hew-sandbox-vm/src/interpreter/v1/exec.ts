@@ -4874,13 +4874,20 @@ class ExecutorV1 {
       spec.spawn,
       args,
       (value) => {
+        const cancellation = owner.constructor?.pendingCancellation;
         owner.constructor = null;
         if (!owner.alive) {
-          this.stopChild(
-            value,
-            () => this.finishSupervisorStop(owner),
-            owner.terminating,
+          // The result is still owned here. Its declaration slot hands it to
+          // canonical reverse-order teardown, including the configured budget.
+          owner.children[child] = value;
+          failed(
+            cancellation ?? {
+              kind: "panic",
+              message: "supervisor construction cancelled",
+              cancelled: true,
+            },
           );
+          this.finishSupervisorStop(owner);
           return;
         }
         owner.children[child] = value;
@@ -4897,9 +4904,12 @@ class ExecutorV1 {
         done();
       },
       (fault) => {
+        const stopped = !owner.alive;
         owner.constructor = null;
-        if (!owner.alive) this.finishSupervisorStop(owner);
-        else failed(fault);
+        // The initial caller still needs one terminal notification if the
+        // supervisor was stopped directly rather than through caller cancel.
+        failed(fault);
+        if (stopped) this.finishSupervisorStop(owner);
       },
     );
   }

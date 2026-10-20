@@ -41,14 +41,11 @@ on:
         options: [all, windows-intel-macos]
         default: all
 
-# A push to a branch makes any run still going for that same ref obsolete:
-# its verdict can no longer gate anything, because a newer commit exists.
-# Those runs were still holding runners, so 15 open pull requests could
-# starve the queue and nothing scheduled at all. Never cancel on main —
-# a push there must complete.
+# Qualification belongs to a source revision and platform selection. Preserve
+# earlier evidence while allowing a corrected candidate to run independently.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}-${{ inputs.platforms || 'all' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read

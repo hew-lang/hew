@@ -918,8 +918,8 @@ jobs:
   # This leg now proves the one thing no other leg proves — that the
   # compiler builds and a compiled program runs correctly on FreeBSD
   # aarch64 — via a release build of hew-cli and a compile+run smoke test.
-  # It does not build hew-lib or run the Rust test
-  # suite, hew-suite-ratchet, or vertical-slice: those already have
+  # Its compiler and native runtime share the release build profile. It does
+  # not run the Rust suite, hew-suite-ratchet, or vertical-slice: those have
   # dedicated coverage on this OS (gate-freebsd-x86_64) and on this
   # architecture (gate-linux-aarch64, gate-macos arm64), so the marginal
   # risk unique to the FreeBSD+aarch64 combination is the build/run path,
@@ -958,15 +958,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
-            # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
-            # the macOS and Linux gates.
-            # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
-            # one wasmtime per quarterly branch and takes no version selector. The
-            # alternative is building wasmtime from source inside a VM step that
-            # already runs near its time limit. Every other runner takes the pinned
-            # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -984,50 +976,22 @@ jobs:
             test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
-            # Upstream does not publish a rustup host toolchain for aarch64
-            # FreeBSD, so keep the pkg compiler and install its matching,
-            # host-independent WASI standard-library component directly.
-            RUST_VERSION=$(rustc --version | awk '{print $2}')
-            RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"
-            RUST_STD_DIR=$(mktemp -d)
-            trap 'rm -rf "$RUST_STD_DIR"' EXIT
-            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" \
-              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"
-            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256" \
-              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"
-            test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \
-              "$(awk '{print $1}' "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"
-            tar -xJf "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" -C "$RUST_STD_DIR"
-            sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \
-              --prefix="$(rustc --print sysroot)" --disable-ldconfig
-            test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"
+            # The native smoke shares one release dependency graph. The shipped
+            # release-lib profile remains separate for external Rust consumers.
+            gmake release-smoke-artifacts
 
-            # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
-            # own bin dir, which is not on PATH. Expose it like the macOS gate's
-            # lld@22 so the linker probe finds it instead of failing to spawn
-            # rust-lld (not shipped by the pkg rust toolchain).
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
-            command -v wasmtime && wasmtime --version
-            command -v wasm-ld && wasm-ld --version
+            # Stage this exact pair so archive discovery cannot select another profile.
+            SMOKE_DIR=$(mktemp -d)
+            trap 'rm -rf "$SMOKE_DIR"' EXIT
+            mkdir -p "$SMOKE_DIR/bin" "$SMOKE_DIR/lib"
+            cp target/release/hew "$SMOKE_DIR/bin/hew"
+            cp target/release/libhew.a "$SMOKE_DIR/lib/libhew.a"
+            "$SMOKE_DIR/bin/hew" --version
 
-            # Only the combined CLI release binary, not the
-            # release-lib profile: this leg proves the compiler builds and
-            # runs on FreeBSD aarch64. The debug libhew archive below is the
-            # native-link input required by the smoke test.
-            gmake release-cli
-
-            # Build only the native archive needed by the release CLI's smoke.
-            # `gmake stdlib` also builds a debug compiler, repeating the full
-            # compiler dependency graph under emulation after release-cli.
-            cargo build -p hew-lib
-
-            target/release/hew --version
-
-            # Smoke test — compile and run a .hew program
-            echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
-            chmod +x _smoke_bin
-            OUTPUT=$(./_smoke_bin)
+            # Smoke test — compile and run a .hew program with the staged runtime.
+            echo 'fn main() { println("smoke-ok") }' > "$SMOKE_DIR/main.hew"
+            HEW_STD="$PWD/std" "$SMOKE_DIR/bin/hew" build "$SMOKE_DIR/main.hew" -o "$SMOKE_DIR/smoke"
+            chmod +x "$SMOKE_DIR/smoke"
+            OUTPUT=$("$SMOKE_DIR/smoke")
             echo "$OUTPUT"
-            echo "$OUTPUT" | grep -q "smoke-ok"
-            rm -f _smoke.hew _smoke_bin
+            test "$OUTPUT" = "smoke-ok"

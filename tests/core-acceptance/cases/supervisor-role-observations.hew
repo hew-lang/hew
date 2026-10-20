@@ -115,6 +115,8 @@ fn main() {
     // A temporary child leaves a stable role with no current incarnation.
     stop(cluster.absent);
     stopped(cluster.absent);
+    // Actor cleanup precedes the supervisor's final role ruling.
+    restarted(cluster.absent);
     println(f"vacant monitor: {watcher.monitor_vacant_role(cluster.absent):?}");
     println(f"vacant link: {watcher.link_vacant_role(cluster.absent):?}");
     while watcher.seen().expect("watcher is running") < 4 {

@@ -700,7 +700,7 @@ ci-preflight: preflight
 # lifecycle tests already run in the workspace suite; source ownership cases
 # run through core acceptance and safety.
 ci-shard-1: observe-functional-test test-cabi \
-	core-acceptance test-pkg-import test-runtime-unit \
+	core-acceptance test-doc-examples test-pkg-import test-runtime-unit \
 	test-migrate-corpus o2-differential-selftest
 
 ci-shard-2: libhew-link-race-test test \

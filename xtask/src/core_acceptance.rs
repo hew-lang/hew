@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+use crate::workspace_root;
+
 type Result<T> = std::result::Result<T, String>;
 
 #[derive(Debug, Deserialize)]
@@ -594,13 +596,6 @@ fn usage() -> String {
         "  --partition K/N                       run only shard K of N (0-based, stable by id)",
     ]
     .join("\n")
-}
-
-fn workspace_root() -> Result<PathBuf> {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "xtask manifest should have a workspace parent".to_string())
 }
 
 fn load_manifest(root: &Path, selected: &[String]) -> Result<Manifest> {

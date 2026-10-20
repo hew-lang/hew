@@ -517,7 +517,24 @@ pub(super) fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop:
 
         if conn_id != HEW_CONN_INVALID {
             // SAFETY: pointers are held by HewNode for the loop lifetime.
-            let _ = unsafe { connection::hew_connmgr_add(conn_mgr.0, conn_id) };
+            let result = unsafe { connection::hew_connmgr_add(conn_mgr.0, conn_id) };
+            if result < 0 {
+                let error = crate::hew_last_error();
+                let error = if error.is_null() {
+                    None
+                } else {
+                    // SAFETY: this thread's error remains valid until it is set again;
+                    // diagnostic logging does not change the thread-local error.
+                    Some(unsafe { std::ffi::CStr::from_ptr(error) })
+                };
+                crate::grant_diagnostic_event(format_args!(
+                    "accept-admission-refused conn={conn_id} result={result} error={error:?}"
+                ));
+            } else {
+                crate::grant_diagnostic_event(format_args!(
+                    "accept-admission conn={conn_id} result={result}"
+                ));
+            }
         }
     }
 }

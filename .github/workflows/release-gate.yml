@@ -11,12 +11,14 @@ permissions:
 
 jobs:
   windows-grant-diagnostic:
-    name: Diagnostic only — packaged Windows SDK
+    name: Diagnostic only — Windows runtime profile comparison
     runs-on: windows-2022
     timeout-minutes: 20
     env:
       RUSTUP_TOOLCHAIN: "1.96.0"
       CARGO_TERM_COLOR: never
+      CARGO_BUILD_JOBS: "2"
+      AWS_LC_SYS_PREBUILT_NASM: "1"
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Verify SDK provenance
@@ -55,7 +57,7 @@ jobs:
       - name: Install GNU Make
         shell: pwsh
         run: choco install make --no-progress -y
-      - name: Run original service-grant harness with packaged SDK
+      - name: Compare release and observed debug runtimes
         shell: pwsh
         run: ./scripts/windows-grant-diagnostic.ps1
       - name: Preserve diagnostic evidence
@@ -65,3 +67,15 @@ jobs:
           name: windows-service-grant-diagnostic-${{ github.sha }}
           path: ${{ runner.temp }}/grant-evidence
           if-no-files-found: error
+      - name: Preserve selected diagnostic binaries
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-service-grant-binaries-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/grant-sdk-debug/lib/hew.lib
+            ${{ runner.temp }}/grant-fixtures/**/dist_node.exe
+            ${{ runner.temp }}/grant-fixtures/**/dist_node.pdb
+            ${{ runner.temp }}/grant-harness-target/debug/deps/distributed_two_process_e2e-*.exe
+          if-no-files-found: warn
+          include-hidden-files: true

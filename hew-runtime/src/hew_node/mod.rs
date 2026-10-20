@@ -695,6 +695,12 @@ impl ReplyRoutingTable {
                 .collect::<Vec<_>>()
         };
         for pending in pending {
+            if ask_error == AskError::Partition {
+                crate::grant_diagnostic_event(format_args!(
+                    "partition-pending request={} conn={}",
+                    pending.request_id, connection.conn_id
+                ));
+            }
             Self::fail_pending_with_reason(&pending, ask_error);
         }
     }

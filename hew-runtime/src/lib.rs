@@ -66,6 +66,40 @@ pub extern "C" fn hew_clear_error() {
     LAST_ERROR.with(|e| *e.borrow_mut() = None);
 }
 
+/// Diagnostic-ref-only observations; never included in a release integration.
+pub(crate) fn grant_diagnostic_event(event: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    use std::sync::{Mutex, OnceLock};
+
+    static LOG: OnceLock<Option<Mutex<std::fs::File>>> = OnceLock::new();
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some(log) = LOG.get_or_init(|| {
+        let directory = std::env::var_os("HEW_GRANT_DIAGNOSTIC_DIR")?;
+        let role = std::env::var("HEW_DIST_ROLE").unwrap_or_else(|_| "unknown".into());
+        let path =
+            std::path::PathBuf::from(directory).join(format!("{role}-{}.log", std::process::id()));
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    }) else {
+        return;
+    };
+    if let Ok(mut log) = log.lock() {
+        let sequence = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let micros = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_micros();
+        let _ = writeln!(
+            log,
+            "GRANT_RUNTIME_TRACE sequence={sequence} unix_us={micros} {event}"
+        );
+    }
+}
+
 /// Process-wide source of non-zero identities for `std::arena::Arena<T>`.
 ///
 /// Keys carry this identity alongside their slot index and generation, so a

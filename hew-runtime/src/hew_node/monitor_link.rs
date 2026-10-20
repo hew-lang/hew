@@ -1243,6 +1243,9 @@ pub(crate) fn fail_remote_asks_for_node(dead_node_id: u16) {
         }
         let connection = ConnectionKey::new(node.conn_mgr.cast_const(), conn_id);
         if let Some(table) = reply_table_opt() {
+            crate::grant_diagnostic_event(format_args!(
+                "partition-origin=swim-dead route_slot={dead_node_id} conn={conn_id}"
+            ));
             table.fail_connection_with_reason(connection, AskError::Partition);
         }
     });

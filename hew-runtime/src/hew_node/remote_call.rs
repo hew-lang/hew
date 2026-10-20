@@ -72,6 +72,9 @@ fn setup_remote_ask(
                 route_slot, conn, ..
             } => (conn, route_slot),
             routing::LocationRoute::Partition => {
+                crate::grant_diagnostic_event(format_args!(
+                    "partition-origin=absent-route target={target:?} message={msg_type}"
+                ));
                 return RemoteAskSetupResult::Error(AskError::Partition);
             }
             routing::LocationRoute::StaleRef => {

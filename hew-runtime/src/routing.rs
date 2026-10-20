@@ -164,6 +164,9 @@ pub(crate) unsafe fn hew_routing_add_route(
 ) -> bool {
     // SAFETY: inherited from this function's contract.
     if !unsafe { hew_routing_can_add_route(table, route_slot, session_incarnation) } {
+        crate::grant_diagnostic_event(format_args!(
+            "route-publication-refused slot={route_slot} session={session_incarnation} conn={conn} publication={publication_token}"
+        ));
         return false;
     }
     // SAFETY: `hew_routing_can_add_route` accepted the non-null table and the
@@ -184,6 +187,10 @@ pub(crate) unsafe fn hew_routing_add_route(
         }
     }
 
+    crate::grant_diagnostic_event(format_args!(
+        "route-publication slot={route_slot} session={session_incarnation} conn={conn} publication={publication_token} previous={:?}",
+        state.by_node.get(&node_id)
+    ));
     state.retired_nodes.remove(&node_id);
     state.known_sessions.insert(node_id, session_incarnation);
     state.by_slot.insert(route_slot, node_id);
@@ -239,11 +246,18 @@ pub(crate) unsafe fn hew_routing_remove_route_if_conn(
     let table = unsafe { &*table };
     let mut state = table.state.write_or_recover();
     let Some(entry) = state.by_node.get(&node_id).copied() else {
+        crate::grant_diagnostic_event(format_args!(
+            "route-removal-missing conn={conn} publication={publication_token}"
+        ));
         return false;
     };
     if entry.conn != conn || entry.publication_token != publication_token {
+        crate::grant_diagnostic_event(format_args!(
+            "route-removal-stale conn={conn} publication={publication_token} current={entry:?}"
+        ));
         return false;
     }
+    crate::grant_diagnostic_event(format_args!("route-removal-owned current={entry:?}"));
     state.by_node.remove(&node_id);
     state.by_slot.remove(&entry.route_slot);
     true

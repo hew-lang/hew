@@ -1,0 +1,36 @@
+//! Status: runnable
+//! Description: Read fixed-width sensor records from a framed byte stream.
+
+import std.encoding.binary;
+import std.stream;
+
+/// A three-byte sensor record: sensor ID followed by temperature in tenths
+/// of a degree, encoded as an unsigned big-endian integer.
+fn sensor_record(sensor_id: u8, temperature_tenths: i64) -> bytes {
+    var record = bytes.new();
+    record.push(sensor_id);
+    record.append(binary.put_uint_be(temperature_tenths, 2).expect("two-byte temperature"));
+    record
+}
+
+fn main() {
+    let writer_codec = stream.FixedWidth.new(3).expect("valid sensor record width");
+    let reader_codec = stream.FixedWidth.new(3).expect("valid sensor record width");
+    let (raw_sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("pipe");
+    let records = raw_sink.framed(writer_codec);
+    records.send(sensor_record(7, 215)).expect("send sensor 7");
+    records.send(sensor_record(8, 238)).expect("send sensor 8");
+    records.finish();
+    let frames: stream.Stream<Result<bytes, stream.CodecError>> = input.frames(reader_codec);
+    while let .Some(result) = frames.recv() {
+        match result {
+            .Ok(record) => {
+                let sensor_id = record[0] as i64;
+                let temperature = binary.read_uint_be(record, 1, 2).expect("record temperature");
+                println(f"sensor {sensor_id}: {temperature / 10}.{temperature % 10} C");
+            }
+            .Err(error) => panic(f"invalid sensor record stream: {error}"),
+        }
+    }
+    frames.close();
+}

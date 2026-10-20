@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Set the workspace release version everywhere it is written by hand.
+# Set the workspace base version for a release or the next development cycle.
 # Usage: scripts/bump-version.sh 0.6.0-rc7
 set -euo pipefail
 
@@ -25,4 +25,5 @@ cargo metadata --format-version 1 >/dev/null # refreshes the workspace entries i
 cargo metadata --manifest-path hew-parser/fuzz/Cargo.toml --format-version 1 >/dev/null
 make baselines # fixtures and manifests that embed the version
 
-echo "bumped $old -> $new; add docs/releases/v$new.md before tagging"
+echo "bumped $old -> $new; development builds derive -dev metadata from Git"
+echo "before tagging a release, add docs/releases/v$new.md and its changelog entry"

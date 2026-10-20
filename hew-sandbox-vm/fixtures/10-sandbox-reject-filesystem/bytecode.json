@@ -12,7 +12,7 @@
   ],
   "bytes": [],
   "closures": [],
-  "compiler_version": "hew-wasm-0.6.1",
+  "compiler_version": "hew-wasm-0.6.2",
   "entry": {
     "exit": "unit",
     "function": 0
@@ -2952,7 +2952,7 @@
       "places": []
     }
   ],
-  "hew_version": "0.6.1",
+  "hew_version": "0.6.2",
   "profile": "sandbox.sandbox-vm-export.v0",
   "regex_patterns": [],
   "resources": [],

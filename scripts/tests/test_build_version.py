@@ -136,6 +136,41 @@ class SharedTargetVersion(unittest.TestCase):
             probe(second, f"0.6.1-dev.1+{second_sha}.dirty|second")
             probe(first, "0.6.1|first")
 
+            (second / "notes").write_text("unchanged\n")
+            git(second, "tag", "--no-sign", "toolchain-preview")
+            git(second, "tag", "--no-sign", "v05-int-tip")
+
+            def open_development_version(previous: str, following: str) -> str:
+                for name in ["hew-compile/Cargo.toml", "hew-cli/Cargo.toml"]:
+                    manifest = second / name
+                    manifest.write_text(
+                        manifest.read_text().replace(
+                            f'version = "{previous}"', f'version = "{following}"'
+                        )
+                    )
+                git(second, "add", "hew-compile/Cargo.toml", "hew-cli/Cargo.toml")
+                commit(second, f"open development {following}")
+                return git(second, "rev-parse", "--short", "HEAD")
+
+            development_sha = open_development_version("0.6.1", "0.6.2")
+            development = f"0.6.2-dev.2+{development_sha}|second"
+            # Count from the last Hew release, never an unrelated toolchain tag.
+            probe(second, development)
+
+            # A tag changes identity without changing source, HEAD or the index.
+            git(second, "tag", "--no-sign", "v0.6.2")
+            probe(second, "0.6.2|second")
+            git(second, "pack-refs", "--all", "--prune")
+            probe(second, "0.6.2|second")
+            git(second, "tag", "--delete", "v0.6.2")
+            probe(second, development)
+            git(second, "tag", "--no-sign", "v0.6.2")
+            probe(second, "0.6.2|second")
+
+            following_sha = open_development_version("0.6.2", "0.6.3")
+            probe(second, f"0.6.3-dev.1+{following_sha}|second")
+            probe(first, "0.6.1|first")
+
 
 if __name__ == "__main__":
     unittest.main()

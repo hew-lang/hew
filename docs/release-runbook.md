@@ -269,23 +269,27 @@ gh workflow run release-gate.yml --ref main \
 This runs candidate validation, identity and dependency checks, then Windows
 and Intel macOS. A green partial run supplies only those platform results.
 For each contributing run, record its URL and the qualification summary's
-source SHA, workflow SHA and platform selection. Except for the isolated
-corrections described below, every source SHA must match the recorded
+source SHA, workflow SHA and platform selection. Except for the scoped
+reuse described below, every source SHA must match the recorded
 `release_sha`. Review workflow corrections for changes to the required checks. Combine successful Windows and Intel results with
 successful jobs for all remaining platforms and sanitizers from the full gate.
 Missing, skipped, cancelled or failed required jobs still need successful
-evidence. Implementation, dependency, build, packaging or shared-harness changes
-require full qualification and a new release dry run for the changed candidate.
+evidence. Requalify affected contracts on the changed candidate, and run a new
+release dry run when implementation, dependency, build or packaging inputs change.
 
-Documentation-only and isolated test corrections may retain completed evidence
-for unchanged production inputs. Record both commits and review their complete
-diff; identify reused results by the commit actually tested. Run the corrected
-tests and their direct consumers, using the qualified compiler/runtime pair on
-platforms relevant to the correction, including any platform that failed. Preserve
-the behavioural assertions and resolve every other failure before reusing evidence.
-Required protected CI must still pass on the final candidate. Do not describe a
-reused matrix as an exact-final-commit run. This exception does not cover changes
-to shared test runners, compiler/runtime/stdlib implementation or build inputs.
+Completed qualification may be retained for unchanged contracts. Record both
+commits, review their complete diff and explain why each retained platform or
+component result still applies. Identify results by the commit actually tested.
+A platform-specific change requires fresh qualification of that platform; shared
+compiler, runtime, dependency or harness changes require every affected check.
+When the impact cannot be bounded confidently, run the full qualification again.
+
+Run corrected tests and their direct consumers on relevant platforms, including
+any platform that failed. An isolated fixture correction can use the qualified
+compiler/runtime pair when production inputs are unchanged. Preserve behavioural
+assertions and resolve all failures; pending, skipped and failed jobs cannot be
+reused as successful evidence. Required protected CI must still pass on the final
+candidate. Do not describe reused results as an exact-final-commit matrix.
 
 The workflow's native job checks and run metadata identify the dispatched
 workflow revision. Candidate-bound JUnit checks and the qualification summary

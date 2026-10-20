@@ -122,7 +122,7 @@ jobs:
             printf '| Platform selection | %s |\n' "${PLATFORMS}"
             if [[ "${PLATFORMS}" != all ]]; then
               echo
-              echo 'Partial qualification: combine these results with successful full-gate jobs for this exact source commit, including sanitizers.'
+              echo 'Partial qualification: record this source revision and combine successful results according to the release runbook, including sanitizer evidence.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           tag="$(scripts/release-identity.sh)"

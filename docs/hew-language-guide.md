@@ -4178,7 +4178,10 @@ fn main() {
     let shuffled = rng.shuffle(hand);
     let another = random.shuffle(hand);
     // hand keeps its original order; both calls return independent values.
-    println(f"{hand} {shuffled} {another}");
+    assert(hand == [1, 2, 3, 4, 5]);
+    println(f"Original first card: {hand[0]}");
+    println(f"Shuffled first card: {shuffled[0]}");
+    println(f"Another first card: {another[0]}");
 }
 ```
 

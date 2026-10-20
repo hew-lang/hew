@@ -1460,3 +1460,55 @@ fn describe_output(output: &Output) -> String {
         String::from_utf8_lossy(&output.stderr)
     )
 }
+
+#[cfg(unix)]
+#[test]
+fn doc_fence_imports_its_package_outside_the_working_directory() {
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("greet")).unwrap();
+    std::fs::write(
+        dir.path().join("greet/hew.toml"),
+        "[package]\nname = \"acme.greet\"\nversion = \"0.1.0\"\nedition = \"2026\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("greet/greet.hew"),
+        "//! ```hew\n\
+         //! import acme.greet;\n\
+         //! fn main() {\n\
+         //!     println(greet.hello(\"Hew\"));\n\
+         //! }\n\
+         //! // Output:\n\
+         //! // hello, Hew\n\
+         //! ```\n\
+         pub fn hello(name: string) -> string { f\"hello, {name}\" }\n",
+    )
+    .unwrap();
+    for engine in ["native", "vm"] {
+        let output = Command::new(hew_binary())
+            .current_dir(dir.path())
+            .timeout(std::time::Duration::from_secs(30))
+            .args([
+                "test",
+                "--doc",
+                "greet/greet.hew",
+                "--engine",
+                engine,
+                "--format",
+                "json",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{engine}: stdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let events = String::from_utf8_lossy(&output.stdout);
+        assert!(events.contains("\"passed\":1"), "{engine}: {events}");
+        assert!(events.contains("hello, Hew\\n"), "{engine}: {events}");
+    }
+}

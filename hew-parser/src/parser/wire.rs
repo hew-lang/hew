@@ -299,12 +299,16 @@ impl Parser<'_> {
         let mut fields = Vec::new();
         let mut field_meta = Vec::new();
         let mut reserved_numbers: Vec<u32> = Vec::new();
+        let mut reserved = Vec::new();
         let mut explicit_numbers: Vec<u32> = Vec::new();
         let mut seen_explicit_numbers = std::collections::HashSet::new();
 
         while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
+            let mut doc_comment = self.collect_doc_comments();
             // Check for `reserved @N, @M, ...;`
             if self.peek() == Some(&Token::Reserved) {
+                let reserved_start = self.peek_span().start;
+                let first_number = reserved_numbers.len();
                 self.advance();
                 while self.peek() != Some(&Token::Semicolon) && !self.at_end() {
                     self.expect(&Token::At)?;
@@ -326,6 +330,10 @@ impl Parser<'_> {
                         break;
                     }
                 }
+                reserved.push(WireReserved {
+                    numbers: reserved_numbers[first_number..].to_vec(),
+                    span: reserved_start..self.last_token_end,
+                });
                 self.expect_member_terminator("reserved");
                 continue;
             }
@@ -333,6 +341,9 @@ impl Parser<'_> {
             // Parse field: [#[serial(..)]] name: Type [@N] [modifiers];
             let field_start = self.peek_span().start;
             let mut attributes = self.parse_attributes();
+            if doc_comment.is_none() {
+                doc_comment = self.collect_doc_comments();
+            }
             self.validate_attributes_for(&attributes, AttrPosition::Field);
             let field_name = self.expect_ident()?;
             self.expect(&Token::Colon)?;
@@ -365,7 +376,7 @@ impl Parser<'_> {
                 name: field_name,
                 ty,
                 attributes,
-                doc_comment: None,
+                doc_comment,
                 span: field_start..self.last_token_end,
             });
             field_meta.push((
@@ -440,7 +451,7 @@ impl Parser<'_> {
             doc_comment: None,
             wire: Some(WireMetadata {
                 field_meta: resolved_meta,
-                reserved_numbers,
+                reserved,
                 version,
                 min_version,
             }),
@@ -528,7 +539,7 @@ impl Parser<'_> {
 
         td.wire = Some(WireMetadata {
             field_meta: Vec::new(),
-            reserved_numbers: Vec::new(),
+            reserved: Vec::new(),
             version,
             min_version,
         });

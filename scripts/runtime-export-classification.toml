@@ -550,6 +550,7 @@ stable = [
   "hew_select_ready_index",
   "hew_semaphore_acquire",
   "hew_semaphore_acquire_timeout",
+  "hew_semaphore_clone",
   "hew_semaphore_count",
   "hew_semaphore_free",
   "hew_semaphore_new",
@@ -1102,30 +1103,25 @@ stable-stdlib = [
   "hew_toml_array_len",
   "hew_toml_array_new",
   "hew_toml_array_push",
-  "hew_toml_array_push_bool",
-  "hew_toml_array_push_float",
-  "hew_toml_array_push_int",
-  "hew_toml_array_push_string",
+  "hew_toml_clone",
+  "hew_toml_eq",
   "hew_toml_free",
   "hew_toml_from_bool",
   "hew_toml_from_float",
   "hew_toml_from_int",
   "hew_toml_from_string",
   "hew_toml_get_bool",
+  "hew_toml_get_datetime",
   "hew_toml_get_field",
   "hew_toml_get_float",
   "hew_toml_get_int",
   "hew_toml_get_string",
   "hew_toml_last_error",
-  "hew_toml_last_serialize_error",
+  "hew_toml_object_keys",
+  "hew_toml_object_new",
+  "hew_toml_object_set",
   "hew_toml_parse",
   "hew_toml_stringify",
-  "hew_toml_table_new",
-  "hew_toml_table_set",
-  "hew_toml_table_set_bool",
-  "hew_toml_table_set_float",
-  "hew_toml_table_set_int",
-  "hew_toml_table_set_string",
   "hew_toml_type",
   "hew_url_fragment",
   "hew_url_free",
@@ -1283,7 +1279,8 @@ non-declarable = [
   "hew_actor_call_poll",
   "hew_actor_call_resume",
   "hew_actor_call_take",
-  "hew_actor_coro_set_fault",
+  "hew_actor_coro_bind_stream",
+  "hew_actor_coro_finish",
   "hew_actor_coro_state_new",
   "hew_actor_construct_native",
   "hew_actor_dispatch_set_fault",
@@ -1370,6 +1367,10 @@ non-declarable = [
   "hew_coro_run_root",
   "hew_coro_sleep_free",
   "hew_coro_sleep_new",
+  "hew_semaphore_acquire_new",
+  "hew_semaphore_acquire_status",
+  "hew_semaphore_acquire_take",
+  "hew_semaphore_acquire_free",
   "hew_coro_sleep_status",
   "hew_coro_sleep_until_new",
   "hew_coro_state_cancel",
@@ -3507,6 +3508,13 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_semaphore_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_semaphore_free"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
 symbol = "hew_semaphore_count"
 result = "none"
 params = ["borrow"]
@@ -3517,6 +3525,7 @@ discharge-depth = "none"
 symbol = "hew_semaphore_free"
 result = "none"
 params = ["consume"]
+resource-param-types = ["std.semaphore.SemaphoreHandle"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6091,27 +6100,24 @@ params = ["borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# TOML values — hew-std/src/toml.rs. Same shape as the JSON family: value
-# producers (parse, from_*, table_new/array_new, get_field/array_get clone-
-# out) return Box'd HewTomlValue handles released by hew_toml_free (deep);
-# setters/pushes borrow the target, copy scalar/string operands, and consume
-# transferred Value children.
+# TOML values — hew-std/src/toml.rs. Same shape as the JSON family: every
+# value producer (parse, from_*, object_new/array_new, clone, and the
+# get_field/array_get/object_keys clone-outs) returns a Box'd HewTomlValue
+# released by hew_toml_free, which drops the whole tree (deep). Setters and
+# pushes borrow the target and consume the transferred Value child;
+# get_string/get_datetime/stringify return fresh strings.
 [[ownership.contracts]]
 symbol = "hew_toml_array_get"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected toml value into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_len"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6119,49 +6125,29 @@ discharge-depth = "none"
 symbol = "hew_toml_array_new"
 result = "fresh"
 params = []
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty toml array and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_array_push"
 result = "none"
 params = ["borrow", "consume"]
-resource-param-types = ["std.encoding.toml.Value", "std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
-symbol = "hew_toml_array_push_bool"
-result = "none"
-params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
-release-symbol = ""
-discharge-depth = "none"
+symbol = "hew_toml_clone"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_toml_array_push_float"
+symbol = "hew_toml_eq"
 result = "none"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_array_push_int"
-result = "none"
-params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_array_push_string"
-result = "none"
-params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6169,7 +6155,6 @@ discharge-depth = "none"
 symbol = "hew_toml_free"
 result = "none"
 params = ["consume"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6177,66 +6162,61 @@ discharge-depth = "none"
 symbol = "hew_toml_from_bool"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new toml boolean and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_float"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new toml float and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_int"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new toml integer and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_from_string"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "copies the C string into a new toml string and boxed_value returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_bool"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_toml_get_datetime"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_field"
 result = "fresh"
 params = ["borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", ""]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "clones the selected table field into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_get_float"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6244,7 +6224,6 @@ discharge-depth = "none"
 symbol = "hew_toml_get_int"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -6252,7 +6231,6 @@ discharge-depth = "none"
 symbol = "hew_toml_get_string"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -6266,91 +6244,48 @@ discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_toml_last_serialize_error"
+symbol = "hew_toml_object_keys"
+result = "fresh"
+params = ["borrow"]
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_object_new"
 result = "fresh"
 params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
+release-symbol = "hew_toml_free"
+discharge-depth = "deep"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_toml_object_set"
+result = "none"
+params = ["borrow", "borrow", "consume"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_toml_parse"
 result = "fresh"
 params = ["borrow"]
-resource-result-type = "std.encoding.toml.Value"
 release-symbol = "hew_toml_free"
 discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "successful toml parsing moves the new table into boxed_value, which returns one fresh Box::into_raw wrapper"
+result-retention = "transferred"
 
 [[ownership.contracts]]
 symbol = "hew_toml_stringify"
 result = "fresh"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
 [[ownership.contracts]]
-symbol = "hew_toml_table_new"
-result = "fresh"
-params = []
-resource-result-type = "std.encoding.toml.Value"
-release-symbol = "hew_toml_free"
-discharge-depth = "deep"
-result-retention = "resource-transfer"
-result-retention-basis = "constructs a new empty toml table and boxed_value returns one fresh Box::into_raw wrapper"
-
-[[ownership.contracts]]
-symbol = "hew_toml_table_set"
-result = "none"
-params = ["borrow", "borrow", "consume"]
-resource-param-types = [
-  "std.encoding.toml.Value",
-  "",
-  "std.encoding.toml.Value",
-]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_table_set_bool"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_table_set_float"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_table_set_int"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_toml_table_set_string"
-result = "none"
-params = ["borrow", "borrow", "borrow"]
-resource-param-types = ["std.encoding.toml.Value", "", ""]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
 symbol = "hew_toml_type"
 result = "none"
 params = ["borrow"]
-resource-param-types = ["std.encoding.toml.Value"]
 release-symbol = ""
 discharge-depth = "none"
 

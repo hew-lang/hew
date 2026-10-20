@@ -1,0 +1,26 @@
+import std.semaphore;
+
+fn automatic_cleanup() {
+    let sem = semaphore.new(1);
+    assert(sem.count() == 1);
+    assert(sem.try_acquire());
+    assert(sem.count() == 0);
+    assert(!sem.try_acquire());
+    assert(sem.count() == 0);
+    sem.release();
+    assert(sem.count() == 1);
+    assert(sem.try_acquire());
+}
+
+fn main() {
+    automatic_cleanup();
+    let sem = semaphore.new(0);
+    assert(!sem.try_acquire());
+    sem.release();
+    sem.release();
+    assert(sem.count() == 2);
+    assert(sem.try_acquire());
+    assert(sem.count() == 1);
+    sem.close();
+    println("semaphore ok");
+}

@@ -2465,6 +2465,7 @@ fn selected_encoding_import_keeps_checked_identity_through_payload_extraction() 
     for (format, builtin) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!(
             r#"
@@ -2548,6 +2549,7 @@ fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
     for (format, builtin) in [
         ("json", BuiltinType::JsonValue),
         ("yaml", BuiltinType::YamlValue),
+        ("toml", BuiltinType::TomlValue),
     ] {
         let source = format!(
             r#"
@@ -2629,7 +2631,11 @@ fn imported_encoding_mutators_keep_the_checked_writeback_contract() {
 #[test]
 fn encoding_spelling_and_opacity_cannot_replace_checked_declaration_authority() {
     let mut ctx = LowerCtx::new(&TypeCheckOutput::default(), TargetArch::host());
-    for builtin in [BuiltinType::JsonValue, BuiltinType::YamlValue] {
+    for builtin in [
+        BuiltinType::JsonValue,
+        BuiltinType::YamlValue,
+        BuiltinType::TomlValue,
+    ] {
         let name = builtin.canonical_name();
         ctx.type_declarations.insert(
             hew_types::NominalId::for_test(name),

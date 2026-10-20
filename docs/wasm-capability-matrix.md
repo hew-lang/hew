@@ -66,8 +66,8 @@ is identified directly; its runtime-status cell states the current behavior.
 | `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface |
 | `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Pass | — | Checked scope joins, cancellation and cleanup on the cooperative driver |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Pass | — | Checked task continuations, ordered batches and races on the cooperative driver |
-| `semaphore-non-blocking` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | `semaphore.new`, `Semaphore.try_acquire/release/count/free` | Pass | — | Non-blocking semaphore subset only |
-| `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Blocking semaphore acquire operations | Reject (`BlockingSemaphoreAcquire`) | Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead | No cooperative blocking wait implementation |
+| `semaphore-non-blocking` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | Pass | — | Explicitly cloned affine handles share a permit count and close independently |
+| `semaphore-blocking-acquire` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | `Semaphore.acquire`, `Semaphore.acquire_timeout` | Pass | — | Owned permit acquisition with cancellation and shared-wheel deadlines |
 | `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative coroutine suspension, including within actor handlers |
 | `timers-every` | `#[every(duration)]` periodic handlers | Timer operations | Warn (`PeriodicTimers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative periodic dispatch on WASI and checked periodic handlers in the browser VM |
 | `streams` | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pass | — | Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified |
@@ -112,8 +112,8 @@ where available, a supported alternative. In particular:
 - Single-process actors and in-memory pipes run on Tier 2. Supervision trees,
   links and monitors, structured task scopes, and `select` require runtime
   modules excluded from wasm32.
-- Use `Semaphore.try_acquire` for non-blocking coordination. The blocking
-  `acquire` methods have no cooperative WASM wait path.
+- Semaphore acquisition releases the worker while waiting. Timed acquisition
+  and cancellation use the same owned permit operation on native and WASI.
 - File and socket streams depend on the native I/O reactor. Networking,
   subprocess, and distributed-node APIs are native-only.
 - `crypto.random_bytes`, encryption, and signing require native cryptographic

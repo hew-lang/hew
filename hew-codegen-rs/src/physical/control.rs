@@ -64,6 +64,14 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 cancel,
                 unwind,
             } => self.emit_service_acquire(*actor, *export, args, *result, normal, cancel, unwind),
+            PhysicalTerminator::SemaphoreAcquire {
+                operation,
+                args,
+                result,
+                normal,
+                cancel,
+                unwind,
+            } => self.emit_semaphore_acquire(*operation, args, *result, normal, cancel, unwind),
             PhysicalTerminator::NativeIo {
                 operation,
                 args,

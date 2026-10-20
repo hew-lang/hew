@@ -711,21 +711,24 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
 }
 
 /// A native coroutine observes one stable role without blocking the driver.
-/// The pin keeps the supervisor allocation live until cancellation or the
-/// resumed coroutine releases this observation.
+/// The root pin stays live until cancellation or completion; nested owners are
+/// resolved afresh because their allocations can be replaced while waiting.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct HewNativeRestartWait {
-    pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    root_pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    /// Stable supervisor-role tokens and their slots, from root to owner.
+    owner_path: Vec<(crate::lifetime::local_handles::HewLocalPidId, u32)>,
     slot: u32,
     nested: bool,
-    _waker: Arc<crate::wake::OwnedWaker>,
+    waker: Arc<crate::wake::OwnedWaker>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for HewNativeRestartWait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewNativeRestartWait")
-            .field("has_supervisor", &self.pin.is_some())
+            .field("has_supervisor", &self.root_pin.is_some())
+            .field("owner_depth", &self.owner_path.len())
             .field("slot", &self.slot)
             .field("nested", &self.nested)
             .finish_non_exhaustive()
@@ -747,16 +750,32 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
 ) -> *mut HewNativeRestartWait {
     // SAFETY: the caller keeps its wake descriptor live during retention.
     let waker = Arc::new(unsafe { crate::wake::OwnedWaker::retain(&*waker) });
-    let pin = crate::lifetime::local_handles::pin_current_supervisor(owner);
-    if let Some(pin) = &pin {
-        // SAFETY: the pin retains the supervisor through registration.
+    let mut root = owner;
+    let mut owner_path = Vec::new();
+    while let Some((parent, parent_slot, kind)) =
+        crate::lifetime::local_handles::current_actor_role_owner_slot(root)
+    {
+        if kind != crate::lifetime::local_handles::SupervisorRoleKind::Supervisor {
+            root = crate::lifetime::local_handles::HewLocalPidId::INVALID;
+            break;
+        }
+        owner_path.push((root, parent_slot));
+        root = parent;
+    }
+    owner_path.reverse();
+    let root_pin = crate::lifetime::local_handles::pin_current_supervisor(root);
+    if let Some(pin) = &root_pin {
+        // Register before the first readiness check. A parent publishes its
+        // replacement on this root even if the nested owner has retired.
+        // SAFETY: the root pin retains the supervisor through registration.
         unsafe { &(*pin.supervisor()).native_restart_wakers }.register(&waker);
     }
     Box::into_raw(Box::new(HewNativeRestartWait {
-        pin,
+        root_pin,
+        owner_path,
         slot,
         nested: role_kind == ROLE_KIND_SUPERVISOR,
-        _waker: waker,
+        waker,
     }))
 }
 
@@ -805,11 +824,42 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
 ) -> c_int {
     // SAFETY: the caller owns the wait until it is freed.
     let wait = unsafe { &*wait };
-    let Some(pin) = &wait.pin else {
+    let Some(root_pin) = &wait.root_pin else {
         return 1;
     };
-    let sup = pin.supervisor();
-    // SAFETY: the pin retains the supervisor for this lookup.
+    let mut sup = root_pin.supervisor();
+    let mut owner_pins = Vec::with_capacity(wait.owner_path.len());
+    let mut current_role = None;
+    for (role, slot) in &wait.owner_path {
+        // Register at every current ancestor before inspecting its child.
+        // When this ancestor is replaced, its parent registration wakes us;
+        // when its own child changes, this registration wakes us.
+        // SAFETY: root_pin or owner_pin retains this supervisor.
+        unsafe { &(*sup).native_restart_wakers }.register(&wait.waker);
+        // SAFETY: root_pin or owner_pin retains this supervisor.
+        let current = unsafe { hew_supervisor_nested_get(sup, *slot) };
+        if !restart_wait_owner_is_current(current_role, sup) {
+            return 0;
+        }
+        if current.tag != 0 {
+            // A closing nested owner is an old incarnation. Its parent still
+            // owns the role ruling; only a live owner's spent slot is final.
+            return c_int::from(
+                current.tag == 2 && (current_role.is_none() || !restart_wait_owner_ending(sup)),
+            );
+        }
+        let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(*role) else {
+            return 0;
+        };
+        sup = pin.supervisor();
+        owner_pins.push(pin);
+        current_role = Some(*role);
+    }
+    // Register the current leaf owner before checking its role. This also
+    // covers a replacement that happened between registration and traversal.
+    // SAFETY: root_pin or owner_pin retains this supervisor.
+    unsafe { &(*sup).native_restart_wakers }.register(&wait.waker);
+    // SAFETY: root_pin or owner_pin retains the supervisor for this lookup.
     let current = unsafe {
         if wait.nested {
             hew_supervisor_nested_get(sup, wait.slot)
@@ -817,10 +867,16 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
             hew_supervisor_child_get(sup, wait.slot)
         }
     };
-    if current.tag == 2 {
-        return 1;
+    if !restart_wait_owner_is_current(current_role, sup) {
+        return 0;
     }
-    // SAFETY: the pin retains the supervisor and its stable local identity.
+    if current.tag == 2 {
+        return c_int::from(wait.owner_path.is_empty() || !restart_wait_owner_ending(sup));
+    }
+    if current.tag != 0 {
+        return 0;
+    }
+    // SAFETY: root_pin or owner_pin retains this supervisor and its identity.
     let owner = unsafe { (*sup).local_pid_id };
     let role = RoleKey {
         owner,
@@ -831,6 +887,25 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
         role_holds_running_incarnation(sup, wait.slot, wait.nested)
             && !crate::exit_status::role_has_unsettled_fault(role),
     )
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn restart_wait_owner_ending(sup: *mut HewSupervisor) -> bool {
+    // SAFETY: the caller holds a supervisor pin through both atomic reads.
+    unsafe {
+        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn restart_wait_owner_is_current(
+    role: Option<crate::lifetime::local_handles::HewLocalPidId>,
+    sup: *mut HewSupervisor,
+) -> bool {
+    role.is_none_or(|role| {
+        crate::lifetime::local_handles::pin_current_supervisor(role)
+            .is_some_and(|pin| pin.supervisor() == sup)
+    })
 }
 
 /// Detach a native restart observer, releasing its supervisor pin and wake.

@@ -549,94 +549,6 @@ impl LowerCtx {
         (state_bindings, params, body)
     }
 
-    /// Lower a `receive gen fn` handler body into a generator-shell block.
-    ///
-    /// Mirrors `lower_actor_body` for state-field/param binding and scope
-    /// handling, but lowers the body with the declared yield type pushed onto
-    /// `generator_yield_tys` (so `yield` inside the body resolves its enclosing
-    /// Yield type) and wraps the result in a `HirExprKind::GenBlock` tail typed
-    /// `Generator<Yield = T, Return = Unit>`. The `yield_ty` is the handler's
-    /// declared element type; the body falls off the end with Unit. This is the
-    /// actor-path analogue of `lower_generator_fn_body`.
-    pub(super) fn lower_actor_generator_body(
-        &mut self,
-        state_fields: &[HirField],
-        params: &[Param],
-        body: &Block,
-        yield_ty: ResolvedTy,
-        span: &Span,
-    ) -> (Vec<HirBinding>, Vec<HirBinding>, HirBlock) {
-        let gen_return_ty = ResolvedTy::Unit;
-        let saved_scope_depth = self.scope_depth;
-        self.scope_depth = 0;
-        self.push_scope();
-        let mut state_field_bindings: HashSet<BindingId> = HashSet::new();
-        let mut state_bindings = Vec::with_capacity(state_fields.len());
-        for (index, field) in state_fields.iter().enumerate() {
-            let binding = self.bind_actor_state_field(field, index);
-            state_field_bindings.insert(binding.id);
-            state_bindings.push(binding);
-        }
-        let params = params.iter().map(|p| self.bind_actor_param(p)).collect();
-
-        // Snapshot the enclosing scope (state fields + params, just bound
-        // above) BEFORE lowering the body, mirroring `lower_generator_fn_body`
-        // — only enclosing-frame bindings are capture candidates, never a
-        // body-local `let`/`var`.
-        let outer_bindings = self.visible_outer_bindings();
-
-        self.generator_yield_tys.push(yield_ty.clone());
-        let gen_body = self.with_current_return_type(gen_return_ty.clone(), |ctx| {
-            ctx.lower_block(body, &gen_return_ty)
-        });
-        self.generator_yield_tys.pop();
-
-        self.pop_scope();
-        self.scope_depth = saved_scope_depth;
-
-        // Handler params and read state fields are both free variables of the
-        // gen body from the synthesised `__hew_gen_body_*` builder's point of
-        // view; `collect_gen_captures` finds both through the same walk. Tag
-        // state-field captures so MIR (`lower_gen_block`) knows to snapshot
-        // them via `ActorStateFieldLoad` rather than a plain local read —
-        // the checker/HIR-recorded discriminator MIR must consume instead of
-        // re-deriving gen-ness from the binding's name (`type-info-survival`).
-        let mut captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
-        for capture in &mut captures {
-            if state_field_bindings.contains(&capture.binding) {
-                capture.source = HirGenCaptureSource::ActorStateField;
-            }
-        }
-
-        let generator_ty = ResolvedTy::Named {
-            args: vec![yield_ty.clone(), gen_return_ty.clone()],
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
-            is_opaque: false,
-        };
-        let gen_block_expr = HirExpr {
-            node: self.ids.node(),
-            site: self.ids.site(),
-            ty: generator_ty.clone(),
-            intent: IntentKind::Read,
-            kind: HirExprKind::GenBlock {
-                body: gen_body,
-                yield_ty,
-                return_ty: gen_return_ty,
-                captures,
-            },
-            span: span.clone(),
-        };
-        let wrapped = HirBlock {
-            node: self.ids.node(),
-            scope: self.ids.scope(),
-            statements: Vec::new(),
-            tail: Some(Box::new(gen_block_expr)),
-            ty: generator_ty,
-            span: span.clone(),
-        };
-        (state_bindings, params, wrapped)
-    }
-
     pub(super) fn lower_actor_receive_fn(
         &mut self,
         rf: &ReceiveFnDecl,
@@ -653,24 +565,14 @@ impl LowerCtx {
             return_ty.clone()
         };
         let (state_bindings, params, body) = if rf.is_generator {
-            // A `receive gen fn` lowers its body through the same `GenBlock`
-            // generator-shell path a standalone `gen fn` uses
-            // (`lower_generator_fn_body`): the declared `-> T` is the Yield
-            // element type, the body falls off the end with Unit, and the
-            // handler value is `Generator<Yield = T, Return = Unit>`. We push
-            // the yield type onto `generator_yield_tys` around the body lower
-            // so any `yield` inside the body resolves its enclosing yield type
-            // (the gap was an empty stack here → "no enclosing generator yield
-            // type"), then wrap the lowered body in a `HirExprKind::GenBlock`
-            // tail so MIR lowers it through the `Terminator::Yield`
-            // state-machine path rather than bailing out.
-            self.lower_actor_generator_body(
-                state_fields,
-                &rf.params,
-                &rf.body,
-                return_ty.clone(),
-                &rf.span,
-            )
+            // A producer is an exclusive actor turn. Its body uses the same
+            // live state bindings as an ordinary receive; yields send through
+            // the turn's sink instead of constructing a capture environment.
+            self.generator_yield_tys.push(return_ty.clone());
+            let lowered =
+                self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);
+            self.generator_yield_tys.pop();
+            lowered
         } else {
             let (state_bindings, params, mut body) =
                 self.lower_actor_body(state_fields, &rf.params, &rf.body, &body_expected_ty);

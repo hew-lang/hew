@@ -294,11 +294,11 @@ impl LowerCtx {
         // into a same-named function or constructor. Binding names serve only
         // as a negative boundary check here; they never select an identity.
         if !self.resolutions.contains_key(&key)
-            && self
-                .binding_scopes
-                .iter()
-                .rev()
-                .any(|scope| scope.values().any(|(bound_name, _, _)| bound_name == name))
+            && self.binding_scopes.iter().rev().any(|scope| {
+                scope
+                    .values()
+                    .any(|(bound_name, _, _, _)| bound_name == name)
+            })
         {
             self.diagnostics.push(HirDiagnostic::new(
                 HirDiagnosticKind::CheckerBoundaryViolation {
@@ -398,8 +398,7 @@ impl LowerCtx {
         }
         // A bare constant an import published into THIS file's scope. The
         // checker recorded the exact declaring owner per importing file, so a
-        // file the root spliced in resolves its own `import lib.{ LIB_K };`
-        // here and a file that never wrote that import does not see `LIB_K`.
+        // file that never wrote `import lib.{ LIB_K };` does not see `LIB_K`.
         if let Some(entry) = self
             .published_bare_const_owners
             .get(&(
@@ -409,7 +408,7 @@ impl LowerCtx {
             ))
             .filter(|owners| owners.len() == 1)
             .and_then(|owners| owners.iter().next())
-            .and_then(|owner| self.const_registry.get(self.published_const_key(owner)))
+            .and_then(|owner| self.const_registry.get(owner))
             .cloned()
         {
             let ty = entry.ty.clone();

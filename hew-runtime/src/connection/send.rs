@@ -195,12 +195,27 @@ pub(crate) fn claim_send_to_location(
 
 pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
-    conn_id: c_int,
     route_slot: u16,
     publication: Option<u64>,
 ) -> Option<SendClaim> {
+    if route_slot == 0 {
+        return None;
+    }
+    // A predecessor may remain active while its successor publishes. Select
+    // the authoritative claim, then revalidate it after releasing this lock.
+    let conn_id = manager
+        .claims
+        .0
+        .lock_or_recover()
+        .values()
+        .find(|owner| {
+            owner.state == ClaimState::Published
+                && owner.route_slot == route_slot
+                && publication.is_none_or(|token| owner.publication_token == token)
+        })?
+        .conn_id;
     let claim = claim_send(manager, conn_id, publication)?;
-    (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
+    (claim.route_slot == route_slot).then_some(claim)
 }
 
 pub(super) unsafe fn send_preencoded_on_manager(
@@ -245,16 +260,17 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded_claimed(
     unsafe { send_preencoded_on_manager(&*mgr, conn_id, publication_token, data, len) }
 }
 
-/// Return the connection ID of the first active connection whose handshake
-/// identified the peer as `node_id`. Returns -1 if not found.
-///
-/// Used by `send_reply_envelope` on the accepting side where `conn_by_node`
-/// is not populated (only the initiating side calls `hew_node_connect`).
+/// Inspect the first active physical connection to `node_id` in a test.
+/// Returns -1 if no active transport exists; this does not select a route owner.
 ///
 /// # Safety
 ///
 /// `mgr` must be a valid pointer for the duration of the call.
-pub(crate) unsafe fn hew_connmgr_conn_id_for_node(mgr: *const HewConnMgr, node_id: u16) -> c_int {
+#[cfg(test)]
+pub(crate) unsafe fn first_active_connection_for_test(
+    mgr: *const HewConnMgr,
+    node_id: u16,
+) -> c_int {
     if mgr.is_null() {
         return -1;
     }

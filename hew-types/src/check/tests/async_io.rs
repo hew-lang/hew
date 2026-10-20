@@ -258,3 +258,39 @@ fn main() {}
     assert!(plain.errors.is_empty(), "{:?}", plain.errors);
     assert!(!suspends(&plain, &parked));
 }
+
+#[test]
+fn semaphore_waits_require_canonical_extern_identity_and_publish_suspension() {
+    let source = r#"
+#[opaque]
+type SemaphoreHandle {}
+extern "C" {
+    fn hew_semaphore_acquire(handle: SemaphoreHandle);
+    fn hew_semaphore_acquire_timeout(handle: SemaphoreHandle, timeout_ms: i64) -> bool;
+}
+pub fn acquire(handle: SemaphoreHandle) { unsafe { hew_semaphore_acquire(handle) }; }
+pub fn acquire_timeout(handle: SemaphoreHandle, timeout_ms: i64) -> bool {
+    unsafe { hew_semaphore_acquire_timeout(handle, timeout_ms) }
+}
+"#;
+    let output =
+        super::check_source_in_canonical_std_module(source, &["std".into(), "semaphore".into()]);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for (method, operation) in [
+        ("acquire", crate::runtime_call::SemaphoreOp::Acquire),
+        (
+            "acquire_timeout",
+            crate::runtime_call::SemaphoreOp::AcquireTimeout,
+        ),
+    ] {
+        assert!(suspends(&output, &format!("std.semaphore.{method}")));
+        assert!(output.direct_call_targets.values().any(|target| *target
+            == crate::CallTarget::Runtime(crate::RuntimeCallFamily::Semaphore(operation))));
+    }
+    let user = check_source(source);
+    assert!(user.errors.is_empty(), "{:?}", user.errors);
+    assert!(user.direct_call_targets.values().all(|target| !matches!(
+        target,
+        crate::CallTarget::Runtime(crate::RuntimeCallFamily::Semaphore(_))
+    )));
+}

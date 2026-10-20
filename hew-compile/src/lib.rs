@@ -525,9 +525,8 @@ impl Session {
         program: &hew_parser::ast::Program,
         tco: &hew_types::TypeCheckOutput,
     ) -> Result<Vec<hew_types::DefId>, SessionError> {
-        // File imports are appended for body lowering after checking. Their
-        // public declarations remain imports, with their own source identities,
-        // rather than becoming authored root exports through flattening.
+        // A file import's public declarations remain imports, with their own
+        // source identities, rather than authored root exports.
         let root_items = program
             .module_graph
             .as_ref()
@@ -2254,26 +2253,71 @@ fn source_contains_regex_literal(source: &str) -> bool {
         .any(|(token, _)| matches!(token, hew_lexer::Token::RegexLiteral(_)))
 }
 
+/// A quoted file's identity is relative to the root source directory. Parent
+/// steps and exceptional filesystem components occupy disjoint namespaces,
+/// while ordinary Hew file and directory names remain readable.
 fn module_id_from_file(source_dir: &Path, canonical_path: &Path) -> hew_parser::module::ModulePath {
-    let without_ext = canonical_path.with_extension("");
-    let rel = without_ext.strip_prefix(source_dir).unwrap_or(&without_ext);
-    let mut segments = rel
-        .iter()
-        .filter_map(|segment| segment.to_str())
-        .map(std::string::ToString::to_string)
-        .collect::<Vec<_>>();
+    use std::path::Component;
 
-    if segments.is_empty() {
-        segments.push(
-            canonical_path
-                .file_stem()
-                .and_then(|segment| segment.to_str())
-                .unwrap_or("unknown")
-                .to_string(),
-        );
+    let base: Vec<_> = source_dir.components().collect();
+    let target: Vec<_> = canonical_path.components().collect();
+    // Compare the full filename: stripping its extension here would confuse
+    // a sibling `app.hew` with the root directory named `app`.
+    let shared = base.iter().zip(&target).take_while(|(a, b)| a == b).count();
+    let mut segments: Vec<String> = if shared == 0 {
+        Vec::new()
+    } else {
+        base[shared..]
+            .iter()
+            .filter(|component| matches!(component, Component::Normal(_)))
+            .map(|_| "super".to_string())
+            .collect()
+    };
+    for (index, component) in target.iter().enumerate().skip(shared) {
+        let segment = match component {
+            Component::Normal(name) if index + 1 == target.len() => {
+                if canonical_path
+                    .extension()
+                    .is_some_and(|extension| extension == "hew")
+                {
+                    file_module_segment(canonical_path.file_stem().expect("source filename"))
+                } else {
+                    escaped_file_module_segment("source", name)
+                }
+            }
+            Component::Normal(name) => file_module_segment(name),
+            Component::Prefix(prefix) => escaped_file_module_segment("volume", prefix.as_os_str()),
+            Component::RootDir => "__hew_file_root".to_string(),
+            Component::ParentDir => "super".to_string(),
+            Component::CurDir => continue,
+        };
+        segments.push(segment);
     }
-
     hew_parser::module::ModulePath::new(segments)
+}
+
+fn file_module_segment(component: &std::ffi::OsStr) -> String {
+    if let Some(name) = component.to_str() {
+        let mut tokens = hew_lexer::Lexer::new(name);
+        if name != "super"
+            && !name.starts_with("__hew_file_")
+            && matches!(tokens.next(), Some((hew_lexer::Token::Identifier(_), span)) if span.start == 0 && span.end == name.len())
+            && tokens.next().is_none()
+        {
+            return name.to_string();
+        }
+    }
+    escaped_file_module_segment("name", component)
+}
+
+fn escaped_file_module_segment(kind: &str, component: &std::ffi::OsStr) -> String {
+    use std::fmt::Write;
+
+    let mut segment = format!("__hew_file_{kind}_");
+    for byte in component.as_encoded_bytes() {
+        write!(segment, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    segment
 }
 
 /// The standard-library roots a run resolves `std.*` from, in the spelling
@@ -2301,9 +2345,10 @@ fn package_module_path(name: &str) -> ModulePath {
 }
 
 /// The anchor of `file` (spec 3.5.1): the std root for a file under
-/// `<std root>/std/`, otherwise the nearest directory at or above the file
-/// holding `hew.toml`, otherwise none. A path that is not absolute names no
-/// file on disk (an editor or browser buffer) and has no package.
+/// `<std root>/std/`, otherwise the nearest manifest if it declares `[package]`.
+/// A virtual workspace is a search boundary, not a package anchor. A path
+/// that is not absolute names no file on disk (an editor or browser buffer)
+/// and has no package.
 fn anchor_for(
     file: &Path,
     std_roots: &[PathBuf],
@@ -2323,12 +2368,13 @@ fn anchor_for(
     else {
         return Ok(ModuleAnchor::Loose);
     };
-    let name = load_manifest_from(dir, documents)?
-        .and_then(|manifest| manifest.package)
-        .map(|package| package_module_path(&package.name));
+    let Some(package) = load_manifest_from(dir, documents)?.and_then(|manifest| manifest.package)
+    else {
+        return Ok(ModuleAnchor::Loose);
+    };
     Ok(ModuleAnchor::Package {
         dir: dir.to_path_buf(),
-        name,
+        name: Some(package_module_path(&package.name)),
     })
 }
 
@@ -2791,9 +2837,7 @@ fn build_module_graph_with_diagnostics(
     // `bank$Account` — so `spawn bank.Account { ... }` and `spawn
     // store.Account(...)` bind their own handlers/state/drop glue.  Within one
     // module there is no qualifier left to tell two same-named actors apart,
-    // so that case stays a hard error.  Runs before
-    // `flatten_file_import_items`, so each actor still lives in exactly one
-    // module here.
+    // so that case stays a hard error.
     if let Err(msg) = check_duplicate_actor_layout_names(&graph) {
         return Err(FrontendFailure::message_only(msg));
     }
@@ -2977,9 +3021,7 @@ fn check_ambiguous_module_import_bindings(
 /// same-named actors from DIFFERENT modules are legal and keep distinct
 /// layouts, handle types, and native symbols.  Within one module the
 /// qualified identities collide — `bank.Account` twice — and no spawn
-/// spelling could tell them apart, so that shape stays a hard error.  The
-/// guard runs at graph-build time (before file-import flattening), so each
-/// actor lives in exactly one module here.
+/// spelling could tell them apart, so that shape stays a hard error.
 fn check_duplicate_actor_layout_names(
     graph: &hew_parser::module::ModuleGraph,
 ) -> Result<(), String> {
@@ -3031,14 +3073,6 @@ pub fn build_module_graph(
 ) -> Result<hew_parser::module::ModuleGraph, FrontendFailure> {
     let mut diagnostics = Vec::new();
     build_module_graph_with_diagnostics(source_file, items, module_doc, ctx, &mut diagnostics)
-}
-
-fn flatten_file_import_items(program: &mut Program) {
-    let extra: Vec<Spanned<Item>> = hew_parser::module::file_import_spliced_items(&program.items)
-        .into_iter()
-        .map(|(item, _)| item.clone())
-        .collect();
-    program.items.extend(extra);
 }
 
 /// The graph node already assembled from `source`, if the walk reached that
@@ -4313,16 +4347,6 @@ fn run_frontend_after_parse_with_dependency_cache(
         }
     }
 
-    if let Some(normalized) = state
-        .typecheck_result
-        .as_mut()
-        .and_then(|result| result.tco.as_mut())
-        .and_then(|tco| tco.normalized_program.as_mut())
-    {
-        flatten_file_import_items(&mut std::sync::Arc::make_mut(normalized).program);
-    } else {
-        flatten_file_import_items(&mut state.program);
-    }
     let stdlib_roots = configured_stdlib_roots(options);
     retain_user_facing_diagnostics(input, &stdlib_roots, &mut state.diagnostics);
     state
@@ -4749,6 +4773,84 @@ mod tests {
     fn write_lockfile(dir: &Path, content: &str) {
         let mut file = File::create(dir.join("hew.lock")).expect("create hew.lock");
         file.write_all(content.as_bytes()).expect("write hew.lock");
+    }
+
+    /// A quoted import above the root file's directory is named relative to
+    /// it, never by the absolute path of the checkout.
+    #[test]
+    fn file_module_ids_are_relative_to_the_root_directory() {
+        let root = Path::new("/work/project/app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file)).dotted();
+        assert_eq!(id("/work/project/app/main.hew"), "main");
+        assert_eq!(id("/work/project/app/x/util.hew"), "x.util");
+        assert_eq!(id("/work/project/a/util.hew"), "super.a.util");
+        assert_eq!(id("/work/other/b/util.hew"), "super.super.other.b.util");
+    }
+
+    #[test]
+    fn file_module_ids_preserve_exceptional_components_and_relocation() {
+        let root = Path::new("/work/project/app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file));
+        assert_ne!(
+            id("/work/project/util.hew"),
+            id("/work/project/app/super/util.hew")
+        );
+        assert_ne!(
+            id("/work/project/app/super/util.hew"),
+            id("/work/project/app/__hew_file_name_7375706572/util.hew")
+        );
+        assert_ne!(
+            id("/work/project/app/a.b/util.hew"),
+            id("/work/project/app/a/b/util.hew")
+        );
+        assert_ne!(id("/work/project/app.hew"), id("/work/project/app/app.hew"));
+        assert_eq!(id("/work/project/app.hew").dotted(), "super.app");
+        assert_ne!(
+            id("/work/project/app/util.hew"),
+            id("/work/project/app/util.txt")
+        );
+        assert_ne!(
+            id("/work/project/app/util.hew"),
+            id("/work/project/app/util")
+        );
+        assert_eq!(
+            id("/work/project/lib/util.hew"),
+            super::module_id_from_file(
+                Path::new("/another/checkout/app"),
+                Path::new("/another/checkout/lib/util.hew")
+            )
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn file_module_ids_preserve_non_utf8_components() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = Path::new("/work/app");
+        let file = |byte| {
+            root.join(std::ffi::OsString::from_vec(vec![byte]))
+                .join("util.hew")
+        };
+        let first = super::module_id_from_file(root, &file(0xff));
+        assert_ne!(first, super::module_id_from_file(root, &file(0xfe)));
+        assert_ne!(
+            first,
+            super::module_id_from_file(root, &root.join("util.hew"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn file_module_ids_preserve_windows_volume_and_unc_prefixes() {
+        let root = Path::new(r"C:\work\app");
+        let id = |file: &str| super::module_id_from_file(root, Path::new(file));
+        assert_ne!(id(r"D:\other\util.hew"), id(r"E:\other\util.hew"));
+        assert_ne!(id(r"\\host\one\util.hew"), id(r"\\host\two\util.hew"));
+        assert_ne!(
+            id(r"D:\other\util.hew"),
+            id(r"C:\work\app\D\other\util.hew")
+        );
+        assert_eq!(id(r"C:\work\lib\util.hew").dotted(), "super.lib.util");
     }
 
     /// A diagnostic label must name the file the way the user did, never
@@ -5377,6 +5479,44 @@ mod tests {
     }
 
     #[test]
+    fn virtual_workspaces_preserve_loose_file_membership() {
+        let dir = tempfile::tempdir().expect("create loose-file fixture");
+        let model = dir.path().join("model");
+        fs::create_dir(&model).expect("create same-stem directory");
+        let entry = write_source(&model, "model.hew", "pub fn answer() -> i64 { 42 }\n");
+        let peer = write_source(&model, "peer.hew", "fn broken() -> i64 { \"wrong\" }\n");
+        for manifest in [None, Some("[workspace]\nmembers = []\n")] {
+            if let Some(manifest) = manifest {
+                write_toml(dir.path(), manifest);
+            }
+            check_file(&entry, &FrontendOptions::default())
+                .expect("loose entry must not include a sibling's type error");
+            let failure = check_file(&peer, &FrontendOptions::default())
+                .expect_err("checking the loose sibling must report its own type error");
+            assert!(failure.diagnostics.iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                FrontendDiagnosticKind::Type(error)
+                    if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. })
+            )));
+        }
+
+        write_package_manifest(dir.path());
+        let failure = check_file(&entry, &FrontendOptions::default())
+            .expect_err("an actual package's entry must include its peer's type error");
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .filename
+                .as_deref()
+                .is_some_and(|file| Path::new(file).ends_with(Path::new("model").join("peer.hew")))
+                && matches!(
+                    &diagnostic.kind,
+                    FrontendDiagnosticKind::Type(error)
+                        if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. })
+                )
+        }));
+    }
+
+    #[test]
     fn checking_a_directory_module_file_checks_the_whole_module() {
         let (_dir, entry, peer) = forge_package("");
         for input in [&entry, &peer] {
@@ -5854,12 +5994,10 @@ mod tests {
         );
     }
 
-    /// The same rule across the other namespace that assembles from several
-    /// files: a file import flattens into the root, so a name the root and the
-    /// imported file both declare collides there too, and the report must not
-    /// double up when the item is inventoried through more than one route.
+    /// A file import is its own module: a private type it declares and a root
+    /// type of the same name are distinct declarations, not a collision.
     #[test]
-    fn a_root_and_its_file_import_claiming_one_name_report_one_duplicate() {
+    fn a_root_type_and_a_private_file_import_type_share_a_name() {
         let dir = tempfile::tempdir().expect("create file-import fixture");
         write_source(
             dir.path(),
@@ -5872,24 +6010,8 @@ mod tests {
             "import \"lib.hew\";\n\ntype Point {\n    y: i64;\n}\n\nfn main() {\n    let p = Point { y: 2 };\n    println(p.y + lib_point());\n}\n",
         );
 
-        let failure = check_file(&input, &FrontendOptions::default())
-            .expect_err("a root and its file import cannot both declare `Point`");
-        let duplicates = failure
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| {
-                matches!(
-                    &diagnostic.kind,
-                    FrontendDiagnosticKind::Type(error)
-                        if error.kind == hew_types::error::TypeErrorKind::DuplicateDefinition
-                )
-            })
-            .count();
-        assert_eq!(
-            duplicates, 1,
-            "one collision must produce one report: {:#?}",
-            failure.diagnostics
-        );
+        check_file(&input, &FrontendOptions::default())
+            .expect("a private file-import type does not collide with a root type");
     }
 
     /// Negative control for the rule above: an `extern "C"` symbol declared by
@@ -5962,7 +6084,7 @@ mod tests {
     }
 
     #[test]
-    fn source_roots_keep_authored_exports_after_file_import_flattening() {
+    fn source_roots_keep_authored_exports_beside_file_imports() {
         let dir = tempfile::tempdir().expect("create source-root fixture");
         write_source(dir.path(), "helper.hew", "fn hidden() -> string { \"owned\".to_upper() } pub fn imported() -> string { hidden() }");
         let input = write_source(
@@ -5996,13 +6118,11 @@ mod tests {
         }
     }
 
-    /// A file-imported item reaches HIR lowering on two surfaces: its file's
-    /// module-graph entry and, after `flatten_file_import_items`, the root
-    /// `Program::items`. The checker must have minted ONE declaration for it,
-    /// and that identity is the one the call site and the lowered HIR item
-    /// carry; a second root-owned mint would split every downstream join.
+    /// A file-imported item lives in its file's module-graph entry only. The
+    /// checker mints ONE declaration for it, and that identity is the one the
+    /// call site and the lowered HIR item carry.
     #[test]
-    fn flattened_file_import_declares_one_identity_per_item() {
+    fn file_import_declares_one_identity_per_item() {
         let dir = tempfile::tempdir().expect("create file-import fixture dir");
         write_source(
             dir.path(),
@@ -6031,9 +6151,9 @@ mod tests {
         });
         let in_root_items = state.program.items.iter().any(|(item, _)| is_helper(item));
         assert!(
-            in_graph && in_root_items,
-            "the fixture must present the helper on both checker surfaces \
-             (graph: {in_graph}, flattened root items: {in_root_items})"
+            in_graph && !in_root_items,
+            "the helper belongs to its file's module, not the root \
+             (graph: {in_graph}, root items: {in_root_items})"
         );
 
         let minted: Vec<hew_types::DefId> = tco
@@ -6075,22 +6195,164 @@ mod tests {
             "file-import fixture must lower without HIR diagnostics: {:#?}",
             hir.diagnostics
         );
-        let lowered: Vec<hew_types::DefId> = hir
+        let lowered: Vec<_> = hir
             .module
             .items
             .iter()
             .filter_map(|item| match item {
-                hew_hir::HirItem::Function(function) if function.name == "helper_value" => {
-                    Some(function.declaration)
+                hew_hir::HirItem::Function(function) if function.declaration == minted[0] => {
+                    Some(function)
                 }
                 _ => None,
             })
             .collect();
         assert_eq!(
-            lowered,
-            vec![minted[0]],
+            lowered.len(),
+            1,
             "HIR must lower the helper once, under the checker-minted identity"
         );
+        assert_eq!(lowered[0].name, "helper$helper_value");
+    }
+
+    #[test]
+    fn selective_machine_import_tracks_bare_state_references() {
+        let dir = tempfile::tempdir().expect("create machine import fixture");
+        write_source(
+            dir.path(),
+            "m.hew",
+            "pub machine Light { events { Flip; } state On; state Off; \
+             on Flip: On => Off; on Flip: Off => On; }",
+        );
+        for (body, expects_unused) in [
+            ("var s = Light.On; s = Light.Off; print(\"ok\");", false),
+            ("print(\"ok\");", true),
+        ] {
+            let input = write_source(
+                dir.path(),
+                "main.hew",
+                &format!("import m.{{ Light }};\nfn main() {{ {body} }}\n"),
+            );
+            let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+                .expect("machine import fixture must type-check");
+            let facts = state.typecheck_result.tco.as_ref().expect("type facts");
+            assert!(facts.errors.is_empty(), "{:#?}", facts.errors);
+            assert_eq!(
+                facts.warnings.iter().any(|warning| {
+                    warning.kind == hew_types::error::TypeErrorKind::UnusedImport
+                }),
+                expects_unused,
+                "bare state references must credit only a used import: {:#?}",
+                facts.warnings
+            );
+        }
+    }
+
+    #[test]
+    fn quoted_file_imports_keep_private_function_symbols_by_source() {
+        for (imports, main_body, expected) in [
+            (
+                "import \"a.hew\";",
+                "fn main() { assert(f() == 1); }",
+                vec!["a$f", "a$main", "main"],
+            ),
+            (
+                "import \"a.hew\"; import \"b.hew\";",
+                "fn main() { assert(a_api() + b_api() == 3); }",
+                vec!["a$helper", "b$helper", "a$a_api", "b$b_api", "main"],
+            ),
+        ] {
+            let dir = tempfile::tempdir().expect("create quoted import fixture");
+            if expected.len() == 3 {
+                write_source(
+                    dir.path(),
+                    "a.hew",
+                    "pub fn f() -> i64 { main(); 1 } fn main() {}",
+                );
+            } else {
+                write_source(
+                    dir.path(),
+                    "a.hew",
+                    "fn helper() -> i64 { 1 } pub fn a_api() -> i64 { helper() }",
+                );
+                write_source(
+                    dir.path(),
+                    "b.hew",
+                    "fn helper() -> i64 { 2 } pub fn b_api() -> i64 { helper() }",
+                );
+            }
+            let input = write_source(dir.path(), "main.hew", &format!("{imports}\n{main_body}\n"));
+            let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+                .expect("quoted import fixture must type-check");
+            let tco = state.typecheck_result.tco.as_ref().expect("type facts");
+            let hir = hew_hir::lower_program(
+                &state.program,
+                tco,
+                &hew_hir::ResolutionCtx,
+                hew_hir::TargetArch::host(),
+            );
+            assert!(hir.diagnostics.is_empty(), "{:#?}", hir.diagnostics);
+            let names: Vec<_> = hir
+                .module
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    hew_hir::HirItem::Function(function) => Some(function.name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            for symbol in expected {
+                assert!(names.contains(&symbol), "missing `{symbol}` in {names:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn dotted_imported_impl_with_iterator_has_a_callable_body() {
+        let dir = tempfile::tempdir().expect("create imported method fixture");
+        write_source(
+            dir.path(),
+            "modp3.hew",
+            "pub type T { xs: Vec<f64>; }\n\
+             impl T { pub fn a(self) -> f64 { var sum = 0.0;\
+                 for i in (0..self.xs.len()).rev() { sum += self.xs[i]; } sum } }\n\
+             pub fn mk() -> T { T { xs: [1.0, 2.0] } }\n",
+        );
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "import modp3; fn main() { let value = modp3.mk(); assert(value.a() == 3.0); }",
+        );
+        let state = run_file_frontend_to_typecheck(&input, &FrontendOptions::default())
+            .expect("imported method fixture must type-check");
+        let tco = state.typecheck_result.tco.as_ref().expect("type facts");
+        let declaration = tco
+            .defs
+            .declarations()
+            .map(|(_, declaration)| declaration)
+            .find(|declaration| {
+                tco.defs.kind(*declaration) == hew_types::DeclarationKind::ImplMethod
+                    && tco.defs.name(*declaration) == hew_types::Symbol::intern("a")
+                    && tco.defs.path(*declaration).starts_with("modp3.")
+            })
+            .expect("checked method identity");
+        assert!(
+            tco.imported_impl_body_facts.contains_key(&declaration),
+            "a Range adapter has no runtime callee and cannot suppress its enclosing body"
+        );
+        let output = Session::new(SessionTarget::native(), DiagnosticPolicy::default())
+            .lower_program(&state.program, tco)
+            .expect("selected imported method must have a callable body");
+        let callable = output
+            .semantics()
+            .module
+            .callable_for_declaration(&declaration)
+            .expect("method body is emitted");
+        assert!(output
+            .semantics()
+            .module
+            .function_index()
+            .function(callable.id)
+            .is_some());
     }
 
     #[test]
@@ -6433,7 +6695,7 @@ fn main() -> i64 {
     fn nested_generic_free_calls_keep_exact_direct_symbols_across_all_module_origins() {
         // Every invocation sits in a closure body, which lowers through a child
         // MIR builder.  Exercise all body origins that may be the selected
-        // generic declaration: root, flattened file import, package import,
+        // generic declaration: root, file import, package import,
         // and two modules with the same final path component.  The same-leaf
         // pair makes a linker-name or leaf-name recovery observably unsound.
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -6512,10 +6774,8 @@ fn main() {
         // sharing a body symbol.
         let expected = [
             ("main.root_first", "root_first"),
-            // A file import is spliced into the root namespace and lowered
-            // once, so its declaration keeps the declaring file's identity
-            // while its emitted body carries the root's bare symbol.
-            ("file_helpers.file_first", "file_first"),
+            // A file import is a module: its body symbol is qualified by it.
+            ("file_helpers.file_first", "file_helpers$file_first"),
             ("hew.genhelpers.first", "hew$genhelpers$first"),
             ("alpha.first", "alpha$first"),
             ("beta.alpha.first", "beta$alpha$first"),
@@ -7804,10 +8064,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     /// Negative control for the file-import happy path: a single `pub actor`
-    /// reached via `import "counter.hew"` must NOT be flagged. The actor is
-    /// flattened into the root program AND present in its file-import graph
-    /// module, but the guard runs before flattening, so it is counted exactly
-    /// once and accepted.
+    /// reached via `import "counter.hew"` must NOT be flagged: it lives in
+    /// exactly one module.
     #[test]
     fn check_file_accepts_single_file_imported_actor() {
         let dir = tempfile::tempdir().expect("create temp dir");
@@ -9036,6 +9294,47 @@ fn main() {
         assert_eq!(batch.reused_roots(), 2);
         assert_eq!(batch.dependency_bootstraps(), 1);
         assert_eq!(batch.dependency_cache_hits(), 1);
+    }
+
+    #[test]
+    fn nested_collect_defaults_preserve_effects_with_cached_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let options = test_options();
+        let source =
+            include_str!("../../tests/core-acceptance/cases/nested-collect-literal-effects.hew");
+        let suspending = source.replace(
+            "|a: i64, b: i64| a + b",
+            "|a: i64, b: i64| { sleep(1ms); a + b }",
+        );
+        for (source, must_suspend) in [(source, false), (suspending.as_str(), true)] {
+            let mut batch = SourceAnalysisBatch::new(options.clone());
+            for name in ["first.hew", "second.hew"] {
+                let label = dir.path().join(name);
+                let state =
+                    assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+                if must_suspend {
+                    let output = state
+                        .typecheck_result
+                        .as_ref()
+                        .unwrap()
+                        .tco
+                        .as_ref()
+                        .unwrap();
+                    assert!(
+                        output.errors.iter().any(|error| error
+                            .message
+                            .contains("closure suspends via `sleep(...)`")),
+                        "{:?}",
+                        state.diagnostics
+                    );
+                } else {
+                    assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+                }
+            }
+            assert_eq!(batch.reused_roots(), 2);
+            assert_eq!(batch.dependency_bootstraps(), 1);
+            assert_eq!(batch.dependency_cache_hits(), 1);
+        }
     }
 
     #[test]

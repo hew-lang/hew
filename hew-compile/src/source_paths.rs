@@ -9,9 +9,12 @@ pub struct SourcePathPolicy {
 
 impl SourcePathPolicy {
     pub fn insert(&mut self, source: &Path, display: &Path) {
-        let source = absolute_path(source);
-        self.prefixes.retain(|(existing, _)| *existing != source);
-        self.prefixes.push((source, display.to_path_buf()));
+        // Missing inputs cannot be canonicalized, so diagnostics can retain the
+        // invocation spelling even when its parent resolves through a symlink.
+        for source in [lexical_absolute_path(source), absolute_path(source)] {
+            self.prefixes.retain(|(existing, _)| *existing != source);
+            self.prefixes.push((source, display.to_path_buf()));
+        }
         self.prefixes
             .sort_by_key(|(source, _)| std::cmp::Reverse(source.components().count()));
     }
@@ -76,9 +79,15 @@ impl SourcePathPolicy {
 }
 
 fn absolute_path(path: &Path) -> PathBuf {
-    let absolute = path.canonicalize().unwrap_or_else(|_| {
-        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path))
-    });
+    path.canonicalize().map_or_else(
+        |_| lexical_absolute_path(path),
+        |absolute| PathBuf::from(super::display_path(&absolute)),
+    )
+}
+
+fn lexical_absolute_path(path: &Path) -> PathBuf {
+    let absolute =
+        std::env::current_dir().map_or_else(|_| path.to_path_buf(), |cwd| cwd.join(path));
     PathBuf::from(super::display_path(&absolute))
 }
 
@@ -111,4 +120,47 @@ pub fn register_source_path(source: &Path, display: &Path) {
 #[must_use]
 pub fn display_source_path(path: &Path) -> PathBuf {
     ACTIVE.with(|active| active.borrow().display(path))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nested_prefixes_preserve_unrelated_paths_and_message_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let nested = root.join("dependency");
+        let mut policy = SourcePathPolicy::default();
+        policy.insert(&root, Path::new("."));
+        policy.insert(&nested, Path::new("packages/dependency"));
+        assert_eq!(
+            policy.display(&nested.join("missing.hew")),
+            Path::new("packages/dependency/missing.hew")
+        );
+        let unrelated = root.with_file_name("unrelated").join("main.hew");
+        assert_eq!(policy.display(&unrelated), unrelated);
+        let similar = format!("{}-other/main.hew", root.display());
+        assert_eq!(policy.display_text(&similar), similar);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_prefix_trims_missing_paths_and_messages_in_both_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        let alias = dir.path().join("alias");
+        std::fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        let mut policy = SourcePathPolicy::default();
+        policy.insert(&alias, Path::new("."));
+        for root in [&alias, &real.canonicalize().unwrap()] {
+            let missing = root.join("missing.hew");
+            assert_eq!(policy.display(&missing), Path::new("./missing.hew"));
+            assert_eq!(
+                policy.display_text(&format!("cannot read {}: missing", missing.display())),
+                "cannot read ./missing.hew: missing"
+            );
+        }
+    }
 }

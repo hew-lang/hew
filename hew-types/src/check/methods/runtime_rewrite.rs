@@ -1009,24 +1009,6 @@ impl Checker {
         }
     }
 
-    pub(super) fn reject_if_wasm_blocking_semaphore_method(
-        &mut self,
-        receiver_ty: &Ty,
-        method: &str,
-        span: &Span,
-    ) {
-        let Ty::Named { head, .. } = receiver_ty else {
-            return;
-        };
-        let name = head.registry_key();
-        if name != "std.semaphore.Semaphore" {
-            return;
-        }
-        if matches!(method, "acquire" | "acquire_timeout") {
-            self.reject_wasm_feature(span, WasmUnsupportedFeature::BlockingSemaphoreAcquire);
-        }
-    }
-
     pub(in crate::check) fn strip_module_prefix<'a>(&self, name: &'a str) -> Option<&'a str> {
         let dot = name.find('.')?;
         if self.module_binding_in_current_file(&name[..dot]) {

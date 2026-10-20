@@ -159,7 +159,7 @@
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
-    "capture": "Private closure capture prefix capture(var name, ...) before pipe parameters; an ordinary identifier outside that prefix.",
+    "capture": "Private capture prefix capture(var name, ...) before closure or actor literal pipe parameters; an ordinary identifier outside that prefix.",
     "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
     "suspends": "Suspending invocation effect inside written function type qualifiers: fn[suspends](...) -> T; an ordinary identifier elsewhere.",
     "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",

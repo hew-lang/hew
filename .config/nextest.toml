@@ -181,27 +181,15 @@ filter = "test(two_process_remote_ask_echo_double_returns_42) | test(remote_ask_
 slow-timeout = { period = "30s", terminate-after = 3 }
 
 [[profile.ci.overrides]]
-# The compiled-.hew two-process distributed harness spawns a server and a client
-# process — each a native binary built from dist_node.hew — that round-trip a
-# remote ask over loopback TCP. Unlike the runtime-crate two-process tests above,
-# this one COMPILES a real .hew program first (the proving gate for codegen +
-# transport + cluster), so its slow-timeout must cover a cold compile (~90 s
-# under hosted-runner load) in addition to the cross-process round-trip. It runs
-# in the real-timing group (max-threads = 1): its assertion irreducibly measures
-# a real cross-process exchange the in-process simtime seam cannot fake, and the
-# serialisation keeps it off the fast tiers and gives the round-trip headroom.
-# No retry: the round-trip is deterministic (server READY signal + client
-# bounded-poll lookup), so a correct outcome does not depend on scheduler luck.
-# wire_cbor_cross_process_round_trip is the same harness with a #[wire]-typed
-# payload (explicit @N tags); it shares the compiled binary via OnceLock and runs
-# in the same serialized group for the same reasons.
-# remote_ask_under_partition_fails_closed_not_hang is the same compiled harness
-# (server + client processes built from dist_node.hew) exercising the fail-closed
-# no-hang partition gate; it belongs in the same serialized real-timing group as
-# its siblings above (it was the only one in this binary missing the assignment,
-# which left it exposed to the concurrent-load timing flake).
-filter = "test(remote_ask_round_trip_returns_exact_values) | test(wire_cbor_cross_process_round_trip) | test(remote_ask_under_partition_fails_closed_not_hang)"
+# Every case in this binary compiles the same Hew fixture and exercises real
+# two-process behaviour. The OnceLock is process-local, and nextest launches
+# each case in its own process, so parallel cases repeat this expensive compile.
+# Serialize the binary to protect its bounded two-minute compile and leave
+# headroom for the server readiness and client execution deadlines.
+filter = "binary(distributed_two_process_e2e)"
 test-group = "real-timing"
+# The two-minute compile plus 30-second readiness and 40-second client bounds
+# fit inside this independent ceiling, which catches a test that ignores them.
 slow-timeout = { period = "120s", terminate-after = 3 }
 
 [[profile.ci.overrides]]

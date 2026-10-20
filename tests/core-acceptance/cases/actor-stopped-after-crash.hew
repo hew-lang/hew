@@ -1,0 +1,55 @@
+#[resource]
+type ReaderState {
+    label: string;
+}
+
+impl ReaderState {
+    fn close(consume self) {
+        panic("reader state close failed");
+    }
+}
+
+actor Reader {
+    receive fn feed(text: string) -> string {
+        if text == "boom" {
+            panic("bad frame");
+        }
+        text
+    }
+}
+
+actor ClosingReader {
+    let state: ReaderState = ReaderState { label: "active" };
+
+    receive fn feed(text: string) -> string {
+        if text == "boom" {
+            panic("bad frame");
+        }
+        text
+    }
+}
+
+fn main() {
+    let reader = spawn Reader;
+    println(f"{reader.feed("boom"):?}");
+    stopped(reader);
+    println("after crash-only stopped");
+
+    let closing_reader = spawn ClosingReader;
+    println(f"{closing_reader.feed("boom"):?}");
+    assert(scope {
+        stopped(closing_reader);
+        false
+    } handle failure {
+        match failure {
+            .Fault { message } => {
+                assert(message.contains("reader state close failed"));
+                println("caught close fault");
+                true
+            }
+            .Deadline { message } => panic(message),
+        }
+    });
+    println("after cleanup stopped");
+    println(f"{closing_reader.feed("x"):?}");
+}

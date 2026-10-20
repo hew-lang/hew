@@ -1,0 +1,64 @@
+import std.semaphore;
+
+fn release_after_yield(consume sem: semaphore.Semaphore) {
+    sleep(1ms);
+    sem.release();
+    sem.close();
+}
+
+fn queued_clone_wait() {
+    let original = semaphore.new(0);
+    let waiting = original.clone();
+    let releasing = original.clone();
+    scope {
+        let producer = fork release_after_yield(releasing);
+        original.close();
+        waiting.acquire();
+        await producer;
+    };
+    assert(waiting.count() == 0);
+    waiting.close();
+}
+
+fn cloned_wrapper_cleanup() {
+    let original = semaphore.new(1);
+    scope {
+        let copy = original.clone();
+        copy.acquire();
+        assert(copy.count() == 0);
+    };
+    original.release();
+    assert(original.count() == 1);
+    original.close();
+}
+
+fn main() {
+    queued_clone_wait();
+    cloned_wrapper_cleanup();
+    let sem = semaphore.new(1);
+    sem.acquire();
+    assert(sem.count() == 0);
+    assert(!sem.acquire_timeout(0));
+    assert(!sem.acquire_timeout(-1));
+    sem.release();
+    assert(sem.acquire_timeout(0));
+    assert(!sem.acquire_timeout(5));
+    var cancelled = false;
+    scope within 5ms {
+        sem.acquire();
+        panic("empty semaphore unexpectedly acquired");
+    } handle failure {
+        match failure {
+            .Deadline { message } => {
+                cancelled = true;
+            }
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(cancelled);
+    sem.release();
+    assert(sem.acquire_timeout(100));
+    assert(sem.count() == 0);
+    sem.close();
+    println("owned semaphore ok");
+}

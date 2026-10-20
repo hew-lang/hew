@@ -1,0 +1,13 @@
+import "../slices.hew";
+
+fn main() {
+    println(cut("hello"));
+    match pick("hello") {
+        .Some(part) => println(part),
+        .None => println("out of range"),
+    }
+    match pick("hi") {
+        .Some(part) => println(part),
+        .None => println("out of range"),
+    }
+}

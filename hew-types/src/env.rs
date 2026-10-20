@@ -1114,7 +1114,6 @@ impl TypeEnv {
     pub(crate) fn closure_environment(
         &self,
         private: &std::collections::HashSet<TypeBindingId>,
-        actor_body: bool,
     ) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
@@ -1126,9 +1125,7 @@ impl TypeEnv {
             scope.clear();
         }
         for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
-            if !actor_body {
-                binding.is_mutable = private.contains(&binding.id);
-            }
+            binding.is_mutable = private.contains(&binding.id);
             // A later invocation may observe this private field's replacement.
             if binding.is_mutable {
                 binding.value_candidates.may_be_unknown = true;

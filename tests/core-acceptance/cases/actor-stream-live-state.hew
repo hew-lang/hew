@@ -1,0 +1,78 @@
+import std.stream;
+
+actor Producer {
+    var total: i64 = 0;
+    var label: string = "item";
+
+    receive gen fn advance(consume gate: Stream<i64>) -> string {
+        total += 1;
+        yield f"{label} {total}";
+        gate.recv().expect("resume");
+        total += 10;
+        yield f"{label} {total}";
+    }
+
+    receive gen fn held(consume gate: Stream<i64>, consume ready: Sink<i64>) -> string {
+        total += 1;
+        // A reader-close cancellation must unwind this cleanup before the
+        // actor accepts its next handler.
+        defer { total += 100; }
+        yield f"{label} {total}";
+        ready.send(1).expect("ready");
+        gate.recv().expect("must be cancelled");
+        total += 100;
+        yield "unreachable";
+    }
+
+    receive gen fn nested() -> i64 {
+        let private = gen { total += 1000; yield total; };
+        for value in private {
+            yield value;
+        }
+        yield total;
+    }
+
+    receive fn total() -> i64 {
+        total
+    }
+}
+
+fn main() {
+    let producer = spawn Producer;
+    // Each turn resumes after a gate wait and retains its writes for the next.
+    for turn in 0..2 {
+        let (resume, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+        var seen = 0;
+        for value in producer.advance(gate) {
+            println(value);
+            if seen == 0 {
+                resume.send(1).expect("resume");
+            }
+            seen += 1;
+        }
+        assert(seen == 2);
+        resume.close();
+        assert(producer.total().expect("total") == (turn + 1) * 11);
+    }
+    // The producer reaches its empty gate. Closing the consumer must end that
+    // turn while retaining the preceding write and releasing its local owners.
+    let (keep, gate): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("gate");
+    let (ready, entered): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ready");
+    for value in producer.held(gate, ready) {
+        println(value);
+        assert(entered.recv().expect("entered") == 1);
+        break;
+    }
+    assert(producer.total().expect("after close") == 123);
+    keep.close();
+    entered.close();
+
+    // A nested ordinary generator still owns a private snapshot.
+    for value in producer.nested() {
+        println(f"nested {value}");
+    }
+    assert(producer.total().expect("after snapshot") == 123);
+    stop(producer);
+    stopped(producer);
+    println("closed");
+}

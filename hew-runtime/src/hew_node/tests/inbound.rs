@@ -77,6 +77,156 @@ fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
     crate::registry::hew_registry_clear();
 }
 
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "keep the paused overlap and real reply outcomes together"
+)]
+fn replies_select_the_request_publication_during_connection_overlap() {
+    let _guard = crate::runtime_test_guard();
+    let (client, _, server, port) = start_authorized_tcp_pair(355, 356);
+    let address = CString::new(format!("356@127.0.0.1:{port}")).unwrap();
+    // SAFETY: both test nodes retain their managers and routing tables.
+    let (client_manager, server_manager, client_routes, server_routes) = unsafe {
+        connect_with_retry(client.as_ptr(), &address);
+        wait_for_handshake(client.as_ptr(), server.as_ptr());
+        (
+            (*client.as_ptr()).conn_mgr,
+            (*server.as_ptr()).conn_mgr,
+            &*(*client.as_ptr()).routing_table,
+            &*(*server.as_ptr()).routing_table,
+        )
+    };
+    // SAFETY: the test nodes retain their authenticated identity snapshots.
+    let (client_identity, server_identity) = unsafe {
+        (
+            (*client.as_ptr()).auth.node_identity().unwrap(),
+            (*server.as_ptr()).auth.node_identity().unwrap(),
+        )
+    };
+    // SAFETY: server remains live for this complete test.
+    let old_publication =
+        connection::claim_send_by_identity(unsafe { &*server_manager }, client_identity, None)
+            .unwrap()
+            .publication_token;
+    let (client_entered, client_wait) = std::sync::mpsc::channel();
+    let (client_release, client_resume) = std::sync::mpsc::channel();
+    let (server_entered, server_wait) = std::sync::mpsc::channel();
+    let (server_release, server_resume) = std::sync::mpsc::channel();
+    client_routes.set_add_route_probe(Some(Arc::new(crate::routing::RouteAddProbe {
+        entered: client_entered,
+        release: Mutex::new(client_resume),
+    })));
+    server_routes.set_add_route_probe(Some(Arc::new(crate::routing::RouteAddProbe {
+        entered: server_entered,
+        release: Mutex::new(server_resume),
+    })));
+    let client_pointer = client.as_ptr() as usize;
+    let reconnect = thread::spawn(move || {
+        // SAFETY: the test retains the client until this thread has joined.
+        unsafe { hew_node_connect(client_pointer as *mut HewNode, address.as_ptr()) }
+    });
+    let observed = (|| -> Result<_, &'static str> {
+        client_wait
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "client publication")?;
+        server_wait
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| "server publication")?;
+        // Both current claims are published while both predecessors remain active.
+        // SAFETY: the test nodes retain both managers until reconnect has joined.
+        let client_claim =
+            connection::claim_send_by_identity(unsafe { &*client_manager }, server_identity, None)
+                .ok_or("client send claim")?;
+        // SAFETY: the server node remains live throughout the paused publication.
+        let server_claim =
+            connection::claim_send_by_identity(unsafe { &*server_manager }, client_identity, None)
+                .ok_or("server send claim")?;
+        let shutdown = AtomicBool::new(false);
+        let mut pending = Vec::new();
+        for kind in 0..3 {
+            let (request, reply) = reply_table().register_with_waker(
+                ConnectionKey::new(client_manager, client_claim.connection_id()),
+                None,
+                PendingReplyKind::Ask(client_claim.publication_token),
+            );
+            // An old request must never migrate onto the successor connection.
+            send_reply_envelope(
+                355,
+                request,
+                old_publication,
+                b"obsolete",
+                server_manager,
+                &shutdown,
+            );
+            match kind {
+                0 => crate::hew_node::inbound::send_refusal_reply(
+                    355,
+                    request,
+                    server_claim.publication_token,
+                    AskError::Unauthorized,
+                    server_manager,
+                    &shutdown,
+                ),
+                1 => crate::hew_node::inbound::send_rejection_reply(
+                    355,
+                    request,
+                    server_claim.publication_token,
+                    AskError::WorkerAtCapacity,
+                    server_manager,
+                    &shutdown,
+                ),
+                _ => send_reply_envelope(
+                    355,
+                    request,
+                    server_claim.publication_token,
+                    b"current",
+                    server_manager,
+                    &shutdown,
+                ),
+            }
+            pending.push(reply);
+        }
+        let last = pending.last().unwrap();
+        let (last_outcome, _) = last
+            .cond
+            .wait_timeout_while(
+                last.outcome.lock().unwrap(),
+                Duration::from_secs(1),
+                |outcome| outcome.is_none(),
+            )
+            .unwrap();
+        drop(last_outcome);
+        Ok(pending
+            .into_iter()
+            .map(|reply| {
+                reply_table().remove(reply.request_id);
+                reply
+                    .outcome
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .map(|outcome| (outcome.status, outcome.ask_error, outcome.data))
+            })
+            .collect::<Vec<_>>())
+    })();
+    // Release both publication threads before assertions or node teardown.
+    let _ = client_release.send(());
+    let _ = server_release.send(());
+    client_routes.set_add_route_probe(None);
+    server_routes.set_add_route_probe(None);
+    let connected = reconnect.join().expect("reconnect thread");
+    assert_eq!(connected, 0);
+    assert_eq!(
+        observed.expect("paused connection overlap"),
+        vec![
+            Some((ReplyStatus::Refused, AskError::Unauthorized, vec![])),
+            Some((ReplyStatus::Failed, AskError::WorkerAtCapacity, vec![])),
+            Some((ReplyStatus::Success, AskError::None, b"current".to_vec())),
+        ]
+    );
+}
+
 // ── Regression: race-window fixes ────────────────────────────────────
 
 /// After `hew_connmgr_mark_stopping` is called, `node_inbound_router`
@@ -574,13 +724,20 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     // SAFETY: the test retains both authenticated nodes through every admission.
     let peer_id = unsafe { (*peer.as_ptr()).auth.node_identity().unwrap() };
     let address = CString::new(format!("365@127.0.0.1:{port}")).unwrap();
-    for _ in 0..2 {
-        // SAFETY: each connect publishes a fresh authenticated connection.
-        unsafe {
-            connect_with_retry(peer.as_ptr(), &address);
-            wait_for_handshake(peer.as_ptr(), node.as_ptr());
-        }
-        let claim = connection::claim_send_by_identity(manager, peer_id, None).unwrap();
+    let mut previous_publication = None;
+    for iteration in 0..2 {
+        // SAFETY: both authenticated nodes remain live through the reconnect.
+        unsafe { connect_with_retry(peer.as_ptr(), &address) };
+        // The old connection can remain authenticated while its replacement is
+        // being published. Wait for the receiver's new claim before exporting.
+        let claim = loop {
+            if let Some(claim) = connection::claim_send_by_identity(manager, peer_id, None) {
+                if Some(claim.publication_token) != previous_publication {
+                    break claim;
+                }
+            }
+            thread::yield_now();
+        };
         let publication = claim.publication_token;
         let location = connection::local_location_for_actor(manager, actor_id).unwrap();
         // SAFETY: the test retains this actor throughout both publication checks.
@@ -609,10 +766,14 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             crate::request_deadline::RequestDeadline::default(),
             crate::request_state::RequestKind::CallReject,
         );
-        assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
+        assert_eq!(
+            manager.inbound_ask_active.load(Ordering::Acquire),
+            1,
+            "admission at iteration {iteration}, publication {publication}, previous {previous_publication:?}"
+        );
         for (target, connection, request) in [
             (actor_id + 1, publication, 42),
-            (actor_id, publication - 1, 42),
+            (actor_id, previous_publication.unwrap_or(0), 42),
             (actor_id, publication, 43),
         ] {
             manager.inbound_asks.withdraw(target, connection, request);
@@ -622,6 +783,7 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
         manager.inbound_asks.withdraw(actor_id, publication, 42);
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
+        previous_publication = Some(publication);
     }
     // SAFETY: the queued requests have released their ownership above.
     unsafe {

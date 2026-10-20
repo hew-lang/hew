@@ -2066,8 +2066,9 @@ mod tests {
         let mut reg = registry();
         reg.load("std.encoding.toml").unwrap();
         assert!(
-            reg.is_drop_type("toml.Value"),
-            "toml.Value is a `#[resource]` handle, so it is a drop type"
+            !reg.is_drop_type("toml.Value"),
+            "toml.Value is an encoding value released through the shared \
+             encoding operation vocabulary, not a registry drop type"
         );
         reg.load("std.net.http").unwrap();
         assert!(
@@ -2088,7 +2089,7 @@ mod tests {
             reg.is_drop_type("regex.Pattern"),
             "regex.Pattern is a `#[resource]` handle, so it is a drop type"
         );
-        for resource in ["toml.Value", "http.Request", "http.Server", "process.Child"] {
+        for resource in ["http.Request", "http.Server", "process.Child"] {
             assert!(
                 reg.is_drop_type(resource),
                 "{resource} must remain registered"
@@ -2102,8 +2103,8 @@ mod tests {
         reg.load("std.encoding.toml").unwrap();
         assert_eq!(
             reg.drop_func_for("toml.Value"),
-            Some("hew_toml_free"),
-            "toml.Value.close directly forwards to its sole raw disposer"
+            None,
+            "toml.Value has no source disposer; its release is EncodingOp::Free"
         );
         reg.load("std.net.http").unwrap();
         assert_eq!(
@@ -2149,18 +2150,18 @@ mod tests {
             "regex.Pattern should not have a drop func"
         );
         let all = reg.all_drop_funcs();
-        for expected in [
-            ("toml.Value".to_string(), "hew_toml_free".to_string()),
-            (
-                "http.Server".to_string(),
-                "hew_http_server_close".to_string(),
-            ),
-        ] {
-            assert!(
-                all.contains(&expected),
-                "missing direct disposer {expected:?}: {all:?}"
-            );
-        }
+        assert!(
+            all.iter().all(|(_, release)| release != "hew_toml_free"),
+            "no registry drop function may release a TOML value: {all:?}"
+        );
+        let expected = (
+            "http.Server".to_string(),
+            "hew_http_server_close".to_string(),
+        );
+        assert!(
+            all.contains(&expected),
+            "missing direct disposer {expected:?}: {all:?}"
+        );
     }
 
     #[test]
@@ -2715,6 +2716,7 @@ mod tests {
         for (format, kind) in [
             ("json", BuiltinType::JsonValue),
             ("yaml", BuiltinType::YamlValue),
+            ("toml", BuiltinType::TomlValue),
         ] {
             let owner = format!("std.encoding.{format}");
             let input = Ty::option(Ty::unresolved_for_test(&format!("{format}.Value"), vec![]));

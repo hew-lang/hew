@@ -288,6 +288,10 @@ fn eval_std_observe_reads_runtime_metric() {
 
 #[test]
 fn eval_std_observe_scrape_and_series_include_actor_attribution() {
+    // The CLI timeout bounds compiled-program execution only. Building and
+    // linking the in-process eval pipeline happens before that deadline, so the
+    // outer process-tree watchdog needs separate compile headroom.
+    const COMMAND_TIMEOUT: Duration = Duration::from_mins(3);
     require_codegen();
 
     let dir = support::tempdir();
@@ -329,10 +333,12 @@ run_counter();
         .current_dir(repo_root())
         .env("HEW_OBSERVE", "hot");
 
-    // `run_bounded_command` contains the compiled-Hew process tree with a
-    // wall-clock timeout; Darwin has no portable per-child data cap here, so
-    // this test uses the timeout-only fallback requested for macOS.
-    let output = support::run_bounded_command(command, format!("hew eval {}", path.display()));
+    let output = support::try_run_bounded_command(
+        command,
+        format!("hew eval {}", path.display()),
+        COMMAND_TIMEOUT,
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
 
     assert!(
         output.status.success(),

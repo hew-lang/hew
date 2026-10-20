@@ -1,0 +1,58 @@
+// A `gen fn` parameter declared `var` or `consume var` belongs to the
+// generator, so its body may reassign and mutate it. A `gen { }` block that
+// assigns a captured `var` changes its own copy; the enclosing binding keeps
+// its value.
+import std.iter;
+
+gen fn count_down(var n: i64) -> i64 {
+    while n > 0 {
+        yield n;
+        n -= 1;
+    }
+}
+
+gen fn drain(consume var items: Vec<string>) -> string {
+    while !items.is_empty() {
+        yield items.pop();
+    }
+}
+
+gen fn naturals() -> i64 {
+    var n = 0;
+    loop {
+        yield n;
+        n += 1;
+    }
+}
+
+gen fn doubled<I: Iterator<Item = i64>>(consume var numbers: I) -> i64 {
+    while let .Some(n) = numbers.next() {
+        yield n * 2;
+    }
+}
+
+fn main() {
+    for n in count_down(3) {
+        println(f"count {n}");
+    }
+    let words: Vec<string> = ["a", "b", "c"];
+    for word in drain(words) {
+        println(f"drain {word}");
+    }
+    for n in iter.take(doubled(naturals()), 3) {
+        println(f"doubled {n}");
+    }
+    var label = "start";
+    var steps = 2;
+    let block = gen {
+        while steps > 0 {
+            label = f"{label}+";
+            yield label;
+            steps -= 1;
+        }
+    };
+    for value in block {
+        println(f"block {value}");
+    }
+    println(f"outer {label} {steps}");
+}

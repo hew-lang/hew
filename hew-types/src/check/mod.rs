@@ -137,8 +137,8 @@ pub(super) enum TypeResolutionContext {
 ///
 /// A nominal (type, trait, record, actor, supervisor, machine, const) has one
 /// spelling — the one `ResolvedTy::Named` carries for it, and the one every
-/// declaration-derived downstream key renders from. In the two flattened cases
-/// it also answers to a second name in its namespace, which is claimed for
+/// declaration-derived downstream key renders from. For the root and the
+/// embedded builtins it also answers to a second name in its namespace, which is claimed for
 /// collision reporting but is never a spelling of its identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum NominalNamespace {
@@ -148,22 +148,9 @@ pub(super) enum NominalNamespace {
     /// An ordinary graph module: its nominals are owner-qualified and no
     /// other spelling reaches them.
     Owned,
-    /// A file import (`import "helper.hew";`) flattened into the root: its
-    /// nominals keep their own file's qualification and are ALSO reachable
-    /// bare, because the flattened items land in the root's namespace.
-    FlattenedFile,
-}
-
-impl NominalNamespace {
-    /// The namespace an import contributes into: a file import
-    /// (empty module path) flattens, a module import does not.
-    pub(super) fn for_import(file_import: bool) -> Self {
-        if file_import {
-            Self::FlattenedFile
-        } else {
-            Self::Owned
-        }
-    }
+    /// The embedded builtins program: its nominals keep their
+    /// owner-qualified identity and also answer bare.
+    QualifiedAndBare,
 }
 
 #[must_use]
@@ -508,9 +495,9 @@ pub(crate) fn class_is_non_owning(
 
 /// Whether a declaration walk rooted at `ty` reaches no cycle.
 ///
-/// Structural capability selection descends through declarations, so a
-/// self-recursive nominal has no finite derived operation. This answers,
-/// fail-closed, whether it is safe to start that walk.
+/// Walks that expand members without memoizing concrete instances, such as
+/// generic demand expansion, cannot finish on a recursive nominal. This
+/// answers whether those walks may start; capability selection tracks cycles.
 #[expect(
     clippy::too_many_lines,
     reason = "the walk enumerates every Ty and VariantDef shape it descends through"
@@ -1097,7 +1084,6 @@ impl Checker {
     /// where the resolved receiver and trait identities are available.
     fn mint_source_declaration_identities(&mut self, program: &Program) {
         if let Some(graph) = &program.module_graph {
-            let flat_file_imports = registration::flat_file_import_module_ids(program);
             for module_id in &graph.topo_order {
                 let Some(module) = graph.modules.get(module_id) else {
                     continue;
@@ -1105,8 +1091,6 @@ impl Checker {
                 let dotted = module_id.dotted();
                 let namespace = if *module_id == graph.root {
                     NominalNamespace::RootBare
-                } else if flat_file_imports.contains(module_id) {
-                    NominalNamespace::FlattenedFile
                 } else {
                     NominalNamespace::Owned
                 };
@@ -1160,16 +1144,14 @@ impl Checker {
             // `Program::items` is the checker root surface. Some callers keep
             // the graph root's `items` empty, so it is not interchangeable
             // with `modules[root].items`. Repeated graph-root claims are
-            // idempotent. File imports are flattened into `Program::items`
-            // only after type checking, so the checker never sees an imported
-            // item on this surface.
+            // idempotent. Imported items never appear on this surface.
             let root = self.defs.root_module();
             for (item_index, (item, span)) in program.items.iter().enumerate() {
                 self.mint_item_declaration_identities(
                     root,
                     root,
                     if self.checking_embedded_builtins {
-                        NominalNamespace::FlattenedFile
+                        NominalNamespace::QualifiedAndBare
                     } else {
                         NominalNamespace::RootBare
                     },
@@ -1186,7 +1168,7 @@ impl Checker {
                     root,
                     root,
                     if self.checking_embedded_builtins {
-                        NominalNamespace::FlattenedFile
+                        NominalNamespace::QualifiedAndBare
                     } else {
                         NominalNamespace::RootBare
                     },
@@ -1317,9 +1299,8 @@ impl Checker {
             return;
         };
         let site = scope::ImportSite::new(file, span);
-        self.scopes.record_import_target(target, site);
         let namespace = self.scopes.namespace_of(target);
-        if decl.path.segments.is_empty() {
+        if decl.publishes_file_items() {
             for (name, binding) in self.scopes.items(namespace) {
                 if self.binding_is_importable(file, binding) {
                     self.scopes.bind_import(file, name, binding, site);
@@ -1355,12 +1336,8 @@ impl Checker {
                 // A selection also binds its module for qualified siblings
                 // (`net.listen` beside `import std.net.{Connection}`).
                 if let Some(module_name) = decl.path.last() {
-                    self.scopes.bind_import(
-                        file,
-                        module_name.name,
-                        scope::Binding::Module(target),
-                        site,
-                    );
+                    self.scopes
+                        .bind_implicit_module_import(file, module_name.name, target, site);
                 }
                 for selected in names {
                     if let Some(binding) = self.scopes.item(namespace, selected.name.name) {
@@ -2022,21 +1999,20 @@ impl Checker {
         // layout tables) renders from.
         let owner_path = |leaf: &str| match namespace {
             NominalNamespace::RootBare => leaf.to_string(),
-            NominalNamespace::Owned | NominalNamespace::FlattenedFile => fn_path(leaf),
+            NominalNamespace::Owned | NominalNamespace::QualifiedAndBare => fn_path(leaf),
         };
         // The OTHER name the same declaration answers to. A root nominal is
         // bare but its module still owns it, and the checker's own registries
         // (`trait_defs`, `type_def_spans`, the visibility index) key it
-        // `{module}.{leaf}`; a flat-imported nominal is qualified by its file
-        // but its items were flattened into the root's namespace, so it also
-        // answers bare. The identity table keeps the one canonical render;
+        // `{module}.{leaf}`; an embedded builtin is qualified by its module
+        // but also answers bare. The identity table keeps the one canonical render;
         // the other name is only claimed in the namespace, so a second
         // declaration answering to it is a duplicate definition.
         let nominal_alias = |leaf: &str| match namespace {
             NominalNamespace::RootBare => module_path
                 .as_ref()
                 .map(|module| format!("{module}.{leaf}")),
-            NominalNamespace::FlattenedFile => Some(leaf.to_string()),
+            NominalNamespace::QualifiedAndBare => Some(leaf.to_string()),
             NominalNamespace::Owned => None,
         };
         if let (Item::Import(decl), Some(file)) = (item, module) {
@@ -2961,8 +2937,6 @@ impl Checker {
             protected_prelude_declaration_collisions: self
                 .protected_prelude_declaration_collisions
                 .clone(),
-            registration_is_flat_file_import: self.registration_is_flat_file_import.clone(),
-            flat_file_import_module_names: self.flat_file_import_module_names.clone(),
             actor_self_state_fields: self.actor_self_state_fields.clone(),
             actor_deferred_field_decls: self.actor_deferred_field_decls.clone(),
             first_stores: self.first_stores.clone(),
@@ -4232,6 +4206,7 @@ impl Checker {
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
         if let Some(normalized) = normalized_program {
+            normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();

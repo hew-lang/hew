@@ -1,0 +1,14 @@
+[[case]]
+id = "machine-guard-unbound-name"
+suites = ["acceptance"]
+intent = "A guard naming a payload field the head does not bind is refused as an undefined variable."
+source = "cases/machine-guard-unbound-name.hew"
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UndefinedVariable"
+line = 11
+column = 36
+message = "undefined variable `cap`"

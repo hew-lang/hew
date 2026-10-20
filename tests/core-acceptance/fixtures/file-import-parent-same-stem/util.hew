@@ -1,0 +1,7 @@
+fn helper() -> string {
+    "c"
+}
+
+pub fn from_parent() -> string {
+    helper()
+}

@@ -471,6 +471,9 @@ actor Watcher {
             DownTarget.Local(slot) => {
                 println(f"local actor {slot} down");
             }
+            DownTarget.Role(token) => {
+                println(f"local supervised role {token} has no occupant");
+            }
         }
         match note.reason {
             DownReason.Exited => println("clean exit"),

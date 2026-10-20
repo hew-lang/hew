@@ -18,7 +18,7 @@ pub(crate) use crate::ast::{
     StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
     TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
     TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata,
+    WireFieldMeta, WireMetadata, WireReserved,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
@@ -661,10 +661,45 @@ impl Parser<'_> {
                 parser = parser.with_expander(Rc::clone(expander), self.macro_source.clone());
             }
             let expression = parser.parse_expr();
+            if expression.is_some() && parser.errors.is_empty() {
+                parser.refuse_interpolation_tail();
+            }
             (expression, parser.errors)
         });
         self.errors.extend(errors);
         parts
+    }
+
+    /// An interpolation holds exactly one expression, optionally followed by
+    /// `:?`, which the scanner has already removed. Anything left after the
+    /// expression is an error rather than text to drop.
+    fn refuse_interpolation_tail(&mut self) {
+        let Some(token) = self.peek() else {
+            return;
+        };
+        let start = self.peek_span().start;
+        let end = self
+            .tokens
+            .last()
+            .map_or(self.last_token_end, |(_, span)| span.end);
+        let (message, hint) = if matches!(token, Token::Colon) {
+            (
+                "f-string interpolation accepts only the `:?` format specifier".to_string(),
+                "format the value before interpolating it, for example with \
+                 `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`",
+            )
+        } else {
+            (
+                format!("unexpected {token} after the interpolated expression"),
+                "an f-string interpolation holds a single expression",
+            )
+        };
+        self.error_at_with_kind_and_hint(
+            message,
+            start..end,
+            hint,
+            ParseDiagnosticKind::InvalidLiteral,
+        );
     }
 }
 

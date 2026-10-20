@@ -19,7 +19,7 @@
 use crate::check::{TypeDef, TypeDefKind, TypeDefView, VariantDef};
 use crate::ty::Ty;
 use crate::BuiltinType;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum EqEligibility {
@@ -47,65 +47,44 @@ impl EqEligibilityFailure {
     }
 }
 
-#[derive(Default)]
-struct EqWalk {
-    completed: HashMap<Ty, Option<EqEligibilityFailure>>,
-    active: HashSet<Ty>,
-    path: Vec<Ty>,
-}
+type EqWalk = crate::capability_walk::CapabilityWalk<Option<EqEligibilityFailure>>;
 
-fn contains_type(ty: &Ty, needle: &Ty) -> bool {
-    let mut pending = vec![ty];
-    while let Some(ty) = pending.pop() {
-        if ty == needle {
-            return true;
-        }
-        ty.for_each_child(&mut |child| pending.push(child));
-    }
-    false
-}
-
-/// Returns `Some(rejection)` if `ty` is not equality-eligible, `None` if eligible.
-///
-/// Only concrete elements are eligible at this layout gate.
+/// Only concrete elements are eligible at this operation-specific layout gate.
 fn eq_ineligibility(
     ty: &Ty,
     types: TypeDefView<'_>,
     walk: &mut EqWalk,
 ) -> Option<EqEligibilityFailure> {
-    if let Some(completed) = walk.completed.get(ty) {
-        return completed.clone();
-    }
-    let growing = matches!(ty, Ty::Named { head, args } if head.nominal().is_some() && !args.is_empty())
-        && walk.path.iter().any(|previous| match (previous, ty) {
-            (
-                Ty::Named {
-                    head: previous_head,
-                    args: previous,
-                },
-                Ty::Named { head, args },
-            ) => {
-                previous_head == head
-                    && previous.len() == args.len()
-                    && previous != args
-                    && previous
-                        .iter()
-                        .zip(args)
-                        .all(|(previous, actual)| contains_type(actual, previous))
-            }
-            _ => false,
-        });
-    if growing || !walk.active.insert(ty.clone()) {
-        return Some(EqEligibilityFailure {
+    use crate::capability_walk::CapabilityVisit;
+    // Literal defaults affect the traversal key only. Eligibility still uses
+    // the original type so inference-time diagnostics retain their spelling.
+    let unknown = || {
+        Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleUnknown,
             member: String::new(),
-        });
-    }
-    walk.path.push(ty.clone());
+        })
+    };
+    let resolved = crate::ResolvedTy::from_ty(ty).or_else(|error| {
+        if matches!(
+            error,
+            crate::resolved_ty::BoundaryError::UnmaterializedLiteral { .. }
+        ) {
+            crate::ResolvedTy::from_ty(&ty.materialize_literal_defaults())
+        } else {
+            Err(error)
+        }
+    });
+    let Ok(resolved) = resolved else {
+        return unknown();
+    };
+    let entry = match walk.enter(&resolved, crate::type_facts::ValueCapability::Eq, true) {
+        CapabilityVisit::Complete(result) => return result,
+        CapabilityVisit::Recursive => return None,
+        CapabilityVisit::Growing => return unknown(),
+        CapabilityVisit::Entered(entry) => entry,
+    };
     let result = eq_ineligibility_inner(ty, types, walk);
-    walk.path.pop();
-    walk.active.remove(ty);
-    walk.completed.insert(ty.clone(), result.clone());
+    walk.finish(entry, result.clone(), result.is_none());
     result
 }
 
@@ -159,7 +138,8 @@ fn eq_ineligibility_inner(
                     | BuiltinType::Rc
                     | BuiltinType::Weak
                     | BuiltinType::JsonValue
-                    | BuiltinType::YamlValue,), .. }
+                    | BuiltinType::YamlValue
+                    | BuiltinType::TomlValue,), .. }
         | Ty::CancellationToken
         | Ty::Array(_, _)
         | Ty::Slice(_)
@@ -352,11 +332,23 @@ mod tests {
     }
 
     #[test]
-    fn equality_recursive_layout_gate_terminates_conservatively() {
+    fn equality_layout_preserves_nested_literal_eligibility() {
+        let output = checked("fn main() {}");
+        assert_eq!(
+            ty_eq_ineligibility(
+                &Ty::Tuple(vec![Ty::IntLiteral, Ty::FloatLiteral]),
+                output.types()
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn equality_recursive_layout_gate_accepts_finite_structural_values() {
         let output = checked("enum EqNode { Leaf(i64); Branch(Vec<EqNode>); } fn main() {}");
-        let failure = ty_eq_ineligibility(&named(&output, "EqNode", vec![]), output.types())
-            .expect("recursive layout gate remains unproven");
-        assert_eq!(failure.reason, EqEligibility::IneligibleUnknown);
-        assert!(!failure.member.is_empty());
+        assert_eq!(
+            ty_eq_ineligibility(&named(&output, "EqNode", vec![]), output.types()),
+            None
+        );
     }
 }

@@ -2,9 +2,17 @@
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-10-19
+
+- Give `std.encoding.toml` values the checked owning model used by JSON and
+  YAML: typed kinds and errors, optional lookups, independent copies and
+  mutation on a `var`. Remove the old public resource and builder APIs.
 - Use an actor's own type for local, supervised and authenticated imported
   references. Preserve stable supervised roles across restart and distinguish
   definite mailbox rejection from uncertain remote admission.
+- Let `stopped` finish after an actor's original crash without raising it again,
+  while preserving distinct cleanup faults for local and remote waiters. Wire
+  protocol 8 carries those diagnostics; communicating peers must upgrade together.
 - Add revocable actor service grants, actor-owned timers, typed crash notices
   and configured supervisor pools. Allow crash hooks to suspend within the
   child's stop budget, with restart fallback after failure or deadline expiry.
@@ -20,7 +28,8 @@
 - Preserve generic signatures across repeated imports, bound cleanup analysis
   of invalid recursive types and remove superseded actor lowering paths.
 
-See the [migration guide](docs/migrations/v0.6.2.md) for changed actor, string,
+See the [release notes](docs/releases/v0.6.2.md) and
+[migration guide](docs/migrations/v0.6.2.md) for changed actor, string,
 sorting, native SDK and tool interfaces.
 
 ## [0.6.1] - 2026-10-15

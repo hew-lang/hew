@@ -923,6 +923,41 @@ fn block_expression_inside_a_match_arm_keeps_dot_postfix() {
 }
 
 #[test]
+fn block_match_arm_stops_before_tuple_and_negative_patterns() {
+    let source = "fn main() { match value { 0 => { println(0); } (1, _) => { println(1); } -1 => { println(-1); } _ => {} } }";
+    let result = parse(source);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Function(function) = &result.program.items[0].0 else {
+        panic!("expected function item");
+    };
+    let Some((Expr::Match { arms, .. }, _)) = function.body.trailing_expr.as_deref() else {
+        panic!("expected trailing match expression");
+    };
+    assert_eq!(arms.len(), 4);
+    assert!(matches!(&arms[1].pattern.0, Pattern::Tuple(_)));
+    assert!(matches!(
+        &arms[2].pattern.0,
+        Pattern::Literal(Literal::Integer { value: -1, .. })
+    ));
+}
+
+#[test]
+fn block_match_arm_continuations_keep_calls_subtraction_and_members() {
+    for source in [
+        "fn main() { match value { 0 => { || 1 }() _ => 0 } }",
+        "fn main() { match value { 0 => { 3 } - 1 _ => 0 } }",
+        "fn main() { match value { 0 => { record }.field _ => 0 } }",
+    ] {
+        let result = parse(source);
+        assert!(
+            result.errors.is_empty(),
+            "errors: {:?}\n{source}",
+            result.errors
+        );
+    }
+}
+
+#[test]
 fn parse_match_bad_arm_pattern_recovers_to_later_arms() {
     let source = "fn main() { match n { fn => 0, 1 => 1, _ => 2 } }";
     let result = parse(source);
@@ -1422,6 +1457,29 @@ fn parse_interpolated_string_contains_expr_part() {
 }
 
 #[test]
+fn interpolation_rejects_unconsumed_input_at_its_source_span() {
+    for (expression, expected_tail) in [
+        ("x garbage", "garbage"),
+        ("x; y", "; y"),
+        ("x )", ")"),
+        ("x 7 8", "7 8"),
+        ("1e21", "e21"),
+        ("x:04", ":04"),
+    ] {
+        let source = format!("fn main() {{ let s = f\"é {{{expression}}}\"; }}");
+        let result = parse(&source);
+        assert_eq!(result.errors.len(), 1, "{expression}: {:?}", result.errors);
+        assert_eq!(
+            &source[result.errors[0].span.clone()],
+            expected_tail,
+            "the complete tail must retain its byte offset after a Unicode prefix"
+        );
+    }
+    let result = parse(r#"fn main() { let s = f"{1.0e21} {value:?} {call(1 + 2)}"; }"#);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+}
+
+#[test]
 fn parse_interpolated_string_structural_format_part() {
     let result = parse(r#"fn main() { let s = f"value={item:?}"; }"#);
     assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
@@ -1491,6 +1549,70 @@ fn parse_interpolated_string_empty_expr_reports_error() {
         !result.errors.is_empty(),
         "expected parse errors for malformed interpolation"
     );
+}
+
+fn interpolation_errors(source: &str) -> Vec<(String, String)> {
+    parse(source)
+        .errors
+        .into_iter()
+        .map(|error| (error.message, source[error.span].to_string()))
+        .collect()
+}
+
+#[test]
+fn parse_interpolated_string_refuses_format_specifiers_other_than_debug() {
+    for (spec, expected) in [
+        ("x:<8", ":<8"),
+        ("x:08", ":08"),
+        ("f:.2", ":.2"),
+        ("x:x", ":x"),
+        ("x :<8", ":<8"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{spec}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                "f-string interpolation accepts only the `:?` format specifier".to_string(),
+                expected.to_string()
+            )],
+            "{spec}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_refuses_tokens_after_the_expression() {
+    for (inner, message, tail) in [
+        ("x garbage", "unexpected identifier `garbage`", "garbage"),
+        ("x; y", "unexpected `;`", "; y"),
+        ("x )", "unexpected `)`", ")"),
+        ("1e21", "unexpected identifier `e21`", "e21"),
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(
+            interpolation_errors(&source),
+            [(
+                format!("{message} after the interpolated expression"),
+                tail.to_string()
+            )],
+            "{inner}"
+        );
+    }
+}
+
+#[test]
+fn parse_interpolated_string_keeps_colons_inside_the_expression() {
+    for inner in [
+        " x ",
+        "x :?",
+        "xs.iter().map(|k: i64| k + 1).count()",
+        "Point { x: 1, y: 2 }:?",
+        r#"label("a:b")"#,
+        r#"if x > 1 { "a" } else { "b" }"#,
+    ] {
+        let source = format!(r#"fn main() {{ let s = f"[{{{inner}}}]"; }}"#);
+        assert_eq!(interpolation_errors(&source), [], "{inner}");
+    }
 }
 
 #[test]
@@ -2567,6 +2689,19 @@ fn parse_import_whole_module_alias() {
 }
 
 #[test]
+fn parse_file_import_alias() {
+    // `import "file.hew" as alias;` keeps the file path and binds the alias.
+    let result = parse(r#"import "codecs/huffman.hew" as huffman;"#);
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::Import(imp) = &result.program.items[0].0 else {
+        panic!("expected import item");
+    };
+    assert_eq!(imp.file_path.as_deref(), Some("codecs/huffman.hew"));
+    assert_eq!(imp.module_alias, Some(Ident::new("huffman")));
+    assert!(!imp.publishes_file_items());
+}
+
+#[test]
 fn parse_import_no_module_alias_is_none() {
     // A plain whole-module import leaves module_alias unset.
     let source = r"import std.net;";
@@ -2839,6 +2974,37 @@ fn parse_gen_without_block_emits_diagnostic() {
 }
 
 #[test]
+fn wire_fields_preserve_docs_on_either_side_of_attributes() {
+    let result = parse(
+        "#[wire] type Message {\n\
+         /// Public identifier.\n\
+         #[serial(key = \"id\")] identifier: i64 @1;\n\
+         #[serial(key = \"body\")]\n\
+         /// Message body.\n\
+         body: string @2;\n\
+         }",
+    );
+    assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+    let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+        panic!("expected wire record");
+    };
+    for (item, expected) in decl
+        .body
+        .iter()
+        .zip(["Public identifier.", "Message body."])
+    {
+        let TypeBodyItem::Field { doc_comment, .. } = item else {
+            panic!("expected wire field");
+        };
+        assert_eq!(doc_comment.as_deref(), Some(expected));
+    }
+    let wire = decl.wire.as_ref().expect("wire metadata");
+    assert_eq!(wire.field_meta.len(), 2);
+    assert_eq!(wire.field_meta[0].field_number, 1);
+    assert_eq!(wire.field_meta[1].field_number, 2);
+}
+
+#[test]
 fn parse_wire_struct_preserves_since_modifier() {
     let source = "\
 #[wire]
@@ -2940,7 +3106,7 @@ enum Command {
     assert_eq!(decl.name, Ident::new("Command"));
     let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
     assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 3);
     for item in &decl.body {
         match item {
@@ -3199,7 +3365,7 @@ pub enum Command {
         .as_ref()
         .expect("expected wire metadata on pub enum");
     assert!(wire.field_meta.is_empty());
-    assert!(wire.reserved_numbers.is_empty());
+    assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 2);
     for item in &decl.body {
         match item {

@@ -1,0 +1,53 @@
+//! TOML values keep their identity through aliased and named imports, beside
+//! JSON's same-leaf `Value` and `Kind`, and inside collections and options.
+
+import std.encoding.toml as cfg;
+
+import std.encoding.json;
+
+import std.encoding.toml.{Value, Kind};
+
+fn is_table(value: Value) -> bool {
+    match value.type_of() {
+        Kind.Table => true,
+        _ => false,
+    }
+}
+
+#[test]
+fn test_aliased_and_named_imports_share_one_identity() {
+    var table = cfg.table();
+    table.set("n", cfg.from_int(3)).expect("table");
+    var object = json.object();
+    object.set("n", json.from_int(4)).expect("object");
+    assert(is_table(table));
+    assert(object.get_field("n").expect("object").expect("present").get_int().expect("integer") == 4);
+    let values: Vec<Value> = [table, cfg.from_string("x")];
+    assert(values.len() == 2);
+    assert(is_table(values[0]));
+    assert(!is_table(values[1]));
+    let maybe: Option<Value> = .Some(table);
+    if let .Some(value) = maybe {
+        assert(value.stringify().expect("table root") == "n = 3\n");
+    }
+}
+
+fn keep<T>(value: T) -> T {
+    value
+}
+
+#[test]
+fn test_values_pass_through_generics_and_maps_as_independent_copies() {
+    var table = cfg.table();
+    table.set("n", cfg.from_int(1)).expect("table");
+    let kept = keep(table);
+    table.set("n", cfg.from_int(2)).expect("table");
+    assert(kept.get_field("n").expect("table").expect("present").get_int().expect("integer") == 1);
+    var by_name: HashMap<string, Value> = HashMap.new();
+    by_name.insert("first", table);
+    table.set("n", cfg.from_int(3)).expect("table");
+    match by_name.get("first") {
+        .Some(stored) => assert(stored.get_field("n").expect("table").expect("present").get_int().expect("integer") == 2),
+        .None => panic("stored value is present"),
+    }
+}

@@ -50,7 +50,7 @@ that conform to that schema live in
 - A `Location` carries a 16-byte key-derived `NodeId`, non-zero actor slot,
   and non-zero durable session incarnation. Receiver-local route slots do not
   enter the frame.
-- `version` is fixed at `4`. Decoders **must** reject unknown
+- `version` is fixed at `8`. Decoders **must** reject unknown
   versions with `UnknownVersion`; they must not best-effort parse a frame
   whose version they do not recognise.
 
@@ -60,8 +60,9 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### Handler identity and reply status
 
-Wire version 4 carries the canonical dotted handler declaration
-(`package.module.Actor.handler`) in envelope key 5. The checker renders this
+Wire version 8 carries a service-request map in envelope key 5. Its key 1 is
+the canonical dotted handler declaration (`package.module.Actor.handler`);
+keys 2 and 3 carry the recipient-bound export grant and request kind. The checker renders this
 from declaration ownership; import aliases, local dispatch indices and
 absolute source paths are not wire identities. Compilation roots have no
 portable module prefix; shared protocol modules provide their declared path.
@@ -72,11 +73,22 @@ are identical. The receiver resolves the
 identity within the target actor's registered codecs. Handler reordering and
 local dispatch numbering therefore do not change the protocol.
 
-Replies use key 5 status `0` for success or `1` for rejection, with no target
-or source and a positive request ID. These statuses are separate from the
-handler text namespace. The connection handshake requires protocol version
-4, and envelope decoders reject other versions before dispatch. There is no
-numeric handler-hash compatibility path.
+Replies use key 5 status `0` for success, `1` for failure after admission or
+unknown admission, and `3` for definitely not admitted, with no target or source
+and a positive request ID. The connection handshake requires protocol version
+8, and envelope decoders reject other versions before dispatch. Communicating
+peers must upgrade together; there is no compatibility path for older payloads.
+
+Monitor and link DOWN payloads retain the terminal actor state, semantic end
+reason and crash class independently. Required key 6 carries `null` when cleanup
+succeeded, or `{1: code, 2: message}` for a cleanup fault. The code is a nonzero
+signed 32-bit integer and the diagnostic is text. Cleanup failure does not replace
+the original terminal reason. These notifications go only to authenticated peers
+with an established monitor or link for that actor. The complete payload remains
+bounded to 8192 bytes, with at most 4096 UTF-8 bytes of diagnostic text. Producers
+truncate longer diagnostics at a UTF-8 boundary with an explicit ` [truncated]`
+suffix inside that limit. Decoders reject missing, duplicate or unknown
+keys, malformed values and trailing bytes.
 
 ### The message body — CDDL-described tagged CBOR
 
@@ -378,11 +390,10 @@ failure. The existing `EnvelopeFrame::encode` surface is the template.
 **State: DELETED.** The `encode_header`, `decode_header`, and
 `validate_header` helpers in `std/encoding/wire/wire.hew` were removed.
 The CBOR envelope substrate (`hew-runtime/src/envelope.rs`, commit
-`04bfb422`) was the replacement; the migration is complete. JSON and YAML
-now expose format-specific owning values with automatic cleanup and checked
-accessors. Their former shared resource-shaped `CanonicalValueMethods` trait
-has been removed. TOML retains its independent resource API; MessagePack
-converts between its bytes and JSON text.
+`04bfb422`) was the replacement; the migration is complete. JSON, YAML and
+TOML now expose format-specific owning values with automatic cleanup and
+checked accessors. The former shared resource-shaped `CanonicalValueMethods`
+trait has been removed. MessagePack converts between its bytes and JSON text.
 
 ### S2. Cap'n Proto stub crate
 

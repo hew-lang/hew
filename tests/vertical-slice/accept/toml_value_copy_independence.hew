@@ -1,0 +1,71 @@
+// TOML values are independent owners: a copy, an extracted child and an
+// inserted child each survive mutation or release of the others, on normal,
+// early-return and actor task-scope exits.
+import std.encoding.toml;
+
+fn early_exit(flag: bool) {
+    var value = toml.table();
+    value.set("n", toml.from_int(11)).expect("table");
+    let child = value.get_field("n").expect("table").expect("present");
+    if flag {
+        return;
+    }
+    println(child.get_int().expect("integer"));
+}
+
+fn cancel_exit() {
+    var value = toml.table();
+    value.set("n", toml.from_int(13)).expect("table");
+    let _child = value.get_field("n").expect("table").expect("present");
+    var i: i64 = 0;
+    while i < 2 {
+        i = i + 1;
+    }
+}
+
+actor TomlCancelDriver {
+    receive fn drive() {
+        scope {
+            cancel_exit();
+        };
+        println("scope done");
+    }
+}
+
+fn main() {
+    // An extracted element outlives its parent.
+    let element = {
+        var value = toml.array();
+        value.push(toml.from_int(8)).expect("array");
+        value.push(toml.from_int(10)).expect("array");
+        value.array_get(0).expect("array").expect("present")
+    };
+    println(element.get_int().expect("integer"));
+
+    // A copy mutates without touching its source, and a child pushed into
+    // both stays independent of later edits to the original child.
+    var child = toml.array();
+    child.push(toml.from_int(1)).expect("array");
+    var source = toml.table();
+    source.set("items", child).expect("table");
+    var copy = source;
+    child.push(toml.from_int(2)).expect("array");
+    copy.set("items", toml.from_string("changed")).expect("table");
+    let items = source.get_field("items").expect("table").expect("present");
+    println(items.array_len().expect("array"));
+    println(child.array_len().expect("array"));
+
+    // A parse failure returns no value; a parsed child outlives its root.
+    match toml.parse("=") {
+        .Ok(_) => panic("malformed TOML unexpectedly parsed"),
+        .Err(_) => {}
+    }
+    let parsed_child = match toml.parse("n = 14") {
+        .Ok(parsed) => parsed.get_field("n").expect("table").expect("present"),
+        .Err(_) => panic("valid TOML did not parse"),
+    };
+    println(parsed_child.get_int().expect("integer"));
+    early_exit(true);
+    let driver = spawn TomlCancelDriver;
+    driver.drive().expect("drive completes");
+}

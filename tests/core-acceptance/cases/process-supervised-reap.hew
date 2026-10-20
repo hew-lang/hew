@@ -1,5 +1,6 @@
 import std.process;
 import std.os;
+import "../fixtures/process-probe.hew" as process_probe;
 
 // A supervised actor owns a child process. When the actor panics, releasing
 // its state kills and reaps the child, so no zombie outlives the incarnation,
@@ -7,7 +8,7 @@ import std.os;
 actor Owner {
     var child: Option<process.Child> = .None;
     receive fn launch() -> i64 {
-        let started = process.start(process.command("sleep", ["60"])).expect("sleep starts");
+        let started = process.start(process.command(os.args()[0], ["child"])).expect("child starts");
         let pid = started.id();
         child = .Some(started);
         pid
@@ -23,22 +24,18 @@ supervisor Group {
 }
 
 // `kill -0` succeeds for a running child and for an unreaped zombie alike, so
-// a refusal proves the process was reaped. Windows checks its process table
-// after the owner has closed the process handle.
+// a refusal proves the process was reaped. Windows checks termination and
+// executable identity instead of process-object disappearance.
 fn alive(pid: i64) -> bool {
-    let windows = match os.env("OS") {
-        .Some(name) => name == "Windows_NT",
-        .None => false,
-    };
-    let probe = if windows {
-        process.run_argv("powershell", ["-NoProfile", "-Command", f"Get-Process -Id {pid} -ErrorAction Stop | Out-Null"])
-    } else {
-        process.run_argv("kill", ["-0", f"{pid}"])
-    };
-    probe.expect("process probe runs").status == process.ExitStatus.Exited(0)
+    process_probe.alive(f"{pid}")
 }
 
 fn main() {
+    let args = os.args();
+    if args.len() > 1 && args[1] == "child" {
+        sleep(60s);
+        return;
+    }
     let group = spawn Group;
     let first = group.owner.launch().expect("launch");
     println(f"first alive: {alive(first)}");

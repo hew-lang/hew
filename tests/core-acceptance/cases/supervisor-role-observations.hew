@@ -1,0 +1,143 @@
+// Observations on a supervised actor role select its current incarnation.
+// When the role is vacant, the notification instead retains the stable role.
+import std.link_monitor.{DownNotification, DownReason, MonitorRef};
+
+import std.failure.{CrashKind, CrashNotification, DownTarget};
+
+actor Backend {
+    receive fn ping() -> string {
+        "pong"
+    }
+
+    receive fn fail() {
+        panic("backend failed");
+    }
+}
+
+supervisor Cluster {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child east: Backend;
+    child west: Backend;
+    child absent: Backend restart: temporary;
+}
+
+supervisor Spares {
+    strategy: simple_one_for_one;
+    intensity: 3 within 60s;
+
+    pool members: Backend count: 2;
+}
+
+supervisor Region {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+
+    child spares: Spares;
+}
+
+actor Watcher {
+    var watch: Option<MonitorRef> = .None;
+    var downs: i64 = 0;
+    var exits: i64 = 0;
+
+    receive fn monitor_role(backend: Backend) -> string {
+        let reply = backend.ping() handle e { f"{e}" };
+        watch = .Some(monitor(backend).expect("watcher is an actor"));
+        reply
+    }
+
+    receive fn link_role(backend: Backend) -> string {
+        let reply = backend.ping() handle e { f"{e}" };
+        link(backend).expect("watcher is an actor");
+        reply
+    }
+
+    receive fn monitor_vacant_role(backend: Backend) -> string {
+        watch = .Some(monitor(backend).expect("watcher is an actor"));
+        "vacant monitor registered"
+    }
+
+    receive fn link_vacant_role(backend: Backend) -> string {
+        link(backend).expect("watcher is an actor");
+        "vacant role linked"
+    }
+
+    receive fn seen() -> i64 {
+        downs + exits
+    }
+
+    #[on(down)]
+    fn down(note: DownNotification) {
+        match (note.target, note.reason) {
+            (DownTarget.Local(_), DownReason.Crashed(_)) => {
+                downs += 1;
+            }
+            (DownTarget.Role(token), DownReason.Stopped) if token > 0 => {
+                downs += 1;
+            }
+            _ => panic("wrong down target or reason"),
+        }
+    }
+
+    #[on(link)]
+    fn peer_exit(note: CrashNotification) {
+        match note.target {
+            DownTarget.Local(_) => {}
+            DownTarget.Role(token) if token > 0 => {}
+            _ => panic("wrong linked target"),
+        }
+        assert(note.kind == CrashKind.Fault);
+        exits += 1;
+    }
+}
+
+fn main() {
+    let cluster = spawn Cluster;
+    let watcher = spawn Watcher;
+    println(f"monitor: {watcher.monitor_role(cluster.east):?}");
+    let _ = cluster.east.fail();
+    restarted(cluster.east);
+    while watcher.seen().expect("watcher is running") < 1 {
+        sleep(1ms);
+    }
+    println("monitored role crashed");
+    println(f"link: {watcher.link_role(cluster.west):?}");
+    let _ = cluster.west.fail();
+    restarted(cluster.west);
+    while watcher.seen().expect("watcher is running") < 2 {
+        sleep(1ms);
+    }
+    println("linked role exited");
+    println(f"replacement: {cluster.east.ping():?}");
+
+    // A temporary child leaves a stable role with no current incarnation.
+    stop(cluster.absent);
+    stopped(cluster.absent);
+    // Actor cleanup precedes the supervisor's final role ruling.
+    restarted(cluster.absent);
+    println(f"vacant monitor: {watcher.monitor_vacant_role(cluster.absent):?}");
+    println(f"vacant link: {watcher.link_vacant_role(cluster.absent):?}");
+    while watcher.seen().expect("watcher is running") < 4 {
+        sleep(1ms);
+    }
+    println("vacant role down");
+    println("vacant role exit");
+
+    // A pool member inside a nested supervisor is a role as well.
+    let region = spawn Region;
+    println(f"pool monitor: {watcher.monitor_role(region.spares.members[1]):?}");
+    let _ = region.spares.members[1].fail();
+    restarted(region.spares.members[1]);
+    while watcher.seen().expect("watcher is running") < 5 {
+        sleep(1ms);
+    }
+    println("monitored role crashed");
+    stop(region);
+    stopped(region);
+    stop(watcher);
+    stopped(watcher);
+    stop(cluster);
+    stopped(cluster);
+}

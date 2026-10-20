@@ -403,28 +403,6 @@ impl Checker {
         self.type_def_exact(qualified).map(|_| qualified.clone())
     }
 
-    pub(super) fn flat_file_import_type_owner(&self, name: &str) -> Option<String> {
-        if self.current_module.is_some() {
-            return None;
-        }
-        let mut owners: Vec<String> =
-            self.registered_type_owners(name)
-                .into_iter()
-                .filter(|owner| {
-                    owner.rsplit_once('.').is_some_and(|(module, _)| {
-                        self.flat_file_import_module_names.contains(module)
-                    }) && self.type_def_exact(owner).is_some()
-                        && self.resolved_builtin_type(owner).is_none()
-                })
-                .collect();
-        owners.sort_unstable();
-        owners.dedup();
-        match owners.as_slice() {
-            [only] => Some(only.clone()),
-            _ => None,
-        }
-    }
-
     pub(super) fn is_current_module_type_def(&self, name: &str) -> bool {
         self.current_module_identity().is_some_and(|module| {
             name.rsplit_once('.')
@@ -536,19 +514,7 @@ impl Checker {
         // presentation through the general unique-owner fallback would turn
         // it into a source nominal after the lexical authority has gone away.
         // Non-root stdlib bodies keep their owner through the branch above.
-        //
-        // A USER declaration whose bare leaf collides with a builtin name is
-        // the exception: a file-imported `type Result` shadows the prelude
-        // enum, and its layout registration is keyed by the declaring file's
-        // full owner (`lib.Result`). Keeping the spelling bare here hands MIR
-        // a field-order key its registration can never match. Yield to a
-        // unique NON-builtin, non-stdlib declaration owner — exactly the
-        // qualification every non-builtin-shaped leaf receives below — and
-        // keep the builtin presentation only when no such user owner exists.
         if self.current_module.is_none() && crate::lookup_builtin_type(name).is_some() {
-            if let Some(owner) = self.flat_file_import_type_owner(name) {
-                return Some(owner);
-            }
             return None;
         }
         // Exactly one module published this bare name → its owner-qualified
@@ -1033,9 +999,6 @@ impl Checker {
         if published_identities.len() > 1 {
             let mut candidates: Vec<String> = published_identities.clone();
             candidates.sort();
-            for candidate in &candidates {
-                self.note_path_use(candidate);
-            }
             self.report_error_with_suggestions(
                 TypeErrorKind::AmbiguousType,
                 span,
@@ -2602,7 +2565,7 @@ impl Checker {
                 // A binder is its own type, even when an actor or handler
                 // trait elsewhere shares its spelling.
                 if let crate::TypeHead::Nominal(nominal) = *head {
-                    if self.name_is_actor_handle_nominal(nominal.spelling.as_str()) {
+                    if self.nominal_is_actor_handle(nominal) {
                         *head = crate::TypeHead::Actor(nominal);
                     }
                 }
@@ -2639,22 +2602,18 @@ impl Checker {
         }
     }
 
-    /// Whether a written nominal names an actor handle: a declared actor, or a
-    /// handler-style trait an actor satisfies structurally.
-    fn name_is_actor_handle_nominal(&self, name: &str) -> bool {
-        if self.lookup_type_def(name).is_some_and(|definition| {
-            matches!(
-                definition.kind,
-                super::types::TypeDefKind::Actor | super::types::TypeDefKind::Supervisor
-            )
-        }) {
-            return true;
-        }
-        if self.supervisor_children.contains_key(name) {
-            return true;
-        }
-        self.lookup_declaration(name)
-            .is_some_and(|id| self.trait_is_handler_style(id))
+    /// Whether a written nominal names an actor handle: a declared actor or
+    /// supervisor, or a handler-style trait an actor satisfies structurally.
+    ///
+    /// The nominal's declaration decides it. Its spelling is display data and
+    /// differs between the declaring file and a file that imports it, so a
+    /// lookup by spelling misses an imported supervisor.
+    fn nominal_is_actor_handle(&self, nominal: crate::NominalHead) -> bool {
+        let declaration = nominal.id.declaration();
+        matches!(
+            self.defs.kind(declaration),
+            crate::DeclarationKind::Actor | crate::DeclarationKind::Supervisor
+        ) || self.trait_is_handler_style(declaration)
     }
 
     #[expect(

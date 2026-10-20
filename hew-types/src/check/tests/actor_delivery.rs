@@ -427,10 +427,33 @@ fn a_completion_call_chain_without_a_cycle_is_accepted() {
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
+/// A completion call to another actor of the caller's own type is not a
+/// static ring: a chain of `Stage`s reaches a different instance each time and
+/// ends where `next` is empty. Only the runtime can see a ring of instances.
+#[test]
+fn a_same_type_completion_chain_through_a_field_is_accepted() {
+    let output = check_source(
+        "actor Stage {\n    let factor: i64;\n    let next: Option<Stage>;\n    receive fn process(v: i64) -> i64 {\n        let out = v * factor;\n        match next {\n            .Some(stage) => stage.process(out).expect(\"next stage\"),\n            .None => out,\n        }\n    }\n}\n\nfn main() {\n    let last = spawn Stage { factor: 3, next: .None };\n    let first = spawn Stage { factor: 2, next: .Some(last) };\n    println(first.process(5).expect(\"first stage\"));\n}\n",
+    );
+    assert!(
+        !output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("completion calls form a cycle")),
+        "{:?}",
+        output.errors
+    );
+}
+
 #[test]
 fn self_completion_is_refused_inside_receive_and_private_method_bodies() {
     for body in [
         "receive fn run() { let _ = self.done(); }",
+        "receive fn run() { let alias = self; let next = alias; let _ = next.done(); }",
+        "receive fn run() { let alias = self; let _ = policy(alias, on_full: .Reject).done(); }",
+        "receive fn run() { let view = policy(self, on_full: .Wait); let _ = view.done(); }",
+        "receive fn run(flag: bool) { let alias = if flag { self } else { self }; let _ = alias.done(); }",
+        "receive fn run(other: Worker) { var alias = other; alias = self; let _ = alias.done(); }",
         "receive fn run() { helper(); } fn helper() { let _ = self.done(); }",
     ] {
         let output = check_source(&format!(
@@ -457,6 +480,23 @@ fn self_mailbox_submission_and_calls_to_another_instance_remain_valid() {
          } fn main() {}",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn self_alias_reassignment_unknown_branches_and_mailbox_remain_valid() {
+    for body in [
+        "let alias = self; let _ = mailbox(alias, on_full: .Reject).done();",
+        "var alias = self; alias = other; let _ = alias.done();",
+        "var alias = self; alias = spawn Worker; let _ = alias.done();",
+        "let alias = if flag { self } else { other }; let _ = alias.done();",
+        "let alias = other; let _ = policy(alias, on_full: .Reject).done();",
+    ] {
+        let output = check_source(&format!(
+            "actor Worker {{ receive fn run(other: Worker, flag: bool) {{ {body} }} \
+             receive fn done() {{}} }} fn main() {{}}"
+        ));
+        assert!(output.errors.is_empty(), "{body}: {:?}", output.errors);
+    }
 }
 
 #[test]

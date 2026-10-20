@@ -1,6 +1,6 @@
 use hew_hir::{
-    lower_program, verify_hir, BindingId, HirDiagnosticKind, HirExpr, HirExprKind,
-    HirGenCaptureSource, HirItem, HirStmtKind, ResolutionCtx,
+    lower_program, verify_hir, BindingId, HirDiagnosticKind, HirExpr, HirExprKind, HirItem,
+    HirStmtKind, ResolutionCtx,
 };
 use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy};
 
@@ -264,16 +264,9 @@ fn find_actor<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a hew_hir::
 }
 
 #[test]
-fn actor_receive_gen_fn_yield_lowers_through_genblock() {
-    // Regression: `yield` inside an actor `receive gen fn` used to find an
-    // empty `generator_yield_tys` stack during HIR lowering ("yield expression
-    // has no enclosing generator yield type") because `lower_actor_receive_fn`
-    // never pushed the handler's Yield type the way `lower_generator_fn_body`
-    // does for a standalone `gen fn`. The handler now lowers its body through
-    // the shared `GenBlock` path: the outer block is a thin wrapper whose tail
-    // is a `GenBlock` typed `Generator<Yield = i64, Return = Unit>`, with the
-    // yields inside the GenBlock body. This is the producer-side analogue of
-    // `gen_fn_lowers_to_generator_returning_fn_with_genblock_body`.
+fn actor_receive_gen_fn_yield_keeps_its_element_type() {
+    // The producer's body returns unit, but every yield retains the handler's
+    // declared stream element type through the ordinary actor-body lowering.
     let output = typecheck_and_lower(
         r"
         actor Seq {
@@ -301,36 +294,9 @@ fn actor_receive_gen_fn_yield_lowers_through_genblock() {
         handler.is_generator,
         "receive gen fn must carry is_generator"
     );
-    // `return_ty` stays the declared element type (the protocol/ABI layer
-    // consults it as the stream element type); the body tail carries the
-    // generator handle type.
     assert_eq!(handler.return_ty, ResolvedTy::I64);
-    assert!(
-        handler.body.statements.is_empty(),
-        "generator handler outer block should be a thin GenBlock wrapper"
-    );
-    let tail = handler
-        .body
-        .tail
-        .as_ref()
-        .expect("generator handler body must have a GenBlock tail");
-    let HirExprKind::GenBlock {
-        body,
-        yield_ty,
-        return_ty,
-        captures: _,
-    } = &tail.kind
-    else {
-        panic!("expected GenBlock tail, got {:?}", tail.kind);
-    };
-    assert_eq!(yield_ty, &ResolvedTy::I64);
-    assert_eq!(return_ty, &ResolvedTy::Unit);
-    assert_generator_type(&tail.ty, &ResolvedTy::I64, &ResolvedTy::Unit);
-
-    // The first `yield 1;` is a statement; the trailing `yield 2;` (with a
-    // semicolon) is also a statement, so the GenBlock body has two statement
-    // yields and no tail yield.
-    let yields = yield_values(body);
+    assert_eq!(handler.body.ty, ResolvedTy::Unit);
+    let yields = yield_values(&handler.body);
     assert_eq!(yields.len(), 2, "expected two statement yields in gen body");
     for (value, yield_ty) in yields {
         assert_eq!(yield_ty, &ResolvedTy::I64);
@@ -411,79 +377,46 @@ fn gen_block_as_value_is_binding_initializer() {
 }
 
 #[test]
-fn receive_gen_fn_state_field_capture_passes_verify() {
-    // A `receive gen fn` reading an actor state field lowers that field as an
-    // `ActorStateField`-tagged gen capture. Its binding id is synthetic —
-    // `lower_actor_generator_body` mints it while binding the actor's state
-    // fields into scope, and no `HirBinding` declaration node carries it — so
-    // it is intentionally absent from the verifier's declared-binding set and
-    // MUST be exempt from the generator DanglingRef gate. Before the exemption,
-    // `verify_hir` wrongly rejected a stateful receive-gen as a dangling
-    // capture, blocking the whole `hew run` pipeline before MIR.
+fn receive_gen_fn_uses_actor_state_binding() {
     let output = typecheck_and_lower(
         r"actor Ticker {
-    var base: i64;
-    init(b: i64) {
-        base = b;
-    }
-    receive gen fn stream(n: i64) -> i64 {
-        var i = 0;
-        while i < n {
-            yield base + i;
-            i = i + 1;
-        }
+    var base: i64 = 100;
+    receive gen fn stream() -> i64 {
+        yield base;
     }
 }
-
-fn main() {
-    let _t = spawn Ticker { b: 100 };
-}
+fn main() { let _ticker = spawn Ticker; }
 ",
     );
-    assert!(
-        output.diagnostics.is_empty(),
-        "unexpected HIR diagnostics: {:?}",
-        output.diagnostics
-    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let verify = verify_hir(&output.module);
-    assert!(
-        verify.is_empty(),
-        "state-field gen capture must pass verify (exemption): {verify:?}"
-    );
-
-    // Precisely: the `base` state field reached the capture list tagged
-    // `ActorStateField` (the tag the exemption keys on).
+    assert!(verify.is_empty(), "actor producer must verify: {verify:?}");
     let actor = find_actor(&output, "Ticker");
     let handler = actor
         .receive_handlers
         .iter()
-        .find(|receive| receive.name == "stream")
-        .expect("stream generator receive handler should lower");
-    let tail = handler
-        .body
-        .tail
-        .as_ref()
-        .expect("generator handler body must have a GenBlock tail");
-    let HirExprKind::GenBlock { captures, .. } = &tail.kind else {
-        panic!("expected GenBlock tail, got {:?}", tail.kind);
+        .find(|handler| handler.name == "stream")
+        .expect("stream handler");
+    let HirStmtKind::Expr(expression) = &handler.body.statements[0].kind else {
+        panic!("expected producer yield");
+    };
+    let HirExprKind::Yield {
+        value: Some(value), ..
+    } = &expression.kind
+    else {
+        panic!("expected producer yield");
     };
     assert!(
-        captures
-            .iter()
-            .any(|c| c.name == "base" && c.source == HirGenCaptureSource::ActorStateField),
-        "`base` must be an ActorStateField-tagged capture: {captures:?}"
+        matches!(&value.kind, HirExprKind::BindingRef { resolved, .. }
+        if *resolved == hew_hir::ResolvedRef::Binding(handler.state_bindings[0].id)),
+        "yield must read the actor state binding: {value:?}"
     );
 }
 
 #[test]
 fn generator_local_capture_with_undeclared_binding_still_trips_dangling_ref() {
-    // Guardrail: the DanglingRef exemption is NARROW. It applies ONLY to
-    // synthetic `ActorStateField` captures. A `Local` capture (a `gen fn`'s
-    // own param, a `gen {}` block's outer local, or a receive-gen handler
-    // param) that references a binding not declared in the resolved HIR is a
-    // resolver bug and MUST still be caught. Lower a real `gen fn` whose param
-    // is a Local capture, corrupt that capture's binding id to an undeclared
-    // sentinel, and confirm `verify_hir` still fires DanglingRef.
+    // Every generator capture must name a declared binding. Corrupt an
+    // otherwise valid parameter capture to prove that check remains active.
     let mut output = typecheck_and_lower(
         r"
         gen fn count(x: i64) -> i64 { yield x; }
@@ -514,12 +447,6 @@ fn generator_local_capture_with_undeclared_binding_still_trips_dangling_ref() {
     let HirExprKind::GenBlock { captures, .. } = &mut tail.kind else {
         panic!("expected GenBlock tail");
     };
-    assert_eq!(
-        captures[0].source,
-        HirGenCaptureSource::Local,
-        "the gen fn param must be a Local capture"
-    );
-    // Point the Local capture at a binding id that no declaration mints.
     captures[0].binding = BindingId(u32::MAX);
 
     let verify = verify_hir(&output.module);
@@ -527,6 +454,6 @@ fn generator_local_capture_with_undeclared_binding_still_trips_dangling_ref() {
         verify
             .iter()
             .any(|d| matches!(d.kind, HirDiagnosticKind::DanglingRef { .. })),
-        "a dangling Local gen capture must still trip DanglingRef: {verify:?}"
+        "a dangling generator capture must still trip DanglingRef: {verify:?}"
     );
 }

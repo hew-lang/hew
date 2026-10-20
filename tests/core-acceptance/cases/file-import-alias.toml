@@ -1,0 +1,10 @@
+[[case]]
+id = "file-import-alias"
+intent = "Two aliased quoted imports that both publish `encode` coexist; calls, constants and types are reached through each alias, and each file keeps its own private helper."
+source = "fixtures/file-import-alias/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "h:ab\nr:ab\nhuffman rle\n6\n"
+exit = 0

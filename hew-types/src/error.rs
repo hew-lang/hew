@@ -814,6 +814,8 @@ pub enum TypeErrorKind {
     ReservedTypeName,
     /// Assigning to immutable variable
     MutabilityError,
+    /// An immutable closure or lambda actor capture was mutated.
+    ImmutableCaptureMutation,
     LocalUninitialized,
     LocalConditionalInit,
     /// Return statement type doesn't match function signature
@@ -1059,14 +1061,6 @@ pub enum TypeErrorKind {
         /// The concrete linker symbol named by both declarations.
         symbol_name: String,
     },
-    /// A `gen { }` generator block appeared inside an actor receive handler.
-    ///
-    /// The scheduler holds the actor-state lock for the entire handler
-    /// invocation; a mid-handler yield cannot release it, so generator blocks
-    /// are statically forbidden inside actor receive handlers.
-    ///
-    /// Envelope code: `E_GENBLOCK_IN_ACTOR_RECEIVE`.
-    GenBlockInActorReceive,
     /// A `gen { }` generator block whose body contains no `yield` expression.
     ///
     /// The checker infers the yield type from `yield` expressions inside the
@@ -1530,6 +1524,7 @@ impl TypeErrorKind {
             Self::DuplicateDefinition => "DuplicateDefinition",
             Self::ReservedTypeName => "ReservedTypeName",
             Self::MutabilityError => "MutabilityError",
+            Self::ImmutableCaptureMutation => "ImmutableCaptureMutation",
             Self::LocalUninitialized => "E_LOCAL_UNINITIALIZED",
             Self::LocalConditionalInit => "E_LOCAL_CONDITIONAL_INIT",
             Self::ReturnTypeMismatch => "ReturnTypeMismatch",
@@ -1583,7 +1578,6 @@ impl TypeErrorKind {
             Self::AssocTypeProjectionFailed { .. } => "AssocTypeProjectionFailed",
             Self::ExternRtSymbolUnclassified { .. } => "ExternRtSymbolUnclassified",
             Self::ConflictingExternDeclaration { .. } => "ConflictingExternDeclaration",
-            Self::GenBlockInActorReceive => "GenBlockInActorReceive",
             Self::EmptyGenerator => "EmptyGenerator",
             Self::ClosureRecursive { .. } => "ClosureRecursive",
             Self::SinkPayloadNotWire { .. } => "SinkPayloadNotWire",

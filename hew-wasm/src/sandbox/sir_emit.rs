@@ -2340,6 +2340,10 @@ fn suspend_shape(kind: &SuspendKind) -> (&'static str, serde_json::Value) {
             "ServiceAcquire",
             serde_json::json!({"actor": actor.0, "export": export}),
         ),
+        SuspendKind::SemaphoreAcquire { operation } => (
+            "SemaphoreAcquire",
+            serde_json::json!({ "operation": format!("{operation:?}") }),
+        ),
         SuspendKind::NativeIo { operation } => (
             "NativeIo",
             serde_json::json!({ "operation": format!("{operation:?}") }),

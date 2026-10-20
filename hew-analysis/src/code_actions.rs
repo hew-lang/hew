@@ -767,6 +767,35 @@ mod tests {
         assert_eq!(actions[0].edits[0].new_text, "var");
     }
 
+    #[test]
+    fn private_capture_mutation_does_not_rewrite_the_enclosing_binding() {
+        for literal in ["||", "actor ||"] {
+            let source =
+                format!("fn main() {{ let x = 1; let worker = {literal} {{ x += 1; }}; }}");
+            let parsed = hew_parser::parse(&source);
+            assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+            let output = hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(
+                Vec::new(),
+            ))
+            .check_program(&parsed.program);
+            let error = output
+                .errors
+                .iter()
+                .find(|error| {
+                    error.kind == hew_types::error::TypeErrorKind::ImmutableCaptureMutation
+                })
+                .expect("capture mutation diagnostic");
+            let diagnostic = DiagnosticInfo {
+                kind: Some(error.kind.as_kind_str().to_string()),
+                // Even ordinary binding prose cannot change the typed action policy.
+                message: "cannot assign to immutable variable `x`".into(),
+                span: OffsetSpan::from(error.span.clone()),
+                suggestions: error.suggestions.clone(),
+            };
+            assert!(build_code_actions(&source, &[diagnostic]).is_empty());
+        }
+    }
+
     // ── UnusedMut ────────────────────────────────────────────────────
 
     #[test]

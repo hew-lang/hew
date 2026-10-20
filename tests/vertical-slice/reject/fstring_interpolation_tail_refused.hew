@@ -1,0 +1,7 @@
+fn main() {
+    let width = 42;
+    let ratio = 3.14159;
+    println(f"[{width:<8}] [{ratio:.2}]");
+    println(f"[{width garbage}]");
+    println(f"[{width:?}] [{ width }]");
+}

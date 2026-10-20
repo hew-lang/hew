@@ -90,6 +90,73 @@ fn main() {
     assert_eq!(wasm.stdout, b"hew\n");
 }
 
+/// Nonblocking permits use the same count transitions and resource cleanup on
+/// both targets.
+#[test]
+fn semaphore_nonblocking_operations_run_on_native_and_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let source = repo_root().join("tests/vertical-slice/accept/semaphore_nonblocking.hew");
+    for (target, output) in [
+        ("native", support::run_bounded_hew_run(&source, repo_root())),
+        ("WASI", run_wasi_example(&source)),
+    ] {
+        assert!(
+            output.status.success(),
+            "{target} semaphore failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert_eq!(output.stdout, b"semaphore ok\n");
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn semaphore_owned_waits_match_on_native_and_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let source = repo_root().join("tests/vertical-slice/accept/semaphore_owned_waits.hew");
+    let source = source.to_str().expect("source path");
+    for optimization in ["0", "2"] {
+        for target in [None, Some("wasm32-wasi")] {
+            let mut args = vec!["run", source];
+            if let Some(target) = target {
+                args.extend(["--target", target]);
+            }
+            let mut command = support::hew_command();
+            command
+                .args(&args)
+                .current_dir(repo_root())
+                .env("HEW_OPT_LEVEL", optimization);
+            let output = support::run_bounded_command(
+                command,
+                format!("semaphore {target:?} O{optimization}"),
+            );
+            assert!(
+                output.status.success(),
+                "{target:?} O{optimization}: {}",
+                support::describe_output(&output)
+            );
+            assert_eq!(output.stdout, b"owned semaphore ok\n");
+            if target.is_none() {
+                assert!(
+                    output.stderr.is_empty(),
+                    "{}",
+                    support::describe_output(&output)
+                );
+            } else {
+                // The delayed release intentionally exercises WASI's cooperative timer.
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(
+                    stderr.contains("timers are cooperative on wasm32"),
+                    "{stderr}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn curated_playground_examples_run_under_wasi() {
     require_wasi_runner();
@@ -554,13 +621,10 @@ fn toml_encoding_round_trips_under_wasi() {
         "import std.encoding.toml;\n\
          \n\
          fn main() {\n\
-         \x20   let doc = match toml.parse(\"[package]\\nname = \\\"hew\\\"\") { .Ok(value) => value, .Err(_) => panic(\"TOML parse failed\"), };\n\
-         \x20   let pkg = doc.get_field(\"package\");\n\
-         \x20   let name = pkg.get_field(\"name\");\n\
-         \x20   println(name.get_string());\n\
-         \x20   name.free();\n\
-         \x20   pkg.free();\n\
-         \x20   doc.free();\n\
+         \x20   let doc = toml.parse(\"[package]\\nname = \\\"hew\\\"\").expect(\"valid TOML\");\n\
+         \x20   let pkg = doc.get_field(\"package\").expect(\"table\").expect(\"present\");\n\
+         \x20   let name = pkg.get_field(\"name\").expect(\"table\").expect(\"present\");\n\
+         \x20   println(name.get_string().expect(\"string\"));\n\
          }\n",
     )
     .expect("write TOML WASI parity source");

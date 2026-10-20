@@ -835,10 +835,14 @@ unsafe fn wait_for_handshake(node1: *mut HewNode, node2: *mut HewNode) {
         let ready = unsafe {
             let mgr1 = &*(*node1).conn_mgr;
             let mgr2 = &*(*node2).conn_mgr;
-            let conn1 =
-                connection::hew_connmgr_conn_id_for_node((*node1).conn_mgr, (*node2).route_slot);
-            let conn2 =
-                connection::hew_connmgr_conn_id_for_node((*node2).conn_mgr, (*node1).route_slot);
+            let conn1 = connection::first_active_connection_for_test(
+                (*node1).conn_mgr,
+                (*node2).route_slot,
+            );
+            let conn2 = connection::first_active_connection_for_test(
+                (*node2).conn_mgr,
+                (*node1).route_slot,
+            );
             conn1 >= 0
                 && conn2 >= 0
                 && connection::authenticated_peer_node_id_for_conn(mgr1, conn1)

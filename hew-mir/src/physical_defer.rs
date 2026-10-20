@@ -151,6 +151,12 @@ pub(super) fn edges(term: &PhysicalTerminator) -> Vec<&PhysicalEdge> {
             unwind,
             ..
         }
+        | PhysicalTerminator::SemaphoreAcquire {
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::ServiceAcquire {
             normal,
             cancel,
@@ -420,6 +426,7 @@ pub(super) fn verify_regions(
             match &block.terminator {
                 PhysicalTerminator::CheckedBinary { result, .. }
                 | PhysicalTerminator::NativeIo { result, .. }
+                | PhysicalTerminator::SemaphoreAcquire { result, .. }
                 | PhysicalTerminator::ServiceAcquire { result, .. }
                 | PhysicalTerminator::WireCodec { result, .. }
                 | PhysicalTerminator::ValueCall { result, .. } => {

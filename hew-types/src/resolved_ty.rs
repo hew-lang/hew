@@ -571,6 +571,14 @@ impl ResolvedTy {
         self.head().and_then(TypeHead::builtin) == Some(expected)
     }
 
+    /// Returns whether this type is one of the owning encoding value carriers.
+    #[must_use]
+    pub fn is_encoding_value(&self) -> bool {
+        self.head()
+            .and_then(TypeHead::builtin)
+            .is_some_and(BuiltinType::is_encoding_value)
+    }
+
     /// Returns `true` for every concrete integer type admitted by the checker.
     /// `Bool` and `Char` are deliberately excluded: `bool` participates in
     /// explicit casts only through the checker-owned bool<->integer rules, and

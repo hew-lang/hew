@@ -17,6 +17,7 @@ use crate::ast::{
     Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
     TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
     TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
+    WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -324,6 +325,21 @@ impl<'a> Formatter<'a> {
     /// Index of the first source token starting at or after `pos`.
     fn token_at_or_after(&self, pos: usize) -> usize {
         self.tokens.partition_point(|(_, span)| span.start < pos)
+    }
+
+    /// The first source token of a method: its first attribute, or the
+    /// `pub`/`package` visibility in front of `fn`, which `fn_span` does not
+    /// cover.
+    fn method_start(&self, method: &FnDecl) -> usize {
+        let before_fn = self
+            .token_at_or_after(method.fn_span.start)
+            .checked_sub(1)
+            .and_then(|index| self.tokens.get(index));
+        let start = match before_fn {
+            Some((hew_lexer::Token::Pub | hew_lexer::Token::Package, span)) => span.start,
+            _ => method.fn_span.start,
+        };
+        member_start(&method.attributes, start)
     }
 
     /// Start of the first source token at or after `from` and before `to`
@@ -1260,7 +1276,13 @@ impl<'a> Formatter<'a> {
             }
         }
         for (i, item) in program.items.iter().enumerate() {
-            self.flush_comments_and_separate(item.1.start, i > 0);
+            // Consecutive imports stay packed unless the author separated
+            // them with a blank line; every other pair of items is separated.
+            let separate = i > 0
+                && !(matches!(item.0, Item::Import(_))
+                    && matches!(program.items[i - 1].0, Item::Import(_))
+                    && !blank_line_before(self.source, item.1.start));
+            self.flush_comments_and_separate(item.1.start, separate);
             self.prev_source_pos = item.1.start;
             self.format_item(&item.0, item.1.start, item.1.end);
             // Only advance if format_item didn't already advance past the item
@@ -1279,16 +1301,29 @@ impl<'a> Formatter<'a> {
         match item {
             Item::Macro(_) | Item::MacroCall(_) => {
                 self.write_indent();
-                self.write(
-                    self.source
-                        .get(span_start..span_end)
-                        .unwrap_or_default()
-                        .trim_end(),
-                );
+                let token_start = self.token_at_or_after(span_start);
+                let token_end = self.tokens[token_start..]
+                    .iter()
+                    .take_while(|(_, span)| span.start < span_end)
+                    .filter(|(token, _)| {
+                        !matches!(
+                            token,
+                            hew_lexer::Token::DocComment(_) | hew_lexer::Token::InnerDocComment(_)
+                        )
+                    })
+                    .last()
+                    .map_or(span_start, |(_, span)| span.end);
+                if let Some(source) = self.source.get(span_start..token_end) {
+                    // Macro syntax is retained verbatim, including comments
+                    // inside its token trees. Keep the item boundary at its
+                    // final token so a comment before the following item stays
+                    // available to the normal comment flusher.
+                    self.output.push_str(source);
+                }
                 self.newline();
-                self.prev_source_pos = span_end;
+                self.prev_source_pos = token_end;
                 while self.next_comment < self.comments.len()
-                    && self.comments[self.next_comment].span.start < span_end
+                    && self.comments[self.next_comment].span.start < token_end
                 {
                     self.next_comment += 1;
                 }
@@ -1348,13 +1383,13 @@ impl<'a> Formatter<'a> {
                     }
                 }
             }
-            // Whole-module alias (`import path as alias;`). The parser only
-            // accepts this for the whole-module form, so it never coexists
-            // with a `::{ }` / `::*` spec.
-            if let Some(alias) = &decl.module_alias {
-                self.write(" as ");
-                self.write_ident(*alias);
-            }
+        }
+        // Whole-module alias (`import path as alias;`, `import "f.hew" as
+        // alias;`). The parser only accepts this for the whole-module and
+        // file forms, so it never coexists with a `.{ }` spec.
+        if let Some(alias) = &decl.module_alias {
+            self.write(" as ");
+            self.write_ident(*alias);
         }
         self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
     }
@@ -1489,7 +1524,7 @@ impl<'a> Formatter<'a> {
                     self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                 }
                 TypeBodyItem::Method(f) => {
-                    self.begin_member(member_start(&f.attributes, f.fn_span.start), false);
+                    self.begin_member(self.method_start(f), false);
                     let has_consuming_self =
                         decl.consuming_methods.iter().any(|name| name == &f.name);
                     self.format_type_body_method(f, f.fn_span.end, has_consuming_self);
@@ -1584,6 +1619,9 @@ impl<'a> Formatter<'a> {
         self.indent += 1;
         match decl.kind {
             TypeDeclKind::Struct => {
+                // `reserved` clauses print among the fields where they were
+                // written; the AST keeps them in a separate list.
+                let mut reserved = wire.reserved.iter().peekable();
                 for (i, item) in decl.body.iter().enumerate() {
                     if let TypeBodyItem::Field {
                         name,
@@ -1593,6 +1631,9 @@ impl<'a> Formatter<'a> {
                         ..
                     } = item
                     {
+                        while let Some(clause) = reserved.next_if(|c| c.span.start < span.start) {
+                            self.format_wire_reserved(clause);
+                        }
                         self.flush_comments_before(span.start);
                         self.prev_source_pos = span.start;
                         self.format_attributes(attributes);
@@ -1617,18 +1658,8 @@ impl<'a> Formatter<'a> {
                         self.prev_source_pos = self.prev_source_pos.max(span.end);
                     }
                 }
-                // Emit reserved field numbers
-                if !wire.reserved_numbers.is_empty() {
-                    self.write_indent();
-                    self.write("reserved ");
-                    for (i, n) in wire.reserved_numbers.iter().enumerate() {
-                        if i > 0 {
-                            self.write(", ");
-                        }
-                        self.write("@");
-                        self.write(&n.to_string());
-                    }
-                    self.write_token(";\n", |t| matches!(t, hew_lexer::Token::Semicolon));
+                for clause in reserved {
+                    self.format_wire_reserved(clause);
                 }
             }
             TypeDeclKind::Enum => {
@@ -1651,6 +1682,23 @@ impl<'a> Formatter<'a> {
         }
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    fn format_wire_reserved(&mut self, clause: &WireReserved) {
+        self.flush_comments_before(clause.span.start);
+        self.prev_source_pos = clause.span.start;
+        self.write_indent();
+        self.write("reserved ");
+        for (i, n) in clause.numbers.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write("@");
+            self.write(&n.to_string());
+        }
+        self.write(";");
+        self.newline();
+        self.prev_source_pos = self.prev_source_pos.max(clause.span.end);
     }
 
     /// The attributes a wire declaration folds into its metadata, for a
@@ -1875,11 +1923,7 @@ impl<'a> Formatter<'a> {
             .type_aliases
             .iter()
             .map(|alias| (alias.span.start, Ok(alias)))
-            .chain(
-                decl.methods
-                    .iter()
-                    .map(|m| (member_start(&m.attributes, m.fn_span.start), Err(m))),
-            )
+            .chain(decl.methods.iter().map(|m| (self.method_start(m), Err(m))))
             .collect();
         members.sort_by_key(|(start, _)| *start);
         for (i, (start, member)) in members.iter().enumerate() {
@@ -2013,12 +2057,11 @@ impl<'a> Formatter<'a> {
                 ActorMember::Receive(r),
             )
         }));
-        members.extend(decl.methods.iter().map(|m| {
-            (
-                member_start(&m.attributes, m.fn_span.start),
-                ActorMember::Method(m),
-            )
-        }));
+        members.extend(
+            decl.methods
+                .iter()
+                .map(|m| (self.method_start(m), ActorMember::Method(m))),
+        );
         members.sort_by_key(|(start, _)| *start);
 
         let mut previous_was_field = false;
@@ -2338,12 +2381,9 @@ impl<'a> Formatter<'a> {
     fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
         self.write("on ");
         self.write_ident(transition.event_name);
-        // Re-emit the `on E { a, b }:` head binding from the side-list. The
-        // parser splices a `let a = event.a;` prelude into the body for
-        // lowering; we strip that prelude below so it does not double up.
         if !transition.event_bindings.is_empty() {
             self.write(" { ");
-            for (i, name) in transition.event_bindings.iter().enumerate() {
+            for (i, (name, _)) in transition.event_bindings.iter().enumerate() {
                 if i > 0 {
                     self.write(", ");
                 }
@@ -2370,15 +2410,7 @@ impl<'a> Formatter<'a> {
             self.write(" when ");
             self.format_expr(guard);
         }
-        // Head bindings are parser-generated locals, not authored body statements.
-        let stripped_body;
-        let body_expr = if transition.event_bindings.is_empty() {
-            &transition.body.0
-        } else {
-            stripped_body =
-                Self::strip_event_binding_prelude(&transition.body.0, &transition.event_bindings);
-            &stripped_body
-        };
+        let body_expr = &transition.body.0;
         match transition.body_form {
             MachineTransitionBodyForm::Implicit => self.write(";"),
             MachineTransitionBodyForm::PayloadShorthand => {
@@ -2433,53 +2465,6 @@ impl<'a> Formatter<'a> {
                 }
             }
         }
-    }
-
-    /// Strip the leading `let <binding> = event.<binding>;` prelude statements
-    /// the parser splices in for an `on E { bindings }: …` head binding, so the
-    /// formatter can re-emit the head form without the desugar. If, after
-    /// stripping, only a tail expression remains, that tail becomes the body
-    /// (collapsing a one-line `on E { x }: S => T { Body }` back to its head form).
-    fn strip_event_binding_prelude(body: &Expr, bindings: &[Ident]) -> Expr {
-        let Expr::Block(block) = body else {
-            return body.clone();
-        };
-        // Count how many leading statements are the synthesized prelude lets.
-        let mut skip = 0;
-        for (stmt, _) in &block.stmts {
-            if skip >= bindings.len() {
-                break;
-            }
-            let Stmt::Let {
-                pattern: (Pattern::Identifier(name), _),
-                value: Some((Expr::FieldAccess { object, field }, _)),
-                ..
-            } = stmt
-            else {
-                break;
-            };
-            let is_event_field = matches!(&object.0, Expr::Ident(o) if o.name.as_str() == "event");
-            if is_event_field && *name == field.0 && bindings.contains(name) {
-                skip += 1;
-            } else {
-                break;
-            }
-        }
-        if skip == 0 {
-            return body.clone();
-        }
-        let remaining: Vec<Spanned<Stmt>> = block.stmts[skip..].to_vec();
-        // If only a tail expression remains, surface it directly so the body
-        // collapses to the canonical struct-init / identifier shorthand.
-        if remaining.is_empty() {
-            if let Some(tail) = &block.trailing_expr {
-                return tail.0.clone();
-            }
-        }
-        Expr::Block(Block {
-            stmts: remaining,
-            trailing_expr: block.trailing_expr.clone(),
-        })
     }
 
     fn format_machine_state_path(&mut self, path: &[Ident], leaf: Ident) {
@@ -2838,12 +2823,11 @@ impl<'a> Formatter<'a> {
                 .iter()
                 .map(|child| (child.span.start, Member::Child(child))),
         );
-        clauses.extend(decl.methods.iter().map(|method| {
-            (
-                member_start(&method.attributes, method.fn_span.start),
-                Member::Method(method),
-            )
-        }));
+        clauses.extend(
+            decl.methods
+                .iter()
+                .map(|method| (self.method_start(method), Member::Method(method))),
+        );
         clauses.sort_by_key(|(start, _)| *start);
 
         let mut previous_was_body = false;
@@ -4519,14 +4503,7 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
-                if !private_captures.is_empty() {
-                    self.write("capture(");
-                    self.comma_sep(private_captures, |f, (name, _)| {
-                        f.write("var ");
-                        f.write_ident(*name);
-                    });
-                    self.write(") ");
-                }
+                self.format_private_captures(private_captures);
                 self.write("|");
                 self.format_opt_type_params(type_params.as_ref());
                 if type_params.is_some() && !params.is_empty() {
@@ -4577,6 +4554,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::SpawnLambdaActor {
                 is_move,
+                private_captures,
                 params,
                 return_type,
                 body,
@@ -4585,6 +4563,7 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
+                self.format_private_captures(private_captures);
                 self.write("|");
                 self.format_lambda_params(params);
                 self.write("|");
@@ -4914,9 +4893,7 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write("emit ");
                 self.write_ident(*event_name);
-                if fields.is_empty() {
-                    self.write(" {}");
-                } else {
+                if !fields.is_empty() {
                     self.write(" { ");
                     self.write_field_inits(fields, field_labels);
                     self.write(" }");
@@ -4972,6 +4949,20 @@ impl<'a> Formatter<'a> {
             }
             CallArg::Positional(e) => f.format_expr(e),
         });
+    }
+
+    /// The `capture(var a, var b) ` prefix shared by closures and lambda
+    /// actors; nothing when no capture is private.
+    fn format_private_captures(&mut self, private_captures: &[Spanned<Ident>]) {
+        if private_captures.is_empty() {
+            return;
+        }
+        self.write("capture(");
+        self.comma_sep(private_captures, |f, (name, _)| {
+            f.write("var ");
+            f.write_ident(*name);
+        });
+        self.write(") ");
     }
 
     fn format_lambda_params(&mut self, params: &[LambdaParam]) {
@@ -5775,6 +5766,50 @@ mod tests {
         let src = "fn main() -> i32 {\n    0\n}\n";
         let formatted = roundtrip(src);
         assert_eq!(formatted, src);
+    }
+
+    #[test]
+    fn unit_machine_emit_uses_bare_spelling() {
+        let source = "machine M { events { Go; } emits { Ready; } state Idle; on Go: Idle => Idle { emit Ready; Idle } }\n";
+        let parsed = parse(source);
+        assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+        let formatted = format_checked(source, &parsed.program)
+            .expect("unit emit spelling should format faithfully");
+        assert!(formatted.contains("emit Ready;"), "formatted:\n{formatted}");
+        assert!(format_program(&parsed.program).contains("emit Ready;"));
+        let reparsed = parse(&formatted);
+        assert!(
+            reparsed.errors.is_empty(),
+            "errors: {:?}\n{formatted}",
+            reparsed.errors
+        );
+        assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+    }
+
+    #[test]
+    fn comments_after_macro_items_stay_before_the_next_item() {
+        for (source, expected) in [
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n// Entry point.\nfn main() { println(twice!(2)); }\n",
+                "// Entry point.\nfn main",
+            ),
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n// Second macro.\nmacro thrice { ($value:expr) => expr { $value + $value + $value } }\n",
+                "// Second macro.\nmacro thrice",
+            ),
+            (
+                "macro twice { ($value:expr) => expr { $value + $value } }\n\n/// Doc comment.\nfn main() { println(twice!(2)); }\n",
+                "/// Doc comment.\nfn main",
+            ),
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "errors: {:?}", parsed.errors);
+            let formatted = format_source(source, &parsed.program);
+            assert!(formatted.contains(expected), "comment was absorbed or moved:\n{formatted}");
+            let reparsed = parse(&formatted);
+            assert!(reparsed.errors.is_empty(), "errors: {:?}\n{formatted}", reparsed.errors);
+            assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+        }
     }
 
     #[test]
@@ -7255,7 +7290,9 @@ supervisor Simple {
     }
 
     #[test]
-    fn transition_body_form_survives_head_binding_desugaring() {
+    fn transition_body_forms_keep_their_shape_under_a_head_binding() {
+        // A head binding changes nothing about how the guard and body print:
+        // each body form prints as it does without one.
         let src = "\
 machine Socket {
     events {
@@ -7265,34 +7302,16 @@ machine Socket {
     state Idle;
     state Active { h: Handle; }
 
-    on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }
-    on Connect { fd }: Active => Active { h: Handle { fd: fd } }
+    on Connect { fd }: Idle => _ when fd > 0 {
+        Socket.Active { h: Handle { fd: fd } }
+    }
+    on Connect { fd }: Active => Active when fd > 0 { h: Handle { fd: fd } }
     on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }
     on Connect { fd }: Active => Idle;
 }
 ";
         let formatted = roundtrip(src);
-        assert!(
-            formatted.contains(
-                "on Connect { fd }: Idle => _ { Socket.Active { h: Handle { fd: fd } } }"
-            ),
-            "computed-target block must retain its outer braces; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("on Connect { fd }: Active => Active { h: Handle { fd: fd } }"),
-            "payload shorthand must remain shorthand; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains(
-                "on Connect { fd }: Active => Active reenter { ..state, h: Handle { fd: fd } }"
-            ),
-            "a transition field list writes its spread base first; got:\n{formatted}"
-        );
-        assert!(
-            formatted.contains("on Connect { fd }: Active => Idle;"),
-            "implicit transition must remain implicit; got:\n{formatted}"
-        );
-        assert_eq!(roundtrip(&formatted), formatted);
+        assert_eq!(formatted, src);
     }
 
     #[test]
@@ -7317,5 +7336,156 @@ impl Display for Foo {
             "doc comment on an impl block must survive formatting; got:\n{formatted}"
         );
         assert_eq!(roundtrip(&formatted), formatted);
+    }
+
+    /// A comment after a raw macro item belongs to the gap before the next
+    /// item: it keeps its place and blank lines, and takes the item indent.
+    #[test]
+    fn comments_after_macro_items_keep_their_place() {
+        let src = "\
+macro twice {
+    ($value:expr) => expr { $value + $value }
+}
+
+// Second macro.
+macro thrice {
+    ($value:expr) => expr { $value + $value + $value }
+}
+
+// Entry point.
+fn main() {
+    println(twice!(2) + thrice!(1));
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+
+        let misindented = src.replace("// Entry point.", "        // Entry point.");
+        assert_eq!(roundtrip_source(&misindented), src);
+    }
+
+    /// A blank line before a doc comment that follows a macro declaration or
+    /// an item-macro invocation is kept, as between any other items.
+    #[test]
+    fn doc_comment_after_macro_items_keeps_blank_line() {
+        let src = "\
+/// first
+macro one {
+    () => expr { 1 }
+}
+
+/// second
+macro id_type {
+    ($name:ident) => items {
+        type $name {
+            value: i64;
+        }
+    }
+}
+
+id_type!(UserId)
+
+/// third
+fn main() {
+    println(one!());
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// The blank line in front of a `pub` or `package` impl member is kept like
+    /// the one in front of a private member; the visibility keyword opens the
+    /// member.
+    #[test]
+    fn blank_line_before_visible_impl_member_is_kept() {
+        let src = "\
+impl Counter {
+    fn a(self) -> i64 {
+        self.count
+    }
+
+    pub fn b(self) -> i64 {
+        self.count + 1
+    }
+
+    package fn c(self) -> i64 {
+        self.count + 2
+    }
+    pub fn d(self) -> i64 {
+        self.count + 3
+    }
+
+    #[inline]
+    pub fn e(self) -> i64 {
+        self.count + 4
+    }
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// `reserved` clauses print where they were written among the wire
+    /// fields, one clause per source clause, with their comments.
+    #[test]
+    fn wire_reserved_clauses_keep_their_position() {
+        let src = "\
+#[wire]
+type First {
+    reserved @1;
+    a: i64 @2;
+}
+
+#[wire]
+type Middle {
+    a: i64 @1;
+    reserved @2, @4;
+    c: i64 @3;
+}
+
+#[wire]
+type Last {
+    a: i64 @1;
+    // retired in v2
+    reserved @2;
+}
+
+#[wire]
+type Split {
+    a: i64 @1; // first
+    reserved @2; // gone
+    reserved @5;
+    c: i64 @3;
+}
+";
+        assert_eq!(roundtrip_source(src), src);
+    }
+
+    /// Consecutive imports stay packed; a blank line the author left between
+    /// two imports is kept, and the item after the imports is separated.
+    #[test]
+    fn consecutive_imports_keep_source_grouping() {
+        let packed = "\
+import std.fs;
+import std.string;
+import std.math;
+
+fn main() {}
+";
+        assert_eq!(roundtrip_source(packed), packed);
+
+        let grouped = "\
+import std.fs;
+
+import std.string;
+import std.math;
+
+fn main() {}
+";
+        assert_eq!(roundtrip_source(grouped), grouped);
+
+        let unseparated = "import std.fs;\nfn main() {}\n";
+        assert_eq!(
+            roundtrip_source(unseparated),
+            "import std.fs;\n\nfn main() {}\n"
+        );
     }
 }

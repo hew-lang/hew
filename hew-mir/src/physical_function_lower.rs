@@ -1020,6 +1020,21 @@ impl FunctionLowerer<'_> {
                 unwind: self.lower_edge(unwind)?,
             }),
             SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::SemaphoreAcquire { operation },
+                inputs,
+                result: CallResult::Value(result),
+                resumes,
+                cancel,
+                unwind,
+            } => Ok(PhysicalTerminator::SemaphoreAcquire {
+                operation: *operation,
+                args: self.argument_transfers(inputs)?,
+                result: self.value(result.id)?,
+                normal: self.lower_edge(&resumes[0])?,
+                cancel: self.lower_edge(cancel)?,
+                unwind: self.lower_edge(unwind)?,
+            }),
+            SemTerminator::Suspend {
                 kind: hew_sir::SuspendKind::NativeIo { operation },
                 inputs,
                 result: CallResult::Value(result),

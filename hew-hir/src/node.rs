@@ -942,7 +942,7 @@ pub struct HirFn {
     /// For ordinary functions this is the declared return type. For generator
     /// functions (`is_generator`) this remains the declared `-> T` yield element
     /// type; the body itself lowers with unit expectation and produces a
-    /// `Generator<Yield, Return>` value (mirrors `HirActorReceiveFn`).
+    /// `Generator<Yield, Return>` value.
     pub return_ty: ResolvedTy,
     pub body: HirBlock,
     pub span: Span,
@@ -2255,45 +2255,20 @@ pub struct HirClosureCapture {
     pub is_sync: bool,
 }
 
-/// One free variable of a generator body that must be threaded into the
-/// synthesised generator-body function through the runtime env channel.
-///
-/// For a `gen fn` these are the generator's own formal parameters; for a
-/// `gen { }` block they are the captured outer locals. Both reduce to the
-/// same thing: a binding that lives in the enclosing MIR frame and is read
-/// inside the generator body. MIR boxes these into an env record passed to
-/// `Terminator::MakeGenerator` (heap-copied for the coro ramp) and resolves the
-/// body-side reads through `ClosureEnvFieldLoad`. Mirrors `HirLambdaCapture`
-/// but carries the resolved field type (no Weak/self-recursion case — a
-/// generator has no self-handle).
+/// A binding captured by an ordinary generator. A `gen fn` captures its
+/// parameters; a `gen { ... }` captures enclosing bindings. SIR selects the
+/// snapshot or ownership transfer and realizes the private environment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirGenCapture {
     /// The captured binding's id in the enclosing HIR scope.
     pub binding: BindingId,
     /// Surface name used at the capture site (diagnostics + dump).
     pub name: String,
-    /// Fully-resolved type of the captured binding, used to size the env
-    /// field. The MIR slot type is the authority; this is the HIR view
-    /// recorded for verification and dump parity.
+    /// Checked capture type used by SIR's ownership and environment contract.
     pub ty: ResolvedTy,
-    /// Where this capture's value lives in the enclosing frame. MIR consumes
-    /// this checker/HIR-recorded discriminator to pick the snapshot source
-    /// (a plain local read vs an `ActorStateFieldLoad`) instead of
-    /// re-deriving gen-ness from the binding's name or type.
-    pub source: HirGenCaptureSource,
-}
-
-/// Source of an `HirGenCapture`'s value in the enclosing frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HirGenCaptureSource {
-    /// An ordinary local binding: a `gen fn`'s formal parameter, a `gen { }`
-    /// block's captured outer local, or a `receive gen fn` handler parameter.
-    Local,
-    /// An actor state field read inside a `receive gen fn` handler body. MIR
-    /// snapshots this at generator-construction time (a point-in-time copy,
-    /// not a live reference — the snapshot is taken once, at stream start,
-    /// and never re-reads the actor's live state).
-    ActorStateField,
+    /// The captured binding was declared `var`, so the body may assign its
+    /// private environment field.
+    pub mutable: bool,
 }
 
 /// Capture-strength selector for an `HirLambdaCapture`. Mirrors

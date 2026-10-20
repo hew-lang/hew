@@ -9,6 +9,7 @@ pub mod actor_protocol;
 pub mod builtin_enums;
 pub mod builtin_names;
 pub mod builtin_type;
+pub(crate) mod capability_walk;
 pub mod check;
 pub mod compile_time;
 pub mod cycle;

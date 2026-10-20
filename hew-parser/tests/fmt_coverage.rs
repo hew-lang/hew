@@ -761,6 +761,12 @@ fn fmt_import_whole_module_alias_roundtrip() {
 }
 
 #[test]
+fn fmt_file_import_alias_roundtrip() {
+    exact_roundtrip("import \"codecs/huffman.hew\" as huffman;\n");
+    exact_roundtrip("import \"codecs/rle.hew\";\n");
+}
+
+#[test]
 fn fmt_dotted_import_forms_roundtrip() {
     exact_roundtrip("import app.net.http as transport;\n");
     exact_roundtrip("import app.net.http.{self as transport, Client as C,};\n");
@@ -2011,7 +2017,14 @@ fn fmt_machine_event_with_payload_roundtrip() {
 #[test]
 fn fmt_machine_emits_manifest_roundtrip() {
     exact_roundtrip(
-        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready {};\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
+        "machine Signal {\n    events {\n        Start;\n        Ready;\n    }\n\n    emits {\n        Ready;\n    }\n\n    state Idle;\n    state Active;\n\n    on Start: Idle => Active {\n        emit Ready;\n        Active\n    }\n    on Ready: Idle => Idle reenter;\n    on Ready: Active => Active reenter;\n    on Start: Active => Active reenter;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_unit_emits_before_state_literal_roundtrip() {
+    exact_roundtrip(
+        "machine Meter {\n    events {\n        Sample { value: i64; }\n    }\n\n    emits {\n        Quiet;\n        Rule;\n        Alarm { value: i64; }\n    }\n\n    state Watching { peak: i64; }\n\n    on Sample: Watching => Watching {\n        emit Quiet;\n        emit Rule;\n        emit Alarm { value: event.value };\n        Watching { peak: event.value }\n    }\n}\n",
     );
 }
 

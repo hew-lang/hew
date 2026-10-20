@@ -1,0 +1,10 @@
+[[case]]
+id = "range-adapter-import-method"
+intent = "An imported module's impl method looping over `(a..b).rev()` and `.step_by(k)` is emitted and runs."
+source = "cases/range-adapter-import-method.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "3210\n2\n41\n"
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "task_result_vec_inference"
+intent = "An empty vector infers task elements through pushes and awaits every result."
+source = "../vertical-slice/accept/task_result_vec_inference.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.env]
+HEW_WORKERS = "4"
+
+[case.expected]
+stdout = "14\n"
+exit = 0

@@ -1,0 +1,10 @@
+[[case]]
+id = "actor-stream-close-before-turn"
+intent = "Closing an actor stream while its accepted message waits behind a gated handler skips producer side effects before the first turn begins."
+source = "cases/actor-stream-close-before-turn.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "closed before turn\n"
+exit = 0

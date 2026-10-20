@@ -31,7 +31,7 @@ actor Watcher {
     }
     #[on(link)]
     fn on_peer_exit(note: CrashNotification) {
-        assert(match note.target { .Local(id) => id > 0, .Remote(_) => false });
+        assert(match note.target { .Local(id) => id > 0, .Remote(_) => false, .Role(_) => false });
         exits = exits + 1;
     }
 }

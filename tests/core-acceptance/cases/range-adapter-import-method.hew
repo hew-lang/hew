@@ -1,0 +1,10 @@
+// Range adapters in an imported module's impl method fold into the loop's
+// bounds and stride; the method body is emitted like any other.
+import range_adapter_import.grid;
+
+fn main() {
+    let g = grid.Grid { n: 4 };
+    println(g.down());
+    println(g.even());
+    println(g.even_down());
+}

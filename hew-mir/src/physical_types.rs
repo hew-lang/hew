@@ -1187,6 +1187,14 @@ pub enum PhysicalTerminator {
         cancel: PhysicalEdge,
         unwind: PhysicalEdge,
     },
+    SemaphoreAcquire {
+        operation: hew_types::runtime_call::SemaphoreOp,
+        args: Vec<ArgumentTransfer>,
+        result: StorageId,
+        normal: PhysicalEdge,
+        cancel: PhysicalEdge,
+        unwind: PhysicalEdge,
+    },
     /// Submit once, suspend without blocking, and drain resource loans before exit.
     NativeIo {
         operation: hew_types::runtime_call::AsyncIoOp,

@@ -1800,6 +1800,14 @@ impl Checker {
             &params,
             &result,
             &contract.consuming_params,
+        ) || family.matches_semaphore_extern(
+            &self.defs,
+            module,
+            self.defs.path(declaration),
+            &extern_decl.symbol,
+            &params,
+            &result,
+            &contract.consuming_params,
         ) || family.matches_async_io_extern(
             &self.defs,
             module,
@@ -1973,9 +1981,7 @@ impl Checker {
             // credit below `check_struct_init` covers for record literals —
             // this call-form constructor is its own resolution path. Credit
             // the lexical binding the same way, via the resolved owner.
-            if let Some((owner, _)) = type_name.rsplit_once('.') {
-                self.note_path_use(owner);
-            }
+            self.note_import_use_of_expr_head(&func.0);
             let type_param_count = type_params.len();
             if type_param_count == 0 {
                 if let Some(type_args_provided) = type_args {
@@ -2415,16 +2421,12 @@ impl Checker {
 
             self.record_call_edge(&resolved_fn_name);
             // Mark the originating module as used for unqualified imports
-            if let Some(module) = self
-                .unqualified_to_module
-                .get(&(
-                    self.current_module.clone(),
-                    self.current_module_idx,
-                    func_name.clone(),
-                ))
-                .cloned()
-            {
-                self.note_path_use(&module);
+            if self.unqualified_to_module.contains_key(&(
+                self.current_module.clone(),
+                self.current_module_idx,
+                func_name.clone(),
+            )) {
+                self.note_import_use(&func_name);
             }
             // `assert` takes one optional parameter, the failure message.
             let assertion = self.call_target_for_signature(&resolved_fn_name)
@@ -2816,9 +2818,6 @@ impl Checker {
             return false;
         }
         let candidates: Vec<String> = owners.iter().cloned().collect();
-        for candidate in &candidates {
-            self.note_path_use(candidate);
-        }
         self.report_error_with_suggestions(
             TypeErrorKind::AmbiguousType,
             span,

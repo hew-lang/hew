@@ -269,14 +269,27 @@ gh workflow run release-gate.yml --ref main \
 This runs candidate validation, identity and dependency checks, then Windows
 and Intel macOS. A green partial run supplies only those platform results.
 For each contributing run, record its URL and the qualification summary's
-source SHA, workflow SHA and platform selection. Require every source SHA to
-match the recorded `release_sha`, and review workflow corrections for changes
-to the required checks. Combine successful Windows and Intel results with
+source SHA, workflow SHA and platform selection. Except for the scoped
+reuse described below, every source SHA must match the recorded
+`release_sha`. Review workflow corrections for changes to the required checks. Combine successful Windows and Intel results with
 successful jobs for all remaining platforms and sanitizers from the full gate.
 Missing, skipped, cancelled or failed required jobs still need successful
-evidence for that same candidate. Evidence from another source SHA cannot be
-reused; any candidate change requires full qualification and a new release
-dry run.
+evidence. Requalify affected contracts on the changed candidate, and run a new
+release dry run when implementation, dependency, build or packaging inputs change.
+
+Completed qualification may be retained for unchanged contracts. Record both
+commits, review their complete diff and explain why each retained platform or
+component result still applies. Identify results by the commit actually tested.
+A platform-specific change requires fresh qualification of that platform; shared
+compiler, runtime, dependency or harness changes require every affected check.
+When the impact cannot be bounded confidently, run the full qualification again.
+
+Run corrected tests and their direct consumers on relevant platforms, including
+any platform that failed. An isolated fixture correction can use the qualified
+compiler/runtime pair when production inputs are unchanged. Preserve behavioural
+assertions and resolve all failures; pending, skipped and failed jobs cannot be
+reused as successful evidence. Required protected CI must still pass on the final
+candidate. Do not describe reused results as an exact-final-commit matrix.
 
 The workflow's native job checks and run metadata identify the dispatched
 workflow revision. Candidate-bound JUnit checks and the qualification summary
@@ -630,10 +643,8 @@ that missing evidence or establish safety sign-off.
   integration tests and name filters. It stops on a reported race and uses no
   default suppressions. Record the actual toolchain, target and executed scope;
   no current nightly TSan job is available to review.
-- **WASM capability gaps**: Pipes (`stream.pipe`, `Stream<T>`, `Sink<T>`)
-  and the other suspending I/O paths remain compile-time refusals on
-  wasm32-wasi. Timers (`sleep`/`sleep_until`) have cooperative
-  semantics on WASM (actor parks at message boundary) and emit a warning rather
-  than an error. See
-  [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full
-  Tier 1 / Tier 2 disposition table.
+- **WASM capability gaps**: In-memory pipes and cooperative timers execute on
+  WASI. File-backed streams, native networking and other host facilities retain
+  target-specific limits. Use the
+  [WASM capability matrix](wasm-capability-matrix.md) for the current browser and
+  WASI support table and its execution evidence.

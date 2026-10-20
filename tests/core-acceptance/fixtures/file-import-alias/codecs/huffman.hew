@@ -1,0 +1,17 @@
+pub const NAME: string = "huffman";
+
+pub type Code {
+    bits: i64;
+}
+
+fn tag(s: string) -> string {
+    "h:" + s
+}
+
+pub fn encode(s: string) -> string {
+    tag(s)
+}
+
+pub fn code_of(s: string) -> Code {
+    Code { bits: s.len() * 2 }
+}

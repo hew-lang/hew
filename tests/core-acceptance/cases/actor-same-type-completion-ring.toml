@@ -1,0 +1,16 @@
+[[case]]
+id = "actor-same-type-completion-ring"
+intent = "A ring of same-type actors formed through fields at run time is left to the runtime, whose wait-cycle detection fails the waiting call instead of deadlocking."
+source = "cases/actor-same-type-completion-ring.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+# Pin the detecting actor for the exact diagnostic transcript. The native actor
+# integration test also exercises this ring with multiple scheduler workers.
+[case.env]
+HEW_WORKERS = "1"
+
+[case.expected]
+stdout = "Err(Trapped: the handler faulted before replying)\ndone\n"
+stderr = "hew: failure: UserPanic (212): local actor wait cycle at ask: 2 -> 1 -> 2\nhew: actor crash in Stage.process (actor 2): UserPanic\nhew: failure: UserPanic (212): next stage is running: Trapped: the handler faulted before replying\nhew: actor crash in Stage.process (actor 1): UserPanic\n"
+exit = 1

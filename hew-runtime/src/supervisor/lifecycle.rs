@@ -1087,6 +1087,11 @@ mod tests {
         }
     }
 
+    unsafe extern "C" fn restart_nested_with_child() -> *mut HewSupervisor {
+        // SAFETY: the parent restart adapter takes ownership of the fresh tree.
+        unsafe { make_supervisor_with_child().0 }
+    }
+
     #[test]
     fn supervisor_teardown_quiescence_waits_expire_fail_closed() {
         let _rt = crate::runtime_test_guard();
@@ -3567,6 +3572,77 @@ mod tests {
             "replacement settlement wakes the registered observer"
         );
         assert_eq!(replacement_ready, 1, "the fresh occupant settles the wait");
+    }
+
+    #[test]
+    fn native_restart_wait_follows_replaced_nested_owner() {
+        let _rt = crate::runtime_test_guard();
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the test owns both trees. It changes the ending flags only
+        // while no worker runs, then uses the production nested replacement.
+        unsafe {
+            let (root, _, _) = make_supervisor_with_child();
+            let (old_inner, _, _) = make_supervisor_with_child();
+            assert_eq!(
+                hew_supervisor_add_child_supervisor_with_init(
+                    root,
+                    old_inner,
+                    restart_nested_with_child,
+                ),
+                0
+            );
+            let role = crate::lifetime::local_handles::current_supervisor_role_owner(
+                (*root).local_pid_id,
+                0,
+                crate::lifetime::local_handles::SupervisorRoleKind::Supervisor,
+            );
+            let wait = hew_supervisor_native_restart_wait_new(
+                role,
+                0,
+                ROLE_KIND_ACTOR,
+                waker.descriptor(),
+            );
+            assert_eq!(hew_supervisor_native_restart_wait_poll(wait), 1);
+
+            (*old_inner).cancelled.store(true, Ordering::Release);
+            assert_eq!(
+                hew_supervisor_native_restart_wait_poll(wait),
+                0,
+                "the ending owner does not decide the stable leaf role"
+            );
+            (*old_inner).cancelled.store(false, Ordering::Release);
+            let new_inner = restart_child_supervisor_from_spec(root, 0);
+            assert!(!new_inner.is_null());
+            notify_restart(root);
+            assert!(ready.take_ready(), "parent replacement wakes the observer");
+            assert_eq!(
+                hew_supervisor_native_restart_wait_poll(wait),
+                1,
+                "the same role reaches the new owner's leaf"
+            );
+
+            // A spent parent slot has no replacement and must release the
+            // observer. Remove the test-owned tree before stopping it.
+            {
+                let mut roster = locked_roster!(root);
+                roster.child_supervisor_specs[0]
+                    .as_mut()
+                    .expect("nested declaration")
+                    .spent = true;
+                roster.child_supervisors[0] = ptr::null_mut();
+                roster.child_supervisor_tokens[0] =
+                    crate::lifetime::local_handles::HewLocalPidId::INVALID;
+            }
+            wake_restart_waiters(root);
+            assert!(
+                ready.take_ready(),
+                "terminal parent ruling wakes the observer"
+            );
+            assert_eq!(hew_supervisor_native_restart_wait_poll(wait), 1);
+            hew_supervisor_native_restart_wait_free(wait);
+            hew_supervisor_stop(new_inner);
+            hew_supervisor_stop(root);
+        }
     }
 
     /// A `temporary` child that crashes is never restarted: the decline spends

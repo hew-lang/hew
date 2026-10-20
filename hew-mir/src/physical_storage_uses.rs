@@ -167,6 +167,7 @@ pub(super) fn terminator_storage(term: &PhysicalTerminator, used: &mut BTreeSet<
         }
         PhysicalTerminator::ActorAsk { args, result, .. }
         | PhysicalTerminator::NativeIo { args, result, .. }
+        | PhysicalTerminator::SemaphoreAcquire { args, result, .. }
         | PhysicalTerminator::ServiceAcquire { args, result, .. }
         | PhysicalTerminator::ValueCall { args, result, .. } => {
             used.extend(args.iter().map(source));

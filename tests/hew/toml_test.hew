@@ -1,383 +1,357 @@
-//! Behavioural tests for std::encoding::toml.
+//! Behavioural tests for std.encoding.toml.
 
 import std.encoding.toml;
 
-// ── try_parse ─────────────────────────────────────────────────────────
+fn field(value: toml.Value, key: string) -> toml.Value {
+    value.get_field(key).expect("get_field succeeds").expect("field is present")
+}
+
+// ── parse ─────────────────────────────────────────────────────────────
 #[test]
-fn test_try_parse_valid_returns_ok() {
-    let r = toml.parse("[package]\nname = \"hew\"\nversion = 1");
-    match r {
-        .Ok(val) => {
-            val.free();
-        }
-        .Err(_) => panic("expected Ok, got Err"),
+fn test_parse_valid_returns_a_table() {
+    let doc = toml.parse("[package]\nname = \"hew\"\nversion = 1").expect("valid TOML");
+    assert(doc.type_of() == Kind.Table);
+    assert(field(field(doc, "package"), "name").get_string().expect("string") == "hew");
+}
+
+#[test]
+fn test_parse_invalid_returns_err_with_detail() {
+    match toml.parse("[[not valid toml") {
+        .Ok(_) => panic("expected Err, got Ok"),
+        .Err(ParseError.Invalid(message)) => assert(!message.is_empty()),
     }
 }
 
 #[test]
-fn test_try_parse_invalid_returns_err() {
-    let r = toml.parse("[[not valid toml");
-    match r {
-        .Ok(val) => {
-            val.free();
-            panic("expected Err, got Ok");
-        }
-        .Err(ParseError.Invalid(_)) => {}
-    }
-}
-
-// ── from_int / get_int round-trip ─────────────────────────────────────
-#[test]
-fn test_from_int_get_int_round_trip() {
-    let val = toml.from_int(99);
-    assert(val.get_int() == 99);
-    val.free();
-}
-
-// ── table() builder + get_field ──────────────────────────────────────
-#[test]
-fn test_table_builder_string_field() {
-    let tbl = toml.table().with_string("lang", "hew");
-    let field = tbl.get_field("lang");
-    assert(field.get_string() == "hew");
-    field.free();
-    tbl.free();
-}
-
-#[test]
-fn test_table_builder_int_field() {
-    let tbl = toml.table().with_int("count", 3);
-    let field = tbl.get_field("count");
-    assert(field.get_int() == 3);
-    field.free();
-    tbl.free();
-}
-
-// ── stringify round-trip ──────────────────────────────────────────────
-#[test]
-fn test_stringify_produces_valid_toml() {
-    let tbl = toml.table().with_int("x", 5);
-    let s = tbl.stringify();
-    let r = toml.parse(s);
-    match r {
-        .Ok(reparsed) => {
-            let field = reparsed.get_field("x");
-            assert(field.get_int() == 5);
-            field.free();
-            reparsed.free();
-        }
-        .Err(_) => panic("stringify produced unparseable TOML"),
-    }
-    tbl.free();
-}
-
-// ── Empty / scalar parses ─────────────────────────────────────────────
-#[test]
-fn test_try_parse_empty_string_is_empty_table() {
-    // "" is valid TOML (empty document → empty table).
-    // get_field on any key returns a null handle (array_len == -1).
-    let r = toml.parse("");
-    match r {
-        .Ok(val) => {
-            let missing = val.get_field("x");
-            assert(missing.array_len() == -1);
-            missing.free(); // null-safe no-op
-            val.free();
-        }
-        .Err(_) => panic("expected Ok for empty TOML"),
-    }
-}
-
-#[test]
-fn test_try_parse_simple_key_value() {
-    // "x = 1" → table with integer field x.
-    let r = toml.parse("x = 1");
-    match r {
-        .Ok(val) => {
-            let f = val.get_field("x");
-            assert(f.get_int() == 1);
-            f.free();
-            val.free();
-        }
-        .Err(_) => panic("expected Ok for simple TOML key-value"),
-    }
-}
-
-// ── Array of integers ─────────────────────────────────────────────────
-#[test]
-fn test_parse_array_of_integers() {
-    // "a = [1, 2, 3]" → root table; get_field("a") → array of 3 ints.
-    let r = toml.parse("a = [1, 2, 3]");
-    match r {
-        .Ok(root) => {
-            let a = root.get_field("a");
-            assert(a.array_len() == 3);
-            let v0 = a.array_get(0);
-            assert(v0.get_int() == 1);
-            v0.free();
-            let v1 = a.array_get(1);
-            assert(v1.get_int() == 2);
-            v1.free();
-            let v2 = a.array_get(2);
-            assert(v2.get_int() == 3);
-            v2.free();
-            a.free();
-            root.free();
-        }
-        .Err(_) => panic("expected Ok for TOML integer array"),
-    }
-}
-
-// ── Nested table (dotted section) ────────────────────────────────────
-#[test]
-fn test_nested_table_dotted_key() {
-    // [outer] x=1 [outer.inner] y=2 → walk outer → inner → y; free leaf-first.
-    let r = toml.parse("[outer]\nx = 1\n[outer.inner]\ny = 2");
-    match r {
-        .Ok(root) => {
-            let outer = root.get_field("outer");
-            let inner = outer.get_field("inner");
-            let y = inner.get_field("y");
-            assert(y.get_int() == 2);
-            // Free leaf first, root last.
-            y.free();
-            inner.free();
-            outer.free();
-            root.free();
-        }
-        .Err(_) => panic("expected Ok for nested TOML table"),
-    }
-}
-
-// ── Array of tables ───────────────────────────────────────────────────
-#[test]
-fn test_array_of_tables_walk() {
-    // [[items]] k=1 [[items]] k=2 → root.get_field("items") is an array.
-    let r = toml.parse("[[items]]\nk = 1\n[[items]]\nk = 2");
-    match r {
-        .Ok(root) => {
-            let items = root.get_field("items");
-            assert(items.array_len() == 2);
-            let item0 = items.array_get(0);
-            let k0 = item0.get_field("k");
-            assert(k0.get_int() == 1);
-            k0.free();
-            item0.free();
-            let item1 = items.array_get(1);
-            let k1 = item1.get_field("k");
-            assert(k1.get_int() == 2);
-            k1.free();
-            item1.free();
-            items.free();
-            root.free();
-        }
-        .Err(_) => panic("expected Ok for TOML array of tables"),
-    }
-}
-
-// ── Missing field — null handle discipline ────────────────────────────
-#[test]
-fn test_missing_field_handle_is_invalid() {
-    // get_field on absent key: Rust returns null_ptr. array_len on null
-    // handle returns -1. free() is null-safe.
-    let r = toml.parse("a = 1");
-    match r {
-        .Ok(root) => {
-            let missing = root.get_field("nope");
-            assert(missing.array_len() == -1);
-            missing.free(); // null-safe no-op; call to document discipline
-            root.free();
-        }
-        .Err(_) => panic("expected Ok"),
-    }
-}
-
-// ── Composed builder — child consumed by with() ───────────────────────
-#[test]
-fn test_builder_with_consumes_child() {
-    // child consumed by with(); do not free child.
-    let child = toml.from_int(77);
-    let tbl = toml.table().with("k", child); // child consumed here
-    let v = tbl.get_field("k");
-    assert(v.get_int() == 77);
-    v.free();
-    tbl.free();
-}
-
-// ── Composed array push — element consumed by push() ─────────────────
-#[test]
-fn test_builder_push_consumes_element() {
-    // elem consumed by push(); do not free elem.
-    let elem = toml.from_string("hi");
-    let arr = toml.array().push(elem); // elem consumed here
-    let got = arr.array_get(0);
-    assert(got.get_string() == "hi");
-    got.free();
-    arr.free();
-}
-
-// ── from_* constructor round-trips ────────────────────────────────────
-#[test]
-fn test_from_float_round_trip_via_table_field() {
-    // TOML stringify only works on table-rooted values.
-    // Round-trip: with_float → stringify → reparse → get_field → get_float.
-    let tbl = toml.table().with_float("ratio", 1.5);
-    let s = tbl.stringify();
-    let r = toml.parse(s);
-    match r {
-        .Ok(reparsed) => {
-            let f = reparsed.get_field("ratio");
-            // 1.5 is exactly representable in IEEE 754; round-trip equality holds.
-            assert(f.get_float() == 1.5);
-            f.free();
-            reparsed.free();
-        }
-        .Err(_) => panic("stringify + reparse of float table failed"),
-    }
-    tbl.free();
-}
-
-#[test]
-fn test_try_stringify_rejects_a_root_toml_cannot_represent() {
-    // A TOML document root must be a table. A bare float root produces no
-    // text at all, which is exactly what an empty table produces, so an empty
-    // string here would be a fabricated success.
-    let val = toml.from_float(1.5);
-    match toml.stringify(val) {
-        .Ok(text) => panic(f"expected a bare float root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(f"{reason}".contains("unsupported")),
-    }
-    val.free();
-}
-
-#[test]
-fn test_try_stringify_rejects_a_bare_integer_root() {
-    let val = toml.from_int(7);
-    match toml.stringify(val) {
-        .Ok(text) => panic(f"expected a bare integer root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(f"{reason}".starts_with("Invalid: ")),
-    }
-    val.free();
-}
-
-#[test]
-fn test_try_stringify_rejects_a_bare_array_root() {
-    let val = toml.array();
-    val.push_int(1);
-    match toml.stringify(val) {
-        .Ok(text) => panic(f"expected a bare array root to be rejected, got {text.len()} bytes"),
-        .Err(reason) => assert(f"{reason}".starts_with("Invalid: ")),
-    }
-    val.free();
-}
-
-#[test]
-fn test_try_stringify_of_an_empty_table_is_a_valid_empty_document() {
-    // The same zero-length answer a rejected root produces, but this one is
-    // real: an empty table is a well-formed, empty TOML document.
-    let tbl = toml.table();
-    match toml.stringify(tbl) {
-        .Ok(text) => assert(text.len() == 0),
-        .Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
-    }
-    tbl.free();
-}
-
-#[test]
-fn test_try_stringify_preserves_a_populated_table() {
-    let tbl = toml.table();
-    tbl.with_int("n", 42);
-    match toml.stringify(tbl) {
-        .Ok(text) => assert(text == "n = 42\n"),
-        .Err(reason) => panic(f"a populated table must serialize: {reason}"),
-    }
-    tbl.free();
-}
-
-#[test]
-fn test_stringify_failure_does_not_leak_into_the_next_call() {
-    let bad = toml.from_float(1.5);
-    match toml.stringify(bad) {
-        .Ok(_) => panic("expected a bare float root to be rejected"),
-        .Err(_) => {}
-    }
-    bad.free();
-    let tbl = toml.table();
-    match toml.stringify(tbl) {
-        .Ok(text) => assert(text.len() == 0),
-        .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
-    }
-    tbl.free();
-}
-
-#[test]
-#[should_panic]
-fn test_stringify_panics_at_legacy_boundary_on_an_unrepresentable_root() {
-    let val = toml.from_float(1.5);
-    let _ = val.stringify();
-}
-
-#[test]
-fn test_from_string_get_string_round_trip() {
-    let val = toml.from_string("hew");
-    assert(val.get_string() == "hew");
-    val.free();
-}
-
-#[test]
-fn test_from_bool_get_bool_round_trip() {
-    // from_bool(true) → get_bool() == 1 (INTERNAL-ABI: C ABI returns bool as i32).
-    let val = toml.from_bool(true);
-    assert((val.get_bool() as i64) == 1);
-    val.free();
-}
-
-// ── Nested builder → stringify → reparse ─────────────────────────────
-#[test]
-fn test_nested_builder_stringify_reparse() {
-    // Build table {inner: {v: 9}}.
-    // inner consumed by outer's with(); do not free inner separately.
-    let inner = toml.table().with_int("v", 9);
-    let outer = toml.table().with("inner", inner); // inner consumed here
-    let s = outer.stringify();
-    let r = toml.parse(s);
-    match r {
-        .Ok(reparsed) => {
-            let inner_f = reparsed.get_field("inner");
-            let v_f = inner_f.get_field("v");
-            assert(v_f.get_int() == 9);
-            v_f.free();
-            inner_f.free();
-            reparsed.free();
-        }
-        .Err(_) => panic("stringify + reparse of nested TOML table failed"),
-    }
-    outer.free();
-}
-
-// ── Malformed input ───────────────────────────────────────────────────
-#[test]
-fn test_try_parse_duplicate_key_returns_err() {
-    // TOML forbids duplicate keys in the same table.
-    let r = toml.parse("a = 1\na = 2");
-    match r {
-        .Ok(val) => {
-            val.free();
-            panic("expected Err for duplicate TOML key");
-        }
+fn test_parse_duplicate_key_returns_err() {
+    match toml.parse("a = 1\na = 2") {
+        .Ok(_) => panic("expected Err for duplicate TOML key"),
         .Err(ParseError.Invalid(_)) => {}
     }
 }
 
 #[test]
-#[should_panic]
-fn test_array_get_rejects_index_that_would_wrap_to_zero() {
-    let arr = toml.array();
-    arr.array_get(4294967296);
+fn test_parse_empty_string_is_an_empty_table() {
+    let doc = toml.parse("").expect("empty TOML is a document");
+    assert(doc.type_of() == Kind.Table);
+    assert(doc.keys().expect("table").array_len().expect("array") == 0);
 }
 
 #[test]
 fn test_parse_error_display_prints_the_carried_detail() {
     let err = ParseError.Invalid("unexpected token");
     assert(to_string(err) == "unexpected token");
+}
+
+// ── get_field: absence versus wrong kind ──────────────────────────────
+#[test]
+fn test_get_field_missing_key_is_none() {
+    let doc = toml.parse("a = 1").expect("valid TOML");
+    match doc.get_field("missing") {
+        .Ok(.None) => {}
+        _ => panic("a missing key must be Ok(None)"),
+    }
+    match doc.get_field("a") {
+        .Ok(.Some(value)) => assert(value.get_int().expect("integer") == 1),
+        _ => panic("a present key must be Some"),
+    }
+}
+
+#[test]
+fn test_get_field_on_a_non_table_is_wrong_kind() {
+    match toml.from_int(3).get_field("a") {
+        .Err(AccessError.WrongKind(Kind.Table, Kind.Integer)) => {}
+        _ => panic("get_field on an integer must be WrongKind(Table, Integer)"),
+    }
+    match toml.array().get_field("a") {
+        .Err(AccessError.WrongKind(Kind.Table, Kind.Array)) => {}
+        _ => panic("get_field on an array must be WrongKind(Table, Array)"),
+    }
+}
+
+// ── scalar getters ────────────────────────────────────────────────────
+#[test]
+fn test_scalar_getters_return_values_for_their_own_kind() {
+    assert(toml.from_int(99).get_int().expect("integer") == 99);
+    assert(toml.from_float(1.5).get_float().expect("float") == 1.5);
+    assert(toml.from_string("hew").get_string().expect("string") == "hew");
+    assert(toml.from_bool(true).get_bool().expect("bool"));
+    assert(!toml.from_bool(false).get_bool().expect("bool"));
+}
+
+#[test]
+fn test_scalar_getters_reject_other_kinds_instead_of_defaulting() {
+    match toml.from_bool(false).get_int() {
+        .Err(AccessError.WrongKind(Kind.Integer, Kind.Bool)) => {}
+        _ => panic("a bool is not an integer"),
+    }
+    match toml.from_int(0).get_string() {
+        .Err(AccessError.WrongKind(Kind.String, Kind.Integer)) => {}
+        _ => panic("an integer is not a string"),
+    }
+    match toml.from_int(1).get_float() {
+        .Err(AccessError.WrongKind(Kind.Float, Kind.Integer)) => {}
+        _ => panic("an integer is not coerced to a float"),
+    }
+    match toml.from_string("true").get_bool() {
+        .Err(AccessError.WrongKind(Kind.Bool, Kind.String)) => {}
+        _ => panic("a string is not a bool"),
+    }
+}
+
+#[test]
+fn test_parsed_kinds_are_reported() {
+    let doc = toml.parse("b = true\ni = 1\nf = 0.5\ns = \"x\"\na = [1]\n[t]\n").expect("valid TOML");
+    assert(field(doc, "b").type_of() == Kind.Bool);
+    assert(field(doc, "i").type_of() == Kind.Integer);
+    assert(field(doc, "f").type_of() == Kind.Float);
+    assert(field(doc, "s").type_of() == Kind.String);
+    assert(field(doc, "a").type_of() == Kind.Array);
+    assert(field(doc, "t").type_of() == Kind.Table);
+}
+
+#[test]
+fn test_float_accepts_infinity() {
+    let doc = toml.parse("x = inf\n").expect("TOML admits inf");
+    let x = field(doc, "x").get_float().expect("float");
+    assert(x > 1.0e308);
+    var out = toml.table();
+    out.set("x", toml.from_float(x)).expect("table");
+    assert(out.stringify().expect("table root") == "x = inf\n");
+}
+
+// ── datetime ──────────────────────────────────────────────────────────
+#[test]
+fn test_datetime_reads_back_its_lexical_form() {
+    let doc = toml.parse("at = 1979-05-27T07:32:00Z\nday = 1979-05-27\nclock = 07:32:00\n").expect("valid TOML");
+    let at = field(doc, "at");
+    assert(at.type_of() == Kind.Datetime);
+    assert(at.get_datetime().expect("datetime") == "1979-05-27T07:32:00Z");
+    assert(field(doc, "day").get_datetime().expect("local date") == "1979-05-27");
+    assert(field(doc, "clock").get_datetime().expect("local time") == "07:32:00");
+}
+
+#[test]
+fn test_datetime_is_not_a_string_and_a_string_is_not_a_datetime() {
+    let doc = toml.parse("at = 1979-05-27T07:32:00Z\ntext = \"1979-05-27T07:32:00Z\"\n").expect("valid TOML");
+    match field(doc, "at").get_string() {
+        .Err(AccessError.WrongKind(Kind.String, Kind.Datetime)) => {}
+        _ => panic("a datetime must not read as a string"),
+    }
+    match field(doc, "text").get_datetime() {
+        .Err(AccessError.WrongKind(Kind.Datetime, Kind.String)) => {}
+        _ => panic("a string must not read as a datetime"),
+    }
+}
+
+// ── arrays ────────────────────────────────────────────────────────────
+#[test]
+fn test_parse_array_of_integers() {
+    let a = field(toml.parse("a = [1, 2, 3]").expect("valid TOML"), "a");
+    assert(a.array_len().expect("array") == 3);
+    assert(a.array_get(2).expect("array").expect("present").get_int().expect("integer") == 3);
+}
+
+#[test]
+fn test_array_absence_and_index_validation() {
+    var values = toml.array();
+    values.push(toml.from_int(1)).expect("push succeeds");
+    match values.array_get(1) {
+        .Ok(.None) => {}
+        _ => panic("missing index"),
+    }
+    match values.array_get(-1) {
+        .Err(AccessError.InvalidIndex(index)) => assert(index == -1),
+        _ => panic("negative index must fail"),
+    }
+    match values.array_get(4294967296) {
+        .Err(AccessError.InvalidIndex(index)) => assert(index == 4294967296),
+        _ => panic("index must not wrap to zero"),
+    }
+    match toml.table().array_get(0) {
+        .Err(AccessError.WrongKind(Kind.Array, Kind.Table)) => {}
+        _ => panic("wrong container is not an absent element"),
+    }
+    match toml.table().array_len() {
+        .Err(AccessError.WrongKind(Kind.Array, Kind.Table)) => {}
+        _ => panic("a table has no array length"),
+    }
+}
+
+#[test]
+fn test_array_of_tables_walk() {
+    let items = field(toml.parse("[[items]]\nk = 1\n[[items]]\nk = 2").expect("valid TOML"), "items");
+    assert(items.array_len().expect("array") == 2);
+    let second = items.array_get(1).expect("array").expect("present");
+    assert(field(second, "k").get_int().expect("integer") == 2);
+}
+
+#[test]
+fn test_nested_table_dotted_key() {
+    let doc = toml.parse("[outer]\nx = 1\n[outer.inner]\ny = 2").expect("valid TOML");
+    assert(field(field(field(doc, "outer"), "inner"), "y").get_int().expect("integer") == 2);
+}
+
+// ── keys ──────────────────────────────────────────────────────────────
+#[test]
+fn test_keys_lists_table_keys_in_sorted_order() {
+    let doc = toml.parse("b = 1\n[a]\nx = 2\n").expect("valid TOML");
+    let keys = doc.keys().expect("table");
+    assert(keys.array_len().expect("array") == 2);
+    assert(keys.array_get(0).expect("array").expect("present").get_string().expect("string") == "a");
+    assert(keys.array_get(1).expect("array").expect("present").get_string().expect("string") == "b");
+    match toml.array().keys() {
+        .Err(AccessError.WrongKind(Kind.Table, Kind.Array)) => {}
+        _ => panic("an array has no keys"),
+    }
+}
+
+// ── value semantics ───────────────────────────────────────────────────
+#[test]
+fn test_copy_mutation_and_extraction_survive_parent_scope() {
+    let selected = {
+        var original = toml.table();
+        var child = toml.array();
+        child.push(toml.from_int(7)).expect("push succeeds");
+        original.set("items", child).expect("set succeeds");
+        child.push(toml.from_int(8)).expect("push succeeds");
+        var edited = original;
+        edited.set("items", toml.from_string("changed")).expect("set succeeds");
+        assert(field(edited, "items").get_string().expect("string") == "changed");
+        assert(child.array_len().expect("array") == 2);
+        field(original, "items")
+    };
+    assert(selected.array_len().expect("array") == 1);
+    assert(selected.array_get(0).expect("array").expect("present").get_int().expect("integer") == 7);
+}
+
+#[test]
+fn test_failed_mutation_preserves_receiver_and_child() {
+    var receiver = toml.from_string("original");
+    var child = toml.array();
+    child.push(toml.from_int(9)).expect("push succeeds");
+    match receiver.set("x", child) {
+        .Err(AccessError.WrongKind(Kind.Table, Kind.String)) => {}
+        _ => panic("set must reject a scalar receiver"),
+    }
+    match receiver.push(child) {
+        .Err(AccessError.WrongKind(Kind.Array, Kind.String)) => {}
+        _ => panic("push must reject a scalar receiver"),
+    }
+    assert(receiver.get_string().expect("string") == "original");
+    assert(child.array_len().expect("array") == 1);
+    assert(child.array_get(0).expect("array").expect("present").get_int().expect("integer") == 9);
+}
+
+#[test]
+fn test_equality_compares_contents() {
+    let parsed = toml.parse("n = 1\n").expect("valid TOML");
+    var built = toml.table();
+    built.set("n", toml.from_int(1)).expect("table");
+    assert(parsed == built);
+    built.set("n", toml.from_float(1.0)).expect("table");
+    assert(parsed != built);
+}
+
+// ── stringify ─────────────────────────────────────────────────────────
+#[test]
+fn test_stringify_preserves_a_populated_table() {
+    var tbl = toml.table();
+    tbl.set("n", toml.from_int(42)).expect("table");
+    assert(tbl.stringify().expect("table root") == "n = 42\n");
+}
+
+#[test]
+fn test_stringify_of_an_empty_table_is_a_valid_empty_document() {
+    // The same zero-length text a rejected root would produce, but this one
+    // is real: an empty table is a well-formed, empty TOML document.
+    match toml.table().stringify() {
+        .Ok(text) => assert(text.is_empty()),
+        .Err(reason) => panic(f"an empty table is a valid TOML document: {reason}"),
+    }
+}
+
+#[test]
+fn test_stringify_rejects_roots_toml_cannot_represent() {
+    match toml.from_int(1).stringify() {
+        .Ok(text) => panic(f"a bare integer root must be rejected, got {text.len()} bytes"),
+        .Err(EncodeError.Invalid(reason)) => assert(!reason.is_empty()),
+    }
+    match toml.from_float(1.5).stringify() {
+        .Ok(_) => panic("a bare float root must be rejected"),
+        .Err(_) => {}
+    }
+    var arr = toml.array();
+    arr.push(toml.from_int(1)).expect("array");
+    match arr.stringify() {
+        .Ok(_) => panic("a bare array root must be rejected"),
+        .Err(_) => {}
+    }
+}
+
+#[test]
+fn test_stringify_failure_does_not_leak_into_the_next_call() {
+    match toml.from_float(1.5).stringify() {
+        .Ok(_) => panic("expected a bare float root to be rejected"),
+        .Err(_) => {}
+    }
+    match toml.table().stringify() {
+        .Ok(text) => assert(text.is_empty()),
+        .Err(reason) => panic(f"a later valid call must not inherit the earlier failure: {reason}"),
+    }
+}
+
+#[test]
+fn test_nested_build_stringify_reparse() {
+    var inner = toml.table();
+    inner.set("v", toml.from_int(9)).expect("table");
+    var tags = toml.array();
+    tags.push(toml.from_string("fast")).expect("array");
+    var outer = toml.table();
+    outer.set("inner", inner).expect("table");
+    outer.set("tags", tags).expect("table");
+    let reparsed = toml.parse(outer.stringify().expect("table root")).expect("round trip parses");
+    assert(reparsed == outer);
+    assert(field(field(reparsed, "inner"), "v").get_int().expect("integer") == 9);
+}
+
+// ── module example ────────────────────────────────────────────────────
+type Service {
+    name: string;
+    port: i64;
+    debug: bool;
+}
+
+fn read_service(text: string) -> Service {
+    let doc = toml.parse(text).expect("service.toml must parse");
+    let server = match doc.get_field("server").expect("document is a table") {
+        .Some(table) => table,
+        .None => panic("missing [server]"),
+    };
+    let name = server.get_field("name").expect("server is a table").expect("server.name is required").get_string().expect("server.name is a string");
+    let port = match server.get_field("port").expect("server is a table") {
+        .Some(value) => value.get_int().expect("server.port is an integer"),
+        .None => 8080,
+    };
+    let debug = match server.get_field("debug").expect("server is a table") {
+        .Some(value) => value.get_bool().expect("server.debug is a boolean"),
+        .None => false,
+    };
+    Service { name: name, port: port, debug: debug }
+}
+
+#[test]
+fn test_readme_service_example() {
+    let service = read_service("[server]\nname = \"api\"\nport = 9000\n");
+    assert(service.name == "api");
+    assert(service.port == 9000);
+    assert(!service.debug);
+    let defaults = read_service("[server]\nname = \"api\"\ndebug = true\n");
+    assert(defaults.port == 8080);
+    assert(defaults.debug);
+    var doc = toml.table();
+    var server = toml.table();
+    server.set("name", toml.from_string("api")).expect("table");
+    doc.set("server", server).expect("table");
+    assert(doc.stringify().expect("table root") == "[server]\nname = \"api\"\n");
 }

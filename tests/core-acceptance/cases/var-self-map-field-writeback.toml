@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-map-field-writeback"
+intent = "Fallible Map insertion into a field of var self writes the updated field back and retains the whole receiver alongside its sibling field."
+source = "cases/var-self-map-field-writeback.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = ""
+exit = 0

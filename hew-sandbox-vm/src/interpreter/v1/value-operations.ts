@@ -11,6 +11,7 @@ import {
   type ValueComponentCapabilities,
 } from "./package.js";
 import { ShimFault } from "./shims.js";
+import { actorIdentical } from "./actor-identity.js";
 
 export type ValueRequest =
   | { kind: "fault"; message: string }
@@ -159,10 +160,15 @@ export function* selectedValue(
       );
     throw new Error("bytes ordering is outside the checked capability domain");
   }
+  if (left.kind === "actor" || left.kind === "supervisor") {
+    if (equality) return boolean(actorIdentical(left, right));
+    throw new Error("actor capability is outside the checked equality domain");
+  }
   const components = plan.components ?? [];
   let fields: VmValue[];
   let others: VmValue[] = [];
   let selections: ValueComponentCapabilities[];
+  let vectorHashLength: number | undefined;
   if (left.kind === "record") {
     fields = left.fields;
     selections = components;
@@ -184,22 +190,31 @@ export function* selectedValue(
     others = right.payload;
     selections = plan.variants?.[left.tag] ?? [];
   } else if (left.kind === "vector") {
-    if (hash)
-      throw new Error(
-        "derived vector Hash is outside the checked capability domain",
-      );
-    if (right?.kind !== "vector" || left.items.length !== right.items.length)
-      return boolean(false);
     fields = left.items;
-    others = right.items;
-    selections = fields.map(() => components[0]!);
+    if (hash) {
+      const elementSelection = components[0];
+      if (!elementSelection)
+        throw new Error(
+          "derived vector Hash lacks its checked element selection",
+        );
+      selections = fields.map(() => elementSelection);
+      vectorHashLength = fields.length;
+    } else {
+      if (right?.kind !== "vector" || left.items.length !== right.items.length)
+        return boolean(false);
+      others = right.items;
+      selections = fields.map(() => components[0]!);
+    }
   } else {
     if (hash) return integer(bits(left, plan.ty));
     if (equality)
       return boolean(!!right && bits(left, plan.ty) === bits(right, plan.ty));
     return scalarOrdering(left, right, plan.ty, ordering!);
   }
-  let state = OFFSET;
+  let state =
+    vectorHashLength === undefined
+      ? OFFSET
+      : mix(OFFSET, BigInt(vectorHashLength));
   for (const [at, field] of fields.entries()) {
     const selection = selections[at];
     if (!selection)

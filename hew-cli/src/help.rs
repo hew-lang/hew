@@ -80,7 +80,7 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
 /// Parsing goes through this rather than `Cli::command()` so `--help` and the
 /// parser can never describe different command sets.
 pub(crate) fn hew_command() -> Command {
-    let command = <crate::args::Cli as clap::CommandFactory>::command();
+    let command = <crate::args::Cli as clap::CommandFactory>::command().bin_name("hew");
     let template = help_template(&command);
     command.help_template(template)
 }
@@ -186,6 +186,22 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{hew_command, COMMAND_GROUPS, LISTING_WIDTH, UNFILED_HEADING};
+
+    #[test]
+    fn tool_usage_keeps_the_public_command_name() {
+        for executable in ["hew", "hew.exe", r"C:\Tools\hew.exe"] {
+            for tool in ["lsp", "observe"] {
+                let help = hew_command()
+                    .try_get_matches_from([executable, tool, "--help"])
+                    .unwrap_err();
+                assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+                assert!(
+                    help.to_string().contains(&format!("Usage: hew {tool}")),
+                    "{executable}: {help}"
+                );
+            }
+        }
+    }
 
     fn rendered_help() -> String {
         hew_command().render_help().to_string()

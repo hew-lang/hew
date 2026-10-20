@@ -36,19 +36,17 @@ on:
         type: string
         default: ""
       platforms:
-        description: "Run the full gate or resume Windows and Intel macOS qualification."
+        description: "Run the full gate or resume a platform subset for the same source."
         type: choice
-        options: [all, windows-intel-macos]
+        options:
+          [all, linux-x86_64, windows-x86_64, macos-x86_64, windows-intel-macos]
         default: all
 
-# A push to a branch makes any run still going for that same ref obsolete:
-# its verdict can no longer gate anything, because a newer commit exists.
-# Those runs were still holding runners, so 15 open pull requests could
-# starve the queue and nothing scheduled at all. Never cancel on main —
-# a push there must complete.
+# Qualification belongs to a source revision and platform selection. Preserve
+# earlier evidence while allowing a corrected candidate to run independently.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.source_sha || github.sha }}-${{ inputs.platforms || 'all' }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -92,7 +90,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|windows-intel-macos) ;;
+            all|linux-x86_64|windows-x86_64|macos-x86_64|windows-intel-macos) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -122,9 +120,9 @@ jobs:
             printf '| Tested source commit | %s |\n' "${SOURCE_SHA}"
             printf '| Workflow commit | %s |\n' "${WORKFLOW_SHA}"
             printf '| Platform selection | %s |\n' "${PLATFORMS}"
-            if [[ "${PLATFORMS}" == windows-intel-macos ]]; then
+            if [[ "${PLATFORMS}" != all ]]; then
               echo
-              echo 'Partial qualification: combine these results with successful full-gate jobs for this exact source commit, including sanitizers.'
+              echo 'Partial qualification: record this source revision and combine successful results according to the release runbook, including sanitizer evidence.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
           tag="$(scripts/release-identity.sh)"
@@ -144,7 +142,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-sanitizers:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — Sanitizers
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -201,14 +199,12 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'linux-x86_64'
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
-    # The passed surrounding work measured 2,053 s (~34 min), while the final
-    # gate was cancelled after more than 3,338 s (~56 min): over 89 min total.
-    # 120 min adds ~30 min for cold-runner completion and variance, while
-    # retaining a finite ceiling that still distinguishes a hung suite.
-    timeout-minutes: 120
+    # Bound the complete cold-runner sequence: workspace, native corpus,
+    # documentation, MQTT and browser execution.
+    timeout-minutes: 240
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -297,6 +293,7 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         # line-tables-only: the release build + debug test workspace + WASM +
         # browser-analysis builds together leave the runner disk-marginal —
         # the runner process itself died of ENOSPC twice mid-run even after
@@ -307,16 +304,16 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run foundational compiled-Hew gates
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: |
-          make core-acceptance
-          make test-doc-examples
-          make test-hew-ratchet
-          make test-migrate-corpus
+          make -k core-acceptance test-doc-examples test-hew-ratchet test-migrate-corpus
 
       - name: Run MQTT broker end-to-end oracle
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # The Linux release lane has explicit mosquitto_pub/sub provisioning
         # above, so this exercises a real external client against the shipped
         # compiler's broker example before a release candidate is tagged.
@@ -329,12 +326,15 @@ jobs:
       # and the wasm-pack release build. Scoped to x86_64 to avoid
       # multiplying wasm-pack installs across aarch64/macOS/Windows lanes.
       - name: Install wasm-pack v0.13.1 and Binaryen 117 (browser-analysis gate)
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         uses: ./.github/actions/setup-wasm-pack
 
       - name: Add wasm32-unknown-unknown target
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: rustup target add wasm32-unknown-unknown
 
       - name: Set up Node.js for browser execution
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 24
@@ -342,6 +342,7 @@ jobs:
           cache-dependency-path: hew-sandbox-vm/package-lock.json
 
       - name: Browser compiler and VM playground gate
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make playground-check
 
       - name: Upload test reports
@@ -360,7 +361,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux-aarch64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — Linux aarch64
     runs-on: ubuntu-24.04-arm
     # Workspace tests plus native core acceptance take about 44 minutes on
@@ -451,6 +452,7 @@ jobs:
           "./${WASMTIME_DIR}/wasmtime" --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         env:
           CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
           NEXTEST_WORKSPACE_FILTER: "not test(two_process_remote_ask) and not test(remote_ask_two_process) and not test(stream_poll_double_register_aborts)"
@@ -461,9 +463,11 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make core-acceptance
 
       - name: Upload test reports
@@ -482,17 +486,18 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'macos-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
     name: Release Gate — macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         # macos-14's lldb predates DW_TAG_variant_part support.
-        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms == 'windows-intel-macos' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
+        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms != 'all' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
     runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-15' }}
-    # The Intel cold build and workspace tests took 93 minutes, then native
-    # acceptance reached the three-hour job limit. Allow the remaining corpus
-    # to finish while preserving the ARM runner's existing limit.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 240 || 180 }}
+    # Intel's cold build and workspace tests take about two hours before the
+    # native corpus begins. Budget the complete gate while retaining the ARM
+    # runner's existing limit.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 360 || 180 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -566,6 +571,7 @@ jobs:
           wasm-ld --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         # Leak-oracle binaries drive macOS leaks(1) with MallocScribble and
         # need entitlements/wall-time hosted runners cannot give (300s
         # timeouts, no failure signal). They are local release evidence and
@@ -575,9 +581,11 @@ jobs:
         run: make test-strict
 
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make core-acceptance
 
       - name: Upload test reports
@@ -596,6 +604,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     needs: gate-release-checks
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 240
@@ -675,15 +684,67 @@ jobs:
           & (Join-Path $bin "wasmtime.exe") --version
 
       - name: Run Rust workspace tests
+        id: workspace-tests
         shell: bash
         run: make SHELL=bash test-strict
 
+      # Snapshot before later test targets can rebuild the failing workspace's binaries.
+      - name: Collect failed Windows workspace binaries
+        if: ${{ failure() && steps.workspace-tests.outcome == 'failure' }}
+        shell: pwsh
+        env:
+          RELEASE_SOURCE_SHA: ${{ needs.gate-release-checks.outputs.source_sha }}
+        run: |
+          $destination = Join-Path $env:RUNNER_TEMP "release-windows-failure-binaries"
+          New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $required = @("target/debug/hew.exe", "target/debug/hew.lib")
+          $selected = @($required | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object { Get-Item -LiteralPath $_ })
+          $selected += @(Get-ChildItem -Path target/debug/deps -Filter "distributed_two_process_e2e-*.exe" -File -ErrorAction SilentlyContinue)
+          # Select only compiled fixtures; temporary credentials and other files are never copied.
+          $temporaryRoots = @($env:TEMP, $env:TMP, $env:RUNNER_TEMP) | Where-Object { $_ } | Select-Object -Unique
+          foreach ($directory in $temporaryRoots) {
+            $selected += @(Get-ChildItem -LiteralPath $directory -Filter dist_node.exe -File -Recurse -Force -ErrorAction SilentlyContinue)
+          }
+          $files = @()
+          foreach ($file in ($selected | Sort-Object FullName -Unique)) {
+            $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $stored = "$hash-$($file.Name)"
+            $copy = Join-Path $destination $stored
+            if (-not (Test-Path -LiteralPath $copy)) {
+              Copy-Item -LiteralPath $file.FullName -Destination $copy
+            }
+            if ((Get-FileHash -LiteralPath $copy -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash) {
+              throw "Retained binary changed during capture: $($file.FullName)"
+            }
+            $files += [ordered]@{ source = $file.FullName; stored = $stored; bytes = $file.Length; sha256 = $hash }
+          }
+          [ordered]@{
+            source_sha = (git rev-parse HEAD).Trim()
+            expected_source_sha = $env:RELEASE_SOURCE_SHA
+            workflow_sha = $env:GITHUB_SHA
+            run_id = $env:GITHUB_RUN_ID
+            run_attempt = $env:GITHUB_RUN_ATTEMPT
+            captured_utc = [DateTime]::UtcNow.ToString("o")
+            missing_required = @($required | Where-Object { -not (Test-Path -LiteralPath $_) })
+            files = $files
+          } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $destination "manifest.json") -Encoding utf8
+
+      - name: Retain failed Windows workspace binaries
+        if: ${{ failure() && steps.workspace-tests.outcome == 'failure' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-workspace-failure-${{ needs.gate-release-checks.outputs.source_sha }}
+          path: ${{ runner.temp }}/release-windows-failure-binaries/
+          if-no-files-found: error
+
       - name: Run C-ABI crate tests
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         # Standalone because the workspace run above must exclude hew-cabi.
         shell: bash
         run: make SHELL=bash test-cabi
 
       - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         shell: bash
         run: make SHELL=bash core-acceptance
 
@@ -703,7 +764,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-x86_64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — FreeBSD x86_64
     runs-on: ubuntu-24.04
     # This separate QEMU-backed job runs the grown Hew-suite ratchet after its
@@ -817,16 +878,9 @@ jobs:
             # cargo-nextest is not in FreeBSD pkg yet; install once via cargo
             cargo install cargo-nextest --locked --version 0.9.120
 
-            gmake test-strict
-
-            # hew-cabi is excluded from the workspace run above because its
-            # cfg(test) runtime stubs collide with hew-runtime's real symbols
-            # at link time. Run it on its own so the C-ABI ownership contract
-            # is actually proven on this platform rather than merely skipped.
-            gmake test-cabi
-
-            gmake core-acceptance
-            gmake test-hew-ratchet
+            # These goals run independent suites, including the separate C-ABI
+            # link boundary. Collect all failures without hiding a later suite.
+            gmake -k test-strict test-cabi core-acceptance test-hew-ratchet
             HEW_FREEBSD_CI
 
       - name: Upload test reports
@@ -864,8 +918,8 @@ jobs:
   # This leg now proves the one thing no other leg proves — that the
   # compiler builds and a compiled program runs correctly on FreeBSD
   # aarch64 — via a release build of hew-cli and a compile+run smoke test.
-  # It does not build hew-lib or run the Rust test
-  # suite, hew-suite-ratchet, or vertical-slice: those already have
+  # Its compiler and native runtime share the release build profile. It does
+  # not run the Rust suite, hew-suite-ratchet, or vertical-slice: those have
   # dedicated coverage on this OS (gate-freebsd-x86_64) and on this
   # architecture (gate-linux-aarch64, gate-macos arm64), so the marginal
   # risk unique to the FreeBSD+aarch64 combination is the build/run path,
@@ -875,7 +929,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-freebsd-aarch64:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all'
     name: Release Gate — FreeBSD aarch64
     runs-on: ubuntu-24.04
     # This is an emulated QEMU leg; 300 minutes matches release.yml's
@@ -904,15 +958,7 @@ jobs:
             # Bootstrap pkg through the base utility before reading package catalogues.
             /usr/sbin/pkg bootstrap -fy -r FreeBSD
             pkg update -f -r FreeBSD
-            # wasmtime executes the eval_wasm_* / wasi_run_e2e modules; the
-            # FreeBSD pkg ships it the same way brew/wasmtime.dev provide it on
-            # the macOS and Linux gates.
-            # unpinned-by-design(wasmtime): the guest installs from pkg, which serves
-            # one wasmtime per quarterly branch and takes no version selector. The
-            # alternative is building wasmtime from source inside a VM step that
-            # already runs near its time limit. Every other runner takes the pinned
-            # release asset.
-            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2 wasmtime
+            pkg install -y -r FreeBSD llvm22 gdb rust python312 cmake ninja git gmake bash pkgconf libffi libxml2
 
           run: |
             set -eux
@@ -930,50 +976,22 @@ jobs:
             test -x "$PYTHON"
             /usr/local/llvm22/bin/llvm-config --version
 
-            # Upstream does not publish a rustup host toolchain for aarch64
-            # FreeBSD, so keep the pkg compiler and install its matching,
-            # host-independent WASI standard-library component directly.
-            RUST_VERSION=$(rustc --version | awk '{print $2}')
-            RUST_STD_COMPONENT="rust-std-${RUST_VERSION}-wasm32-wasip1"
-            RUST_STD_DIR=$(mktemp -d)
-            trap 'rm -rf "$RUST_STD_DIR"' EXIT
-            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" \
-              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz"
-            /usr/bin/fetch -o "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256" \
-              "https://static.rust-lang.org/dist/${RUST_STD_COMPONENT}.tar.xz.sha256"
-            test "$(sha256 -q "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz")" = \
-              "$(awk '{print $1}' "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz.sha256")"
-            tar -xJf "$RUST_STD_DIR/${RUST_STD_COMPONENT}.tar.xz" -C "$RUST_STD_DIR"
-            sh "$RUST_STD_DIR/${RUST_STD_COMPONENT}/install.sh" \
-              --prefix="$(rustc --print sysroot)" --disable-ldconfig
-            test -d "$(rustc --print sysroot)/lib/rustlib/wasm32-wasip1/lib"
+            # The native smoke shares one release dependency graph. The shipped
+            # release-lib profile remains separate for external Rust consumers.
+            gmake release-smoke-artifacts
 
-            # The wasm codegen tests link with `wasm-ld`; llvm22 ships it in its
-            # own bin dir, which is not on PATH. Expose it like the macOS gate's
-            # lld@22 so the linker probe finds it instead of failing to spawn
-            # rust-lld (not shipped by the pkg rust toolchain).
-            ln -sf /usr/local/llvm22/bin/wasm-ld /usr/local/bin/wasm-ld
-            command -v wasmtime && wasmtime --version
-            command -v wasm-ld && wasm-ld --version
+            # Stage this exact pair so archive discovery cannot select another profile.
+            SMOKE_DIR=$(mktemp -d)
+            trap 'rm -rf "$SMOKE_DIR"' EXIT
+            mkdir -p "$SMOKE_DIR/bin" "$SMOKE_DIR/lib"
+            cp target/release/hew "$SMOKE_DIR/bin/hew"
+            cp target/release/libhew.a "$SMOKE_DIR/lib/libhew.a"
+            "$SMOKE_DIR/bin/hew" --version
 
-            # Only the combined CLI release binary, not the
-            # release-lib profile: this leg proves the compiler builds and
-            # runs on FreeBSD aarch64. The debug libhew archive below is the
-            # native-link input required by the smoke test.
-            gmake release-cli
-
-            # Build only the native archive needed by the release CLI's smoke.
-            # `gmake stdlib` also builds a debug compiler, repeating the full
-            # compiler dependency graph under emulation after release-cli.
-            cargo build -p hew-lib
-
-            target/release/hew --version
-
-            # Smoke test — compile and run a .hew program
-            echo 'fn main() { println("smoke-ok") }' > _smoke.hew
-            target/release/hew build _smoke.hew -o _smoke_bin
-            chmod +x _smoke_bin
-            OUTPUT=$(./_smoke_bin)
+            # Smoke test — compile and run a .hew program with the staged runtime.
+            echo 'fn main() { println("smoke-ok") }' > "$SMOKE_DIR/main.hew"
+            HEW_STD="$PWD/std" "$SMOKE_DIR/bin/hew" build "$SMOKE_DIR/main.hew" -o "$SMOKE_DIR/smoke"
+            chmod +x "$SMOKE_DIR/smoke"
+            OUTPUT=$("$SMOKE_DIR/smoke")
             echo "$OUTPUT"
-            echo "$OUTPUT" | grep -q "smoke-ok"
-            rm -f _smoke.hew _smoke_bin
+            test "$OUTPUT" = "smoke-ok"

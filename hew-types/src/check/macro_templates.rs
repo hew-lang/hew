@@ -551,7 +551,7 @@ impl TemplateNames<'_> {
                             self.bind(*name);
                         }
                     }
-                    for name in &transition.event_bindings {
+                    for (name, _) in &transition.event_bindings {
                         self.bind(*name);
                     }
                     if let Some(guard) = &mut transition.guard {
@@ -761,11 +761,20 @@ impl TemplateNames<'_> {
                 self.pop();
             }
             Expr::SpawnLambdaActor {
+                private_captures,
                 params,
                 return_type,
                 body,
                 ..
             } => {
+                for (name, span) in private_captures {
+                    self.path(
+                        &Path {
+                            segments: vec![(*name, span.clone())],
+                        },
+                        Namespace::Value,
+                    )?;
+                }
                 self.push();
                 for param in params {
                     if let Some(ty) = &param.ty {

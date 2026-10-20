@@ -1256,3 +1256,24 @@ fn top_level_float_const_non_literal_initializer_fails_closed() {
         output.diagnostics
     );
 }
+
+#[test]
+fn lambda_actor_state_has_distinct_bindings_and_preserves_nested_captures() {
+    let output = lower(
+        r"fn main() {
+        let seed: i64 = 7;
+        let first = actor || -> i64 { let read = || seed; read() };
+        let second = actor || -> i64 { let values = gen { yield seed; }; seed };
+        stop(first); stopped(first); stop(second); stopped(second);
+    }",
+    );
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let diagnostics = verify_hir(&output.module);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let actors = synthesized_lambda_actors(&output);
+    assert_eq!(actors.len(), 2);
+    assert_ne!(
+        actors[0].receive_handlers[0].state_bindings[0].id,
+        actors[1].receive_handlers[0].state_bindings[0].id
+    );
+}

@@ -2181,6 +2181,7 @@ impl<'a> Flow<'a> {
                         | SemTerminator::Suspend {
                             kind: crate::SuspendKind::Select { .. }
                                 | crate::SuspendKind::NativeIo { .. }
+                                | crate::SuspendKind::SemaphoreAcquire { .. }
                                 | crate::SuspendKind::ServiceAcquire { .. }
                                 // An ask reads its target to address the actor
                                 // and retains nothing past the reply.

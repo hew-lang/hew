@@ -1,0 +1,13 @@
+[[case]]
+id = "lambda-actor-moved-capture-reuse"
+intent = "Moving a collection into a private actor field consumes the enclosing owner."
+source = "../vertical-slice/reject/lambda_actor_moved_capture_reuse.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+code = "UseAfterMove"
+line = 8
+column = 13
+message = "use of moved value `seen`"

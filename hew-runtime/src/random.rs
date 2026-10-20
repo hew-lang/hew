@@ -688,6 +688,44 @@ mod tests {
     }
 
     #[test]
+    fn rng_ffi_advances_state_without_mutating_copies() {
+        // SAFETY: all pointers are ordinary owned vectors created and released
+        // by this test; the copied headers share only copy-on-write storage.
+        unsafe {
+            let state = hew_rng_new(42);
+            let saved = crate::vec::hew_vec_clone_owned(state);
+            assert_eq!(hew_rng_next_u64(state), 15_021_278_609_987_233_951);
+            assert_eq!(hew_rng_next_u64(state), 5_881_210_131_331_364_753);
+            assert_eq!(hew_rng_next_u64(saved), 15_021_278_609_987_233_951);
+            assert_eq!(hew_rng_next_u64(saved), 5_881_210_131_331_364_753);
+
+            // Range and shuffle both persist their state transitions.
+            assert_eq!(hew_rng_range(state, 0, 37), hew_rng_range(saved, 0, 37));
+            let target = crate::vec::hew_vec_new_i64();
+            for value in 0..10 {
+                crate::vec::hew_vec_push_i64(target, value);
+            }
+            let original = crate::vec::hew_vec_clone_owned(target);
+            hew_rng_shuffle_i64(state, target);
+            for index in 0..10 {
+                assert_eq!(crate::vec::hew_vec_get_i64(original, index), index);
+            }
+            hew_rng_shuffle_i64(saved, original);
+            for index in 0..10 {
+                assert_eq!(
+                    crate::vec::hew_vec_get_i64(target, index),
+                    crate::vec::hew_vec_get_i64(original, index),
+                );
+            }
+            assert_eq!(hew_rng_next_u64(state), hew_rng_next_u64(saved));
+            crate::vec::hew_vec_free(target);
+            crate::vec::hew_vec_free(original);
+            crate::vec::hew_vec_free(state);
+            crate::vec::hew_vec_free(saved);
+        }
+    }
+
+    #[test]
     fn rng_randbelow_never_reaches_bound() {
         let mut state = xoshiro_seed_words(7);
         for _ in 0..10_000 {

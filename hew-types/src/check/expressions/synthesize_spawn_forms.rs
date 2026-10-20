@@ -109,7 +109,7 @@ impl Checker {
                 field,
                 &DottedTypeMemberUse::Reference { span },
             ) {
-                self.note_path_use(&head.canonical_type);
+                self.note_import_use_of_expr_head(&object.0);
                 return result;
             }
         }
@@ -836,9 +836,7 @@ impl Checker {
         is_fork_body: bool,
     ) -> Ty {
         let private_bindings = self.resolve_private_captures(private_captures);
-        let body_environment = self
-            .env
-            .closure_environment(&private_bindings, is_actor_body);
+        let body_environment = self.env.closure_environment(&private_bindings);
         let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -1391,9 +1389,7 @@ impl Checker {
         // from colliding in the downstream MIR record-layout / field-order
         // registry (the same identity discipline `samename_type_layout` proves
         // for explicitly qualified constructions).
-        let qualified_owned = self
-            .published_bare_type_qualified(name)
-            .or_else(|| self.flat_file_import_type_owner(name));
+        let qualified_owned = self.published_bare_type_qualified(name);
         let delivery_owner = self
             .canonical_nominal_name(name)
             .unwrap_or_else(|| qualified_owned.clone().unwrap_or_else(|| name.to_string()));
@@ -1404,13 +1400,10 @@ impl Checker {
             return Ty::Error;
         }
 
-        if let Some(qualified) = qualified_owned.as_deref() {
-            // `qualified` is the full owner-qualified source identity
-            // (`owner.TypeName`); constructing it uses the current file's
-            // imports of `owner`.
-            if let Some((owner, _)) = qualified.rsplit_once('.') {
-                self.note_path_use(owner);
-            }
+        if qualified_owned.is_some() {
+            // Credit the written binding, not every import of its selected
+            // declaration's source module.
+            self.note_import_use(name.split('.').next().unwrap_or(name));
         }
         let name = qualified_owned.as_deref().unwrap_or(name);
         if self
@@ -1942,7 +1935,10 @@ impl Checker {
             // silent first-wins.
             Expr::Ident(name) => {
                 match self.resolve_bare_spawn_target_identity(name) {
-                    super::types::BareActorResolution::Resolved(identity) => Some(identity),
+                    super::types::BareActorResolution::Resolved(identity) => {
+                        self.note_import_use(name.name.as_str());
+                        Some(identity)
+                    }
                     super::types::BareActorResolution::Ambiguous(candidate_modules) => {
                         self.report_ambiguous_actor_reference(
                             name.name.as_str(),
@@ -2170,13 +2166,6 @@ impl Checker {
         candidate_modules: &[String],
         span: &Span,
     ) {
-        let candidate_identities: Vec<String> = candidate_modules
-            .iter()
-            .map(|module| format!("{module}.{name}"))
-            .collect();
-        for candidate in &candidate_identities {
-            self.note_path_use(candidate);
-        }
         let candidates_list = candidate_modules
             .iter()
             .map(|m| format!("`{m}.{name}`"))

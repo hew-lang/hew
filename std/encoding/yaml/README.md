@@ -62,7 +62,7 @@ Migration: remove data `free()` and `close()` calls. Replace consuming `with_*`
 builders with `var` plus `set`, and `push_*` builders with `push` of a constructed
 value. Handle checked getters and the two lookup layers explicitly. Use
 `from_string` for string construction. The shared `CanonicalValueMethods` trait
-has been removed; TOML currently retains its own independent resource API.
+has been removed; TOML follows the same model with its own `Kind`.
 
 ## Typed encode and decode
 

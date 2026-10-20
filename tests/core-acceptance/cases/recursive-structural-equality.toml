@@ -1,0 +1,10 @@
+[[case]]
+id = "recursive-structural-equality"
+intent = "Records and enums recursive through a Vec compare structurally with ==, != and Vec.contains."
+source = "cases/recursive-structural-equality.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "json true false true\nvec true false true\nnode true false\nrecursive keys ok\nlist true false\n"
+exit = 0

@@ -143,6 +143,11 @@ fn main() {
 Prefix interpolated strings with `f`. Expressions inside braces use Display;
 use an explicit Display implementation to choose the user-facing text.
 
+Each pair of braces holds one expression, optionally followed by `:?`.
+Anything else after the expression is an error, including width, alignment and
+precision specifiers such as `{x:<8}` or `{f:.2}`. Format the value first, for
+example with `fmt.pad_left`, `fmt.pad_right` or `fmt.to_hex` from `std.fmt`.
+
 ### Structural rendering with `:?`
 
 ```hew
@@ -1348,9 +1353,9 @@ fn main() {
 }
 ```
 
-A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter { count }`), and machine `emit` and transition field lists. It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
+A field written as a bare name takes the binding of the same name: `Endpoint { host, port }` is `Endpoint { host: host, port: port }`. Bare and explicit fields mix freely, and a bare field overrides `..base` like any named field. The same spelling works wherever fields are named: enum struct variants (`Shape.Circle { radius }`, `.Circle { radius }`), actor spawn arguments (`spawn Counter { count }`), and machine `emit` and transition field lists (a transition list needs two fields or an explicit one; see below). It mirrors the record pattern `.Circle { radius }`, which binds the field to a name of the same name. `hew fmt` keeps each field as you wrote it.
 
-Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there.
+Where a block follows the expression — after an `if let` or `while let` scrutinee or a `for` iterable — `{ name }` is that block, not a one-field literal; write `(Wrapper { value })` there. A machine transition body is the same: `=> Failed { why }` is a body block yielding `why`, so a one-field list is written `=> Failed { why: why }`.
 
 ### Spread in literals
 
@@ -2177,6 +2182,66 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
+Captured values initialize read-only state fields: ordinary values are
+independent snapshots, and affine resources transfer their ownership. To keep
+state that changes from one message to the next, name the capture in a
+`capture(var ..)` prefix after `actor` (and after `move`, when present). The
+actor gets its own mutable field starting from the captured value; the
+enclosing binding can be `let` and never changes.
+
+```hew
+fn main() {
+    let total: i64 = 0;
+    let add = actor capture(var total) |n: i64| -> i64 {
+        total += n;
+        total
+    };
+    let _ = add(5);
+    match add(7) {
+        .Ok(sum) => println(sum), // 12
+        .Err(_) => println("the call failed"),
+    }
+    println(total); // 0: main's own value
+    stop(add);
+    stopped(add);
+}
+```
+
+The only way to read that state back is a reply. A lambda actor has one
+handler, so give it an enum message when it offers several operations:
+
+```hew
+enum Tally {
+    Add(i64);
+    Get;
+}
+
+fn main() {
+    let count: i64 = 0;
+    let tally = actor capture(var count) |m: Tally| -> i64 {
+        match m {
+            .Add(n) => {
+                count += n;
+                count
+            }
+            .Get => count,
+        }
+    };
+    let _ = tally(Tally.Add(3));
+    let _ = tally(Tally.Add(4));
+    match tally(Tally.Get) {
+        .Ok(n) => println(f"tally = {n}"), // tally = 7
+        .Err(_) => println("tally is gone"),
+    }
+    stop(tally);
+    stopped(tally);
+}
+```
+
+Writing a capture the prefix does not name is a compile error, even when the
+enclosing binding is a `var`: the actor's copy is never the caller's variable,
+so the write could not reach it.
+
 An `actor(Msg) -> Reply` handle is an ordinary value. Store it in a record field or a
 `Vec` and call it where it is stored; a handle read out of a collection is
 borrowed, and the call addresses the actor through the borrow without taking
@@ -2406,6 +2471,11 @@ It requests a graceful stop and returns immediately, whether called inside or
 outside the actor. `stopped(worker)` waits for terminal cleanup, while
 `terminate(actor)` requests cancellation. After `stop(self)`, the current
 handler finishes and queued messages drain before `#[on(stop)]` runs.
+`stopped(worker)` does not raise an actor's original crash again: the crash
+was reported when it happened and still counts toward the exit status. The
+wait finishes after terminal cleanup. A distinct fault from a stop or crash
+hook, or from releasing actor state, passes to the waiting caller, including
+when cleanup follows a crash.
 
 ### Accepting connections and reading in a handler
 
@@ -2575,8 +2645,10 @@ fn main() {
 }
 ```
 
-The head binding `on Add { n }: ...` names the payload fields at the rule site;
-`event.n` is the equivalent spelling without it. The compiler generates a
+The head binding `on Add { n }: ...` names the payload fields for the whole
+rule, so the guard and the body both read `n`:
+`on Add { n }: Seed => Total when n > 0 { sum: n }`. `event.n` is the equivalent
+spelling without it. The compiler generates a
 companion event type `{MachineName}.Event` you can name in signatures and construct
 with `Acc.Event.Add { n: 1 }`.
 
@@ -2704,7 +2776,10 @@ fn main() {
 
 `_` in the source position matches any state, and `_` in the target position
 lets the body choose, so an `if` returning different states is legal there. An
-explicit cell rule always wins over a wildcard.
+explicit cell rule always wins over a wildcard. Because the target is not known
+until the body runs, a `_` target always leaves and re-enters: the source's
+`exit` and the result's `entry` hooks run even when the body returns the state
+it started in.
 
 ### Driving a machine from a function or an actor
 
@@ -2813,8 +2888,11 @@ position in the file does not matter, only which state the rule names.
 
 The composite's hooks bracket the substates' own. Entering the group runs
 `Live.entry` before the substate's `entry`; leaving it runs the substate's
-`exit` before `Live.exit`. Moving between two substates of the same group runs
-neither, because the group was never left.
+`exit` before `Live.exit`. Moving to a named substate of the same group runs
+neither, because the group was never left. A `_` target is the exception: it
+leaves the whole active branch and re-enters the result, so `on Stay: Active =>
+_ { Active }` runs `Live.exit` and `Live.entry`. Name the target when the group's
+hooks must not run.
 
 The composite is a grouping, not a live state: `state_name()` always reports a
 substate, and the machine flattens before it is checked. `hew machine diagram`
@@ -4091,15 +4169,23 @@ The functions above share one implicit generator per thread. `random.Rng` is a p
 ```hew
 import std.random;
 fn main() {
-    let rng = random.Rng.new(42);
+    var rng = random.Rng.new(42);
     println(rng.next_u64());
     println(rng.next_f64());     // f64 in [0.0, 1.0)
     println(rng.range(1, 7));    // i64 in [1, 7)
 
-    var hand: Vec<i64> = [1, 2, 3, 4, 5];
-    rng.shuffle(hand);
+    let hand: Vec<i64> = [1, 2, 3, 4, 5];
+    let shuffled = rng.shuffle(hand);
+    let another = random.shuffle(hand);
+    // hand keeps its original order; both calls return independent values.
+    assert(hand == [1, 2, 3, 4, 5]);
+    println(f"Original first card: {hand[0]}");
+    println(f"Shuffled first card: {shuffled[0]}");
+    println(f"Another first card: {another[0]}");
 }
 ```
+
+Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
 `Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
 
@@ -4224,7 +4310,25 @@ fn main() {
 
 A quoted string path (`import "relative/path.hew";`) pulls in a sibling
 source file directly — no project layout is required. This is the fastest
-way to split a script into files.
+way to split a script into files. The imported file is a module of its own:
+its `pub` items are bound unqualified in the importing file, while its private
+items, including a `fn main` that lets the file run on its own, stay inside it.
+Two imported files may each keep a private `helper` or `const WIDTH` without
+clashing; two that both publish the same `pub` name are refused as an import
+binding collision. Alias them to keep both:
+
+```hew,ignore
+import "codecs/huffman.hew" as huffman;
+import "codecs/rle.hew" as rle;
+
+fn main() {
+    println(huffman.encode("aab"));
+    println(rle.encode("aab"));
+}
+```
+
+An aliased file import binds only the module name, so its items are always
+written qualified (`huffman.encode`).
 
 A dotted import names a module by its path: `import a.b.c;` finds
 `a/b/c.hew` beside the importing file or from its package root (never in the

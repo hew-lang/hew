@@ -13,6 +13,10 @@ use crate::cancel_token::{
 use crate::wake::{HewWaker, OwnedWaker};
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 
+/// Private token reason identifying cancellation requested by the reader of an
+/// actor stream. The source-facing failure remains `HEW_FAULT_CANCELLED`.
+const ACTOR_STREAM_READER_CLOSED_REASON: i32 = i32::MIN + 1;
+
 /// ABI-visible coroutine outcome. A yielded value is available until the
 /// generator's next resume; every terminal outcome requires frame destruction.
 #[repr(i32)]
@@ -58,20 +62,22 @@ pub(crate) struct InvocationContext {
     token: *mut HewCancellationToken,
     observer: *mut HewCancelObserver,
     previous: *mut InvocationContext,
+    pub(crate) actor_stream: Option<ActorStreamBinding>,
 }
 
-/// Retained readiness and cancellation for a construction owned by its caller.
-/// It never points into the caller's frame.
+/// Retained cancellation token and wake target for an invocation that may be
+/// cancelled by an owner other than the suspended invocation itself.
+/// It never points into a coroutine frame or invocation state.
 #[derive(Debug)]
-pub(crate) struct ConstructionWake {
+pub(crate) struct RetainedCancellation {
     token: *mut HewCancellationToken,
     waker: OwnedWaker,
 }
 
 // SAFETY: the retained token and readiness descriptor support concurrent requests.
-unsafe impl Send for ConstructionWake {}
+unsafe impl Send for RetainedCancellation {}
 
-impl ConstructionWake {
+impl RetainedCancellation {
     pub(crate) fn new(state: &HewCoroState) -> Self {
         let execution = state.execution();
         // SAFETY: the live invocation retains this token through the increment.
@@ -89,11 +95,58 @@ impl ConstructionWake {
     }
 }
 
-impl Drop for ConstructionWake {
+impl Drop for RetainedCancellation {
     fn drop(&mut self) {
         // SAFETY: this registration owns one retained reference.
         unsafe { hew_cancel_token_release(self.token) };
     }
+}
+
+/// Cancellation association for one actor stream producer. The channel owns
+/// this registration while open; the invocation also retains it until finish.
+#[derive(Debug)]
+pub(crate) struct ActorStreamCancellation {
+    retained: RetainedCancellation,
+    reader_closed: std::sync::atomic::AtomicBool,
+}
+
+// SAFETY: cancellation only touches atomics, the retained token, and waker.
+unsafe impl Send for ActorStreamCancellation {}
+// SAFETY: cancellation may be requested concurrently with invocation finish.
+unsafe impl Sync for ActorStreamCancellation {}
+
+impl ActorStreamCancellation {
+    pub(crate) fn new(state: &HewCoroState) -> Self {
+        Self {
+            retained: RetainedCancellation::new(state),
+            reader_closed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn close_reader(&self) {
+        self.reader_closed.store(true, Ordering::Release);
+        self.retained.cancel(ACTOR_STREAM_READER_CLOSED_REASON);
+    }
+
+    pub(crate) fn reader_closed(&self) -> bool {
+        self.reader_closed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn caused_cancellation(&self, state: &HewCoroState) -> bool {
+        self.reader_closed()
+            // SAFETY: `state` is live through actor completion; its token owns
+            // the parent chain consulted by the reason lookup.
+            && unsafe { cancel_token_reason(state.execution().token) }
+                == ACTOR_STREAM_READER_CLOSED_REASON
+    }
+}
+
+/// Invocation-owned half of a channel's producer-cancellation registration.
+/// It keeps the core alive through completion and removes only this binding.
+#[derive(Debug)]
+pub(crate) struct ActorStreamBinding {
+    pub(crate) core: std::sync::Arc<crate::channel_core::ChannelCore>,
+    pub(crate) cancellation: std::sync::Arc<ActorStreamCancellation>,
 }
 
 #[repr(u8)]
@@ -112,6 +165,9 @@ enum CleanupIo {
 
 impl Drop for InvocationContext {
     fn drop(&mut self) {
+        if let Some(binding) = self.actor_stream.take() {
+            binding.core.unbind_actor_stream(&binding.cancellation);
+        }
         // SAFETY: this context owns its subscription and retained token.
         unsafe {
             hew_cancel_unobserve(self.observer);
@@ -121,6 +177,21 @@ impl Drop for InvocationContext {
 }
 
 impl HewCoroState {
+    pub(crate) fn bind_actor_stream(
+        &mut self,
+        core: std::sync::Arc<crate::channel_core::ChannelCore>,
+    ) -> bool {
+        if self.execution().actor_stream.is_some() {
+            return false;
+        }
+        let cancellation = std::sync::Arc::new(ActorStreamCancellation::new(self));
+        if !core.bind_actor_stream(std::sync::Arc::clone(&cancellation)) {
+            return false;
+        }
+        self.execution_mut().actor_stream = Some(ActorStreamBinding { core, cancellation });
+        true
+    }
+
     fn with_context(context: *mut InvocationContext, flags: u8, poll_suppression: u32) -> Self {
         Self {
             invocation: hew_cabi::coro::HewCoroInvocation {
@@ -197,6 +268,7 @@ unsafe fn context_with_token(
         token,
         observer,
         previous,
+        actor_stream: None,
     }
 }
 

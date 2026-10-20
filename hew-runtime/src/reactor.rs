@@ -718,6 +718,22 @@ impl Slot {
         }
     }
 
+    /// Snapshot only drained work, leaving root waits registered. Cancellation
+    /// withdraws each selected operation through `forget`, including passing
+    /// a cancelled standard-input reader's turn to the next reader.
+    fn waiters_holding_drain(&self) -> Vec<Arc<HewAsyncIo>> {
+        let state = self.state.lock_or_recover();
+        state
+            .readers
+            .queue
+            .iter()
+            .chain(state.reader.iter())
+            .chain(state.writer.iter())
+            .filter(|operation| operation.holds_drain())
+            .cloned()
+            .collect()
+    }
+
     fn take_waiters(&self) -> Vec<Arc<HewAsyncIo>> {
         let mut state = self.state.lock_or_recover();
         state.readers.front_woken = false;
@@ -1039,11 +1055,10 @@ fn fail_reactor(error: &io::Error) {
     REACTOR_RUNNING.store(false, Ordering::Release);
 }
 
-/// Cancel and wake every waiting operation on the slots `swept` selects, so
-/// parked tasks take their cancellation edge before workers are joined.
-fn cancel_waiters(swept: impl Fn(&Slot) -> bool) -> usize {
+/// Cancel and wake every waiting operation. Reactor teardown uses this.
+pub(crate) fn cancel_all() -> usize {
     let mut cancelled = 0;
-    for slot in slots().into_iter().filter(|slot| swept(slot)) {
+    for slot in slots() {
         for operation in slot.take_waiters() {
             cancelled += usize::from(operation.cancel_and_wake());
             waiter_removed(&operation);
@@ -1052,16 +1067,21 @@ fn cancel_waiters(swept: impl Fn(&Slot) -> bool) -> usize {
     cancelled
 }
 
-/// Cancel and wake every waiting operation. Reactor teardown uses this.
-pub(crate) fn cancel_all() -> usize {
-    cancel_waiters(|_| true)
-}
-
-/// Resolve waits parked when shutdown began, preserving existing child
-/// process pipes and exit watches. Capture must drain the child's output to
-/// EOF alongside its exit; cancelling either pipe would fault an admitted run.
+/// Resolve drained waits parked when shutdown began, preserving process-root
+/// waits and existing child process pipes and exit watches. Capture must drain
+/// the child's output to EOF alongside its exit; cancelling either pipe would
+/// fault an admitted run.
 pub(crate) fn reactor_cancel_parked_waits_for_shutdown() -> usize {
-    cancel_waiters(|slot| !matches!(slot.object, IoObject::Pipe(_)) && !slot.is_child_exit())
+    let mut cancelled = 0;
+    for slot in slots() {
+        if matches!(slot.object, IoObject::Pipe(_)) || slot.is_child_exit() {
+            continue;
+        }
+        for operation in slot.waiters_holding_drain() {
+            cancelled += usize::from(operation.cancel_and_wake());
+        }
+    }
+    cancelled
 }
 
 /// Stop and join the reactor thread, then cancel what still waits. Runtime

@@ -688,7 +688,7 @@ fn generator_producer_descriptor_rejects_ordinary_callable_capabilities() {
 }
 
 #[test]
-fn a_capture_is_copied_only_for_a_mutation_that_can_release_it() {
+fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
     let module = lower_source(
         r#"
         fn main() -> i64 {
@@ -733,29 +733,38 @@ fn a_capture_is_copied_only_for_a_mutation_that_can_release_it() {
             .find(|op| op.results.iter().any(|result| result.id == value))
             .map(|op| &op.kind)
     };
-    // A map insert can release its receiver when a key callback faults, and
-    // the closure reads the capture again after a recovered fault, so the
-    // insert runs on a copy. A push keeps its receiver and takes the capture.
-    let mut copied = Vec::new();
+    // Every receiver transform keeps its receiver on its failure edge, so a
+    // mutation takes the capture in place; the map insert, which a key
+    // callback can fail, re-initializes the capture on that edge so a call
+    // after a recovered fault reads it again.
     let mut taken = Vec::new();
+    let mut restored = Vec::new();
     for block in &function.blocks {
-        let SemTerminator::RtCall { args, .. } = &block.terminator else {
+        let SemTerminator::RtCall { args, unwind, .. } = &block.terminator else {
             continue;
         };
         let Some(SemOpKind::Move { source }) = producer(args[0].operand.value) else {
             continue;
         };
-        match producer(source.value) {
-            Some(SemOpKind::CopyValue { source }) => {
-                let Some(SemOpKind::LoadBorrow { place }) = producer(source.value) else {
-                    panic!("a capture's copy is read through a loan of the capture")
-                };
-                copied.push(*place);
-            }
-            Some(SemOpKind::LoadTake { place }) => taken.push(*place),
-            other => panic!("unexpected runtime receiver source {other:?}"),
+        let Some(SemOpKind::LoadTake { place }) = producer(source.value) else {
+            panic!("a capture mutation takes the capture in place");
+        };
+        taken.push(*place);
+        if let hew_sir::CallUnwind::Cleanup(edge) = unwind {
+            let failure = function
+                .blocks
+                .iter()
+                .find(|block| block.id == edge.target)
+                .unwrap();
+            let moved = args[0].operand.value;
+            assert!(
+                failure.ops.iter().any(|op| matches!(op.kind,
+                    SemOpKind::StoreInit { place: at, ref value } if at == *place && value.value == moved)),
+                "the failure edge hands the capture its receiver back"
+            );
+            restored.push(*place);
         }
     }
-    assert_eq!(copied, [capture(0)]);
-    assert_eq!(taken, [capture(1)]);
+    assert_eq!(taken, [capture(0), capture(1)]);
+    assert_eq!(restored, [capture(0)]);
 }

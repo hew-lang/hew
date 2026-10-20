@@ -1,0 +1,40 @@
+// A lambda actor with one handler takes an enum message to offer several
+// operations, and reads its state back through the reply. The match arms bind
+// their own payloads, which are locals of the handler, not captures.
+enum Tally {
+    Add(i64);
+    Get;
+}
+
+fn main() {
+    let count: i64 = 0;
+    let tally = actor capture(var count) |m: Tally| -> i64 {
+        match m {
+            .Add(n) => {
+                count += n;
+                count
+            }
+            .Get => count,
+        }
+    };
+    let _ = tally(Tally.Add(3));
+    let _ = tally(Tally.Add(4));
+    match tally(Tally.Get) {
+        .Ok(n) => println(f"tally = {n}"),
+        .Err(_) => println("tally is gone"),
+    }
+    stop(tally);
+    stopped(tally);
+    let pick = actor |m: Option<i64>| -> i64 {
+        match m {
+            .Some(n) => n,
+            .None => 0,
+        }
+    };
+    match pick(.Some(4)) {
+        .Ok(n) => println(n),
+        .Err(_) => println("pick is gone"),
+    }
+    stop(pick);
+    stopped(pick);
+}

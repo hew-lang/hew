@@ -1,0 +1,13 @@
+import "imported_supervisor_support/pool.hew";
+
+fn main() {
+    // A supervisor spawned here and one spawned inside the imported file
+    // both match the imported file's `RenderPool` parameter.
+    let pool = spawn RenderPool;
+    println(first(pool));
+    println(spawn_and_render());
+    stop(pool);
+    stopped(pool);
+    // The imported file reads the children of its own private supervisor.
+    println(backup_render(4));
+}

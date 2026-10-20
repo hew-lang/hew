@@ -61,6 +61,8 @@ fn protocol_version_mismatch_rejected() {
     let mut peer = local;
     peer.protocol_version = local.protocol_version.wrapping_add(1);
     assert!(!version_compatible(&local, &peer));
+    peer.protocol_version = local.protocol_version - 1;
+    assert!(!version_compatible(&local, &peer));
 }
 
 #[test]

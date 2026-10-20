@@ -10,8 +10,8 @@ use crate::DeclarationKind;
 use hew_parser::ast::{CallArg, Expr, Ident, Param, Span, Spanned};
 
 impl Checker {
-    /// Provenance tracks callables and task handles. Scalar values and their
-    /// concrete collection shapes cannot carry either; abstract and nominal
+    /// Provenance tracks callables, task handles and actor self. Scalars and
+    /// collections of scalars cannot carry these origins; abstract and nominal
     /// values remain conservative because their members may do so.
     fn type_may_carry_value_candidates(ty: &crate::Ty) -> bool {
         match ty {
@@ -83,6 +83,10 @@ impl Checker {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one provenance dispatch covers the checked expression forms"
+    )]
     fn unerased_value_candidates(&self, expr: &Expr, span: &Span) -> IndirectCallCandidates {
         let key = SpanKey::in_module(span, self.current_module_idx);
         if matches!(expr, Expr::Literal(_))
@@ -121,6 +125,13 @@ impl Checker {
             Expr::GenBlock { .. } => {
                 IndirectCallCandidates::single(CallableCandidate::GeneratorBlock(key))
             }
+            Expr::Ident(_) if self.is_actor_self_receiver(expr) => self
+                .effect_graph
+                .current_body
+                .clone()
+                .map_or_else(IndirectCallCandidates::unknown, |body| {
+                    IndirectCallCandidates::single(CallableCandidate::ActorSelf(body))
+                }),
             Expr::Ident(_) => self.resolved_callable_candidate(span),
             Expr::FieldAccess { object, field } => self.callable_field_candidates(object, field),
             Expr::GenericApplySuffix { target, .. } => {

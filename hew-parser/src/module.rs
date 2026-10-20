@@ -90,54 +90,6 @@ pub struct Module {
     pub doc: Option<String>,
 }
 
-/// The items a file-import chain rooted at `items` splices into the importing
-/// namespace, in splice order, each with the source file that declared it.
-///
-/// The frontend appends exactly these items; HIR re-derives the same sequence
-/// to give each spliced item back the file index the checker stamped its facts
-/// with. Both read this one walk, so the two can no longer disagree about the
-/// shape of the flattened block.
-#[must_use]
-pub fn file_import_spliced_items(items: &[Spanned<Item>]) -> Vec<(&Spanned<Item>, Option<&Path>)> {
-    let mut spliced = Vec::new();
-    let mut seen = HashSet::new();
-    collect_file_import_spliced_items(items, &mut seen, &mut spliced);
-    spliced
-}
-
-fn collect_file_import_spliced_items<'a>(
-    items: &'a [Spanned<Item>],
-    seen: &mut HashSet<PathBuf>,
-    out: &mut Vec<(&'a Spanned<Item>, Option<&'a Path>)>,
-) {
-    for (item, _) in items {
-        let Item::Import(decl) = item else { continue };
-        if decl.file_path.is_none() {
-            continue;
-        }
-        let Some(resolved_items) = decl.resolved_items.as_ref() else {
-            continue;
-        };
-        if let Some(source) = decl.resolved_source_paths.first() {
-            if !seen.insert(source.clone()) {
-                continue;
-            }
-        }
-        for (index, resolved) in resolved_items.iter().enumerate() {
-            if matches!(resolved.0, Item::Import(_)) {
-                continue;
-            }
-            let source = decl
-                .resolved_item_source_paths
-                .get(index)
-                .map(PathBuf::as_path)
-                .or_else(|| decl.resolved_source_paths.first().map(PathBuf::as_path));
-            out.push((resolved, source));
-        }
-        collect_file_import_spliced_items(resolved_items, seen, out);
-    }
-}
-
 /// Every source a file-import chain rooted at `items` reaches.
 ///
 /// A file import (`import "helper.hew";`) publishes its declarations into the

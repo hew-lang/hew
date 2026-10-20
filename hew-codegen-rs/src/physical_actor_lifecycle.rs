@@ -185,6 +185,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, target_tag)?;
         let local = self.ctx.append_basic_block(function, "down.local");
         let remote = self.ctx.append_basic_block(function, "down.remote");
+        let role = self.ctx.append_basic_block(function, "down.role");
         let reason = self
             .ctx
             .append_basic_block(function, "notification.target.done");
@@ -196,6 +197,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &[
                     (self.ctx.i32_type().const_zero(), local),
                     (self.ctx.i32_type().const_int(1, false), remote),
+                    (self.ctx.i32_type().const_int(2, false), role),
                 ],
             )
             .llvm_ctx("decode DOWN target")?;
@@ -257,6 +259,18 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         builder
             .build_unconditional_branch(reason)
             .llvm_ctx("finish remote DOWN target")?;
+        builder.position_at_end(role);
+        let role_token = word(std::mem::offset_of!(HewNotificationTarget, slot), 64)?;
+        self.lifecycle_variant_payload(
+            builder,
+            target,
+            BuiltinType::DownTarget,
+            2,
+            &[role_token.into()],
+        )?;
+        builder
+            .build_unconditional_branch(reason)
+            .llvm_ctx("finish role DOWN target")?;
         builder.position_at_end(reason);
         Ok(())
     }
@@ -909,25 +923,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             self.ramps[&hook],
             &args,
         )?;
-        let free_state = get_or_declare_external(
-            &self.llvm,
-            "hew_coro_state_free",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(free_state, &[child.into()], "")
-            .llvm_ctx("release completed lifecycle hook invocation state")?;
         let returned_fault = builder
             .build_load(ptr, fault, "hook.returned.fault")
             .llvm_ctx("read completed lifecycle hook fault")?;
-        let publish = get_or_declare_external(
+        let finish = get_or_declare_external(
             &self.llvm,
-            "hew_actor_coro_set_fault",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            "hew_actor_coro_finish",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
         builder
-            .build_call(publish, &[returned_fault.into()], "")
-            .llvm_ctx("publish lifecycle hook completion under current activation")?;
+            .build_call(finish, &[child.into(), returned_fault.into()], "")
+            .llvm_ctx("finish lifecycle hook under current activation")?;
         builder
             .build_unconditional_branch(frame.finish)
             .llvm_ctx("finish lifecycle hook frame")?;

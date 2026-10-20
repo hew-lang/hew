@@ -86,3 +86,14 @@ leak:hew_sched_init
 # drop-fn, remove this suppression.
 leak:hew_runtime::supervisor::tests::heap_state_clone
 leak:hew_runtime::supervisor::tests::make_heap_template
+
+# ── Loom construction-publication model threads (test-only) ───────────────
+# Loom 0.7.2 drives modelled threads with generator 0.8.11 coroutines.
+# Resuming a coroutine initializes generator's thread-local root context via
+# ContextStack::init_root, which stores a Box::leak allocation in thread-local
+# state. When a Loom model test's libtest thread exits, its 256-byte root
+# context is unreachable. Match the allocation origin so unrelated allocations
+# made by a model test remain visible to LeakSanitizer.
+# WHEN obsolete: if Loom stops using generator or generator releases its root
+# context when the owning OS thread exits, remove this suppression.
+leak:generator::rt::ContextStack>::init_root

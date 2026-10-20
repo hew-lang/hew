@@ -2215,15 +2215,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         },
     ),
     direct(
-        "random.shuffle",
-        BuiltinClass::ClassB,
-        VEC_ANY,
-        BuiltinTy::Unit,
-        BuiltinLinkage::RuntimeFfiShim {
-            symbol: "hew_random_shuffle_i64",
-        },
-    ),
-    direct(
         "random.choices",
         BuiltinClass::ClassB,
         &[BuiltinTy::VecAny, BuiltinTy::F64, BuiltinTy::I64],

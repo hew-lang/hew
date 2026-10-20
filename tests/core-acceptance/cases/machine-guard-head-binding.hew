@@ -1,0 +1,115 @@
+// A transition head binding names the event's payload fields for the whole
+// rule: the `when` guard reads them exactly as the body does, across plain,
+// wildcard-source, generic and composite-group rules, and over an owned field
+// the guard inspects and the body keeps.
+machine Meter {
+    events {
+        Add { n: i64; cap: i64; }
+        Reset;
+    }
+    emits {
+        Rejected { n: i64; }
+    }
+
+    state Idle;
+    state Acc { sum: i64; }
+
+    on Add { n }: Idle => Acc when n > 0 { sum: n }
+    on Add { n, cap }: Acc => Acc when state.sum + n <= cap { sum: state.sum + n }
+    on Add { n }: _ => _ {
+        emit Rejected { n };
+        state
+    }
+    on Reset: _ => Idle;
+}
+
+machine Box<T> {
+    events {
+        Put { item: T; keep: bool; }
+    }
+
+    state Empty;
+    state Full { item: T; }
+
+    on Put { item, keep }: Empty => Full when keep { item: item }
+    on Put: _ => _ {
+        state
+    }
+}
+
+machine Link {
+    events {
+        Drop { code: i64; }
+    }
+
+    state Live {
+        initial state Up;
+        state Degraded;
+
+        on Drop { code }: _ => Down when code >= 500;
+    }
+    state Down;
+
+    on Drop: Up => Degraded;
+    on Drop: _ => _ {
+        state
+    }
+}
+
+machine Bag {
+    events {
+        Put { items: Vec<string>; keep: bool; }
+    }
+
+    state Empty;
+    state Full { items: Vec<string>; }
+
+    on Put { items, keep }: Empty => Full when keep && !items.is_empty() { items: items }
+    on Put { items }: Full => Full when items.len() > 1 { items: items }
+
+    default { state }
+}
+
+fn show(report: MeterStep) {
+    for output in report.outputs {
+        match output {
+            .Rejected { n } => println(f"rejected {n}"),
+        }
+    }
+}
+
+fn main() {
+    var meter: Meter = .Idle;
+    show(meter.step(.Add { n: 0, cap: 10 }));
+    println(meter.state_name());
+    show(meter.step(.Add { n: 4, cap: 10 }));
+    show(meter.step(.Add { n: 5, cap: 10 }));
+    show(meter.step(.Add { n: 2, cap: 10 }));
+    match meter {
+        .Acc { sum } => println(f"sum={sum}"),
+        _ => println("not accumulating"),
+    }
+    var held: Box<string> = .Empty;
+    let _ = held.step(.Put { item: "skip", keep: false });
+    println(held.state_name());
+    let _ = held.step(.Put { item: "kept", keep: true });
+    match held {
+        .Full { item } => println(f"item={item}"),
+        _ => println("empty"),
+    }
+    var link: Link = .Up;
+    let _ = link.step(.Drop { code: 404 });
+    println(link.state_name());
+    let _ = link.step(.Drop { code: 503 });
+    println(link.state_name());
+    var bag: Bag = .Empty;
+    let _ = bag.step(.Put { items: ["a", "b"], keep: false });
+    println(bag.state_name());
+    let _ = bag.step(.Put { items: ["a", "b"], keep: true });
+    let _ = bag.step(.Put { items: ["c"], keep: true });
+    let _ = bag.step(.Put { items: ["d", "e", "f"], keep: true });
+    match bag {
+        .Full { items } => println(f"bag={items.len()} {items[0]}"),
+        _ => println("empty"),
+    }
+}

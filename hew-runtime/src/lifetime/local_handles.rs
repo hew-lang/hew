@@ -103,6 +103,26 @@ pub(crate) enum RetireActorResult {
     Mismatch,
 }
 
+/// The current target selected by `link` or `monitor` through a local handle.
+/// A role keeps its stable token when no child incarnation currently occupies
+/// the slot; when occupied, the pair preserves the full identity across the
+/// later actor pin.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "WASI does not expose the native actor monitor and link hooks"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ObservedActorTarget {
+    Actor(u64),
+    Role {
+        token: HewLocalPidId,
+        incarnation: Option<(u64, u64)>,
+    },
+}
+
 #[derive(Default)]
 struct LocalHandleState {
     routes: HashMap<HewLocalPidId, Route>,
@@ -793,7 +813,13 @@ impl LocalHandles {
     }
 
     /// Resolve a live or retired incarnation without acquiring allocation ownership.
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg_attr(
+        target_arch = "wasm32",
+        allow(
+            dead_code,
+            reason = "WASI does not expose the native actor monitor and link hooks"
+        )
+    )]
     pub(crate) fn observation_actor(
         &self,
         runtime_id: RuntimeId,
@@ -1510,13 +1536,58 @@ pub(crate) fn with_current_actor<R>(
 }
 
 /// Resolve an observation target even after its allocation has been reclaimed.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "WASI does not expose the native actor monitor and link hooks"
+    )
+)]
 pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(not(target_arch = "wasm32"))]
     let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
     #[cfg(target_arch = "wasm32")]
     let runtime_id = RuntimeId::DEFAULT;
     current_handles()?.observation_actor(runtime_id, token)
+}
+
+/// Resolve the actor incarnation selected now by a direct handle or actor
+/// role. An empty role is still a valid observation target and retains its
+/// stable role token for the immediate terminal notification.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "WASI does not expose the native actor monitor and link hooks"
+    )
+)]
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<ObservedActorTarget> {
+    if let Some(actor_id) = resolve_current_observation_actor(token) {
+        return Some(ObservedActorTarget::Actor(actor_id));
+    }
+    let (_, _, kind) = current_actor_role_owner_slot(token)?;
+    if kind != SupervisorRoleKind::Actor {
+        return None;
+    }
+    let incarnation = crate::supervisor::current_actor_role_identity(token);
+    // A role token never falls back to a previous occupant when its slot is
+    // empty.
+    Some(ObservedActorTarget::Role { token, incarnation })
+}
+
+/// wasm32 currently has no supervised actor-role runtime, so only direct
+/// actor identities can be selected for observation there.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        dead_code,
+        reason = "WASI does not expose the native actor monitor and link hooks"
+    )
+)]
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<ObservedActorTarget> {
+    resolve_current_observation_actor(token).map(ObservedActorTarget::Actor)
 }
 
 /// Return the direct token registered for an `ActorId` in the current runtime.
@@ -1546,6 +1617,24 @@ mod tests {
             std::mem::align_of::<HewLocalPidId>(),
             std::mem::align_of::<usize>()
         );
+    }
+
+    #[test]
+    fn vacant_role_notification_keeps_the_complete_local_token() {
+        let token = HewLocalPidId(usize::try_from((1_u64 << 55) | 0x1234).unwrap_or(usize::MAX));
+        let target = crate::monitor::HewNotificationTarget::role(token);
+
+        assert_eq!(target.kind, crate::monitor::DOWN_TARGET_ROLE);
+        assert_eq!(target.slot, u64::try_from(token.as_usize()).unwrap());
+        assert_eq!(target.session_incarnation, 0);
+        assert_eq!(target.node_hi, 0);
+        assert_eq!(target.node_lo, 0);
+
+        let down = crate::monitor::HewDownMessage::role_stopped(17, token);
+        assert_eq!(down.monitor_id, 17);
+        assert_eq!(down.target, target);
+        assert_eq!(down.reason_kind, 0);
+        assert_eq!(down.crash_kind, 0);
     }
 
     #[test]

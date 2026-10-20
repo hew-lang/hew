@@ -69,7 +69,7 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
             head_bindings: transition
                 .event_bindings
                 .iter()
-                .map(ToString::to_string)
+                .map(|(name, _)| name.to_string())
                 .collect(),
         });
     }

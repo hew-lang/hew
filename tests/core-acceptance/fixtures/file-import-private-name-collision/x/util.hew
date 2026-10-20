@@ -1,0 +1,7 @@
+fn helper() -> string {
+    "x"
+}
+
+pub fn from_x() -> string {
+    helper()
+}

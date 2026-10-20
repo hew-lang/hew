@@ -235,6 +235,10 @@ fn qualified_user_type_annotation_keeps_module_qualifier_in_hir() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one fixture row per encoding carrier keeps every format's identity visible"
+)]
 fn checked_member_types_preserve_nominal_opacity_through_hir() {
     use hew_types::BuiltinType;
     let option = |inner| ResolvedTy::named_builtin(BuiltinType::Option, vec![inner]);
@@ -251,6 +255,11 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
             "import std.encoding.yaml;",
             "yaml.Value",
             Some(BuiltinType::YamlValue),
+        ),
+        (
+            "import std.encoding.toml;",
+            "toml.Value",
+            Some(BuiltinType::TomlValue),
         ),
     ] {
         let source = format!(

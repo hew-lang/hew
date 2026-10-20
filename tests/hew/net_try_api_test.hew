@@ -181,10 +181,9 @@ fn test_recv_reports_an_orderly_eof_as_none() {
 // would have made this entire file fail to compile.
 //
 // The property it covered was not dropped, it was promoted from a runtime check to a
-// static one. Use-after-close is proven by the reject fixtures
+// static one. Use-after-close is proven by the reject fixture
 // `tests/vertical-slice/reject/safe_handle_resources_use_after_close.hew` (11 handle
-// types) and `tests/vertical-slice/reject/value_tree_resources_use_after_close.hew`
-// (3 cases), both of which assert exact diagnostic counts.
+// types), which asserts exact diagnostic counts.
 //
 // The transport layer's runtime closed-handle check stays in place as defence in depth
 // for FFI callers that bypass the checker. It is unreachable from Hew source now, so it

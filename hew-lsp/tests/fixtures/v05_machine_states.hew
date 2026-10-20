@@ -13,15 +13,15 @@ machine Traffic {
 
     state Idle {
         entry {
-            emit Stopped {};
+            emit Stopped;
         }
     }
     state Running {
         entry {
-            emit Started {};
+            emit Started;
         }
         exit {
-            emit Stopped {};
+            emit Stopped;
         }
     }
 

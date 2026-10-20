@@ -249,9 +249,9 @@ fn parse_machine_with_event_payload() {
 
 #[test]
 fn parse_machine_event_head_binding() {
-    // `on E { field }: …` head binding names the event payload at the rule site.
-    // It lowers identically to `event.field`; the parser splices a `let`
-    // prelude in front of the body, so the body just sees the bare name.
+    // `on E { field }: …` names the event payload for the whole rule. The
+    // parser records each name with its head span and keeps the guard and
+    // body as written; machine normalization binds the names.
     let source = r"machine Tcp {
     events {
         Connect { port: Int; }
@@ -260,7 +260,7 @@ fn parse_machine_event_head_binding() {
     state Closed;
     state Open { port: Int; }
 
-    on Connect { port }: Closed => Open { port: port }
+    on Connect { port }: Closed => Open when port > 0 { port: port }
 }
 ";
     let result = hew_parser::parse(source);
@@ -270,41 +270,37 @@ fn parse_machine_event_head_binding() {
         result.errors
     );
 
-    if let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 {
-        assert_eq!(m.transitions.len(), 1);
-        // The binding names are recorded on the transition for the formatter.
-        assert_eq!(m.transitions[0].event_bindings, vec![Ident::new("port")]);
-        // The head binding makes the body a block whose first statement binds
-        // `port` from `event.port`.
-        let hew_parser::ast::Expr::Block(block) = &m.transitions[0].body.0 else {
-            panic!("expected head-binding body to be a block");
-        };
-        assert!(
-            !block.stmts.is_empty(),
-            "head binding should splice a `let port = event.port;` prelude"
-        );
-        let hew_parser::ast::Stmt::Let { pattern, value, .. } = &block.stmts[0].0 else {
-            panic!("expected first prelude stmt to be a let binding");
-        };
-        assert!(
-            matches!(&pattern.0, hew_parser::ast::Pattern::Identifier(n) if n.name.as_str() == "port"),
-            "expected `let port = …`"
-        );
-        let Some((hew_parser::ast::Expr::FieldAccess { field, .. }, _)) = value.as_ref() else {
-            panic!("expected let value to be `event.port`");
-        };
-        assert_eq!(field.0, Ident::new("port"));
-    } else {
+    let hew_parser::ast::Item::Machine(m) = &result.program.items[0].0 else {
         panic!("expected Machine item");
-    }
+    };
+    let rule = &m.transitions[0];
+    let [(name, span)] = rule.event_bindings.as_slice() else {
+        panic!("expected one head binding, got {:?}", rule.event_bindings);
+    };
+    assert_eq!(*name, Ident::new("port"));
+    assert_eq!(&source[span.clone()], "port");
+    assert!(
+        source[..span.start].ends_with("on Connect { "),
+        "the head span must name the binding in the head"
+    );
+    assert!(
+        matches!(
+            rule.guard.as_ref().map(|guard| &guard.0),
+            Some(hew_parser::ast::Expr::Binary { .. })
+        ),
+        "the guard stays as written, got {:?}",
+        rule.guard
+    );
+    assert!(
+        matches!(&rule.body.0, hew_parser::ast::Expr::StructInit { .. }),
+        "the field-list body stays as written, got {:?}",
+        rule.body.0
+    );
 }
 
 #[test]
 fn machine_event_head_binding_round_trips_through_formatter() {
-    // The `on E { field }: …` head form must survive parse → format → parse: the
-    // formatter re-emits the head binding and strips the synthesized
-    // `let field = event.field;` prelude, so the formatted source is the head
-    // form again (not the desugar).
+    // The `on E { field }: …` head form must survive parse → format → parse.
     let source = r"machine Tcp {
     events {
         Connect { port: Int; }
@@ -313,7 +309,7 @@ fn machine_event_head_binding_round_trips_through_formatter() {
     state Closed;
     state Open { port: Int; }
 
-    on Connect { port }: Closed => Open { port: port }
+    on Connect { port }: Closed => Open when port > 0 { port: port }
 }
 ";
     let parsed = hew_parser::parse(source);
@@ -325,12 +321,8 @@ fn machine_event_head_binding_round_trips_through_formatter() {
 
     let formatted = hew_parser::fmt::format_program(&parsed.program);
     assert!(
-        formatted.contains("on Connect { port }: Closed => Open"),
-        "formatter must re-emit the head binding; got:\n{formatted}"
-    );
-    assert!(
-        !formatted.contains("let port = event.port"),
-        "formatter must strip the synthesized head-binding prelude; got:\n{formatted}"
+        formatted.contains("on Connect { port }: Closed => Open when port > 0 { port: port }"),
+        "formatter must re-emit the head binding, guard and body as written; got:\n{formatted}"
     );
 
     let reparsed = hew_parser::parse(&formatted);
@@ -471,7 +463,7 @@ fn parse_machine_emits_manifest() {
     state Active;
 
     on Start: Idle => Active {
-        emit Ready {};
+        emit Ready;
         Active
     }
     on Ready: Idle => Idle reenter;

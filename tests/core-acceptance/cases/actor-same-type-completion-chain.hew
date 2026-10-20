@@ -1,0 +1,21 @@
+// A chain of actors of one type: each stage completion-calls the next
+// instance through a field, and the last stage has no successor. The checker
+// accepts it: only a call to `self` makes a same-type edge a static ring.
+actor Stage {
+    let factor: i64;
+    let next: Option<Stage>;
+
+    receive fn process(token: i64) -> i64 {
+        let out = token * factor;
+        match next {
+            .Some(stage) => stage.process(out).expect("next stage is running"),
+            .None => out,
+        }
+    }
+}
+
+fn main() {
+    let last = spawn Stage { factor: 3, next: .None };
+    let first = spawn Stage { factor: 2, next: .Some(last) };
+    println(first.process(5).expect("chain is running"));
+}

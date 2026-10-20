@@ -7,11 +7,11 @@
 // different types that merely share a bare name. The earlier
 // bare-name dedup key (`"TestResult:TestResultMethods"`) collapsed both, silently
 // dropping the package-import impl; the provenance-based skip keeps both.
-type TestResult {
+pub type TestResult {
     handle: i64;
 }
 
-trait TestResultMethods {
+pub trait TestResultMethods {
     fn tag(self) -> i32;
 }
 

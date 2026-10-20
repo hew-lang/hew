@@ -1,0 +1,10 @@
+[[case]]
+id = "machine-guard-head-binding"
+suites = ["acceptance", "safety"]
+intent = "A transition head binding is in scope in the rule's `when` guard as well as its body, for plain, wildcard-source, generic and composite-group rules, including an owned field the guard reads and the body keeps."
+source = "cases/machine-guard-head-binding.hew"
+timeout_seconds = 15
+
+[case.expected]
+stdout = "rejected 0\nIdle\nrejected 2\nsum=9\nEmpty\nitem=kept\nDegraded\nDown\nEmpty\nbag=3 d\n"
+exit = 0

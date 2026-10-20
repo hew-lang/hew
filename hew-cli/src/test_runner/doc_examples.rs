@@ -35,6 +35,14 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
 
     let mut tests = Vec::new();
     for file in files {
+        let origin = file
+            .canonicalize()
+            .map_err(|error| format!("resolve {}: {error}", file.display()))?;
+        let source_dir = origin.parent().unwrap_or(&root);
+        let project_dir = source_dir
+            .ancestors()
+            .find(|dir| dir.join("hew.toml").is_file())
+            .unwrap_or(source_dir);
         let source = std::fs::read_to_string(&file)
             .map_err(|error| format!("read {}: {error}", file.display()))?;
         let fences = extract_fences(&source, file.extension().is_some_and(|ext| ext == "hew"));
@@ -51,7 +59,8 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
             std::fs::write(&generated_path, generated_source)
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
             let path = generated_path.display().to_string();
-            let mut discovered = discovery::discover_tests_in_file(&path)?;
+            let mut discovered =
+                discovery::discover_entries_in_file(&path, false, Some(project_dir))?;
             let parse_error = discovered
                 .parse_errors
                 .iter()
@@ -63,7 +72,7 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
                     format!("#[test]\nfn {entry_name}() {{}}\n"),
                 )
                 .map_err(|error| format!("write {}: {error}", generated_path.display()))?;
-                discovered = discovery::discover_tests_in_file(&path)?;
+                discovered = discovery::discover_entries_in_file(&path, false, Some(project_dir))?;
             }
             let mut test = discovered
                 .tests
@@ -75,6 +84,7 @@ pub fn prepare(paths: &[String]) -> Result<PreparedDocTests, String> {
                 identity,
                 selector,
                 origin: file.display().to_string(),
+                project_dir: project_dir.to_path_buf(),
                 expected_stdout: fence.expected_stdout,
                 no_run: fence.no_run,
                 parse_error,

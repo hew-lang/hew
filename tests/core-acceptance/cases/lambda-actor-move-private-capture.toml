@@ -1,0 +1,10 @@
+[[case]]
+id = "lambda-actor-move-private-capture"
+intent = "`actor move capture(var x)` transfers the capture into the actor and makes it a mutable state field."
+source = "cases/lambda-actor-move-private-capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "2\n"
+exit = 0

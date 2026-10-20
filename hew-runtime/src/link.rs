@@ -170,26 +170,70 @@ pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<
     if current.is_null() {
         return (crate::monitor::HEW_OBSERVATION_NO_CONTEXT, None);
     }
-    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target) = crate::lifetime::local_handles::resolve_current_observed_target(target)
     else {
         return (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None);
     };
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { &*current };
-    if current.id == target_id {
-        return (0, None);
+    match target {
+        crate::lifetime::local_handles::ObservedActorTarget::Actor(target_id) => {
+            if current.id == target_id {
+                return (0, None);
+            }
+            let Some(target) = pin_actor_by_id(target_id) else {
+                // A clean free retires an incarnation without a terminal
+                // sweep; its identity still answers with a normal exit.
+                send_exit_signal(current.id, target_id, 0);
+                return (0, None);
+            };
+            let (_, terminal, inserted) = register_link(current, target.actor());
+            if let Some(reason) = terminal {
+                send_exit_signal(current.id, target_id, reason);
+            }
+            (0, inserted.then_some(target_id))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { token, .. } => {
+            for _ in 0..2 {
+                let Some((target_id, target_serial)) =
+                    crate::supervisor::current_actor_role_identity(token)
+                else {
+                    // An empty role reports its stable identity immediately.
+                    // It does not subscribe the caller to a future occupant.
+                    send_exit_notification(
+                        current.id,
+                        crate::monitor::HewNotificationTarget::role(token),
+                        0,
+                        crate::internal::types::CrashKind::tag_from_error_code(0),
+                    );
+                    return (0, None);
+                };
+                let linked = crate::lifetime::live_actors::with_actor_send_by_identity(
+                    target_id,
+                    target_serial,
+                    |pin| {
+                        if current.id == target_id {
+                            return (0, None);
+                        }
+                        let (_, terminal, inserted) = register_link(current, pin.actor());
+                        if let Some(reason) = terminal {
+                            send_exit_signal(current.id, target_id, reason);
+                        }
+                        (0, inserted.then_some(target_id))
+                    },
+                );
+                if let Some(linked) = linked {
+                    return linked;
+                }
+            }
+            (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None)
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { .. } => {
+            (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None)
+        }
     }
-    let Some(target) = pin_actor_by_id(target_id) else {
-        // A clean free retires an incarnation without a terminal sweep; its
-        // identity still answers with a normal exit (error code zero).
-        send_exit_signal(current.id, target_id, 0);
-        return (0, None);
-    };
-    let (_, terminal, inserted) = register_link(current, target.actor());
-    if let Some(reason) = terminal {
-        send_exit_signal(current.id, target_id, reason);
-    }
-    (0, inserted.then_some(target_id))
 }
 
 /// Remove the current actor's local subscription; repeated removal is harmless.
@@ -215,13 +259,32 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
         }
         return;
     }
-    let Some(target) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
-    else {
-        return;
-    };
     // SAFETY: the current activation owns its actor allocation.
     let current = unsafe { (*current).id };
-    unlink_by_ids(current, target);
+    match crate::lifetime::local_handles::resolve_current_observed_target(target) {
+        Some(crate::lifetime::local_handles::ObservedActorTarget::Actor(target)) => {
+            unlink_by_ids(current, target);
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(crate::lifetime::local_handles::ObservedActorTarget::Role {
+            incarnation: Some((target_id, target_serial)),
+            ..
+        }) => {
+            let _ = crate::lifetime::live_actors::with_actor_send_by_identity(
+                target_id,
+                target_serial,
+                |_| unlink_by_ids(current, target_id),
+            );
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        Some(crate::lifetime::local_handles::ObservedActorTarget::Role {
+            incarnation: None,
+            ..
+        }) => {}
+        #[cfg(target_arch = "wasm32")]
+        Some(crate::lifetime::local_handles::ObservedActorTarget::Role { .. }) => {}
+        None => {}
+    }
 }
 
 /// Remove a bidirectional link between two actors.

@@ -1,0 +1,14 @@
+const WIDTH: i64 = 10;
+
+type Cell {
+    value: i64;
+}
+
+fn helper() -> i64 {
+    let cell = Cell { value: 1 };
+    cell.value
+}
+
+pub fn one() -> i64 {
+    helper() + WIDTH
+}

@@ -146,10 +146,18 @@ pub(crate) struct RemoteWatcherTarget {
     pub is_link: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Snapshot for one late remote subscription. Diagnostic ownership stays with
+/// the pinned actor completion, never the scalar terminal-history table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteTerminal {
+    pub(crate) reason: TerminalMonitorReason,
+    pub(crate) close_fault: Option<(i32, String)>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteWatcherSetup {
     Registered,
-    Terminal(TerminalMonitorReason),
+    Terminal(RemoteTerminal),
     Refused,
     TargetGone,
 }
@@ -363,13 +371,17 @@ impl MonitorState {
         selected
     }
 
-    pub(crate) fn enqueue_terminal(&self, down: MonitorDown, crash_kind: u32, end_reason: u8) {
+    pub(crate) fn enqueue_terminal(
+        &self,
+        down: MonitorDown,
+        crash_kind: u32,
+        end_reason: u8,
+        close_fault: Option<(i32, String)>,
+    ) {
         if let Some(completion) = down.completion {
-            completion.finish(if end_reason == 2 {
-                crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
-            } else {
-                0
-            });
+            // The original crash stays on its owning node. Only a distinct
+            // cleanup fault transfers to this completion observer.
+            completion.finish_remote(close_fault);
         } else {
             self.enqueue_down(
                 down.watcher_actor_id,
@@ -684,26 +696,41 @@ impl MonitorState {
                 {
                     return RemoteWatcherSetup::Refused;
                 }
-                if let Some(reason) = shard.terminal_reasons.get(&target_actor_id) {
-                    return RemoteWatcherSetup::Terminal(*reason);
-                }
-                let state = actor.actor_state.load(Ordering::Acquire);
-                if terminal_monitor_reason(state).is_some()
-                    && actor
-                        .native_completion
-                        .as_ref()
-                        .is_none_or(|completion| completion.is_finished())
-                {
-                    return RemoteWatcherSetup::Terminal(TerminalMonitorReason {
-                        state,
-                        crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
-                            actor.error_code.load(Ordering::Acquire),
-                        )
-                        .cast_unsigned(),
-                        // SAFETY: the send pin retains this actor and mailbox.
-                        end: crate::internal::types::ActorEndReason::from_terminal(state, unsafe {
-                            crate::mailbox::mailbox_terminate_requested(actor.mailbox.cast())
-                        }),
+                let terminal = shard
+                    .terminal_reasons
+                    .get(&target_actor_id)
+                    .copied()
+                    .or_else(|| {
+                        let state = actor.actor_state.load(Ordering::Acquire);
+                        (terminal_monitor_reason(state).is_some()
+                            && actor
+                                .native_completion
+                                .as_ref()
+                                .is_none_or(|completion| completion.is_finished()))
+                        .then(|| TerminalMonitorReason {
+                            state,
+                            crash_kind: crate::internal::types::CrashKind::tag_from_error_code(
+                                actor.error_code.load(Ordering::Acquire),
+                            )
+                            .cast_unsigned(),
+                            // SAFETY: the send pin retains this actor and mailbox.
+                            end: crate::internal::types::ActorEndReason::from_terminal(
+                                state,
+                                unsafe {
+                                    crate::mailbox::mailbox_terminate_requested(
+                                        actor.mailbox.cast(),
+                                    )
+                                },
+                            ),
+                        })
+                    });
+                if let Some(reason) = terminal {
+                    return RemoteWatcherSetup::Terminal(RemoteTerminal {
+                        reason,
+                        close_fault: actor
+                            .native_completion
+                            .as_ref()
+                            .and_then(|completion| completion.close_fault_payload()),
                     });
                 }
                 let target_serial = crate::pid::hew_pid_serial(target_actor_id);
@@ -959,6 +986,7 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
 
 const DOWN_TARGET_LOCAL: u32 = 0;
 const DOWN_TARGET_REMOTE: u32 = 1;
+pub(crate) const DOWN_TARGET_ROLE: u32 = 2;
 const DOWN_REASON_STOPPED: u32 = 0;
 const DOWN_REASON_TERMINATED: u32 = 1;
 const DOWN_REASON_CRASHED: u32 = 2;
@@ -994,6 +1022,18 @@ impl HewNotificationTarget {
             node_hi: target.node().hi(),
             node_lo: target.node().lo(),
             slot: target.slot(),
+        }
+    }
+
+    pub(crate) fn role(token: HewLocalPidId) -> Self {
+        Self {
+            kind: DOWN_TARGET_ROLE,
+            session_incarnation: 0,
+            node_hi: 0,
+            node_lo: 0,
+            // Stable local role tokens are semantic identities, not packed
+            // actor PIDs. Keep the complete token in the shared slot word.
+            slot: u64::try_from(token.as_usize()).expect("local role token fits notification slot"),
         }
     }
 }
@@ -1072,6 +1112,15 @@ impl HewDownMessage {
         Self {
             reason_kind: DOWN_REASON_LOCAL_SHUTDOWN,
             ..Self::remote_lost(monitor_id, target)
+        }
+    }
+
+    pub(crate) fn role_stopped(monitor_id: u64, token: HewLocalPidId) -> Self {
+        Self {
+            monitor_id,
+            target: HewNotificationTarget::role(token),
+            reason_kind: DOWN_REASON_STOPPED,
+            crash_kind: 0,
         }
     }
 }
@@ -1271,27 +1320,85 @@ pub unsafe extern "C" fn hew_native_actor_monitor(
     if watcher.is_null() {
         return HEW_OBSERVATION_NO_CONTEXT;
     }
-    let Some(target_id) = crate::lifetime::local_handles::resolve_current_observation_actor(target)
+    let Some(target) = crate::lifetime::local_handles::resolve_current_observed_target(target)
     else {
         return -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED;
     };
-    let target = pin_actor_by_id(target_id);
-    // SAFETY: the activation owns watcher; the optional pin protects target;
-    // the caller provides a writable output slot.
-    let status = unsafe {
-        register_local_monitor(
-            (*watcher).id,
-            target_id,
-            target
-                .as_ref()
-                .map(crate::lifetime::live_actors::ActorPin::actor),
-            out_monitor_id,
-        )
-    };
-    if status == 0 {
-        0
-    } else {
-        -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+    // SAFETY: the current activation retains this non-null watcher actor.
+    let watcher_id = unsafe { (*watcher).id };
+    match target {
+        crate::lifetime::local_handles::ObservedActorTarget::Actor(target_id) => {
+            let target = pin_actor_by_id(target_id);
+            // SAFETY: the activation owns watcher; the optional pin protects
+            // target; the caller provides a writable output slot.
+            let status = unsafe {
+                register_local_monitor(
+                    watcher_id,
+                    target_id,
+                    target
+                        .as_ref()
+                        .map(crate::lifetime::live_actors::ActorPin::actor),
+                    out_monitor_id,
+                )
+            };
+            if status == 0 {
+                0
+            } else {
+                -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+            }
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { token, .. } => {
+            for _ in 0..2 {
+                let Some((target_id, target_serial)) =
+                    crate::supervisor::current_actor_role_identity(token)
+                else {
+                    let state = monitor_state();
+                    let ref_id = state
+                        .next_observation_id()
+                        .unwrap_or_else(|| observation_ids_exhausted());
+                    // This role has no current incarnation. Report the stable
+                    // role identity once with a normal terminal reason; a
+                    // later replacement is a separate observation.
+                    deliver_down_message(watcher_id, HewDownMessage::role_stopped(ref_id, token));
+                    // SAFETY: inherited from this function's writable output
+                    // pointer contract.
+                    unsafe { *out_monitor_id = ref_id };
+                    return 0;
+                };
+                // Pin the exact incarnation selected under the supervisor's
+                // roster lock. A packed actor ID alone could alias another
+                // incarnation before the monitor is registered.
+                let status = crate::lifetime::live_actors::with_actor_send_by_identity(
+                    target_id,
+                    target_serial,
+                    |pin| {
+                        // SAFETY: the activation owns watcher; `pin` retains
+                        // the selected target through registration.
+                        unsafe {
+                            register_local_monitor(
+                                watcher_id,
+                                target_id,
+                                Some(pin.actor()),
+                                out_monitor_id,
+                            )
+                        }
+                    },
+                );
+                if let Some(status) = status {
+                    return if status == 0 {
+                        0
+                    } else {
+                        -crate::internal::types::HEW_TRAP_HEAP_EXCEEDED
+                    };
+                }
+            }
+            -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+        }
+        #[cfg(target_arch = "wasm32")]
+        crate::lifetime::local_handles::ObservedActorTarget::Role { .. } => {
+            -crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED
+        }
     }
 }
 
@@ -1474,6 +1581,7 @@ pub(crate) fn notify_monitors_on_end(
     reason: i32,
     crash_kind: u32,
     end: crate::internal::types::ActorEndReason,
+    close_fault: Option<&(i32, String)>,
 ) {
     let shard_index = get_shard_index(actor_id);
     // No runtime → no per-runtime monitor table → no monitors to notify. This
@@ -1558,6 +1666,7 @@ pub(crate) fn notify_monitors_on_end(
         reason,
         crash_kind,
         end,
+        close_fault,
     );
 }
 
@@ -1568,6 +1677,7 @@ pub(crate) fn notify_monitors_on_death(actor_id: u64, reason: i32, crash_kind: u
         reason,
         crash_kind,
         crate::internal::types::ActorEndReason::from_terminal(reason, false),
+        None,
     );
 }
 
@@ -2653,6 +2763,7 @@ mod tests {
             reason: HewActorState::Stopped as i32,
             end_reason: crate::internal::types::ActorEndReason::Terminated as u8,
             crash_kind: 0,
+            close_fault: None,
         };
         let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
         let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
@@ -2790,6 +2901,7 @@ mod tests {
                 reason: HewActorState::Crashed as i32,
                 end_reason: crate::internal::types::ActorEndReason::Crashed as u8,
                 crash_kind: crate::internal::types::CrashKind::HeapExceeded.tag(),
+                close_fault: None,
             };
             let bytes = crate::envelope::encode_monitor_down_payload(&payload).unwrap();
             let decoded = crate::envelope::decode_monitor_down_payload(&bytes).unwrap();
@@ -2952,14 +3064,34 @@ mod tests {
                 RemoteWatcherSetup::Registered
             );
             state.remove_remote_watcher(crate::pid::hew_pid_serial((*actor).id), watcher, 1);
-            completion.finish(0);
-            assert!(matches!(
-                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
-                RemoteWatcherSetup::Terminal(TerminalMonitorReason {
-                    end: crate::internal::types::ActorEndReason::Stopped,
-                    ..
-                })
+            completion.record_close_fault(crate::fault::HewFault::with_message(
+                212,
+                "late cleanup failure".into(),
             ));
+            completion.finish(212);
+            let expected = RemoteTerminal {
+                reason: TerminalMonitorReason {
+                    state: HewActorState::Stopped as i32,
+                    crash_kind: 0,
+                    end: crate::internal::types::ActorEndReason::Stopped,
+                },
+                close_fault: Some((212, "late cleanup failure".into())),
+            };
+            assert_eq!(
+                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
+                RemoteWatcherSetup::Terminal(expected.clone()),
+            );
+            notify_monitors_on_end(
+                (*actor).id,
+                expected.reason.state,
+                expected.reason.crash_kind,
+                expected.reason.end,
+                expected.close_fault.as_ref(),
+            );
+            assert_eq!(
+                state.register_admitted_watcher((*actor).id, watcher, 3, false, 17, 0),
+                RemoteWatcherSetup::Terminal(expected),
+            );
             crate::actor::hew_actor_free(actor);
         }
     }

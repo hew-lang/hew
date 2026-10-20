@@ -1,0 +1,10 @@
+[[case]]
+id = "lambda-actor-private-capture"
+intent = "`actor capture(var x)` gives a lambda actor a mutable state field that starts from a snapshot of `x`; later messages see earlier writes and the enclosing binding never changes."
+source = "cases/lambda-actor-private-capture.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "501\n1202\n2303\nouter 0 0\n2\n"
+exit = 0

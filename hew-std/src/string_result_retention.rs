@@ -207,9 +207,11 @@ fn toml_results_are_transferred() {
     unsafe { crate::toml::hew_toml_free(toml_scalar) };
 
     let key = ManagedString::new("answer");
-    let table = crate::toml::hew_toml_table_new();
-    // SAFETY: table/key are live; the setter copies the scalar value.
-    unsafe { crate::toml::hew_toml_table_set_int(table, key.as_ptr(), 42) };
+    let table = crate::toml::hew_toml_object_new();
+    // SAFETY: table/key are live; the child owner transfers into the table.
+    unsafe {
+        crate::toml::hew_toml_object_set(table, key.as_ptr(), crate::toml::hew_toml_from_int(42));
+    };
     assert_managed_transferred(
         "hew_toml_stringify",
         // SAFETY: `table` stays live through the measurement.
@@ -219,17 +221,23 @@ fn toml_results_are_transferred() {
     // SAFETY: stringify borrowed the live value.
     unsafe { crate::toml::hew_toml_free(table) };
 
+    let datetime_source = ManagedString::new("at = 1979-05-27\n");
+    // SAFETY: `datetime_source` owns a live managed string.
+    let document = unsafe { crate::toml::hew_toml_parse(datetime_source.as_ptr()) };
+    let at = ManagedString::new("at");
+    // SAFETY: `document` is a live table; the selected child is an owner.
+    let datetime = unsafe { crate::toml::hew_toml_get_field(document, at.as_ptr()) };
     assert_managed_transferred(
-        "hew_toml_last_serialize_error",
-        || {
-            // Induce the documented deterministic error before every read.
-            // SAFETY: null is an explicitly accepted invalid-value sentinel.
-            let empty = unsafe { crate::toml::hew_toml_stringify(std::ptr::null()) };
-            assert!(empty.is_null(), "a failed stringify reports no text");
-            crate::toml::hew_toml_last_serialize_error()
-        },
-        |text| assert_eq!(text, "toml: cannot serialize an invalid value"),
+        "hew_toml_get_datetime",
+        // SAFETY: `datetime` stays live through the measurement.
+        || unsafe { crate::toml::hew_toml_get_datetime(datetime) },
+        |text| assert_eq!(text, "1979-05-27"),
     );
+    // SAFETY: both owners are live and released once.
+    unsafe {
+        crate::toml::hew_toml_free(datetime);
+        crate::toml::hew_toml_free(document);
+    }
 }
 
 #[test]

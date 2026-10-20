@@ -716,24 +716,14 @@ mod tests {
                         "hew_toml_array_push",
                         &[ExternParamOwnership::Borrow, ExternParamOwnership::Consume][..],
                     ),
+                    ("hew_toml_clone", &[ExternParamOwnership::Borrow][..]),
                     (
-                        "hew_toml_array_push_bool",
-                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
-                    ),
-                    (
-                        "hew_toml_array_push_float",
-                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
-                    ),
-                    (
-                        "hew_toml_array_push_int",
-                        &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
-                    ),
-                    (
-                        "hew_toml_array_push_string",
+                        "hew_toml_eq",
                         &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
                     ),
                     ("hew_toml_free", &[ExternParamOwnership::Consume][..]),
                     ("hew_toml_get_bool", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_toml_get_datetime", &[ExternParamOwnership::Borrow][..]),
                     (
                         "hew_toml_get_field",
                         &[ExternParamOwnership::Borrow, ExternParamOwnership::Borrow][..],
@@ -741,47 +731,16 @@ mod tests {
                     ("hew_toml_get_float", &[ExternParamOwnership::Borrow][..]),
                     ("hew_toml_get_int", &[ExternParamOwnership::Borrow][..]),
                     ("hew_toml_get_string", &[ExternParamOwnership::Borrow][..]),
-                    ("hew_toml_stringify", &[ExternParamOwnership::Borrow][..]),
+                    ("hew_toml_object_keys", &[ExternParamOwnership::Borrow][..]),
                     (
-                        "hew_toml_table_set",
+                        "hew_toml_object_set",
                         &[
                             ExternParamOwnership::Borrow,
                             ExternParamOwnership::Borrow,
                             ExternParamOwnership::Consume,
                         ][..],
                     ),
-                    (
-                        "hew_toml_table_set_bool",
-                        &[
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                        ][..],
-                    ),
-                    (
-                        "hew_toml_table_set_float",
-                        &[
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                        ][..],
-                    ),
-                    (
-                        "hew_toml_table_set_int",
-                        &[
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                        ][..],
-                    ),
-                    (
-                        "hew_toml_table_set_string",
-                        &[
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                            ExternParamOwnership::Borrow,
-                        ][..],
-                    ),
+                    ("hew_toml_stringify", &[ExternParamOwnership::Borrow][..]),
                     ("hew_toml_type", &[ExternParamOwnership::Borrow][..]),
                 ][..],
             ),
@@ -889,45 +848,17 @@ mod tests {
                     .contract()
                     .unwrap_or_else(|| panic!("{symbol} must have a complete contract"));
                 assert_eq!(contract.params, *expected_params, "{symbol}");
-                if module != "std.encoding.toml" {
-                    assert!(
-                        contract.resource_param_types.is_empty(),
-                        "{symbol} takes managed values without resource identities"
-                    );
-                    for index in 0..expected_params.len() {
-                        assert!(!extern_resource_param_is_audited_borrow(
-                            symbol,
-                            index,
-                            Some(module),
-                            nominal,
-                        ));
-                    }
-                    continue;
-                }
-                assert_eq!(
-                    contract.resource_param_types.len(),
-                    contract.params.len(),
-                    "{symbol} must classify every parameter slot"
+                assert!(
+                    contract.resource_param_types.is_empty(),
+                    "{symbol} takes managed values without resource identities"
                 );
-                for (index, disposition) in expected_params.iter().enumerate() {
-                    let expected_nominal =
-                        match (symbol.ends_with("_set"), symbol.ends_with("_push"), index) {
-                            (true, _, 2) | (_, true, 1) | (_, _, 0) => nominal,
-                            _ => "",
-                        };
-                    assert_eq!(
-                        contract.resource_param_types[index], expected_nominal,
-                        "{symbol} parameter {index}"
-                    );
-                    if *disposition == ExternParamOwnership::Borrow && !expected_nominal.is_empty()
-                    {
-                        assert!(extern_resource_param_is_audited_borrow(
-                            symbol,
-                            index,
-                            Some(module),
-                            nominal,
-                        ));
-                    }
+                for index in 0..expected_params.len() {
+                    assert!(!extern_resource_param_is_audited_borrow(
+                        symbol,
+                        index,
+                        Some(module),
+                        nominal,
+                    ));
                 }
             }
         }
@@ -957,16 +888,18 @@ mod tests {
             (
                 "toml",
                 "hew_toml_free",
-                ExternResultRetention::ResourceTransfer,
+                ExternResultRetention::Transferred,
                 &[
                     "hew_toml_array_get",
                     "hew_toml_array_new",
+                    "hew_toml_clone",
                     "hew_toml_from_bool",
                     "hew_toml_from_float",
                     "hew_toml_from_int",
                     "hew_toml_from_string",
                     "hew_toml_get_field",
-                    "hew_toml_table_new",
+                    "hew_toml_object_keys",
+                    "hew_toml_object_new",
                     "hew_toml_parse",
                 ][..],
             ),

@@ -1,0 +1,11 @@
+[[case]]
+id = "var-self-map-callback-fault"
+intent = "A key callback fault during a map insert in a `var self` method hands the receiver back whole and releases the map, its entries and the rejected inputs exactly once."
+source = "cases/var-self-map-callback-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

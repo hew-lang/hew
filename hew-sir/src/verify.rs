@@ -3267,8 +3267,7 @@ fn is_supported_call_value(module: &SemModule, ty: &ResolvedTy) -> bool {
             .any(|supervisor| supervisor.handle_ty == *ty)
         || hew_types::runtime_call::collection_type_arguments(ty).is_some()
         || hew_types::runtime_call::shared_handle_payload(ty).is_some()
-        || ty.is_builtin(hew_types::BuiltinType::JsonValue)
-        || ty.is_builtin(hew_types::BuiltinType::YamlValue)
+        || ty.is_encoding_value()
         || matches!(
             ty,
             ResolvedTy::GenericCallable { .. }
@@ -6058,6 +6057,19 @@ fn verify_terminator_shape(
                                         && (!*export || arguments.get(1) == Some(&descriptor.handle_ty))
                                 }) && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                     })
+                }
+                crate::SuspendKind::SemaphoreAcquire { operation } => {
+                    let argument_types = inputs
+                        .iter()
+                        .map(|input| types.get(&input.operand.value).cloned())
+                        .collect::<Option<Vec<_>>>();
+                    resumes.len() == 1
+                        && inputs
+                            .iter()
+                            .all(|input| input.decision == crate::BoundaryDecision::Borrow)
+                        && matches!(result, crate::CallResult::Value(value)
+                            if argument_types.is_some_and(|arguments| operation.contract().matches_signature(variants.defs, &arguments, &value.ty))
+                                && OwnKind::of_ty(&value.ty, variants.facts) == Ok(value.own))
                 }
                 crate::SuspendKind::NativeIo { operation } => {
                     let argument_types = inputs

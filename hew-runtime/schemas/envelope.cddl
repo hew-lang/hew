@@ -13,9 +13,6 @@
 ; do not recognise a version value MUST return an UnknownVersion error rather
 ; than attempting to parse further.
 ;
-; CP-1 coordination: A2 (QUIC stream framing) owns the transport container.
-; The CDDL below describes what lives inside that container.
-;
 ; The fixed-width connection handshake is specified in HEW-DIST-SPEC section 4.
 
 ; ── Top-level rule ───────────────────────────────────────────────────────────
@@ -38,7 +35,7 @@ wire-frame = control-frame / envelope-frame
 ;                                              same identifying triple as req).
 ; ctrl_kind = 6 carries link-req-payload      (cross-node link request).
 ; ctrl_kind = 7 carries monitor-down-payload  (cross-node link DOWN; same
-;                                              {ref_id, reason} shape as monitor
+;                                              terminal payload as monitor
 ;                                              DOWN — the divergence is the
 ;                                              receiver's mailbox-EXIT handling).
 ; ctrl_kind = 8 carries link-req-payload      (cross-node unlink request; same
@@ -49,16 +46,16 @@ wire-frame = control-frame / envelope-frame
 ; ctrl_kind = 12 carries setup-result-payload (recipient offer-admission acknowledgement).
 
 control-frame = {
-    version:    1 => wire-version,
-    frame_type: 2 => 0,            ; 0 = control
-    ctrl_kind:  3 => uint,         ; protocol-defined control kind tag
-    payload:    4 => bstr,         ; 0..* bytes; empty bstr for bare signals
+    1 => wire-version, ; version
+    2 => 0, ; frame_type: 0 = control
+    3 => uint, ; ctrl_kind: protocol-defined control kind tag
+    4 => bstr, ; payload: 0..* bytes; empty bstr for bare signals
 }
 
 registry-gossip-payload = {
-    op:       1 => registry-gossip-op,
-    name:     2 => text,           ; bounded by runtime to 1024 UTF-8 bytes
-    location: 3 => location,       ; exact identity for both add and remove
+    1 => registry-gossip-op, ; op
+    2 => text, ; name: bounded by runtime to 1024 UTF-8 bytes
+    3 => location, ; location: exact identity for both add and remove
 }
 
 registry-gossip-op = 5 / 6         ; add / remove
@@ -73,22 +70,30 @@ registry-gossip-op = 5 / 6         ; add / remove
 ; echoed ref_id and the terminal reason code.
 
 monitor-req-payload = {
-    watcher: 1 => location,
-    ref_id:  2 => uint,            ; watcher's local monitor-registration id
-    target:  3 => location,
-    setup_id: 4 => uint,           ; zero for demonitor
-    grant_id: 5 => uint,           ; active recipient-bound export grant
+    1 => location, ; watcher
+    2 => uint, ; ref_id: watcher's local monitor-registration id
+    3 => location, ; target
+    4 => uint, ; setup_id: zero for demonitor
+    5 => uint, ; grant_id: active recipient-bound export grant
 }
 
 monitor-down-payload = {
-    ref_id: 1 => uint,             ; echoed from the request
-    target: 2 => location,
-    reason: 3 => down-reason,
+    1 => uint, ; ref_id: echoed from the request
+    2 => location, ; target
+    3 => down-reason, ; reason
+    4 => -2147483648..2147483647, ; crash_kind
+    5 => 0..4, ; end_reason: stopped, terminated, crashed, lost, local shutdown
+    6 => cleanup-fault / nil, ; close_fault
+} ; complete encoded payload at most 8192 bytes
+
+cleanup-fault = {
+    1 => (-2147483648..-1) / (1..2147483647), ; code
+    2 => text, ; message: at most 4096 UTF-8 bytes
 }
 
 down-reason = {
-    tag:  1 => 1,                  ; 1 = actor-state
-    code: 2 => int,
+    1 => 1, ; tag: 1 = actor-state
+    2 => int, ; code
 }
 
 ; ── Cross-node link payloads ──────────────────────────────────────────────────
@@ -104,22 +109,22 @@ down-reason = {
 ; MonitorLost=2, CrashLinked=3, Quarantine=4).
 
 link-req-payload = {
-    linker:      1 => location,
-    ref_id:      2 => uint,        ; linker's local link-registration id
-    target:      3 => location,
-    policy_tag:  4 => uint,        ; PartitionPolicy discriminant (0..4)
-    reciprocate: 5 => uint,        ; 1 = original request, 0 = reverse (bounds the
+    1 => location, ; linker
+    2 => uint, ; ref_id: linker's local link-registration id
+    3 => location, ; target
+    4 => uint, ; policy_tag: PartitionPolicy discriminant (0..4)
+    5 => uint, ; reciprocate: 1 = original request, 0 = reverse (bounds the
                                    ; bidirectional handshake to one round trip)
-    setup_id:    6 => uint,        ; zero for unlink
-    grant_id:    7 => uint,        ; same export grant as ordinary actor calls
-    reciprocal_ref: 8 => uint,     ; original caller ref; zero on original setup
+    6 => uint, ; setup_id: zero for unlink
+    7 => uint, ; grant_id: same export grant as ordinary actor calls
+    8 => uint, ; reciprocal_ref: original caller ref; zero on original setup
 }
 
 setup-result-payload = {
-    setup_id: 1 => uint,
-    ref_id:   2 => uint,
-    target:   3 => location,
-    status:   4 => 0..3,           ; accepted, target gone, capacity, refused
+    1 => uint, ; setup_id
+    2 => uint, ; ref_id
+    3 => location, ; target
+    4 => 0..3, ; status: accepted, target gone, capacity, refused
 }
 
 ; ── Envelope frame ───────────────────────────────────────────────────────────
@@ -133,33 +138,33 @@ setup-result-payload = {
 ; Replies and withdrawals echo that request_id.
 
 envelope-frame = {
-    version:          1 => wire-version,
-    frame_type:       2 => 1,            ; 1 = envelope
-    target:           3 => location / nil, ; nil only for replies
-    source:           4 => location / nil,
-    message:          5 => service-request / reply-status / withdrawal,
-    payload:          6 => bstr,         ; serialised message body; 0..* bytes.
+    1 => wire-version, ; version
+    2 => 1, ; frame_type: 1 = envelope
+    3 => location / nil, ; target: nil only for replies
+    4 => location / nil, ; source
+    5 => service-request / reply-status / withdrawal, ; message
+    6 => bstr, ; payload: serialised message body; 0..* bytes.
                                          ; The bytes inside this bstr are the
                                          ; per-`#[wire]`-type CBOR body described
                                          ; by `wire-body.cddl` (`wire-body` rule).
-    request_id:       7 => uint .gt 0,
-    budget_ns:        8 => (0..9223372036854775807) / nil, ; remaining ask budget
+    7 => uint .gt 0, ; request_id
+    8 => (0..9223372036854775807) / nil, ; budget_ns: remaining ask budget
 }
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
 service-offer-payload = {
-    grant_id: 1 => uint .gt 0,
-    target: 2 => location,
-    recipient: 3 => node-session,
-    handlers: 4 => [1*256 handler-identity], ; strictly ordered, no duplicates
-    request_id: 5 => uint .gt 0,
+    1 => uint .gt 0, ; grant_id
+    2 => location, ; target
+    3 => node-session, ; recipient
+    4 => [1*256 handler-identity], ; handlers: strictly ordered, no duplicates
+    5 => uint .gt 0, ; request_id
 } ; complete encoded payload at most 65536 bytes
 
 service-request = {
-    handler: 1 => handler-identity,
-    grant_id: 2 => uint .gt 0,
-    kind: 3 => 0..4, ; call Wait/Reject; mailbox Wait/Reject/DropNewest
+    1 => handler-identity, ; handler
+    2 => uint .gt 0, ; grant_id
+    3 => 0..4, ; kind: call Wait/Reject; mailbox Wait/Reject/DropNewest
 } ; only with target and positive request_id
 
 handler-identity = text ; canonical package.module.Actor.handler; 1..4096 UTF-8 bytes, no NUL
@@ -168,29 +173,29 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 7        ; current schema version; decoders reject unknown values
+wire-version = 8        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
-    node:        1 => node-id,
-    slot:        2 => uint, ; non-zero
-    incarnation: 3 => uint, ; non-zero, <= u32 max
+    1 => node-id, ; node
+    2 => uint, ; slot: non-zero
+    3 => uint, ; incarnation: non-zero, <= u32 max
 }
 
 node-session = {
-    node:        1 => node-id,
-    incarnation: 2 => uint, ; non-zero, <= u32 max
+    1 => node-id, ; node
+    2 => uint, ; incarnation: non-zero, <= u32 max
 }
 
 swim-gossip-entry = {
-    member:      1 => node-session,
-    state:       2 => int,
-    incarnation: 3 => uint,
+    1 => node-session, ; member
+    2 => int, ; state
+    3 => uint, ; incarnation
 }
 
 swim-control-payload = {
-    msg_type:   1 => int,
-    from:       2 => node-session,
-    incarnation: 3 => uint,
-    target:     4 => node-session / nil,
-    gossip:     5 => [* swim-gossip-entry],
+    1 => int, ; msg_type
+    2 => node-session, ; from
+    3 => uint, ; incarnation
+    4 => node-session / nil, ; target
+    5 => [* swim-gossip-entry], ; gossip
 }

@@ -253,6 +253,34 @@ impl SocketSlots {
                         // deadlock.
                         if let Some(ref sock) = conns[idx] {
                             let _ = sock.shutdown(Shutdown::Both);
+                            #[cfg(windows)]
+                            {
+                                use std::os::windows::io::AsRawSocket;
+                                use windows_sys::Win32::Foundation::ERROR_NOT_FOUND;
+                                use windows_sys::Win32::System::IO::CancelIoEx;
+
+                                // Winsock shutdown refuses future reads but does
+                                // not wake an already-blocking recv. Cancel its
+                                // pending I/O after shutdown closes that race.
+                                // SAFETY: the table owns this live socket, and
+                                // each in-flight read retains its own duplicate.
+                                let cancelled = unsafe {
+                                    CancelIoEx(
+                                        sock.as_raw_socket() as *mut c_void,
+                                        std::ptr::null(),
+                                    )
+                                };
+                                if cancelled == 0 {
+                                    let error = std::io::Error::last_os_error();
+                                    if error.raw_os_error() != Some(ERROR_NOT_FOUND as i32) {
+                                        let message = format!(
+                                            "transport socket cancellation failed: {error}"
+                                        );
+                                        tracing::error!("{message}");
+                                        set_last_error(message);
+                                    }
+                                }
+                            }
                         }
                         conns[idx] = None;
                     })
@@ -1966,6 +1994,38 @@ mod tests {
             }));
         }
         crate::hew_clear_error();
+    }
+
+    #[test]
+    fn tcp_slot_removal_wakes_blocked_reader_while_peer_stays_open() {
+        use std::sync::mpsc::{self, RecvTimeoutError};
+        use std::time::Duration;
+
+        let (server, peer) = connected_streams();
+        let slots = SocketSlots::new("tcp");
+        let id = slots.store_conn(server.into());
+        let socket = slots.get_conn(id).unwrap().unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let (started_tx, started_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            let mut bytes = [0u8; 8];
+            done_tx.send(framed_recv(&socket, &mut bytes)).unwrap();
+        });
+        started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        let before_close = done_rx.recv_timeout(Duration::from_millis(50));
+        slots.remove_conn(id);
+        let after_close = done_rx.recv_timeout(Duration::from_secs(1));
+        // Close the peer only after observing local cancellation, including on
+        // failure, so a regression cannot leave the reader behind in the suite.
+        drop(peer);
+        reader.join().unwrap();
+        assert_eq!(before_close, Err(RecvTimeoutError::Timeout));
+        assert_eq!(after_close, Ok(-1));
+        assert!(slots.get_conn(id).unwrap().is_none());
     }
 
     #[cfg(unix)]

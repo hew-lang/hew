@@ -434,52 +434,30 @@ pub(super) fn materialized_default_body_plan(
 pub(super) fn plan_imported_impl_bodies(
     ctx: &mut LowerCtx,
     program: &Program,
-    file_import_module_idx: &HashMap<usize, u32>,
-    file_import_modules: &HashSet<hew_parser::module::ModulePath>,
     preferred_modules: &HashSet<hew_parser::module::ModulePath>,
     span_indices: &hew_parser::module::FileSpanIndices,
     selected_builtin_graph_module: Option<&hew_parser::module::ModulePath>,
 ) {
     let empty_skips = HashSet::new();
-    // Source-order bodies include root declarations and flattened file imports.
-    // They may be called before their tail-spliced item is emitted.
+    // Root impl bodies may be called before their item is emitted.
     for (item_idx, (item, _)) in program.items.iter().enumerate() {
         ctx.current_item_ordinal = item_idx;
-        ctx.current_module_idx = file_import_module_idx
-            .get(&item_idx)
-            .copied()
-            .unwrap_or_default();
-        ctx.current_module_name = span_indices
-            .module_name(ctx.current_module_idx)
-            .map(str::to_string);
         if let Item::Impl(impl_decl) = item {
             if let TypeExpr::Named {
                 path: named_path, ..
             } = &impl_decl.target_type.0
             {
                 let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-                let symbol_self_name = file_import_module_idx
-                    .get(&item_idx)
-                    .and_then(|module_idx| span_indices.module_name(*module_idx))
-                    .map_or_else(
-                        || name.clone(),
-                        |module| imported_impl_symbol_self_name(module, name),
-                    );
-                plan_impl_block_symbols(ctx, impl_decl, &symbol_self_name, &empty_skips);
+                plan_impl_block_symbols(ctx, impl_decl, name, &empty_skips);
             }
         }
     }
-    ctx.current_module_idx = 0;
-    ctx.current_module_name = None;
 
     let Some(module_graph) = &program.module_graph else {
         return;
     };
     for module_id in &module_graph.topo_order {
-        if *module_id == module_graph.root
-            || file_import_modules.contains(module_id)
-            || !module_graph.modules.contains_key(module_id)
-        {
+        if *module_id == module_graph.root || !module_graph.modules.contains_key(module_id) {
             continue;
         }
         let module = &module_graph.modules[module_id];

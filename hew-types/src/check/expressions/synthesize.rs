@@ -499,6 +499,11 @@ impl Checker {
                 self.suspension_operands
                     .insert(SpanKey::in_module(effective_span, self.current_module_idx));
                 let inner_ty = self.synthesize(&inner.0, &inner.1);
+                // An empty Vec retains its element variable in the binding;
+                // later pushes constrain that variable without rewriting the
+                // stored type. Classify the operand after applying those
+                // constraints so Vec<Task<T>> reaches the vector join path.
+                let inner_ty = self.subst.resolve(&inner_ty);
 
                 // Join one Task layer; `await` joins tasks and nothing else. A
                 // `Vec<Task<T>>` joins every task in order and yields `Vec<T>`;
@@ -1494,9 +1499,7 @@ impl Checker {
                 .cloned()
             {
                 self.reject_wasm_native_only_function_identity(&source_identity, span);
-                if let Some((source_owner, _)) = source_identity.rsplit_once('.') {
-                    self.note_path_use(source_owner);
-                }
+                self.note_import_use(name);
             }
             self.record_call_edge(&fn_sig_key);
             let sig = self

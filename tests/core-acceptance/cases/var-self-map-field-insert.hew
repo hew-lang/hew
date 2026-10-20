@@ -1,0 +1,31 @@
+// A `var self` method inserts into and removes from map and set fields in
+// place: the receiver stays whole because a key callback's fault leaves the
+// collection with the caller.
+type Registry {
+    seen: HashSet<string>;
+    by: HashMap<string, i64>;
+}
+
+impl Registry {
+    fn add(var self, key: string, value: i64) {
+        self.seen.insert(key);
+        self.by.insert(key, value);
+    }
+
+    fn take(var self, key: string) -> Option<i64> {
+        self.by.remove(key)
+    }
+}
+
+fn main() {
+    var registry = Registry { seen: HashSet.new(), by: HashMap.new() };
+    registry.add("a", 1);
+    registry.add("b", 2);
+    registry.add("a", 3);
+    let taken = registry.take("b");
+    println(f"{registry.seen.len()} {registry.by.len()} {taken.is_some()}");
+    match registry.by.get("a") {
+        .Some(v) => println(v),
+        .None => println("missing"),
+    }
+}

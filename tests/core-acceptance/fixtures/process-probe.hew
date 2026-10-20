@@ -1,0 +1,28 @@
+import std.io;
+import std.os;
+import std.process;
+
+pub fn alive(pid: string) -> bool {
+    let windows = match os.env("OS") {
+        .Some(name) => name == "Windows_NT",
+        .None => false,
+    };
+    let probe = if windows {
+        let executable = os.args()[0].replace("'", "''");
+        // An exited Windows process object may remain visible. A reused PID
+        // belonging to another executable is not the child being checked.
+        let script = "$ErrorActionPreference = 'Stop'; try { $p = [Diagnostics.Process]::GetProcessById(" + pid + ") } catch [ArgumentException] { exit 1 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }; try { if ($p.HasExited) { exit 1 }; $expected = [IO.Path]::GetFullPath('" + executable + "'); if ($p.MainModule.FileName -ne $expected) { [Console]::Error.WriteLine('process identity mismatch: expected ' + $expected + ', found ' + $p.MainModule.FileName); exit 1 }; exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 2 }";
+        process.run_argv("powershell", ["-NoProfile", "-Command", script])
+    } else {
+        process.run_argv("kill", ["-0", pid])
+    };
+    let output = probe.expect("process probe runs");
+    if windows && !output.stderr.is_empty() {
+        io.write_err(output.stderr);
+    }
+    match output.status {
+        .Exited(0) => true,
+        .Exited(1) => false,
+        status => panic(f"process probe failed: {status}"),
+    }
+}

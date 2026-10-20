@@ -1,0 +1,7 @@
+import "codecs/huffman.hew" as huffman;
+import "codecs/rle.hew" as rle;
+
+fn main() {
+    println(huffman.encode("ab") + rle.encode("ab"));
+    println(encode("ab"));
+}

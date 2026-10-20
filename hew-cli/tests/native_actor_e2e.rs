@@ -87,6 +87,74 @@ fn run_actor(source: &str, expected: &str, status: i32, diagnostic: &str) {
 }
 
 #[test]
+fn same_type_actor_ring_faults_with_multiple_workers() {
+    require_codegen();
+    let dir = tempdir();
+    let input = dir.path().join("ring.hew");
+    std::fs::write(
+        &input,
+        include_str!("../../tests/core-acceptance/cases/actor-same-type-completion-ring.hew"),
+    )
+    .unwrap();
+    for opt in ["0", "2"] {
+        let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("ring-{opt}"));
+        let mut build = Command::new(hew_binary());
+        build.args(["build", "--opt-level", opt, "-o"]);
+        build.arg(&binary).arg(&input);
+        let output = run_bounded_command(build, format!("build actor ring O{opt}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        for workers in ["2", "4"] {
+            for _ in 0..8 {
+                let mut run = Command::new(&binary);
+                run.env("HEW_WORKERS", workers);
+                let output =
+                    run_bounded_command(run, format!("actor ring O{opt}, {workers} workers"));
+                assert_eq!(
+                    output.status.code(),
+                    Some(1),
+                    "{}",
+                    describe_output(&output)
+                );
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stdout),
+                    "Err(Trapped: the handler faulted before replying)\ndone\n",
+                    "{}",
+                    describe_output(&output)
+                );
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let lines: Vec<_> = stderr.lines().collect();
+                // Either pending waiter can close the cycle. Its peer observes
+                // Trapped or Dead depending on whether its request was admitted.
+                // Require both crashes and every diagnostic, independent of order.
+                let cycle = lines.iter().filter(|line| {
+                    **line == "hew: failure: UserPanic (212): local actor wait cycle at ask: 1 -> 2 -> 1"
+                        || **line == "hew: failure: UserPanic (212): local actor wait cycle at ask: 2 -> 1 -> 2"
+                }).count();
+                let cascade = lines.iter().filter(|line| {
+                    **line == "hew: failure: UserPanic (212): next stage is running: Trapped: the handler faulted before replying"
+                        || **line == "hew: failure: UserPanic (212): next stage is running: Dead: the destination actor is gone and will not come back"
+                }).count();
+                assert_eq!(lines.len(), 4, "{}", describe_output(&output));
+                assert_eq!(cycle, 1, "{}", describe_output(&output));
+                assert_eq!(cascade, 1, "{}", describe_output(&output));
+                for actor in [1, 2] {
+                    assert!(
+                        lines.contains(
+                            &format!(
+                                "hew: actor crash in Stage.process (actor {actor}): UserPanic"
+                            )
+                            .as_str()
+                        ),
+                        "{}",
+                        describe_output(&output)
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn messages_and_state_preserve_independent_values() {
     run_actor(
         r#"actor Recorder {
@@ -772,19 +840,17 @@ fn main() {
 }
 
 #[test]
-fn actor_termination_fault_reaches_waiter_recovery() {
+fn actor_termination_wait_does_not_raise_the_original_crash() {
     run_actor(
         r#"actor Broken { receive fn fail() { defer println("receiver-cleanup"); sleep(1ms); panic("receiver-failed"); } }
 fn main() {
     let broken = spawn Broken;
     let _ = mailbox(broken, on_full: .Reject).fail();
-    let result = scope { stopped(broken); "unexpected clean termination" } handle failure {
-        match failure { .Fault { message } => "observed fault", .Deadline { message } => "unexpected deadline", }
-    };
-    println(result);
+    stopped(broken);
+    println("observed termination");
 }
 "#,
-        "receiver-cleanup\nobserved fault\n",
+        "receiver-cleanup\nobserved termination\n",
         1,
         "actor crash",
     );

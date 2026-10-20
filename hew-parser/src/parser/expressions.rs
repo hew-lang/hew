@@ -396,6 +396,16 @@ impl Parser<'_> {
             if statement_block && !matches!(self.peek(), Some(Token::Identifier("handle"))) {
                 break;
             }
+            // Parenthesized and negative patterns can also begin the next arm
+            // after a block body. Stop only when the candidate is followed by
+            // the arm arrow, so ordinary calls and subtraction still parse as
+            // continuations of the block expression.
+            if block_arm_body
+                && Self::is_block_expr(&lhs.0)
+                && self.match_arm_pattern_followed_by_arrow()
+            {
+                break;
+            }
             if self.record_init_suffix_allowed(&lhs.0) {
                 lhs = self.parse_record_init_postfix(lhs)?;
                 continue;
@@ -403,20 +413,6 @@ impl Parser<'_> {
 
             // Try postfix first (highest precedence)
             match self.peek() {
-                // A block-opened match-arm body ends at its closing `}`. A `.`
-                // followed by an identifier there is the next arm's pattern
-                // (`.Ok(v) => …`), which is the only spelling of a contextual
-                // variant pattern — the same `Dot`+identifier pair
-                // `is_match_arm_pattern_start` already reads as an arm start.
-                // Reading it as member access on the block would swallow the
-                // pattern and report "expected pattern, found `=>`".
-                Some(Token::Dot)
-                    if block_arm_body
-                        && Self::is_block_expr(&lhs.0)
-                        && matches!(self.peek_at(self.pos + 1), Some(Token::Identifier(_))) =>
-                {
-                    break;
-                }
                 Some(Token::Dot) => {
                     lhs = self.parse_dot_postfix(lhs)?;
                     continue;
@@ -917,10 +913,13 @@ impl Parser<'_> {
             Token::Identifier("emit")
                 if self.peek_at(self.pos + 1).is_some_and(Self::is_ident_token) =>
             {
+                let head_start = self.peek_span().start;
                 self.advance();
                 let event_name = self.expect_ident()?;
                 let mut field_labels = Vec::new();
-                let fields = if self.eat(&Token::LeftBrace) {
+                let fields = if self.peek() == Some(&Token::LeftBrace) {
+                    let open = self.peek_span();
+                    self.advance();
                     let mut fields = Vec::new();
                     while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                         let (field_name, field_label, field_val) = self.parse_field_init()?;
@@ -931,6 +930,20 @@ impl Parser<'_> {
                         }
                     }
                     self.expect(&Token::RightBrace)?;
+                    // A unit output is emitted by its name alone (§3.11.6:
+                    // `FieldInitList` names at least one field).
+                    if fields.is_empty() {
+                        let head = self
+                            .source_text(head_start..open.start)
+                            .trim_end()
+                            .to_string();
+                        self.error_at_with_kind_and_hint(
+                            "an empty field list is written without braces".to_string(),
+                            open.start..self.last_token_end,
+                            format!("write `{head}`"),
+                            ParseDiagnosticKind::EmptyKeyBraces,
+                        );
+                    }
                     fields
                 } else {
                     Vec::new()
@@ -1283,12 +1296,17 @@ impl Parser<'_> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
-            // actor [move] |params| [-> Ret] { body }
+            // actor [move] [capture(var x, ..)] |params| [-> Ret] { body }
             // Lambda actor literal (replaces `spawn (...) => ...`).
             Token::Actor => {
                 self.advance();
 
                 let is_move = self.eat(&Token::Move);
+                let private_captures = if self.peek() == Some(&Token::Identifier("capture")) {
+                    self.parse_private_capture_prefix()?
+                } else {
+                    Vec::new()
+                };
 
                 let params = if self.eat(&Token::PipePipe) {
                     Vec::new()
@@ -1308,6 +1326,7 @@ impl Parser<'_> {
                     self.expect(&Token::Pipe)?;
                     params
                 };
+                self.reject_private_capture_parameter_clash(&private_captures, &params)?;
 
                 let return_type = self.parse_opt_return_type()?;
 
@@ -1328,6 +1347,7 @@ impl Parser<'_> {
                 return Some((
                     Expr::SpawnLambdaActor {
                         is_move,
+                        private_captures,
                         params,
                         return_type,
                         body,
@@ -1714,6 +1734,25 @@ impl Parser<'_> {
         Some(captures)
     }
 
+    /// A private capture names an enclosing binding, so a parameter of the
+    /// same name would make the body's reference ambiguous.
+    fn reject_private_capture_parameter_clash(
+        &mut self,
+        private_captures: &[Spanned<Ident>],
+        params: &[LambdaParam],
+    ) -> Option<()> {
+        for (name, span) in private_captures {
+            if params.iter().any(|parameter| parameter.name == *name) {
+                self.error_at(
+                    format!("private capture `{name}` conflicts with a parameter"),
+                    span.clone(),
+                );
+                return None;
+            }
+        }
+        Some(())
+    }
+
     pub(crate) fn parse_pipe_lambda(
         &mut self,
         is_move: bool,
@@ -1744,15 +1783,7 @@ impl Parser<'_> {
             (type_params, params)
         };
 
-        for (name, span) in &private_captures {
-            if params.iter().any(|parameter| parameter.name == *name) {
-                self.error_at(
-                    format!("private capture `{name}` conflicts with a closure parameter"),
-                    span.clone(),
-                );
-                return None;
-            }
-        }
+        self.reject_private_capture_parameter_clash(&private_captures, &params)?;
         let return_type = self.parse_opt_return_type()?;
         let body = if return_type.is_some() {
             if self.peek() != Some(&Token::LeftBrace) {

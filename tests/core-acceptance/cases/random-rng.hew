@@ -1,12 +1,16 @@
 import std.random;
 
+fn bound() -> i64 {
+    5
+}
+
 fn main() {
     // Reference sequence computed independently in Python from the published
     // splitmix64 seed-expansion and xoshiro256++ step algorithms (not derived
     // from this compiler or its runtime) for seed 42. See
     // hew-runtime/src/random.rs for the algorithms and the matching pinned
     // Rust unit test.
-    let rng = random.Rng.new(42);
+    var rng = random.Rng.new(42);
     assert(rng.next_u64() == 15021278609987233951);
     assert(rng.next_u64() == 5881210131331364753);
     assert(rng.next_u64() == 18149643915985481100);
@@ -14,47 +18,99 @@ fn main() {
     assert(rng.next_u64() == 14637574242682825331);
 
     // Two generators seeded identically agree, independent of the first.
-    let a = random.Rng.new(1234);
-    let b = random.Rng.new(1234);
+    var a = random.Rng.new(1234);
+    var b = random.Rng.new(1234);
     assert(a.next_u64() == b.next_u64());
     assert(a.next_u64() == b.next_u64());
     assert(a.next_f64() == b.next_f64());
 
+    // A computed bound must advance exactly as a literal bound does.
+    // Copying a generator preserves its position without sharing mutation.
+    var literal = random.Rng.new(7);
+    var computed = literal;
+    let bounds: Vec<i64> = [0, 1, 2, 3, 4];
+    let bound_len = bounds.len();
+    for i in 0..8 {
+        let expected = literal.range(0, 5);
+        assert(computed.range(0, bound_len) == expected);
+    }
+    assert(computed.range(0, bounds.len()) == literal.range(0, 5));
+    assert(computed.range(0, bound()) == literal.range(0, 5));
+    let saved_position = computed;
+    let next = computed.next_u64();
+    var restored = saved_position;
+    assert(restored.next_u64() == next);
+    assert(restored.next_u64() == computed.next_u64());
+
+    // A nested draw runs before the outer draw and both advance the receiver.
+    var nested = random.Rng.new(7);
+    let nested_value = nested.range(0, nested.range(1, 10));
+    var hoisted = random.Rng.new(7);
+    let inner = hoisted.range(1, 10);
+    assert(nested_value == hoisted.range(0, inner));
+    assert(nested.next_u64() == hoisted.next_u64());
+
     // Two generators seeded differently diverge.
-    let c = random.Rng.new(1);
-    let d = random.Rng.new(2);
+    var c = random.Rng.new(1);
+    var d = random.Rng.new(2);
     assert(c.next_u64() != d.next_u64());
 
     // next_f64 stays within [0.0, 1.0).
-    let f = random.Rng.new(99);
-    for i in 0 .. 1000 {
+    var f = random.Rng.new(99);
+    for i in 0..1000 {
         let x = f.next_f64();
         assert(x >= 0.0 && x < 1.0);
     }
     // range(lo, hi) always lands in [lo, hi) and hi <= lo returns lo.
-    let g = random.Rng.new(7);
-    for i in 0 .. 1000 {
+    var g = random.Rng.new(7);
+    for i in 0..1000 {
         let n = g.range(10, 20);
         assert(n >= 10 && n < 20);
     }
     assert(g.range(5, 5) == 5);
     assert(g.range(5, 1) == 5);
 
-    // shuffle rearranges a vector in place and preserves its multiset of
-    // elements; two independently-seeded generators are overwhelmingly
-    // unlikely to produce the same permutation of a large vector.
-    let h = random.Rng.new(2026);
-    var original: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+    // shuffle returns an independent vector and preserves its multiset.
+    var h = random.Rng.new(2026);
+    let original: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
     let saved = original;
-    h.shuffle(original);
-    assert(original != saved);
+    let shuffled = h.shuffle(original);
+    assert(shuffled != saved);
+    assert(original == saved);
     var seen: Vec<bool> = [false, false, false, false, false, false, false, false, false, false, false, false, false, false, false, false];
-    for i in 0 .. original.len() {
+    for i in 0..original.len() {
         assert(saved[i] == i);
-        let v = original[i];
+        let v = shuffled[i];
         assert(!seen[v]);
         seen[v] = true;
     }
+    // Module shuffle also preserves immutable inputs and all aliases.
+    random.seed(42);
+    let ordered: Vec<i64> = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let alias = ordered;
+    let permutation = random.shuffle(ordered);
+    let expected: Vec<i64> = [7, 3, 2, 8, 5, 6, 9, 4, 0, 1];
+    assert(permutation == expected);
+    assert(ordered == alias);
+    for i in 0..ordered.len() {
+        assert(ordered[i] == i);
+    }
+    var mutable_copy = alias;
+    mutable_copy = random.shuffle(mutable_copy);
+    assert(ordered == alias);
+    assert(mutable_copy != ordered);
+
+    // RNG shuffle advances its receiver and preserves independent copies.
+    var same_h = random.Rng.new(2026);
+    assert(same_h.shuffle(original) == shuffled);
+    assert(same_h.next_u64() == h.next_u64());
+    let empty: Vec<i64> = [];
+    let singleton: Vec<i64> = [9];
+    assert(random.shuffle(empty) == empty);
+    assert(random.shuffle(singleton) == singleton);
+    assert(h.shuffle(empty) == empty);
+    assert(h.shuffle(singleton) == singleton);
+
     // crypto_bytes(n) returns exactly n bytes; two draws differ.
     let cb1 = random.crypto_bytes(16);
     let cb2 = random.crypto_bytes(16);

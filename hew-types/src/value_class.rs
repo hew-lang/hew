@@ -797,7 +797,7 @@ fn classify_uncached(
             | BuiltinType::CrashInfo | BuiltinType::CrashNotification => {
                 classify_declaration(head, args, decls, walk)?
             }
-            BuiltinType::JsonValue | BuiltinType::YamlValue => {
+            BuiltinType::JsonValue | BuiltinType::YamlValue | BuiltinType::TomlValue => {
                 (ValueClass::CowValue, CloneKind::DeepCopy)
             }
             BuiltinType::Rc | BuiltinType::Weak => affine_retain,

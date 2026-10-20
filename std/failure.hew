@@ -35,12 +35,20 @@ pub enum CrashAction {
     GiveUp;
 }
 
-/// Actor identity carried by a monitor or link notification.
+/// Identity reported by a monitor or link notification.
+///
+/// `Local` names an actor incarnation's process-local slot, `Remote` names a
+/// complete remote incarnation, and `Role` names a stable local supervised
+/// role when it has no current actor. Observing an occupied role selects its
+/// current incarnation; a vacant-role notification does not subscribe to a
+/// later replacement.
 pub enum DownTarget {
     /// A process-local actor slot.
     Local(u64);
     /// A complete remote actor location.
     Remote(Location);
+    /// A stable local supervised role with no current actor incarnation.
+    Role(u64);
 }
 
 /// Identity and class of a crash propagated to a linked actor.

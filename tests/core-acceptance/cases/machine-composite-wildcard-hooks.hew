@@ -1,0 +1,55 @@
+// A `_` target leaves and re-enters the whole active branch, so a composite's
+// hooks run even when the body stays inside the group (§3.11.5). A named
+// target inside the group runs neither hook.
+machine Session {
+    events {
+        Open;
+        Named;
+        Stay;
+        Choose;
+    }
+    emits {
+        Trace { text: string; }
+    }
+
+    state Closed;
+    state Live {
+        entry {
+            emit Trace { text: "Live.entry" };
+        }
+        exit {
+            emit Trace { text: "Live.exit" };
+        }
+        initial state Authing;
+        state Active;
+    }
+
+    on Open: Closed => Live;
+    on Named: Authing => Active;
+    on Stay: Active => _ {
+        Active
+    }
+    on Choose: Active => _ {
+        Authing
+    }
+
+    default { state }
+}
+
+fn show(label: string, report: SessionStep) {
+    println(f"{label}: {report.outputs.len()}");
+    for output in report.outputs {
+        match output {
+            .Trace { text } => println(f"  {text}"),
+        }
+    }
+}
+
+fn main() {
+    var session: Session = .Closed;
+    show("open", session.step(.Open));
+    show("named sibling", session.step(.Named));
+    show("wildcard same", session.step(.Stay));
+    show("wildcard sibling", session.step(.Choose));
+    println(session.state_name());
+}

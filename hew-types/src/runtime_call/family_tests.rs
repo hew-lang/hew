@@ -377,6 +377,14 @@ fn async_suspension_classification_preserves_operation_identity() {
 
     // Positive: exactly these (family, expected kind) tuples.
     let positives: &[(RuntimeCallFamily, AsyncSuspendKind)] = &[
+        (
+            F::Semaphore(super::SemaphoreOp::Acquire),
+            AsyncSuspendKind::Semaphore(super::SemaphoreOp::Acquire),
+        ),
+        (
+            F::Semaphore(super::SemaphoreOp::AcquireTimeout),
+            AsyncSuspendKind::Semaphore(super::SemaphoreOp::AcquireTimeout),
+        ),
         (F::StreamSendLayout, AsyncSuspendKind::SinkSend),
         (F::StreamNextLayout, AsyncSuspendKind::StreamRecv),
     ];
@@ -635,6 +643,42 @@ fn deque_pop_contract_preserves_nominal_facts_and_rejects_foreign_lookalikes() {
                 is_opaque,
             };
             assert!(!admits("std.deque", &declaration, &lookalike, false));
+        }
+    }
+}
+
+#[test]
+fn semaphore_wait_contract_preserves_nominal_facts_and_rejects_foreign_lookalikes() {
+    let mut defs = crate::DefTable::new();
+    let identity = defs.mint_nominal_for_test("std.semaphore.SemaphoreHandle");
+    let foreign = defs.mint_nominal_for_test("application.SemaphoreHandle");
+    for operation in [
+        super::SemaphoreOp::Acquire,
+        super::SemaphoreOp::AcquireTimeout,
+    ] {
+        let result = if operation == super::SemaphoreOp::Acquire {
+            ResolvedTy::Unit
+        } else {
+            ResolvedTy::Bool
+        };
+        for is_opaque in [false, true] {
+            let handle = |identity| ResolvedTy::Named {
+                head: crate::TypeHead::Nominal(crate::NominalHead::new(
+                    identity,
+                    "std.semaphore.SemaphoreHandle",
+                )),
+                args: vec![],
+                is_opaque,
+            };
+            let mut arguments = vec![handle(identity)];
+            if operation == super::SemaphoreOp::AcquireTimeout {
+                arguments.push(ResolvedTy::I64);
+            }
+            let contract = operation.contract();
+            let instantiated = contract.instantiate(&defs, &arguments, &result).unwrap();
+            assert_eq!(instantiated.arguments, arguments);
+            arguments[0] = handle(foreign);
+            assert!(contract.instantiate(&defs, &arguments, &result).is_err());
         }
     }
 }

@@ -2754,6 +2754,28 @@ unsafe fn sink_channel_core<'a>(
     }
 }
 
+/// Clone the channel core owned by a live channel-backed sink.
+///
+/// # Safety
+/// `sink` must be a live, exclusively readable `HewSink` for this call.
+pub(crate) unsafe fn clone_sink_channel_core(
+    sink: *mut HewSink,
+) -> Option<Arc<crate::channel_core::ChannelCore>> {
+    if sink.is_null() {
+        return None;
+    }
+    // SAFETY: caller keeps the sink alive while its opaque core borrow is read.
+    let core = unsafe { (*sink).channel_core_ptr() };
+    if core.is_null() {
+        return None;
+    }
+    let core = core.cast::<crate::channel_core::ChannelCore>();
+    // SAFETY: the live sink owns one Arc strong reference to this allocation.
+    unsafe { Arc::increment_strong_count(core) };
+    // SAFETY: the increment above transfers this additional reference here.
+    Some(unsafe { Arc::from_raw(core) })
+}
+
 /// `Sink.try_send`: deposit one element of any witness-describable type
 /// without waiting. Returns `0` (accepted), `1` (`SendError.Closed`: the sink
 /// finished or the reader left) or `2` (`SendError.Full`: the pipe is at

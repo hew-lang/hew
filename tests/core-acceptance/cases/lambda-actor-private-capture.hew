@@ -1,0 +1,33 @@
+// Explicit private captures become mutable actor state fields. Each call
+// sees the previous call's writes; the enclosing binding keeps its value.
+fn main() {
+    let total: i64 = 0;
+    let names: Vec<string> = [];
+    let acc = actor capture(var total, var names) |n: i64| -> i64 {
+        total += n;
+        names.push(f"n{n}");
+        total * 100 + names.len()
+    };
+    for n in [5, 7, 11] {
+        match acc(n) {
+            .Ok(v) => println(v),
+            .Err(_) => println("err"),
+        }
+    }
+    println(f"outer {total} {names.len()}");
+    stop(acc);
+    stopped(acc);
+    let count: i64 = 0;
+    let counter = actor move capture(var count) || -> i64 {
+        count += 1;
+        count
+    };
+    let _ = counter();
+    match counter() {
+        .Ok(v) => println(v),
+        .Err(_) => println("err"),
+    }
+    assert(count == 0);
+    stop(counter);
+    stopped(counter);
+}

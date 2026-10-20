@@ -6,7 +6,7 @@ mod support;
 
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 struct OwnedRun {
     cli: Child,
     program_pid: Option<i32>,
+    terminal: Option<File>,
 }
 
 impl OwnedRun {
@@ -31,6 +32,9 @@ impl OwnedRun {
 
 impl Drop for OwnedRun {
     fn drop(&mut self) {
+        // Hang up the owned terminal before reaping, including failed checks.
+        // A session leader must not wait for a master this test stopped reading.
+        drop(self.terminal.take());
         // Only signal this fixture's published, isolated group. Keep the CLI
         // alive to reap its child whenever possible, including assertion paths.
         if let Some(pid) = self.program_pid {
@@ -66,8 +70,8 @@ fn attach_controlling_terminal(command: &mut Command) -> File {
             &raw mut master,
             &raw mut slave,
             std::ptr::null_mut(),
-            std::ptr::null(),
-            std::ptr::null(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     assert_eq!(result, 0, "create pseudo-terminal");
@@ -75,6 +79,33 @@ fn attach_controlling_terminal(command: &mut Command) -> File {
     let master = unsafe { File::from_raw_fd(master) };
     // SAFETY: openpty returned a separate owned slave descriptor.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
+    // Only stdin uses this terminal; output is captured through separate pipes.
+    // Unread input echo can keep macOS draining the slave during process exit.
+    // Preserve canonical input and terminal-generated signals, without echo.
+    // SAFETY: zero-initialize the output buffer before tcgetattr fills it.
+    let mut settings: libc::termios = unsafe { std::mem::zeroed() };
+    assert_eq!(
+        // SAFETY: the slave descriptor and output termios buffer are valid.
+        unsafe { libc::tcgetattr(slave.as_raw_fd(), &raw mut settings) },
+        0,
+        "read terminal settings"
+    );
+    settings.c_lflag &= !(libc::ECHO | libc::ECHONL);
+    assert_eq!(
+        // SAFETY: apply valid settings immediately to this owned terminal.
+        unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &raw const settings) },
+        0,
+        "disable input echo"
+    );
+    for descriptor in [master.as_raw_fd(), slave.as_raw_fd()] {
+        assert_eq!(
+            // SAFETY: mark only these owned descriptors close-on-exec. Command
+            // duplicates the slave onto stdin before closing the original.
+            unsafe { libc::fcntl(descriptor, libc::F_SETFD, libc::FD_CLOEXEC) },
+            0,
+            "keep terminal descriptors private"
+        );
+    }
     command.stdin(Stdio::from(slave));
     // SAFETY: only async-signal-safe session/terminal operations run after
     // fork. The slave has already been installed as this child's stdin.
@@ -114,7 +145,7 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
     command.arg(&source).current_dir(dir.path());
     command.stdout(Stdio::piped()).stderr(Stdio::inherit());
 
-    let mut master = if terminal {
+    let master = if terminal {
         Some(attach_controlling_terminal(&mut command))
     } else {
         command.stdin(Stdio::null());
@@ -124,6 +155,7 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
     let mut run = OwnedRun {
         cli: command.spawn().expect("spawn hew run"),
         program_pid: None,
+        terminal: master,
     };
     let stdout = run.cli.stdout.take().unwrap();
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -139,7 +171,7 @@ fn exercise(signal: i32, timeout: bool, terminal: bool, ignore: bool) {
     let pid = line.trim().parse::<i32>().expect("numeric program PID");
     run.program_pid = Some(pid);
 
-    if let Some(master) = master.as_mut() {
+    if let Some(master) = run.terminal.as_mut() {
         master.write_all(&[3]).expect("type terminal Ctrl-C");
     } else {
         // SAFETY: this is the unreaped CLI child owned by this test.
@@ -198,10 +230,11 @@ fn run_wasi_foreground_stdin_is_readable() {
         .current_dir(dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut master = attach_controlling_terminal(&mut command);
+    let master = attach_controlling_terminal(&mut command);
     let mut run = OwnedRun {
         cli: command.spawn().expect("spawn WASI hew run"),
         program_pid: None,
+        terminal: Some(master),
     };
     let stdout = run.cli.stdout.take().unwrap();
     let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
@@ -220,7 +253,9 @@ fn run_wasi_foreground_stdin_is_readable() {
         .expect("WASI program startup")
         .expect("read WASI startup line");
     assert_eq!(ready, "ready\n");
-    master
+    run.terminal
+        .as_mut()
+        .unwrap()
         .write_all(b"foreground input\n")
         .expect("type terminal input");
     let status = run.wait();

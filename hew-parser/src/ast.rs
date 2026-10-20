@@ -508,6 +508,9 @@ pub enum Expr {
     },
     SpawnLambdaActor {
         is_move: bool,
+        /// Captures named in `capture(var ..)`: mutable state fields of the
+        /// actor, each starting from a snapshot of the enclosing binding.
+        private_captures: Vec<Spanned<Ident>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
@@ -1363,6 +1366,17 @@ pub struct ImportDecl {
     pub resolved_source_paths: Vec<std::path::PathBuf>,
 }
 
+impl ImportDecl {
+    /// Whether this is a quoted file import that binds the file's public
+    /// items unqualified (`import "lib.hew";`). An aliased file import
+    /// (`import "lib.hew" as lib;`) binds only the module, like a whole-module
+    /// path import.
+    #[must_use]
+    pub fn publishes_file_items(&self) -> bool {
+        self.file_path.is_some() && self.module_alias.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ImportName {
     pub name: Ident,
@@ -1506,13 +1520,23 @@ pub enum TypeDeclKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireMetadata {
     pub field_meta: Vec<WireFieldMeta>,
-    pub reserved_numbers: Vec<u32>,
+    /// `reserved @N, @M;` clauses in source order.
+    pub reserved: Vec<WireReserved>,
     /// Schema version from `#[wire(version = N)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<u32>,
     /// Minimum version that can decode this schema, from `#[wire(min_version = N)]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_version: Option<u32>,
+}
+
+/// One `reserved @N, @M;` clause of a wire type body. The span places the
+/// clause among the fields so the formatter reprints it where it was written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WireReserved {
+    pub numbers: Vec<u32>,
+    #[serde(default)]
+    pub span: Span,
 }
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
@@ -2176,13 +2200,13 @@ pub struct MachineTransition {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub target_is_contextual: bool,
     /// Event-payload field names bound in the transition head
-    /// (`on E { a, b }: …`). These alias the event's fields so the body can use
-    /// the bare names instead of `event.field`. The parser splices a
-    /// `let a = event.a;` prelude into `body` for lowering (no new HIR kind);
-    /// this list is retained purely so the formatter can re-emit the head form
-    /// and strip that prelude. Empty when the rule used no head binding.
+    /// (`on E { a, b }: …`), each with its span in the head. They alias the
+    /// event's fields for the whole rule, so the guard and the body can use
+    /// the bare names instead of `event.field`; machine normalization binds
+    /// them. `guard` and `body` hold the authored expressions. Empty when the
+    /// rule used no head binding.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub event_bindings: Vec<Ident>,
+    pub event_bindings: Vec<Spanned<Ident>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,

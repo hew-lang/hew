@@ -1,0 +1,11 @@
+[[case]]
+id = "indexed-field-write-in-place"
+intent = "A var self or local write through an element of a collection field updates the element in place, and a fault before it publishes leaves the seat whole for the crash hook, including a nested map callback fault."
+source = "cases/indexed-field-write-in-place.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 60
+
+[case.expected]
+stdout = "[2 false][1 true][1 true][1 true]\n[1 false][1 true][1 false][0 true]\n[1 false][0 true]\nseat [1 false][0 true]\n[1 false][0 true]\nseat [1 false][0 true]\ncallback seat 1 1\ndone\n"
+stderr = "hew: failure: IndexOutOfBounds (205)\nhew: actor crash in Words.mark_missing (actor 1): IndexOutOfBounds\nhew: failure: IndexOutOfBounds (205)\nhew: actor crash in Words.link_missing (actor 2): IndexOutOfBounds\nhew: failure: DivideByZero (202)\nhew: actor crash in CallbackFault.insert_fault (actor 3): DivideByZero\n"
+exit = 1

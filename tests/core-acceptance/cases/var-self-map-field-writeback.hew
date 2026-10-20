@@ -1,0 +1,22 @@
+type Env { vars: HashMap<string, i64>; items: Vec<i64>; }
+
+impl Env {
+    fn set(var self, key: string, value: i64) {
+        self.vars.insert(key, value);
+    }
+
+    fn push(var self, value: i64) {
+        self.items.push(value);
+    }
+}
+
+fn main() {
+    var env = Env { vars: HashMap.new(), items: Vec.new() };
+    env.set("first", 2);
+    env.set("second", 3);
+    env.push(5);
+    assert(env.vars.len() == 2);
+    assert(env.vars.get("first").expect("first value") == 2);
+    assert(env.vars.get("second").expect("second value") == 3);
+    assert(env.items.len() == 1 && env.items[0] == 5);
+}

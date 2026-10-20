@@ -2,8 +2,8 @@ actor Source {
     var base: i64 = 10;
     var label: string = "item";
     receive gen fn items(count: i64) -> string {
-        for index in 0 .. count {
-            base = base + 1;
+        base = base + 1;
+        for index in 0..count {
             yield label + ":" + label;
         }
     }

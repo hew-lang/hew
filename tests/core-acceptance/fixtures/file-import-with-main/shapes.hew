@@ -1,0 +1,9 @@
+// A runnable file: `hew run shapes.hew` prints its own demo. Importers see
+// only its public items; this `main` is an ordinary private function.
+pub fn area(width: i64, height: i64) -> i64 {
+    width * height
+}
+
+fn main() {
+    println(f"demo area: {area(2, 3)}");
+}

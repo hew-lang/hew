@@ -1,0 +1,10 @@
+[[case]]
+id = "semaphore-owned-waits"
+intent = "Shared affine handles support queued acquisition, deadlines and cancellation without losing or duplicating permits."
+source = "../vertical-slice/accept/semaphore_owned_waits.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "owned semaphore ok\n"
+exit = 0

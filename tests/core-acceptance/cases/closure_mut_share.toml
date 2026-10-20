@@ -7,7 +7,7 @@ timeout_seconds = 30
 kind = "reject"
 
 [[case.expected.diagnostics]]
-code = "MutabilityError"
+code = "ImmutableCaptureMutation"
 line = 4
 column = 9
 message = "capture `n` is an immutable snapshot; add `capture(var n)` before the"

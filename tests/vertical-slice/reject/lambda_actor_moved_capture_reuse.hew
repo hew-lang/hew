@@ -1,0 +1,11 @@
+fn main() {
+    let seen: Vec<string> = [];
+    let collect = actor move capture(var seen) |line: string| -> i64 {
+        seen.push(line);
+        seen.len()
+    };
+    let _ = collect("a");
+    println(seen.len());
+    stop(collect);
+    stopped(collect);
+}

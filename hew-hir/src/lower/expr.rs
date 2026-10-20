@@ -1494,40 +1494,21 @@ impl LowerCtx {
                         }
                     }
                 }
-                // Pre-dispatch: module-qualified constant reference, e.g.
-                // `module_short.CONST_NAME`.  The type checker accepted this as
-                // a qualified const access and registered the result type in
-                // `expr_types`; the HIR must produce a `BindingRef { Const(id) }`
-                // rather than falling through to the generic struct-field path
-                // (which would `lower_expr(object)` on a bare module name and
-                // fail with `UnresolvedSymbol`).
-                //
-                // Guard: object is a bare `Expr::Ident` and the checker-resolved
-                // owner key is in `const_registry`. The registry pre-pass stores
-                // imported consts under exact source owners, so the lexical module
-                // binding must cross the same owner map used by type checking.
-                if let Expr::Ident(module_name) = &object.0 {
-                    let qualified_key = self.imported_module_member_key(
-                        module_name.name.as_str(),
-                        field.0.name.as_str(),
-                    );
-                    // A file import's declaration is spliced into the root
-                    // namespace and registered under its bare name, so the
-                    // qualified spelling reaches it through the same mapping a
-                    // bare reference uses.
-                    let registry_key = self.published_const_key(&qualified_key).to_string();
-                    if let Some(entry) = self.const_registry.get(&registry_key).cloned() {
-                        let ty = entry.ty.clone();
-                        let id = entry.id;
+                // A qualified constant is selected at its member token, whether
+                // its module was imported by path or alias. Reuse the same
+                // declaration lowering as a bare constant reference.
+                if let Some(Resolution::Def(declaration)) =
+                    self.resolutions.get(&self.mk_key(&field.1)).copied()
+                {
+                    if self.defs.kind(declaration) == hew_types::DeclarationKind::Const {
+                        let (kind, ty) =
+                            self.lower_identifier(field.0.name.as_str(), field.1.clone(), site);
                         return HirExpr {
                             node: self.ids.node(),
                             site,
                             ty,
                             intent,
-                            kind: HirExprKind::BindingRef {
-                                name: qualified_key,
-                                resolved: ResolvedRef::Const(id),
-                            },
+                            kind,
                             span,
                         };
                     }

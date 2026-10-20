@@ -1,0 +1,29 @@
+pub type Grid {
+    n: i64;
+}
+
+impl Grid {
+    pub fn down(self) -> i64 {
+        var t = 0;
+        for i in (0..self.n).rev() {
+            t = t * 10 + i;
+        }
+        t
+    }
+
+    pub fn even(self) -> i64 {
+        var t = 0;
+        for i in (0..self.n).step_by(2) {
+            t = t + i;
+        }
+        t
+    }
+
+    pub fn even_down(self) -> i64 {
+        var t = 0;
+        for i in (0..=self.n).rev().step_by(3) {
+            t = t * 10 + i;
+        }
+        t
+    }
+}

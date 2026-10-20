@@ -1630,10 +1630,16 @@ impl Parser<'_> {
         reason = "the import production preserves path and selection separator origin in one parse"
     )]
     pub(crate) fn parse_import(&mut self) -> Option<ImportDecl> {
-        // File-path import: import "path/to/file.hew";
+        // File-path import: import "path/to/file.hew"; optionally aliased
+        // (`import "path/to/file.hew" as name;`).
         if let Some(Token::StringLit(s) | Token::RawString(s)) = self.peek() {
             let raw = *s;
             self.advance();
+            let module_alias = if self.eat(&Token::As) {
+                Some(self.expect_ident()?)
+            } else {
+                None
+            };
             self.expect(&Token::Semicolon)?;
             let file_path = unquote_str(raw).to_owned();
             return Some(ImportDecl {
@@ -1642,7 +1648,7 @@ impl Parser<'_> {
                 },
                 spec: None,
                 selection_trailing_comma: false,
-                module_alias: None,
+                module_alias,
                 file_path: Some(file_path),
                 resolved_items: None,
                 resolved_item_source_paths: Vec::new(),

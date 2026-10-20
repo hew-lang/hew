@@ -59,16 +59,32 @@ const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(30);
 /// headroom for loopback gossip under load without masking a true hang.
 const CLIENT_RUN_TIMEOUT: Duration = Duration::from_secs(40);
 
+/// The shared distributed fixture is substantially larger than ordinary E2E
+/// programs. Allow a cold native compile to finish on slower hosted runners;
+/// nextest's per-test ceiling remains the independent hang watchdog.
+const DIST_NODE_COMPILE_TIMEOUT: Duration = Duration::from_mins(2);
+
 #[derive(Clone, Copy)]
 enum StderrExpectation {
     Ignore,
     ExactOneCrashIn(&'static str),
     NoCrashIn(&'static str),
+    NoFaultDiagnostics,
 }
 
 fn assert_stderr_expectation(stderr: &str, expectation: StderrExpectation) {
     match expectation {
         StderrExpectation::Ignore => {}
+        StderrExpectation::NoFaultDiagnostics => {
+            assert!(
+                !stderr.lines().any(|line| {
+                    line.starts_with("hew: failure:")
+                        || line.starts_with("hew: secondary failure:")
+                        || line.starts_with("hew: actor crash")
+                }),
+                "remote observation must not report the origin fault again:\n{stderr}"
+            );
+        }
         StderrExpectation::ExactOneCrashIn(context) => {
             let prefix = format!("hew: actor crash in {context} (actor ");
             let diagnostics: Vec<_> = stderr
@@ -152,15 +168,10 @@ fn compiled_node_binary() -> &'static Path {
                 .arg(&source)
                 .env("HEW_STD", repo_root().join("std"))
                 .current_dir(repo_root());
-            let compile_timeout = if sanitize {
-                Duration::from_mins(2)
-            } else {
-                hew_testutil::DEFAULT_EXEC_TIMEOUT
-            };
             let output = support::try_run_bounded_command(
                 command,
                 format!("hew compile {}", source.display()),
-                compile_timeout,
+                DIST_NODE_COMPILE_TIMEOUT,
             )
             .unwrap_or_else(|error| panic!("{error}"));
             assert!(
@@ -202,6 +213,13 @@ impl Drop for ManagedChild {
         // after the client finishes (it otherwise sleeps to a safety ceiling).
         let _ = self.child.kill();
         let _ = self.child.wait();
+        if std::thread::panicking() {
+            if let Some(mut stderr) = self.child.stderr.take() {
+                let mut diagnostics = String::new();
+                let _ = stderr.read_to_string(&mut diagnostics);
+                eprintln!("{} teardown stderr:\n{diagnostics}", self.label);
+            }
+        }
     }
 }
 
@@ -237,6 +255,11 @@ impl PeerLink {
                 }
                 match listener.accept() {
                     Ok((client, _)) => {
+                        // Windows inherits the listener's nonblocking mode;
+                        // the forwarding threads use blocking copy loops.
+                        client
+                            .set_nonblocking(false)
+                            .expect("blocking peer gate stream");
                         let server_port = std::fs::read_to_string(directory.join("server.ready"))
                             .expect("published server port")
                             .parse::<u16>()
@@ -925,6 +948,80 @@ fn remote_monitor_down_on_crash() {
         !stdout.contains("FAIL "),
         "client reported a FAIL on the crash monitor; client stdout:\n{stdout}"
     );
+}
+
+/// The target holds state cleanup until the origin sees the remote stopped
+/// registration. A second call observes the completed actor through the same
+/// authenticated grant, without replacing its original crash with cleanup failure.
+fn assert_remote_stopped_crash(fail_close: bool) {
+    let scenario = if fail_close {
+        "remote_stopped_cleanup_fault"
+    } else {
+        "remote_stopped_crash"
+    };
+    let scene = SecureScenario::new();
+    let mut server = scene.spawn_server(scenario);
+    let client = scene.spawn_client(scenario, &[]);
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client, 0, StderrExpectation::NoFaultDiagnostics);
+    for pass in 0..2 {
+        assert!(
+            stdout.contains(&format!(
+                "PASS remote_stopped pass={pass} cleanup={fail_close}"
+            )),
+            "live and late stopped must distinguish cleanup from original crash:\n{stdout}"
+        );
+    }
+    // The client acknowledges both observations before the origin shuts down.
+    // Waiting for process completion also makes the diagnostic count definitive.
+    let deadline = Instant::now() + CLIENT_RUN_TIMEOUT;
+    loop {
+        if let Some(status) = server.child.try_wait().expect("poll origin") {
+            assert_eq!(
+                status.code(),
+                Some(1),
+                "original crash must remain unresolved"
+            );
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "origin did not finish after observations"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let mut stderr = String::new();
+    server
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert_stderr_expectation(
+        &stderr,
+        StderrExpectation::ExactOneCrashIn("RemoteClosingActor.crash"),
+    );
+    assert_eq!(
+        stderr.matches("remote original handler fault").count(),
+        1,
+        "{stderr}"
+    );
+    assert_eq!(
+        stderr.matches("remote secondary cleanup fault").count(),
+        usize::from(fail_close),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn remote_stopped_preserves_original_crash_without_cleanup_failure() {
+    assert_remote_stopped_crash(false);
+}
+
+#[test]
+fn remote_stopped_recovers_secondary_cleanup_fault_live_and_late() {
+    assert_remote_stopped_crash(true);
 }
 
 /// Cross-node connection drop: a client monitoring a remote actor receives

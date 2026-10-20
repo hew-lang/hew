@@ -365,6 +365,14 @@ pub(crate) fn terminator_successors(
             unwind,
             ..
         }
+        | PhysicalTerminator::SemaphoreAcquire {
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+            ..
+        }
         | PhysicalTerminator::ServiceAcquire {
             args,
             result,
@@ -1257,6 +1265,35 @@ pub(crate) fn verify_terminator(
                         })
             }) || !operation.row().contract.expect("service contract").matches_signature(&module.defs, &arguments, &slot(*result)?.ty) {
                 return Err(PhysicalError::new("service acquisition differs from its admitted interface"));
+            }
+            edge(normal)?;
+            edge(cancel)?;
+            edge(unwind)
+        }
+        PhysicalTerminator::SemaphoreAcquire {
+            operation,
+            args,
+            result,
+            normal,
+            cancel,
+            unwind,
+        } => {
+            let arguments = args
+                .iter()
+                .map(|argument| match argument {
+                    ArgumentTransfer::Borrow(id) => Ok(slot(*id)?.ty.clone()),
+                    _ => Err(PhysicalError::new(
+                        "semaphore acquisition requires borrowed inputs",
+                    )),
+                })
+                .collect::<Result<Vec<_>, PhysicalError>>()?;
+            if !operation
+                .contract()
+                .matches_signature(&module.defs, &arguments, &slot(*result)?.ty)
+            {
+                return Err(PhysicalError::new(
+                    "semaphore acquisition inputs or result differ from the operation contract",
+                ));
             }
             edge(normal)?;
             edge(cancel)?;

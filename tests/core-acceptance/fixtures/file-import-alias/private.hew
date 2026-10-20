@@ -1,0 +1,5 @@
+import "codecs/huffman.hew" as huffman;
+
+fn main() {
+    println(huffman.tag("ab"));
+}

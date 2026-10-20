@@ -28,7 +28,6 @@ pub enum WasmFeatureDisposition { Warn, Reject }
 pub enum WasmUnsupportedFeature {
     SupervisionTrees,
     LinkMonitor,
-    BlockingSemaphoreAcquire,
     Timers,
     PeriodicTimers,
     FilesystemStreams,
@@ -56,7 +55,6 @@ impl WasmUnsupportedFeature {
     pub const ALL: &'static [Self] = &[
         Self::SupervisionTrees,
         Self::LinkMonitor,
-        Self::BlockingSemaphoreAcquire,
         Self::Timers,
         Self::PeriodicTimers,
         Self::FilesystemStreams,
@@ -84,7 +82,6 @@ impl WasmUnsupportedFeature {
         match self {
             Self::SupervisionTrees => WasmCapabilityId("supervision-trees"),
             Self::LinkMonitor => WasmCapabilityId("link-monitor"),
-            Self::BlockingSemaphoreAcquire => WasmCapabilityId("semaphore-blocking-acquire"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
@@ -113,7 +110,6 @@ impl WasmUnsupportedFeature {
         match self {
             Self::SupervisionTrees => WasmFeatureDisposition::Reject,
             Self::LinkMonitor => WasmFeatureDisposition::Reject,
-            Self::BlockingSemaphoreAcquire => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::FilesystemStreams => WasmFeatureDisposition::Reject,
@@ -142,7 +138,6 @@ impl WasmUnsupportedFeature {
         match self {
             Self::SupervisionTrees => "Supervision tree operations",
             Self::LinkMonitor => "Link/monitor operations",
-            Self::BlockingSemaphoreAcquire => "Blocking semaphore acquire operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
             Self::FilesystemStreams => "File-backed streams and resources",
@@ -171,7 +166,6 @@ impl WasmUnsupportedFeature {
         match self {
             Self::SupervisionTrees => "they require OS threads for restart strategies and child supervision",
             Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
-            Self::BlockingSemaphoreAcquire => "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::FilesystemStreams => "file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available",
@@ -224,8 +218,6 @@ pub mod wasm_capability_ids {
     pub const QUIC: WasmCapabilityId = WasmCapabilityId("quic");
     pub const RUNTIME_SUBSTRATE_CLASSIFICATION: WasmCapabilityId = WasmCapabilityId("runtime-substrate-classification");
     pub const RUNTIME_TRAPS: WasmCapabilityId = WasmCapabilityId("runtime-traps");
-    pub const SEMAPHORE: WasmCapabilityId = WasmCapabilityId("semaphore");
-    pub const SEMAPHORE_BLOCKING_ACQUIRE: WasmCapabilityId = WasmCapabilityId("semaphore-blocking-acquire");
     pub const SMTP: WasmCapabilityId = WasmCapabilityId("smtp");
     pub const STD_OS: WasmCapabilityId = WasmCapabilityId("std-os");
     pub const STREAMS: WasmCapabilityId = WasmCapabilityId("streams");

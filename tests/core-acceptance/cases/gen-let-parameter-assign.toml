@@ -1,0 +1,13 @@
+[[case]]
+id = "gen-let-parameter-assign"
+intent = "A gen fn parameter without `var` stays immutable in the generator body."
+source = "cases/gen-let-parameter-assign.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "check"
+
+[[case.expected.diagnostics]]
+code = "MutabilityError"
+line = 4
+column = 9
+message = "cannot assign to immutable variable `n`"

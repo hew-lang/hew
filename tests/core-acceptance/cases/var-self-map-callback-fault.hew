@@ -1,0 +1,38 @@
+// A key's hash faults while a `var self` method inserts into a map field.
+// The runtime leaves the map with the caller, so the method hands back a
+// whole receiver and its owner releases every key and value once.
+type Key {
+    label: string;
+    divisor: i64;
+}
+
+impl Hash for Key {
+    fn hash(self) -> i64 {
+        self.label.len() / self.divisor
+    }
+}
+
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool {
+        self.label == other.label
+    }
+}
+
+type Env {
+    vars: HashMap<Key, string>;
+    name: string;
+}
+
+impl Env {
+    fn set(var self, key: Key, value: string) {
+        self.vars.insert(key, value);
+    }
+}
+
+fn main() {
+    var env = Env { vars: HashMap.new(), name: "env".to_upper() };
+    env.set(Key { label: "ok".to_upper(), divisor: 1 }, "one".to_upper());
+    println(env.vars.len());
+    env.set(Key { label: "bad".to_upper(), divisor: 0 }, "two".to_upper());
+    println("unreachable");
+}

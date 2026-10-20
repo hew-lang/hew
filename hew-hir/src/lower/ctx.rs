@@ -134,8 +134,6 @@ impl LowerCtx {
             call_site_type_args: HashMap::new(),
             record_registry: HashMap::new(),
             extern_backed_record_names: HashSet::new(),
-            colliding_imported_record_names: HashSet::new(),
-            file_import_module_names: HashSet::new(),
             cross_module_colliding_record_names: HashSet::new(),
             enum_type_params: HashMap::new(),
             intrinsic_declarations: tc_output.intrinsic_declarations.clone(),
@@ -160,7 +158,6 @@ impl LowerCtx {
             current_fn_type_params: HashSet::new(),
             trait_defaults: tc_output.trait_defaults.clone(),
             root_visible_source_type_short_names: HashSet::new(),
-            file_import_root_type_aliases: HashMap::new(),
             source_type_identities: HashSet::new(),
             // The checker registers both lifecycle owners' declarations at
             // bootstrap, with or without an import, so their canonical source
@@ -467,17 +464,6 @@ impl LowerCtx {
         let _ = span;
     }
 
-    /// Tag diagnostics raised while lowering a spliced file-import item with
-    /// the file it was written in. The item's spans are that file's byte
-    /// offsets, so an untagged diagnostic renders against the root source and
-    /// points at whatever text happens to share the offset. A root item leaves
-    /// `current_module_name` unset and keeps the root's own attribution.
-    pub(super) fn tag_spliced_diagnostics(&mut self, start: usize) {
-        if let Some(source_module) = self.current_module_name.clone() {
-            self.tag_diagnostics_since(start, &source_module);
-        }
-    }
-
     pub(super) fn tag_diagnostics_since(&mut self, start: usize, source_module: &str) {
         debug_assert!(start <= self.diagnostics.len());
         for diagnostic in self.diagnostics.iter_mut().skip(start) {
@@ -522,15 +508,6 @@ impl LowerCtx {
             .get(symbol)
             .filter(|registered| registered.id == entry.id)
             .map(|_| symbol.clone())
-    }
-
-    /// The registry key HIR holds a published constant under: the bare name for
-    /// a file import's spliced declaration, the qualified identity otherwise.
-    pub(super) fn published_const_key<'a>(&self, source_identity: &'a str) -> &'a str {
-        source_identity
-            .rsplit_once('.')
-            .filter(|(owner, _)| self.file_import_module_names.contains(*owner))
-            .map_or(source_identity, |(_, name)| name)
     }
 
     pub(super) fn checked_member_definition(

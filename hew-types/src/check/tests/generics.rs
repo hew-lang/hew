@@ -914,7 +914,7 @@ fn test_wire_since_without_version_warns() {
             is_repeated: false,
             since: Some(2),
         }],
-        reserved_numbers: vec![],
+        reserved: vec![],
         version: None,
         min_version: None,
     };
@@ -951,7 +951,7 @@ fn test_wire_since_without_version_uses_registered_decl_span() {
             is_repeated: false,
             since: Some(2),
         }],
-        reserved_numbers: vec![],
+        reserved: vec![],
         version: None,
         min_version: None,
     };
@@ -976,7 +976,7 @@ fn test_wire_since_with_version_no_extra_warning() {
             is_repeated: false,
             since: Some(2),
         }],
-        reserved_numbers: vec![],
+        reserved: vec![],
         version: Some(3),
         min_version: None,
     };

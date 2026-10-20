@@ -1,0 +1,10 @@
+[[case]]
+id = "gen-var-parameters"
+intent = "A gen fn `var` or `consume var` parameter and a gen block's captured `var` are the generator's own mutable copies."
+source = "cases/gen-var-parameters.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "count 3\ncount 2\ncount 1\ndrain c\ndrain b\ndrain a\ndoubled 0\ndoubled 2\ndoubled 4\nblock start+\nblock start++\nouter start 2\n"
+exit = 0

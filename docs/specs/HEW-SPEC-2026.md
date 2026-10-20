@@ -590,7 +590,8 @@ fn main() {
 **Syntax:**
 
 ```ebnf
-LambdaActorExpr = "actor" "move"? "|" LambdaParams? "|" RetType? Block ;
+LambdaActorExpr = "actor" "move"? PrivateCaptures? ( "|" LambdaParams? "|" | "||" ) RetType? Block ;
+PrivateCaptures = "capture" "(" "var" Ident { "," "var" Ident } ","? ")" ;
 ActorSpawn      = "spawn" Path TypeArgs? [ "{" FieldInitList "}" ] ;  (* spawn Counter { count: 0 } *)
 ```
 
@@ -656,6 +657,46 @@ captured as an independent value; resource transfer consumes the source.
 Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
+
+Every capture initializes a private, read-only state field using those value
+and transfer rules. Naming a capture in a `capture(var name, ...)` prefix makes its
+state field mutable: the handler may assign it or call mutating methods on it,
+and each message observes the writes of earlier ones. The prefix follows
+`actor` and any `move`, with the closure rules of §3.8.6: duplicate names,
+names that clash with a parameter, and initializers are errors. The enclosing
+binding is a separate value. It may be `let`, it is never changed, and the
+handler's state is read back only through replies. Writing a capture that the
+prefix does not name is an error whether the enclosing binding is `let` or
+`var`.
+
+```hew
+enum Tally {
+    Add(i64);
+    Get;
+}
+
+fn main() {
+    let count: i64 = 0;
+    let tally = actor capture(var count) |m: Tally| -> i64 {
+        match m {
+            .Add(n) => {
+                count += n;
+                count
+            }
+            .Get => count,
+        }
+    };
+    let _ = tally(Tally.Add(3));
+    let _ = tally(Tally.Add(4));
+    match tally(Tally.Get) {
+        .Ok(n) => println(f"tally = {n}"), // tally = 7
+        .Err(_) => println("tally is gone"),
+    }
+    println(count); // 0: the enclosing binding is unchanged
+    stop(tally);
+    stopped(tally);
+}
+```
 
 **Operations:**
 
@@ -1744,8 +1785,10 @@ fn main() {
 ```
 
 Captured types must satisfy the actor boundary's sendability rules. A borrowed
-view cannot outlive its owner by being captured. See §3.8.6 for ordinary
-closure capabilities and private mutable captures.
+view cannot outlive its owner by being captured. A capture is read-only state
+unless `capture(var name)` names it, which makes it a mutable state field of the
+actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
+ordinary closure capabilities and private mutable captures.
 
 #### 3.4.6 What IS Allowed (Within an Actor)
 
@@ -1854,6 +1897,19 @@ import std.net.{Connection, connect};  // Import multiple
 Glob imports are rejected. Import the specific symbols required by the module
 instead.
 
+A quoted path (`import "helpers.hew";`) imports a source file named relative to
+the importing file. The file is its own module: its `pub` items are bound
+unqualified in the importing file, under the same collision rules as a
+selective import, and its private items stay private to it. A `fn main` in an
+imported file is one of those private items; only the root file's `main` is the
+program entry. The file is also reachable as a module named by its file stem
+(`helpers.name`).
+
+An aliased quoted import (`import "codecs/huffman.hew" as huffman;`) binds the
+file only as the module `huffman`, like `import path as alias;`; none of its
+items are bound unqualified. Two files that publish the same name can then be
+imported side by side and reached as `huffman.encode` and `rle.encode`.
+
 **Module dot-syntax for standard library:**
 
 When importing a standard library module, the **last segment** of the module path becomes the local alias for the module. All access uses this short name, not the full path:
@@ -1921,8 +1977,9 @@ file belongs to depends only on where it sits relative to its **anchor**, a
 directory the code carries with it:
 
 - the standard-library root, for a file under `<std root>/std/`;
-- otherwise the nearest directory at or above the file that holds `hew.toml`
-  (the file's package);
+- otherwise the nearest directory at or above the file holding `hew.toml`,
+  if that manifest declares `[package]` (the file's package); a virtual
+  workspace manifest is a search boundary, not a package anchor;
 - otherwise nothing: the file is **loose**.
 
 The anchor directory's own name is never read. Renaming a checkout, installing
@@ -4814,7 +4871,7 @@ fielded state may declare `entry` and `exit` hooks (§3.11.5). A rule head is
 `on Event: Source => Target`, optionally with a payload head binding
 (`on Open { by }:`), `reenter`, and a `when` guard. The head binding names
 event fields in braces, as the record pattern `.Open { by }` does, and binds
-each to a local of the same name; the retired `on Open(by):` is refused with
+each to a local of the same name in the rule's guard and body; the retired `on Open(by):` is refused with
 `E_EVENT_HEAD_PARENS` and a fix-it.
 
 **Surface spelling** (an illustration of what `hew-parser` accepts, not a
@@ -5130,7 +5187,7 @@ companion types:
 
 | Generated item        | Behaviour                                                            |
 | --------------------- | -------------------------------------------------------------------- |
-| `NameEvent`           | Typed input variants from `events`                                   |
+| `Name.Event`          | Typed input variants from `events`                                   |
 | `NameOutput`          | Separate typed output variants from `emits`                          |
 | `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
 | `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |
@@ -5138,7 +5195,9 @@ companion types:
 | `m.state_name()`      | Returns the current state tag as a string                            |
 
 `emit` appends output data in evaluation order; it never feeds an input event
-back in or performs the represented work. Without an `emits` header,
+back in or performs the represented work. A unit output is emitted by its name
+alone, `emit Ready;`; `emit Ready {}` is refused (`E_EMPTY_KEY_BRACES`) and
+`hew fmt --migrate` rewrites it. Without an `emits` header,
 `NameOutput` is an empty enum and the report's vector is empty. There is no
 dummy output variant and no hidden queue.
 
@@ -5758,6 +5817,13 @@ cleanup. To request a graceful stop and wait, write `stop(pid); stopped(pid);`.
 To wait concurrently, `fork stopped(pid)` returns a `Task<()>` that must be
 joined. These operations are idempotent once the actor is terminal.
 
+`stopped(pid)` on an actor that crashed returns once its cleanup is complete.
+The crash was reported when it happened and counts toward the exit status on
+its own (§5.8); the waiter does not raise it again, and a later call on the
+actor reports `ActorError.Dead`. A distinct fault from a terminal hook or
+state release, including cleanup after a crash, passes to the caller waiting
+in `stopped`, which can recover it like any other fault.
+
 A call on a receive handler waits for that handler's completion, not the
 actor's entire lifetime. `fork pid.method(args)` runs it concurrently; `await`
 then joins that task. `for item in pid.stream()` waits per item using ordinary
@@ -6142,27 +6208,37 @@ pull that crosses an actor boundary is written the same way:
 `for await` spelling; `for await` is `E_FOR_AWAIT` (User) with a fix-it that
 deletes `await`.
 
-Generator construction snapshots every captured value into a heap-owned
-environment before the body ramp reaches its first `yield`. Bit-copy values and
+Ordinary generator construction snapshots copyable captures into an owned
+environment before the body executes. Affine captures transfer their owner. Bit-copy values and
 proven null-environment function values are copied directly. Strings, bytes,
 `Rc`, `Weak`, supported collections, tuples, fixed arrays, records, and enums
 are cloned structurally when every reachable leaf has both a total clone and
 the matching inverse drop.
 
-The caller, enclosing closure, or actor state remains the owner of the capture
-source. The generator owns only its snapshot. Destroying a completed,
-suspended, or never-resumed generator destroys the coroutine frame first,
+The source of a copyable capture keeps its own value. The generator owns
+its independent snapshot. A captured `var` binding,
+including a `gen fn` parameter declared `var` or `consume var`, may be
+assigned in the body; the assignment changes the snapshot and never the
+capture source. Destroying a completed, suspended, or never-resumed generator destroys the coroutine frame first,
 drops environment fields in reverse declaration order, frees the environment,
 drops any pending yielded value, and finally frees the companion.
 
-Opaque handles, resources, IO handles, trait objects, and capturing closure
-pairs are not cloneable generator captures. A whole owned value loaded from a
-generator environment is an alias; it must be cloned explicitly before being
-yielded or otherwise moved into another owner.
+Each yielded owning value transfers to the consumer. The producer retains
+its other captures and any state needed for its next resume; an affine value
+cannot be used again after its owner transfers.
+
+An actor's `receive gen fn` runs as one exclusive producer turn over live
+actor state. It keeps that turn while yielding or waiting, so another handler
+cannot observe partial execution. Closing the consumer discards its buffered
+output and requests cancellation of the producer, including a pending wait.
+The next handler waits until the producer has released its pending output and
+local owners; closing the consumer does not itself join that cleanup. Writes
+performed before the producer finishes or observes cancellation remain in the
+actor. An ordinary `gen { ... }` created inside the turn still owns independent
+captured snapshots.
 
 > See HEW-FUTURE.md §1.6 for the remaining deferred generator forms
-> (`Lazy<T>`, `#[prefetch(N)]`). `gen fn`, `gen {}`, and `receive gen fn` use
-> the snapshot semantics above. There is no `async gen fn` form: a generator
+> (`Lazy<T>`, `#[prefetch(N)]`). There is no `async gen fn` form: a generator
 > whose body suspends carries no marker, because suspension is inferred from
 > the body rather than declared on the signature (§12).
 
@@ -8114,7 +8190,7 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 7. Bitwise XOR: `^`
 8. Bitwise OR: `|`
 9. Relational: `<`, `<=`, `>`, `>=`
-10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
+10. Equality: `==`, `!=`, `is` (`is` is **handle identity only** — it admits the pid, counted, opaque, and resource handle categories of §3.4.3 and answers whether two names denote the same actor, count, or resource. Every value-category and callable-category operand is rejected with `E_IS_VALUE_TYPE`, including scalars, `string`, `bytes`, tuples, records, enums, `Vec`, `HashMap`, and `HashSet`: these are copy-on-write values with no identity to compare, so `==` is their comparison. On an actor reference `==` and `!=` compare that same handle identity, so `a == b` agrees with `a is b`, and a record, option, tuple or result that carries actor references compares them by identity; an actor's state is never compared. There is no `expr is TypeName` form; regex matching is via `Pattern.is_match`)
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (lowered in `for` loop iterables, range indexing and the string `get(range)` form; standalone range values are not lowered). Open endpoints are admitted for range selectors. At the start of a literal item, `..expr` is the spread of §3.1

@@ -1840,38 +1840,6 @@ fn same_leaf_type_defs_keep_distinct_full_owners_right_then_left() {
 }
 
 #[test]
-fn flat_file_owner_selection_ignores_same_leaf_package_owner() {
-    let flat = make_user_import(
-        &["pkg", "flat"],
-        None,
-        vec![(Item::TypeDecl(make_pub_struct("FlatResult", "local")), 0..0)],
-    );
-    let package = make_user_import(
-        &["pkg", "package"],
-        None,
-        vec![(
-            Item::TypeDecl(make_pub_struct("FlatResult", "remote")),
-            0..0,
-        )],
-    );
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    checker.check_program(&Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        module_graph: None,
-        items: vec![(Item::Import(flat), 0..0), (Item::Import(package), 0..0)],
-        module_doc: None,
-    });
-    checker
-        .flat_file_import_module_names
-        .insert("pkg.flat".to_string());
-
-    assert_eq!(
-        checker.flat_file_import_type_owner("FlatResult"),
-        Some("pkg.flat.FlatResult".to_string())
-    );
-}
-
-#[test]
 fn canonical_module_variants_shadow_builtin_variants() {
     let output = check_source_in_module(
         r"pub enum AppErr {
@@ -3384,98 +3352,47 @@ fn check_qualified_variant_root(root_source: &str) -> TypeCheckOutput {
     })
 }
 
-/// Harness for the selective-imported-machine rule (#3175): a module `m`
-/// exporting `machine Light`, checked from a root that reaches `Light` only
-/// by referencing one of its states as a bare dotted literal (`Light.On`),
-/// never by calling `.step(...)` or constructing a payload.
-fn check_qualified_machine_state_root(root_source: &str) -> (Checker, TypeCheckOutput) {
-    let module = hew_parser::parse(
-        "machine Light {\n    events {\n        Flip;\n    }\n\n    state On;\n    state Off;\n\n    on Flip: On => Off;\n    on Flip: Off => On;\n}\n",
-    );
-    assert!(module.errors.is_empty(), "parse: {:?}", module.errors);
-    let mut root = hew_parser::parse(root_source);
-    assert!(root.errors.is_empty(), "parse: {:?}", root.errors);
-    for (item, _) in &mut root.program.items {
-        if let Item::Import(import) = item {
-            if import.path.to_string() == "m" {
-                import.resolved_items = Some(module.program.items.clone().into());
-            }
-        }
+#[test]
+fn sibling_bare_and_selected_imports_credit_the_binding_used() {
+    for imports in [
+        "import m;\nimport m.{ Mode };",
+        "import m.{ Mode };\nimport m;",
+    ] {
+        let source = format!(
+            "{imports}\nfn main() {{ let value: m.Mode = m.Mode.Present(42); assert(m.pick(value) == 42); }}"
+        );
+        let output = check_qualified_variant_root(&source);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+            .collect();
+        assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+        assert_eq!(
+            unused[0].span.start,
+            source.find("import m.{ Mode };").unwrap()
+        );
     }
-    let root_id = ModulePath::root();
-    let m_id = ModulePath::new(["m"]);
-    let mut module_graph = ModuleGraph::new(root_id.clone());
-    module_graph
-        .add_module(Module {
-            id: m_id.clone(),
-            items: module.program.items,
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add module m");
-    module_graph
-        .add_module(Module {
-            id: root_id.clone(),
-            items: root.program.items.clone(),
-            imports: vec![],
-            source_paths: vec![],
-            doc: None,
-        })
-        .expect("add root");
-    module_graph.topo_order = vec![m_id, root_id];
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let output = checker.check_program(&Program {
-        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
-        items: root.program.items,
-        module_graph: Some(module_graph),
-        module_doc: None,
-    });
-    (checker, output)
-}
 
-/// A selective import of a machine, referenced only as a bare dotted state
-/// literal (`Light.On`, never `.step(...)` or a constructed payload), must
-/// credit the import binding exactly as the Call-path dispatch does — the
-/// Reference-path dispatch was the one caller of `dispatch_dotted_type_member`
-/// that never counted the use (#3175).
-#[test]
-fn selective_import_used_only_as_bare_state_literal_is_not_unused() {
-    let (_, output) = check_qualified_machine_state_root(
-        "import m.{ Light };\n\nfn main() {\n    var s = Light.On;\n    s = Light.Off;\n    print(\"ok\");\n}\n",
-    );
-    assert!(
-        output.errors.is_empty(),
-        "bare state literal must resolve canonically: {:?}",
-        output.errors
-    );
-    assert!(
-        !output
-            .warnings
-            .iter()
-            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
-        "a selective machine import used only as a bare state literal must not be \
-         reported unused: {:?}",
-        output.warnings
-    );
-}
+    let source = "import m;\nimport m.{ Mode };\nfn main() { let value: Mode = Mode.Present(42); }";
+    let output = check_qualified_variant_root(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let unused: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+        .collect();
+    assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+    assert_eq!(unused[0].span.start, source.find("import m;").unwrap());
 
-/// Negative control: a selective import that is never referenced at all must
-/// still be reported unused. This proves the assertion above is not merely
-/// vacuous (every selective import always passing).
-#[test]
-fn selective_import_never_referenced_is_still_unused() {
-    let (_, output) = check_qualified_machine_state_root(
-        "import m.{ Light };\n\nfn main() {\n    print(\"ok\");\n}\n",
-    );
-    assert!(
-        output
-            .warnings
-            .iter()
-            .any(|warning| warning.kind == TypeErrorKind::UnusedImport),
-        "a genuinely unreferenced selective import must still warn: {:?}",
-        output.warnings
-    );
+    let shadowed = "import m;\nfn main() { let m = 1; assert(m == 1); }";
+    let output = check_qualified_variant_root(shadowed);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output.warnings.iter().any(|warning| {
+        warning.kind == TypeErrorKind::UnusedImport
+            && warning.span.start == shadowed.find("import m;").unwrap()
+    }));
 }
 
 /// A selected import publishes a bare type spelling while its declaration is

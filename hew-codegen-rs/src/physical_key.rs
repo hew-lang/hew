@@ -256,6 +256,7 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
                 self.finish(result)
             }
             PhysicalValueMethod::Identity => self.identity(ty, lhs, rhs),
+            PhysicalValueMethod::ActorIdentity => self.actor_identity(ty, lhs, rhs),
             PhysicalValueMethod::String => self.string(lhs, rhs),
             PhysicalValueMethod::Bytes => self.bytes(lhs, rhs),
             PhysicalValueMethod::Aggregate(id) => {
@@ -744,6 +745,39 @@ impl<'a, 'ctx, 'm> SelectedValueEmitter<'a, 'ctx, 'm> {
             state = self.mix(state, word(lhs, index)?)?;
         }
         self.finish(state)
+    }
+
+    /// Compare two actor references the way `is` does: by handle identity,
+    /// through the runtime that knows roles, occupants and imported actors.
+    fn actor_identity(
+        &self,
+        ty: &ResolvedTy,
+        lhs: PointerValue<'ctx>,
+        rhs: Option<PointerValue<'ctx>>,
+    ) -> CodegenResult<()> {
+        let rhs = rhs.ok_or_else(|| {
+            CodegenError::FailClosed("actor references are compared, never hashed".into())
+        })?;
+        let ctx = self.parent.ctx;
+        let word = match self.layout(ty)?.size {
+            8 => ctx.i64_type(),
+            4 => ctx.i32_type(),
+            _ => {
+                return Err(CodegenError::FailClosed(
+                    "an actor reference is one handle word".into(),
+                ))
+            }
+        };
+        let left = self.load(word.into(), lhs)?;
+        let right = self.load(word.into(), rhs)?;
+        let status = self
+            .runtime(
+                "hew_actor_handle_identical",
+                ctx.i32_type().fn_type(&[word.into(), word.into()], false),
+                &[left.into(), right.into()],
+            )?
+            .into_int_value();
+        self.finish(status)
     }
 
     fn string(

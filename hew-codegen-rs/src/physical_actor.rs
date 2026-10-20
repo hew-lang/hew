@@ -498,7 +498,8 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     return true;
                 }
                 match &block.terminator {
-                    PhysicalTerminator::NativeIo { .. } | PhysicalTerminator::ServiceAcquire { .. }
+                    PhysicalTerminator::NativeIo { .. }
+                | PhysicalTerminator::SemaphoreAcquire { .. } | PhysicalTerminator::ServiceAcquire { .. }
                     | PhysicalTerminator::Offload { .. }
                     // Content-backed stream operations offload producer work
                     // through the installed runtime's blocking pool.
@@ -1497,6 +1498,81 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .into(),
             });
         }
+        if handler.stream.is_some() {
+            let sink_field = u32::try_from(handler.params.len()).map_err(|_| {
+                CodegenError::FailClosed("stream sink field index exceeds u32".into())
+            })?;
+            let sink_slot = builder
+                .build_struct_gep(message_ty, payload, sink_field, "handler.stream.sink.slot")
+                .llvm_ctx("address actor stream sink")?;
+            let sink = builder
+                .build_load(ptr, sink_slot, "handler.stream.sink")
+                .llvm_ctx("load actor stream sink")?
+                .into_pointer_value();
+            let bind_stream = get_or_declare_external(
+                &self.llvm,
+                "hew_actor_coro_bind_stream",
+                self.ctx
+                    .void_type()
+                    .fn_type(&[ptr.into(), ptr.into()], false),
+            )?;
+            builder
+                .build_call(bind_stream, &[child.into(), sink.into()], "")
+                .llvm_ctx("bind actor stream cancellation to its producer")?;
+            // Closing a stream before its queued actor turn starts must keep
+            // the message payload with the dispatcher and skip user code.
+            let cancelled = get_or_declare_external(
+                &self.llvm,
+                "hew_coro_state_is_cancelled",
+                self.ctx.i32_type().fn_type(&[ptr.into()], false),
+            )?;
+            let status = call_value(&builder, cancelled, &[child.into()], "stream.cancelled")?
+                .into_int_value();
+            let invoke = self.ctx.append_basic_block(ramp, "handler.invoke");
+            let skip = self.ctx.append_basic_block(ramp, "handler.cancelled");
+            builder
+                .build_conditional_branch(
+                    builder
+                        .build_int_compare(
+                            IntPredicate::NE,
+                            status,
+                            self.ctx.i32_type().const_zero(),
+                            "stream.cancelled.condition",
+                        )
+                        .llvm_ctx("compare actor stream cancellation")?,
+                    skip,
+                    invoke,
+                )
+                .llvm_ctx("skip a cancelled actor stream before user code")?;
+            builder.position_at_end(skip);
+            let cancel_code = get_or_declare_external(
+                &self.llvm,
+                "hew_coro_state_cancel_code",
+                self.ctx.i32_type().fn_type(&[ptr.into()], false),
+            )?;
+            let code = call_value(&builder, cancel_code, &[child.into()], "stream.cancel.code")?;
+            let create_fault = external_fault_new(self.ctx, &self.llvm)?;
+            let cancellation = call_value(
+                &builder,
+                create_fault,
+                &[code.into()],
+                "stream.cancel.fault",
+            )?;
+            let finish = get_or_declare_external(
+                &self.llvm,
+                "hew_actor_coro_finish",
+                self.ctx
+                    .void_type()
+                    .fn_type(&[ptr.into(), ptr.into()], false),
+            )?;
+            builder
+                .build_call(finish, &[child.into(), cancellation.into()], "")
+                .llvm_ctx("finish a stream cancelled before its actor turn")?;
+            builder
+                .build_unconditional_branch(frame.finish)
+                .llvm_ctx("finish cancelled actor stream adapter")?;
+            builder.position_at_end(invoke);
+        }
         if !handler.params.is_empty() {
             builder
                 .build_store(payload, self.ctx.i8_type().const_zero())
@@ -1525,25 +1601,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             )?;
         }
         self.emit_actor_reply(&builder, ramp, actor, handler, output, fault, Some(&frame))?;
-        let free_state = get_or_declare_external(
-            &self.llvm,
-            "hew_coro_state_free",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
-        )?;
-        builder
-            .build_call(free_state, &[child.into()], "")
-            .llvm_ctx("release completed handler invocation state")?;
         let returned_fault = builder
             .build_load(ptr, fault, "handler.returned.fault")
             .llvm_ctx("read completed handler fault")?;
-        let publish = get_or_declare_external(
+        let finish = get_or_declare_external(
             &self.llvm,
-            "hew_actor_coro_set_fault",
-            self.ctx.void_type().fn_type(&[ptr.into()], false),
+            "hew_actor_coro_finish",
+            self.ctx
+                .void_type()
+                .fn_type(&[ptr.into(), ptr.into()], false),
         )?;
         builder
-            .build_call(publish, &[returned_fault.into()], "")
-            .llvm_ctx("publish handler completion under current activation")?;
+            .build_call(finish, &[child.into(), returned_fault.into()], "")
+            .llvm_ctx("finish handler invocation under current activation")?;
         builder
             .build_unconditional_branch(frame.finish)
             .llvm_ctx("finish actor adapter frame")?;

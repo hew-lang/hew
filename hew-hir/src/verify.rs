@@ -4,8 +4,8 @@ use std::ops::Range;
 use crate::diagnostic::{HirDiagnostic, HirDiagnosticKind};
 use crate::ids::{BindingId, HirNodeId, ResolvedRef, ScopeId, SiteId};
 use crate::node::{
-    HirBlock, HirExpr, HirExprKind, HirGenCaptureSource, HirItem, HirLiteral, HirMatchArmPredicate,
-    HirModule, HirStmtKind, HirVarSelfMethodTarget,
+    HirBlock, HirExpr, HirExprKind, HirItem, HirLiteral, HirMatchArmPredicate, HirModule,
+    HirStmtKind, HirVarSelfMethodTarget,
 };
 use hew_types::{BuiltinType, RcIntrinsicOp, ResolvedTy};
 
@@ -175,25 +175,25 @@ impl Verifier {
                         }
                     }
                     if let Some(init) = &actor.init {
-                        for param in &init.params {
+                        for param in init.state_bindings.iter().chain(&init.params) {
                             self.binding(param.id, param.span.clone());
                         }
                         self.block(&init.body);
                     }
                     for receive in &actor.receive_handlers {
-                        for param in &receive.params {
+                        for param in receive.state_bindings.iter().chain(&receive.params) {
                             self.binding(param.id, param.span.clone());
                         }
                         self.block(&receive.body);
                     }
                     for method in &actor.methods {
-                        for param in &method.params {
+                        for param in method.state_bindings.iter().chain(&method.params) {
                             self.binding(param.id, param.span.clone());
                         }
                         self.block(&method.body);
                     }
                     for hook in &actor.lifecycle_hooks {
-                        for param in &hook.params {
+                        for param in hook.state_bindings.iter().chain(&hook.params) {
                             self.binding(param.id, param.span.clone());
                         }
                         self.block(&hook.body);
@@ -879,24 +879,9 @@ impl Verifier {
                 // resolved HIR, and no binding may appear twice (the env field
                 // layout is keyed by binding — duplicates would collide). Mirrors
                 // the closure/lambda capture verification above.
-                //
-                // The declared-binding requirement applies only to `Local`
-                // captures (a `gen fn`'s params, a `gen {}` block's outer
-                // locals, or a `receive gen fn` handler param) — those resolve
-                // to a real `HirBinding` declaration and a dangling one is a
-                // resolver bug. An `ActorStateField` capture is intentionally
-                // synthetic: `lower_actor_generator_body` mints its binding id
-                // while binding the actor's state fields into scope, and no
-                // `HirBinding` declaration node carries that id, so it will
-                // never be in `self.bindings`. Trust the HIR-authority source
-                // tag (`type-info-survival` — do not re-derive) and exempt it
-                // from the DanglingRef gate. The duplicate-id guard still
-                // covers ALL captures (the env layout keys on binding id
-                // regardless of source).
                 let mut seen_captures = std::collections::HashSet::new();
                 for capture in captures {
-                    let checked_local = matches!(capture.source, HirGenCaptureSource::Local);
-                    if checked_local && !self.bindings.contains(&capture.binding) {
+                    if !self.bindings.contains(&capture.binding) {
                         self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::DanglingRef {
                                 resolved: ResolvedRef::Binding(capture.binding),

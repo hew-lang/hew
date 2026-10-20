@@ -216,24 +216,19 @@ categories = ["runtime", "scope"]
 
 [[feature]]
 id = "semaphore-non-blocking"
-label = "`semaphore.new`, `Semaphore.try_acquire/release/count/free`"
+label = "`semaphore.new`, `Semaphore.clone/try_acquire/release/count/close`"
 checker = "pass"
 runtime = "implemented"
-runtime_status = "Non-blocking semaphore subset only"
+runtime_status = "Explicitly cloned affine handles share a permit count and close independently"
 categories = ["runtime", "semaphore"]
 
 [[feature]]
 id = "semaphore-blocking-acquire"
-enum_variant = "BlockingSemaphoreAcquire"
-label = "Blocking semaphore acquire operations"
-prose_label = "`Semaphore.acquire`, `Semaphore.acquire_timeout`"
-reason = "Semaphore.acquire and Semaphore.acquire_timeout still require a blocking permit wait that has no cooperative wasm32 implementation; use try_acquire or actor coordination instead"
-checker = "reject"
-runtime = "unimplemented"
-runtime_status = "No cooperative blocking wait implementation"
+label = "`Semaphore.acquire`, `Semaphore.acquire_timeout`"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Owned permit acquisition with cancellation and shared-wheel deadlines"
 categories = ["runtime", "semaphore"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(semaphore):"
 
 [[feature]]
 id = "timers-sleep"
@@ -860,14 +855,6 @@ id = "actor-crash-containment"
 gap = "Actor-local panic/trap containment and restart on production WASI"
 blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
 tracking_label = "WASM-TODO(actor-crash-containment):"
-
-[[backlog]]
-id = "semaphore"
-gap = "Blocking semaphore acquire parity"
-blocker = "Cooperative permit wait / timeout semantics for `Semaphore.acquire*` on wasm32"
-tracking_label = "WASM-TODO(semaphore):"
-marker_disposition = "non-source"
-non_source_reason = "The capability is rejected by checker metadata; no deferred WASM source implementation site exists to mark."
 
 [[backlog]]
 id = "wasi-sockets"

@@ -229,14 +229,14 @@ impl Checker {
                 span,
             },
         )?;
-        self.note_path_use(&head.canonical_type);
+        self.note_import_use_of_expr_head(&receiver.0);
 
         Some(result)
     }
 
-    #[expect(
+    #[allow(
         clippy::too_many_lines,
-        reason = "pattern matching type checker with many variants"
+        reason = "the checker dispatches the complete method-call surface"
     )]
     pub(super) fn check_method_call_inner(
         &mut self,
@@ -260,7 +260,7 @@ impl Checker {
                     span,
                 },
             ) {
-                self.note_path_use(&head.canonical_type);
+                self.note_import_use_of_expr_head(&receiver.0);
                 return result;
             }
             let source_member = format!("{}.{method}", head.canonical_type);
@@ -629,7 +629,6 @@ impl Checker {
             };
         }
         self.reject_if_wasm_native_only_handle(&resolved, span);
-        self.reject_if_wasm_blocking_semaphore_method(&resolved, method, span);
         if let Some(receiver) = match &resolved {
             Ty::Named { head, .. } => head.nominal(),
             _ => None,
@@ -1731,6 +1730,12 @@ impl Checker {
                         }
                     }
                 }
+                // These adapters construct a new Range value in MIR. They
+                // have no callable target, so the effect graph must not treat
+                // their call syntax as an unresolved body dependency. In an
+                // imported impl, that false dependency otherwise suppresses
+                // the entire checked method body at HIR registration.
+                self.record_construct_call(span);
                 range_ty
             }
             // User-defined struct/actor methods from type_defs

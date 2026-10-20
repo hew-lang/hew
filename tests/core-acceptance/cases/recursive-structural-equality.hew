@@ -1,0 +1,57 @@
+// Records and enums that hold a `Vec` of themselves compare structurally,
+// with `==`, `!=` and `Vec.contains`, like any other record or enum.
+enum Json {
+    Null;
+    Num(i64);
+    Text(string);
+    Arr(Vec<Json>);
+}
+
+type Node {
+    label: string;
+    kids: Vec<Node>;
+}
+
+enum List<T> {
+    Nil;
+    Cons(T, Vec<List<T>>);
+}
+
+fn leaf(label: string) -> Node {
+    Node { label: label, kids: [] }
+}
+
+fn main() {
+    let a = Json.Arr([Json.Num(1), Json.Arr([Json.Text("x"), Json.Null])]);
+    let b = Json.Arr([Json.Num(1), Json.Arr([Json.Text("x"), Json.Null])]);
+    let c = Json.Arr([Json.Num(1), Json.Arr([Json.Text("y"), Json.Null])]);
+    println(f"json {a == b} {a == c} {a != c}");
+
+    let docs: Vec<Json> = [Json.Null, a];
+    let same: Vec<Json> = [Json.Null, b];
+    println(f"vec {docs == same} {docs.contains(c)} {docs.contains(Json.Null)}");
+
+    let tree = Node { label: "root", kids: [leaf("l"), leaf("r")] };
+    let copy = Node { label: "root", kids: [leaf("l"), leaf("r")] };
+    let other = Node { label: "root", kids: [leaf("l")] };
+    println(f"node {tree == copy} {tree == other}");
+
+    var keys: HashMap<Node, i64> = HashMap.new();
+    keys.insert(tree, 10);
+    keys.insert(copy, 20);
+    assert(keys.len() == 1);
+    assert(keys.get(tree) == Option.Some(20));
+    assert(keys.get(other) == Option.None);
+    var unique: HashSet<Node> = HashSet.new();
+    assert(unique.insert(tree));
+    assert(!unique.insert(copy));
+    assert(unique.insert(other));
+    assert(unique.contains(copy));
+    assert(unique.remove(copy));
+    assert(!unique.contains(tree));
+    println("recursive keys ok");
+
+    let list: List<string> = List.Cons("a", [List.Cons("b", [List.Nil])]);
+    let longer: List<string> = List.Cons("a", [List.Cons("b", [List.Nil, List.Nil])]);
+    println(f"list {list == list} {list == longer}");
+}

@@ -425,31 +425,6 @@ impl Builder<'_, '_> {
         Ok(true)
     }
 
-    /// A state seat the runtime consumed on a failure edge keeps whatever the
-    /// take left in it until the actor's release reads the field, so its
-    /// carrier must have an empty form that release accepts.
-    ///
-    /// Map and set carriers do: their release treats an empty carrier as an
-    /// empty collection. Nothing else reaches here today, and a family that
-    /// starts to must say what its empty carrier means before it does.
-    pub(super) fn require_empty_carrier_seat(&mut self, place: PlaceId) -> Result<(), String> {
-        let ty = self.places[place.0 as usize].ty.clone();
-        if matches!(
-            collection_type_arguments(&ty),
-            Some((
-                hew_types::BuiltinType::HashMap | hew_types::BuiltinType::HashSet,
-                _
-            ))
-        ) {
-            return Ok(());
-        }
-        Err(format!(
-            "an actor state field of type `{}` cannot be taken by a call that keeps nothing on \
-             its failure edge: its carrier has no empty form the actor's release accepts",
-            ty.user_facing()
-        ))
-    }
-
     /// A `Vec` state seat consumed by value is drained rather than copied: the
     /// buffer moves to the consumer and the seat keeps a valid empty vector
     /// with its element representation intact, which a later dispatch refills.
@@ -481,16 +456,6 @@ impl Builder<'_, '_> {
             true,
             &[],
         )
-    }
-
-    /// Whether a place is a capture of a body that borrows its environment.
-    /// The environment keeps the field after this call, so it must be whole
-    /// at every exit.
-    pub(super) fn is_borrowed_capture(&self, place: PlaceId) -> bool {
-        matches!(self.places[place.0 as usize].origin, PlaceOrigin::Capture { environment, .. }
-        if self.params.iter().any(|param| {
-            param.value == environment && param.own != OwnKind::Owned
-        }))
     }
 
     /// Whether a place is a `var self` method's receiver seat or lies beneath
@@ -1813,6 +1778,17 @@ impl Builder<'_, '_> {
             }
             return self.lower_service_acquire(expr, operation, args);
         }
+        if let hew_types::RuntimeCallFamily::Semaphore(operation) = family {
+            if !evaluation_order.is_empty() {
+                return Err("semaphore acquisition takes positional arguments only".into());
+            }
+            return self.lower_borrowed_native_suspend(
+                expr,
+                crate::SuspendKind::SemaphoreAcquire { operation },
+                operation.contract(),
+                args,
+            );
+        }
         if let hew_types::RuntimeCallFamily::AsyncIo(operation) = family {
             if !evaluation_order.is_empty() {
                 return Err("native I/O takes positional arguments only".into());
@@ -2160,31 +2136,24 @@ impl Builder<'_, '_> {
                 }
             }
             let receiver_ty = self.ty(&args[0].ty);
+            // A transform's failure edge keeps its receiver, so its place is
+            // whole again wherever the call can fail.
+            if !contract.failures.is_empty() && !contract.preserves_inputs_on_failure() {
+                return Err(format!(
+                    "runtime transform `{family:?}` must keep its receiver on its failure edge"
+                ));
+            }
             // Beneath a whole owner, a single transform opens the owner and
             // mutates its field in place. An indexed path runs several steps
-            // that can fail, and a transform that releases its receiver when
-            // it fails leaves nothing to close the owner around, so those
-            // mutate a copy of the field that is assigned back after them.
-            let releases = !contract.failures.is_empty() && !contract.preserves_inputs_on_failure();
-            let copies_field = indexed_path.is_some() || releases;
-            // A closure called again after a recovered fault reads its capture
-            // again, so a transform that releases a capture when it fails
-            // mutates a copy of the capture too.
-            let whole_owner = whole_owner.or_else(|| {
-                (releases && indexed_path.is_none() && self.is_borrowed_capture(projected))
-                    .then_some(projected)
-            });
+            // that can fail, so it mutates a copy of the field that is
+            // assigned back after them.
             let (current, target) = match whole_owner {
-                Some(root) if copies_field => (
+                Some(root) if indexed_path.is_some() => (
                     Some(self.copy_through_whole_owner(
                         root,
                         place,
                         &provenance,
-                        if indexed_path.is_some() {
-                            "an indexed update"
-                        } else {
-                            "an operation that can release the collection when it fails"
-                        },
+                        "an indexed update",
                     )?),
                     WritableRoot::WholeOwner {
                         root,
@@ -2204,13 +2173,15 @@ impl Builder<'_, '_> {
                 ),
             };
             let source = if let Some(path) = indexed_path.take() {
-                let container = match current {
-                    Some(copy) => copy,
-                    None => self.emit_typed(
-                        provenance.clone(),
-                        &place.leaf_ty,
-                        SemOpKind::LoadCopy { place: projected },
-                    )?,
+                let (container, target) = match current {
+                    Some(copy) => (copy, target),
+                    None => (
+                        self.take_indexed_container(projected, &place.leaf_ty, &provenance)?,
+                        WritableRoot::Place {
+                            leaf: projected,
+                            taken: true,
+                        },
+                    ),
                 };
                 let (source, writeback) =
                     self.acquire_indexed_path(path, container, target, true, &provenance)?;
@@ -2225,10 +2196,8 @@ impl Builder<'_, '_> {
             } else {
                 // The receiver leaves its place by take, and the call
                 // re-initializes the place on every edge the call owns: with
-                // the updated receiver, or the input where the contract keeps
-                // it on failure. A state seat the runtime consumed keeps the
-                // empty carrier the take left in it. The place never needs a
-                // copy of its own value.
+                // the updated receiver, or the input its failure edge keeps.
+                // The place never needs a copy of its own value.
                 transformed_target = Some(WritableRoot::Place {
                     leaf: projected,
                     taken: true,
@@ -2408,25 +2377,13 @@ impl Builder<'_, '_> {
         if let (Some(failure), Some(block)) = (failure, failure_block) {
             self.current = block;
             self.owned_live = live_on_failure;
-            // Where the contract keeps the receiver on this edge, the place
-            // the call took is re-published here, so a failing mutation
-            // leaves its target whole: an actor's teardown releases the field
-            // once, and a `var self` method hands its receiver back. Where the
-            // runtime consumed and released it instead, a state seat keeps the
-            // empty carrier the take left in it: nothing but releases may run
-            // on a failure edge, and the actor's release reads that carrier as
-            // an empty collection.
+            // Every receiver transform keeps its receiver on its failure
+            // edge, so the place the call took is re-published here and a
+            // failing mutation leaves its target whole: an actor's teardown
+            // releases the field once, a closure called again reads its
+            // capture, and a `var self` method hands its receiver back.
             if let Some((target, value)) = failure_return {
-                if contract.preserves_inputs_on_failure() {
-                    self.publish_writable(target, value, &Provenance::Site(expr.site))?;
-                } else if let WritableRoot::Place { leaf, .. } = target {
-                    if matches!(
-                        self.places[leaf.0 as usize].origin,
-                        crate::PlaceOrigin::ActorState { .. }
-                    ) {
-                        self.require_empty_carrier_seat(leaf)?;
-                    }
-                }
+                self.publish_writable(target, value, &Provenance::Site(expr.site))?;
             }
             self.end_call_loans(&loans)?;
             if contract.propagates_fault() {

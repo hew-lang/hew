@@ -61,6 +61,59 @@ pub unsafe extern "C" fn hew_actor_coro_state_new() -> *mut crate::coro_state::H
     unsafe { new_actor_state(context.actor, context.cancel_token) }
 }
 
+/// Associate one generated actor stream handler with its exact output sink.
+/// The retained channel registration owns cancellation and a wake target, not
+/// this state pointer or the generated coroutine frame.
+///
+/// # Safety
+/// `state` must be the live invocation for the current exclusive actor turn;
+/// `sink` must be that handler's live, channel-backed final `Sink<T>` argument.
+#[no_mangle]
+pub unsafe extern "C" fn hew_actor_coro_bind_stream(
+    state: *mut crate::coro_state::HewCoroState,
+    sink: *mut crate::stream::HewSink,
+) {
+    if state.is_null() || sink.is_null() {
+        std::process::abort();
+    }
+    // SAFETY: the generated adapter retains this body-owned sink through bind.
+    let Some(core) = (unsafe { crate::stream::clone_sink_channel_core(sink) }) else {
+        std::process::abort();
+    };
+    // SAFETY: caller retains the invocation and exclusively owns its context.
+    if !unsafe { (&mut *state).bind_actor_stream(core) } {
+        std::process::abort();
+    }
+}
+
+fn normalize_actor_stream_cancellation(
+    state: &crate::coro_state::HewCoroState,
+    fault: Box<HewFault>,
+    external_trap: bool,
+    stronger_stop: bool,
+) -> Option<Box<HewFault>> {
+    if fault.code() != crate::fault::HEW_FAULT_CANCELLED || external_trap || stronger_stop {
+        return Some(fault);
+    }
+    let reader_closed = state
+        .execution()
+        .actor_stream
+        .as_ref()
+        .is_some_and(|binding| binding.cancellation.caused_cancellation(state));
+    if !reader_closed {
+        return Some(fault);
+    }
+    // SAFETY: this cancellation is the exact reader-close request; cleanup
+    // diagnostics remain owned by and are returned from the normalizer.
+    let normalized = unsafe { crate::fault::hew_fault_finish_cleanup(Box::into_raw(fault)) };
+    if normalized.is_null() {
+        None
+    } else {
+        // SAFETY: the cleanup normalizer returned one unique fault owner.
+        Some(unsafe { Box::from_raw(normalized) })
+    }
+}
+
 unsafe fn new_actor_state(
     actor: *mut crate::actor::HewActor,
     token: *mut crate::cancel_token::HewCancellationToken,
@@ -101,20 +154,70 @@ pub(crate) unsafe fn new_cleanup_state(
     unsafe { new_actor_state(ptr::from_ref(actor).cast_mut(), ptr::null_mut()) }
 }
 
-/// Publish a completed handler fault through the current resume context.
+/// Complete a checked actor invocation after its generated frame is destroyed.
+/// Stream reader-close cancellation is normalized only for the exact bound
+/// producer token; cleanup faults remain the actor's checked failure.
 ///
 /// # Safety
-/// The current context is the exclusively owned actor activation. `fault` is
-/// null or an owned logical fault, relinquished by the completed handler.
+/// `state` is the current actor activation's live invocation. Its frame has
+/// been destroyed. `fault` is null or its unique logical fault owner, which is
+/// relinquished here.
 #[no_mangle]
-pub unsafe extern "C" fn hew_actor_coro_set_fault(fault: *mut HewFault) {
+pub unsafe extern "C" fn hew_actor_coro_finish(
+    state: *mut crate::coro_state::HewCoroState,
+    fault: *mut HewFault,
+) {
+    if state.is_null() {
+        std::process::abort();
+    }
     let context = crate::execution_context::current_context();
-    // SAFETY: this activation exclusively owns the completed checked turn.
-    unsafe { &*(*context).actor }
-        .checked_invocation
-        .store(ptr::null_mut(), std::sync::atomic::Ordering::Release);
+    // SAFETY: the generated adapter has returned under its exclusive actor
+    // activation, keeping both context and invocation live.
+    let context_ref = unsafe { &*context };
+    // SAFETY: the exclusive activation retains its actor through completion.
+    let actor = unsafe { &*context_ref.actor };
+    // SAFETY: the caller transfers the one optional fault owner.
+    let fault = if fault.is_null() {
+        None
+    } else {
+        // SAFETY: caller transfers the unique non-null fault owner.
+        Some(unsafe { Box::from_raw(fault) })
+    };
+    let fault = if let Some(current_fault) = fault {
+        let external_trap = actor
+            .pending_external_trap_code
+            .load(std::sync::atomic::Ordering::Acquire)
+            != 0;
+        // SAFETY: actor belongs to the current activation, which pins mailbox.
+        let stopped = unsafe { crate::mailbox::mailbox_stop_requested(actor.mailbox.cast()) };
+        let shutdown = crate::fault::cancelled_by_shutdown(current_fault.code());
+        // SAFETY: state remains live until after normalization and detachment.
+        normalize_actor_stream_cancellation(
+            unsafe { &*state },
+            current_fault,
+            external_trap,
+            stopped || shutdown,
+        )
+    } else {
+        None
+    };
+    let actor_state = &actor.checked_invocation;
+    if actor_state
+        .compare_exchange(
+            state.cast(),
+            ptr::null_mut(),
+            std::sync::atomic::Ordering::AcqRel,
+            std::sync::atomic::Ordering::Acquire,
+        )
+        .is_err()
+    {
+        std::process::abort();
+    }
+    // SAFETY: its LLVM frame is already destroyed and the exact actor slot is
+    // detached; dropping state unregisters only its channel association.
+    unsafe { crate::coro_state::hew_coro_state_free(state) };
     // SAFETY: resume installs a fresh context before entering generated code.
-    unsafe { hew_actor_dispatch_set_fault(context, fault) };
+    unsafe { hew_actor_dispatch_set_fault(context, fault.map_or(ptr::null_mut(), Box::into_raw)) };
 }
 
 /// Request cooperative cleanup while preserving the scheduler's strict turn.
@@ -674,6 +777,104 @@ mod tests {
     use std::ffi::c_void;
     use std::sync::atomic::Ordering;
 
+    fn stream_invocation(
+        core: Arc<crate::channel_core::ChannelCore>,
+    ) -> (
+        Box<crate::coro_state::HewCoroState>,
+        Arc<crate::wake::blocking::Readiness>,
+    ) {
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the state retains this live waker descriptor.
+        let state =
+            unsafe { crate::coro_state::hew_coro_state_new(waker.descriptor(), ptr::null_mut()) };
+        assert!(!state.is_null());
+        // SAFETY: this test uniquely owns the newly allocated invocation.
+        let mut state = unsafe { Box::from_raw(state) };
+        assert!(state.bind_actor_stream(core));
+        (state, ready)
+    }
+
+    #[test]
+    fn actor_stream_close_cancels_only_its_bound_invocation() {
+        let _guard = crate::runtime_test_guard();
+        let core = Arc::new(crate::channel_core::ChannelCore::new(1));
+        let (state, ready) = stream_invocation(Arc::clone(&core));
+
+        core.close_stream();
+
+        assert_eq!(
+            // SAFETY: this test owns the live invocation throughout the query.
+            unsafe { crate::coro_state::hew_coro_state_is_cancelled(&raw const *state) },
+            1
+        );
+        assert!(ready.take_ready());
+        let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
+        assert!(normalize_actor_stream_cancellation(
+            &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
+            unsafe { Box::from_raw(cancellation) },
+            false,
+            false,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn actor_stream_close_keeps_cleanup_fault_and_obeys_stop_precedence() {
+        let _guard = crate::runtime_test_guard();
+        let core = Arc::new(crate::channel_core::ChannelCore::new(1));
+        let (state, _ready) = stream_invocation(Arc::clone(&core));
+        core.close_stream();
+        // SAFETY: these two fresh fault owners are distinct and transferred.
+        let combined = unsafe {
+            crate::fault::hew_fault_combine(
+                crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED),
+                crate::fault::hew_fault_new(212),
+            )
+        };
+        let preserved = normalize_actor_stream_cancellation(
+            &state,
+            // SAFETY: combine returned one unique fault owner, transferred here.
+            unsafe { Box::from_raw(combined) },
+            false,
+            false,
+        )
+        .expect("cleanup failure survives stream cancellation");
+        assert_eq!(preserved.code(), 212);
+
+        let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
+        let stopped = normalize_actor_stream_cancellation(
+            &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
+            unsafe { Box::from_raw(cancellation) },
+            false,
+            true,
+        )
+        .expect("actor stop remains authoritative after reader close");
+        assert_eq!(stopped.code(), crate::fault::HEW_FAULT_CANCELLED);
+    }
+
+    #[test]
+    fn actor_stop_that_wins_before_stream_close_is_not_relabelled() {
+        let _guard = crate::runtime_test_guard();
+        let core = Arc::new(crate::channel_core::ChannelCore::new(1));
+        let (state, _ready) = stream_invocation(Arc::clone(&core));
+        // SAFETY: this test owns the live invocation; stop wins its token CAS.
+        unsafe { crate::coro_state::hew_coro_state_cancel(&raw const *state) };
+        core.close_stream();
+
+        let cancellation = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
+        let preserved = normalize_actor_stream_cancellation(
+            &state,
+            // SAFETY: the freshly allocated fault has one owner, transferred here.
+            unsafe { Box::from_raw(cancellation) },
+            false,
+            false,
+        )
+        .expect("the actor's earlier stop reason wins");
+        assert_eq!(preserved.code(), crate::fault::HEW_FAULT_CANCELLED);
+    }
+
     #[test]
     fn checked_waker_retains_incarnation_after_invocation_and_actor_replacement() {
         let _guard = crate::runtime_test_guard();
@@ -692,8 +893,7 @@ mod tests {
                 crate::wake::OwnedWaker::retain(&*crate::coro_state::hew_coro_state_waker(state));
             operation.wake();
             crate::test_actor::assert_woken(&scheduler, &actor, "checked handler");
-            crate::coro_state::hew_coro_state_free(state);
-            hew_actor_coro_set_fault(ptr::null_mut());
+            hew_actor_coro_finish(state, ptr::null_mut());
             operation
         };
         assert_eq!(
@@ -862,8 +1062,7 @@ mod tests {
                     state,
                     crate::coro_state::CoroStatus::Cancelled as i32,
                 );
-                crate::coro_state::hew_coro_state_free(state);
-                hew_actor_coro_set_fault(ptr::null_mut());
+                hew_actor_coro_finish(state, ptr::null_mut());
                 frame.resume = None;
             }
         }

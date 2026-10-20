@@ -195,7 +195,7 @@ test("fma is fused: the product is not rounded before the addend arrives", () =>
   assert.equal(math("Fma", [f(1.0000000000000002), f(1.0000000000000002), f(-1.0000000000000004)]), "4.93038e-32");
 });
 
-test("a math intrinsic the VM has no shim for is refused at load", () => {
+test("an unknown math intrinsic is rejected as malformed bytecode", () => {
   const trace = runBytecode(
     {
       ...mathPackage("Sqrt", [f(16)], "F64"),
@@ -214,5 +214,6 @@ test("a math intrinsic the VM has no shim for is refused at load", () => {
   assert.equal(trace.result, "sandbox_rejected");
   assert.deepEqual(trace.final_state.stdout, []);
   assert.equal(trace.final_state.step_count, 0);
-  assert.equal(trace.final_state.sandbox_rejections[0].capability, "MathIntrinsic::NotAnIntrinsic");
+  assert.equal(trace.final_state.sandbox_rejections[0].category, "invalid_package");
+  assert.equal(trace.final_state.sandbox_rejections[0].capability, null);
 });

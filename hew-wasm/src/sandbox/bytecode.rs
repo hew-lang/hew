@@ -1134,10 +1134,6 @@ fn discriminator_names(
 ///
 /// # Errors
 /// Returns an error if the authoritative runtime enum cannot be projected.
-#[expect(
-    clippy::too_many_lines,
-    reason = "keeps derived schema composition and runtime identity adaptation together"
-)]
 pub fn package_schema() -> Result<serde_json::Value, String> {
     fn integer_ranges(value: &mut serde_json::Value) {
         match value {

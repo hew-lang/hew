@@ -456,7 +456,7 @@ impl<'m> Walker<'m> {
                     },
                     ResourceRelease::Nominal { release, .. } => Resource::Nominal {
                         ty: Some(ty.user_facing().to_string()),
-                        release: release.symbol.to_owned(),
+                        release: release.symbol.clone(),
                     },
                     ResourceRelease::Task => Resource::Task,
                     ResourceRelease::ActorCall => Resource::ActorCall,
@@ -634,38 +634,7 @@ impl<'m> Walker<'m> {
                             return Ok(StructuralRecipe::Identity { name });
                         }
                         if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
-                            let mut offset = 0;
-                            let cases = shape
-                                .variants
-                                .iter()
-                                .map(|variant| {
-                                    let kind = match variant.kind {
-                                        hew_sir::SemVariantKind::Unit => StructuralCaseKind::Unit,
-                                        hew_sir::SemVariantKind::Tuple => StructuralCaseKind::Tuple,
-                                        hew_sir::SemVariantKind::Struct => {
-                                            StructuralCaseKind::Struct
-                                        }
-                                    };
-                                    let fields = variant
-                                        .fields
-                                        .iter()
-                                        .map(|field| {
-                                            let recipe = members[offset];
-                                            offset += 1;
-                                            StructuralField {
-                                                name: field.name.clone(),
-                                                recipe,
-                                            }
-                                        })
-                                        .collect();
-                                    StructuralCase {
-                                        name: variant.name.clone(),
-                                        kind,
-                                        fields,
-                                    }
-                                })
-                                .collect();
-                            return Ok(StructuralRecipe::Enum { cases });
+                            return Ok(structural_enum(shape, &members));
                         }
                         if let Some(shape) = self.module.aggregate_shape_for_type(&key.value) {
                             let fields = shape
@@ -2003,6 +1972,39 @@ impl<'m> Walker<'m> {
 /// `Runtime` storage the runtime owns and `ActorState` seats belong to the
 /// concurrency path, which never reaches this walker; they are named here so
 /// the projection is closed against `PlaceOrigin`.
+fn structural_enum(shape: &hew_sir::SemVariantShape, members: &[u32]) -> StructuralRecipe {
+    let mut offset = 0;
+    let cases = shape
+        .variants
+        .iter()
+        .map(|variant| {
+            let kind = match variant.kind {
+                hew_sir::SemVariantKind::Unit => StructuralCaseKind::Unit,
+                hew_sir::SemVariantKind::Tuple => StructuralCaseKind::Tuple,
+                hew_sir::SemVariantKind::Struct => StructuralCaseKind::Struct,
+            };
+            let fields = variant
+                .fields
+                .iter()
+                .map(|field| {
+                    let recipe = members[offset];
+                    offset += 1;
+                    StructuralField {
+                        name: field.name.clone(),
+                        recipe,
+                    }
+                })
+                .collect();
+            StructuralCase {
+                name: variant.name.clone(),
+                kind,
+                fields,
+            }
+        })
+        .collect();
+    StructuralRecipe::Enum { cases }
+}
+
 fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
     let id = place.id.0;
     match &place.origin {

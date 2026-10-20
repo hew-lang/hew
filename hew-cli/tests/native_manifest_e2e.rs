@@ -127,7 +127,8 @@ fn trimmed_package_paths_are_stable_across_roots() {
             let output = run_binary(&linked);
             assert_ok(&output, "run native package");
             assert_eq!(stdout(&output), "42\n");
-            assert_eq!(stderr(&output), "native/calc.c\n");
+            let native_sources: Vec<_> = stderr(&output).lines().map(PathBuf::from).collect();
+            assert_eq!(native_sources, [Path::new("native").join("calc.c")]);
         }
     }
     assert_native_objects_match(&roots);

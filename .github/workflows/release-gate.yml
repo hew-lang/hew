@@ -198,7 +198,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-linux:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'linux-x86_64'
     name: Release Gate — Linux x86_64
     runs-on: ubuntu-24.04
     # Bound the complete cold-runner sequence: workspace, native corpus,
@@ -603,7 +603,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms != 'linux-x86_64'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 240

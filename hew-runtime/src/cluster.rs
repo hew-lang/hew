@@ -1371,8 +1371,7 @@ impl HewCluster {
                     if matches!(member.state, MEMBER_DEAD | MEMBER_LEFT) {
                         false
                     } else if member.state == MEMBER_ALIVE {
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                        self.refresh_member_liveness(member);
                         true
                     } else {
                         let next_incarnation = member.incarnation.saturating_add(1);
@@ -1384,6 +1383,7 @@ impl HewCluster {
                             &[],
                             false,
                         ) {
+                            self.refresh_member_liveness(&mut members[index]);
                             should_drain = self.queue_member_transition(transition);
                         }
                         true
@@ -1396,8 +1396,7 @@ impl HewCluster {
                         let old_state = member.state;
                         member.state = MEMBER_ALIVE;
                         member.incarnation = 1;
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                        self.refresh_member_liveness(member);
                         should_drain = self.queue_member_transition(MemberTransition {
                             node_id,
                             state: MEMBER_ALIVE,
@@ -1496,34 +1495,6 @@ impl HewCluster {
         }
     }
 
-    /// Notify event callback if registered.
-    fn notify_membership_callback(
-        &self,
-        node_id: u16,
-        state: i32,
-        is_new_member: bool,
-        old_state: Option<i32>,
-    ) {
-        let event = match state {
-            MEMBER_ALIVE => {
-                if is_new_member || matches!(old_state, Some(prev) if prev != MEMBER_ALIVE) {
-                    Some(HEW_MEMBERSHIP_EVENT_NODE_JOINED)
-                } else {
-                    None
-                }
-            }
-            MEMBER_SUSPECT => Some(HEW_MEMBERSHIP_EVENT_NODE_SUSPECT),
-            MEMBER_DEAD => Some(HEW_MEMBERSHIP_EVENT_NODE_DEAD),
-            MEMBER_LEFT => Some(HEW_MEMBERSHIP_EVENT_NODE_LEFT),
-            _ => None,
-        };
-        if let Some(evt) = event {
-            let _ = self.with_membership_callback_dispatch(|callback, user_data| {
-                callback(node_id, evt, user_data);
-            });
-        }
-    }
-
     /// Snapshot the current membership callback binding.
     fn with_membership_callback_dispatch<R>(
         &self,
@@ -1603,32 +1574,39 @@ impl HewCluster {
     /// still advance the detector's anchor so the next genuine interval
     /// is measured correctly.
     fn update_last_seen(&self, node_id: u16) {
+        let mut members = self.members.lock_or_recover();
+        let Some(member) = members.iter_mut().find(|member| member.node_id == node_id) else {
+            return;
+        };
+        // Publish the member timestamp and detector sample as one observation.
+        // Readers take the same members → detectors lock order.
         // SAFETY: hew_now_ms has no preconditions.
         let now = unsafe { crate::clock::hew_now_ms() };
-        let was_suspect = {
-            let mut members = self.members.lock_or_recover();
-            if let Some(m) = members.iter_mut().find(|m| m.node_id == node_id) {
-                m.last_seen_ms = now;
-                let was_suspect = m.state == MEMBER_SUSPECT;
-                if was_suspect {
-                    m.state = MEMBER_ALIVE;
-                }
-                Some(was_suspect)
-            } else {
-                None
-            }
-        };
-        if let Some(was_suspect) = was_suspect {
-            // members → detectors lock order.
-            let mut detectors = self.detectors.lock_or_recover();
-            let det = detectors
-                .entry(node_id)
-                .or_insert_with(|| PhiAccrualDetector::new(PHI_WINDOW_SIZE, PHI_MIN_SAMPLES));
-            if was_suspect {
-                det.heartbeat_anchor_only(now);
-            } else {
-                det.heartbeat(now);
-            }
+        let was_suspect = member.state == MEMBER_SUSPECT;
+        member.last_seen_ms = now;
+        if was_suspect {
+            member.state = MEMBER_ALIVE;
+        }
+        let mut detectors = self.detectors.lock_or_recover();
+        let detector = detectors
+            .entry(node_id)
+            .or_insert_with(|| PhiAccrualDetector::new(PHI_WINDOW_SIZE, PHI_MIN_SAMPLES));
+        if was_suspect {
+            detector.heartbeat_anchor_only(now);
+        } else {
+            detector.heartbeat(now);
+        }
+    }
+
+    /// Refresh membership liveness without training the detector on a recovery
+    /// gap. The caller holds `members`, keeping its timestamp and any warm
+    /// detector anchor coherent for tick snapshots.
+    fn refresh_member_liveness(&self, member: &mut ClusterMember) {
+        // SAFETY: hew_now_ms has no preconditions.
+        let now = unsafe { crate::clock::hew_now_ms() };
+        member.last_seen_ms = now;
+        if let Some(detector) = self.detectors.lock_or_recover().get_mut(&member.node_id) {
+            detector.heartbeat_anchor_only(now);
         }
     }
 
@@ -1656,21 +1634,19 @@ impl HewCluster {
         let suspect_timeout_ms = u64::from(self.config.suspect_timeout_ms);
         let ping_timeout_ms = u64::from(self.config.ping_timeout_ms);
 
-        // Take a snapshot of (node_id, phi, is_warm) outside the
-        // `members` lock so we respect the members → detectors lock
-        // order. We hold detectors only briefly.
-        let phi_snapshot: HashMap<u16, (f64, bool)> = {
+        // Membership, publication and detector evidence must describe the
+        // same instant. Publication takes tokens → members; heartbeat updates
+        // take members → detectors. Release all guards before protocol work.
+        let (member_snapshot, publication_snapshot, phi_snapshot) = {
+            let tokens = self.connection_tokens.lock_or_recover();
+            let members = self.members.lock_or_recover();
             let detectors = self.detectors.lock_or_recover();
-            detectors
+            let phi = detectors
                 .iter()
-                .map(|(id, det)| (*id, (det.phi(now_ms), det.is_warm())))
-                .collect()
+                .map(|(id, detector)| (*id, (detector.phi(now_ms), detector.is_warm())))
+                .collect();
+            (members.clone(), tokens.current.clone(), phi)
         };
-
-        // Take a member snapshot to pass to the protocol.  We release
-        // the lock before applying state changes so the apply loop can
-        // re-lock for mutation without holding two locks.
-        let member_snapshot: Vec<ClusterMember> = self.members.lock_or_recover().clone();
 
         // Delegate the transition decision to the protocol strategy.
         let state_changes = self.protocol.compute_tick_transitions(
@@ -1681,41 +1657,43 @@ impl HewCluster {
             &member_snapshot,
         );
 
-        // Apply state transitions: update the authoritative members list,
-        // emit gossip events, fire callbacks.
-        for change in &state_changes {
+        // A decision can outlive a heartbeat, reconnect or session replacement.
+        // Claim it only while its original observation still owns the peer;
+        // discarded decisions have no gossip, callback or partition effects.
+        let mut should_drain = false;
+        for change in state_changes {
+            let Some(observed) = member_snapshot.iter().find(|m| m.node_id == change.node_id)
+            else {
+                continue;
+            };
+            let tokens = self.connection_tokens.lock_or_recover();
+            let mut members = self.members.lock_or_recover();
+            let current = members.iter().find(|m| m.node_id == change.node_id);
+            if !current.is_some_and(|member| {
+                member.state == observed.state
+                    && member.incarnation == observed.incarnation
+                    && member.last_seen_ms == observed.last_seen_ms
+            }) || tokens.current.get(&change.node_id)
+                != publication_snapshot.get(&change.node_id)
             {
-                let mut members = self.members.lock_or_recover();
-                if let Some(m) = members.iter_mut().find(|m| m.node_id == change.node_id) {
-                    // Only apply if the member hasn't moved on since the snapshot.
-                    if m.state != MEMBER_DEAD && m.state != MEMBER_LEFT {
-                        m.state = change.new_state;
-                    }
-                }
+                continue;
             }
-            self.emit_event(change.node_id, change.new_state, change.incarnation);
-            self.notify_callback(change.node_id, change.new_state, change.incarnation);
-            self.notify_membership_callback(change.node_id, change.new_state, false, None);
-            // Prune the detector once the peer has left the live set.
-            if change.new_state == MEMBER_DEAD {
-                self.detectors.lock_or_recover().remove(&change.node_id);
-                // Partition-injection seam: fan out PartitionDetected to all
-                // queues registered for the dead node.
-                if let Some(registry) = &self.partition_registry {
-                    registry.on_member_dead(change.node_id);
+            if let Some(transition) = Self::stage_member_transition_locked(
+                &mut members,
+                change.node_id,
+                change.new_state,
+                change.incarnation,
+                &[],
+                false,
+            ) {
+                if change.new_state == MEMBER_DEAD {
+                    self.detectors.lock_or_recover().remove(&change.node_id);
                 }
-                self.protocol.on_member_dead(change.node_id);
-                // Cross-node monitor SWIM-DEAD fan-out: arm MonitorLost for
-                // every still-pending local watcher of an actor on the dead
-                // node (exactly-once; a prior definitive DOWN wins).
-                crate::hew_node::fan_out_monitor_lost_for_node(change.node_id);
-                // Pending-ask SWIM-DEAD fan-out + quarantine: resolve every
-                // pending remote ask routed to the dead peer with
-                // AskError::Partition immediately (mirroring the recv-queue
-                // partition seam above) AND quarantine the peer at the incarnation
-                // it died at.
-                crate::hew_node::fail_remote_and_quarantine(change.node_id, change.incarnation);
+                should_drain |= self.queue_member_transition(transition);
             }
+        }
+        if should_drain {
+            self.drain_member_transitions();
         }
     }
 
@@ -1877,8 +1855,7 @@ impl HewCluster {
             if let Some((state, incarnation)) = member {
                 if state == MEMBER_ALIVE {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                        self.refresh_member_liveness(member);
                     }
                 } else {
                     // Locally-synthesized bump on reconnect: raises a SUSPECT peer
@@ -1895,8 +1872,7 @@ impl HewCluster {
                         false,
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                            // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                            self.refresh_member_liveness(member);
                         }
                         should_drain = self.queue_member_transition(transition);
                     }
@@ -1930,8 +1906,7 @@ impl HewCluster {
             if let Some((state, incarnation)) = member {
                 if state == MEMBER_ALIVE {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                        self.refresh_member_liveness(member);
                     }
                     tokens.visible.insert(node_id, publication_token);
                 } else {
@@ -1947,8 +1922,7 @@ impl HewCluster {
                         false,
                     ) {
                         if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                            // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                            self.refresh_member_liveness(member);
                         }
                         should_drain = self.queue_member_transition(transition.with_publication(
                             PublicationTransition::TokenEstablished(publication_token),
@@ -2161,8 +2135,7 @@ impl HewCluster {
                         {
                             member.state = state;
                             member.incarnation = incarnation;
-                            // SAFETY: hew_now_ms has no preconditions.
-                            member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                            self.refresh_member_liveness(member);
                         } else {
                             members.push(ClusterMember {
                                 node_id,
@@ -2710,8 +2683,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
             if session_is_new {
                 members[index].state = MEMBER_ALIVE;
                 members[index].incarnation = 1;
-                // SAFETY: hew_now_ms has no preconditions.
-                members[index].last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                cluster.refresh_member_liveness(&mut members[index]);
                 should_drain = cluster.queue_member_transition(
                     MemberTransition {
                         node_id,
@@ -2731,8 +2703,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                 );
             } else if state == MEMBER_ALIVE {
                 if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                    // SAFETY: hew_now_ms has no preconditions.
-                    member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                    cluster.refresh_member_liveness(member);
                 }
                 tokens.visible.insert(node_id, publication_token);
             } else {
@@ -2750,8 +2721,7 @@ pub(crate) unsafe fn hew_cluster_notify_connection_established_for_token_if_not_
                     false,
                 ) {
                     if let Some(member) = members.iter_mut().find(|m| m.node_id == node_id) {
-                        // SAFETY: hew_now_ms has no preconditions.
-                        member.last_seen_ms = unsafe { crate::clock::hew_now_ms() };
+                        cluster.refresh_member_liveness(member);
                     }
                     should_drain = cluster.queue_member_transition(transition.with_publication(
                         PublicationTransition::GuardedTokenEstablished {
@@ -3172,6 +3142,216 @@ mod tests {
             let members = cluster.members.lock().unwrap();
             assert_eq!(members[0].state, MEMBER_DEAD);
         }
+    }
+
+    /// Pause the real SWIM decision after its snapshot, then refresh the peer
+    /// before allowing the tick to apply that now-obsolete decision.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "keep the paused protocol, concurrent refresh and fault-delivery oracles in one fixture"
+    )]
+    fn assert_tick_discards_refreshed_peer(initial_state: i32, reconnect: bool) {
+        #[derive(Debug)]
+        struct PausedTick {
+            swim: SimpleSwim,
+            computed: std::sync::mpsc::Sender<()>,
+            resume: Mutex<std::sync::mpsc::Receiver<()>>,
+            declared_dead: Arc<AtomicBool>,
+        }
+
+        impl ClusterProtocol for PausedTick {
+            fn handle_ping(&self, from: u16) -> ProtocolDecision {
+                self.swim.handle_ping(from)
+            }
+            fn handle_ack(&self, from: u16, incarnation: u64) -> ProtocolDecision {
+                self.swim.handle_ack(from, incarnation)
+            }
+            fn handle_ping_req(&self, from: u16) -> ProtocolDecision {
+                self.swim.handle_ping_req(from)
+            }
+            fn next_ping_target(&self, members: &[u16]) -> Option<u16> {
+                self.swim.next_ping_target(members)
+            }
+            fn on_member_dead(&self, _node: u16) {
+                self.declared_dead.store(true, Ordering::Release);
+            }
+            fn compute_tick_transitions(
+                &self,
+                now: u64,
+                ping_timeout: u64,
+                suspect_timeout: u64,
+                phi: &HashMap<u16, (f64, bool)>,
+                members: &[ClusterMember],
+            ) -> Vec<StateChange> {
+                let changes = self.swim.compute_tick_transitions(
+                    now,
+                    ping_timeout,
+                    suspect_timeout,
+                    phi,
+                    members,
+                );
+                assert_eq!(changes.len(), 1, "the old observation must detect a fault");
+                self.computed.send(()).expect("tick decision ready");
+                self.resume
+                    .lock_or_recover()
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .expect("refresh releases the tick");
+                changes
+            }
+        }
+
+        struct SendCluster(*const HewCluster);
+        // SAFETY: the scoped thread only calls the synchronized shared tick API;
+        // the test retains the cluster until that thread joins.
+        unsafe impl Send for SendCluster {}
+
+        let (computed_tx, computed_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let declared_dead = Arc::new(AtomicBool::new(false));
+        let mut cluster = HewCluster::new(ClusterConfig {
+            local_node_id: 1,
+            ping_timeout_ms: 100,
+            suspect_timeout_ms: 300,
+            ..ClusterConfig::default()
+        });
+        cluster.protocol = Box::new(PausedTick {
+            swim: SimpleSwim::new(),
+            computed: computed_tx,
+            resume: Mutex::new(resume_rx),
+            declared_dead: Arc::clone(&declared_dead),
+        });
+        cluster.upsert_member(2, initial_state, 1, b"10.0.0.1:9000");
+        cluster.sessions.lock_or_recover().insert(2, 1);
+        cluster.members.lock_or_recover()[0].last_seen_ms = 0;
+        cluster.events.lock_or_recover().clear();
+        let tick_cluster = SendCluster(std::ptr::from_ref(&cluster));
+        std::thread::scope(|scope| {
+            let tick = scope.spawn(move || {
+                let cluster = tick_cluster;
+                // SAFETY: the scoped thread cannot outlive the test cluster.
+                unsafe { (&*cluster.0).tick(500) };
+            });
+            computed_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("tick computed from the old peer observation");
+            if reconnect {
+                assert_eq!(
+                    // SAFETY: the scoped tick and this call borrow the same live
+                    // cluster through its synchronized shared-reference API.
+                    unsafe {
+                        hew_cluster_notify_connection_established_for_token_if_not_removed(
+                            std::ptr::from_ref(&cluster).cast_mut(),
+                            2,
+                            1,
+                            2,
+                            &Arc::new(Mutex::new(())),
+                            &Arc::new(AtomicBool::new(false)),
+                        )
+                    },
+                    1,
+                );
+            } else {
+                cluster.update_last_seen(2);
+                // This tick uses a synthetic 500 ms clock. Align the heartbeat
+                // timestamp with it without depending on host clock resolution.
+                cluster.members.lock_or_recover()[0].last_seen_ms = 500;
+            }
+            resume_tx.send(()).expect("resume tick after peer refresh");
+            tick.join().expect("tick completes");
+        });
+        assert_eq!(
+            cluster.member_state(2),
+            MEMBER_ALIVE,
+            "a stale tick must not demote a refreshed peer"
+        );
+        assert!(
+            cluster.events.lock_or_recover().iter().all(|event| {
+                event.new_state != MEMBER_SUSPECT && event.new_state != MEMBER_DEAD
+            }),
+            "a discarded decision must not emit fault gossip"
+        );
+        assert!(
+            !declared_dead.load(Ordering::Acquire),
+            "a discarded decision must not run the partition callback"
+        );
+    }
+
+    #[test]
+    fn tick_discards_suspect_decision_after_fresh_heartbeat() {
+        assert_tick_discards_refreshed_peer(MEMBER_ALIVE, false);
+    }
+
+    #[test]
+    fn tick_discards_dead_decision_after_same_session_reconnect() {
+        assert_tick_discards_refreshed_peer(MEMBER_SUSPECT, true);
+    }
+
+    #[test]
+    fn reconnect_refreshes_warm_failure_detector() {
+        const CHILD: &str = "HEW_CLUSTER_WARM_RECONNECT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            // Simulated time is process-wide. Isolate it from other libtest
+            // cases instead of changing their clocks during this regression.
+            let output =
+                std::process::Command::new(std::env::current_exe().expect("runtime test binary"))
+                    .args([
+                        "cluster::tests::reconnect_refreshes_warm_failure_detector",
+                        "--exact",
+                        "--nocapture",
+                        "--test-threads=1",
+                    ])
+                    .env(CHILD, "1")
+                    .output()
+                    .expect("isolated warm reconnect test");
+            assert!(
+                output.status.success(),
+                "warm reconnect failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        crate::deterministic::hew_simtime_enable(1_000);
+        let cluster = HewCluster::new(make_config(1));
+        cluster.upsert_member(2, MEMBER_ALIVE, 1, b"10.0.0.1:9000");
+        cluster.sessions.lock_or_recover().insert(2, 1);
+        let mut detector = PhiAccrualDetector::new(PHI_WINDOW_SIZE, PHI_MIN_SAMPLES);
+        for sample in 0..=PHI_MIN_SAMPLES {
+            detector.heartbeat(u64::try_from(sample).unwrap() * 10);
+        }
+        assert!(detector.is_warm() && detector.phi(1_000) > PHI_THRESHOLD);
+        cluster.members.lock_or_recover()[0].last_seen_ms = detector.last_heartbeat_ms().unwrap();
+        cluster.detectors.lock_or_recover().insert(2, detector);
+        assert_eq!(
+            // SAFETY: the cluster remains live and this isolated process is its
+            // sole owner; the publication API mutates synchronized shared state.
+            unsafe {
+                hew_cluster_notify_connection_established_for_token_if_not_removed(
+                    std::ptr::from_ref(&cluster).cast_mut(),
+                    2,
+                    1,
+                    1,
+                    &Arc::new(Mutex::new(())),
+                    &Arc::new(AtomicBool::new(false)),
+                )
+            },
+            1
+        );
+        cluster.tick(1_000);
+        assert_eq!(cluster.member_state(2), MEMBER_ALIVE);
+        assert_eq!(
+            cluster.detectors.lock_or_recover()[&2].sample_count(),
+            PHI_MIN_SAMPLES,
+            "reconnect must not train the detector on the recovery gap"
+        );
+        cluster.tick(1_900);
+        assert_eq!(
+            cluster.member_state(2),
+            MEMBER_SUSPECT,
+            "a new silence must still be detected after reconnect"
+        );
+        crate::deterministic::hew_simtime_disable();
     }
 
     /// The rejoin-admission truth table: a buried node (DEAD or LEFT) is

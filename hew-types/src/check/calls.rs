@@ -1192,6 +1192,7 @@ impl Checker {
             return;
         }
         self.warnings.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::BlockingCallInReceiveFn,
             span: span.clone(),
@@ -1902,6 +1903,7 @@ impl Checker {
                             return self.check_method_call_with_type_args(
                                 object,
                                 field.0.name.as_str(),
+                                Some(&field.1),
                                 type_args,
                                 args,
                                 span,
@@ -1917,6 +1919,7 @@ impl Checker {
                         return self.check_method_call_with_type_args(
                             object,
                             field.0.name.as_str(),
+                            Some(&field.1),
                             type_args,
                             args,
                             span,
@@ -2720,7 +2723,7 @@ impl Checker {
                 matches!(binding, scope::Binding::Fn(_)).then_some(name.as_str())
             })
             .collect();
-        let mut similar = crate::error::find_similar(
+        let similar = crate::error::find_similar(
             &func_name,
             self.sigs()
                 .entries()
@@ -2729,12 +2732,14 @@ impl Checker {
                 .chain(scoped_functions)
                 .chain(local_names.iter().copied()),
         );
-        similar.extend(module_qualified_intrinsic_spellings(&func_name));
-        self.report_error_with_suggestions(
+        let help = module_qualified_intrinsic_spellings(&func_name);
+        self.report_error_with_spelling_suggestions(
             TypeErrorKind::UndefinedFunction,
             span,
+            Some(&func.1),
             format!("undefined function `{func_name}`"),
             similar,
+            help,
         );
         Ty::Error
     }

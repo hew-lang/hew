@@ -36,6 +36,7 @@ impl Checker {
         // `await` then joins that task.
         if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InvalidOperation,
                 span: span.clone(),

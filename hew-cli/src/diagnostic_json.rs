@@ -159,18 +159,19 @@ pub(crate) struct JsonNote {
     pub span: Option<JsonSpan>,
 }
 
-/// A single text edit within a machine-checked fix.
+/// A single text edit within a producer-owned fix.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct JsonEdit {
     pub span: JsonSpan,
     pub new_text: String,
 }
 
-/// A machine-checked fix the compiler can apply (mirrors the LSP quick-fix /
+/// A producer-owned fix the compiler can apply (mirrors the LSP quick-fix /
 /// `CodeAction`).
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct JsonFix {
     pub title: String,
+    pub applicability: hew_parser::diagnostic::Applicability,
     pub edits: Vec<JsonEdit>,
 }
 
@@ -182,6 +183,9 @@ pub(crate) struct JsonFix {
 /// quick-fixes.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub(crate) struct JsonDiagnostic {
+    /// Exact consumed source snapshot for the diagnostic's edits.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
     /// Stable diagnostic code — the `kind` discriminant (e.g. `Mismatch`,
     /// `UndefinedVariable`, `NotYetImplemented`). Never a Rust `{:?}` payload.
     pub code: String,
@@ -202,7 +206,7 @@ pub(crate) struct JsonDiagnostic {
     pub message: String,
     /// Secondary notes (related locations / context).
     pub notes: Vec<JsonNote>,
-    /// Machine-checked fixes the compiler can apply.
+    /// Producer-owned alternatives with explicit applicability.
     pub fixes: Vec<JsonFix>,
 }
 
@@ -215,24 +219,14 @@ const SEVERITY_WARNING: &str = "warning";
 
 fn fixes_from_code_actions(
     source: &str,
-    kind: Option<&str>,
-    message: &str,
-    span: &Range<usize>,
-    suggestions: &[String],
+    fixes: &[hew_parser::diagnostic::DiagnosticFix],
 ) -> Vec<JsonFix> {
-    let info = hew_analysis::code_actions::DiagnosticInfo {
-        kind: kind.map(str::to_string),
-        message: message.to_string(),
-        span: hew_analysis::OffsetSpan {
-            start: span.start,
-            end: span.end,
-        },
-        suggestions: suggestions.to_vec(),
-    };
+    let info = hew_analysis::code_actions::DiagnosticInfo::new(source, fixes.to_vec());
     hew_analysis::code_actions::build_code_actions(source, &[info])
         .into_iter()
         .map(|action| JsonFix {
             title: action.title,
+            applicability: action.applicability,
             edits: action
                 .edits
                 .into_iter()
@@ -262,6 +256,7 @@ pub(crate) fn coded_message_diagnostic(
     channel: DiagChannel,
 ) -> JsonDiagnostic {
     JsonDiagnostic {
+        source_hash: None,
         code: code.to_string(),
         severity: SEVERITY_ERROR.to_string(),
         channel: channel.as_json_str().to_string(),
@@ -360,6 +355,7 @@ pub(crate) fn from_parse_error(
         })
         .collect();
     JsonDiagnostic {
+        source_hash: Some(hew_analysis::code_actions::source_hash(source)),
         code: error.kind.as_kind_str().to_string(),
         severity: severity.to_string(),
         channel: DiagChannel::User.as_json_str().to_string(),
@@ -368,12 +364,12 @@ pub(crate) fn from_parse_error(
         span: JsonSpan::from_range(source, &error.span),
         message: error.message.clone(),
         notes,
-        fixes: Vec::new(),
+        fixes: fixes_from_code_actions(source, &error.fixes),
     }
 }
 
 /// Build a [`JsonDiagnostic`] from a type-checker diagnostic, including any
-/// machine-checked fixes the code-action engine can derive.
+/// producer-owned fixes the code-action engine can derive.
 pub(crate) fn from_type_error(
     source: &str,
     filename: &str,
@@ -392,14 +388,9 @@ pub(crate) fn from_type_error(
             span: Some(JsonSpan::from_range(source, span)),
         })
         .collect();
-    let fixes = fixes_from_code_actions(
-        source,
-        Some(code),
-        &error.message,
-        &error.span,
-        &error.suggestions,
-    );
+    let fixes = fixes_from_code_actions(source, &error.fixes);
     JsonDiagnostic {
+        source_hash: Some(hew_analysis::code_actions::source_hash(source)),
         code: code.to_string(),
         severity: severity.to_string(),
         channel: error.kind.channel().as_json_str().to_string(),
@@ -433,6 +424,7 @@ pub(crate) fn from_hir_diagnostic(
             .collect()
     });
     JsonDiagnostic {
+        source_hash: None,
         code: diagnostic.kind.kind_string(),
         severity: SEVERITY_ERROR.to_string(),
         channel: diagnostic.kind.channel().as_json_str().to_string(),
@@ -475,19 +467,34 @@ mod tests {
     }
 
     #[test]
-    fn type_error_carries_code_action_fix_for_undefined_variable() {
-        let source = "fn main() {\n    let y = foob;\n}\n";
-        let foob_start = source.find("foob").expect("foob present");
-        let mut error = hew_types::TypeError::new(
-            hew_types::error::TypeErrorKind::UndefinedVariable,
-            foob_start..foob_start + 4,
-            "undefined variable `foob`",
-        );
-        error.suggestions = vec!["`food`".to_string()];
-        let diag = from_type_error(source, "main.hew", &error);
-        assert_eq!(diag.code, "UndefinedVariable");
-        assert_eq!(diag.fixes.len(), 1, "expected one code-action fix");
+    fn type_error_carries_the_producer_edit_without_parsing_suggestions() {
+        let source = "fn main() { let food = 42; let _ = foob; }";
+        let parsed = hew_parser::parse(source);
+        let output =
+            hew_types::Checker::new(hew_types::module_registry::ModuleRegistry::new(vec![]))
+                .check_program(&parsed.program);
+        let error = output
+            .errors
+            .iter()
+            .find(|error| {
+                matches!(
+                    error.kind,
+                    hew_types::error::TypeErrorKind::UndefinedVariable
+                )
+            })
+            .unwrap();
+        let mut changed_prose = error.clone();
+        changed_prose.message = "different prose".into();
+        changed_prose.suggestions = vec!["this prose is not an edit".into()];
+        let diag = from_type_error(source, "main.hew", &changed_prose);
+        assert_eq!(diag.fixes.len(), error.fixes.len());
         assert_eq!(diag.fixes[0].edits[0].new_text, "food");
+        let edit = &diag.fixes[0].edits[0];
+        assert_eq!(&source[edit.span.start_byte..edit.span.end_byte], "foob");
+        assert_eq!(
+            diag.source_hash,
+            Some(hew_analysis::code_actions::source_hash(source))
+        );
     }
 
     #[test]

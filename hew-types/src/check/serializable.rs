@@ -269,6 +269,7 @@ impl Checker {
                     "fields"
                 };
                 self.errors.push(crate::error::TypeError {
+                    fixes: Vec::new(),
                     severity: crate::error::Severity::Error,
                     kind: TypeErrorKind::InvalidOperation,
                     span: self

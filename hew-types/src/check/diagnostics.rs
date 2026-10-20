@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use std::fmt::Write as _;
 
 impl Checker {
     /// Reject a bare variant in expression position.
@@ -19,6 +20,7 @@ impl Checker {
             ),
             format!("replace `{name}` with `{replacement}`"),
             span,
+            Some((span.start..span.start + name.len(), replacement.to_string())),
         );
     }
 
@@ -35,6 +37,7 @@ impl Checker {
             ),
             format!("replace `{name}` with `.{name}`"),
             span,
+            Some((span.start..span.start + name.len(), format!(".{name}"))),
         );
     }
 
@@ -45,8 +48,21 @@ impl Checker {
         message: String,
         suggestion: String,
         span: &Span,
+        replacement: Option<(Span, String)>,
     ) {
+        let fixes = replacement
+            .into_iter()
+            .map(|(span, text)| {
+                hew_parser::diagnostic::DiagnosticFix::replace(
+                    format!("Replace with `{text}`"),
+                    span,
+                    text,
+                    hew_parser::diagnostic::Applicability::MachineApplicable,
+                )
+            })
+            .collect();
         self.errors.push(TypeError {
+            fixes,
             severity: crate::error::Severity::Error,
             kind,
             span: span.clone(),
@@ -68,7 +84,7 @@ impl Checker {
     /// at the annotation. This diagnostic fires at the annotation's span and
     /// recovers using the intended `Y`, so the body still checks sensibly.
     pub(super) fn report_gen_return_spelling(&mut self, declared: &Ty, yields: &Ty, span: &Span) {
-        self.errors.push(TypeError {
+        self.errors.push(TypeError { fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::GenReturnSpelling,
             span: span.clone(),
@@ -272,6 +288,7 @@ impl Checker {
             return;
         }
         self.warnings.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::PlatformLimitation,
             span: span.clone(),
@@ -312,6 +329,7 @@ impl Checker {
             return;
         }
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::PlatformLimitation,
             span: span.clone(),
@@ -374,6 +392,7 @@ impl Checker {
 
     pub(super) fn report_error(&mut self, kind: TypeErrorKind, span: &Span, message: String) {
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind,
             span: span.clone(),
@@ -393,6 +412,7 @@ impl Checker {
         note: String,
     ) {
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind,
             span: span.clone(),
@@ -431,7 +451,53 @@ impl Checker {
         message: String,
         suggestions: Vec<String>,
     ) {
+        self.report_error_with_suggestions_at(kind, span, None, message, suggestions);
+    }
+
+    pub(super) fn report_error_with_suggestions_at(
+        &mut self,
+        kind: TypeErrorKind,
+        span: &Span,
+        fix_span: Option<&Span>,
+        message: String,
+        suggestions: Vec<String>,
+    ) {
+        self.report_error_with_spelling_suggestions(
+            kind,
+            span,
+            fix_span,
+            message,
+            suggestions,
+            Vec::new(),
+        );
+    }
+
+    /// Replacement spellings and additional human help are separate producer facts.
+    pub(super) fn report_error_with_spelling_suggestions(
+        &mut self,
+        kind: TypeErrorKind,
+        span: &Span,
+        fix_span: Option<&Span>,
+        message: String,
+        mut suggestions: Vec<String>,
+        help: Vec<String>,
+    ) {
+        let fixes = fix_span
+            .into_iter()
+            .flat_map(|span| {
+                suggestions.iter().map(move |name| {
+                    hew_parser::diagnostic::DiagnosticFix::replace(
+                        format!("Replace with `{name}`"),
+                        span.clone(),
+                        name.clone(),
+                        hew_parser::diagnostic::Applicability::MaybeIncorrect,
+                    )
+                })
+            })
+            .collect();
+        suggestions.extend(help);
         self.errors.push(TypeError {
+            fixes,
             severity: crate::error::Severity::Error,
             kind,
             span: span.clone(),
@@ -475,6 +541,7 @@ impl Checker {
         // be overwritten by the real `define_with_span` call without an error.
         if let Some(Some(prev_span)) = self.env.find_in_current_scope(ident) {
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::Shadowing,
                 span: span.clone(),
@@ -503,6 +570,7 @@ impl Checker {
                     // Synthetic binding (actor field): hard error — bare field access would
                     // be ambiguous if a local could shadow a field name.
                     self.errors.push(TypeError {
+                        fixes: Vec::new(),
                         severity: crate::error::Severity::Error,
                         kind: TypeErrorKind::Shadowing,
                         span: span.clone(),
@@ -517,7 +585,7 @@ impl Checker {
                 Some(prev) => {
                     // User-defined local variable in an outer scope: warning.
                     // Shadowing is confusing but not ambiguous in the same way as actor fields.
-                    self.warnings.push(TypeError {
+                    self.warnings.push(TypeError { fixes: Vec::new(),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::Shadowing,
                         span: span.clone(),
@@ -566,6 +634,7 @@ impl Checker {
                         continue;
                     }
                     self.warnings.push(TypeError {
+                        fixes: binding_warning_fixes(&w),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedVariable,
                         span: w.span,
@@ -577,6 +646,7 @@ impl Checker {
                 }
                 ScopeWarningKind::NeverMutated => {
                     self.warnings.push(TypeError {
+                        fixes: binding_warning_fixes(&w),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedMut,
                         span: w.span,
@@ -703,7 +773,11 @@ impl Checker {
         }
         let missing = self.missing_match_shapes(arms, &scrutinee_ty);
         if !missing.is_empty() {
-            self.error_non_exhaustive(span, &missing, std::string::ToString::to_string);
+            self.error_non_exhaustive(
+                span,
+                &missing,
+                arms.last().and_then(|arm| arm.append_separator),
+            );
         }
     }
 
@@ -723,26 +797,62 @@ impl Checker {
     /// Emit a hard error for genuinely non-exhaustive enum-like matches (Option, Result,
     /// user enums, machines, bool).  These are fail-closed: missing variants are a
     /// correctness issue, not just a style suggestion.
-    pub(super) fn error_non_exhaustive<F>(
+    pub(super) fn error_non_exhaustive(
         &mut self,
         span: &Span,
-        missing: &[String],
-        suggestion_pattern: F,
-    ) where
-        F: Fn(&str) -> String,
-    {
+        missing: &[super::exhaustiveness::MatchWitness],
+        append_separator: Option<usize>,
+    ) {
         let detail = if missing.is_empty() {
             "missing some patterns".to_string()
         } else {
-            format!("missing {}", missing.join(", "))
+            format!(
+                "missing {}",
+                missing
+                    .iter()
+                    .map(|witness| witness.display.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         };
         let mut error = TypeError::non_exhaustive_match_detail(
             span.clone(),
             crate::error::Severity::Error,
             detail,
         );
-        for variant in missing {
-            error = error.with_suggestion(suggestion_pattern(variant));
+        let patterns = missing
+            .iter()
+            .map(|witness| witness.pattern.clone())
+            .collect::<Vec<_>>();
+        if let Some(position) = span.end.checked_sub(1) {
+            let mut arms = String::new();
+            for pattern in patterns {
+                write!(
+                    arms,
+                    " {pattern} => {{ panic(\"TODO: handle missing case\"); }}"
+                )
+                .expect("writing to a String cannot fail");
+            }
+            let mut fix = hew_parser::diagnostic::DiagnosticFix::replace(
+                "Add missing match arms",
+                position..position,
+                arms,
+                hew_parser::diagnostic::Applicability::HasPlaceholders,
+            );
+            if let Some(separator) = append_separator {
+                if separator == position {
+                    fix.edits[0].new_text.insert(0, ',');
+                } else {
+                    fix.edits.push(hew_parser::diagnostic::TextEdit {
+                        span: (separator..separator).into(),
+                        new_text: ",".into(),
+                    });
+                }
+            }
+            error.fixes.push(fix);
+        }
+        for witness in missing {
+            error = error.with_suggestion(witness.display.clone());
         }
         self.errors.push(error);
     }
@@ -768,4 +878,34 @@ impl Checker {
         }
         leaves
     }
+}
+
+/// Keep binding edits at the declaration retained by the scope warning.
+fn binding_warning_fixes(
+    warning: &crate::env::ScopeWarning,
+) -> Vec<hew_parser::diagnostic::DiagnosticFix> {
+    use crate::env::ScopeWarningKind;
+    use hew_parser::diagnostic::{Applicability, DiagnosticFix};
+    let Some(declaration) = &warning.declaration else {
+        return Vec::new();
+    };
+    let fix = match warning.kind {
+        // A declaration-only rename can capture a different `_name` value.
+        ScopeWarningKind::Unused => Some(DiagnosticFix::replace(
+            "Prefix with `_`",
+            declaration.name_span.clone(),
+            format!("_{}", warning.name),
+            Applicability::MaybeIncorrect,
+        )),
+        ScopeWarningKind::NeverMutated => declaration.keyword_span.clone().map(|span| {
+            DiagnosticFix::replace(
+                "Change `var` to `let`",
+                span,
+                "let",
+                Applicability::MachineApplicable,
+            )
+        }),
+        ScopeWarningKind::VarParamMutationLost | ScopeWarningKind::TaskOutlivesTimedSelect => None,
+    };
+    fix.into_iter().collect()
 }

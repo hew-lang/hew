@@ -13,6 +13,7 @@ categories = ["compilers", "development-tools"]
 workspace = true
 
 [dependencies]
+sha2.workspace = true
 hew-lexer = { path = "../hew-lexer" }
 hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }

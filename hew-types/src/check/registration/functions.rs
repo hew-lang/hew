@@ -1106,6 +1106,7 @@ impl Checker {
         });
         if !signature_matches {
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::IntrinsicSignatureMismatch {
                     intrinsic_key: intrinsic_key.to_string(),
@@ -1169,6 +1170,7 @@ impl Checker {
         // Reject early and do NOT insert into `intrinsic_declarations`.
         if key.contains("::") {
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::IntrinsicOnMethod {
                     intrinsic_key: intrinsic_key.to_string(),
@@ -1224,6 +1226,7 @@ impl Checker {
             .clone()
             .unwrap_or_else(|| "(root)".to_string());
         self.errors.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Error,
             kind: TypeErrorKind::IntrinsicOutsideFloor {
                 intrinsic_key: intrinsic_key.to_string(),

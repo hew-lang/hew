@@ -555,6 +555,7 @@ impl LowerCtx {
                 label,
                 condition,
                 body,
+                ..
             } => {
                 // `while cond { body }` — lowered to a HIR `While` expression
                 // so that MIR can build the header/body/exit CFG shape.

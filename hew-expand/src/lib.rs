@@ -58,6 +58,7 @@ pub fn expand_program(
             (
                 path,
                 ParseError {
+                    fixes: Vec::new(),
                     message,
                     span,
                     hint: None,
@@ -166,6 +167,9 @@ fn expand_item(
                         registry.borrow().map.source_origin(&error.span)
                     {
                         error.span = span;
+                        // Expansion origins can name a whole invocation, not
+                        // an exact authored token suitable for replacement.
+                        error.fixes.clear();
                         path
                     } else {
                         source.to_path_buf()
@@ -192,6 +196,7 @@ fn expand_item(
                         return Err((
                             path,
                             ParseError {
+                                fixes: Vec::new(),
                                 message: error.message,
                                 span,
                                 hint: None,

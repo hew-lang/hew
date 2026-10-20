@@ -537,7 +537,11 @@ fn parse_lsp_diagnostic(error: &hew_parser::ParseError, target: &DiagnosticTarge
             || error.message.clone(),
             |hint| format!("{}\n\nhint: {hint}", error.message),
         ),
-        data: Some(parse_diagnostic_data(&error.kind)),
+        data: Some(bind_diagnostic_fixes(
+            parse_diagnostic_data(&error.kind),
+            target,
+            &error.fixes,
+        )),
         ..Default::default()
     }
 }
@@ -563,7 +567,11 @@ fn type_lsp_diagnostic(
             )
         },
         related_information: type_related_information(error, note_sources, target),
-        data: Some(diagnostic_data(&error.kind, &error.suggestions)),
+        data: Some(bind_diagnostic_fixes(
+            diagnostic_data(&error.kind, &error.suggestions),
+            target,
+            &error.fixes,
+        )),
         ..Default::default()
     }
 }
@@ -860,6 +868,18 @@ pub(super) fn severity_to_lsp(severity: Severity) -> DiagnosticSeverity {
         Severity::Error => DiagnosticSeverity::ERROR,
         Severity::Warning => DiagnosticSeverity::WARNING,
     }
+}
+
+fn bind_diagnostic_fixes(
+    mut data: serde_json::Value,
+    target: &DiagnosticTarget,
+    fixes: &[hew_parser::diagnostic::DiagnosticFix],
+) -> serde_json::Value {
+    data["sourceUri"] = serde_json::json!(target.uri.as_str());
+    data["source_hash"] =
+        serde_json::json!(hew_analysis::code_actions::source_hash(&target.source));
+    data["fixes"] = serde_json::json!(fixes);
+    data
 }
 
 /// Encode a `TypeErrorKind` discriminant and suggestions as JSON for `Diagnostic.data`.

@@ -2944,12 +2944,23 @@ impl Checker {
                         // `type mismatch: expected `Unit`, found `()``. Reject it
                         // here with the canonical hint. A user-declared
                         // `type Unit` shadows this reservation (local-shadows-global).
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &te.1,
-                            "unknown type `Unit`".to_string(),
-                            vec!["the unit type is written `()`".to_string()],
+                        self.errors.push(
+                            TypeError::new(
+                                TypeErrorKind::UndefinedType,
+                                te.1.clone(),
+                                "unknown type `Unit`",
+                            )
+                            .with_suggestion("the unit type is written `()`")
+                            .with_fix(
+                                hew_parser::diagnostic::DiagnosticFix::replace(
+                                    "Use `()`",
+                                    te.1.clone(),
+                                    "()",
+                                    hew_parser::diagnostic::Applicability::MaybeIncorrect,
+                                ),
+                            ),
                         );
+
                         return Ty::Error;
                     }
                     _ => {}

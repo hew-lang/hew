@@ -28,7 +28,10 @@ The package exports JSON-string APIs for the current developer-tooling surface:
   `code_actions`, and `get_keywords`.
 
 Diagnostics include stable `phase`, `kind`, nested `span`, `message`, `notes`,
-and `suggestions` fields. The legacy `start_offset` / `end_offset` fields remain
+and `suggestions` fields, plus `source_hash` and producer-owned `fixes` (title,
+applicability and byte-range edits). Pass diagnostics unchanged to `code_actions`;
+human suggestions are prose. Stale snapshots and imported origins do not produce
+root-buffer edits. The legacy `start_offset` / `end_offset` fields remain
 for existing browser bridges.
 
 ## Compilation and execution

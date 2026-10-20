@@ -2078,7 +2078,7 @@ fn module_qualified_named_type_method_rejects_leaf_method_retry() {
     );
 
     let receiver = (Expr::Ident(Ident::new("thing")), 0..5);
-    let ty = checker.check_method_call(&receiver, "label", &[], &(0..13));
+    let ty = checker.check_method_call(&receiver, "label", None, &[], &(0..13));
 
     assert_eq!(ty, Ty::Error);
     assert!(

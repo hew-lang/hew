@@ -811,6 +811,7 @@ mod tests {
         // `loop { while { break } { } }` — the while CONDITION is a header
         // expression in the enclosing scope, so its break targets the outer loop.
         let while_stmt = sp(Stmt::While {
+            header_span: None,
             label: None,
             condition: break_block_expr(),
             body: empty_block(),
@@ -825,6 +826,7 @@ mod tests {
     fn while_condition_without_break_not_detected() {
         // `loop { while cond { } }` — a plain identifier condition has no break.
         let while_stmt = sp(Stmt::While {
+            header_span: None,
             label: None,
             condition: sp(Expr::Ident(Ident::new("cond"))),
             body: empty_block(),
@@ -892,6 +894,7 @@ mod tests {
         use crate::ast::{MatchArm, Pattern};
         // `loop { match v { _ if { break } => 1 } }` — break in an arm GUARD.
         let arm = MatchArm {
+            append_separator: None,
             pattern: sp(Pattern::Wildcard),
             guard: Some(break_block_expr()),
             body: sp(Expr::Literal(int_lit(1))),
@@ -948,6 +951,7 @@ mod tests {
         use crate::ast::{MatchArm, Pattern};
         // `loop { let _ = match { break } { _ => 1 }; }` — Expr::Match scrutinee.
         let arm = MatchArm {
+            append_separator: None,
             pattern: sp(Pattern::Wildcard),
             guard: None,
             body: sp(Expr::Literal(int_lit(1))),
@@ -967,11 +971,13 @@ mod tests {
         use crate::ast::{MatchArm, Pattern};
         // `loop { let _ = match v { _ if { break } => 1, _ => 2 }; }` — guard.
         let guarded = MatchArm {
+            append_separator: None,
             pattern: sp(Pattern::Wildcard),
             guard: Some(break_block_expr()),
             body: sp(Expr::Literal(int_lit(1))),
         };
         let fallback = MatchArm {
+            append_separator: None,
             pattern: sp(Pattern::Wildcard),
             guard: None,
             body: sp(Expr::Literal(int_lit(2))),
@@ -1005,6 +1011,7 @@ mod tests {
         // `@outer: loop { while { break @outer } { } }` — a labeled header break
         // escapes to the named outer loop.
         let while_stmt = sp(Stmt::While {
+            header_span: None,
             label: None,
             condition: labeled_break_block_expr("outer"),
             body: empty_block(),
@@ -1020,6 +1027,7 @@ mod tests {
         // `loop { loop { while { break } { } } }` — the header break targets the
         // middle loop (its nearest enclosing loop), NOT the outermost loop.
         let inner_while = sp(Stmt::While {
+            header_span: None,
             label: None,
             condition: break_block_expr(),
             body: empty_block(),

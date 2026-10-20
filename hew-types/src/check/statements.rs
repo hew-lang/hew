@@ -636,7 +636,17 @@ impl Checker {
         for (i, (stmt, span)) in block.stmts.iter().enumerate() {
             // If a previous statement was terminal, warn about this unreachable code
             if terminated {
+                let end = block.trailing_expr.as_ref().map_or_else(
+                    || block.stmts.last().map_or(span.end, |stmt| stmt.1.end),
+                    |expr| expr.1.end,
+                );
                 self.warnings.push(TypeError {
+                    fixes: vec![hew_parser::diagnostic::DiagnosticFix::replace(
+                        "Remove unreachable code",
+                        span.start..end,
+                        "",
+                        hew_parser::diagnostic::Applicability::MachineApplicable,
+                    )],
                     severity: crate::error::Severity::Warning,
                     kind: TypeErrorKind::UnreachableCode,
                     span: span.clone(),
@@ -688,6 +698,12 @@ impl Checker {
         let ty = if let Some(expr) = &block.trailing_expr {
             if terminated {
                 self.warnings.push(TypeError {
+                    fixes: vec![hew_parser::diagnostic::DiagnosticFix::replace(
+                        "Remove unreachable code",
+                        expr.1.clone(),
+                        "",
+                        hew_parser::diagnostic::Applicability::MachineApplicable,
+                    )],
                     severity: crate::error::Severity::Warning,
                     kind: TypeErrorKind::UnreachableCode,
                     span: expr.1.clone(),
@@ -1300,6 +1316,7 @@ impl Checker {
                     if val_ty == Ty::Unit && value.is_some() && !name.name.as_str().starts_with('_')
                     {
                         self.warnings.push(TypeError {
+                            fixes: Vec::new(),
                             severity: crate::error::Severity::Warning,
                             kind: TypeErrorKind::StyleSuggestion,
                             span: span.clone(),
@@ -1322,6 +1339,17 @@ impl Checker {
                     let name_end = pattern.1.start.saturating_add(name.name.as_str().len());
                     if name_end <= pattern.1.end {
                         self.record_local_resolution(*name, &(pattern.1.start..name_end));
+                        self.env.set_binding_declaration(
+                            *name,
+                            crate::env::BindingDeclaration {
+                                name_span: pattern.1.start..name_end,
+                                keyword_span: Some(span.start..span.start + 3),
+                                initializer_site: ty
+                                    .as_ref()
+                                    .filter(|_| value.is_none())
+                                    .map(|ty| ty.1.end),
+                            },
+                        );
                     }
                     self.env
                         .set_collection_borrow(*name, collection_borrow.clone());
@@ -1600,6 +1628,17 @@ impl Checker {
                 }
                 self.check_shadowing(*name, span);
                 self.env.define_with_span(*name, val_ty, true, span.clone());
+                self.env.set_binding_declaration(
+                    *name,
+                    crate::env::BindingDeclaration {
+                        name_span: name_span.clone(),
+                        keyword_span: Some(span.start..span.start + 3),
+                        initializer_site: ty
+                            .as_ref()
+                            .filter(|_| value.is_none())
+                            .map(|ty| ty.1.end),
+                    },
+                );
                 if value.is_none() {
                     self.env.mark_unassigned(*name);
                 }
@@ -1834,16 +1873,25 @@ impl Checker {
                                 .iter()
                                 .find(|f| f.name == name.name.as_str())
                             {
-                                self.errors.push(TypeError::immutable_field_assignment(
+                                let mut error = TypeError::immutable_field_assignment(
                                     span.clone(),
                                     name.name.as_str(),
                                     field.decl_span.clone(),
-                                ));
+                                );
+                                error.fixes.extend(field.mutable_fix.clone());
+                                self.errors.push(error);
                             } else {
-                                self.errors.push(TypeError::mutability_error(
-                                    span.clone(),
-                                    name.name.as_str(),
-                                ));
+                                let mut error =
+                                    TypeError::mutability_error(span.clone(), name.name.as_str());
+                                if let Some(fix) = self
+                                    .env
+                                    .lookup_ref(name)
+                                    .and_then(|binding| binding.declaration.as_ref())
+                                    .and_then(crate::env::BindingDeclaration::mutable_fix)
+                                {
+                                    error.fixes.push(fix);
+                                }
+                                self.errors.push(error);
                             }
                         } else if let Some((root, path)) = self.expr_place(&target.0) {
                             // Replacing the root acquires a fresh local value;
@@ -1894,7 +1942,7 @@ impl Checker {
                 // width then fails `check_against`'s ordinary implicit-convert
                 // gate instead of drifting.
                 if let Expr::Ident(name) = &target.0 {
-                    if let Some(binding) = self.env.lookup_ref(*name) {
+                    if let Some(binding) = self.env.lookup_ref(name) {
                         if let binding_ty @ Ty::Var(_) = binding.ty.clone() {
                             let value_resolved = self.subst.resolve(&value_ty);
                             if self.subst.resolve(&binding_ty).is_numeric_literal()
@@ -1929,10 +1977,17 @@ impl Checker {
                                 .lookup_ref(*name)
                                 .is_some_and(|binding| !binding.is_mutable)
                             {
-                                self.errors.push(TypeError::mutability_error(
-                                    span.clone(),
-                                    name.name.as_str(),
-                                ));
+                                let mut error =
+                                    TypeError::mutability_error(span.clone(), name.name.as_str());
+                                if let Some(fix) = self
+                                    .env
+                                    .lookup_ref(*name)
+                                    .and_then(|binding| binding.declaration.as_ref())
+                                    .and_then(crate::env::BindingDeclaration::mutable_fix)
+                                {
+                                    error.fixes.push(fix);
+                                }
+                                self.errors.push(error);
                             } else {
                                 self.env.mark_written(*name);
                             }
@@ -2262,12 +2317,25 @@ impl Checker {
             }
             Stmt::While {
                 label,
+                header_span,
                 condition,
                 body,
             } => {
                 // Detect `while true` — suggest `loop` instead
                 if matches!(&condition.0, Expr::Literal(Literal::Bool(true))) {
                     self.warnings.push(TypeError {
+                        fixes: header_span
+                            .as_ref()
+                            .map(|header| {
+                                hew_parser::diagnostic::DiagnosticFix::replace(
+                                    "Replace `while true` with `loop`",
+                                    header.clone(),
+                                    "loop",
+                                    hew_parser::diagnostic::Applicability::MachineApplicable,
+                                )
+                            })
+                            .into_iter()
+                            .collect(),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
                         span: span.clone(),

@@ -673,6 +673,7 @@ impl TemplateNames<'_> {
                 label: _,
                 condition,
                 body,
+                ..
             } => {
                 self.expr(condition)?;
                 self.block(body)?;

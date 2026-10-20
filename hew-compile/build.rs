@@ -25,7 +25,17 @@ pub(crate) fn git_version(repo_dir: &Path, cargo_version: &str) -> String {
         return cargo_version.to_string();
     }
 
-    let Ok(describe) = git_stdout(repo_dir, &["describe", "--tags", "--long", "--dirty"]) else {
+    let Ok(describe) = git_stdout(
+        repo_dir,
+        &[
+            "describe",
+            "--tags",
+            "--match",
+            "v[0-9]*.[0-9]*.[0-9]*",
+            "--long",
+            "--dirty",
+        ],
+    ) else {
         return shallow_clone_version(repo_dir, cargo_version);
     };
 
@@ -108,6 +118,14 @@ fn git_watch_paths(repo_dir: &Path) -> Vec<PathBuf> {
     if let Some(head) = git_path("HEAD").filter(|path| path.exists()) {
         paths.push(head);
     }
+    // Creating or removing a release tag changes the version without moving
+    // HEAD or touching source. Packed tags share the common packed-refs file.
+    if let Some(tags) = git_path("refs/tags").filter(|path| path.exists()) {
+        paths.push(tags);
+    }
+    if let Some(packed) = git_path("packed-refs").filter(|path| path.exists()) {
+        paths.push(packed);
+    }
     if let Ok(ref_name) = git_stdout(repo_dir, &["symbolic-ref", "--quiet", "HEAD"]) {
         if let Some(reference) = git_path(&ref_name) {
             if reference.exists() {
@@ -124,9 +142,6 @@ fn git_watch_paths(repo_dir: &Path) -> Vec<PathBuf> {
                         .find(|path| path.exists())
                 }) {
                     paths.push(parent.to_path_buf());
-                }
-                if let Some(packed) = git_path("packed-refs").filter(|path| path.exists()) {
-                    paths.push(packed);
                 }
             }
         }

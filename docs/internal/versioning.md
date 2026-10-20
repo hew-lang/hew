@@ -37,6 +37,21 @@ Packages using an addition declare its minimum compiler version through
 `hew` in `hew.toml`. Incompatible changes require exact migration instructions
 and coherent updates to all in-tree consumers.
 
+### Development builds
+
+Immediately after publishing a release, open the next planned development
+version on main with `scripts/bump-version.sh`. Store the plain base version in
+`Cargo.toml`, without a `-dev` suffix: the build appends `-dev.X+<commit>` to
+untagged builds, where `X` counts commits since the nearest reachable Hew
+release tag. Unrelated tags do not affect that count. A dirty checkout also
+appends `.dirty`; a clean build at the matching tag reports the plain version.
+
+For the current patch sequence, main uses base `0.6.2` after v0.6.1 and base
+`0.6.3` after v0.6.2. Keep edition 2026 unchanged. This is a main-branch closeout
+change, separate from the already qualified release commit and its tag. The
+[post-release checklist](../release-runbook.md#phase-6--post-release-verification)
+owns the concrete steps.
+
 ### Pre-release suffix
 
 - `-pre` — an untagged preview version while a release is being assembled.
@@ -128,8 +143,8 @@ the Hew language edition; it governs how the compiler's own source compiles.
 - **Workspace `Cargo.toml`** (`[workspace.package] version = "..."`) — the
   source of truth. All crates inherit via `version.workspace = true`.
 - **`docs/syntax-data.json`** — its `version` field is hand-maintained and
-  checked against `CARGO_PKG_VERSION` by a `hew-lexer` test; a release bump
-  that skips it fails `cargo test -p hew-lexer`.
+  checked against `CARGO_PKG_VERSION` by a `hew-lexer` test. The bump script
+  updates it together with lockfiles, npm identities and generated fixtures.
 - **`CHANGELOG.md`** — `[Unreleased]` becomes `[X.Y.Z]` at tag time.
 - **`docs/releases/vX.Y.Z.md`** — curated narrative release notes
   (when the release warrants them; PATCH releases may skip this).

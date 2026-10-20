@@ -392,15 +392,9 @@ fn send_failure_reply(
             return;
         }
 
-        // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
-        // read lock held above (guard) ensures it remains valid for this call.
-        let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
-        if conn_id < 0 {
-            return;
-        }
         // SAFETY: the current-node guard pins this manager for the reply.
         let Some(send_claim) = (unsafe {
-            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+            connection::claim_send_to_route(&*conn_mgr, target_node_id, Some(publication))
         }) else {
             return;
         };
@@ -466,16 +460,9 @@ pub(super) fn send_reply_envelope(
             return;
         }
 
-        // Find the connection back to the requesting node.
-        // SAFETY: conn_mgr is the manager that received the ask. The CURRENT_NODE
-        // read lock held above (guard) ensures it remains valid for this call.
-        let conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(conn_mgr, target_node_id) };
-        if conn_id < 0 {
-            return;
-        }
         // SAFETY: the current-node guard pins this manager for the reply.
         let Some(send_claim) = (unsafe {
-            connection::claim_send_to_route(&*conn_mgr, conn_id, target_node_id, Some(publication))
+            connection::claim_send_to_route(&*conn_mgr, target_node_id, Some(publication))
         }) else {
             return;
         };

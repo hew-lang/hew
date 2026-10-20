@@ -195,12 +195,27 @@ pub(crate) fn claim_send_to_location(
 
 pub(crate) fn claim_send_to_route(
     manager: &HewConnMgr,
-    conn_id: c_int,
     route_slot: u16,
     publication: Option<u64>,
 ) -> Option<SendClaim> {
+    if route_slot == 0 {
+        return None;
+    }
+    // A predecessor may remain active while its successor publishes. Select
+    // the authoritative claim, then revalidate it after releasing this lock.
+    let conn_id = manager
+        .claims
+        .0
+        .lock_or_recover()
+        .values()
+        .find(|owner| {
+            owner.state == ClaimState::Published
+                && owner.route_slot == route_slot
+                && publication.is_none_or(|token| owner.publication_token == token)
+        })?
+        .conn_id;
     let claim = claim_send(manager, conn_id, publication)?;
-    (route_slot != 0 && claim.route_slot == route_slot).then_some(claim)
+    (claim.route_slot == route_slot).then_some(claim)
 }
 
 pub(super) unsafe fn send_preencoded_on_manager(
@@ -247,9 +262,6 @@ pub(crate) unsafe fn hew_connmgr_send_preencoded_claimed(
 
 /// Return the connection ID of the first active connection whose handshake
 /// identified the peer as `node_id`. Returns -1 if not found.
-///
-/// Used by `send_reply_envelope` on the accepting side where `conn_by_node`
-/// is not populated (only the initiating side calls `hew_node_connect`).
 ///
 /// # Safety
 ///

@@ -147,16 +147,11 @@ pub(crate) unsafe fn hew_connmgr_send_swim(
     }
 
     // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
-    let conn_id = unsafe { hew_connmgr_conn_id_for_node(mgr, peer_node_id) };
-    if conn_id < 0 {
-        return -1;
-    }
-    // SAFETY: mgr validity is the caller's contract, re-checked non-null above.
     let flags = unsafe { hew_connmgr_feature_flags_for_node(mgr, peer_node_id) };
     if !supports_gossip(flags) {
         return -1;
     }
-    let Some(send_claim) = claim_send_to_route(mgr_ref, conn_id, peer_node_id, None) else {
+    let Some(send_claim) = claim_send_to_route(mgr_ref, peer_node_id, None) else {
         return -1;
     };
 

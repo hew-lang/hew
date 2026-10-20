@@ -386,11 +386,12 @@ fn sandbox_bytecode(args: &[String]) -> Result<()> {
             ),
         ),
     ];
+    let formatter_cli = root.join("hew-sandbox-vm/node_modules/prettier/bin/prettier.cjs");
     for (relative, generated) in outputs {
         let path = root.join(relative);
-        // Use the supported Make/Bash environment, including npm wrappers on Windows.
-        let mut formatter = std::process::Command::new("bash")
-            .args(["-c", "exec prettier --stdin-filepath \"$1\"", "prettier"])
+        let mut formatter = std::process::Command::new("node")
+            .arg(&formatter_cli)
+            .arg("--stdin-filepath")
             .arg(&path)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

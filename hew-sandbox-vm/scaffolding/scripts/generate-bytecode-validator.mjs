@@ -49,8 +49,12 @@ const destination = path.join(
   "src/interpreter/v1/package-validator.generated.ts",
 );
 const formatted = spawnSync(
-  "bash",
-  ["-c", 'exec prettier --stdin-filepath "$1"', "prettier", destination],
+  process.execPath,
+  [
+    path.join(root, "node_modules/prettier/bin/prettier.cjs"),
+    "--stdin-filepath",
+    destination,
+  ],
   {
     input: unformatted,
     encoding: "utf8",

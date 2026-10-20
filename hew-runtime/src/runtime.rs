@@ -41,7 +41,7 @@ use crate::lifetime::local_handles::LocalHandles;
 use crate::lifetime::poison_safe::PoisonSafe;
 use crate::registry::ShardedRegistry;
 use crate::scheduler::Scheduler;
-use crate::shutdown::SupervisorPtr;
+use crate::supervisor::roots::SupervisorPtr;
 
 // `RuntimeId` is defined in the always-compiled `runtime_id` module (it must
 // exist on wasm too, where this native `runtime` module is configured out, so

@@ -36,7 +36,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
     } {
         set_last_error("runtime cleanup retained an unfinished supervisor constructor");
         // SAFETY: Canonical post-worker cleanup owns this live parent and retains it if the constructor cannot drain.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         return false;
     }
     // ROSTER-EXCLUSIVE: runtime cleanup runs after workers join and closes
@@ -46,7 +46,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
     else {
         set_last_error("runtime cleanup left a pinned supervisor allocated");
         // SAFETY: canonical cleanup still owns this live top-level root.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         return false;
     };
     // Clone the Arc before cancellation without creating an exclusive borrow:
@@ -64,7 +64,7 @@ pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool 
         // a one-shot teardown leaks it fail-closed. Freeing now would be a
         // use-after-free in the delayed-restart thread.
         // SAFETY: canonical cleanup still owns the live top-level allocation.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         return false;
     }
     // SAFETY: every timer raw borrow drained above; canonical cleanup now has

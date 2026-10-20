@@ -617,7 +617,7 @@ impl NativePublication {
 
                     (*child).parent = sup;
                     (*child).index_in_parent = *index;
-                    crate::shutdown::hew_shutdown_unregister_supervisor(child);
+                    roots::hew_shutdown_unregister_supervisor(child);
 
                     roster.child_supervisors[*index] = child;
                     roster.child_supervisor_tokens[*index] = token;

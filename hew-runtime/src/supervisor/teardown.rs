@@ -272,7 +272,7 @@ pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSuperviso
         // SAFETY: the deferred owner is returning the still-live allocation
         // without consuming it.
         // SAFETY: canonical cleanup still owns the live top-level allocation.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
     }
 }
 
@@ -323,7 +323,7 @@ pub(crate) unsafe fn claim_nested_supervisor_for_detach(
     unsafe { (*sup).parent = ptr::null_mut() };
     // SAFETY: the claimed detached allocation remains live through stop or a
     // fail-closed handoff back to canonical cleanup.
-    unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+    unsafe { roots::hew_shutdown_register_supervisor(sup) };
     drop(pin);
     true
 }
@@ -1188,7 +1188,7 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
     unsafe {
         (*new_child).parent = sup;
         (*new_child).index_in_parent = index;
-        crate::shutdown::hew_shutdown_unregister_supervisor(new_child);
+        roots::hew_shutdown_unregister_supervisor(new_child);
     }
     // SAFETY: `new_child` is the live allocation returned by `init_fn`.
     let new_token = unsafe { (*new_child).local_pid_id };
@@ -1209,7 +1209,7 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
             // the still-live, otherwise-unpublished allocation.
             unsafe {
                 (*new_child).parent = ptr::null_mut();
-                crate::shutdown::hew_shutdown_register_supervisor(new_child);
+                roots::hew_shutdown_register_supervisor(new_child);
             }
             return ptr::null_mut();
         }

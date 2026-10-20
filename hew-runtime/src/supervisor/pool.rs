@@ -583,7 +583,7 @@ pub(super) unsafe fn adopt_native_child(
         unsafe {
             (*nested).parent = sup;
             (*nested).index_in_parent = index;
-            crate::shutdown::hew_shutdown_unregister_supervisor(nested);
+            roots::hew_shutdown_unregister_supervisor(nested);
         }
         roster.child_supervisors[index] = nested;
         roster.child_supervisor_tokens[index] = token;

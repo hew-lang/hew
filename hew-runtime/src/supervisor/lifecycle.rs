@@ -328,6 +328,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
     let runtime = crate::runtime::rt_current();
     let sup = Box::new(HewSupervisor {
         runtime: runtime as *const crate::runtime::RuntimeInner,
+        handles: &raw const runtime.local_handles,
         local_pid_id: crate::lifetime::local_handles::HewLocalPidId::INVALID,
         strategy,
         max_restarts,
@@ -605,7 +606,7 @@ pub unsafe extern "C" fn hew_supervisor_start(sup: *mut HewSupervisor) -> c_int 
     // SAFETY: construction has exclusive authority over the parent edge.
     if unsafe { (*sup).parent.is_null() } {
         // SAFETY: sup is valid and will remain valid until shutdown.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
     }
 
     // SAFETY: start retains both allocations until buffered admission finishes.
@@ -746,7 +747,7 @@ pub(crate) unsafe fn finish_claimed_supervisor(
             if root_unregistered {
                 // SAFETY: the failed handoff leaves the top-level allocation
                 // live and teardown ownership is released below.
-                unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+                unsafe { roots::hew_shutdown_register_supervisor(sup) };
             }
             release_supervisor_teardown(sup);
             set_last_error("hew_supervisor_stop: failed to spawn deferred stop thread");
@@ -756,7 +757,7 @@ pub(crate) unsafe fn finish_claimed_supervisor(
         if !root_unregistered {
             // Unregister once the deferred owner is guaranteed to finish.
             // SAFETY: `sup` is live and was registered when started.
-            unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+            unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
         }
         drop(teardown);
         return true;
@@ -766,7 +767,7 @@ pub(crate) unsafe fn finish_claimed_supervisor(
         // Unregister before consuming the raw pointer so shutdown cannot race
         // this exact-once teardown owner.
         // SAFETY: `sup` is live and was registered when started.
-        unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+        unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
     }
     run_supervisor_teardown_hook_for_test();
     // SAFETY: teardown ownership is uniquely claimed by the caller.
@@ -818,7 +819,7 @@ pub(crate) unsafe fn stop_supervisor_with_teardown_authority(
         if unsafe { (*sup).parent.is_null() } {
             // SAFETY: the claimed allocation stays live until canonical
             // cleanup consumes the restored root.
-            unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+            unsafe { roots::hew_shutdown_register_supervisor(sup) };
         }
         return;
     }
@@ -960,7 +961,7 @@ pub(crate) fn stop_local_supervisor(
     // cleanup can no longer select it for a competing canonical destructor.
     if top_level {
         // SAFETY: the pin proves that `sup` remains live through unregister.
-        unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+        unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
     }
     drop(pin);
     // Reclamation removes the registry's final control reference. Do not keep
@@ -1856,7 +1857,7 @@ mod tests {
             let (sup, child, self_actor) = make_supervisor_with_child();
             let child_id = (*child).id;
             let self_id = (*self_actor).id;
-            crate::shutdown::hew_shutdown_register_supervisor(sup);
+            roots::hew_shutdown_register_supervisor(sup);
             let timer = (*sup)
                 .restart_timers
                 .begin(FaultRecord::NONE)
@@ -2218,7 +2219,7 @@ mod tests {
         }
         // SAFETY: this top-level root remains live until the stop owner or
         // canonical cleanup consumes it.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         // SAFETY: the supervisor remains live until one of the joined owners
         // reclaims it.
         let token = unsafe { hew_supervisor_direct_id(sup) };
@@ -2398,7 +2399,7 @@ mod tests {
         // SAFETY: sup is live and registered as a cleanup root below.
         let token = unsafe { hew_supervisor_direct_id(sup) };
         // SAFETY: this fresh supervisor remains live until cleanup consumes it.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
 
         let entered = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -2468,12 +2469,12 @@ mod tests {
         // Mirror the deferred/token handoff: canonical cleanup ownership is
         // removed only after teardown admission and the exact owner claim.
         // SAFETY: `sup` remains live through this fail-closed handoff.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         // SAFETY: `sup` is a live supervisor in the current runtime.
         let teardown = unsafe { begin_supervisor_teardown(sup) }.expect("teardown lease");
         assert!(claim_supervisor_teardown(sup));
         // SAFETY: the teardown owner now holds the allocation exclusively.
-        unsafe { crate::shutdown::hew_shutdown_unregister_supervisor(sup) };
+        unsafe { roots::hew_shutdown_unregister_supervisor(sup) };
 
         FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.set(true));
         // SAFETY: the exact teardown owner retains the live allocation.
@@ -2501,11 +2502,11 @@ mod tests {
         // canonical cleanup as a root and keeps its claim.
         assert!(claim_supervisor_teardown(sup));
         // SAFETY: the claimed allocation stays live through this handback.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
         // Shutdown takes each root before stopping it; the claim refuses.
         // SAFETY: as above.
         unsafe {
-            crate::shutdown::hew_shutdown_unregister_supervisor(sup);
+            roots::hew_shutdown_unregister_supervisor(sup);
             hew_supervisor_stop(sup);
         }
         assert!(
@@ -2621,7 +2622,7 @@ mod tests {
         // the current actor only long enough to select the deferred stop path.
         unsafe {
             let (sup, child, _self_actor) = make_supervisor_with_child();
-            crate::shutdown::hew_shutdown_register_supervisor(sup);
+            roots::hew_shutdown_register_supervisor(sup);
             (*child)
                 .actor_state
                 .store(HewActorState::Runnable as i32, Ordering::Release);

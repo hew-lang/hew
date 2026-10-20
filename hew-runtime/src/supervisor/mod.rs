@@ -1180,6 +1180,8 @@ unsafe impl Send for SupervisorRoster {}
 pub struct HewSupervisor {
     /// Runtime authority that owns this allocation's stable handle control.
     runtime: *const crate::runtime::RuntimeInner,
+    /// Exact local-handle authority retained until supervisor teardown drains.
+    handles: *const crate::lifetime::local_handles::LocalHandles,
     /// Direct stable identity for this exact supervisor allocation.
     local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
     strategy: c_int,
@@ -1622,26 +1624,21 @@ unsafe fn begin_supervisor_access_close(
 )> {
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`;
     // copy scalars without creating a whole-supervisor reference.
-    let (runtime_ptr, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime_ptr.is_null() {
-        return None;
-    }
-    // SAFETY: the runtime outlives every registered supervisor control.
-    let runtime = unsafe { &*runtime_ptr };
-    let control = runtime
-        .local_handles
-        .supervisor_control_for_raw(token, sup)?;
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    // SAFETY: the handle authority outlives every registered supervisor control.
+    let handles = unsafe { handles.as_ref() }?;
+    let control = handles.supervisor_control_for_raw(token, sup)?;
     // Cancellation waits behind any roster publisher that acquired its lock
     // first. Later publishers refuse it, so this observer snapshot is final.
     request_supervisor_shutdown(sup);
     // SAFETY: this teardown owner keeps the raw allocation live until close.
     control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
     let won_close = control.begin_close();
-    runtime.local_handles.retire_supervisor_route(&control);
+    handles.retire_supervisor_route(&control);
     if won_close {
         run_supervisor_close_hook_for_test();
     }
-    Some((control, &raw const runtime.local_handles))
+    Some((control, std::ptr::from_ref(handles)))
 }
 
 unsafe fn close_supervisor_access(
@@ -1664,15 +1661,9 @@ unsafe fn begin_supervisor_teardown(
     sup: *mut HewSupervisor,
 ) -> Option<crate::lifetime::local_handles::SupervisorTeardownLease> {
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
-    let runtime_ptr = unsafe { (*sup).runtime };
-    if runtime_ptr.is_null() {
-        return None;
-    }
-    // SAFETY: cleanup cannot reclaim the runtime until this admission either
-    // fails under the closed gate or returns a lease that cleanup must drain.
-    unsafe { &*runtime_ptr }
-        .local_handles
-        .begin_supervisor_teardown()
+    let handles = unsafe { (*sup).handles };
+    // SAFETY: cleanup retains this authority until admitted teardown leases drain.
+    unsafe { handles.as_ref() }?.begin_supervisor_teardown()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -2752,6 +2743,7 @@ mod native;
 mod pool;
 mod restart;
 mod role;
+pub(crate) mod roots;
 mod teardown;
 
 pub use child::*;

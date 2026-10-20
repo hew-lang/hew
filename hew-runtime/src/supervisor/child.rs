@@ -44,7 +44,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor(
         (*child).index_in_parent = idx;
         // Unregister from top-level list (was registered in
         // hew_supervisor_start when parent was still null).
-        crate::shutdown::hew_shutdown_unregister_supervisor(child);
+        roots::hew_shutdown_unregister_supervisor(child);
     };
     0
 }
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
         // The child was auto-registered as a top-level supervisor in
         // hew_supervisor_start (parent was null at that point). Now that
         // it has a parent, unregister it so only the true root is stopped.
-        crate::shutdown::hew_shutdown_unregister_supervisor(child);
+        roots::hew_shutdown_unregister_supervisor(child);
     };
     0
 }

@@ -107,20 +107,22 @@ published Hew release; nothing here pushes into them.
   environment.
 - **homebrew-hew**: driven by `publish-homebrew` above; `update-formula.yml`
   downloads the release archives and commits the formulae.
-- **hew.sh and hew.run**: depend on `@hew-lang/wasm` by exact version. Both
-  map the `@hew-lang` scope to GitHub Packages today, because
-  `@hew-lang/playground-sandbox` exists only there; bump the version and
-  refresh the lockfile with the `Browser package dependencies` workflow
-  (`resolve`), which installs the consumer commit from the authenticated
-  registry and uploads the lockfile to commit. Once `playground-sandbox` is on
-  npmjs, drop the scope's registry lines and pin the packages from npmjs, where
-  `npm audit signatures` verifies their provenance.
-- **playground**: the release does not depend on a pinned playground image.
-  The playground repository consumes the published `@hew-lang` packages and
-  release assets after the tag, and builds and deploys on its own pipeline.
-  hew.sh and hew.run stay on GitHub Packages until the playground repository
-  publishes `@hew-lang/playground-sandbox` to npmjs through its `publish-sdk.yml`
-  after each Hew release.
+- **playground-client and playground-sandbox**: publish their package archives
+  as immutable GitHub Release assets, with checksum sidecars. The sandbox
+  wrapper pins its compiler and VM dependencies; publish a matching wrapper
+  after the new engine packages are available, before updating browser consumers.
+  Verify the actual published archives against their checksums.
+- **hew.sh and hew.run**: pin `@hew-lang/wasm` and `@hew-lang/sandbox-vm` to the
+  same published engine version from npmjs. Pin the client and sandbox wrapper
+  dependencies to their public GitHub Release archive URLs and regenerate the
+  lockfile from those published bytes. Remove obsolete GitHub Packages scope
+  routing from the consumer. Prove a fresh installation with empty user/global
+  npm configuration and no package-registry credentials, then run the consumer's
+  build and browser checks. Keep the prior released pins until the complete
+  replacement dependency graph is published and verified.
+- **playground**: the server consumes the published packages and release assets
+  on its own build and deployment pipeline. Browser package updates do not
+  require a new server image to be published by the compiler release workflow.
 
 ## v0.6.0-rc3 native candidate scope
 

@@ -404,7 +404,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","id":1,"method":"initialize",
-        "params":{"processId":null,"capabilities":{},"rootUri":root_uri}}),
+        "params":{"processId":null,"capabilities":{"workspace":{"diagnostics":{"refreshSupport":true}}},"rootUri":root_uri}}),
     );
     recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(1)));
     send(
@@ -420,6 +420,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
         m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
     });
 
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 90, false);
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","id":2,"method":"hew/tests",
@@ -434,6 +435,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
         &json!({"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand",
         "params":{"command":"hew.runTest","arguments":[selector]}}),
     );
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 91, false);
     let failed = recv_until(&rx, deadline, |m| {
         m["method"] == "textDocument/publishDiagnostics"
             && m["params"]["uri"] == uri
@@ -452,8 +454,46 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
     assert!(diagnostic["message"].as_str().unwrap().contains("left: 1"));
     assert!(diagnostic["message"].as_str().unwrap().contains("right: 2"));
 
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 92, true);
     assert_seeded_rerun_and_edit_clear(&mut stdin, &rx, deadline, &uri);
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 93, false);
     shutdown(&mut stdin);
+}
+
+/// Clients may pull before acknowledging refresh. This must work while test
+/// failures are cleared and published, as well as after source edits.
+fn assert_test_diagnostic_pull_before_refresh_ack(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    deadline: Instant,
+    uri: &str,
+    id: i64,
+    expect_failure: bool,
+) {
+    let refresh = recv_until(rx, deadline, |message| {
+        message["method"] == "workspace/diagnostic/refresh"
+    });
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":"textDocument/diagnostic",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let report = recv_until(rx, deadline, |message| {
+        message["id"] == id && message.get("method").is_none()
+    });
+    assert!(report["error"].is_null(), "{report}");
+    let items = report["result"]["items"].as_array().expect("full report");
+    assert_eq!(
+        items
+            .iter()
+            .any(|diagnostic| diagnostic["source"] == "hew test"),
+        expect_failure,
+        "{report}"
+    );
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":refresh["id"],"result":null}),
+    );
 }
 
 fn assert_seeded_rerun_and_edit_clear(

@@ -465,7 +465,7 @@ pub struct HewLanguageServer {
     analysis_versions: AnalysisVersions,
     /// Completed generations include refreshes of all importing documents.
     completed_analysis_versions: AnalysisVersions,
-    /// Serialize source scheduling, dependent refresh, close and pull snapshots.
+    /// Serialize source scheduling, diagnostic publication, close and pull snapshots.
     analysis_jobs: Arc<tokio::sync::Mutex<()>>,
     diagnostic_reports: RwLock<handlers::editor::DiagnosticReports>,
     /// Failures from the CLI test stream, kept separate from source diagnostics.
@@ -663,7 +663,6 @@ impl HewLanguageServer {
                     .await;
             }
         }
-        self.refresh_pull_diagnostics().await;
     }
 
     async fn refresh_pull_diagnostics(&self) {
@@ -677,6 +676,7 @@ impl HewLanguageServer {
     }
 
     async fn begin_test_run(&self, test_name: &str) -> TestRunState {
+        let analysis = self.analysis_jobs.lock().await;
         let file = test_name
             .rsplit_once("::")
             .map_or(test_name, |(file, _)| file);
@@ -716,6 +716,8 @@ impl HewLanguageServer {
                 .retain(|selector, _| !selector.starts_with(&prefix));
         }
         self.publish_test_diagnostics_for(&affected).await;
+        drop(analysis);
+        self.refresh_pull_diagnostics().await;
         TestRunState {
             affected,
             target_uri,
@@ -796,6 +798,7 @@ impl HewLanguageServer {
                     Vec::new()
                 };
                 wait_for_output_task(stderr_task, "stderr").await?;
+                let analysis = self.analysis_jobs.lock().await;
                 if let (Some(uri), Some(run_version)) = (&target_uri, run_version) {
                     if self.test_run_versions.get(uri).map(|version| *version) != Some(run_version)
                         || self.analysis_versions.get(uri).map(|version| *version) != edit_version
@@ -805,6 +808,8 @@ impl HewLanguageServer {
                 }
                 self.record_test_failures(&events, &mut affected);
                 self.publish_test_diagnostics_for(&affected).await;
+                drop(analysis);
+                self.refresh_pull_diagnostics().await;
                 let client = self.client.clone();
                 tokio::spawn(async move {
                     let _ = client.code_lens_refresh().await;

@@ -496,8 +496,12 @@ impl Checker {
                         // the impl site so mismatches surface where the user
                         // wrote them, not as a confusing "type does not satisfy
                         // trait" downstream. See LESSONS row `diagnostic-trust`.
-                        if let Some(tb) = id.trait_bound.as_ref() {
-                            self.check_impl_method_against_trait(type_name, tb, method, &sig);
+                        if let (Some(tb), Some(trait_ref)) =
+                            (id.trait_bound.as_ref(), impl_trait.as_ref())
+                        {
+                            self.check_impl_method_against_trait(
+                                type_name, tb, trait_ref, method, &sig,
+                            );
                         }
                         // When the receiver is a primitive or compiler-builtin
                         // generic, `lookup_type_def_mut(type_name)` returns `None` so the

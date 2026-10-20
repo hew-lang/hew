@@ -1,0 +1,58 @@
+trait Echo<A, B> {
+    fn echo(self, marker: A, consume value: B) -> B;
+}
+
+trait Flip<X, Y>: Echo<Y, X> {}
+
+type Fixed {}
+
+impl<T> Echo<i64, T> for Fixed {
+    fn echo(self, marker: i64, consume value: T) -> T {
+        assert(marker == 7);
+        value
+    }
+}
+
+impl<T> Flip<T, i64> for Fixed {
+    fn echo(self, marker: i64, consume value: T) -> T {
+        assert(marker == 7);
+        value
+    }
+}
+
+trait Nested<X, Y>: Echo<Vec<Y>, Option<X>> {}
+trait Rotated<A, B>: Nested<B, A> {}
+
+type NestedFixed {}
+
+impl<T> Echo<Vec<i64>, Option<T>> for NestedFixed {
+    fn echo(self, marker: Vec<i64>, consume value: Option<T>) -> Option<T> {
+        assert(marker[0] == 7);
+        value
+    }
+}
+
+impl<T> Nested<T, i64> for NestedFixed {}
+
+impl<T> Rotated<i64, T> for NestedFixed {
+    fn echo(self, marker: Vec<i64>, consume value: Option<T>) -> Option<T> {
+        assert(marker[0] == 7);
+        value
+    }
+}
+
+fn flipped<F: Flip<string, i64>>(item: F) -> string {
+    item.echo(7, "owned".to_upper())
+}
+
+fn nested<R: Rotated<i64, string>>(item: R) -> string {
+    match item.echo([7], .Some("nested".to_upper())) {
+        .Some(value) => value,
+        .None => "missing",
+    }
+}
+
+fn main() {
+    println(flipped(Fixed {}));
+    println(nested(NestedFixed {}));
+}

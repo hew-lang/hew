@@ -656,10 +656,10 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
 }
 
 /// A native coroutine observes one stable role without blocking the driver.
-/// The root pin stays live until cancellation or completion; nested owners are
-/// resolved afresh because their allocations can be replaced while waiting.
+/// Stable identities survive suspension; allocation pins cover only a readiness
+/// check so an idle observer cannot prevent supervisor teardown.
 pub struct HewNativeRestartWait {
-    root_pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    root: crate::lifetime::local_handles::HewLocalPidId,
     /// Stable supervisor-role tokens and their slots, from root to owner.
     owner_path: Vec<(crate::lifetime::local_handles::HewLocalPidId, u32)>,
     slot: u32,
@@ -670,7 +670,7 @@ pub struct HewNativeRestartWait {
 impl std::fmt::Debug for HewNativeRestartWait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewNativeRestartWait")
-            .field("has_supervisor", &self.root_pin.is_some())
+            .field("root", &self.root)
             .field("owner_depth", &self.owner_path.len())
             .field("slot", &self.slot)
             .field("nested", &self.nested)
@@ -713,7 +713,7 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
         unsafe { &(*pin.supervisor()).native_restart_wakers }.register(&waker);
     }
     Box::into_raw(Box::new(HewNativeRestartWait {
-        root_pin,
+        root,
         owner_path,
         slot,
         nested: role_kind == ROLE_KIND_SUPERVISOR,
@@ -764,7 +764,7 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
 ) -> c_int {
     // SAFETY: the caller owns the wait until it is freed.
     let wait = unsafe { &*wait };
-    let Some(root_pin) = &wait.root_pin else {
+    let Some(root_pin) = crate::lifetime::local_handles::pin_current_supervisor(wait.root) else {
         return 1;
     };
     let mut sup = root_pin.supervisor();
@@ -846,7 +846,7 @@ fn restart_wait_owner_is_current(
     })
 }
 
-/// Detach a native restart observer, releasing its supervisor pin and wake.
+/// Detach a native restart observer, releasing its retained wake.
 ///
 /// # Safety
 /// The caller transfers its unique wait owner.

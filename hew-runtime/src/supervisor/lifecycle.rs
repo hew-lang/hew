@@ -3884,6 +3884,38 @@ mod tests {
     }
 
     #[test]
+    fn native_restart_wait_survives_supervisor_reclamation() {
+        let _rt = crate::runtime_test_guard();
+        let (ready, waker) = crate::wake::blocking::Readiness::new();
+        // SAFETY: the test owns the tree and observer. No worker runs, and the
+        // observer must use its stable identity after teardown frees the tree.
+        unsafe {
+            let (sup, child, _) = make_supervisor_with_child();
+            let wait = hew_supervisor_native_restart_wait_new(
+                (*sup).local_pid_id,
+                0,
+                ROLE_KIND_ACTOR,
+                waker.descriptor(),
+            );
+            (*child)
+                .actor_state
+                .store(HewActorState::Stopping as i32, Ordering::Release);
+            assert_eq!(hew_supervisor_native_restart_wait_poll(wait), 0);
+            (*child)
+                .actor_state
+                .store(HewActorState::Idle as i32, Ordering::Release);
+            assert!(
+                close_supervisor_access_with_timeout(sup, Duration::ZERO),
+                "a suspended observer cannot retain an allocation pin"
+            );
+            hew_supervisor_stop(sup);
+            assert!(ready.take_ready(), "shutdown wakes the restart observer");
+            assert_eq!(hew_supervisor_native_restart_wait_poll(wait), 1);
+            hew_supervisor_native_restart_wait_free(wait);
+        }
+    }
+
+    #[test]
     fn native_restart_wait_follows_replaced_nested_owner() {
         let _rt = crate::runtime_test_guard();
         let (ready, waker) = crate::wake::blocking::Readiness::new();

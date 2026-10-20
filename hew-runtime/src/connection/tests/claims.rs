@@ -131,18 +131,18 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     let identity = test_node_identity(42);
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1),
+        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1, None),
         ClaimReservation::Reserved { superseded: None }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 1));
     assert!(retire_identity_claim(mgr, identity, 100, 1));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2),
+        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2, None),
         ClaimReservation::Rejected(_)
     ));
 
-    let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2) {
+    let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2, None) {
         ClaimReservation::Reserved {
             superseded: Some(retired),
         } => retired,
@@ -157,7 +157,7 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     abort_identity_claim(mgr, identity, 200, 2, Some(equal_superseded));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3),
+        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3, None),
         ClaimReservation::Reserved {
             superseded: Some(LiveClaim {
                 state: ClaimState::Retired,

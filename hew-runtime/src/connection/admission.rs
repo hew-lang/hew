@@ -24,8 +24,8 @@ use super::identity_claim::{
 use super::reader::reader_loop;
 use super::reconnect::next_publication_token;
 use super::{
-    ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr, SendConnMgr,
-    SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
+    ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr,
+    ReconnectOwner, SendConnMgr, SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
 };
 
 pub(super) fn install_connection_actor(
@@ -86,11 +86,20 @@ pub(super) fn install_connection_actor(
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`](super::manager::hew_connmgr_new).
 /// `conn_id` must be a valid connection ID from the transport.
 #[no_mangle]
+pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
+    // SAFETY: the caller provides a live manager and an owned transport connection.
+    unsafe { add_connection(mgr, conn_id, None) }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "connection event loop handles all states"
 )]
-pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
+pub(super) unsafe fn add_connection(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    predecessor: Option<&ReconnectOwner>,
+) -> c_int {
     if mgr.is_null() {
         // Cannot close conn_id: no transport pointer available.  This is API
         // misuse; the caller retains ownership of conn_id in this case only.
@@ -285,6 +294,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         Some(&peer_credential),
         conn_id,
         claim_token,
+        predecessor,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {

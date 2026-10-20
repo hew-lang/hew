@@ -609,10 +609,8 @@ that missing evidence or establish safety sign-off.
   integration tests and name filters. It stops on a reported race and uses no
   default suppressions. Record the actual toolchain, target and executed scope;
   no current nightly TSan job is available to review.
-- **WASM capability gaps**: Pipes (`stream.pipe`, `Stream<T>`, `Sink<T>`)
-  and the other suspending I/O paths remain compile-time refusals on
-  wasm32-wasi. Timers (`sleep`/`sleep_until`) have cooperative
-  semantics on WASM (actor parks at message boundary) and emit a warning rather
-  than an error. See
-  [`docs/wasm-capability-matrix.md`](wasm-capability-matrix.md) for the full
-  Tier 1 / Tier 2 disposition table.
+- **WASM capability gaps**: In-memory pipes and cooperative timers execute on
+  WASI. File-backed streams, native networking and other host facilities retain
+  target-specific limits. Use the
+  [WASM capability matrix](wasm-capability-matrix.md) for the current browser and
+  WASI support table and its execution evidence.

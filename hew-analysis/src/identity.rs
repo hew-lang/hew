@@ -91,6 +91,17 @@ pub fn resolution_at(
         .map(|(key, resolution)| (span_of(key), *resolution))
 }
 
+/// Whether a checked source segment is exactly one authored identifier token.
+/// Some expression resolutions include trailing punctuation or whitespace.
+#[must_use]
+pub fn is_identifier_span(source: &str, span: OffsetSpan) -> bool {
+    let Some(text) = source.get(span.start..span.end) else {
+        return false;
+    };
+    matches!(hew_lexer::lex(text).as_slice(), [(hew_lexer::Token::Identifier(_), token)]
+        if token.start == 0 && token.end == text.len())
+}
+
 /// Every resolved source segment in one file that names the same declaration.
 ///
 /// This includes the queried segment if it is present in the checker table.

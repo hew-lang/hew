@@ -98,6 +98,7 @@ pub(crate) async fn execute_command(
                 )
                 .await;
             if output.status.success() {
+                let _analysis = server.analysis_jobs.lock().await;
                 let documents = server
                     .documents
                     .iter()

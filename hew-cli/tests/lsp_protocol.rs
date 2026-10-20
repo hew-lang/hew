@@ -404,7 +404,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","id":1,"method":"initialize",
-        "params":{"processId":null,"capabilities":{},"rootUri":root_uri}}),
+        "params":{"processId":null,"capabilities":{"workspace":{"diagnostics":{"refreshSupport":true}}},"rootUri":root_uri}}),
     );
     recv_until(&rx, deadline, |m| m.get("id") == Some(&json!(1)));
     send(
@@ -420,6 +420,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
         m["method"] == "textDocument/publishDiagnostics" && m["params"]["uri"] == uri
     });
 
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 90, false);
     send(
         &mut stdin,
         &json!({"jsonrpc":"2.0","id":2,"method":"hew/tests",
@@ -434,6 +435,7 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
         &json!({"jsonrpc":"2.0","id":3,"method":"workspace/executeCommand",
         "params":{"command":"hew.runTest","arguments":[selector]}}),
     );
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 91, false);
     let failed = recv_until(&rx, deadline, |m| {
         m["method"] == "textDocument/publishDiagnostics"
             && m["params"]["uri"] == uri
@@ -452,8 +454,46 @@ fn lsp_test_failure_diagnostic_and_seeded_rerun_roundtrip() {
     assert!(diagnostic["message"].as_str().unwrap().contains("left: 1"));
     assert!(diagnostic["message"].as_str().unwrap().contains("right: 2"));
 
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 92, true);
     assert_seeded_rerun_and_edit_clear(&mut stdin, &rx, deadline, &uri);
+    assert_test_diagnostic_pull_before_refresh_ack(&mut stdin, &rx, deadline, &uri, 93, false);
     shutdown(&mut stdin);
+}
+
+/// Clients may pull before acknowledging refresh. This must work while test
+/// failures are cleared and published, as well as after source edits.
+fn assert_test_diagnostic_pull_before_refresh_ack(
+    stdin: &mut ChildStdin,
+    rx: &Receiver<Value>,
+    deadline: Instant,
+    uri: &str,
+    id: i64,
+    expect_failure: bool,
+) {
+    let refresh = recv_until(rx, deadline, |message| {
+        message["method"] == "workspace/diagnostic/refresh"
+    });
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":id,"method":"textDocument/diagnostic",
+        "params":{"textDocument":{"uri":uri}}}),
+    );
+    let report = recv_until(rx, deadline, |message| {
+        message["id"] == id && message.get("method").is_none()
+    });
+    assert!(report["error"].is_null(), "{report}");
+    let items = report["result"]["items"].as_array().expect("full report");
+    assert_eq!(
+        items
+            .iter()
+            .any(|diagnostic| diagnostic["source"] == "hew test"),
+        expect_failure,
+        "{report}"
+    );
+    send(
+        stdin,
+        &json!({"jsonrpc":"2.0","id":refresh["id"],"result":null}),
+    );
 }
 
 fn assert_seeded_rerun_and_edit_clear(
@@ -2209,4 +2249,383 @@ fn lsp_generation_diagnostics_do_not_execute_the_generator() {
         "{publish}"
     );
     assert!(!root.join(".hew/generate/lock").exists());
+}
+
+fn provider_position(path: &Path, source: &str, needle: &str) -> Value {
+    json!({"textDocument":{"uri":file_uri(path)},"position":position_of(source, needle)})
+}
+
+fn range_text<'a>(source: &'a str, range: &Value) -> &'a str {
+    &source[position_offset(source, &range["start"])..position_offset(source, &range["end"])]
+}
+
+#[test]
+fn lsp_editor_type_definition_uses_imported_unsaved_types_and_utf16() {
+    let project = TestProject::new("editor-type-definition");
+    let original =
+        "pub type Widget { value: i64; }\npub fn make() -> Widget { Widget { value: 42 } }\n";
+    let library = project.write("model.hew", original);
+    let fresh = format!("// unsaved library header\n{original}");
+    let source =
+        "import model;\nfn inspect(unused_param: model.Widget) {}\nfn main() { let w = model.make(); let unused = model.make(); let (left, right) = (model.make(), 2); println(\"🦊\"); println(w.value); }\n";
+    let file = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&library, &fresh, 1));
+    assert_clean(&session.open(&file, source, 1));
+    for needle in ["w =", "w.value", "unused =", "left,", "unused_param:"] {
+        let response = session.request(
+            "textDocument/typeDefinition",
+            provider_position(&file, source, needle),
+        );
+        assert!(response["error"].is_null(), "{response}");
+        assert_eq!(response["result"]["uri"], file_uri(&library), "{response}");
+        assert_eq!(range_text(&fresh, &response["result"]["range"]), "Widget");
+        assert_eq!(response["result"]["range"]["start"]["line"], 1);
+    }
+    let primitive = session.request(
+        "textDocument/typeDefinition",
+        provider_position(&library, &fresh, "42"),
+    );
+    assert!(
+        primitive["error"].is_null() && primitive["result"].is_null(),
+        "{primitive}"
+    );
+    let missing = session.request(
+        "textDocument/typeDefinition",
+        json!({"textDocument":{"uri":"untitled:missing"},"position":{"line":0,"character":0}}),
+    );
+    assert!(
+        missing["error"].is_null() && missing["result"].is_null(),
+        "{missing}"
+    );
+}
+
+#[test]
+fn lsp_editor_implementations_select_exact_trait_method_and_receiver() {
+    let project = TestProject::new("editor-implementations");
+    let source = "type Widget { value: i64; }\ntype Other { value: i64; }\ntrait Read { fn read(self) -> i64; }\ntrait Unrelated { fn read(self) -> i64; }\nimpl Read for Widget { fn read(self) -> i64 { self.value } }\nimpl Read for Other { fn read(self) -> i64 { self.value } }\nimpl Unrelated for Widget { fn read(self) -> i64 { 99 } }\nfn main() {}\n";
+    let file = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&file, source, 1));
+    for (needle, lines) in [
+        ("Read {", vec![4, 5]),
+        ("read(self)", vec![4, 5]),
+        ("Widget {", vec![4, 6]),
+        ("Unrelated {", vec![6]),
+    ] {
+        let response = session.request(
+            "textDocument/implementation",
+            provider_position(&file, source, needle),
+        );
+        assert!(response["error"].is_null(), "{response}");
+        let locations = response["result"]
+            .as_array()
+            .expect("implementation locations");
+        assert_eq!(
+            locations
+                .iter()
+                .map(|location| location["range"]["start"]["line"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            lines,
+            "{response}"
+        );
+        for location in locations {
+            assert_eq!(location["uri"], file_uri(&file));
+            assert_eq!(range_text(source, &location["range"]), "read");
+        }
+    }
+    let none = session.request(
+        "textDocument/implementation",
+        provider_position(&file, source, "main()"),
+    );
+    assert!(
+        none["error"].is_null() && none["result"].is_null(),
+        "{none}"
+    );
+}
+
+#[test]
+fn lsp_editor_highlights_preserve_binding_and_field_boundaries() {
+    let project = TestProject::new("editor-highlights");
+    let source = "type Pair { value: i64; }\nfn main() {\n    let (value, other) = (1, 2);\n    println(\"🦊\"); println(value);\n    { let value = 7; println(value); }\n    let p = Pair { value };\n    println(p.value);\n    println(value + other);\n}\n";
+    let file = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&file, source, 1));
+    for (needle, lines) in [
+        ("value +", vec![2, 3, 5, 7]),
+        ("value = 7", vec![4, 4]),
+        ("p.value", vec![5, 6]),
+    ] {
+        let response = session.request(
+            "textDocument/documentHighlight",
+            provider_position(&file, source, needle),
+        );
+        assert!(response["error"].is_null(), "{response}");
+        let highlights = response["result"].as_array().expect("highlights");
+        assert_eq!(
+            highlights
+                .iter()
+                .map(|highlight| highlight["range"]["start"]["line"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            lines,
+            "{response}"
+        );
+        let text = if needle == "p.value" { "p" } else { "value" };
+        for highlight in highlights {
+            assert_eq!(range_text(source, &highlight["range"]), text);
+        }
+    }
+    let field_position = position_of(source, "p.value");
+    let mut params = provider_position(&file, source, "p.value");
+    params["position"]["character"] = json!(field_position["character"].as_u64().unwrap() + 2);
+    let fields = session.request("textDocument/documentHighlight", params);
+    let highlights = fields["result"].as_array().expect("field highlights");
+    assert_eq!(
+        highlights
+            .iter()
+            .map(|highlight| highlight["range"]["start"]["line"].as_u64().unwrap())
+            .collect::<Vec<_>>(),
+        vec![0, 5, 6],
+        "{fields}"
+    );
+    let none = session.request(
+        "textDocument/documentHighlight",
+        provider_position(&file, source, "🦊"),
+    );
+    assert!(
+        none["error"].is_null() && none["result"].is_null(),
+        "{none}"
+    );
+}
+
+#[test]
+fn lsp_editor_selection_ranges_form_strict_nested_utf16_chains() {
+    let project = TestProject::new("editor-selections");
+    let source = "fn main() { println(\"🦊\"); let answer = (20 + 22); println(answer); }\n";
+    let file = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&file, source, 1));
+    let positions = vec![
+        position_of(source, "answer);"),
+        position_of(source, "22"),
+        json!({"line":1,"character":0}),
+    ];
+    let response = session.request(
+        "textDocument/selectionRange",
+        json!({"textDocument":{"uri":file_uri(&file)},"positions":positions}),
+    );
+    assert!(response["error"].is_null(), "{response}");
+    let ranges = response["result"].as_array().expect("selection ranges");
+    assert_eq!(ranges.len(), positions.len());
+    assert_eq!(range_text(source, &ranges[0]["range"]), "answer");
+    assert_eq!(range_text(source, &ranges[1]["range"]), "22");
+    for (index, selection) in ranges.iter().enumerate() {
+        let cursor = position_offset(source, &positions[index]);
+        let mut child = None;
+        let mut current = selection;
+        loop {
+            let range = &current["range"];
+            let start = position_offset(source, &range["start"]);
+            let end = position_offset(source, &range["end"]);
+            assert!(start <= cursor && cursor <= end, "{current}");
+            if let Some((child_start, child_end)) = child {
+                assert!(
+                    start <= child_start
+                        && child_end <= end
+                        && (start, end) != (child_start, child_end)
+                );
+            }
+            child = Some((start, end));
+            if current["parent"].is_null() {
+                assert_eq!((start, end), (0, source.len()));
+                break;
+            }
+            current = &current["parent"];
+        }
+    }
+}
+
+#[test]
+fn lsp_editor_pull_diagnostics_wait_for_changes_and_dependency_refresh() {
+    let project = TestProject::new("editor-diagnostics");
+    let good = "pub fn value() -> i64 { 42 }\n";
+    let dependency = project.write("model.hew", good);
+    let source = "import model;\nfn main() { let answer: i64 = model.value(); println(answer); }\n";
+    let file = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&dependency, good, 1));
+    let push = session.open(&file, source, 1);
+    assert_clean(&push);
+    let params = json!({"textDocument":{"uri":file_uri(&file)}});
+    let first = session.request("textDocument/diagnostic", params.clone());
+    assert!(first["error"].is_null(), "{first}");
+    assert_eq!(first["result"]["kind"], "full");
+    assert_eq!(first["result"]["items"], push["params"]["diagnostics"]);
+    let mut previous = params.clone();
+    previous["previousResultId"] = first["result"]["resultId"].clone();
+    let same = session.request("textDocument/diagnostic", previous.clone());
+    assert_eq!(same["result"]["kind"], "unchanged", "{same}");
+    session.change_without_waiting(&dependency, "pub fn value() -> string { \"bad\" }\n", 2);
+    let bad = session.request("textDocument/diagnostic", previous.clone());
+    assert_eq!(bad["result"]["kind"], "full", "{bad}");
+    assert!(
+        !bad["result"]["items"]
+            .as_array()
+            .expect("diagnostics")
+            .is_empty(),
+        "{bad}"
+    );
+    assert_ne!(bad["result"]["resultId"], first["result"]["resultId"]);
+    previous["previousResultId"] = bad["result"]["resultId"].clone();
+    let same_bad = session.request("textDocument/diagnostic", previous.clone());
+    assert_eq!(same_bad["result"]["kind"], "unchanged", "{same_bad}");
+    session.change_without_waiting(&dependency, good, 3);
+    let fixed = session.request("textDocument/diagnostic", previous.clone());
+    assert_eq!(fixed["result"]["kind"], "full", "{fixed}");
+    assert_eq!(fixed["result"]["items"], json!([]));
+    previous["previousResultId"] = fixed["result"]["resultId"].clone();
+    session.change_without_waiting(&file, &format!("// harmless edit\n{source}"), 2);
+    let unchanged = session.request("textDocument/diagnostic", previous);
+    assert_eq!(unchanged["result"]["kind"], "unchanged", "{unchanged}");
+    let closed_source = "fn main() { undefined_value; }\n";
+    let closed = project.write("closed.hew", closed_source);
+    let closed_report = session.request(
+        "textDocument/diagnostic",
+        json!({"textDocument":{"uri":file_uri(&closed)}}),
+    );
+    assert_eq!(closed_report["result"]["kind"], "full", "{closed_report}");
+    assert!(!closed_report["result"]["items"]
+        .as_array()
+        .expect("closed diagnostics")
+        .is_empty());
+    let missing = session.request(
+        "textDocument/diagnostic",
+        json!({"textDocument":{"uri":file_uri(&project.0.join("missing.hew"))}}),
+    );
+    assert_eq!(missing["error"]["code"], -32602, "{missing}");
+}
+
+#[test]
+fn lsp_editor_pull_client_receives_diagnostic_refresh_requests() {
+    let project = TestProject::new("editor-diagnostic-refresh");
+    let file = project.write("main.hew", BAD_SOURCE);
+    let uri = file_uri(&file);
+    let mut server = ServerProcess {
+        child: server_command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn hew lsp"),
+    };
+    let mut stdin = server.child.stdin.take().expect("stdin");
+    let rx = spawn_reader(server.child.stdout.take().expect("stdout"));
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","id":42,"method":"initialize","params":{
+            "processId":null,"capabilities":{"workspace":{"diagnostics":{"refreshSupport":true}}}
+        }}),
+    );
+    let initialized = recv_until(&rx, Instant::now() + SESSION_BUDGET, |m| m["id"] == 42);
+    let caps = &initialized["result"]["capabilities"];
+    for provider in [
+        "typeDefinitionProvider",
+        "implementationProvider",
+        "documentHighlightProvider",
+        "selectionRangeProvider",
+    ] {
+        assert_eq!(caps[provider], true, "{initialized}");
+    }
+    assert_eq!(caps["diagnosticProvider"]["interFileDependencies"], true);
+    assert_eq!(caps["diagnosticProvider"]["workspaceDiagnostics"], false);
+    send(
+        &mut stdin,
+        &json!({"jsonrpc":"2.0","method":"initialized","params":{}}),
+    );
+    for (version, source) in [(1, BAD_SOURCE), (2, "fn main() {}\n")] {
+        let notification = if version == 1 {
+            json!({"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{
+                "uri":uri,"languageId":"hew","version":version,"text":source
+            }}})
+        } else {
+            json!({"jsonrpc":"2.0","method":"textDocument/didChange","params":{
+                "textDocument":{"uri":uri,"version":version},"contentChanges":[{"text":source}]
+            }})
+        };
+        send(&mut stdin, &notification);
+        let refresh = recv_until(&rx, Instant::now() + SESSION_BUDGET, |m| {
+            m["method"] == "workspace/diagnostic/refresh"
+        });
+        send(
+            &mut stdin,
+            &json!({"jsonrpc":"2.0","id":refresh["id"],"result":null}),
+        );
+        send(
+            &mut stdin,
+            &json!({"jsonrpc":"2.0","id":43+version,"method":"textDocument/diagnostic","params":{"textDocument":{"uri":uri}}}),
+        );
+        let report = recv_until(&rx, Instant::now() + SESSION_BUDGET, |m| {
+            m["id"] == 43 + version && m.get("method").is_none()
+        });
+        assert_eq!(report["result"]["kind"], "full", "{report}");
+        assert_eq!(
+            report["result"]["items"]
+                .as_array()
+                .expect("diagnostics")
+                .is_empty(),
+            version == 2,
+            "{report}"
+        );
+    }
+    shutdown(&mut stdin);
+}
+
+#[test]
+fn lsp_editor_cancelled_pull_and_close_do_not_keep_pending_generations_alive() {
+    let project = TestProject::new("editor-diagnostic-cancel-close");
+    let good = "fn main() {}\n";
+    let file = project.write("main.hew", good);
+    let uri = file_uri(&file);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&file, good, 1));
+    let params = json!({"textDocument":{"uri":uri}});
+    let initial = session.request("textDocument/diagnostic", params.clone());
+    session.change_without_waiting(&file, BAD_SOURCE, 2);
+    // A watcher refresh must keep the pending authored buffer, even though
+    // the analyzed snapshot and the file on disk still contain `good`.
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"workspace/didChangeWatchedFiles",
+        "params":{"changes":[{"uri":uri,"type":2}]}}),
+    );
+    let cancelled_id = session.start_request("textDocument/diagnostic", params.clone());
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"$/cancelRequest","params":{"id":cancelled_id}}),
+    );
+    let cancelled = session.wait_for_responses(&[cancelled_id], SESSION_BUDGET);
+    assert_eq!(cancelled["error"]["code"], -32800, "{cancelled}");
+    let bad = session.request("textDocument/diagnostic", params.clone());
+    assert_eq!(bad["result"]["kind"], "full", "{bad}");
+    assert!(
+        !bad["result"]["items"]
+            .as_array()
+            .expect("diagnostics")
+            .is_empty(),
+        "{bad}"
+    );
+    session.change_without_waiting(&file, "fn main() { another_missing; }\n", 3);
+    send(
+        &mut session.stdin,
+        &json!({"jsonrpc":"2.0","method":"textDocument/didClose","params":{"textDocument":{"uri":uri}}}),
+    );
+    let mut previous = params;
+    previous["previousResultId"] = initial["result"]["resultId"].clone();
+    let closed = session.request("textDocument/diagnostic", previous.clone());
+    assert_eq!(closed["result"]["kind"], "full", "{closed}");
+    assert_eq!(closed["result"]["items"], json!([]));
+    assert_ne!(closed["result"]["resultId"], initial["result"]["resultId"]);
+    assert_clean(&session.open(&file, good, 4));
+    let reopened = session.request("textDocument/diagnostic", previous);
+    assert_eq!(reopened["result"]["items"], json!([]), "{reopened}");
 }

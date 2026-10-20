@@ -1,3 +1,4 @@
+pub(super) mod editor;
 pub(super) mod hierarchy;
 pub(super) mod language_features;
 pub(super) mod navigation;

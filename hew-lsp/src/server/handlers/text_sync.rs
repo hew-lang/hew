@@ -107,6 +107,15 @@ pub(crate) fn initialize(
             .and_then(|edit| edit.document_changes)
             .unwrap_or(false);
     }
+    if let Ok(mut supported) = server.diagnostic_refresh_supported.write() {
+        *supported = params
+            .capabilities
+            .workspace
+            .as_ref()
+            .and_then(|workspace| workspace.diagnostics.as_ref())
+            .and_then(|diagnostics| diagnostics.refresh_support)
+            .unwrap_or(false);
+    }
     let capabilities = build_server_capabilities();
     build_initialize_result(&capabilities)
 }
@@ -140,11 +149,8 @@ pub(crate) async fn initialized(server: &HewLanguageServer) {
 
 pub(crate) fn shutdown(_: &HewLanguageServer) {}
 
-#[expect(
-    clippy::unused_async,
-    reason = "called from an async LanguageServer impl; reanalyze is now sync (spawns internally)"
-)]
 pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocumentParams) {
+    let _analysis = server.analysis_jobs.lock().await;
     let uri = params.text_document.uri;
     let source = params.text_document.text;
     if let Ok(mut open) = server.open_documents.write() {
@@ -159,11 +165,8 @@ pub(crate) async fn did_open(server: &HewLanguageServer, params: DidOpenTextDocu
     server.reanalyze(&uri, &source);
 }
 
-#[expect(
-    clippy::unused_async,
-    reason = "called from an async LanguageServer impl; reanalyze is now sync (spawns internally)"
-)]
 pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeTextDocumentParams) {
+    let _analysis = server.analysis_jobs.lock().await;
     let uri = params.text_document.uri;
     if let Some(change) = params.content_changes.into_iter().last() {
         if let Ok(mut open) = server.open_documents.write() {
@@ -180,8 +183,20 @@ pub(crate) async fn did_change(server: &HewLanguageServer, params: DidChangeText
 }
 
 pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDocumentParams) {
+    let analysis = server.analysis_jobs.lock().await;
     if let Ok(mut open) = server.open_documents.write() {
         open.remove(&params.text_document.uri);
+    }
+    // Retain a monotonically increasing generation across close/reopen so a
+    // sleeping task from a previous open cannot match the reopened document.
+    if let Some(mut generation) = server.analysis_versions.get_mut(&params.text_document.uri) {
+        *generation += 1;
+        server
+            .completed_analysis_versions
+            .insert(params.text_document.uri.clone(), *generation);
+    }
+    if let Ok(mut reports) = server.diagnostic_reports.write() {
+        reports.remove(&params.text_document.uri);
     }
     server.test_diagnostics.remove(&params.text_document.uri);
     let published = close_document_and_dependents(
@@ -197,4 +212,6 @@ pub(crate) async fn did_close(server: &HewLanguageServer, params: DidCloseTextDo
             .publish_diagnostics(updated_uri, diagnostics, None)
             .await;
     }
+    drop(analysis);
+    server.refresh_pull_diagnostics().await;
 }

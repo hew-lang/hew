@@ -120,10 +120,11 @@ fn trimmed_package_paths_are_stable_across_roots() {
             assert!(!objects[0]
                 .1
                 .contains(&llvm_string_contents(root.to_str().unwrap())));
-            let mut args = vec!["build", ".", "-g", "-o", "linked"];
+            let linked = binary(root, "linked");
+            let mut args = vec!["build", ".", "-g", "-o", linked.to_str().unwrap()];
             args.extend_from_slice(flags);
             assert_ok(&hew(root, &args), "link native package");
-            let output = run_binary(&binary(root, "linked"));
+            let output = run_binary(&linked);
             assert_ok(&output, "run native package");
             assert_eq!(stdout(&output), "42\n");
             assert_eq!(stderr(&output), "native/calc.c\n");

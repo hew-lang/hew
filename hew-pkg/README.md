@@ -80,7 +80,7 @@ grant, then publish it after its matching source package:
 ```sh
 hew native build --target x86_64-unknown-linux-gnu --output target/native.tar.zst
 hew publish
-hew native publish target/native.tar.zst
+hew publish --native-archive target/native.tar.zst
 ```
 
 Native publication uses the existing registry login and signing key, refuses
@@ -231,3 +231,13 @@ The resolver supports semver version requirements:
 | `^1.0`  | Compatible (>=1.0.0, <2.0.0)  |
 | `~1.0`  | Approximate (>=1.0.0, <1.1.0) |
 | `>=1.0` | Greater or equal              |
+
+Native archives attach to the same source or workspace publication plan with
+repeatable `--native-archive PATH` inputs. They share its credentials or trusted
+publishing grant, signing key and verified readback. A source version that
+already exists still discovers missing requested native artifacts. Every
+native descriptor must name a selected native source package and its exact
+published source archive checksum; a same-tree source with different compression
+retains the registry archive identity. Rebuild a mismatched native input from
+the verified installed source archive, rather than changing its descriptor.
+`--dry-run` validates and compares both kinds without authentication or uploads.

@@ -67,6 +67,9 @@ pub enum PkgCommand {
         /// order
         #[arg(long)]
         workspace: bool,
+        /// Attach a native archive bound to one selected source package
+        #[arg(long = "native-archive", conflicts_with = "local")]
+        native_archives: Vec<PathBuf>,
         /// Where upload credentials come from
         #[arg(long, value_enum, default_value_t = PublishAuth::Credentials, conflicts_with = "local")]
         auth: PublishAuth,
@@ -254,12 +257,6 @@ pub enum NativeAction {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Publish an archive beside its already published source package
-    Publish {
-        archive: PathBuf,
-        #[arg(long, short = 'r')]
-        registry: Option<String>,
-    },
 }
 
 /// Execute a package-manager subcommand dispatched from the `hew` CLI.
@@ -307,6 +304,7 @@ pub fn dispatch(
             local,
             dry_run,
             workspace,
+            native_archives,
             auth,
         } => cmd_publish(
             &registry,
@@ -315,6 +313,7 @@ pub fn dispatch(
                 local: *local,
                 dry_run: *dry_run,
                 workspace: *workspace,
+                native_archives: native_archives.clone(),
                 auth: *auth,
             },
             &check_generation,
@@ -399,28 +398,6 @@ fn cmd_native(
                 .map_err(|error| error.to_string())?;
             println!("Native archive: {}", output.display());
             println!("Checksum: {}", archive.checksum);
-        }
-        NativeAction::Publish { archive, registry } => {
-            let bytes = std::fs::read(archive).map_err(|error| error.to_string())?;
-            let descriptor = crate::native_prebuilt::inspect(&bytes, &root.join("target"))?;
-            let keypair = signing::load_keypair(&signing::default_key_dir())
-                .map_err(|error| error.to_string())?;
-            let token =
-                resolve_registry_token(&credentials::credentials_path(), registry.as_deref())
-                    .map_err(|error| error.to_string())?;
-            let client = make_client(registry.as_deref()).with_token(token);
-            let checksum = crate::native_prebuilt::publish(
-                &client,
-                &bytes,
-                &descriptor,
-                &keypair,
-                &root.join("target"),
-            )?;
-            println!(
-                "Published native {}@{} for {}",
-                descriptor.name, descriptor.version, descriptor.identity.target
-            );
-            println!("Checksum: {checksum}");
         }
     }
     Ok(())
@@ -1923,6 +1900,24 @@ fn cmd_publish(
         return;
     }
 
+    let native_archives: Vec<_> = flags
+        .native_archives
+        .iter()
+        .map(|path| {
+            let bytes = std::fs::read(path).map_err(|error| {
+                publish::PublishError::Invalid(format!(
+                    "cannot read native archive {}: {error}",
+                    path.display()
+                ))
+            })?;
+            publish::NativeArchive::from_bytes(bytes)
+        })
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|error| fail(&error));
+    let api_client = make_client(registry_name);
+    let publication = publish::prepare_with_native(&api_client, &packages, &native_archives)
+        .unwrap_or_else(|error| fail(&error));
+
     // Phases 3 to 5: query, authenticate if anything uploads, then upload and
     // read back in order. `make_client` validates a named registry first, so a
     // typo'd `--registry NAME` gets the unknown-registry diagnostic rather
@@ -1958,13 +1953,13 @@ fn cmd_publish(
         }
     };
     let mut tally = PublishTally::default();
-    let result = publish::publish_all(
-        make_client(registry_name),
-        &packages,
+    let result = publish::publish_prepared(
+        api_client,
+        &publication,
         flags.dry_run,
         auth,
         &std::thread::sleep,
-        &mut |package, outcome| tally.report(package, outcome),
+        &mut |item, outcome| tally.report(item, outcome),
     );
     if flags.workspace {
         tally.summarize(flags.dry_run);
@@ -2035,11 +2030,12 @@ fn pack_publish_members(
 }
 
 /// `hew publish` switches that shape the run.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PublishFlags {
     local: bool,
     dry_run: bool,
     workspace: bool,
+    native_archives: Vec<PathBuf>,
     auth: PublishAuth,
 }
 
@@ -2131,15 +2127,29 @@ struct PublishTally {
 }
 
 impl PublishTally {
-    fn report(&mut self, package: &publish::PackedPackage, outcome: &publish::Outcome) {
+    fn report(&mut self, item: publish::PublicationItem<'_>, outcome: &publish::Outcome) {
+        let native = match item {
+            publish::PublicationItem::Native(archive) => {
+                format!(" native {}", archive.descriptor().identity.target)
+            }
+            _ => String::new(),
+        };
         match outcome {
             publish::Outcome::WouldPublish => {
                 self.published += 1;
-                print_would_publish(package);
+                match item {
+                    publish::PublicationItem::Source(package) => print_would_publish(package),
+                    publish::PublicationItem::Native(_) => println!(
+                        "Would publish {}@{}{native}\nChecksum: {}",
+                        item.name(),
+                        item.version(),
+                        item.checksum()
+                    ),
+                }
             }
             publish::Outcome::Skipped(skip) => {
                 self.skipped += 1;
-                println!("Skipped {}@{}: {skip}", package.name(), package.version());
+                println!("Skipped {}@{}{native}: {skip}", item.name(), item.version());
             }
             publish::Outcome::Published {
                 signature,
@@ -2147,11 +2157,11 @@ impl PublishTally {
             } => {
                 self.published += 1;
                 println!(
-                    "Published {}@{} to registry",
-                    package.name(),
-                    package.version()
+                    "Published {}@{}{native} to registry",
+                    item.name(),
+                    item.version()
                 );
-                println!("Checksum: {}", package.archive.checksum);
+                println!("Checksum: {}", item.checksum());
                 println!("Signature: {signature}");
                 println!("Key: {key_fingerprint}");
                 println!(

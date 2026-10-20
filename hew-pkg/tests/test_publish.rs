@@ -50,11 +50,16 @@ struct State {
     records: BTreeMap<(String, String), Value>,
     /// `(wire name, version)` -> stored archive bytes.
     archives: BTreeMap<(String, String), Vec<u8>>,
+    native_records: BTreeMap<String, Value>,
+    native_archives: BTreeMap<String, Vec<u8>>,
+    native_misses: usize,
+    native_conflict: bool,
     /// Publisher fingerprint -> base64 public key.
     keys: BTreeMap<String, String>,
     /// `METHOD path` for every request, in arrival order.
     log: Vec<String>,
     tamper: Option<Tamper>,
+    native_tamper: Option<Tamper>,
     /// On the next PUT, store this archive instead (as a concurrent publish
     /// would) and answer 409.
     conflict_with: Option<(Vec<u8>, KeyPairBytes)>,
@@ -399,7 +404,11 @@ fn route(
             (401, br#"{"error":"unauthorized"}"#.to_vec())
         }
         "PUT" => {
-            let reply = accept_upload(&mut state, registry_key, path, body);
+            let reply = if path.contains("/native/") {
+                accept_native_upload(&mut state, registry_key, path, body)
+            } else {
+                accept_upload(&mut state, registry_key, path, body)
+            };
             if reply.0 == 201 {
                 state.accepted_puts += 1;
                 if state.expire_grants_after_puts == Some(state.accepted_puts) {
@@ -434,10 +443,89 @@ fn route(
                 None => not_found(),
             }
         }
+        "GET" if path.contains("/native/") => serve_native(&mut state, registry_key, origin, path),
         "GET" if path.starts_with("/tarballs/") => serve_archive(&mut state, path),
         "GET" => serve_record(&state, registry_key, origin, path),
         _ => (405, br#"{"error":"method"}"#.to_vec()),
     }
+}
+
+fn accept_native_upload(
+    state: &mut State,
+    registry_key: &KeyPair,
+    path: &str,
+    body: &[u8],
+) -> (u16, Vec<u8>) {
+    let (source_path, route) = path.split_once("/native/").unwrap();
+    let (name, version) = package_version(source_path).unwrap();
+    let Some(source) = state.records.get(&(name.clone(), version.clone())) else {
+        return not_found();
+    };
+    let body: Value = serde_json::from_slice(body).unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(body["tarball"].as_str().unwrap())
+        .unwrap();
+    let archive = publish::NativeArchive::from_bytes(bytes.clone()).unwrap();
+    assert_eq!(archive.descriptor().source_checksum, source["cksum"]);
+    let checksum = hew_pkg::tarball::checksum_bytes(&bytes);
+    assert_eq!(body["checksum"], checksum);
+    let signature = body["signature"].as_str().unwrap();
+    let canonical = format!(
+        "registry:native:v1:{name}@{version}:{}:{}:{checksum}:{signature}:2026-01-02T03:04:05Z",
+        route.replace('/', ":"),
+        source["cksum"].as_str().unwrap()
+    );
+    let record = json!({"cksum":checksum,"sig":signature,"key_fp":body["key_fingerprint"],
+        "source_checksum":source["cksum"],"registry_sig":registry_key.sign(canonical.as_bytes()),
+        "registry_key_fp":"registry","published_at":"2026-01-02T03:04:05Z"});
+    if state.native_records.contains_key(path) {
+        return (409, b"conflict".to_vec());
+    }
+    state.native_records.insert(path.to_owned(), record);
+    state.native_archives.insert(path.to_owned(), bytes);
+    if state.native_conflict {
+        state.native_conflict = false;
+        return (409, b"racing publisher".to_vec());
+    }
+    (201, br#"{"ok":true}"#.to_vec())
+}
+
+fn serve_native(
+    state: &mut State,
+    registry_key: &KeyPair,
+    origin: &str,
+    path: &str,
+) -> (u16, Vec<u8>) {
+    if let Some(key) = path.strip_suffix("/download") {
+        if state.native_misses > 0 {
+            state.native_misses -= 1;
+            return not_found();
+        }
+        return match state.native_archives.get(key) {
+            Some(_) if state.native_tamper == Some(Tamper::Archive) => (200, b"corrupt".to_vec()),
+            Some(bytes) => (200, bytes.clone()),
+            None => not_found(),
+        };
+    }
+    let Some(record) = state.native_records.get(path) else {
+        return not_found();
+    };
+    let mut record = record.clone();
+    record["dl"] = json!(format!("{origin}{path}/download"));
+    match state.native_tamper.unwrap_or(Tamper::None) {
+        Tamper::Cksum => record["cksum"] = json!(format!("sha256:{}", "0".repeat(64))),
+        Tamper::KeyFp => record["key_fp"] = json!(KeyPair::generate().fingerprint()),
+        Tamper::Sig => record["sig"] = json!(registry_key.sign(b"wrong bytes")),
+        Tamper::RegistrySig => {
+            record["registry_sig"] = json!(registry_key.sign(b"wrong native identity"))
+        }
+        Tamper::NoRegistrySig => {
+            record.as_object_mut().unwrap().remove("registry_sig");
+        }
+        Tamper::Name => record["source_checksum"] = json!(format!("sha256:{}", "0".repeat(64))),
+        Tamper::None | Tamper::Archive => {}
+    }
+    (200, serde_json::to_vec(&record).unwrap())
 }
 
 /// `PUT /packages/{name}/{version}`, shaped like the registry's handler.
@@ -1761,7 +1849,20 @@ fn publish_checks_the_archive_membership_of_workspace_dependencies() {
 /// `hew publish --workspace --auth github-actions` with the runner's OIDC
 /// endpoint on `mock` and an empty `HEW_HOME`.
 fn trusted_publish(mock: &MockRegistry, root: &Path, hew_home: &Path) -> Output {
-    let arguments = ["publish", "--workspace", "--auth", "github-actions"];
+    trusted_publish_args(
+        mock,
+        root,
+        hew_home,
+        &["publish", "--workspace", "--auth", "github-actions"],
+    )
+}
+
+fn trusted_publish_args(
+    mock: &MockRegistry,
+    root: &Path,
+    hew_home: &Path,
+    arguments: &[&str],
+) -> Output {
     Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "publish_command_child", "--nocapture"])
         .env(CHILD_ARGS, serde_json::to_string(&arguments).unwrap())
@@ -2059,4 +2160,271 @@ fn prepared_plan_retains_the_stored_source_archive_identity() {
         package.archive.checksum
     );
     assert_eq!(mock.puts(), 0);
+}
+
+fn native_package() -> (TempDir, PackedPackage) {
+    let dir = tempfile::tempdir().unwrap();
+    write_package(dir.path(), 1);
+    let manifest = dir.path().join("hew.toml");
+    let mut text = fs::read_to_string(&manifest).unwrap();
+    text.push_str("\n[native]\ncrate = \".\"\n");
+    fs::write(manifest, text).unwrap();
+    fs::write(dir.path().join("Cargo.toml"), "[package]\nname='widget'\nversion='1.0.0'\nedition='2021'\n[lib]\npath='lib.rs'\ncrate-type=['staticlib']\n").unwrap();
+    fs::write(dir.path().join("lib.rs"), "pub fn value() -> i64 { 1 }\n").unwrap();
+    let package = publish::prepare(dir.path(), &|_| Ok(())).unwrap();
+    (dir, package)
+}
+
+fn native_archive(root: &Path, source_checksum: &str) -> Vec<u8> {
+    let dir = tempfile::tempdir().unwrap();
+    fs::copy(root.join("hew.toml"), dir.path().join("hew.toml")).unwrap();
+    fs::write(dir.path().join("native.json"), serde_json::to_vec(&json!({
+        "name":NAME,"version":VERSION,"source_checksum":source_checksum,
+        "identity":{"target":"x86_64-unknown-linux-gnu","hew":"0.6.3","rustc_release":"1.96.0","rustc_host":"x86_64-unknown-linux-gnu"},
+        "library":"libwidget.a"
+    })).unwrap()).unwrap();
+    fs::write(dir.path().join("libwidget.a"), b"!<arch>\n").unwrap();
+    let mut builder = tar::Builder::new(Vec::new());
+    for name in ["hew.toml", "native.json", "libwidget.a"] {
+        let data = fs::read(dir.path().join(name)).unwrap();
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, name, data.as_slice())
+            .unwrap();
+    }
+    zstd::encode_all(builder.into_inner().unwrap().as_slice(), 0).unwrap()
+}
+
+struct NativeAuth<'a> {
+    mock: &'a MockRegistry,
+    keypair: KeyPair,
+    calls: usize,
+}
+impl publish::Auth for NativeAuth<'_> {
+    fn authenticate(&mut self) -> Result<Signer, PublishError> {
+        self.calls += 1;
+        self.mock.register_key(&self.keypair);
+        Ok(Signer {
+            keypair: KeyPair::from_secret_bytes(self.keypair.secret_key_bytes()).unwrap(),
+            token: "token".into(),
+        })
+    }
+}
+
+#[test]
+fn unified_publication_uploads_source_then_native_and_retries_missing_native() {
+    let mock = MockRegistry::start();
+    let (dir, package) = native_package();
+    let archives =
+        [
+            publish::NativeArchive::from_bytes(native_archive(
+                dir.path(),
+                &package.archive.checksum,
+            ))
+            .unwrap(),
+        ];
+    let mut auth = NativeAuth {
+        mock: &mock,
+        keypair: KeyPair::generate(),
+        calls: 0,
+    };
+    let source = [package];
+    let plan = publish::prepare_with_native(&mock.client(), &source, &archives).unwrap();
+    publish::publish_prepared(
+        mock.client(),
+        &plan,
+        true,
+        &mut auth,
+        &no_sleep,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(auth.calls, 0);
+    assert_eq!(mock.puts(), 0);
+    // First publish only the source. A retry with the native input must still
+    // discover and upload it when every source version skips.
+    run(&mock, &source[0], false, &auth.keypair).unwrap();
+    let plan = publish::prepare_with_native(&mock.client(), &source, &archives).unwrap();
+    publish::publish_prepared(
+        mock.client(),
+        &plan,
+        false,
+        &mut auth,
+        &no_sleep,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(auth.calls, 1);
+    assert_eq!(mock.puts(), 2);
+    assert!(mock.put_paths()[1].contains("/native/"));
+    let plan = publish::prepare_with_native(&mock.client(), &source, &archives).unwrap();
+    publish::publish_prepared(
+        mock.client(),
+        &plan,
+        false,
+        &mut auth,
+        &no_sleep,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(auth.calls, 1);
+    assert_eq!(mock.puts(), 2);
+}
+
+#[test]
+fn native_source_binding_uses_the_stored_archive_before_authentication() {
+    let mock = MockRegistry::start();
+    let (dir, package) = native_package();
+    let stored = reencoded(&package.archive.data);
+    let checksum = hew_pkg::tarball::checksum_bytes(&stored);
+    mock.seed(&stored, &KeyPair::generate());
+    let wrong =
+        [
+            publish::NativeArchive::from_bytes(native_archive(
+                dir.path(),
+                &package.archive.checksum,
+            ))
+            .unwrap(),
+        ];
+    let source = [package];
+    let error = publish::prepare_with_native(&mock.client(), &source, &wrong).unwrap_err();
+    assert!(error.to_string().contains("E_PUBLISH_NATIVE_SOURCE"));
+    assert_eq!(mock.puts(), 0);
+    assert!(!mock.log().iter().any(|line| line.contains("/native/")));
+    let correct =
+        [publish::NativeArchive::from_bytes(native_archive(dir.path(), &checksum)).unwrap()];
+    let plan = publish::prepare_with_native(&mock.client(), &source, &correct).unwrap();
+    let mut auth = NativeAuth {
+        mock: &mock,
+        keypair: KeyPair::generate(),
+        calls: 0,
+    };
+    publish::publish_prepared(
+        mock.client(),
+        &plan,
+        false,
+        &mut auth,
+        &no_sleep,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(auth.calls, 1);
+}
+
+#[test]
+fn native_readback_rejects_corrupt_receipts_and_archive_bytes() {
+    for tamper in [
+        Tamper::Cksum,
+        Tamper::KeyFp,
+        Tamper::Sig,
+        Tamper::RegistrySig,
+        Tamper::NoRegistrySig,
+        Tamper::Archive,
+        Tamper::Name,
+    ] {
+        let mock = MockRegistry::start();
+        let (dir, package) = native_package();
+        mock.seed(&package.archive.data, &KeyPair::generate());
+        let archives = [publish::NativeArchive::from_bytes(native_archive(
+            dir.path(),
+            &package.archive.checksum,
+        ))
+        .unwrap()];
+        let source = [package];
+        let plan = publish::prepare_with_native(&mock.client(), &source, &archives).unwrap();
+        mock.state.lock().unwrap().native_tamper = Some(tamper);
+        let mut auth = NativeAuth {
+            mock: &mock,
+            keypair: KeyPair::generate(),
+            calls: 0,
+        };
+        let error = publish::publish_prepared(
+            mock.client(),
+            &plan,
+            false,
+            &mut auth,
+            &no_sleep,
+            &mut |_, _| {},
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, PublishError::Readback { .. }),
+            "{tamper:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn native_conflict_converges_and_readback_retries_visibility_lag() {
+    let mock = MockRegistry::start();
+    let (dir, package) = native_package();
+    let archives =
+        [
+            publish::NativeArchive::from_bytes(native_archive(
+                dir.path(),
+                &package.archive.checksum,
+            ))
+            .unwrap(),
+        ];
+    let source = [package];
+    let plan = publish::prepare_with_native(&mock.client(), &source, &archives).unwrap();
+    {
+        let mut state = mock.state.lock().unwrap();
+        state.native_conflict = true;
+        state.native_misses = 2;
+    }
+    let mut auth = NativeAuth {
+        mock: &mock,
+        keypair: KeyPair::generate(),
+        calls: 0,
+    };
+    publish::publish_prepared(
+        mock.client(),
+        &plan,
+        false,
+        &mut auth,
+        &no_sleep,
+        &mut |_, _| {},
+    )
+    .unwrap();
+    assert_eq!(mock.puts(), 2);
+    assert_eq!(auth.calls, 1);
+}
+
+#[test]
+fn trusted_source_and_native_share_key_and_refresh_grant() {
+    let mock = MockRegistry::start();
+    mock.state.lock().unwrap().expire_grants_after_puts = Some(1);
+    let (dir, package) = native_package();
+    let asset = dir.path().join("widget.tar.zst");
+    fs::write(
+        &asset,
+        native_archive(dir.path(), &package.archive.checksum),
+    )
+    .unwrap();
+    // Keep the attachment outside the source package snapshot.
+    let home = tempfile::tempdir().unwrap();
+    let outside = home.path().join("native.tar.zst");
+    fs::rename(&asset, &outside).unwrap();
+    let output = trusted_publish_args(
+        &mock,
+        dir.path(),
+        home.path(),
+        &[
+            "publish",
+            "--native-archive",
+            outside.to_str().unwrap(),
+            "--auth",
+            "github-actions",
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    let state = mock.state.lock().unwrap();
+    assert_eq!(state.exchanges.len(), 2);
+    assert_eq!(state.exchanges[0], state.exchanges[1]);
+    assert_eq!(state.native_records.len(), 1);
+    assert_eq!(state.accepted_puts, 2);
 }

@@ -479,53 +479,6 @@ pub(crate) fn inspect(bytes: &[u8], staging_parent: &Path) -> Result<NativeDescr
     Ok(descriptor)
 }
 
-pub(crate) fn publish(
-    client: &RegistryClient,
-    bytes: &[u8],
-    descriptor: &NativeDescriptor,
-    keypair: &crate::signing::KeyPair,
-    staging_parent: &Path,
-) -> Result<String, String> {
-    let record =
-        match client.get_native(&descriptor.name, &descriptor.version, &descriptor.identity) {
-            Ok(record) => record,
-            Err(ApiError::Server { status: 404, .. }) => {
-                let checksum = crate::tarball::checksum_bytes(bytes);
-                client
-                    .publish_native(
-                        descriptor,
-                        bytes,
-                        &keypair.sign(checksum.as_bytes()),
-                        &keypair.fingerprint(),
-                    )
-                    .map_err(|error| error.to_string())?;
-                let record = client
-                    .get_native(&descriptor.name, &descriptor.version, &descriptor.identity)
-                    .map_err(|error| error.to_string())?;
-                if record.cksum != checksum || record.key_fp != keypair.fingerprint() {
-                    return Err(
-                        "published native artifact record does not match submitted bytes/key"
-                            .to_string(),
-                    );
-                }
-                record
-            }
-            Err(error) => return Err(error.to_string()),
-        };
-    crate::cli::verify_package_signature(client, &record.cksum, &record.sig, &record.key_fp)?;
-    let stored = client
-        .download_tarball(&record.dl)
-        .map_err(|error| error.to_string())?;
-    if crate::tarball::checksum_bytes(&stored) != record.cksum
-        || inspect(&stored, staging_parent)? != *descriptor
-    {
-        return Err(
-            "published native artifact integrity or source/runtime identity mismatch".to_string(),
-        );
-    }
-    Ok(record.cksum)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

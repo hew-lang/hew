@@ -4,7 +4,7 @@
 use hew_wasm::sandbox::sir_emit;
 use std::fmt::Write as _;
 
-fn semantics(source: &str) -> hew_sir::LoweredModule {
+fn semantics(source: &str) -> hew_compile::SessionOutput {
     let state = hew_compile::run_source_frontend(
         source,
         "actor_package.hew",
@@ -21,7 +21,6 @@ fn semantics(source: &str) -> hew_sir::LoweredModule {
     )
     .lower_program(&state.program, tco)
     .expect("the program lowers")
-    .into_semantics()
 }
 
 const COUNTER: &str = r"actor Counter {
@@ -44,7 +43,7 @@ fn main() {
 #[test]
 fn an_actor_declaration_reaches_the_package_with_its_handlers() {
     let module = semantics(COUNTER);
-    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
+    let package = sir_emit::emit_package(&module, "sandbox-vm-export", "0", "test")
         .expect("an actor module projects into a package");
 
     let actor = package
@@ -97,7 +96,7 @@ fn execute_options(
         compiled.diagnostics
     );
     let package = compiled.bytecode.expect("verified source emits bytecode");
-    assert_eq!(package.schema_version, "hew.sandbox.bytecode.v1");
+    assert_eq!(package.schema_version, sir_emit::SchemaVersion::V1);
     let file = tempfile::NamedTempFile::new().expect("package file");
     serde_json::to_writer(file.as_file(), &package).expect("serialize package");
     let output = std::process::Command::new("node")
@@ -753,7 +752,8 @@ fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
     );
     let mut module = semantics(include_str!(
         "../../tests/core-acceptance/cases/actor-one-shot-lifetime.hew"
-    ));
+    ))
+    .into_semantics();
     let operation = module
         .module
         .functions

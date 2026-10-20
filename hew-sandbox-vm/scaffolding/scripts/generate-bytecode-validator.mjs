@@ -5,10 +5,19 @@ import { fileURLToPath } from "node:url";
 import Ajv2020 from "ajv/dist/2020.js";
 import standaloneCode from "ajv/dist/standalone/index.js";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const schema = JSON.parse(fs.readFileSync(path.join(root, "bytecode/sandbox-bytecode-v1.schema.json"), "utf8"));
+const root = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../..",
+);
+const schema = JSON.parse(
+  fs.readFileSync(
+    path.join(root, "bytecode/sandbox-bytecode-v1.schema.json"),
+    "utf8",
+  ),
+);
 const ajv = new Ajv2020({
   strict: false,
+  strictNumbers: true,
   validateFormats: false,
   discriminator: true,
   inlineRefs: false,
@@ -19,40 +28,38 @@ const ajv = new Ajv2020({
 for (const name of ["OpV1", "TermV1"])
   schema.$defs[name].discriminator = { propertyName: "op" };
 schema.$defs.RuntimeFamilyEntry.discriminator = { propertyName: "family" };
-const suspension = schema.$defs.TermV1.oneOf.find((variant) => variant.properties.op.const === "suspend");
+const suspension = schema.$defs.TermV1.oneOf.find(
+  (variant) => variant.properties.op.const === "suspend",
+);
 suspension.discriminator = { propertyName: "kind" };
-const definitions = {};
-function include(name) {
-  if (Object.hasOwn(definitions, name)) return;
-  definitions[name] = schema.$defs[name];
-  function dependencies(value) {
-    if (value === null || typeof value !== "object") return;
-    if (typeof value.$ref === "string" && value.$ref.startsWith("#/$defs/"))
-      include(value.$ref.slice("#/$defs/".length));
-    for (const child of Object.values(value)) dependencies(child);
-  }
-  dependencies(definitions[name]);
-}
-include("OpV1");
-include("TermV1");
-include("RuntimeFamilyEntry");
-ajv.addSchema({ $id: schema.$id, $defs: definitions });
-const unformatted = "// @ts-nocheck\n// Generated from the Rust instruction schema. Run make sandbox-bytecode.\n" +
+ajv.addSchema(schema);
+const unformatted =
+  "// @ts-nocheck\n// Generated from the complete Rust package schema. Run make sandbox-bytecode.\n" +
   standaloneCode(ajv, {
-    validOperation: schema.$id + "#/$defs/OpV1",
-    validRuntimeFamily: schema.$id + "#/$defs/RuntimeFamilyEntry",
-    validTerminator: schema.$id + "#/$defs/TermV1",
-  }) + "\n";
-const destination = path.join(root, "src/interpreter/v1/instruction-validator.generated.ts");
-const formatted = spawnSync("bash", ["-c", 'exec prettier --stdin-filepath "$1"', "prettier", destination], {
-  input: unformatted, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
-});
+    validPackage: schema.$id,
+    validCodecShape: schema.$id + "#/$defs/CodecShape",
+  }) +
+  "\n";
+const destination = path.join(
+  root,
+  "src/interpreter/v1/package-validator.generated.ts",
+);
+const formatted = spawnSync(
+  "bash",
+  ["-c", 'exec prettier --stdin-filepath "$1"', "prettier", destination],
+  {
+    input: unformatted,
+    encoding: "utf8",
+    maxBuffer: 16 * 1024 * 1024,
+  },
+);
 if (formatted.error) throw formatted.error;
-if (formatted.status !== 0) throw new Error("prettier failed for instruction validator");
+if (formatted.status !== 0)
+  throw new Error("prettier failed for package validator");
 const generated = formatted.stdout;
 if (process.argv[2] === "--write") fs.writeFileSync(destination, generated);
 else if (process.argv[2] === "--check") {
   if (fs.readFileSync(destination, "utf8") !== generated) {
-    throw new Error("instruction validator is stale; run make sandbox-bytecode");
+    throw new Error("package validator is stale; run make sandbox-bytecode");
   }
 } else throw new Error("expected --write or --check");

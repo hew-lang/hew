@@ -4,7 +4,7 @@
 verified ownership SIR (`hew_sir::SemModule`, produced by
 `hew_compile::Session::lower_hir_module`), not a lowering of the AST.
 
-The compiler decides. The VM executes. Every fact in this package was proved by
+The compiler decides. The VM executes. For compiler-produced packages, every semantic fact was proved by
 SIR verification; the VM must never re-derive one from a type, a name or a
 symbol spelling.
 
@@ -315,16 +315,21 @@ the original SIR fault edge after the remaining owners drain.
 
 ## Instruction contract generation
 
-The concrete Rust operation and terminator types in
-hew-wasm/src/sandbox/bytecode.rs own the instruction wire representation.
+The concrete Rust package types in hew-wasm/src/sandbox/package.rs and
+instruction types in hew-wasm/src/sandbox/bytecode.rs own the wire representation.
 Make sandbox-bytecode generates the TypeScript discriminated unions, opcode
-admission identities, JSON Schema instruction definitions and standalone loader
-validators. Make sandbox-bytecode-check verifies freshness and runs in lint and
-baseline checks. The envelope schema remains in package-v1.envelope.schema.json.
+admission identities, the complete JSON Schema and standalone loader
+validators. Codec shapes derive from hew-codec/src/property.rs while retaining
+their JSON-string wire representation. Make sandbox-bytecode-check verifies freshness and runs in lint and
+baseline checks. There is no separate handwritten envelope schema.
 
 The SIR projection and VM dispatches are exhaustive over their typed inputs.
-External instruction payloads are validated before capability admission and
-execution. This validates wire representations; the compiler's ownership and
-cleanup proofs remain in SIR. Runtime-family and suspension-detail registration
+External packages are copied, structurally validated, and checked for table,
+callable, value, shape and control-flow references before capability admission
+and execution. Table IDs follow their module-local array indexes; edge argument
+counts match block parameters. Embedded codec graphs are checked at this same
+boundary. These checks establish representation and reference validity, not
+source typing, dominance or ownership of arbitrary imported bytecode. The
+compiler's ownership and cleanup proofs remain in SIR. Runtime-family and suspension-detail registration
 are separate contracts. Existing v1 optional fields, including the distinction
 between omitted and null fields, remain compatible.

@@ -11,8 +11,7 @@ import { calendarResultFields } from "./calendar.js";
 /// and never reads an instruction stream to guess a capability.
 
 import type { SandboxRejection } from "../types.js";
-import type { PackageV1 } from "./package.js";
-import { OP_NAMES, TERM_NAMES } from "./instructions.generated.js";
+import type { CheckedPackage } from "../schema-validator.js";
 import {
   CODEC_REGISTRATION,
   registrationRefusal,
@@ -26,8 +25,18 @@ import {
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
 
-const OPS: ReadonlySet<string> = new Set(OP_NAMES);
-const TERMS: ReadonlySet<string> = new Set(TERM_NAMES);
+/// The executor can only be constructed after structural/reference checks and
+/// the canonical host registration have both accepted the same package.
+export class AdmittedPackage {
+  private constructor(readonly package: CheckedPackage) {}
+
+  static load(
+    pkg: CheckedPackage,
+    bridges: HostBridges,
+  ): AdmittedPackage | SandboxRejection {
+    return admitPackage(pkg, bridges) ?? new AdmittedPackage(pkg);
+  }
+}
 
 function capabilityMessage(capability: string, native: boolean): string {
   const nativeFeatures: Record<string, string> = {
@@ -64,7 +73,7 @@ function unavailable(capability: string): SandboxRejection {
 
 /// The first refusal, or `null` when all operations and bridges are available.
 export function admitPackage(
-  pkg: PackageV1,
+  pkg: CheckedPackage,
   bridges: HostBridges = {},
 ): SandboxRejection | null {
   if (!pkg.entry) {
@@ -102,23 +111,6 @@ export function admitPackage(
         block.term.operation.op === "local_observation"
       )
         return unavailable(`actor.${block.term.operation.op}`);
-      if (
-        block.ops.some(
-          (op) =>
-            op.op === "coverage.hit" &&
-            (!Number.isSafeInteger(op.counter) ||
-              op.counter < 0 ||
-              op.counter > 0xffff_ffff),
-        )
-      ) {
-        return {
-          category: "invalid_package",
-          code: "sandbox.package.invalid_counter",
-          capability: "coverage.hit",
-          message: "coverage counter must be a u32",
-          span: null,
-        };
-      }
       const term = block.term;
       if (
         term.op === "runtime.call" &&
@@ -288,7 +280,7 @@ export function admitPackage(
         if (registration.kind === "refused")
           return rejectRegistration(registration);
         const mandatoryClose = (pkg.resources ?? []).some(
-          (resource) => resource.close === function_.id,
+          (resource) => "close" in resource && resource.close === function_.id,
         );
         if (
           term.kind === "Safepoint"
@@ -304,33 +296,10 @@ export function admitPackage(
             span: null,
           };
       }
-      const unknown =
-        block.ops.find((op) => !OPS.has(op.op))?.op ??
-        (!TERMS.has(block.term.op) ? block.term.op : null);
-      if (unknown)
-        return {
-          category: "invalid_package",
-          code: "sandbox.package.unknown_opcode",
-          capability: unknown,
-          message: `unknown bytecode opcode ${unknown}`,
-          span: null,
-        };
     }
   }
 
   for (const [index, resource] of (pkg.resources ?? []).entries()) {
-    if (
-      resource.kind === "record" &&
-      (resource.shape === undefined ||
-        !pkg.aggregates.some((shape) => shape.id === resource.shape))
-    )
-      return {
-        category: "invalid_package",
-        code: "sandbox.package.resource_shape_missing",
-        capability: null,
-        message: "record resource has no exact aggregate shape",
-        span: null,
-      };
     if (resource.kind === "opaque" && !timerResources.has(index))
       return unavailable("resource.opaque_close");
     if (

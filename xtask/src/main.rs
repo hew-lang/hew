@@ -372,9 +372,7 @@ fn sandbox_bytecode(args: &[String]) -> Result<()> {
         return Err("sandbox-bytecode requires --write or --check".to_string());
     }
     let root = workspace_root()?;
-    let envelope_path = root.join("hew-sandbox-vm/bytecode/package-v1.envelope.schema.json");
-    let envelope = read_json(&envelope_path)?;
-    let schema = hew_wasm::sandbox::bytecode::package_schema(envelope)?;
+    let schema = hew_wasm::sandbox::bytecode::package_schema()?;
     let outputs = [
         (
             "hew-sandbox-vm/src/interpreter/v1/instructions.generated.ts",

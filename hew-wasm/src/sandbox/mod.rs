@@ -4,6 +4,7 @@
 //! resulting package before executing any instruction.
 
 pub mod bytecode;
+pub mod package;
 pub mod sir_emit;
 
 /// The shipped standard-library sources, as `("std/<relative path>", source)`.
@@ -509,7 +510,7 @@ fn compile_from_semantics(
     }
     let module = &semantics.semantics().module;
     let package = sir_emit::emit_package(
-        module,
+        &semantics,
         &canonical_profile,
         env!("CARGO_PKG_VERSION"),
         &format!("hew-wasm-{}", env!("CARGO_PKG_VERSION")),
@@ -529,15 +530,15 @@ fn compile_from_semantics(
             message: "sandbox function table exceeds u32".into(),
         })?;
         let exit = match test.action {
-            hew_types::EntryExitAction::Unit => "unit",
+            hew_types::EntryExitAction::Unit => package::EntryExit::Unit,
             hew_types::EntryExitAction::Integer(_) | hew_types::EntryExitAction::Result { .. } => {
-                "status"
+                package::EntryExit::Status
             }
         };
         test_entries.push(sir_emit::Entry {
             properties: test.properties.clone(),
             function,
-            exit: exit.into(),
+            exit,
         });
     }
 

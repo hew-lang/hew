@@ -1,10 +1,10 @@
-import { SUSPENSION_NAMES } from "./v1/instructions.generated.js";
-import {
-  validOperation,
-  validTerminator,
-  validRuntimeFamily,
-} from "./v1/instruction-validator.generated.js";
-import { isPackageV1, type PackageV1 } from "./v1/package.js";
+import { validPackage } from "./v1/package-validator.generated.js";
+import type { PackageV1 } from "./v1/package.js";
+import { validatePackageGraph } from "./v1/package-graph.js";
+
+declare const checkedPackage: unique symbol;
+/// Shape and reference validity only. Imported bytecode has no SIR ownership proof.
+export type CheckedPackage = PackageV1 & { readonly [checkedPackage]: true };
 
 export class BytecodeValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -13,72 +13,17 @@ export class BytecodeValidationError extends Error {
   }
 }
 
-/** Check the package envelope before capability admission traverses its tables.
- * Operation support belongs to v1/validate, with one shared executor registry. */
-export function validateBytecodePackage(input: unknown): PackageV1 {
-  if (!isPackageV1(input))
-    throw new BytecodeValidationError(["expected hew.sandbox.bytecode.v1"]);
-  const errors: string[] = [];
-  for (const key of ["profile", "hew_version", "compiler_version"] as const) {
-    if (typeof input[key] !== "string") errors.push(`${key} must be a string`);
+/** Decode an isolated package before capability admission or any host effect.
+ * Cloning prevents a caller or host callback from changing the checked input. */
+export function validateBytecodePackage(input: unknown): CheckedPackage {
+  try {
+    const decoded: unknown = structuredClone(input);
+    if (!validPackage(decoded))
+      throw new Error("malformed sandbox bytecode package");
+    const pkg = decoded as PackageV1;
+    validatePackageGraph(pkg);
+    return pkg as CheckedPackage;
+  } catch (error) {
+    throw new BytecodeValidationError([String(error)]);
   }
-  for (const key of [
-    "functions",
-    "strings",
-    "bytes",
-    "regex_patterns",
-    "aggregates",
-    "variants",
-    "runtime_families",
-    "externs",
-    "suspend_kinds",
-    "value_capabilities",
-    "closures",
-    "vtables",
-  ] as const) {
-    if (!Array.isArray(input[key])) errors.push(`${key} must be an array`);
-  }
-  if (errors.length) throw new BytecodeValidationError(errors);
-  const suspensionNames: readonly string[] = SUSPENSION_NAMES;
-  if (
-    !Array.isArray(input.suspend_kinds) ||
-    input.suspend_kinds.some((kind) => !suspensionNames.includes(kind))
-  )
-    errors.push("malformed suspension manifest");
-  for (const entry of input.runtime_families) {
-    if (!validRuntimeFamily(entry)) errors.push("malformed runtime family");
-  }
-  for (const fn of input.functions) {
-    if (
-      !fn ||
-      !Number.isInteger(fn.id) ||
-      !Array.isArray(fn.params) ||
-      !Array.isArray(fn.places) ||
-      !Array.isArray(fn.blocks)
-    ) {
-      errors.push("malformed function");
-      continue;
-    }
-    for (const block of fn.blocks) {
-      if (
-        !block ||
-        !Number.isInteger(block.id) ||
-        !Array.isArray(block.params) ||
-        !Array.isArray(block.ops) ||
-        !block.term ||
-        typeof block.term.op !== "string"
-      )
-        errors.push("malformed block");
-      else {
-        for (const op of block.ops) {
-          if (!validOperation(op))
-            errors.push("malformed instruction in block " + block.id);
-        }
-        if (!validTerminator(block.term))
-          errors.push("malformed terminator in block " + block.id);
-      }
-    }
-  }
-  if (errors.length) throw new BytecodeValidationError(errors);
-  return input;
 }

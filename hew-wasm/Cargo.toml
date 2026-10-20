@@ -28,7 +28,7 @@ wasm-opt = ["-O1", "--enable-bulk-memory"]
 [dependencies]
 hew-calendar = { path = "../hew-calendar" }
 hew-analysis = { path = "../hew-analysis" }
-hew-codec = { path = "../hew-codec" }
+hew-codec = { path = "../hew-codec", features = ["sandbox-schema"] }
 hew-compile = { path = "../hew-compile" }
 hew-hir = { path = "../hew-hir" }
 hew-lexer = { path = "../hew-lexer" }

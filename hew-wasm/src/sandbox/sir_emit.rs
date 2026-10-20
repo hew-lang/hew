@@ -15,12 +15,9 @@ use std::collections::BTreeMap;
 use super::bytecode as wire;
 use hew_sir::{
     AggregateShapeRef, BoundaryDecision, BoundaryOperand, CallResult, CallUnwind, CallableId, Edge,
-    Operand, OwnKind, Provenance, RuntimeVariantRole, SemBlock, SemFunction, SemModule, SemOp,
-    SemOpKind, SemTerminator, SuspendKind, TrapKind, ValueDef,
+    Operand, OwnKind, Provenance, RuntimeVariantRole as SirRuntimeVariantRole, SemBlock,
+    SemFunction, SemModule, SemOp, SemOpKind, SemTerminator, SuspendKind, TrapKind, ValueDef,
 };
-use serde::{Deserialize, Serialize};
-
-pub const SCHEMA_VERSION: &str = "hew.sandbox.bytecode.v1";
 
 /// A construct the walker cannot name in the package.
 ///
@@ -49,288 +46,64 @@ impl std::fmt::Display for EmitError {
 
 impl std::error::Error for EmitError {}
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Package {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub codecs: Vec<String>,
-    pub structural_render: Vec<serde_json::Value>,
-    pub resources: Vec<serde_json::Value>,
-    pub schema_version: String,
-    pub hew_version: String,
-    pub compiler_version: String,
-    pub profile: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub entry: Option<Entry>,
-    pub strings: Vec<String>,
-    pub bytes: Vec<Vec<u8>>,
-    pub regex_patterns: Vec<String>,
-    pub aggregates: Vec<AggregateShape>,
-    pub variants: Vec<VariantShape>,
-    pub closures: Vec<Closure>,
-    pub actors: Vec<Actor>,
-    pub supervisors: Vec<Supervisor>,
-    pub vtables: Vec<Vtable>,
-    pub value_capabilities: Vec<ValueCapabilityPlan>,
-    pub runtime_families: Vec<RuntimeFamily>,
-    pub externs: Vec<Extern>,
-    /// Every suspension kind the instruction stream reaches, so load-time
-    /// admission stays a walk of the package's own manifest.
-    pub suspend_kinds: Vec<String>,
-    pub functions: Vec<Function>,
-}
+pub use super::package::*;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Entry {
-    #[serde(skip)]
-    pub properties: Vec<hew_codec::property::Shape>,
-    pub function: u32,
-    pub exit: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AggregateShape {
-    pub id: u32,
-    pub name: String,
-    pub fields: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub builtin: Option<AggregateBuiltin>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AggregateBuiltin {
-    Timestamp,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VariantShape {
-    pub id: u32,
-    pub name: String,
-    pub cases: Vec<VariantCase>,
-    pub runtime_tags: BTreeMap<String, u32>,
-}
-
-fn runtime_role_name(role: RuntimeVariantRole) -> &'static str {
-    use RuntimeVariantRole as Role;
+fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVariantRole {
+    use SirRuntimeVariantRole as Role;
     match role {
-        Role::CrashKindFault => "CrashKindFault",
-        Role::CrashKindHeapExceeded => "CrashKindHeapExceeded",
-        Role::CrashKindPartitionDetected => "CrashKindPartitionDetected",
-        Role::CrashKindHandlerFailed => "CrashKindHandlerFailed",
-        Role::CrashKindTimerOverdue => "CrashKindTimerOverdue",
-        Role::OptionSome => "OptionSome",
-        Role::OptionNone => "OptionNone",
-        Role::ResultOk => "ResultOk",
-        Role::ResultErr => "ResultErr",
-        Role::ActorErrorRejected => "ActorErrorRejected",
-        Role::ActorErrorFailed => "ActorErrorFailed",
-        Role::ActorErrorTrapped => "ActorErrorTrapped",
-        Role::ActorErrorRefused => "ActorErrorRefused",
-        Role::CallerActor => "CallerActor",
-        Role::CallerTask => "CallerTask",
-        Role::CallerTimer => "CallerTimer",
-        Role::CallerNode => "CallerNode",
-        Role::ActorErrorDead => "ActorErrorDead",
-        Role::ActorErrorTimedOut => "ActorErrorTimedOut",
-        Role::ActorErrorNodeNotRunning => "ActorErrorNodeNotRunning",
-        Role::ActorErrorRoutingFailed => "ActorErrorRoutingFailed",
-        Role::ActorErrorEncodeFailed => "ActorErrorEncodeFailed",
-        Role::ActorErrorConnectionDropped => "ActorErrorConnectionDropped",
-        Role::ActorErrorPartition => "ActorErrorPartition",
-        Role::SendErrorFull => "SendErrorFull",
-        Role::SendErrorClosed => "SendErrorClosed",
-        Role::SendErrorPartition => "SendErrorPartition",
-        Role::SendErrorStaleRef => "SendErrorStaleRef",
-        Role::SendErrorLocalShutdown => "SendErrorLocalShutdown",
-        Role::SendErrorCancelled => "SendErrorCancelled",
-        Role::SendErrorVersionMismatch => "SendErrorVersionMismatch",
-        Role::SendErrorBackpressure => "SendErrorBackpressure",
-        Role::SendErrorDead => "SendErrorDead",
-        Role::SendErrorUnauthorized => "SendErrorUnauthorized",
-        Role::SendErrorInvalidMessage => "SendErrorInvalidMessage",
-        Role::SendErrorTimedOut => "SendErrorTimedOut",
-        Role::SendErrorWriteTimedOut => "SendErrorWriteTimedOut",
-        Role::DeliveryAccepted => "DeliveryAccepted",
-        Role::DeliveryDiscarded => "DeliveryDiscarded",
-        Role::LinkErrorNoContext => "LinkErrorNoContext",
+        Role::CrashKindFault => super::package::RuntimeVariantRole::CrashKindFault,
+        Role::CrashKindHeapExceeded => super::package::RuntimeVariantRole::CrashKindHeapExceeded,
+        Role::CrashKindPartitionDetected => {
+            super::package::RuntimeVariantRole::CrashKindPartitionDetected
+        }
+        Role::CrashKindHandlerFailed => super::package::RuntimeVariantRole::CrashKindHandlerFailed,
+        Role::CrashKindTimerOverdue => super::package::RuntimeVariantRole::CrashKindTimerOverdue,
+        Role::OptionSome => super::package::RuntimeVariantRole::OptionSome,
+        Role::OptionNone => super::package::RuntimeVariantRole::OptionNone,
+        Role::ResultOk => super::package::RuntimeVariantRole::ResultOk,
+        Role::ResultErr => super::package::RuntimeVariantRole::ResultErr,
+        Role::ActorErrorRejected => super::package::RuntimeVariantRole::ActorErrorRejected,
+        Role::ActorErrorFailed => super::package::RuntimeVariantRole::ActorErrorFailed,
+        Role::ActorErrorTrapped => super::package::RuntimeVariantRole::ActorErrorTrapped,
+        Role::ActorErrorRefused => super::package::RuntimeVariantRole::ActorErrorRefused,
+        Role::CallerActor => super::package::RuntimeVariantRole::CallerActor,
+        Role::CallerTask => super::package::RuntimeVariantRole::CallerTask,
+        Role::CallerTimer => super::package::RuntimeVariantRole::CallerTimer,
+        Role::CallerNode => super::package::RuntimeVariantRole::CallerNode,
+        Role::ActorErrorDead => super::package::RuntimeVariantRole::ActorErrorDead,
+        Role::ActorErrorTimedOut => super::package::RuntimeVariantRole::ActorErrorTimedOut,
+        Role::ActorErrorNodeNotRunning => {
+            super::package::RuntimeVariantRole::ActorErrorNodeNotRunning
+        }
+        Role::ActorErrorRoutingFailed => {
+            super::package::RuntimeVariantRole::ActorErrorRoutingFailed
+        }
+        Role::ActorErrorEncodeFailed => super::package::RuntimeVariantRole::ActorErrorEncodeFailed,
+        Role::ActorErrorConnectionDropped => {
+            super::package::RuntimeVariantRole::ActorErrorConnectionDropped
+        }
+        Role::ActorErrorPartition => super::package::RuntimeVariantRole::ActorErrorPartition,
+        Role::SendErrorFull => super::package::RuntimeVariantRole::SendErrorFull,
+        Role::SendErrorClosed => super::package::RuntimeVariantRole::SendErrorClosed,
+        Role::SendErrorPartition => super::package::RuntimeVariantRole::SendErrorPartition,
+        Role::SendErrorStaleRef => super::package::RuntimeVariantRole::SendErrorStaleRef,
+        Role::SendErrorLocalShutdown => super::package::RuntimeVariantRole::SendErrorLocalShutdown,
+        Role::SendErrorCancelled => super::package::RuntimeVariantRole::SendErrorCancelled,
+        Role::SendErrorVersionMismatch => {
+            super::package::RuntimeVariantRole::SendErrorVersionMismatch
+        }
+        Role::SendErrorBackpressure => super::package::RuntimeVariantRole::SendErrorBackpressure,
+        Role::SendErrorDead => super::package::RuntimeVariantRole::SendErrorDead,
+        Role::SendErrorUnauthorized => super::package::RuntimeVariantRole::SendErrorUnauthorized,
+        Role::SendErrorInvalidMessage => {
+            super::package::RuntimeVariantRole::SendErrorInvalidMessage
+        }
+        Role::SendErrorTimedOut => super::package::RuntimeVariantRole::SendErrorTimedOut,
+        Role::SendErrorWriteTimedOut => super::package::RuntimeVariantRole::SendErrorWriteTimedOut,
+        Role::DeliveryAccepted => super::package::RuntimeVariantRole::DeliveryAccepted,
+        Role::DeliveryDiscarded => super::package::RuntimeVariantRole::DeliveryDiscarded,
+        Role::LinkErrorNoContext => super::package::RuntimeVariantRole::LinkErrorNoContext,
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VariantCase {
-    pub name: String,
-    pub fields: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Closure {
-    pub id: u32,
-    pub entries: Vec<ClosureEntry>,
-    pub fields: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ClosureEntry {
-    pub body: u32,
-    pub specialization: Option<u32>,
-}
-
-/// One demanded actor: its state seats, its lifecycle callables and the
-/// handlers its mailbox dispatches, all as function indexes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Actor {
-    pub id: u32,
-    pub name: String,
-    pub state_fields: Vec<ActorField>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub init: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub start: Option<u32>,
-    pub stop: Vec<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crash: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crash_info: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crash_kind: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub crash_action: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub down: Option<u32>,
-    pub handlers: Vec<ActorHandler>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mailbox_capacity: Option<u32>,
-    pub overflow: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub coalesce: Option<Coalesce>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_heap_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActorField {
-    pub mutable: bool,
-    pub deferred: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ActorHandler {
-    pub name: String,
-    pub message_id: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub every_ns: Option<i64>,
-    pub callable: u32,
-    pub params: u32,
-    pub streams: bool,
-    pub fallible: bool,
-    pub result_shape: Option<u32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Coalesce {
-    pub fallback: String,
-    pub keys: Vec<CoalesceKey>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CoalesceKey {
-    pub message: u32,
-    pub param: u32,
-}
-
-/// One demanded supervisor: its restart policy and the children it starts.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Supervisor {
-    pub id: u32,
-    pub strategy: String,
-    pub max_restarts: u32,
-    pub window_secs: u32,
-    pub children: Vec<SupervisorChild>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub startup_order: Vec<usize>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SupervisorChild {
-    pub name: String,
-    #[serde(default)]
-    pub dependencies: Vec<usize>,
-    /// The role this child plays, as `{"actor": id}` or `{"supervisor": id}`.
-    pub role: serde_json::Value,
-    pub restart: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_ns: Option<i64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_config: Option<usize>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub is_pool: bool,
-    pub spawn: u32,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Vtable {
-    pub id: u32,
-    pub slots: Vec<VtableSlot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct VtableSlot {
-    pub slot: u32,
-    pub method: String,
-    pub callee: u32,
-    /// How the erased receiver crosses the dispatch boundary. A `dyn.call`
-    /// passes the wrapped value to the callee's `self` parameter under this
-    /// decision, which the verifier proves matches the boundary the concrete
-    /// type was erased under.
-    pub receiver: String,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub receiver_handback: bool,
-}
-
-/// The checker's selection for one `(type, capability)` pair.
-///
-/// `callable` names a user implementation; its absence is the derived
-/// structural operation, which the VM performs over its own value
-/// representation.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ValueCapabilityPlan {
-    pub id: u32,
-    pub capability: String,
-    pub ty: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub callable: Option<u32>,
-    pub components: Vec<ValueComponentCapabilities>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub variants: Option<Vec<Vec<ValueComponentCapabilities>>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ValueComponentCapabilities {
-    pub selected: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ordering: Option<ValueOrderingCapabilities>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ValueOrderingCapabilities {
-    pub less: u32,
-    pub less_equal: u32,
-    pub greater: u32,
-    pub greater_equal: u32,
-}
-
-pub use super::bytecode::RuntimeFamilyEntry as RuntimeFamily;
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Extern {
-    pub id: u32,
-    pub symbol: String,
-    /// The capability manifest's label for a native-only runtime endpoint,
-    /// so a refusal can name what needs native execution. Admission still
-    /// keys on `symbol` alone.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native_capability: Option<String>,
 }
 
 /// The manifest label of the native-only capability `symbol` belongs to.
@@ -344,62 +117,6 @@ fn native_capability(symbol: &str) -> Option<String> {
         .map(|feature| feature.label().to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Function {
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub actor_construction: bool,
-    pub id: u32,
-    pub name: String,
-    pub params: Vec<Value>,
-    pub entry: u32,
-    pub places: Vec<Place>,
-    pub blocks: Vec<Block>,
-}
-
-/// One semantic storage location and where its storage comes from.
-///
-/// A `local` place is a cell of its own, created by `alloc_place`. Every other
-/// origin resolves through something the body already holds: an `aggregate`
-/// place is one field of its base, so it is never allocated and a load of it
-/// reads that field in place. Dropping the origin would leave a load with no
-/// cell to read.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Place {
-    pub id: u32,
-    pub origin: String,
-    /// `aggregate`: the place or value this field belongs to.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub base: Option<serde_json::Value>,
-    /// `aggregate`: the record shape, or absent for a tuple.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub shape: Option<u32>,
-    /// `aggregate`, `capture` and `actor_state`: the field index.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub field: Option<u32>,
-    /// `capture` and `actor_state`: the value whose field this place is - the
-    /// closure environment, or the state the actor's turn holds.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub environment: Option<u32>,
-    /// `actor_state`: false only for a seat the actor's `init` body owns,
-    /// which holds no value until init's first store.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub initialized: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Value {
-    pub value: u32,
-    pub own: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Block {
-    pub id: u32,
-    pub params: Vec<Value>,
-    pub ops: Vec<wire::OpV1>,
-    pub term: wire::TermV1,
-}
-
 /// Project a verified semantic module into a sandbox bytecode package.
 ///
 /// # Errors
@@ -407,12 +124,12 @@ pub struct Block {
 /// Returns the first construct whose supporting table the sequential package
 /// does not carry.
 pub fn emit_package(
-    module: &SemModule,
+    session: &hew_compile::SessionOutput,
     profile: &str,
     hew_version: &str,
     compiler_version: &str,
 ) -> Result<Package, EmitError> {
-    Walker::new(module).emit(profile, hew_version, compiler_version)
+    Walker::new(&session.semantics().module).emit(profile, hew_version, compiler_version)
 }
 
 struct Walker<'m> {
@@ -601,7 +318,7 @@ impl<'m> Walker<'m> {
         let failure_ty = error
             .and_then(|shape| {
                 shape
-                    .runtime_tag(RuntimeVariantRole::ActorErrorRejected)
+                    .runtime_tag(SirRuntimeVariantRole::ActorErrorRejected)
                     .and_then(|tag| shape.variants.get(tag as usize))
             })
             .and_then(|variant| variant.fields.first())
@@ -665,7 +382,7 @@ impl<'m> Walker<'m> {
             .map(|(index, ((ty, capability), plan))| {
                 Ok(ValueCapabilityPlan {
                     id: table_index(index),
-                    capability: capability_name(*capability).to_string(),
+                    capability: capability_name(*capability),
                     ty: ty.user_facing().to_string(),
                     components: if plan.callable.is_none() {
                         hew_sir::derived_capability_components(
@@ -711,29 +428,45 @@ impl<'m> Walker<'m> {
             .collect::<Result<Vec<_>, EmitError>>()
     }
 
-    fn resources(&self) -> Result<Vec<serde_json::Value>, EmitError> {
-        self.module.resources.iter().map(|(ty, release)| {
+    fn resources(&self) -> Result<Vec<Resource>, EmitError> {
+        self.module
+            .resources
+            .iter()
+            .map(|(ty, release)| {
                 use hew_sir::ResourceRelease;
                 Ok(match release {
-                    ResourceRelease::RecordClose { close, .. } => {
-                        let shape = self.module.aggregate_shape_for_type(ty).ok_or_else(|| {
-                            EmitError::new(format!(
-                                "record resource `{}` has no exact aggregate shape",
-                                ty.user_facing()
-                            ))
-                        })?;
-                        serde_json::json!({"kind": "record", "shape": shape.id.0, "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?})
+                    ResourceRelease::RecordClose { close, .. } => Resource::Record {
+                        shape: self
+                            .module
+                            .aggregate_shape_for_type(ty)
+                            .ok_or_else(|| {
+                                EmitError::new(format!(
+                                    "record resource `{}` has no exact aggregate shape",
+                                    ty.user_facing()
+                                ))
+                            })?
+                            .id
+                            .0,
+                        ty: ty.user_facing().to_string(),
+                        close: self.function_id(*close)?,
                     },
-                    ResourceRelease::OpaqueClose { close, .. } => serde_json::json!({"kind": "opaque", "ty": ty.user_facing().to_string(), "close": self.function_id(*close)?}),
-                    ResourceRelease::Nominal { release, .. } => serde_json::json!({"kind": "nominal", "ty": ty.user_facing().to_string(), "release": release.symbol}),
-                    ResourceRelease::Task => serde_json::json!({"kind": "task"}),
-                    ResourceRelease::ActorCall => serde_json::json!({"kind": "actor_call"}),
-                    ResourceRelease::ActorRequest => serde_json::json!({"kind": "actor_request"}),
-                    ResourceRelease::Generator => serde_json::json!({"kind": "generator"}),
-                    ResourceRelease::Stream => serde_json::json!({"kind": "stream"}),
-                    ResourceRelease::Sink => serde_json::json!({"kind": "sink"}),
+                    ResourceRelease::OpaqueClose { close, .. } => Resource::Opaque {
+                        ty: ty.user_facing().to_string(),
+                        close: self.function_id(*close)?,
+                    },
+                    ResourceRelease::Nominal { release, .. } => Resource::Nominal {
+                        ty: ty.user_facing().to_string(),
+                        release: release.symbol.to_owned(),
+                    },
+                    ResourceRelease::Task => Resource::Task,
+                    ResourceRelease::ActorCall => Resource::ActorCall,
+                    ResourceRelease::ActorRequest => Resource::ActorRequest,
+                    ResourceRelease::Generator => Resource::Generator,
+                    ResourceRelease::Stream => Resource::Stream,
+                    ResourceRelease::Sink => Resource::Sink,
                 })
-            }).collect::<Result<Vec<_>, EmitError>>()
+            })
+            .collect()
     }
 
     fn emit(
@@ -758,11 +491,10 @@ impl<'m> Walker<'m> {
                 // publishes the integer status that body returns, so it reaches
                 // the package as an ordinary integer exit.
                 exit: match plan.action {
-                    hew_types::EntryExitAction::Unit => "unit",
+                    hew_types::EntryExitAction::Unit => EntryExit::Unit,
                     hew_types::EntryExitAction::Integer(_)
-                    | hew_types::EntryExitAction::Result { .. } => "status",
-                }
-                .to_string(),
+                    | hew_types::EntryExitAction::Result { .. } => EntryExit::Status,
+                },
             }),
             _ => None,
         };
@@ -771,7 +503,7 @@ impl<'m> Walker<'m> {
             codecs: self.codecs.clone(),
             structural_render: self.structural_render()?,
             resources: self.resources()?,
-            schema_version: SCHEMA_VERSION.to_string(),
+            schema_version: SchemaVersion::V1,
             hew_version: hew_version.to_string(),
             compiler_version: compiler_version.to_string(),
             profile: profile.to_string(),
@@ -819,7 +551,7 @@ impl<'m> Walker<'m> {
                                     slot: slot.slot,
                                     method: self.module.defs.name(slot.method).to_string(),
                                     callee: self.function_id(slot.callee)?,
-                                    receiver: passing_name(slot.receiver).to_string(),
+                                    receiver: passing_name(slot.receiver),
                                     receiver_handback: self
                                         .module
                                         .callable(slot.callee)
@@ -851,45 +583,112 @@ impl<'m> Walker<'m> {
             .ok_or_else(|| EmitError::new("structural type lacks its checked selection"))
     }
 
-    fn structural_render(&self) -> Result<Vec<serde_json::Value>, EmitError> {
+    fn structural_render(&self) -> Result<Vec<StructuralRecipe>, EmitError> {
         use hew_types::{BuiltinType, ResolvedTy};
-        self.module.structural_display.iter().map(|(key, selected)| {
-            if let Some(callable) = selected.display {
-                return Ok(serde_json::json!({ "kind": "display", "callee": self.function_id(callable)? }));
-            }
-            let members = selected.members.iter().map(|member| self.structural_id(member)).collect::<Result<Vec<_>, _>>()?;
-            let scalar = |kind| Ok(serde_json::json!({"kind": kind}));
-            match &key.value {
-                ResolvedTy::Unit => scalar("unit"),
-                ResolvedTy::I8 | ResolvedTy::I16 | ResolvedTy::I32 | ResolvedTy::I64 | ResolvedTy::Isize |
-                ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::Usize |
-                ResolvedTy::F32 | ResolvedTy::F64 | ResolvedTy::Bool | ResolvedTy::Char | ResolvedTy::String => scalar("scalar"),
-                ResolvedTy::Tuple(_) => Ok(serde_json::json!({"kind": "tuple", "members": members})),
-                ResolvedTy::Named { head, is_opaque, .. } => { let name = head.registry_key(); let builtin = head.builtin();
-                    if builtin == Some(BuiltinType::Vec) { return Ok(serde_json::json!({"kind": "vector", "members": members})); }
-                    if builtin == Some(BuiltinType::HashMap) { return Ok(serde_json::json!({"kind": "map", "members": members})); }
-                    if *is_opaque { return Ok(serde_json::json!({"kind": "identity", "name": name})); }
-                    if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
-                        let mut offset = 0;
-                        let cases: Vec<_> = shape.variants.iter().map(|variant| {
-                            let kind = match variant.kind { hew_sir::SemVariantKind::Unit => "unit", hew_sir::SemVariantKind::Tuple => "tuple", hew_sir::SemVariantKind::Struct => "struct" };
-                            let fields: Vec<_> = variant.fields.iter().map(|field| {
-                                let recipe = members[offset]; offset += 1;
-                                serde_json::json!({"name": field.name, "recipe": recipe})
-                            }).collect();
-                            serde_json::json!({"name": variant.name, "kind": kind, "fields": fields})
-                        }).collect();
-                        return Ok(serde_json::json!({"kind": "enum", "cases": cases}));
-                    }
-                    if let Some(shape) = self.module.aggregate_shape_for_type(&key.value) {
-                        let fields: Vec<_> = shape.fields.iter().zip(members).map(|(field, recipe)| serde_json::json!({"name": field.name, "recipe": recipe})).collect();
-                        return Ok(serde_json::json!({"kind": "record", "name": name, "fields": fields}));
-                    }
-                    Err(EmitError::new("structural named type has no shape"))
+        self.module
+            .structural_display
+            .iter()
+            .map(|(key, selected)| {
+                if let Some(callable) = selected.display {
+                    return Ok(StructuralRecipe::Display {
+                        callee: self.function_id(callable)?,
+                    });
                 }
-                _ => Err(EmitError::new("structural type has no sandbox representation")),
-            }
-        }).collect()
+                let members = selected
+                    .members
+                    .iter()
+                    .map(|member| self.structural_id(member))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(match &key.value {
+                    ResolvedTy::Unit => StructuralRecipe::Unit,
+                    ResolvedTy::I8
+                    | ResolvedTy::I16
+                    | ResolvedTy::I32
+                    | ResolvedTy::I64
+                    | ResolvedTy::Isize
+                    | ResolvedTy::U8
+                    | ResolvedTy::U16
+                    | ResolvedTy::U32
+                    | ResolvedTy::U64
+                    | ResolvedTy::Usize
+                    | ResolvedTy::F32
+                    | ResolvedTy::F64
+                    | ResolvedTy::Bool
+                    | ResolvedTy::Char
+                    | ResolvedTy::String => StructuralRecipe::Scalar,
+                    ResolvedTy::Tuple(_) => StructuralRecipe::Tuple { members },
+                    ResolvedTy::Named {
+                        head, is_opaque, ..
+                    } => {
+                        let name = head.registry_key().to_owned();
+                        match head.builtin() {
+                            Some(BuiltinType::Vec) => {
+                                return Ok(StructuralRecipe::Vector { members })
+                            }
+                            Some(BuiltinType::HashMap) => {
+                                return Ok(StructuralRecipe::Map { members })
+                            }
+                            _ => {}
+                        }
+                        if *is_opaque {
+                            return Ok(StructuralRecipe::Identity { name });
+                        }
+                        if let Some(shape) = self.module.variant_shape_for_type(&key.value) {
+                            let mut offset = 0;
+                            let cases = shape
+                                .variants
+                                .iter()
+                                .map(|variant| {
+                                    let kind = match variant.kind {
+                                        hew_sir::SemVariantKind::Unit => StructuralCaseKind::Unit,
+                                        hew_sir::SemVariantKind::Tuple => StructuralCaseKind::Tuple,
+                                        hew_sir::SemVariantKind::Struct => {
+                                            StructuralCaseKind::Struct
+                                        }
+                                    };
+                                    let fields = variant
+                                        .fields
+                                        .iter()
+                                        .map(|field| {
+                                            let recipe = members[offset];
+                                            offset += 1;
+                                            StructuralField {
+                                                name: field.name.clone(),
+                                                recipe,
+                                            }
+                                        })
+                                        .collect();
+                                    StructuralCase {
+                                        name: variant.name.clone(),
+                                        kind,
+                                        fields,
+                                    }
+                                })
+                                .collect();
+                            return Ok(StructuralRecipe::Enum { cases });
+                        }
+                        if let Some(shape) = self.module.aggregate_shape_for_type(&key.value) {
+                            let fields = shape
+                                .fields
+                                .iter()
+                                .zip(members)
+                                .map(|(field, recipe)| StructuralField {
+                                    name: field.name.clone(),
+                                    recipe,
+                                })
+                                .collect();
+                            return Ok(StructuralRecipe::Record { name, fields });
+                        }
+                        return Err(EmitError::new("structural named type has no shape"));
+                    }
+                    _ => {
+                        return Err(EmitError::new(
+                            "structural type has no sandbox representation",
+                        ))
+                    }
+                })
+            })
+            .collect()
     }
 
     /// Project each demanded actor. Every callable becomes a function index,
@@ -1023,10 +822,10 @@ impl<'m> Walker<'m> {
                                 dependencies: dependencies.clone(),
                                 role: match role {
                                     hew_sir::SemSupervisedRole::Actor(actor) => {
-                                        serde_json::json!({ "actor": actor.0 })
+                                        SupervisedRole::Actor(actor.0)
                                     }
                                     hew_sir::SemSupervisedRole::Supervisor(supervisor) => {
-                                        serde_json::json!({ "supervisor": supervisor.0 })
+                                        SupervisedRole::Supervisor(supervisor.0)
                                     }
                                 },
                                 restart: restart_name(*restart).to_string(),
@@ -1078,7 +877,7 @@ impl<'m> Walker<'m> {
                 runtime_tags: shape
                     .runtime_tags
                     .iter()
-                    .map(|(role, tag)| (runtime_role_name(*role).to_string(), *tag))
+                    .map(|(role, tag)| (runtime_role_name(*role), *tag))
                     .collect(),
                 cases: shape
                     .variants
@@ -2205,53 +2004,36 @@ impl<'m> Walker<'m> {
 /// concurrency path, which never reaches this walker; they are named here so
 /// the projection is closed against `PlaceOrigin`.
 fn place_decl(place: &hew_sir::PlaceDecl) -> Place {
-    let mut encoded = Place {
-        id: place.id.0,
-        origin: String::new(),
-        base: None,
-        shape: None,
-        field: None,
-        environment: None,
-        initialized: None,
-    };
+    let id = place.id.0;
     match &place.origin {
-        hew_sir::PlaceOrigin::Local => encoded.origin = "local".to_string(),
-        hew_sir::PlaceOrigin::Runtime => encoded.origin = "runtime".to_string(),
-        hew_sir::PlaceOrigin::Aggregate { base, shape, field } => {
-            encoded.origin = "aggregate".to_string();
-            encoded.base = Some(match base {
-                hew_sir::PlaceBase::Value(value) => serde_json::json!({ "value": value.0 }),
-                hew_sir::PlaceBase::Place(place) => serde_json::json!({ "place": place.0 }),
-            });
-            encoded.shape = match shape {
-                AggregateShapeRef::Tuple => None,
-                AggregateShapeRef::Record(id) => Some(id.0),
-            };
-            encoded.field = Some(*field);
-        }
-        hew_sir::PlaceOrigin::Capture { environment, field } => {
-            encoded.origin = "capture".to_string();
-            encoded.environment = Some(environment.0);
-            encoded.field = Some(*field);
-        }
+        hew_sir::PlaceOrigin::Local => Place::Local { id },
+        hew_sir::PlaceOrigin::Runtime => Place::Runtime { id },
+        hew_sir::PlaceOrigin::Aggregate { base, shape, field } => Place::Aggregate {
+            id,
+            base: match base {
+                hew_sir::PlaceBase::Value(value) => PlaceBase::Value(value.0),
+                hew_sir::PlaceBase::Place(place) => PlaceBase::Place(place.0),
+            },
+            shape: shape_ref(*shape),
+            field: *field,
+        },
+        hew_sir::PlaceOrigin::Capture { environment, field } => Place::Capture {
+            id,
+            environment: environment.0,
+            field: *field,
+        },
         hew_sir::PlaceOrigin::ActorState {
             state,
             field,
             initialized,
             ..
-        } => {
-            // The seat is a field of the state value the turn holds, so the
-            // state's own identity is what makes the place resolvable - the
-            // same fact `capture` carries as `environment`. `initialized` is
-            // false only in the actor's `init` body for a seat init owns: it
-            // holds no value until init's first store.
-            encoded.origin = "actor_state".to_string();
-            encoded.environment = Some(state.0);
-            encoded.field = Some(*field);
-            encoded.initialized = Some(*initialized);
-        }
+        } => Place::ActorState {
+            id,
+            environment: state.0,
+            field: *field,
+            initialized: *initialized,
+        },
     }
-    encoded
 }
 
 /// A table position as the package's id type.
@@ -2288,7 +2070,7 @@ fn encode_unwind(unwind: &CallUnwind) -> Option<wire::Edge> {
 fn block_arg(arg: &hew_sir::BlockArg) -> Value {
     Value {
         value: arg.value.0,
-        own: own_name(arg.own).to_string(),
+        own: own_kind(arg.own),
     }
 }
 
@@ -2334,20 +2116,12 @@ const fn own_kind(own: OwnKind) -> wire::Own {
         OwnKind::Guaranteed => wire::Own::Guaranteed,
     }
 }
-const fn own_name(own: OwnKind) -> &'static str {
-    match own {
-        OwnKind::None => "none",
-        OwnKind::Owned => "owned",
-        OwnKind::Guaranteed => "guaranteed",
-    }
-}
-
-const fn passing_name(passing: hew_sir::SemParamPassing) -> &'static str {
+const fn passing_name(passing: hew_sir::SemParamPassing) -> wire::BoundaryDecision {
     match passing {
-        hew_sir::SemParamPassing::ReadOnly => "copy",
-        hew_sir::SemParamPassing::Borrow => "borrow",
-        hew_sir::SemParamPassing::BorrowMut => "borrow_mut",
-        hew_sir::SemParamPassing::Consume => "move",
+        hew_sir::SemParamPassing::ReadOnly => wire::BoundaryDecision::Copy,
+        hew_sir::SemParamPassing::Borrow => wire::BoundaryDecision::Borrow,
+        hew_sir::SemParamPassing::BorrowMut => wire::BoundaryDecision::BorrowMut,
+        hew_sir::SemParamPassing::Consume => wire::BoundaryDecision::Move,
     }
 }
 
@@ -2485,14 +2259,14 @@ const fn restart_name(policy: hew_sir::SemRestartPolicy) -> &'static str {
     }
 }
 
-const fn capability_name(capability: hew_types::ValueCapability) -> &'static str {
+const fn capability_name(capability: hew_types::ValueCapability) -> Capability {
     match capability {
-        hew_types::ValueCapability::Hash => "Hash",
-        hew_types::ValueCapability::Eq => "Eq",
-        hew_types::ValueCapability::Less => "Less",
-        hew_types::ValueCapability::LessEqual => "LessEqual",
-        hew_types::ValueCapability::Greater => "Greater",
-        hew_types::ValueCapability::GreaterEqual => "GreaterEqual",
+        hew_types::ValueCapability::Hash => Capability::Hash,
+        hew_types::ValueCapability::Eq => Capability::Eq,
+        hew_types::ValueCapability::Less => Capability::Less,
+        hew_types::ValueCapability::LessEqual => Capability::LessEqual,
+        hew_types::ValueCapability::Greater => Capability::Greater,
+        hew_types::ValueCapability::GreaterEqual => Capability::GreaterEqual,
     }
 }
 

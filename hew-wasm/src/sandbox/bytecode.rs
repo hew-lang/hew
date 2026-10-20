@@ -1076,11 +1076,13 @@ pub fn typescript() -> Result<String, String> {
         entries: BTreeMap::new(),
         config: ts_rs::Config::default(),
     };
+    ts_rs::TypeVisitor::visit::<super::package::Package>(&mut declarations);
+    ts_rs::TypeVisitor::visit::<hew_codec::property::Shape>(&mut declarations);
     ts_rs::TypeVisitor::visit::<OpV1>(&mut declarations);
     ts_rs::TypeVisitor::visit::<TermV1>(&mut declarations);
     ts_rs::TypeVisitor::visit::<hew_types::RuntimeCallFamily>(&mut declarations);
     let mut output = String::from(
-        "// Generated from hew-wasm/src/sandbox/bytecode.rs. Run make sandbox-bytecode.\n",
+        "// Generated from the Rust sandbox package and instruction types. Run make sandbox-bytecode.\n",
     );
     for declaration in declarations.entries.into_values() {
         output.push_str(&declaration);
@@ -1128,24 +1130,17 @@ fn discriminator_names(
         .collect()
 }
 
-/// Complete the package envelope schema with the derived instruction definitions.
+/// Derive the complete package schema, including the custom runtime identity wire shape.
 ///
 /// # Errors
-/// Returns an error if the envelope template is not a schema object.
+/// Returns an error if the authoritative runtime enum cannot be projected.
 #[expect(
     clippy::too_many_lines,
     reason = "keeps derived schema composition and runtime identity adaptation together"
 )]
-pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Value, String> {
-    #[derive(JsonSchema)]
-    #[allow(
-        dead_code,
-        reason = "schema roots are type descriptions, never runtime values"
-    )]
-    struct Instructions {
-        operation: OpV1,
-        terminator: TermV1,
-    }
+pub fn package_schema() -> Result<serde_json::Value, String> {
+    let mut envelope = schemars::schema_for!(super::package::Package).to_value();
+    envelope["$id"] = "https://hew.sh/schemas/sandbox/bytecode-v1.schema.json".into();
     fn integer_ranges(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(object) => {
@@ -1164,18 +1159,11 @@ pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Val
             _ => {}
         }
     }
-    let mut schema = schemars::schema_for!(Instructions).to_value();
-    integer_ranges(&mut schema);
+    integer_ranges(&mut envelope);
     let definitions = envelope
         .get_mut("$defs")
         .and_then(serde_json::Value::as_object_mut)
         .ok_or_else(|| "bytecode envelope has no definitions".to_string())?;
-    for (name, definition) in schema["$defs"]
-        .as_object()
-        .ok_or_else(|| "derived instruction definitions missing".to_string())?
-    {
-        definitions.insert(name.clone(), definition.clone());
-    }
     let runtime = schemars::schema_for!(hew_types::RuntimeCallFamily).to_value();
     if let Some(nested) = runtime["$defs"].as_object() {
         definitions.extend(nested.clone());
@@ -1219,15 +1207,24 @@ pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Val
         serde_json::json!({
             "type": "object", "additionalProperties": false,
             "required": ["id", "family"],
-            "properties": {"id": {"$ref": "#/$defs/id"}, "family": {"type": "string"}, "detail": {}},
+            "properties": {"id": {"type": "integer", "minimum": 0, "maximum": u32::MAX}, "family": {"type": "string"}, "detail": {}},
             "oneOf": variants,
         }),
     );
-    definitions.insert("op".to_string(), schema["properties"]["operation"].clone());
-    definitions.insert(
-        "term".to_string(),
-        schema["properties"]["terminator"].clone(),
-    );
+    let mut codec = schemars::schema_for!(hew_codec::property::Shape).to_value();
+    integer_ranges(&mut codec);
+    if let Some(nested) = codec
+        .as_object_mut()
+        .and_then(|object| object.remove("$defs"))
+    {
+        definitions.extend(
+            nested
+                .as_object()
+                .ok_or("codec definitions are not an object")?
+                .clone(),
+        );
+    }
+    definitions.insert("CodecShape".to_string(), codec);
     definitions.insert(
         "SuspensionKind".to_string(),
         serde_json::json!({
@@ -1235,9 +1232,10 @@ pub fn package_schema(mut envelope: serde_json::Value) -> Result<serde_json::Val
             "enum": discriminator_names(&schemars::schema_for!(Suspension).to_value(), "kind")?,
         }),
     );
+    envelope["properties"]["suspend_kinds"]["items"] =
+        serde_json::json!({"$ref": "#/$defs/SuspensionKind"});
     envelope["$comment"] =
-        "Generated from the envelope schema and Rust instruction DTOs; run make sandbox-bytecode"
-            .into();
+        "Generated from the Rust package and instruction DTOs; run make sandbox-bytecode".into();
     Ok(envelope)
 }
 

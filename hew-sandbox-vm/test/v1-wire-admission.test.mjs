@@ -208,6 +208,19 @@ test("missing codec bridge rejects before output; a supplied bridge executes the
   assert.equal(trace.result, "ok");
   assert.equal(calls, 1);
   assert.deepEqual(trace.final_state.stdout, ["effect before bridge\n"]);
+
+  // This valid control really invokes the bridge. A malformed package must
+  // refuse before either the earlier print or that same callback can run.
+  const malformed = structuredClone(bytecode);
+  malformed.actors = [null];
+  calls = 0;
+  assertBeforeOutput(malformed, "invalid_package", {
+    codecBridge() {
+      calls += 1;
+      throw new Error("bridge must not run for an invalid package");
+    },
+  });
+  assert.equal(calls, 0);
 });
 
 test("missing calendar bridge rejects before output and the supplied bridge receives the call", () => {

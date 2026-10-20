@@ -163,3 +163,35 @@ fn suspension_detail_preserves_omission_null_and_typed_values() {
         }
     }
 }
+
+#[test]
+fn recorded_v1_packages_retain_the_complete_wire_shape() {
+    use hew_wasm::sandbox::package::Package;
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../hew-sandbox-vm/fixtures");
+    let mut packages = 0;
+    for directory in std::fs::read_dir(fixtures).expect("fixture directory") {
+        let path = directory
+            .expect("fixture entry")
+            .path()
+            .join("bytecode.json");
+        if !path.is_file() {
+            continue;
+        }
+        let input: Value = serde_json::from_slice(&std::fs::read(&path).expect("fixture package"))
+            .expect("fixture JSON");
+        let typed: Package = serde_json::from_value(input.clone())
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        assert_eq!(
+            serde_json::to_value(typed).expect("typed package"),
+            input,
+            "{}",
+            path.display()
+        );
+        packages += 1;
+    }
+    assert!(
+        packages > 0,
+        "the wire oracle requires independently recorded packages"
+    );
+}

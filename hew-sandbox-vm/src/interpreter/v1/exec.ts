@@ -70,7 +70,8 @@ import {
   type RuntimeShim,
   type RuntimeContinuation,
 } from "./shims.js";
-import { admitPackage } from "./validate.js";
+import { AdmittedPackage } from "./validate.js";
+import type { CheckedPackage } from "../schema-validator.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
 
@@ -335,7 +336,7 @@ class StdinReader {
 }
 
 export function runPackageV1(
-  pkg: PackageV1,
+  pkg: CheckedPackage,
   options: RunOptions = {},
 ): SandboxTrace {
   const fixtureId = options.fixtureId ?? "package";
@@ -358,14 +359,14 @@ export function runPackageV1(
 
   // Admission is a load-time decision: nothing runs when the package names a
   // capability the VM has no shim for.
-  const rejection = admitPackage(pkg, options);
-  if (rejection) {
-    trace.reject(rejection);
+  const admission = AdmittedPackage.load(pkg, options);
+  if (!(admission instanceof AdmittedPackage)) {
+    trace.reject(admission);
     return trace.finish();
   }
 
   const vm = new ExecutorV1(
-    pkg,
+    admission,
     trace,
     StdinReader.fromReplay(replay.inputs),
     options.schedulerPolicy ?? "round_robin",
@@ -415,13 +416,17 @@ class ExecutorV1 {
   private rootComplete = false;
   private rootFault: Fault | null = null;
 
+  private readonly pkg: PackageV1;
+
   constructor(
-    private readonly pkg: PackageV1,
+    admission: AdmittedPackage,
     private readonly trace: TraceBuilder,
     private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
     private readonly options: RunOptions,
   ) {
+    const pkg = admission.package;
+    this.pkg = pkg;
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
@@ -570,7 +575,7 @@ class ExecutorV1 {
     context?: FrameContext,
   ): Activation {
     const mandatoryClose = (this.pkg.resources ?? []).some(
-      (resource) => resource.close === fn.id,
+      (resource) => "close" in resource && resource.close === fn.id,
     );
     const parentContext = caller?.context ?? context!;
     parentContext.pollBudget ??= { remaining: 0 };
@@ -3275,7 +3280,7 @@ class ExecutorV1 {
           case "timer": {
             if (value.closed) break;
             const resource = this.pkg.resources?.[value.resource];
-            if (resource?.close === undefined)
+            if (resource?.kind !== "opaque")
               throw new Error("timer lost its selected close");
             this.invokeFrame(
               actor,
@@ -3327,7 +3332,7 @@ class ExecutorV1 {
               (resource) =>
                 resource.kind === "record" && resource.shape === value.shape,
             );
-            if (resource?.close !== undefined) {
+            if (resource?.kind === "record") {
               if (this.consumedResources.has(value)) break;
               if (!this.closingResources.has(value)) {
                 this.invokeFrame(

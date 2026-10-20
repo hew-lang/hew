@@ -17,12 +17,16 @@ fn peer_identity_validation_rejects_self_connections() {
 #[test]
 fn reconnect_plan_threads_expected_peer_identity() {
     let mut pinned = test_actor(30);
+    pinned.peer_identity = Some(test_node_identity(7));
+    pinned.peer_session_incarnation = 2;
+    pinned.publication_token = 45;
     pinned.reconnect = Some(ReconnectSettings {
         target_addr: "127.0.0.1:1".into(),
         max_retries: 3,
         expected_node_id: Some(7),
     });
     let mut bare = test_actor(31);
+    bare.peer_identity = Some(test_node_identity(20));
     bare.reconnect = Some(ReconnectSettings {
         target_addr: "127.0.0.1:1".into(),
         max_retries: 3,
@@ -175,7 +179,21 @@ fn run_reconnect_attempt_replay_case(
     assert!(!mgr.is_null());
 
     crate::hew_clear_error();
+    // SAFETY: the manager remains live until the cleanup below.
+    let mgr_ref = unsafe { &*mgr };
+    reserve_unverified_identity_claim(mgr_ref, test_node_identity(20), 20, 1, 10, 1);
+    assert!(retire_identity_claim(
+        mgr_ref,
+        test_node_identity(20),
+        10,
+        1
+    ));
     let plan = ReconnectPlan {
+        predecessor: ReconnectOwner {
+            node_id: test_node_identity(20),
+            session_incarnation: 1,
+            publication_token: 1,
+        },
         target_addr: "127.0.0.1:1".into(),
         max_retries: 3,
         expected_node_id,
@@ -243,4 +261,129 @@ fn reconnect_attempt_requires_authenticated_credential_before_pin_check() {
         error_message.contains(&channel_gate),
         "an unpinned reconnect must still require a protected channel, got: {error_message}"
     );
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "stage the delayed retry, successor publication and preserved route together"
+)]
+fn stale_reconnect_cannot_replace_newer_publication() {
+    for successor_session in [1, 2] {
+        let (mgr_ptr, transport) = test_manager_with_transport();
+        // SAFETY: this test retains the manager and routing table through cleanup.
+        unsafe {
+            (*mgr_ptr).routing_table = crate::routing::hew_routing_table_new_for_test(1);
+        }
+        // SAFETY: the manager remains live through the assertions below.
+        let mgr = unsafe { &*mgr_ptr };
+        mgr.reconnect_enabled.store(true, Ordering::Release);
+        let identity = test_node_identity(20);
+        reserve_unverified_identity_claim(mgr, identity, 20, 1, 10, 100);
+        install_strict_conn(mgr, 20, 10, 100);
+        mgr.connections.access(|connections| {
+            connections[0].reconnect = Some(ReconnectSettings {
+                target_addr: "127.0.0.1:1".into(),
+                max_retries: 3,
+                expected_node_id: None,
+            });
+        });
+        assert!(publish_identity_claim(mgr, identity, 10, 100));
+        let plan = reconnect_plan(mgr, 10).expect("admitted peer has reconnect owner");
+        assert_eq!(plan.predecessor.node_id, identity);
+        assert_eq!(plan.predecessor.session_incarnation, 1);
+        assert_eq!(plan.predecessor.publication_token, 100);
+        // SAFETY: the manager owns the installed predecessor.
+        assert_eq!(unsafe { hew_connmgr_remove(mgr_ptr, 10) }, 0);
+
+        // A failed attempt restores the retired predecessor so retry remains
+        // possible; shutdown cancels that otherwise valid retry before connect.
+        let ClaimReservation::Reserved { superseded } =
+            reserve_identity_claim(mgr, identity, 20, 1, None, 11, 101, Some(&plan.predecessor))
+        else {
+            panic!("current retired predecessor must permit reconnect");
+        };
+        abort_identity_claim(mgr, identity, 11, 101, superseded);
+        mgr.reconnect_shutdown.store(true, Ordering::Release);
+        assert_eq!(
+            reconnect_attempt(mgr_ptr, &plan, 10, 1),
+            ReconnectAttemptOutcome::Cancelled
+        );
+        mgr.reconnect_shutdown.store(false, Ordering::Release);
+        assert_eq!(
+            reconnect_attempt(mgr_ptr, &plan, 10, 1),
+            ReconnectAttemptOutcome::TransportError,
+            "the restored predecessor permits retry to reach the stub transport"
+        );
+
+        // A separately admitted connection wins while the old retry is
+        // delayed. Reuse its transport id to exercise the publication token.
+        let superseded =
+            reserve_unverified_identity_claim(mgr, identity, 20, successor_session, 10, 102);
+        let mut actor = test_actor(10);
+        actor.peer_node_id = 20;
+        actor.peer_identity = Some(identity);
+        actor.peer_session_incarnation = successor_session;
+        actor.publication_token = 102;
+        actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        let Ok(publication) = install_connection_actor(mgr, actor) else {
+            panic!("successor installs");
+        };
+        assert!(publish_identity_connection_established(
+            mgr,
+            identity,
+            20,
+            successor_session,
+            10,
+            0,
+            102,
+            &publication.sync,
+            &publication.removed,
+            superseded,
+        ));
+        assert_eq!(
+            reconnect_attempt(mgr_ptr, &plan, 10, 2),
+            ReconnectAttemptOutcome::Cancelled
+        );
+
+        // Also drive the reservation boundary directly: a worker that passed
+        // its early check before the successor published must still lose.
+        assert!(matches!(
+            reserve_identity_claim(
+                mgr,
+                identity,
+                20,
+                successor_session,
+                None,
+                12,
+                103,
+                Some(&plan.predecessor),
+            ),
+            ClaimReservation::Rejected(_)
+        ));
+        let claim = mgr
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&identity)
+            .cloned()
+            .unwrap();
+        assert_eq!(claim.state, ClaimState::Published);
+        assert_eq!(claim.session_incarnation, successor_session);
+        assert_eq!(claim.publication_token, 102);
+        // SAFETY: routing table and manager are still owned by this test.
+        unsafe {
+            assert_eq!(
+                crate::routing::hew_routing_lookup(
+                    mgr.routing_table,
+                    crate::pid::hew_pid_make(20, 0),
+                ),
+                10
+            );
+            assert_eq!(hew_connmgr_count(mgr_ptr), 1);
+            let routing_table = mgr.routing_table;
+            free_test_manager_and_transport(mgr_ptr, transport);
+            crate::routing::hew_routing_table_free(routing_table);
+        }
+    }
 }

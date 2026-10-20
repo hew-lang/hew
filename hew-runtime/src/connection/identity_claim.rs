@@ -17,7 +17,7 @@ use super::gossip::flush_registry_gossip_to_connection;
 use super::handshake::close_transport_conn;
 #[cfg(test)]
 use super::reconnect::next_publication_token;
-use super::HewConnMgr;
+use super::{HewConnMgr, ReconnectOwner};
 
 /// Bounded wait for an in-flight `Reserved` claim to resolve, in ms. Mirrors the
 /// handshake timeout ceiling: a stuck reservation must not wedge admission.
@@ -45,6 +45,10 @@ pub(super) enum ClaimReservation {
 /// - `Reserved` (another admission in flight) ⇒ wait on the condvar until it
 ///   publishes/aborts, then re-evaluate; on timeout ⇒ reject.
 /// - absent ⇒ insert `Reserved`; no supersede.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "admission carries the authenticated claim and optional reconnect predecessor"
+)]
 pub(super) fn reserve_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
@@ -53,6 +57,7 @@ pub(super) fn reserve_identity_claim(
     credential: Option<&PeerCredential>,
     conn_id: c_int,
     publication_token: u64,
+    predecessor: Option<&ReconnectOwner>,
 ) -> ClaimReservation {
     if route_slot == 0 || session_incarnation == 0 {
         return ClaimReservation::Rejected(format!(
@@ -62,6 +67,16 @@ pub(super) fn reserve_identity_claim(
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     loop {
+        // A delayed automatic retry may replace only the exact retired
+        // publication that scheduled it. Check under the reservation lock:
+        // a pre-connect check alone leaves a handshake/publication race.
+        if predecessor.is_some_and(|owner| {
+            owner.node_id != node_id || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
+        }) {
+            return ClaimReservation::Rejected(format!(
+                "stale reconnect predecessor for NodeId {node_id}"
+            ));
+        }
         match map.get(&node_id) {
             Some(existing) if existing.state != ClaimState::Reserved => {
                 if existing.credential.as_ref() == credential && existing.route_slot == route_slot {
@@ -242,6 +257,7 @@ pub(super) fn reserve_unverified_identity_claim(
         None,
         conn_id,
         token,
+        None,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {
@@ -273,6 +289,7 @@ pub(super) fn reserve_claim(
         credential,
         conn_id,
         publication_token,
+        None,
     )
 }
 

@@ -509,7 +509,23 @@ struct ReconnectSettings {
 }
 
 #[derive(Clone, Debug)]
+struct ReconnectOwner {
+    node_id: NodeId,
+    session_incarnation: u32,
+    publication_token: u64,
+}
+
+impl ReconnectOwner {
+    fn matches(&self, claim: &LiveClaim) -> bool {
+        claim.state == crate::peer_binding::ClaimState::Retired
+            && claim.session_incarnation == self.session_incarnation
+            && claim.publication_token == self.publication_token
+    }
+}
+
+#[derive(Clone, Debug)]
 struct ReconnectPlan {
+    predecessor: ReconnectOwner,
     target_addr: String,
     max_retries: u32,
     expected_node_id: Option<u16>,

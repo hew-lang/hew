@@ -12,14 +12,15 @@ use rand::RngExt;
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 
-use super::admission::hew_connmgr_add;
+use super::admission::add_connection;
 use super::handshake::close_transport_conn;
 use super::manager::{hew_connmgr_configure_reconnect, hew_connmgr_expect_peer};
 use super::{
-    HewConnMgr, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
+    HewConnMgr, ReconnectOwner, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
     RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_JITTER_MAX_PERCENT, RECONNECT_JITTER_MIN_PERCENT,
     RECONNECT_MAX_BACKOFF_MS, RECONNECT_SLEEP_SLICE_MS,
 };
+use crate::util::MutexExt;
 
 pub(super) fn normalize_max_retries(max_retries: c_int) -> u32 {
     if max_retries <= 0 {
@@ -93,6 +94,11 @@ pub(super) fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<Reconne
         let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
         let reconnect = conn.reconnect.as_ref()?;
         Some(ReconnectPlan {
+            predecessor: ReconnectOwner {
+                node_id: conn.peer_identity?,
+                session_incarnation: conn.peer_session_incarnation,
+                publication_token: conn.publication_token,
+            },
             target_addr: reconnect.target_addr.clone(),
             max_retries: reconnect.max_retries.max(1),
             expected_node_id: reconnect.expected_node_id,
@@ -169,22 +175,40 @@ pub(super) enum ReconnectAttemptOutcome {
     /// The attempt failed before reaching the identity gate (invalid
     /// address, transport connect failure).
     TransportError,
+    /// Shutdown or a successor publication made this worker obsolete.
+    Cancelled,
+}
+
+fn reconnect_is_current(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
+    !mgr.reconnect_shutdown.load(Ordering::Acquire)
+        && mgr
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&plan.predecessor.node_id)
+            .is_some_and(|claim| plan.predecessor.matches(claim))
 }
 
 /// Runs one reconnect attempt: connect, replay the pinned peer identity
 /// (`plan.expected_node_id`) if any, install via `hew_connmgr_add`, and
 /// re-arm reconnect on success.
 ///
-/// Extracted from the retry loop so both the worker and tests can drive the
-/// exact install sequence deterministically and same-thread. Bare-address
-/// reconnects (`plan.expected_node_id.is_none()`) skip straight to
-/// `hew_connmgr_add`, unchanged from before this pin was threaded through.
+/// The retired predecessor remains authoritative through reservation, even
+/// when another connection publishes while this attempt is handshaking.
+/// Both the worker and tests drive this same install sequence.
 pub(super) fn reconnect_attempt(
     mgr_ptr: *mut HewConnMgr,
     plan: &ReconnectPlan,
     dropped_conn_id: c_int,
     attempt: u32,
 ) -> ReconnectAttemptOutcome {
+    // SAFETY: workers are joined before manager free; tests retain the manager.
+    let Some(mgr) = (unsafe { mgr_ptr.as_ref() }) else {
+        return ReconnectAttemptOutcome::Cancelled;
+    };
+    if !reconnect_is_current(mgr, plan) {
+        return ReconnectAttemptOutcome::Cancelled;
+    }
     let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
         set_last_error(format!(
             "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
@@ -219,12 +243,16 @@ pub(super) fn reconnect_attempt(
     }
 
     // SAFETY: manager pointer is valid until shutdown and join in free.
-    if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } != 0 {
+    if unsafe { add_connection(mgr_ptr, new_conn_id, Some(&plan.predecessor)) } != 0 {
         // hew_connmgr_add owns conn_id cleanup on failure (closes the
         // transport connection on all failure paths, including a
         // pinned-identity mismatch) and has already recorded the specific
         // rejection reason via set_last_error.
-        return ReconnectAttemptOutcome::Rejected;
+        return if reconnect_is_current(mgr, plan) {
+            ReconnectAttemptOutcome::Rejected
+        } else {
+            ReconnectAttemptOutcome::Cancelled
+        };
     }
 
     let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
@@ -267,9 +295,10 @@ fn reconnect_worker_loop(
             return;
         }
 
-        if reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt)
-            == ReconnectAttemptOutcome::Installed
-        {
+        if matches!(
+            reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt),
+            ReconnectAttemptOutcome::Installed | ReconnectAttemptOutcome::Cancelled
+        ) {
             return;
         }
 

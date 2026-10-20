@@ -554,7 +554,7 @@ fn main() {
 #[test]
 fn supervisor_wiring_uses_owner_token_and_rejects_reversed_dependency_order() {
     let mut module = lower_source(
-        r#"
+        r"
 actor Backend { receive fn ping() {} }
 actor Frontend { init(backend: Backend) {} receive fn ping() {} }
 supervisor Shop {
@@ -562,7 +562,7 @@ supervisor Shop {
     child backend: Backend;
 }
 fn main() { let app = spawn Shop; stop(app); stopped(app); }
-"#,
+",
     );
     let supervisor = &module.supervisors[0];
     assert_eq!(supervisor.startup_order, vec![1, 0]);

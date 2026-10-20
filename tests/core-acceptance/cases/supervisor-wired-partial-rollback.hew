@@ -1,0 +1,21 @@
+actor Ledger {
+    let label: string;
+    #[on(start)] fn started() {
+        if label == "reject" { panic("prerequisite start failed"); }
+    }
+    #[on(stop)] fn stopping() { println(label + " stop"); }
+    receive fn ping() {}
+}
+actor Checkout {
+    init(backend: Ledger) { println("dependent must not construct"); }
+    receive fn ping() {}
+}
+supervisor Shop(seed: string) {
+    child observer: Ledger { label: "observer" };
+    child checkout: Checkout wired_to: { backend: ledger };
+    child ledger: Ledger { label: seed };
+}
+fn main() {
+    let shop = spawn Shop { seed: "reject" };
+    stop(shop); stopped(shop);
+}

@@ -1,0 +1,12 @@
+[[case]]
+id = "supervisor-wired-construction-cancel"
+intent = "Cancelling initial construction drains the pending child and rolls back earlier children before the deadline handler, retaining and releasing owned config once."
+source = "cases/supervisor-wired-construction-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "OWNED CONFIG\nconstruction cancelled\n"
+stderr = ""
+exit = 0

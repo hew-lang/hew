@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-imported-generics"
+intent = "Imported generic actor identities and supervisor substitutions survive typed sibling wiring in two different instantiations."
+source = "cases/supervisor-wired-imported-generics.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "imported generic wiring\n"
+stderr = ""
+exit = 0

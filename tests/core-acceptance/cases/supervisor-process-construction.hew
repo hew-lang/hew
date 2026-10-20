@@ -1,0 +1,36 @@
+import std.os;
+import std.process;
+
+actor Worker {
+    let label: string;
+    init(program: string, seed: string) {
+        self.label = seed;
+        let output = process.run_argv(program, ["child"]).expect("constructor process");
+        assert(output.status == process.ExitStatus.Exited(0));
+        assert(output.stdout == "ready\n" && output.stderr == "");
+    }
+    receive fn read() -> i64 { label.len() }
+    receive fn fail() { panic("process-backed reconstruction"); }
+}
+
+supervisor Application(program: string, seed: string) {
+    child worker: Worker { program: program, seed: seed };
+}
+
+fn main() {
+    let arguments = os.args();
+    if arguments.len() > 1 {
+        assert(arguments[1] == "child");
+        sleep(20ms);
+        println("ready");
+        return;
+    }
+    let app = spawn Application { program: arguments[0], seed: "owned process".to_upper() };
+    let worker = app.worker;
+    assert(worker.read().expect("initial process constructor") == 13);
+    let _ = worker.fail();
+    restarted(worker);
+    assert(worker.read().expect("repeated process constructor") == 13);
+    stop(app); stopped(app);
+    println("process-backed supervisor construction");
+}

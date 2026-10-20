@@ -405,3 +405,63 @@ supervisor CycleApp {
     );
     assert_eq!(err.kind.as_kind_str(), "SupervisorWiredCycle");
 }
+
+#[test]
+fn supervisor_wiring_binds_forward_generic_init_arguments_and_defaults() {
+    let output = check_source(
+        r#"
+actor Ledger<T> { let value: T; receive fn get() -> T { value } }
+actor Checkout<T> {
+    let ledger: Ledger<T>;
+    let label: string = "default";
+    init(backend: Ledger<T>, count: i64) { self.ledger = backend; }
+    receive fn ping() {}
+}
+supervisor Shop<T>(seed: T) {
+    child checkout: Checkout<T> { count: 7 } wired_to: { backend: ledger };
+    child ledger: Ledger<T> { value: seed };
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(output
+        .supervisor_startup_order
+        .values()
+        .any(|order| order == &[1, 0]));
+    assert!(output
+        .supervisor_wiring
+        .values()
+        .any(|bindings| bindings == &[("backend".to_string(), 1)]));
+}
+
+#[test]
+fn supervisor_wiring_rejects_full_generic_mismatch_and_argument_collision() {
+    for declaration in [
+        "child checkout: Checkout<string> wired_to: { backend: ledger }; child ledger: Ledger<i64> { value: 1 };",
+        "child ledger: Ledger<i64> { value: 1 }; child checkout: Checkout<i64> { backend: seed } wired_to: { backend: ledger };",
+    ] {
+        let source = format!(r"
+actor Ledger<T> {{ let value: T; receive fn get() -> T {{ value }} }}
+actor Checkout<T> {{ init(backend: Ledger<T>) {{}} receive fn ping() {{}} }}
+supervisor Shop(seed: Ledger<i64>) {{ {declaration} }}
+");
+        let output = check_source(&source);
+        assert!(!output.errors.is_empty(), "accepted invalid wiring: {source}");
+        assert!(output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::SpawnArgDuplicate | TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch })), "{:#?}", output.errors);
+    }
+}
+
+#[test]
+fn supervisor_wiring_does_not_capture_source_configuration_names() {
+    let output = check_source(
+        r"
+actor Ledger<T> { let value: T; receive fn get() -> T { value } }
+actor Checkout<T> { let count: i64; init(backend: Ledger<T>) {} receive fn ping() {} }
+supervisor Shop<T>(__hew_wired_0_1: i64, seed: T) {
+    child checkout: Checkout<T> { count: __hew_wired_0_1 } wired_to: { backend: ledger };
+    child ledger: Ledger<T> { value: seed };
+}
+",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

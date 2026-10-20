@@ -1575,7 +1575,7 @@ non-declarable = [
   # emits the literal and the call); user code has no way to name it that is
   # not a forged system-dispatch registration.
   "hew_supervisor_add_child_spec",
-  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_spawn` spawns
+  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_spawn_new` adopts the config and its polling operation spawns
   # every declared child from compiler-emitted adapters, and the shared
   # restart path installs the runtime's own system dispatch on each
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
@@ -1588,7 +1588,10 @@ non-declarable = [
   "hew_supervisor_native_role_owner",
   "hew_supervisor_native_role_request",
   "hew_supervisor_native_role_wait_new",
-  "hew_supervisor_native_spawn",
+  "hew_supervisor_native_spawn_free",
+  "hew_supervisor_native_spawn_new",
+  "hew_supervisor_native_spawn_poll",
+  "hew_supervisor_native_spawn_take",
   "hew_supervisor_role_await_send",
   "hew_supervisor_stop_native",
   "hew_supervisor_terminate_native",

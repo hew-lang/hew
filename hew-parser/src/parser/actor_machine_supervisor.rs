@@ -1195,6 +1195,7 @@ impl Parser<'_> {
                     let mut count: Option<Spanned<Expr>> = None;
                     let mut stop: Option<Spanned<Expr>> = None;
                     let mut wired_to: Option<std::collections::HashMap<String, String>> = None;
+                    let mut seen_wired_to = false;
                     loop {
                         match self.peek() {
                             // `restart: <policy>` clause (the only restart spelling).
@@ -1263,19 +1264,27 @@ impl Parser<'_> {
                             }
                             // `wired_to: { key: sibling, bare_sibling }` clause.
                             Some(Token::Identifier(s)) if *s == "wired_to" => {
+                                if seen_wired_to {
+                                    self.error(
+                                        "duplicate supervisor child `wired_to:` clause".to_string(),
+                                    );
+                                }
+                                seen_wired_to = true;
                                 self.advance(); // consume `wired_to`
                                 self.expect(&Token::Colon)?;
                                 self.expect(&Token::LeftBrace)?;
                                 let mut map = std::collections::HashMap::new();
                                 while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
                                     let key = self.expect_ident()?.to_string();
-                                    if self.eat(&Token::Colon) {
-                                        // explicit `key: sibling_name` form
-                                        let val = self.expect_ident()?.to_string();
-                                        map.insert(key, val);
+                                    let value = if self.eat(&Token::Colon) {
+                                        self.expect_ident()?.to_string()
                                     } else {
-                                        // shorthand `sibling_name` — key == value
-                                        map.insert(key.clone(), key);
+                                        key.clone()
+                                    };
+                                    if map.insert(key.clone(), value).is_some() {
+                                        self.error(format!(
+                                            "duplicate supervisor wiring key `{key}`"
+                                        ));
                                     }
                                     if !self.eat(&Token::Comma) {
                                         break;

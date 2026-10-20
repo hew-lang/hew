@@ -54,13 +54,15 @@ pub enum SemStopDeadline {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemSupervisorChild {
     pub name: String,
+    /// Checker-resolved sibling declaration identities required for construction.
+    pub dependencies: Vec<usize>,
     pub role: SemSupervisedRole,
     pub restart: SemRestartPolicy,
     pub stop_deadline: SemStopDeadline,
     /// A checked count callable over borrowed config, evaluated once before
     /// bootstrap. `None` identifies an ordinary single child.
     pub pool_count: Option<CallableId>,
-    /// `fn(config...) -> handle`: evaluates the declared init arguments against
+    /// `fn(supervisor, config...) -> handle`: evaluates the declared init arguments against
     /// the supervisor's config and spawns one incarnation. The supervisor calls
     /// it for the initial spawn and for every restart.
     pub spawn: CallableId,
@@ -80,6 +82,7 @@ pub struct SemSupervisor {
     pub max_restarts: u32,
     pub window_secs: u32,
     pub children: Vec<SemSupervisorChild>,
+    pub startup_order: Vec<usize>,
 }
 
 impl SemModule {
@@ -164,6 +167,34 @@ impl SemSupervisor {
         ))
     }
 
+    fn validate_startup_order(&self) -> Result<(), String> {
+        let mut order = self.startup_order.clone();
+        order.sort_unstable();
+        if order != (0..self.children.len()).collect::<Vec<_>>() {
+            return Err("supervisor startup order is not a declaration permutation".into());
+        }
+        for (index, child) in self.children.iter().enumerate() {
+            let after = self
+                .startup_order
+                .iter()
+                .position(|child| *child == index)
+                .ok_or("dependent is absent from startup order")?;
+            for sibling in &child.dependencies {
+                let before = self
+                    .startup_order
+                    .iter()
+                    .position(|child| child == sibling)
+                    .ok_or("wired sibling is absent from startup order")?;
+                if before >= after {
+                    return Err(
+                        "supervisor startup order constructs a dependent before its sibling".into(),
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.supervisor(self.id) != Some(self) {
             return Err("supervisor descriptor is not at its canonical index".into());
@@ -183,6 +214,7 @@ impl SemSupervisor {
         {
             return Err("simple_one_for_one requires exactly one pool".into());
         }
+        self.validate_startup_order()?;
         let mut names = std::collections::BTreeSet::new();
         for (index, child) in self.children.iter().enumerate() {
             if !names.insert(child.name.as_str()) {
@@ -239,11 +271,15 @@ impl SemSupervisor {
                 .ok_or("supervised child has no spawn callable")?;
             if callable.kind != crate::SemCallableKind::HewDirect
                 || callable.signature.return_ty != *spawned
-                || callable.signature.params.len() != self.config.len()
+                || callable.signature.params.len() != self.config.len() + 1
+                || callable.signature.params.first().is_none_or(|param| {
+                    param.ty != self.handle_ty || param.passing != crate::SemParamPassing::Consume
+                })
                 || callable
                     .signature
                     .params
                     .iter()
+                    .skip(1)
                     .zip(&self.config)
                     .any(|(param, ty)| {
                         param.ty != *ty

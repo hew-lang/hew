@@ -1,0 +1,34 @@
+actor Ledger {
+    let label: string;
+    receive fn read() -> i64 { label.len() }
+    receive fn fail() { panic("construction ledger crash"); }
+}
+actor Checkout {
+    let ledger: Ledger;
+    var count: i64 = 42;
+    init(backend: Ledger) {
+        self.ledger = backend;
+        match backend.fail() {
+            .Err(_) => { println("caught"); }
+            .Ok(_) => { panic("ledger did not fail"); }
+        }
+    }
+
+    receive fn read() -> i64 {
+        count + ledger.read().expect("restarted ledger")
+    }
+}
+supervisor Shop(seed: string) {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child checkout: Checkout wired_to: { backend: ledger };
+    child ledger: Ledger { label: seed };
+}
+fn main() {
+    let shop = spawn Shop { seed: "ledger" };
+    let ledger = shop.ledger;
+    restarted(ledger);
+    assert(shop.checkout.read().expect("checkout survives") == 48);
+    stop(shop); stopped(shop);
+    println("recovered");
+}

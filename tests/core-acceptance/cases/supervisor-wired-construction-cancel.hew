@@ -1,0 +1,32 @@
+actor Observer {
+    let label: string;
+    #[on(stop)] fn stopping() { println(label); }
+    receive fn ping() {}
+}
+
+actor Waiting {
+    let label: string;
+    init(seed: string) {
+        self.label = seed;
+        sleep(10s);
+    }
+    receive fn ping() {}
+}
+
+supervisor Tree(seed: string) {
+    child observer: Observer { label: seed };
+    child waiting: Waiting { seed: seed };
+}
+
+fn main() {
+    scope within 100ms {
+        let tree = spawn Tree { seed: "owned config".to_upper() };
+        stop(tree); stopped(tree);
+        panic("construction ignored cancellation");
+    } handle failure {
+        match failure {
+            .Deadline { message } => println("construction cancelled"),
+            .Fault { message } => panic(message),
+        }
+    }
+}

@@ -22,6 +22,23 @@ use super::*;
 /// rather than being freed unsafely. There is no automatic retry; an embedder
 /// may explicitly invoke cleanup again after the borrower drains.
 pub(crate) unsafe fn free_supervisor_resources(sup: *mut HewSupervisor) -> bool {
+    // Workers have joined, so canonical cleanup exclusively owns any pending
+    // constructor. Its cancellation cleanup must release retained role pins
+    // before access closure can wait for those pins.
+    publish_supervisor_cancellation(sup);
+    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: Canonical post-worker cleanup owns this live parent and retains it if the constructor cannot drain.
+    if !unsafe {
+        teardown::drain_cancelled_native_group(
+            sup,
+            Instant::now() + SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT,
+        )
+    } {
+        set_last_error("runtime cleanup retained an unfinished supervisor constructor");
+        // SAFETY: Canonical post-worker cleanup owns this live parent and retains it if the constructor cannot drain.
+        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        return false;
+    }
     // ROSTER-EXCLUSIVE: runtime cleanup runs after workers join and closes
     // supervisor access before traversing or dropping roster storage.
     // SAFETY: canonical cleanup still owns a live raw supervisor allocation.

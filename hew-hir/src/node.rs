@@ -637,6 +637,9 @@ impl HirRecordDecl {
 /// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorDecl {
+    /// Owning supervisor handle supplied to each incarnation constructor.
+    pub owner: HirBinding,
+    pub startup_order: Vec<usize>,
     /// Stateless interceptor instantiated inside each declared child turn.
     pub interceptor: Option<HirFn>,
     pub id: ItemId,
@@ -666,12 +669,11 @@ pub struct HirSupervisorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorChild {
     pub name: String,
+    /// Checked wiring: init argument index and sibling declaration index.
+    pub wiring: Vec<(usize, usize)>,
     /// Complete checked child handle, including any supervisor type parameters.
     pub ty: ResolvedTy,
     pub restart_policy: Option<HirRestartPolicy>,
-    /// Declarative sibling wiring: init-param name → sibling child name.
-    /// `None` means no `wired_to:` clause. S-B validates key correctness.
-    pub wired_to: Option<std::collections::HashMap<String, String>>,
     /// `true` when declared with `pool name: Type`; `false` for `child name: Type`.
     pub is_pool: bool,
     /// Compile-time-assigned slot index within the child's own slot space.

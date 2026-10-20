@@ -1756,6 +1756,7 @@ impl Checker {
         args: &[(Ident, Spanned<Expr>)],
         labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
+        typed_arguments: &HashMap<usize, Ty>,
     ) {
         let definition = self.lookup_type_def(actor_name);
         let registered = self.registered_spawn_identity(actor_name);
@@ -1764,6 +1765,7 @@ impl Checker {
         let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
+            let typed = typed_arguments.get(&index);
             let key_span = labels
                 .get(index)
                 .map_or_else(|| as_.clone(), |label| label.span.clone());
@@ -1773,7 +1775,7 @@ impl Checker {
                     &key_span,
                     format!("spawn of `{actor_name}` names `{field_name}` more than once"),
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1799,7 +1801,7 @@ impl Checker {
                          arguments"
                     ),
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1814,7 +1816,7 @@ impl Checker {
                     keys,
                     &key_span,
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1838,21 +1840,28 @@ impl Checker {
                 _ => None,
             };
             let declared = declared_owned.as_ref().or(declared);
-            let ty_raw = match declared {
-                Some(declared_ty) => {
-                    let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.head_type_def(*head)
-                            .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    } else {
-                        false
-                    };
-                    if is_bare_actor {
-                        self.synthesize(arg, as_)
-                    } else {
-                        self.check_against(arg, as_, declared_ty)
-                    }
+            let ty_raw = if let Some(typed) = typed {
+                if let Some(expected) = declared {
+                    self.expect_type(expected, typed, as_);
                 }
-                None => self.synthesize(arg, as_),
+                typed.clone()
+            } else {
+                match declared {
+                    Some(declared_ty) => {
+                        let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
+                            self.head_type_def(*head)
+                                .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        } else {
+                            false
+                        };
+                        if is_bare_actor {
+                            self.synthesize(arg, as_)
+                        } else {
+                            self.check_against(arg, as_, declared_ty)
+                        }
+                    }
+                    None => self.synthesize(arg, as_),
+                }
             };
             self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
         }
@@ -2056,6 +2065,25 @@ impl Checker {
         labels: &[FieldLabel],
         span: &Span,
     ) -> Ty {
+        self.check_spawn_with_typed_arguments(
+            target,
+            type_args,
+            args,
+            labels,
+            span,
+            &HashMap::new(),
+        )
+    }
+
+    pub(in crate::check) fn check_spawn_with_typed_arguments(
+        &mut self,
+        target: &Spanned<Expr>,
+        type_args: &[Spanned<TypeExpr>],
+        args: &[(Ident, Spanned<Expr>)],
+        labels: &[FieldLabel],
+        span: &Span,
+        typed_arguments: &HashMap<usize, Ty>,
+    ) -> Ty {
         let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
             return Ty::Error;
         };
@@ -2065,6 +2093,9 @@ impl Checker {
                 .type_def_at(&name)
                 .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
             {
+                // Initial construction may await child callbacks and rollback,
+                // independently of any particular child's inferred effects.
+                self.mark_body_suspends("supervisor construction");
                 "supervisor"
             } else {
                 "actor"
@@ -2098,7 +2129,13 @@ impl Checker {
                 .copied()
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
-            self.check_spawn_constructor_args(&name, args, labels, Some(&type_subst));
+            self.check_spawn_constructor_args(
+                &name,
+                args,
+                labels,
+                Some(&type_subst),
+                typed_arguments,
+            );
             let registered = self.registered_spawn_identity(&name);
             if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
                 // Bind each key the target accepts to its written value or

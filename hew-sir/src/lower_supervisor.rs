@@ -1,6 +1,6 @@
 //! Demanded supervisor declarations and their boundaries.
 //!
-//! Each declared child gets a spawn callable `fn(config...) -> handle` whose
+//! Each declared child gets a spawn callable `fn(supervisor, config...) -> handle` whose
 //! body is the child's `spawn` with the declared init arguments. The
 //! supervisor runs it for the initial spawn and for every restart, so a
 //! restarted child re-runs init and start against the same config.
@@ -124,9 +124,6 @@ impl InstanceService<'_> {
                 SemRestartStrategy::SimpleOneForOne
             }
         };
-        if source.children.iter().any(|child| child.wired_to.is_some()) {
-            return Err("`wired_to` needs its sibling-handle contract".into());
-        }
         let max_restarts = match source.max_restarts {
             None => 10,
             Some(count) => u32::try_from(count)
@@ -160,6 +157,7 @@ impl InstanceService<'_> {
             max_restarts,
             window_secs,
             children: Vec::new(),
+            startup_order: source.startup_order.clone(),
         });
         let mut child_chain = chain.to_vec();
         if source.interceptor.is_some() {
@@ -202,6 +200,13 @@ impl InstanceService<'_> {
                 self.register_child_spawn(id, index, &source, child, handle, &substitution)?;
             children.push(SemSupervisorChild {
                 name: child.name.clone(),
+                dependencies: child
+                    .wiring
+                    .iter()
+                    .map(|(_, sibling)| *sibling)
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect(),
                 role,
                 restart,
                 stop_deadline: stop_deadline(child, &source, role)?,
@@ -234,7 +239,7 @@ impl InstanceService<'_> {
         Ok(id)
     }
 
-    /// `fn(config...) -> handle { spawn Child { init args } }`, lowered and
+    /// `fn(supervisor, config...) -> handle { spawn Child { init args } }`, lowered and
     /// verified like any function. The config parameters are lent, so an owned
     /// init argument is copied into each incarnation.
     fn register_child_spawn(
@@ -300,7 +305,13 @@ impl InstanceService<'_> {
             declaration: source.bootstrap_declaration,
             name: format!("{}::{suffix}", source.name),
             type_params: Vec::new(),
-            params: source.params.clone(),
+            params: if matches!(instance, CallableInstance::SupervisorChild { .. }) {
+                std::iter::once(source.owner.clone())
+                    .chain(source.params.iter().cloned())
+                    .collect()
+            } else {
+                source.params.clone()
+            },
             var_self_receiver: None,
             terminal_receiver: None,
             return_ty: result_ty.clone(),
@@ -317,6 +328,13 @@ impl InstanceService<'_> {
             intrinsic_id: None,
         };
         let mut params = Vec::new();
+        if matches!(instance, CallableInstance::SupervisorChild { .. }) {
+            params.push(SemAbiParam {
+                ty: substitution.apply(&source.owner.ty),
+                passing: SemParamPassing::Consume,
+                caller_visible_projection: false,
+            });
+        }
         for ty in &self.supervisors[supervisor.0 as usize].config {
             let owned = OwnKind::of_ty(ty, self.checked_facts.rows())? == OwnKind::Owned;
             params.push(SemAbiParam {
@@ -377,10 +395,14 @@ impl Builder<'_, '_> {
         slot: &hew_types::ChildSlot,
     ) -> Result<ValueId, String> {
         let supervisor = self.service.require_supervisor(&self.ty(&object.ty))?;
-        let child = self.service.supervisors[supervisor.0 as usize]
+        let child = declaration(self.service.module, &self.ty(&object.ty))
+            .ok_or("supervisor lookup lacks its declaration")?
             .children
             .iter()
-            .position(|child| child.name == slot.child_name)
+            .enumerate()
+            .filter(|(_, child)| child.is_pool == (slot.kind == hew_types::ChildKind::Pool))
+            .nth(slot.index as usize)
+            .map(|(index, _)| index)
             .ok_or("supervisor child lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
         let operation = ActorOperation::SupervisorChild { supervisor, child };
@@ -407,10 +429,14 @@ impl Builder<'_, '_> {
         slot: &hew_types::ChildSlot,
     ) -> Result<ValueId, String> {
         let supervisor = self.service.require_supervisor(&self.ty(&object.ty))?;
-        let child = self.service.supervisors[supervisor.0 as usize]
+        let child = declaration(self.service.module, &self.ty(&object.ty))
+            .ok_or("supervisor lookup lacks its declaration")?
             .children
             .iter()
-            .position(|child| child.name == slot.child_name)
+            .enumerate()
+            .filter(|(_, child)| child.is_pool == (slot.kind == hew_types::ChildKind::Pool))
+            .nth(slot.index as usize)
+            .map(|(index, _)| index)
             .ok_or("supervisor pool lookup names no declared child")?;
         let child = u32::try_from(child).map_err(|_| "supervisor child count exceeds u32")?;
         let operation = ActorOperation::SupervisorPoolView { supervisor, child };

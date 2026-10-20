@@ -460,6 +460,10 @@ pub struct TypeCheckOutput {
     /// fields that `init` does not initialize, then its `init` parameters; a
     /// supervisor's header parameters.
     pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
+    /// Wiring arguments appended to written init values, in checked argument order.
+    pub supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    /// Dependency-first declaration indices, with declaration-order ties.
+    pub supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     pub expr_types: HashMap<SpanKey, Ty>,
     /// Final checked types of authored lexical bindings, including unused
     /// declarations and destructured components. Keys are the same identities
@@ -3477,6 +3481,8 @@ pub struct Checker {
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
     pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
+    pub(super) supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    pub(super) supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     /// Calls whose named arguments a callee rule has bound or refused. A
     /// call with named arguments outside this set reached a callee that
     /// takes positional arguments only.
@@ -4490,6 +4496,8 @@ impl Checker {
             chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
             spawn_argument_slots: HashMap::new(),
+            supervisor_wiring: HashMap::new(),
+            supervisor_startup_order: HashMap::new(),
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),

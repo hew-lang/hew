@@ -1,0 +1,9 @@
+pub actor Ledger<T> {
+    let value: T;
+    receive fn get() -> T { value }
+}
+pub actor Checkout<T> {
+    let ledger: Ledger<T>;
+    init(backend: Ledger<T>) { self.ledger = backend; }
+    receive fn get() -> T { ledger.get().expect("ledger") }
+}

@@ -1,0 +1,12 @@
+[[case]]
+id = "supervisor-process-construction"
+intent = "Declared-child init captures a self-child process through the ordinary suspending process API on initial construction and restart, releasing owned process state and config."
+source = "cases/supervisor-process-construction.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "process-backed supervisor construction\n"
+stderr = "hew: failure: UserPanic (212): process-backed reconstruction\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
+exit = 0

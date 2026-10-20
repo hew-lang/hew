@@ -908,6 +908,8 @@ struct LowerCtx {
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// Checker-bound slots of each spawn and supervisor child.
     spawn_argument_slots: HashMap<SpanKey, Vec<hew_types::check::SpawnSlot>>,
+    supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
     race_operands: HashMap<SpanKey, Vec<hew_types::check::RaceOperandKind>>,

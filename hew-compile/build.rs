@@ -71,8 +71,8 @@ fn shallow_clone_version(repo_dir: &Path, cargo_version: &str) -> String {
     let Ok(sha) = git_stdout(repo_dir, &["rev-parse", "--short=7", "HEAD"]) else {
         return cargo_version.to_string();
     };
-    let dirty =
-        git_stdout(repo_dir, &["status", "--porcelain"]).is_ok_and(|status| !status.is_empty());
+    let dirty = git_stdout(repo_dir, &["status", "--porcelain", "--untracked-files=no"])
+        .is_ok_and(|status| !status.is_empty());
 
     dev_version(cargo_version, commits_since_root, &sha, dirty)
 }

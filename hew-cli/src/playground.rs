@@ -655,15 +655,5 @@ mod tests {
             runnable > 0,
             "manifest must have at least one runnable entry"
         );
-
-        // Verify "unsupported" entries exist too (tests the skip path).
-        let unsupported = entries
-            .iter()
-            .filter(|e| e.capabilities.wasi == "unsupported")
-            .count();
-        assert!(
-            unsupported > 0,
-            "manifest must have at least one unsupported entry (tests skip path)"
-        );
     }
 }

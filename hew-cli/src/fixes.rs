@@ -191,7 +191,7 @@ mod tests {
         let options = FrontendOptions::default();
         let diagnostic = diagnosed(&path, source, &options);
         assert_eq!(
-            apply(&path, &options, &[diagnostic.clone()], true).unwrap(),
+            apply(&path, &options, std::slice::from_ref(&diagnostic), true).unwrap(),
             1
         );
         assert_eq!(std::fs::read(&path).unwrap(), source.as_bytes());

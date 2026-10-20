@@ -4088,11 +4088,12 @@ machine Traffic {
             diagnostic.data.unwrap(),
         )
         .unwrap();
-        assert!(
-            hew_analysis::code_actions::machine_applicable_edits(source, &[info.clone()])
-                .unwrap()
-                .is_empty()
-        );
+        assert!(hew_analysis::code_actions::machine_applicable_edits(
+            source,
+            std::slice::from_ref(&info)
+        )
+        .unwrap()
+        .is_empty());
         let actions = hew_analysis::code_actions::build_code_actions(source, &[info]);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].title, "Add missing match arms");

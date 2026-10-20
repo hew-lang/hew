@@ -439,6 +439,10 @@ impl DebugArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps these independent command-line switches directly"
+)]
 pub struct CheckArgs {
     /// Apply unambiguous machine-applicable diagnostic fixes in selected sources.
     #[arg(long)]

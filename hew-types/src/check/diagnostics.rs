@@ -3,6 +3,7 @@
     reason = "submodules mirror the legacy check namespace during the split"
 )]
 use super::*;
+use std::fmt::Write as _;
 
 impl Checker {
     /// Reject a bare variant in expression position.
@@ -633,21 +634,7 @@ impl Checker {
                         continue;
                     }
                     self.warnings.push(TypeError {
-                        fixes: w
-                            .declaration
-                            .as_ref()
-                            .map(|decl| {
-                                hew_parser::diagnostic::DiagnosticFix::replace(
-                                    "Prefix with `_`",
-                                    decl.name_span.clone(),
-                                    format!("_{}", w.name),
-                                    // A declaration-only rename may capture a
-                                    // different value named `_name` later.
-                                    hew_parser::diagnostic::Applicability::MaybeIncorrect,
-                                )
-                            })
-                            .into_iter()
-                            .collect(),
+                        fixes: binding_warning_fixes(&w),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedVariable,
                         span: w.span,
@@ -659,20 +646,7 @@ impl Checker {
                 }
                 ScopeWarningKind::NeverMutated => {
                     self.warnings.push(TypeError {
-                        fixes: w
-                            .declaration
-                            .as_ref()
-                            .and_then(|decl| decl.keyword_span.clone())
-                            .map(|span| {
-                                hew_parser::diagnostic::DiagnosticFix::replace(
-                                    "Change `var` to `let`",
-                                    span,
-                                    "let",
-                                    hew_parser::diagnostic::Applicability::MachineApplicable,
-                                )
-                            })
-                            .into_iter()
-                            .collect(),
+                        fixes: binding_warning_fixes(&w),
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedMut,
                         span: w.span,
@@ -851,10 +825,14 @@ impl Checker {
             .map(|witness| witness.pattern.clone())
             .collect::<Vec<_>>();
         if let Some(position) = span.end.checked_sub(1) {
-            let arms = patterns
-                .iter()
-                .map(|pattern| format!(" {pattern} => {{ panic(\"TODO: handle missing case\"); }}"))
-                .collect::<String>();
+            let mut arms = String::new();
+            for pattern in patterns {
+                write!(
+                    arms,
+                    " {pattern} => {{ panic(\"TODO: handle missing case\"); }}"
+                )
+                .expect("writing to a String cannot fail");
+            }
             let mut fix = hew_parser::diagnostic::DiagnosticFix::replace(
                 "Add missing match arms",
                 position..position,
@@ -900,4 +878,34 @@ impl Checker {
         }
         leaves
     }
+}
+
+/// Keep binding edits at the declaration retained by the scope warning.
+fn binding_warning_fixes(
+    warning: &crate::env::ScopeWarning,
+) -> Vec<hew_parser::diagnostic::DiagnosticFix> {
+    use crate::env::ScopeWarningKind;
+    use hew_parser::diagnostic::{Applicability, DiagnosticFix};
+    let Some(declaration) = &warning.declaration else {
+        return Vec::new();
+    };
+    let fix = match warning.kind {
+        // A declaration-only rename can capture a different `_name` value.
+        ScopeWarningKind::Unused => Some(DiagnosticFix::replace(
+            "Prefix with `_`",
+            declaration.name_span.clone(),
+            format!("_{}", warning.name),
+            Applicability::MaybeIncorrect,
+        )),
+        ScopeWarningKind::NeverMutated => declaration.keyword_span.clone().map(|span| {
+            DiagnosticFix::replace(
+                "Change `var` to `let`",
+                span,
+                "let",
+                Applicability::MachineApplicable,
+            )
+        }),
+        ScopeWarningKind::VarParamMutationLost | ScopeWarningKind::TaskOutlivesTimedSelect => None,
+    };
+    fix.into_iter().collect()
 }

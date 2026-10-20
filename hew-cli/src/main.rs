@@ -1917,6 +1917,19 @@ fn cmd_expand(args: &args::ExpandArgs) {
     }
 }
 
+/// Keep fix refusals on the selected diagnostic output channel.
+fn render_fix_refusal(error: &str, json: bool) {
+    if json {
+        diagnostic_json::push_json_diagnostic(diagnostic_json::coded_message_diagnostic(
+            "E_FIX_REFUSED",
+            error,
+            DiagChannel::User,
+        ));
+    } else {
+        eprintln!("Error: {error}");
+    }
+}
+
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 
@@ -1979,17 +1992,7 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
             Ok(_) => {}
             Err(error) => {
                 compile::render_frontend_diagnostics(diagnostics);
-                if json {
-                    diagnostic_json::push_json_diagnostic(
-                        diagnostic_json::coded_message_diagnostic(
-                            "E_FIX_REFUSED",
-                            &error,
-                            DiagChannel::User,
-                        ),
-                    );
-                } else {
-                    eprintln!("Error: {error}");
-                }
+                render_fix_refusal(&error, json);
                 return 1;
             }
         }

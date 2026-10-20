@@ -23,6 +23,7 @@ use crate::BuiltinType;
 use hew_parser::ast::FieldLabel;
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy)]
 pub(in crate::check) struct StructInitSite<'a> {
     pub path: &'a hew_parser::ast::Path,
     pub field_labels: &'a [hew_parser::ast::FieldLabel],

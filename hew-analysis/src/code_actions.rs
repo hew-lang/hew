@@ -147,7 +147,7 @@ mod tests {
         let source = "é value";
         let fix = Fix::replace("Rename", 3..8, "other", A::MachineApplicable);
         let diagnostic = DiagnosticInfo::new(source, vec![fix.clone()]);
-        let edits = machine_applicable_edits(source, &[diagnostic.clone()]).unwrap();
+        let edits = machine_applicable_edits(source, std::slice::from_ref(&diagnostic)).unwrap();
         assert_eq!(apply_edits(source, &edits).unwrap(), "é other");
         assert_eq!(
             machine_applicable_edits("prefix é value", &[diagnostic]),
@@ -160,9 +160,11 @@ mod tests {
                 Fix::replace("Alternative", 3..8, "third", A::MachineApplicable),
             ],
         );
-        assert!(machine_applicable_edits(source, &[ambiguous.clone()])
-            .unwrap()
-            .is_empty());
+        assert!(
+            machine_applicable_edits(source, std::slice::from_ref(&ambiguous))
+                .unwrap()
+                .is_empty()
+        );
         assert_eq!(build_code_actions(source, &[ambiguous]).len(), 2);
         assert_eq!(
             apply_edits(
@@ -208,22 +210,22 @@ mod producer_tests {
         output.errors.into_iter().chain(output.warnings).collect()
     }
 
-    fn action(source: &str, kind: TypeErrorKind) -> CodeAction {
+    fn action(source: &str, kind: &TypeErrorKind) -> CodeAction {
         let diagnostic = diagnostics(source)
             .into_iter()
-            .find(|error| error.kind == kind)
+            .find(|error| &error.kind == kind)
             .unwrap_or_else(|| panic!("missing {kind:?}"));
         assert!(!diagnostic.fixes.is_empty(), "{diagnostic:?}");
         let info = DiagnosticInfo::new(source, diagnostic.fixes);
         // Human prose is absent from the edit contract entirely.
-        build_code_actions(source, &[info.clone()]).remove(0)
+        build_code_actions(source, std::slice::from_ref(&info)).remove(0)
     }
 
     #[test]
     fn diagnostic_fixes_preserve_generic_callee_trivia_and_prefix_shifts() {
         for prefix in ["", "// é😀 shifted\n"] {
             let source = format!("{prefix}fn helper<T>(value: T) -> T {{ value }} fn main() {{ let _ = helpr /* retained */ <i64>(42); }}");
-            let fix = action(&source, TypeErrorKind::UndefinedFunction);
+            let fix = action(&source, &TypeErrorKind::UndefinedFunction);
             assert_eq!(fix.applicability, Applicability::MaybeIncorrect);
             assert_eq!(
                 &source[fix.edits[0].span.start..fix.edits[0].span.end],
@@ -247,7 +249,7 @@ mod producer_tests {
             ("type Point { value: i64; } impl Point { fn read(self) -> i64 { self.value } } fn main() { let point = Point { value: 3 }; println(point.rea()); }", TypeErrorKind::UndefinedMethod, "rea", "read"),
             ("type Point { value: i64; } fn main() { let _ = Point { valu: 3 }; }", TypeErrorKind::UndefinedField, "valu", "value"),
         ] {
-            let fix = action(source, kind);
+            let fix = action(source, &kind);
             assert_eq!(&source[fix.edits[0].span.start..fix.edits[0].span.end], old);
             assert_eq!(fix.edits[0].new_text, new);
             let updated = apply_edits(source, &fix.edits).unwrap();
@@ -258,7 +260,7 @@ mod producer_tests {
     #[test]
     fn diagnostic_fixes_keep_binding_initializers_and_choose_explicit_names() {
         let source = "fn side_effect() -> i64 { println(7); 3 } fn main() { let _held = 9; let held = side_effect(); println(_held); }";
-        let fix = action(source, TypeErrorKind::UnusedVariable);
+        let fix = action(source, &TypeErrorKind::UnusedVariable);
         assert_eq!(fix.applicability, Applicability::MaybeIncorrect);
         let updated = apply_edits(source, &fix.edits).unwrap();
         assert!(updated.contains("let _held = side_effect()"));
@@ -280,7 +282,7 @@ mod producer_tests {
     #[test]
     fn diagnostic_fixes_use_declaration_sites_and_preserve_loop_labels() {
         let source = "fn main() { let value = 1; let _text = \"let value = 9\"; value = 2; println(value); }";
-        let fix = action(source, TypeErrorKind::MutabilityError);
+        let fix = action(source, &TypeErrorKind::MutabilityError);
         assert_eq!(
             &source[fix.edits[0].span.start..fix.edits[0].span.end],
             "let"
@@ -289,7 +291,7 @@ mod producer_tests {
             .unwrap()
             .starts_with("fn main() { var value"));
         let source = "fn main() { @outer: while (true) /* retained */ { break @outer; } }";
-        let fix = action(source, TypeErrorKind::StyleSuggestion);
+        let fix = action(source, &TypeErrorKind::StyleSuggestion);
         let updated = apply_edits(source, &fix.edits).unwrap();
         assert!(updated.contains("@outer: loop /* retained */"));
         assert!(hew_parser::parse(&updated).errors.is_empty(), "{updated}");
@@ -298,7 +300,7 @@ mod producer_tests {
     #[test]
     fn diagnostic_fixes_do_not_turn_type_help_into_replacement_text() {
         let source = "fn f(value: Unit) {} fn main() {}";
-        let fix = action(source, TypeErrorKind::UndefinedType);
+        let fix = action(source, &TypeErrorKind::UndefinedType);
         assert_eq!(fix.edits[0].new_text, "()");
         assert!(diagnostics(&apply_edits(source, &fix.edits).unwrap())
             .iter()

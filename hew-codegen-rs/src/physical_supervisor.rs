@@ -61,6 +61,7 @@ fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ptr.into(),
             ptr.into(),
             ctx.i64_type().into(),
+            ctx.i32_type().into(),
         ],
         false,
     )
@@ -146,6 +147,21 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                                 hew_mir::physical::SemStopDeadline::Config(_) => 0,
                             },
                             true,
+                        )
+                        .into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(
+                            supervisor
+                                .startup_order
+                                .iter()
+                                .position(|child| *child == index)
+                                .ok_or_else(|| {
+                                    CodegenError::FailClosed(
+                                        "child missing from startup order".into(),
+                                    )
+                                })? as u64,
+                            false,
                         )
                         .into(),
                 ]),
@@ -237,13 +253,14 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let word = self.ctx.ptr_sized_int_type(&target, None);
         let function = self.llvm.add_function(
             &symbol(supervisor, &format!("child_{child}_spawn")),
-            word.fn_type(&[ptr.into(), ptr.into()], false),
+            word.fn_type(&[word.into(), ptr.into(), ptr.into()], false),
             Some(Linkage::Internal),
         );
         let builder = self.ctx.create_builder();
         builder.position_at_end(self.ctx.append_basic_block(function, "entry"));
-        let config = function.get_first_param().unwrap().into_pointer_value();
-        let fault = function.get_nth_param(1).unwrap().into_pointer_value();
+        let owner = function.get_first_param().unwrap().into_int_value();
+        let config = function.get_nth_param(1).unwrap().into_pointer_value();
+        let fault = function.get_nth_param(2).unwrap().into_pointer_value();
         let handle_layout = spawn.return_layout.as_ref().ok_or_else(|| {
             CodegenError::FailClosed("child spawn callable produces no handle".into())
         })?;
@@ -251,13 +268,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         let handle = builder
             .build_alloca(handle_ty, "spawn.handle")
             .llvm_ctx("allocate child handle")?;
-        if spawn.params.len() != supervisor.config.len() {
+        if spawn.params.len() != supervisor.config.len() + 1 {
             return Err(CodegenError::FailClosed(
                 "child spawn callable does not take the supervisor config".into(),
             ));
         }
-        let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = Vec::new();
-        for (index, parameter) in spawn.params.iter().enumerate() {
+        let mut arguments: Vec<BasicMetadataValueEnum<'ctx>> = vec![owner.into()];
+        for (index, parameter) in spawn.params.iter().skip(1).enumerate() {
             let index = u32::try_from(index)
                 .map_err(|_| CodegenError::FailClosed("config field exceeds u32".into()))?;
             let field = builder
@@ -794,7 +811,7 @@ mod abi_tests {
     use hew_runtime::supervisor::HewNativeChildSpec;
     use std::mem::{align_of, offset_of, size_of};
 
-    fn fields() -> [(usize, usize); 5] {
+    fn fields() -> [(usize, usize); 6] {
         [
             (
                 offset_of!(HewNativeChildSpec, restart_policy),
@@ -815,6 +832,10 @@ mod abi_tests {
             (
                 offset_of!(HewNativeChildSpec, stop_ns),
                 field_size(|spec: &HewNativeChildSpec| &spec.stop_ns),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, startup_rank),
+                field_size(|spec: &HewNativeChildSpec| &spec.startup_rank),
             ),
         ]
     }

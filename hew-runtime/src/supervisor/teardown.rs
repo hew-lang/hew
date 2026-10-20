@@ -841,7 +841,7 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
         let mut refusal: *mut crate::fault::HewFault = ptr::null_mut();
         // SAFETY: the adapter is emitted with this exact ABI, `config` is the
         // supervisor-owned buffer, and `refusal` is a writable null slot.
-        let token = unsafe { spawn(config.cast_const(), &raw mut refusal) };
+        let token = unsafe { spawn((*sup).local_pid_id, config.cast_const(), &raw mut refusal) };
         if !refusal.is_null() {
             // SAFETY: the adapter transferred this fault to us.
             unsafe { crate::fault::hew_fault_drop(refusal) };
@@ -1170,7 +1170,7 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
         SupervisorChildSpawn::Native { spawn, config } => {
             let mut fault = ptr::null_mut();
             // SAFETY: the parent owns the config throughout this restart.
-            let token = unsafe { spawn(config, &raw mut fault) };
+            let token = unsafe { spawn((*sup).local_pid_id, config, &raw mut fault) };
             if !fault.is_null() {
                 // SAFETY: the adapter transferred the diagnostic here.
                 unsafe { crate::fault::hew_fault_drop(fault) };

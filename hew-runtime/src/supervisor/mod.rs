@@ -972,6 +972,8 @@ pub(crate) struct SupervisorRoster {
     child_specs: Vec<InternalChildSpec>,
     child_count: usize,
     next_child_spec_identity: u64,
+    /// Compiler-provided construction order, expressed in stable declaration identities.
+    native_startup_order: Vec<u64>,
     child_supervisors: Vec<*mut HewSupervisor>,
     child_supervisor_tokens: Vec<crate::lifetime::local_handles::HewLocalPidId>,
     child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
@@ -1007,6 +1009,9 @@ pub struct HewSupervisor {
     window_secs: c_int,
 
     running: AtomicI32,
+    /// Private native construction permits calls through already started roles.
+    /// This does not make the supervisor running for lifecycle observations.
+    constructing: AtomicBool,
     /// Wait-free cancellation observation for public/hot read paths. The
     /// restart-timer control mirrors this state under its mutex only for timer
     /// wakeup and raw-borrow exclusion.
@@ -1614,6 +1619,7 @@ struct InternalChildSpec {
 /// fault slot.
 pub type HewNativeChildSpawnFn =
     unsafe extern "C-unwind" fn(
+        crate::lifetime::local_handles::HewLocalPidId,
         *const c_void,
         *mut *mut crate::fault::HewFault,
     ) -> crate::lifetime::local_handles::HewLocalPidId;

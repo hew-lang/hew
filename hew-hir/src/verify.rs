@@ -204,6 +204,7 @@ impl Verifier {
                     // uniqueness in S-A; children-list resolution and
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
+                    self.binding(sup.owner.id, sup.owner.span.clone());
                     if let Some(interceptor) = &sup.interceptor {
                         self.node(interceptor.node, interceptor.span.clone());
                         for parameter in &interceptor.params {

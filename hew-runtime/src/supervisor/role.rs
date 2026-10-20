@@ -115,7 +115,9 @@ fn role_resolve_current_child_id(
     // Fast-path shutdown check (atomics, no lock).
     // SAFETY: the stable-identity pin keeps `sup` live for these atomic reads.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
@@ -133,7 +135,9 @@ fn role_resolve_current_child_id(
     // SAFETY: the stable-identity pin keeps the allocation live through this
     // atomic re-check.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
@@ -512,7 +516,9 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
     }
     // SAFETY: caller keeps `sup` live for these atomic reads.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }

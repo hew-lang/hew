@@ -831,6 +831,7 @@ mod tests {
             config.drops.fetch_add(1, Ordering::SeqCst);
         }
         unsafe extern "C-unwind" fn adopt_child(
+            _owner: local_handles::HewLocalPidId,
             config: *const c_void,
             _fault: *mut *mut crate::fault::HewFault,
         ) -> local_handles::HewLocalPidId {
@@ -877,6 +878,7 @@ mod tests {
                 spawn: adopt_child,
                 name: std::ptr::null(),
                 stop_ns: -1,
+                startup_rank: 0,
             }];
             let parent = hew_supervisor_native_spawn(
                 0,

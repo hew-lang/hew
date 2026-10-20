@@ -80,6 +80,7 @@ pub struct SemSupervisor {
     pub max_restarts: u32,
     pub window_secs: u32,
     pub children: Vec<SemSupervisorChild>,
+    pub startup_order: Vec<usize>,
 }
 
 impl SemModule {
@@ -183,6 +184,11 @@ impl SemSupervisor {
         {
             return Err("simple_one_for_one requires exactly one pool".into());
         }
+        let mut order = self.startup_order.clone();
+        order.sort_unstable();
+        if order != (0..self.children.len()).collect::<Vec<_>>() {
+            return Err("supervisor startup order is not a declaration permutation".into());
+        }
         let mut names = std::collections::BTreeSet::new();
         for (index, child) in self.children.iter().enumerate() {
             if !names.insert(child.name.as_str()) {
@@ -239,11 +245,15 @@ impl SemSupervisor {
                 .ok_or("supervised child has no spawn callable")?;
             if callable.kind != crate::SemCallableKind::HewDirect
                 || callable.signature.return_ty != *spawned
-                || callable.signature.params.len() != self.config.len()
+                || callable.signature.params.len() != self.config.len() + 1
+                || callable.signature.params.first().is_none_or(|param| {
+                    param.ty != self.handle_ty || param.passing != crate::SemParamPassing::Consume
+                })
                 || callable
                     .signature
                     .params
                     .iter()
+                    .skip(1)
                     .zip(&self.config)
                     .any(|(param, ty)| {
                         param.ty != *ty
@@ -256,6 +266,67 @@ impl SemSupervisor {
                 return Err(
                     "supervised child spawn callable differs from its config and role".into(),
                 );
+            }
+            if let Some(body) = module
+                .functions
+                .iter()
+                .find(|body| body.callable == child.spawn)
+            {
+                let owner = body
+                    .params
+                    .first()
+                    .ok_or("child constructor lacks its owner token")?
+                    .value;
+                let mut owner_copies = std::collections::BTreeSet::from([owner]);
+                loop {
+                    let before = owner_copies.len();
+                    for block in &body.blocks {
+                        for operation in &block.ops {
+                            if let crate::SemOpKind::CopyValue { source } = &operation.kind {
+                                if owner_copies.contains(&source.value) {
+                                    for value in &operation.results {
+                                        owner_copies.insert(value.id);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if before == owner_copies.len() {
+                        break;
+                    }
+                }
+                for block in &body.blocks {
+                    if let crate::SemTerminator::ActorCall {
+                        operation:
+                            crate::ActorOperation::SupervisorChild {
+                                supervisor,
+                                child: sibling,
+                            },
+                        args,
+                        ..
+                    } = &block.terminator
+                    {
+                        if *supervisor == self.id
+                            && args
+                                .first()
+                                .is_some_and(|arg| owner_copies.contains(&arg.operand.value))
+                        {
+                            let before = self
+                                .startup_order
+                                .iter()
+                                .position(|child| *child == *sibling as usize)
+                                .ok_or("wired sibling is absent from startup order")?;
+                            let after = self
+                                .startup_order
+                                .iter()
+                                .position(|child| *child == index)
+                                .ok_or("dependent is absent from startup order")?;
+                            if before >= after {
+                                return Err("supervisor startup order constructs a dependent before its sibling".into());
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())

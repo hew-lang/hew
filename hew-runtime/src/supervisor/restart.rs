@@ -274,9 +274,25 @@ fn stop_detached_nested_supervisor(
 /// # Safety
 /// `sup` remains live throughout the spawns.
 unsafe fn restart_group(sup: *mut HewSupervisor, roles: &[RestartChildRole]) -> bool {
+    let mut roles = roles.to_vec();
+    let ordered;
+    {
+        // SAFETY: the caller keeps the supervisor live through this snapshot.
+        let roster = unsafe { &(*sup).roster }.lock_or_recover();
+        ordered = !roster.native_startup_order.is_empty();
+        if ordered {
+            roles.sort_unstable_by_key(|role| {
+                roster
+                    .native_startup_order
+                    .iter()
+                    .position(|identity| *identity == role.identity())
+                    .unwrap_or(usize::MAX)
+            });
+        }
+    }
     let mut complete = true;
     for role in roles {
-        complete &= match *role {
+        complete &= match role {
             RestartChildRole::Actor(identity) => {
                 // SAFETY: the stable identity refuses any concurrent retirement.
                 !unsafe { restart_child_from_spec_expected(sup, 0, Some(identity)) }.is_null()
@@ -286,6 +302,9 @@ unsafe fn restart_group(sup: *mut HewSupervisor, roles: &[RestartChildRole]) -> 
                 !unsafe { restart_child_supervisor_from_spec(sup, index) }.is_null()
             }
         };
+        if ordered && !complete {
+            break;
+        }
     }
     complete
 }

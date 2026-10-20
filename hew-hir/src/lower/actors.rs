@@ -56,6 +56,18 @@ impl LowerCtx {
             .map(|param| self.bind_param(param))
             .collect();
 
+        let owner = HirBinding {
+            id: self.ids.binding(),
+            name: "supervisor".into(),
+            ty: self.checked_ty(&span)?.clone(),
+            mutable: false,
+            span: span.clone(),
+            is_consume: true,
+        };
+        let startup_order = self
+            .supervisor_startup_order
+            .get(&self.mk_key(&span))?
+            .clone();
         // Assign slot indices by partitioning children into static and pool spaces.
         // Each partition uses its own 0-based counter so the indices are disjoint,
         // matching the runtime layout (children[] for static, pool_slots[] for pool).
@@ -89,7 +101,55 @@ impl LowerCtx {
                     ResolvedTy::Unit
                 });
                 let init_slots = self.checked_spawn_slots(&child.span, child.name.name.as_str());
-                HirSupervisorChild {
+                let mut init_args: Vec<_> = child
+                    .args
+                    .iter()
+                    .map(|(name, expr)| (name.to_string(), self.lower_expr(expr, IntentKind::Read)))
+                    .collect();
+                for (key, sibling_index) in self
+                    .supervisor_wiring
+                    .get(&self.mk_key(&child.span))
+                    .cloned()
+                    .unwrap_or_default()
+                {
+                    let sibling = &decl.children[sibling_index];
+                    let site = self.ids.site();
+                    self.supervisor_child_slots.insert(
+                        site,
+                        hew_types::ChildSlot {
+                            kind: hew_types::ChildKind::Static,
+                            index: u32::try_from(sibling_index).expect("child count fits u32"),
+                            child_ty: sibling.actor_type.to_string(),
+                            child_name: sibling.name.to_string(),
+                            supervisor: decl.name.to_string(),
+                        },
+                    );
+                    init_args.push((
+                        key,
+                        HirExpr {
+                            node: self.ids.node(),
+                            site,
+                            ty: self.checked_ty(&sibling.span)?.clone(),
+                            intent: IntentKind::Read,
+                            kind: HirExprKind::FieldAccess {
+                                object: Box::new(HirExpr {
+                                    node: self.ids.node(),
+                                    site: self.ids.site(),
+                                    ty: owner.ty.clone(),
+                                    intent: IntentKind::Read,
+                                    kind: HirExprKind::BindingRef {
+                                        name: owner.name.clone(),
+                                        resolved: ResolvedRef::Binding(owner.id),
+                                    },
+                                    span: child.span.clone(),
+                                }),
+                                field: sibling.name.to_string(),
+                            },
+                            span: child.span.clone(),
+                        },
+                    ));
+                }
+                Some(HirSupervisorChild {
                     name: child.name.to_string(),
                     ty: child_ty,
                     restart_policy: child.restart.map(|r| match r {
@@ -97,21 +157,13 @@ impl LowerCtx {
                         RestartPolicy::Transient => HirRestartPolicy::Transient,
                         RestartPolicy::Temporary => HirRestartPolicy::Temporary,
                     }),
-                    wired_to: child.wired_to.clone(),
                     is_pool: child.is_pool,
                     slot_index,
                     // Lower the keyed init values from AST `(key, expr)` pairs.
                     // The key list is the actor's own namespace in full — pool
                     // arity arrives separately as the `count:` clause, so an
                     // actor field named `count` lowers here like any other.
-                    init_args: child
-                        .args
-                        .iter()
-                        .map(|(field_name, spanned_expr)| {
-                            let hir_expr = self.lower_expr(spanned_expr, IntentKind::Read);
-                            (field_name.to_string(), hir_expr)
-                        })
-                        .collect(),
+                    init_args,
                     init_slots,
                     // Pool arity comes from the `count:` clause. The parser
                     // refuses the clause on a static child, so `count` is only
@@ -130,9 +182,9 @@ impl LowerCtx {
                     // caret at the declaration instead of a sentinel.
                     site: self.ids.site(),
                     span: child.span.clone(),
-                }
+                })
             })
-            .collect();
+            .collect::<Option<Vec<_>>>()?;
 
         // Pop the param scope now that every child's init-arg expr is lowered.
         self.pop_scope();
@@ -157,6 +209,8 @@ impl LowerCtx {
             )
         });
         Some(HirSupervisorDecl {
+            owner,
+            startup_order,
             interceptor,
             id: self.ids.item(),
             node: self.ids.node(),

@@ -248,6 +248,11 @@ impl PeerLink {
                 }
                 match listener.accept() {
                     Ok((client, _)) => {
+                        // Windows inherits the listener's nonblocking mode;
+                        // the forwarding threads use blocking copy loops.
+                        client
+                            .set_nonblocking(false)
+                            .expect("blocking peer gate stream");
                         let server_port = std::fs::read_to_string(directory.join("server.ready"))
                             .expect("published server port")
                             .parse::<u16>()

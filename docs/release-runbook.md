@@ -269,14 +269,23 @@ gh workflow run release-gate.yml --ref main \
 This runs candidate validation, identity and dependency checks, then Windows
 and Intel macOS. A green partial run supplies only those platform results.
 For each contributing run, record its URL and the qualification summary's
-source SHA, workflow SHA and platform selection. Require every source SHA to
-match the recorded `release_sha`, and review workflow corrections for changes
-to the required checks. Combine successful Windows and Intel results with
+source SHA, workflow SHA and platform selection. Except for the isolated
+corrections described below, every source SHA must match the recorded
+`release_sha`. Review workflow corrections for changes to the required checks. Combine successful Windows and Intel results with
 successful jobs for all remaining platforms and sanitizers from the full gate.
 Missing, skipped, cancelled or failed required jobs still need successful
-evidence for that same candidate. Evidence from another source SHA cannot be
-reused; any candidate change requires full qualification and a new release
-dry run.
+evidence. Implementation, dependency, build, packaging or shared-harness changes
+require full qualification and a new release dry run for the changed candidate.
+
+Documentation-only and isolated test corrections may retain completed evidence
+for unchanged production inputs. Record both commits and review their complete
+diff; identify reused results by the commit actually tested. Run the corrected
+tests and their direct consumers, using the qualified compiler/runtime pair on
+platforms relevant to the correction, including any platform that failed. Preserve
+the behavioural assertions and resolve every other failure before reusing evidence.
+Required protected CI must still pass on the final candidate. Do not describe a
+reused matrix as an exact-final-commit run. This exception does not cover changes
+to shared test runners, compiler/runtime/stdlib implementation or build inputs.
 
 The workflow's native job checks and run metadata identify the dispatched
 workflow revision. Candidate-bound JUnit checks and the qualification summary

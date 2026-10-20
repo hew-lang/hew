@@ -147,6 +147,12 @@ enum SourceContent {
 }
 
 impl SourceSet {
+    /// Whether missing documents are read from the host filesystem.
+    #[must_use]
+    pub fn uses_filesystem(&self) -> bool {
+        self.filesystem
+    }
+
     #[must_use]
     pub fn is_file(&self, path: &Path) -> bool {
         self.contains(path) || (self.filesystem && path.is_file())

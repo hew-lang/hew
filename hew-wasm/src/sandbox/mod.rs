@@ -47,8 +47,9 @@ const SANDBOX_BUFFER_LABEL: &str = "playground.hew";
 ///
 /// Import resolution builds candidate paths relative to the buffer and reads
 /// them through this set before the filesystem, so the browser resolves the
-/// shipped sources it has no filesystem to read. Natively the files are on
-/// disk and win, so this changes nothing there.
+/// shipped sources it has no filesystem to read. Filesystem-backed hosts use
+/// their selected source roots directly, without mixing embedded modules into
+/// that standard library.
 ///
 /// The working-directory spelling is the one recorded, because it is the
 /// candidate both shapes reach: the buffer's own import tries it after its
@@ -71,6 +72,9 @@ pub fn embedded_standard_library_paths() -> Vec<&'static str> {
 }
 
 pub(crate) fn add_embedded_standard_library(options: &mut hew_compile::FrontendOptions) {
+    if options.documents.uses_filesystem() {
+        return;
+    }
     let roots = options
         .module_search_paths
         .clone()
@@ -78,7 +82,10 @@ pub(crate) fn add_embedded_standard_library(options: &mut hew_compile::FrontendO
     for (path, text) in embedded_standard_library() {
         let relative = path.strip_prefix("./").unwrap_or(path);
         for root in &roots {
-            options.documents.insert(root.join(relative), *text);
+            let path = root.join(relative);
+            if !options.documents.is_file(&path) {
+                options.documents.insert(path, *text);
+            }
         }
     }
 }
@@ -655,5 +662,85 @@ fn type_error_to_diagnostic(err: &hew_types::error::TypeError) -> Diagnostic {
             .collect(),
         suggestions: err.suggestions.clone(),
         source_module: err.source_module.clone(),
+    }
+}
+
+#[cfg(test)]
+mod source_authority_tests {
+    use super::*;
+
+    #[test]
+    fn native_standard_library_uses_selected_sources_without_embedded_fill() {
+        let root = tempfile::tempdir().expect("temporary source root");
+        let module = root.path().join("std/random/random.hew");
+        std::fs::create_dir_all(module.parent().expect("module directory"))
+            .expect("standard-library directory");
+        let selected = "pub fn selected_source() -> i32 { 73 }\n";
+        std::fs::write(&module, selected).expect("selected module");
+        let mut options = hew_compile::FrontendOptions {
+            module_search_paths: Some(vec![root.path().to_path_buf()]),
+            ..Default::default()
+        };
+        add_embedded_standard_library(&mut options);
+        assert_eq!(
+            options
+                .documents
+                .read_bytes(&module)
+                .expect("selected source"),
+            selected.as_bytes()
+        );
+        let missing = options
+            .documents
+            .read_bytes(&root.path().join("std/math/math.hew"));
+        assert_eq!(
+            missing
+                .expect_err("a partial native root must not borrow embedded modules")
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+
+        options
+            .documents
+            .insert(&module, "pub fn editor_source() -> i32 { 81 }\n");
+        add_embedded_standard_library(&mut options);
+        assert_eq!(
+            options
+                .documents
+                .read_bytes(&module)
+                .expect("editor source"),
+            b"pub fn editor_source() -> i32 { 81 }\n"
+        );
+    }
+
+    #[test]
+    fn in_memory_standard_library_preserves_supplied_sources_and_embedded_fallback() {
+        let root = std::path::Path::new("virtual-sandbox-source-root");
+        let module = root.join("std/random/random.hew");
+        let mut options = hew_compile::FrontendOptions {
+            documents: hew_compile::SourceSet::in_memory(),
+            module_search_paths: Some(vec![root.to_path_buf()]),
+            ..Default::default()
+        };
+        let supplied = "pub fn selected_source() -> i32 { 73 }\n";
+        options.documents.insert(&module, supplied);
+        add_embedded_standard_library(&mut options);
+        assert_eq!(
+            options
+                .documents
+                .read_bytes(&module)
+                .expect("supplied source"),
+            supplied.as_bytes()
+        );
+        let (path, embedded) = embedded_standard_library()
+            .iter()
+            .find(|(path, _)| path.ends_with("std/math/math.hew"))
+            .expect("embedded math module");
+        assert_eq!(
+            options
+                .documents
+                .read_bytes(&root.join(path.trim_start_matches("./")))
+                .expect("embedded fallback"),
+            embedded.as_bytes()
+        );
     }
 }

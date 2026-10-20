@@ -39,6 +39,30 @@ fn write_cached_package(cache: &Path, name: &str, version: &str) -> PathBuf {
     package
 }
 
+/// Seed a verified cache through the same local-publication path users invoke.
+/// Untrusted legacy cache tests keep using `write_cached_package` directly.
+fn publish_fixture(home: &Path, package: &Path) {
+    let manifest_path = package.join("hew.toml");
+    let mut manifest: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+    let metadata = manifest["package"].as_table_mut().unwrap();
+    metadata.insert("description".into(), "Resolver fixture".into());
+    metadata.insert("license".into(), "MIT".into());
+    metadata.insert("authors".into(), vec!["Fixture"].into());
+    std::fs::write(manifest_path, toml::to_string(&manifest).unwrap()).unwrap();
+    let keys = home.join(".hew/keys");
+    if !keys.exists() {
+        hew_pkg::signing::save_keypair(&keys, &hew_pkg::signing::KeyPair::generate()).unwrap();
+    }
+    let output = run_pkg_bounded(
+        home,
+        package,
+        &["publish", "--local"],
+        "seed verified cache",
+    );
+    assert!(output.status.success(), "{}", describe_output(&output));
+}
+
 fn write_config(home: &Path, cache: &Path, registry_api: Option<&str>) {
     let hew_home = home.join(".hew");
     std::fs::create_dir_all(&hew_home).expect("create package-manager home");
@@ -405,8 +429,9 @@ fn pkg_offline_uses_cache_and_says_so() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     write_manifest(&project, "foo = \"0.2.1\"\n");
-    write_cached_package(&cache, "foo", "0.2.1");
     write_config(&home, &cache, None);
+    let package = write_cached_package(&root.path().join("sources"), "foo", "0.2.1");
+    publish_fixture(&home, &package);
 
     let output = run_pkg(&home, &project, &["install", "--offline"]);
     assert!(
@@ -931,12 +956,13 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
     let home = root.path().join("home");
     let project = root.path().join("app");
     let cache = root.path().join("cache");
+    let sources = root.path().join("sources");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&home).unwrap();
     write_manifest(&project, "foo = \"0.2.1\"\n");
     write_config(&home, &cache, None);
 
-    let locked_package = write_cached_package(&cache, "foo", "0.2.1");
+    let locked_package = write_cached_package(&sources, "foo", "0.2.1");
     std::fs::write(
         locked_package.join("foo.hew"),
         "pub fn selected() -> i64 { 21 }\n",
@@ -947,12 +973,14 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
         "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n\n[dependencies]\nbar = \"^1\"\n",
     )
     .unwrap();
-    let locked_bar = write_cached_package(&cache, "bar", "1.0.1");
+    let locked_bar = write_cached_package(&sources, "bar", "1.0.1");
     std::fs::write(
         locked_bar.join("bar.hew"),
         "pub fn selected() -> i64 { 101 }\n",
     )
     .unwrap();
+    publish_fixture(&home, &locked_bar);
+    publish_fixture(&home, &locked_package);
     let initial = run_pkg_bounded(
         &home,
         &project,
@@ -969,7 +997,7 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
     std::fs::write(project.join("hew.lock"), &lock_contents).unwrap();
     write_manifest(&project, "foo = \"^0.2\"\n");
 
-    let newer_package = write_cached_package(&cache, "foo", "0.2.2");
+    let newer_package = write_cached_package(&sources, "foo", "0.2.2");
     std::fs::write(
         newer_package.join("foo.hew"),
         "pub fn selected() -> i64 { 22 }\n",
@@ -980,12 +1008,14 @@ fn pkg_locked_uses_exact_version_and_never_rewrites_lockfile() {
         "[package]\nname = \"foo\"\nversion = \"0.2.2\"\n\n[dependencies]\nbar = \"^1\"\n",
     )
     .unwrap();
-    let newer_bar = write_cached_package(&cache, "bar", "1.0.2");
+    let newer_bar = write_cached_package(&sources, "bar", "1.0.2");
     std::fs::write(
         newer_bar.join("bar.hew"),
         "pub fn selected() -> i64 { 102 }\n",
     )
     .unwrap();
+    publish_fixture(&home, &newer_bar);
+    publish_fixture(&home, &newer_package);
     let materialized = project.join(".hew/packages/foo");
     let metadata = std::fs::symlink_metadata(&materialized).unwrap();
     if metadata.file_type().is_symlink() || metadata.is_file() {
@@ -1033,6 +1063,7 @@ fn pkg_locked_invalid_graphs_never_contact_registry_or_mutate_project_or_cache()
     let project = root.path().join("app");
     let seed_project = root.path().join("seed");
     let cache = root.path().join("cache");
+    let sources = root.path().join("sources");
     std::fs::create_dir_all(&project).unwrap();
     std::fs::create_dir_all(&seed_project).unwrap();
     std::fs::create_dir_all(&home).unwrap();
@@ -1040,14 +1071,17 @@ fn pkg_locked_invalid_graphs_never_contact_registry_or_mutate_project_or_cache()
     write_manifest(&seed_project, "baz = \"1.0.0\"\n");
     write_config(&home, &cache, None);
 
-    let foo = write_cached_package(&cache, "foo", "0.2.1");
+    let foo = write_cached_package(&sources, "foo", "0.2.1");
     std::fs::write(
         foo.join("hew.toml"),
         "[package]\nname = \"foo\"\nversion = \"0.2.1\"\n\n[dependencies]\nbar = \"1.0.0\"\n",
     )
     .unwrap();
-    write_cached_package(&cache, "bar", "1.0.0");
-    write_cached_package(&cache, "baz", "1.0.0");
+    let bar = write_cached_package(&sources, "bar", "1.0.0");
+    let baz = write_cached_package(&sources, "baz", "1.0.0");
+    publish_fixture(&home, &bar);
+    publish_fixture(&home, &foo);
+    publish_fixture(&home, &baz);
     let initial = run_pkg_bounded(
         &home,
         &project,
@@ -1084,11 +1118,7 @@ fn pkg_locked_invalid_graphs_never_contact_registry_or_mutate_project_or_cache()
         .find(|entry| entry.contains("name = \"baz\""))
         .unwrap();
     let default_registry = hew_pkg::config::default_registry_identity();
-    let unsupported_entry = foo_entry.replacen(
-        "version = \"0.2.1\"",
-        "version = \"0.2.1\"\nsource = \"git\"",
-        1,
-    );
+    let unsupported_entry = foo_entry.replacen("source = \"local\"", "source = \"git\"", 1);
     let wrong_registry_entry = foo_entry.replacen(
         &format!("registry = {default_registry:?}"),
         "registry = \"https://wrong.example/api/v1\"",

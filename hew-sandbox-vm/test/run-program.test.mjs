@@ -7,6 +7,7 @@ import test from "node:test";
 import { pathToFileURL, fileURLToPath } from "node:url";
 import { runBytecode } from "../dist/interpreter/index.js";
 import { runProgram } from "../dist/interpreter/run-program.js";
+import { assertFixtureTrace } from "./support/fixture-trace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(root, "..");
@@ -40,6 +41,27 @@ test.after(() => {
     delete globalThis.__hewSandboxExecuteCalendar;
   }
 });
+
+// Keep current emitter behaviour checked independently of the recorded v1
+// packages, which deliberately retain older valid lowering and omitted fields.
+for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
+  const fixture = path.join(root, "fixtures", dir);
+  if (!fs.existsSync(path.join(fixture, "bytecode.json"))) continue;
+  test(`freshly compiled fixture replay: ${dir}`, () => {
+    const source = fs.readFileSync(path.join(fixture, "main.hew"), "utf8");
+    const output = globalThis.__hewSandboxCompileToSandboxBytecode(source, "sandbox-vm-export");
+    const compiled = typeof output === "string" ? JSON.parse(output) : output;
+    assert.ok(compiled.bytecode, JSON.stringify(compiled.diagnostics));
+    const expected = JSON.parse(fs.readFileSync(path.join(fixture, "expected.trace.json"), "utf8"));
+    const actual = runBytecode(compiled.bytecode, {
+      fixtureId: expected.fixture_id,
+      traceId: expected.trace_id,
+      replay: expected.replay,
+      sandboxVersion: expected.sandbox_version,
+    });
+    assertFixtureTrace(actual, expected, dir);
+  });
+}
 
 test("runProgram hello_world returns stdout and zero exit code", () => {
   const source = fs.readFileSync(path.join(root, "fixtures/01-hello-world/main.hew"), "utf8");

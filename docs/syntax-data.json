@@ -1,91 +1,4 @@
 {
-  "version": "0.6.2",
-  "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
-  "keywords": {
-    "control_flow": [
-      "if",
-      "else",
-      "match",
-      "loop",
-      "for",
-      "while",
-      "break",
-      "continue",
-      "return",
-      "in",
-      "yield",
-      "defer"
-    ],
-    "declarations": [
-      "let",
-      "var",
-      "const",
-      "mut",
-      "fn",
-      "macro",
-      "gen",
-      "pub",
-      "import",
-      "package",
-      "extern",
-      "where",
-      "type",
-      "indirect",
-      "enum",
-      "trait",
-      "impl",
-      "as"
-    ],
-    "actors": [
-      "actor",
-      "supervisor",
-      "spawn",
-      "receive",
-      "init",
-      "scope",
-      "fork",
-      "move",
-      "select",
-      "race",
-      "after",
-      "await"
-    ],
-    "wire": [
-      "reserved",
-      "optional",
-      "deprecated"
-    ],
-    "supervisor_config": [
-      "child",
-      "restart",
-      "strategy",
-      "permanent",
-      "transient",
-      "temporary",
-      "one_for_one",
-      "one_for_all",
-      "rest_for_one",
-      "simple_one_for_one"
-    ],
-    "logical": [
-      "true",
-      "false"
-    ],
-    "machine": [
-      "machine",
-      "state",
-      "event",
-      "on",
-      "when",
-      "entry",
-      "exit"
-    ],
-    "other": [
-      "dyn",
-      "unsafe",
-      "is"
-    ]
-  },
   "all_keywords": [
     "let",
     "var",
@@ -155,48 +68,150 @@
     "exit",
     "is"
   ],
+  "comment_styles": {
+    "block_end": "*/",
+    "block_start": "/*",
+    "doc": "///",
+    "inner_doc": "//!",
+    "line": "//"
+  },
   "contextual_identifiers": {
-    "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
-    "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
-    "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
+    "block": "Overflow policy: block sender",
     "capture": "Private capture prefix capture(var name, ...) before closure or actor literal pipe parameters; an ordinary identifier outside that prefix.",
-    "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
-    "suspends": "Suspending invocation effect inside written function type qualifiers: fn[suspends](...) -> T; an ordinary identifier elsewhere.",
-    "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
-    "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
-    "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",
-    "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
-    "events": "Machine input-event vocabulary block header (contextual inside machine body)",
-    "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
-    "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
-    "initial": "Machine composite-state initial-substate marker (contextual before nested state decl)",
-    "mailbox": "Actor mailbox configuration block",
-    "overflow": "Mailbox overflow policy",
-    "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
-    "within": "Scope deadline (scope within duration { ... }) and supervisor intensity window separator",
-    "stop": "Supervisor child graceful-stop deadline clause",
-    "wired_to": "Supervisor child sibling-wiring clause",
-    "count": "Supervisor pool arity clause (pool ws: Worker { .. } count: N)",
-    "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
-    "default": "Machine fallback transition marker (contextual inside a machine body)",
-    "emit": "Machine event emission marker (contextual before an event name)",
-    "export": "FFI export attribute",
-    "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
-    "linear": "Type-decl ownership attribute — must be consumed exactly once",
-    "opaque": "Type-decl attribute — pointer-width opaque runtime handle (empty-body struct only)",
-    "wire": "Type-decl attribute — marks a type/enum for wire (CBOR/JSON) serialization",
-    "json": "Wire serialization format",
-    "yaml": "Wire serialization format",
-    "repeated": "Wire field qualifier",
+    "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "coalesce": "Mailbox overflow policy",
-    "fallback": "Mailbox overflow fallback",
+    "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
+    "count": "Supervisor pool arity clause (pool ws: Worker { .. } count: N)",
+    "default": "Machine fallback transition marker (contextual inside a machine body)",
+    "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
     "drop_new": "Overflow policy: discard incoming work and return MessageLost",
     "drop_old": "Overflow policy: evict queued work and return MessageLost",
-    "block": "Overflow policy: block sender",
-    "fail": "Overflow policy: reject the send with Full"
+    "emit": "Machine event emission marker (contextual before an event name)",
+    "emits": "Machine Mealy-output manifest block header (contextual inside machine body)",
+    "error": "Explicit error return: return error expression; an ordinary identifier elsewhere.",
+    "events": "Machine input-event vocabulary block header (contextual inside machine body)",
+    "export": "FFI export attribute",
+    "fail": "Overflow policy: reject the send with Full",
+    "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
+    "fallback": "Mailbox overflow fallback",
+    "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
+    "initial": "Machine composite-state initial-substate marker (contextual before nested state decl)",
+    "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
+    "json": "Wire serialization format",
+    "linear": "Type-decl ownership attribute — must be consumed exactly once",
+    "mailbox": "Actor mailbox configuration block",
+    "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
+    "opaque": "Type-decl attribute — pointer-width opaque runtime handle (empty-body struct only)",
+    "overflow": "Mailbox overflow policy",
+    "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
+    "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
+    "repeated": "Wire field qualifier",
+    "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
+    "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
+    "stop": "Supervisor child graceful-stop deadline clause",
+    "suspends": "Suspending invocation effect inside written function type qualifiers: fn[suspends](...) -> T; an ordinary identifier elsewhere.",
+    "wire": "Type-decl attribute — marks a type/enum for wire (CBOR/JSON) serialization",
+    "wired_to": "Supervisor child sibling-wiring clause",
+    "within": "Scope deadline (scope within duration { ... }) and supervisor intensity window separator",
+    "yaml": "Wire serialization format"
+  },
+  "description": "Canonical syntax data exported from the Hew compiler. Used by tree-sitter-hew, vscode-hew, hew.sh, and hew.run to generate syntax highlighting grammars.",
+  "keywords": {
+    "actors": [
+      "actor",
+      "supervisor",
+      "spawn",
+      "receive",
+      "init",
+      "scope",
+      "fork",
+      "move",
+      "select",
+      "race",
+      "after",
+      "await"
+    ],
+    "control_flow": [
+      "if",
+      "else",
+      "match",
+      "loop",
+      "for",
+      "while",
+      "break",
+      "continue",
+      "return",
+      "in",
+      "yield",
+      "defer"
+    ],
+    "declarations": [
+      "let",
+      "var",
+      "const",
+      "mut",
+      "fn",
+      "macro",
+      "gen",
+      "pub",
+      "import",
+      "package",
+      "extern",
+      "where",
+      "type",
+      "indirect",
+      "enum",
+      "trait",
+      "impl",
+      "as"
+    ],
+    "logical": [
+      "true",
+      "false"
+    ],
+    "machine": [
+      "machine",
+      "state",
+      "event",
+      "on",
+      "when",
+      "entry",
+      "exit"
+    ],
+    "other": [
+      "dyn",
+      "unsafe",
+      "is"
+    ],
+    "supervisor_config": [
+      "child",
+      "restart",
+      "strategy",
+      "permanent",
+      "transient",
+      "temporary",
+      "one_for_one",
+      "one_for_all",
+      "rest_for_one",
+      "simple_one_for_one"
+    ],
+    "wire": [
+      "reserved",
+      "optional",
+      "deprecated"
+    ]
+  },
+  "literal_suffixes": {
+    "duration": [
+      "ns",
+      "us",
+      "ms",
+      "s",
+      "m",
+      "h"
+    ]
   },
   "operators": {
-    "optional": ["?", "?.", "??"],
     "arithmetic": [
       "+",
       "-",
@@ -204,26 +219,9 @@
       "/",
       "%"
     ],
-    "comparison": [
-      "==",
-      "!=",
-      "<",
-      "<=",
-      ">",
-      ">="
-    ],
-    "logical": [
-      "&&",
-      "||",
-      "!"
-    ],
-    "bitwise": [
-      "&",
-      "|",
-      "^",
-      "~",
-      "<<",
-      ">>"
+    "arrow": [
+      "->",
+      "=>"
     ],
     "assignment": [
       "=",
@@ -238,13 +236,31 @@
       "<<=",
       ">>="
     ],
-    "arrow": [
-      "->",
-      "=>"
+    "bitwise": [
+      "&",
+      "|",
+      "^",
+      "~",
+      "<<",
+      ">>"
     ],
-    "range": [
-      "..",
-      "..="
+    "comparison": [
+      "==",
+      "!=",
+      "<",
+      "<=",
+      ">",
+      ">="
+    ],
+    "logical": [
+      "&&",
+      "||",
+      "!"
+    ],
+    "optional": [
+      "?",
+      "?.",
+      "??"
     ],
     "other": [
       "?",
@@ -256,10 +272,38 @@
     ],
     "path_separators": {
       "primary": ".",
-      "removed": ["::"]
-    }
+      "removed": [
+        "::"
+      ]
+    },
+    "range": [
+      "..",
+      "..="
+    ]
   },
+  "string_prefixes": [
+    "f",
+    "r",
+    "re",
+    "b"
+  ],
   "types": {
+    "collections": [
+      "HashMap",
+      "HashSet",
+      "Vec"
+    ],
+    "concurrency": [
+      "Stream",
+      "Sink",
+      "Task",
+      "Scope",
+      "Generator"
+    ],
+    "float": [
+      "f32",
+      "f64"
+    ],
     "integer": [
       "i8",
       "i16",
@@ -272,22 +316,13 @@
       "isize",
       "usize"
     ],
-    "float": [
-      "f32",
-      "f64"
-    ],
-    "primitive": [
-      "bool",
-      "char",
-      "string",
-      "bytes",
-      "duration",
-      "instant"
-    ],
-    "collections": [
-      "HashMap",
-      "HashSet",
-      "Vec"
+    "marker_traits": [
+      "Send",
+      "Frozen",
+      "Copy",
+      "Arc",
+      "Rc",
+      "Weak"
     ],
     "option_result": [
       "Option",
@@ -297,46 +332,18 @@
       "Some",
       "None"
     ],
-    "concurrency": [
-      "Stream",
-      "Sink",
-      "Task",
-      "Scope",
-      "Generator"
-    ],
-    "marker_traits": [
-      "Send",
-      "Frozen",
-      "Copy",
-      "Arc",
-      "Rc",
-      "Weak"
-    ],
     "other": [
       "Range"
+    ],
+    "primitive": [
+      "bool",
+      "char",
+      "string",
+      "bytes",
+      "duration",
+      "instant",
+      "timestamp"
     ]
   },
-  "string_prefixes": [
-    "f",
-    "r",
-    "re",
-    "b"
-  ],
-  "comment_styles": {
-    "line": "//",
-    "doc": "///",
-    "inner_doc": "//!",
-    "block_start": "/*",
-    "block_end": "*/"
-  },
-  "literal_suffixes": {
-    "duration": [
-      "ns",
-      "us",
-      "ms",
-      "s",
-      "m",
-      "h"
-    ]
-  }
+  "version": "0.6.2"
 }

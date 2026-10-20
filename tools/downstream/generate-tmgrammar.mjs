@@ -12,6 +12,7 @@
  * Environment variables:
  *   HEW_SYNTAX_DATA   Path to syntax-data.json
  *                      (default: REPO_ROOT/docs/syntax-data.json)
+ *   HEW_TEXTMATE_TEMPLATE  Explicit template path (optional)
  *   HEW_VSCODE_HEW    Path to vscode-hew repo
  *                      (default: REPO_ROOT/../vscode-hew)
  */
@@ -27,7 +28,8 @@ const syntaxDataPath = process.env.HEW_SYNTAX_DATA
   || resolve(REPO_ROOT, 'docs/syntax-data.json');
 const vscodeHewDir = process.env.HEW_VSCODE_HEW
   || resolve(REPO_ROOT, '..', 'vscode-hew');
-const templatePath = resolve(vscodeHewDir, 'syntaxes/hew.tmLanguage.json');
+const templatePath = process.env.HEW_TEXTMATE_TEMPLATE
+  || resolve(vscodeHewDir, 'syntaxes/hew.tmLanguage.json');
 const outputPath = resolve(REPO_ROOT, 'dist/hew.tmLanguage.json');
 
 // -- Validate inputs -------------------------------------------------------

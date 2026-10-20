@@ -82,7 +82,7 @@
 (defconst hew-builtin-types
   '("i8" "i16" "i32" "i64" "u8" "u16" "u32" "u64"
     "f32" "f64" "isize" "usize"
-    "bool" "char" "string" "bytes" "duration" "instant"
+    "bool" "char" "string" "bytes" "duration" "instant" "timestamp"
     "Result" "Option" "Ok" "Err" "Some" "Vec" "HashMap" "HashSet" "Range"
     "Box" "Arc" "Rc" "Weak"
     "Task" "Scope"

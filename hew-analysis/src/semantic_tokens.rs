@@ -11,8 +11,27 @@ use crate::{token_modifiers, token_types, SemanticToken};
 
 #[cfg(test)]
 const WELL_KNOWN_PRIMITIVE_TYPE_NAMES: &[&str] = &[
-    "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "isize", "usize", "f32", "f64", "bool",
-    "char", "string", "bytes", "void", "never", "duration",
+    "i8",
+    "i16",
+    "i32",
+    "i64",
+    "u8",
+    "u16",
+    "u32",
+    "u64",
+    "isize",
+    "usize",
+    "f32",
+    "f64",
+    "bool",
+    "char",
+    "string",
+    "bytes",
+    "void",
+    "never",
+    "duration",
+    "instant",
+    "timestamp",
 ];
 
 /// Returns `true` if `name` is a known type name (primitive or builtin).

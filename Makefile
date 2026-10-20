@@ -41,7 +41,7 @@
 #   make baselines-check           — verify deterministic generated metadata
 #   make wasm-capability-check     — verify manifest-owned generated outputs
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
-#   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
+#   make sandbox-fixtures-check    — verify sandbox VM fixture sources compile
 #   make sandbox-fixtures-record   — regenerate fixture bytecode and golden traces
 #   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
@@ -590,6 +590,19 @@ playground-manifest: wasm-capability
 playground-manifest-check: wasm-capability-check
 	$(PYTHON) scripts/gen-playground-manifest.py --check
 
+.PHONY: syntax-data syntax-data-check editor-syntax
+syntax-data:
+	cargo run -p xtask -- syntax-data --write
+
+syntax-data-check:
+	cargo run -p xtask -- syntax-data --check
+
+editor-syntax: syntax-data
+	node tools/downstream/generate-nano.mjs
+	HEW_TEXTMATE_TEMPLATE="$(MAKEFILE_ROOT)/editors/sublime/Hew.tmLanguage.json" node tools/downstream/generate-tmgrammar.mjs
+	cp dist/hew.nanorc editors/nano/hew.nanorc
+	cp dist/hew.tmLanguage.json editors/sublime/Hew.tmLanguage.json
+
 sandbox-fixtures:
 	cargo run -p xtask -- sandbox-fixtures
 
@@ -627,9 +640,9 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # Deterministic generated repository artifacts. Behavioral ratchets remain
 # owned by their named test targets; they are intentionally not re-recorded by
 # a generic command from observed compiler output.
-baselines: sandbox-bytecode wasm-capability playground-manifest sandbox-fixtures licenses cabi-surface
+baselines: syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when

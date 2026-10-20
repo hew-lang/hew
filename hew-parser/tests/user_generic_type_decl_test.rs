@@ -62,7 +62,9 @@ fn parses_pub_type_box_t_field_uses_type_param() {
         hew_parser::ast::TypeBodyItem::Field { name, .. } => {
             assert_eq!(*name, Ident::new("value"));
         }
-        other => panic!("expected Field item, got {other:?}"),
+        other @ hew_parser::ast::TypeBodyItem::Variant(_) => {
+            panic!("expected Field item, got {other:?}")
+        }
     }
 }
 

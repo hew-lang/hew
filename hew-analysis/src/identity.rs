@@ -336,7 +336,7 @@ pub fn declaration_name_span(
                     .iter()
                     .filter_map(|part| match part {
                         TypeBodyItem::Field { name, ty, .. } => Some((name, ty)),
-                        _ => None,
+                        TypeBodyItem::Variant(_) => None,
                     })
                     .nth(index as usize)?;
                 enclosing_span.start..ty.1.start
@@ -390,7 +390,7 @@ pub fn declaration_name_span(
             .iter()
             .filter_map(|part| match part {
                 TypeBodyItem::Variant(variant) => Some(variant),
-                _ => None,
+                TypeBodyItem::Field { .. } => None,
             })
             .nth(ordinal)?
             .span

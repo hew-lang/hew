@@ -548,7 +548,7 @@ fn load_source(
                         .iter()
                         .filter_map(|item| match item {
                             TypeBodyItem::Variant(variant) => Some(variant.name.to_string()),
-                            _ => None,
+                            TypeBodyItem::Field { .. } => None,
                         })
                         .collect();
                     let qualified = qualified(source, decl.name.name.as_str());

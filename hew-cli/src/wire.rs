@@ -126,7 +126,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                         TypeBodyItem::Field { name, ty, .. } => {
                             Some((name.to_string(), type_expr_to_string(&ty.0)))
                         }
-                        _ => None,
+                        TypeBodyItem::Variant(_) => None,
                     })
                     .collect();
                 let variants: Vec<VariantDecl> = td
@@ -134,7 +134,7 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
                     .iter()
                     .filter_map(|item| match item {
                         TypeBodyItem::Variant(variant) => Some(variant.clone()),
-                        _ => None,
+                        TypeBodyItem::Field { .. } => None,
                     })
                     .collect();
                 let field_since: BTreeMap<u32, u32> = wire

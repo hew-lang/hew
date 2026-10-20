@@ -909,9 +909,7 @@ impl Parser<'_> {
             let before = self.pos;
             if let Some(item) = self.parse_type_body_item(kind, name) {
                 body.push(item);
-            } else if self.pos != before {
-                continue;
-            } else {
+            } else if self.pos == before {
                 let found = match self.peek() {
                     Some(tok) => format!("{tok}"),
                     None => "end of file".to_string(),
@@ -1079,9 +1077,27 @@ impl Parser<'_> {
 
     /// Skip the rejected signature and its balanced body for recovery only.
     fn skip_type_method(&mut self) {
+        let mut parens: usize = 0;
+        let mut brackets: usize = 0;
         while !self.at_end() {
             match self.peek() {
-                Some(Token::LeftBrace) => {
+                Some(Token::LeftParen) => {
+                    parens += 1;
+                    self.advance();
+                }
+                Some(Token::RightParen) => {
+                    parens = parens.saturating_sub(1);
+                    self.advance();
+                }
+                Some(Token::LeftBracket) => {
+                    brackets += 1;
+                    self.advance();
+                }
+                Some(Token::RightBracket) => {
+                    brackets = brackets.saturating_sub(1);
+                    self.advance();
+                }
+                Some(Token::LeftBrace) if parens == 0 && brackets == 0 => {
                     self.advance();
                     let mut depth = 1;
                     while depth > 0 && !self.at_end() {
@@ -1094,7 +1110,7 @@ impl Parser<'_> {
                     }
                     return;
                 }
-                Some(Token::Semicolon) => {
+                Some(Token::Semicolon) if parens == 0 && brackets == 0 => {
                     self.advance();
                     return;
                 }

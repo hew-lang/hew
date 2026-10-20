@@ -12,6 +12,8 @@ fn inline_methods_are_refused_with_an_impl_directive_and_recovery() {
         "fn create() -> Value { Value { value: 1 } }",
         "pub fn read(self) -> i64 { self.value }",
         "gen fn values(self) -> i64 { yield self.value; }",
+        "fn read(values: [i64; 3]) {}",
+        "fn read(values: ([i64; 3], [i64; 2])) -> [i64; 3] { values.0 }",
         "/// A method.\n#[extern_symbol(\"value_read\")] fn read(self) -> i64 { self.value }",
     ] {
         let source = format!("type Value {{ {method} value: i64; }} fn main() {{}}");

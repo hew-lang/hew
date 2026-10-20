@@ -3111,7 +3111,7 @@ enum Command {
     for item in &decl.body {
         match item {
             TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
-            _ => panic!("expected variant, got {item:?}"),
+            TypeBodyItem::Field { .. } => panic!("expected variant, got {item:?}"),
         }
     }
 }
@@ -3227,7 +3227,7 @@ enum Command {
         .iter()
         .filter_map(|item| match item {
             TypeBodyItem::Variant(variant) => variant.tag,
-            _ => None,
+            TypeBodyItem::Field { .. } => None,
         })
         .collect();
     assert_eq!(tags, [3, 7, 9]);
@@ -3370,7 +3370,7 @@ pub enum Command {
     for item in &decl.body {
         match item {
             TypeBodyItem::Variant(v) => assert!(matches!(v.kind, VariantKind::Unit)),
-            _ => panic!("expected variant, got {item:?}"),
+            TypeBodyItem::Field { .. } => panic!("expected variant, got {item:?}"),
         }
     }
 }

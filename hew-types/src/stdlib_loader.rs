@@ -401,7 +401,7 @@ fn collect_wrapper_resource_fields(
                 .iter()
                 .filter_map(|b| match b {
                     TypeBodyItem::Field { name, .. } => Some(name.to_string()),
-                    _ => None,
+                    TypeBodyItem::Variant(_) => None,
                 })
                 .collect();
             (td.resource_marker == ResourceMarker::Resource && !field_names.is_empty())

@@ -17,7 +17,7 @@ supervisor Shop(seed: string) {
     child ledger: Ledger { label: seed };
 }
 fn main() {
-    let shop = spawn Shop { seed: "owned config" };
+    let shop = spawn Shop { seed: "owned config".to_upper() };
     println("construction must refuse");
     stop(shop); stopped(shop);
 }

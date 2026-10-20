@@ -1135,12 +1135,6 @@ impl Checker {
             return;
         }
         match func_name {
-            "link" | "unlink" | "monitor" | "demonitor" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
-            }
-            "supervisor_child" | "supervisor_stop" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-            }
             // sleep / sleep_until: the wasm32 scheduler parks the calling actor
             // at the message boundary and re-enqueues it once the deadline passes
             // (see hew-runtime/src/scheduler_wasm.rs :: park_actor_sleep).

@@ -208,40 +208,6 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-#[test]
-fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
-    require_wasi_runner();
-
-    let manifest = load_playground_manifest();
-    let supervisor_entry = manifest
-        .iter()
-        .find(|entry| entry.id == "concurrency/supervisor")
-        .expect("concurrency/supervisor entry in manifest");
-    assert_eq!(
-        supervisor_entry.capabilities.wasi, "unsupported",
-        "concurrency/supervisor must declare wasi capability 'unsupported' in manifest"
-    );
-
-    let source = playground_root().join(&supervisor_entry.source_path);
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "supervisor should fail in compile phase\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("not supported on WASM32"),
-        "expected unsupported WASM diagnostic\nstderr:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("hew.supervisor.new"),
-        "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
-    );
-}
-
 /// A handler `panic` is contained on both targets.
 ///
 /// The physical path delivers it as a typed fault on the ask's failure edge,
@@ -483,33 +449,6 @@ fn main() {
 }
 
 #[test]
-fn actor_start_panic_remains_module_fatal_on_production_wasi() {
-    require_wasi_runner();
-
-    let source = repo_root()
-        .join("tests")
-        .join("vertical-slice")
-        .join("accept")
-        .join("actor_start_panic_module_fatal.hew");
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "production WASI must not claim actor containment for on(start) panic\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("intentional on(start) panic") || stderr.contains("unreachable"),
-        "the configured panic policy, not lifecycle transaction validation, must terminate the module; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("ActorSendFailed"),
-        "the state write before panic must not fail on an absent lifecycle dispatch domain; stderr:\n{stderr}"
-    );
-}
-
-#[test]
 fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
     assert_native_wasi_cases(&[
         "task-call-values",
@@ -524,9 +463,13 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
 }
 
 #[test]
+fn supervisor_restart_one_for_one_runs_under_wasi() {
+    assert_native_wasi_cases(&["supervisor-restart-one-for-one"]);
+}
+
+#[test]
 fn supervised_actor_lifecycle_runs_under_wasi() {
     assert_native_wasi_cases(&[
-        "supervisor-restart-one-for-one",
         "actor-typed-notifications",
         "actor-notification-hooks-suspend",
         "supervisor-wired-start-fault",
@@ -616,8 +559,8 @@ fn assert_native_wasi_cases(names: &[&str]) {
                     if target == "native" || stderr.is_empty() {
                         assert_eq!(actual, stderr, "{name} {target} O{level}");
                     } else {
-                        // WASI has no profiler name registry; compare the fault
-                        // itself, before the actor context diagnostic.
+                        // WASI has no profiler name registry; preserve every
+                        // language fault while excluding actor context labels.
                         let faults = |text: &str| {
                             text.lines()
                                 .filter(|line| !line.starts_with("hew: actor crash in "))

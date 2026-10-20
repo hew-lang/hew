@@ -54,7 +54,7 @@ is identified directly; its runtime-status cell states the current behavior.
 |----|-----------------|------------------|---------------------|-------------------|----------------|
 | `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads |
 | `exit-status-range` | Process exit statuses above 125 | Process exit statuses above 125 | Pass | — | WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status |
-| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | Unsupported (no dedicated diagnostic) | — | A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability |
+| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | Pass | — | Checked handler, init and start faults release owned state and return through failure edges; supervised faults use the shared restart and settlement policy |
 | `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass | — | Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2 |
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented |
@@ -62,8 +62,8 @@ is identified directly; its runtime-status cell states the current behavior.
 | `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented |
 | `wasi-sockets` | Raw host-provided WASI socket capability | Raw host-provided WASI socket capability | Unsupported (no dedicated diagnostic) | — | Host- and runtime-dependent; Hew's stdlib has no cross-target socket layer |
 | `select` | `select {}` (any arm kind, any timeout expression) | `select {}` operations | Pass | — | Checked readiness waitsets for tasks, actor calls, streams and timers on the cooperative driver |
-| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface |
-| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface |
+| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Pass | — | Checked child construction, restart strategies, stable roles and cooperative teardown use the shared actor runtime |
+| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Pass | — | Local actor and role observations share typed LINK/DOWN delivery and owned subscription cleanup |
 | `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Pass | — | Checked scope joins, cancellation and cleanup on the cooperative driver |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Pass | — | Checked task continuations, ordered batches and races on the cooperative driver |
 | `semaphore-non-blocking` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | Pass | — | Explicitly cloned affine handles share a permit count and close independently |
@@ -103,17 +103,19 @@ single-threaded cooperative WASM scheduler. `sleep`, `sleep_until`, and
 `#[every(duration)]` use the shared timer wheel. The process driver ticks that
 wheel against the WASI clock while the root waits.
 
+Local actors, supervision trees, links, monitors, structured task scopes,
+`select` and in-memory pipes share the cooperative runtime on Tier 2.
+Supervisor construction and restart retain the same configuration and stable
+roles, and terminal hooks complete before child state is released. Semaphore
+acquisition, timed acquisition and cancellation also share their owned permit
+operation with native execution.
+
 ### 🚫 Error (compile-time reject)
 
 An error means the compiler rejects the operation before code generation. The
 diagnostic reason in the table names the missing WASI runtime facility and,
 where available, a supported alternative. In particular:
 
-- Single-process actors and in-memory pipes run on Tier 2. Supervision trees,
-  links and monitors, structured task scopes, and `select` require runtime
-  modules excluded from wasm32.
-- Semaphore acquisition releases the worker while waiting. Timed acquisition
-  and cancellation use the same owned permit operation on native and WASI.
 - File and socket streams depend on the native I/O reactor. Networking,
   subprocess, and distributed-node APIs are native-only.
 - `crypto.random_bytes`, encryption, and signing require native cryptographic
@@ -190,7 +192,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `concurrency/actor_pipeline` | `runnable` | Verified by WASI end-to-end execution |
 | `concurrency/async_await` | `runnable` | Verified by WASI end-to-end execution |
 | `concurrency/counter_actor` | `runnable` | Verified by WASI end-to-end execution |
-| `concurrency/supervisor` | `unsupported` | Uses supervision trees, which Tier 2 rejects |
+| `concurrency/supervisor` | `runnable` | Verified by WASI end-to-end execution |
 | `language/arithmetic_operators` | `runnable` | Verified by WASI end-to-end execution |
 | `language/array_indexing` | `runnable` | Verified by WASI end-to-end execution |
 | `language/string_slicing` | `runnable` | Verified by WASI end-to-end execution |

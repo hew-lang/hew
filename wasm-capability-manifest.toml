@@ -95,13 +95,10 @@ categories = ["runtime", "failure"]
 [[feature]]
 id = "actor-crash-containment"
 label = "Actor-local panic/trap containment and restart"
-checker = "todo"
-runtime = "unavailable"
-runtime_status = "A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked handler, init and start faults release owned state and return through failure edges; supervised faults use the shared restart and settlement policy"
 categories = ["runtime", "actors", "failure"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(actor-crash-containment):"
-note = "Tier 2 basic actor dispatch remains supported, but panic/trap containment is a separate capability. Host-side native parity tests may unwind to exercise bookkeeping; they are not evidence that the production WASI artifact can recover."
 
 [[feature]]
 id = "generators"
@@ -172,29 +169,21 @@ categories = ["runtime", "actors"]
 
 [[feature]]
 id = "supervision-trees"
-enum_variant = "SupervisionTrees"
 label = "Supervision tree operations"
 prose_label = "Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`)"
-reason = "they require OS threads for restart strategies and child supervision"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked child construction, restart strategies, stable roles and cooperative teardown use the shared actor runtime"
 categories = ["runtime", "supervision"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(supervision):"
 
 [[feature]]
 id = "link-monitor"
-enum_variant = "LinkMonitor"
 label = "Link/monitor operations"
 prose_label = "Actor `link` / `unlink` / `monitor` / `demonitor`"
-reason = "they rely on OS threads to watch linked actors and propagate exits"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Local actor and role observations share typed LINK/DOWN delivery and owned subscription cleanup"
 categories = ["runtime", "actors"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(link-monitor):"
 
 [[feature]]
 id = "structured-concurrency"
@@ -851,12 +840,6 @@ generate_endpoints = ["hew_glob", "hew_path_is_file", "hew_path_is_dir"]
 # ---------------------------------------------------------------------------
 
 [[backlog]]
-id = "actor-crash-containment"
-gap = "Actor-local panic/trap containment and restart on production WASI"
-blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
-tracking_label = "WASM-TODO(actor-crash-containment):"
-
-[[backlog]]
 id = "wasi-sockets"
 gap = "Raw socket-backed Hew networking surface"
 blocker = "Stable cross-host socket abstraction above host-provided WASI sockets"
@@ -943,18 +926,6 @@ id = "distributed"
 gap = "Key-backed distributed identity, remote-actor messaging, and lifecycle parity"
 blocker = "wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities"
 tracking_label = "WASM-TODO(distributed):"
-
-[[backlog]]
-id = "supervision"
-gap = "Supervision tree restart strategies"
-blocker = "OS-thread-free supervision design"
-tracking_label = "WASM-TODO(supervision):"
-
-[[backlog]]
-id = "link-monitor"
-gap = "Actor link/monitor fault propagation"
-blocker = "OS-thread-free exit propagation"
-tracking_label = "WASM-TODO(link-monitor):"
 
 [[backlog]]
 id = "actor-drain"
@@ -1067,9 +1038,3 @@ tracking_label = "WASM-TODO(wasi-errno):"
 # by `curated_playground_examples_run_under_wasi`; omission is not evidence of
 # pass by itself.
 # ---------------------------------------------------------------------------
-
-[[playground_wasi]]
-id = "concurrency/supervisor"
-status = "unsupported"
-capability = "supervision-trees"
-reason = "Uses supervision trees, which Tier 2 rejects"

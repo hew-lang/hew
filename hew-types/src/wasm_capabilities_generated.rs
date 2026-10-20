@@ -26,8 +26,6 @@ pub enum WasmFeatureDisposition { Warn, Reject }
 /// Exhaustive reject/warn feature carrier generated from the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmUnsupportedFeature {
-    SupervisionTrees,
-    LinkMonitor,
     Timers,
     PeriodicTimers,
     FilesystemStreams,
@@ -53,8 +51,6 @@ pub enum WasmUnsupportedFeature {
 impl WasmUnsupportedFeature {
     /// Every reject/warn variant, in manifest order.
     pub const ALL: &'static [Self] = &[
-        Self::SupervisionTrees,
-        Self::LinkMonitor,
         Self::Timers,
         Self::PeriodicTimers,
         Self::FilesystemStreams,
@@ -80,8 +76,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn capability_id(self) -> WasmCapabilityId {
         match self {
-            Self::SupervisionTrees => WasmCapabilityId("supervision-trees"),
-            Self::LinkMonitor => WasmCapabilityId("link-monitor"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
@@ -108,8 +102,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn disposition(self) -> WasmFeatureDisposition {
         match self {
-            Self::SupervisionTrees => WasmFeatureDisposition::Reject,
-            Self::LinkMonitor => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::FilesystemStreams => WasmFeatureDisposition::Reject,
@@ -136,8 +128,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::SupervisionTrees => "Supervision tree operations",
-            Self::LinkMonitor => "Link/monitor operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
             Self::FilesystemStreams => "File-backed streams and resources",
@@ -164,8 +154,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
-            Self::SupervisionTrees => "they require OS threads for restart strategies and child supervision",
-            Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::FilesystemStreams => "file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available",
@@ -192,7 +180,6 @@ impl WasmUnsupportedFeature {
 /// Typed constants for every reject/warn feature and backlog identity.
 pub mod wasm_capability_ids {
     use super::WasmCapabilityId;
-    pub const ACTOR_CRASH_CONTAINMENT: WasmCapabilityId = WasmCapabilityId("actor-crash-containment");
     pub const ACTOR_DRAIN: WasmCapabilityId = WasmCapabilityId("actor-drain");
     pub const ACTOR_EXIT_STATUS: WasmCapabilityId = WasmCapabilityId("actor-exit-status");
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
@@ -211,7 +198,6 @@ pub mod wasm_capability_ids {
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");
     pub const LAMBDA_ACTORS: WasmCapabilityId = WasmCapabilityId("lambda-actors");
-    pub const LINK_MONITOR: WasmCapabilityId = WasmCapabilityId("link-monitor");
     pub const OS: WasmCapabilityId = WasmCapabilityId("os");
     pub const PROCESS_EXECUTION: WasmCapabilityId = WasmCapabilityId("process-execution");
     pub const PROFILER: WasmCapabilityId = WasmCapabilityId("profiler");
@@ -221,8 +207,6 @@ pub mod wasm_capability_ids {
     pub const SMTP: WasmCapabilityId = WasmCapabilityId("smtp");
     pub const STD_OS: WasmCapabilityId = WasmCapabilityId("std-os");
     pub const STREAMS: WasmCapabilityId = WasmCapabilityId("streams");
-    pub const SUPERVISION: WasmCapabilityId = WasmCapabilityId("supervision");
-    pub const SUPERVISION_TREES: WasmCapabilityId = WasmCapabilityId("supervision-trees");
     pub const TCP_NETWORKING: WasmCapabilityId = WasmCapabilityId("tcp-networking");
     pub const TERMINATION_SIGNALS: WasmCapabilityId = WasmCapabilityId("termination-signals");
     pub const TIMERS_EVERY: WasmCapabilityId = WasmCapabilityId("timers-every");

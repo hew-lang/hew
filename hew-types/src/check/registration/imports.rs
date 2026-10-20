@@ -1358,7 +1358,6 @@ impl Checker {
                     // identity and the bare spelling is only the binding this
                     // importer sees, so `spawn Inner` reaches the declaration
                     // SIR matches rather than a bare row of its own.
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     let identity = if owner.is_empty() {
                         sd.name.to_string()
                     } else {

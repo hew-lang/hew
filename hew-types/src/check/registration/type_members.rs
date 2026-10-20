@@ -321,7 +321,6 @@ impl Checker {
                     self.register_trait_lang_items(td, span.clone());
                 }
                 Item::Supervisor(sd) => {
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     if !self.register_type_namespace_name(None, sd.name, span) {
                         continue;
                     }

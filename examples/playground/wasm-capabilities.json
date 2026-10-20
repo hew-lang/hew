@@ -1,8 +1,1 @@
-[
-  {
-    "id": "concurrency/supervisor",
-    "status": "unsupported",
-    "capability": "supervision-trees",
-    "reason": "Uses supervision trees, which Tier 2 rejects"
-  }
-]
+[]

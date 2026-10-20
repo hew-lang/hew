@@ -830,7 +830,7 @@ impl<'m> Walker<'m> {
                                 },
                                 restart: restart_name(*restart).to_string(),
                                 stop_ns: match *stop_deadline {
-                                    hew_sir::SemStopDeadline::Literal(ns) if ns >= 0 => Some(ns),
+                                    hew_sir::SemStopDeadline::Literal(ns) => u64::try_from(ns).ok(),
                                     _ => None,
                                 },
                                 stop_config: match *stop_deadline {

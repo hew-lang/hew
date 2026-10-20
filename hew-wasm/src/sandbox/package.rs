@@ -193,7 +193,8 @@ pub struct SupervisorChild {
     pub restart: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(type = "number | null")]
-    pub stop_ns: Option<i64>,
+    #[schemars(range(max = i64::MAX))]
+    pub stop_ns: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_config: Option<usize>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

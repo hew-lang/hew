@@ -6459,7 +6459,9 @@
           "type": ["integer", "null"]
         },
         "stop_ns": {
-          "format": "int64",
+          "format": "uint64",
+          "maximum": 9223372036854775807,
+          "minimum": 0,
           "type": ["integer", "null"]
         }
       },

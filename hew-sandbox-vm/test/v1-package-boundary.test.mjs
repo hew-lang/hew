@@ -113,3 +113,42 @@ test("codec string payloads and their references are checked at load", () => {
     rejected(pkg);
   }
 });
+
+test("negative supervisor stop deadlines reject before construction or host effects", () => {
+  const pkg = JSON.parse(
+    fs.readFileSync(
+      new URL(
+        "../fixtures/19-supervisor-restart/bytecode.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    runBytecode(pkg).result,
+    "ok",
+    "independent supervisor package executes",
+  );
+  pkg.supervisors[0].children[0].stop_ns = -1;
+  let calls = 0;
+  const bridge = () => {
+    calls++;
+    throw new Error("malformed package reached a bridge");
+  };
+  const trace = runBytecode(pkg, {
+    codecBridge: bridge,
+    calendarBridge: bridge,
+  });
+  assert.equal(trace.result, "sandbox_rejected");
+  assert.equal(
+    trace.final_state.sandbox_rejections[0].category,
+    "invalid_package",
+  );
+  assert.match(
+    trace.final_state.sandbox_rejections[0].message,
+    /\/supervisors\/0\/children\/0\/stop_ns/,
+  );
+  assert.equal(trace.final_state.step_count, 0);
+  assert.deepEqual(trace.final_state.stdout, []);
+  assert.equal(calls, 0);
+});

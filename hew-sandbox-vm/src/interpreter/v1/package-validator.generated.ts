@@ -4695,7 +4695,12 @@ const schema19 = {
           type: "integer",
         },
         stop_config: { format: "uint", minimum: 0, type: ["integer", "null"] },
-        stop_ns: { format: "int64", type: ["integer", "null"] },
+        stop_ns: {
+          format: "uint64",
+          maximum: 9223372036854776000,
+          minimum: 0,
+          type: ["integer", "null"],
+        },
       },
       required: ["name", "role", "restart", "spawn"],
       type: "object",
@@ -66867,7 +66872,12 @@ const schema108 = {
       type: "integer",
     },
     stop_config: { format: "uint", minimum: 0, type: ["integer", "null"] },
-    stop_ns: { format: "int64", type: ["integer", "null"] },
+    stop_ns: {
+      format: "uint64",
+      maximum: 9223372036854776000,
+      minimum: 0,
+      type: ["integer", "null"],
+    },
   },
   required: ["name", "role", "restart", "spawn"],
   type: "object",
@@ -67522,6 +67532,38 @@ function validate315(
                             },
                           ];
                           return false;
+                        }
+                        if (errors === _errs16) {
+                          if (typeof data8 == "number" && isFinite(data8)) {
+                            if (data8 > 9223372036854776000 || isNaN(data8)) {
+                              validate315.errors = [
+                                {
+                                  instancePath: instancePath + "/stop_ns",
+                                  schemaPath: "#/properties/stop_ns/maximum",
+                                  keyword: "maximum",
+                                  params: {
+                                    comparison: "<=",
+                                    limit: 9223372036854776000,
+                                  },
+                                  message: "must be <= 9223372036854776000",
+                                },
+                              ];
+                              return false;
+                            } else {
+                              if (data8 < 0 || isNaN(data8)) {
+                                validate315.errors = [
+                                  {
+                                    instancePath: instancePath + "/stop_ns",
+                                    schemaPath: "#/properties/stop_ns/minimum",
+                                    keyword: "minimum",
+                                    params: { comparison: ">=", limit: 0 },
+                                    message: "must be >= 0",
+                                  },
+                                ];
+                                return false;
+                              }
+                            }
+                          }
                         }
                         var valid0 = _errs16 === errors;
                       } else {

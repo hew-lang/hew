@@ -1,12 +1,8 @@
 import std.stream;
 
 actor Audit {
-    var created: i64 = 0;
     var closed: i64 = 0;
     var last: i64 = 0;
-    receive fn create(id: i64) {
-        created += 1;
-    }
     receive fn record(id: i64) {
         sleep(1ms);
         closed += 1;
@@ -14,7 +10,7 @@ actor Audit {
     }
     // Every ticket the worker created must have closed before the worker
     // accepted its next message.
-    receive fn receipt() -> i64 {
+    receive fn receipt(created: i64) -> i64 {
         assert(created == closed);
         closed
     }
@@ -35,15 +31,20 @@ impl Ticket {
     }
 }
 
+// Count construction in the worker: a queued audit notification would inherit
+// the caller deadline and could expire before the audit actor dispatches it.
 actor Worker {
-    // Holds the ticket until the caller releases the gate, which it does only
-    // after its own deadline has passed.
+    var created: i64 = 0;
+    // Constructs the ticket after the caller releases the gate, which it does
+    // only after its own deadline has passed.
     receive fn create(audit: Audit, gate: stream.Stream<i64>) -> Ticket {
-        mailbox(audit).create(9).expect("audit queued");
         gate.recv();
+        created += 1;
         Ticket { audit: audit, id: 9 }
     }
-    receive fn ready() {}
+    receive fn ready() -> i64 {
+        created
+    }
 }
 
 fn main() {
@@ -73,8 +74,8 @@ fn main() {
         // A withdrawn request took its gate with it, so the release may find
         // no reader.
         let _ = release.send(1);
-        worker.ready().expect("ready");
-        let closed = audit.receipt().expect("receipt");
+        let created = worker.ready().expect("ready");
+        let closed = audit.receipt(created).expect("receipt");
         late = timed_out && closed > closed_before;
         closed_before = closed;
     }

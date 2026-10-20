@@ -38,7 +38,8 @@ on:
       platforms:
         description: "Run the full gate or resume a platform subset for the same source."
         type: choice
-        options: [all, linux-x86_64, windows-x86_64, windows-intel-macos]
+        options:
+          [all, linux-x86_64, windows-x86_64, macos-x86_64, windows-intel-macos]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -89,7 +90,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|linux-x86_64|windows-x86_64|windows-intel-macos) ;;
+            all|linux-x86_64|windows-x86_64|macos-x86_64|windows-intel-macos) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -485,18 +486,18 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'macos-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
     name: Release Gate — macOS ${{ matrix.arch }}
     strategy:
       fail-fast: false
       matrix:
         # macos-14's lldb predates DW_TAG_variant_part support.
-        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms == 'windows-intel-macos' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
+        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms != 'all' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
     runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-15' }}
-    # The Intel cold build and workspace tests took 93 minutes, then native
-    # acceptance reached the three-hour job limit. Allow the remaining corpus
-    # to finish while preserving the ARM runner's existing limit.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 240 || 180 }}
+    # Intel's cold build and workspace tests take about two hours before the
+    # native corpus begins. Budget the complete gate while retaining the ARM
+    # runner's existing limit.
+    timeout-minutes: ${{ matrix.arch == 'x86_64' && 360 || 180 }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:

@@ -536,10 +536,8 @@ pub const CRASH_ACTION_KILL: i32 = 2;
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
 // Trap error codes and the typed `ExitReason` live in
-// [`crate::internal::types`] because both native and WASM arena/dispatch
-// paths must stamp the canonical code on an actor crash, and the supervisor
-// module is `cfg(not(target_arch = "wasm32"))`. They are re-exported here so
-// existing `crate::supervisor::*` call sites keep resolving.
+// [`crate::internal::types`] so every runtime path uses the same canonical
+// code for an actor crash. They are re-exported here for supervisor callers.
 pub use crate::internal::types::{
     ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,

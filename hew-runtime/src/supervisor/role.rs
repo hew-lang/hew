@@ -414,12 +414,6 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
     unsafe { crate::actor::hew_actor_ask_by_identity(child_id, child_serial, msg_type, data, size) }
 }
 
-/// Supervisors are unavailable on the wasm runtime; the owner-scoped role ask
-/// keeps symbol parity and fails closed exactly like the lookup twin above.
-
-/// Supervisors are unavailable on the wasm runtime; the blocking role ask
-/// keeps symbol parity and fails closed to a null reply.
-
 /// Look up a nested child supervisor by its compile-time-assigned slot index.
 ///
 /// Used for traversing supervision trees one dot segment at a time:

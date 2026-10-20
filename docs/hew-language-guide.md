@@ -5307,10 +5307,11 @@ actor Watcher {
 `MonitorRef.id()` matches `DownNotification.monitor`. Closing the handle
 removes the registration and delivers no notification.
 
-The complete protocol and identity rules are normative in
-[`HEW-DIST-SPEC.md`](specs/HEW-DIST-SPEC.md). Distributed nodes, remote
-messaging, and link/monitor propagation are native-only; wasm32 rejects these
-surfaces.
+Local links and monitors use the same notification and lifetime rules on
+native and WASI targets. The complete protocol and identity rules are normative
+in [`HEW-DIST-SPEC.md`](specs/HEW-DIST-SPEC.md). Distributed nodes, remote
+messaging, and link/monitor propagation between nodes remain native-only;
+wasm32 rejects those distributed operations.
 
 ### TLS client
 

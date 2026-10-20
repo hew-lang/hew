@@ -431,9 +431,6 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
     result
 }
 
-/// Supervisors are unavailable on the wasm runtime; retain an exact symbol so
-/// runtime-family parity stays exhaustive while codegen rejects the substrate.
-
 /// Test-only hook fired inside [`role_resolve_current_child_id`] in the gap
 /// between resolving the current child slot and returning its ID — with
 /// `roster` HELD. The forced-interleaving regression installs a closure

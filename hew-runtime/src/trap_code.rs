@@ -126,15 +126,7 @@ pub(crate) fn fmt_decimal_i64(value: i64, buf: &mut [u8; 20]) -> &[u8] {
 /// Stamp `code` on the actor in the current execution context.
 ///
 /// Returns `true` when an actor lane was present and updated. Returns `false`
-/// outside actor dispatch so callers can preserve their target-specific
-/// non-actor fallback (native `llvm.trap`, WASM `llvm.trap`, or explicit panic).
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "native exports hew_trap_with_code from supervisor.rs; wasm32 reaches it once the actor core lands"
-    )
-)]
+/// outside actor dispatch so the raw trap bridge can select its fatal fallback.
 pub(crate) fn stamp_current_actor_error_code(code: c_int) -> bool {
     let ctx = crate::execution_context::current_context();
     if ctx.is_null() {
@@ -192,7 +184,7 @@ pub(crate) unsafe fn runtime_bounds_trap(code: c_int) -> ! {
     }
 }
 
-/// The trap bridge a raised fault routes through, per target.
+/// The fallback for a raised fault without a checked failure continuation.
 ///
 /// `reported` says the caller already wrote the typed diagnostic line, which
 /// [`crate::fault::hew_fault_trap`] does so its fault's message survives.
@@ -216,7 +208,9 @@ pub(crate) unsafe fn fault_trap_bridge(code: c_int, reported: bool) {
         // An unrecovered fault ends the run with status 1 (HEW-SPEC-2026 5.8);
         // the trap code in the reported line is the runtime's internal tag and
         // is never the process exit status.
-        // JUSTIFIED: no recovery authority exists; the host reclaims the module.
+        // JUSTIFIED: this raw trap ABI has no checked failure continuation.
+        // Checked actor invocations return their fault before this boundary;
+        // an unowned fallback ends the module and the host reclaims it.
         std::process::exit(1);
     }
 }

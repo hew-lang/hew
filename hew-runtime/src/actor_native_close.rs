@@ -396,8 +396,8 @@ pub unsafe extern "C" fn hew_actor_wait_new(
         })
         .flatten()
     });
-    // A supervised child's completion is reachable through the local-PID
-    // control table, which is native-only; wasm32 admits no supervisor.
+    // A supervisor completion is retained by the shared local-PID control
+    // table after its actor route has closed.
     let target = target.or_else(|| {
         local_handles::current_supervisor_completion(token).map(|completion| NativeWaitTarget {
             completion,

@@ -89,14 +89,6 @@
 //! already a failure and carries more information than `1`. A `0` never masks a
 //! fault.
 
-// WASM-TODO(actor-exit-status): report unrecovered actor faults in the wasm32
-// program-exit status. This module is native-only (gated at `lib.rs`): its
-// readers are `hew_shutdown_wait` and the native `main`-return epilogue, and
-// wasm32 has neither — it exits through `hew_wasm_runtime_exit`, with no
-// shutdown phases and no supervision tree (supervisors are HIR-gated off
-// wasm32). A wasm32 actor fault is therefore observable in its trap output but
-// not in the program's exit status.
-
 use std::ffi::c_int;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

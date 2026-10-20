@@ -3417,37 +3417,12 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
-/// Crash the current actor in response to an unhandled link EXIT.
+/// Legacy native trap adapter for an unhandled link EXIT.
 ///
-/// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
-/// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
-/// routes a `HewSysMsg::Exit` with no `#[on(exit)]` hook here instead of the
-/// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
-/// only accidentally produced a terminal state on macOS). This drives the SAME
-/// controlled crash path a handler panic uses, with the carried reason stamped
-/// on the actor, and is target-symmetric: both backends export a
-/// `hew_trap_with_code(i32)` symbol with identical semantics but from different
-/// modules, because the crash seam itself differs per target.
-///
-/// * Native (`crate::supervisor::hew_trap_with_code`): unwinds through generated
-///   cleanup pads to the scheduler's recovery boundary — terminal `Crashed`, the carried reason
-///   stamped, link / monitor / supervisor fan-out.
-/// * wasm32 (`crate::trap_code::hew_trap_with_code`): stamps the carried reason
-///   on the actor and panics; under `panic = "abort"` (the wasm32-wasip1 runtime
-///   profile) the panic aborts the module — the fail-closed crash. On a host
-///   build with unwinding the cooperative scheduler's `catch_unwind` activation
-///   boundary observes the stamped code and transitions the actor to `Crashed`,
-///   the WASM counterpart of the native caught-unwind seam. wasm32 has no `supervisor`
-///   module (it is `#[cfg(not(target_arch = "wasm32"))]`), so the call must
-///   target `trap_code` there or the wasm runtime archive does not compile.
-///
-/// `reason` is the EXIT's carried terminal reason; a zero (clean) reason is
-/// coerced to the non-zero `Crashed` sentinel so an unhandled EXIT ALWAYS
-/// crashes the non-trapping linked actor (a cleanly-exited linked peer still
-/// takes it down, OTP-style). `hew_trap_with_code` does not return when called
-/// inside dispatch; outside an actor context there is no recovery seam, where
-/// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
-/// arrives at a scheduler-driven dispatch.
+/// The carried reason becomes the actor's crash code; a clean peer exit still
+/// crashes a linked actor without an exit handler. This raw adapter uses the
+/// native trap boundary. Checked actor dispatch instead carries the fault
+/// through its completion edge on both native and WASI targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
@@ -3458,10 +3433,8 @@ pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     } else {
         reason
     };
-    // SAFETY: routes through the per-target language-trap seam. Native stamps
-    // the actor error and unwinds through the C-unwind ABI; wasm32 stamps the
-    // error and panics. Both are safe to call from generated dispatch code.
-    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the native trap bridge uses the installed dispatch context or
+    // its process-fatal fallback when no recovery owner exists.
     unsafe {
         crate::supervisor::hew_trap_with_code(crash_code);
     }

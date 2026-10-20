@@ -432,6 +432,10 @@ fn refuse_unpublishable_route(mgr: &HewConnMgr, conn_id: c_int, publication_toke
     let _ = remove_connection(mgr, conn_id, Some(publication_token));
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "keep claim, route and cluster publication together with their ordered refusal paths"
+)]
 #[expect(
     clippy::too_many_arguments,
     reason = "publication threads route/cluster/gossip metadata plus the issue #2652 superseded claim; bundling them would obscure the call site"
@@ -447,16 +451,18 @@ pub(super) fn publish_identity_connection_established(
     publication_sync: &Arc<Mutex<()>>,
     publication_removed: &Arc<AtomicBool>,
     superseded: Option<LiveClaim>,
-) {
+) -> bool {
     if publication_removed.load(Ordering::Acquire) {
-        return;
+        set_last_error("connection publication cancelled before establishment");
+        return false;
     }
 
     // Transition our reservation Reserved → Published (issue #2652, D3 step 3).
     // A superseding admission arriving in the reserve window ⇒ we are no longer
     // the map owner ⇒ abort publish (write no route / cluster token / gossip).
     if !publish_identity_claim(mgr, peer_identity, conn_id, publication_token) {
-        return;
+        set_last_error("connection publication no longer owns the peer claim");
+        return false;
     }
 
     // Reserved slots and zero sessions are immutable properties of this
@@ -479,7 +485,7 @@ pub(super) fn publish_identity_connection_established(
              route slot {peer_route_slot} is reserved (slot 0 or this node's own local \
              route slot), so no route could be registered"
         ));
-        return;
+        return false;
     }
 
     if let Some(previous) = superseded.as_ref().filter(|previous| {
@@ -521,12 +527,13 @@ pub(super) fn publish_identity_connection_established(
                  the cluster rejected session {peer_session_incarnation} on route slot \
                  {peer_route_slot}"
             ));
-            return;
+            return false;
         }
         result == 1
     };
     if !published {
-        return;
+        set_last_error("connection publication cancelled during cluster admission");
+        return false;
     }
 
     #[cfg(test)]
@@ -539,7 +546,8 @@ pub(super) fn publish_identity_connection_established(
         let route_registered = {
             let _publication = publication_sync.lock_or_recover();
             if publication_removed.load(Ordering::Acquire) {
-                return;
+                set_last_error("connection publication cancelled before route admission");
+                return false;
             }
             // SAFETY: pointer validity is checked by the callee.
             unsafe {
@@ -568,7 +576,7 @@ pub(super) fn publish_identity_connection_established(
                  route slot {peer_route_slot} is reserved (slot 0 or this node's own local \
                  route slot), so no route could be registered"
             ));
-            return;
+            return false;
         }
     }
 
@@ -597,6 +605,7 @@ pub(super) fn publish_identity_connection_established(
             close_superseded_connection_once(mgr, superseded.conn_id, superseded.publication_token);
         }
     }
+    true
 }
 
 /// Clear the restorable predecessor claim only from the exact admission whose

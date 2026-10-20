@@ -1694,11 +1694,9 @@ pub fn lower_program(
                 }
             }
             Item::Supervisor(decl) => {
-                // P0.2: Fail-closed gate: supervisor restart machinery
-                // (`SupervisorChildGet`, `Stop`, nested-restart) is not yet
-                // available on wasm32 (#1475). Supervisors remain restricted
-                // to x86_64/aarch64 until that work lands.
-                if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+                // Native and WASI share the checked supervisor runtime.
+                // Other architectures have no runtime implementation.
+                if matches!(ctx.target_arch, TargetArch::Other) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
                             target_arch: format!("{:?}", ctx.target_arch),
@@ -1707,7 +1705,7 @@ pub fn lower_program(
                         span.clone(),
                         format!(
                             "supervisor '{}' requires supervisor restart machinery \
-                             (x86_64/aarch64 only; wasm32 support tracked in #1475)",
+                             (unsupported target)",
                             decl.name
                         ),
                     ));
@@ -2116,10 +2114,9 @@ pub fn lower_program(
                         // layout here.
                         Item::Actor(actor) => {
                             // Fail-closed target gate: actors require the actor
-                            // runtime ABI (x86_64/aarch64), same as the root-item
+                            // runtime ABI, same as the root-item
                             // actor arm in the source-order emit pass.
-                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
-                            {
+                            if matches!(ctx.target_arch, TargetArch::Other) {
                                 ctx.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::TargetCoroutineUnsupported {
                                         target_arch: format!("{:?}", ctx.target_arch),
@@ -2128,7 +2125,7 @@ pub fn lower_program(
                                     span.clone(),
                                     format!(
                                         "actor '{}' requires the actor runtime ABI \
-                                         (x86_64/aarch64 only)",
+                                         (unsupported target)",
                                         actor.name
                                     ),
                                 ));
@@ -2146,8 +2143,7 @@ pub fn lower_program(
                         // lowering with a handle no declaration answers. The
                         // root arm gates the target the same way.
                         Item::Supervisor(supervisor) => {
-                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
-                            {
+                            if matches!(ctx.target_arch, TargetArch::Other) {
                                 ctx.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::TargetCoroutineUnsupported {
                                         target_arch: format!("{:?}", ctx.target_arch),
@@ -2156,7 +2152,7 @@ pub fn lower_program(
                                     span.clone(),
                                     format!(
                                         "supervisor '{}' requires supervisor restart machinery \
-                                         (x86_64/aarch64 only; wasm32 support tracked in #1475)",
+                                         (unsupported target)",
                                         supervisor.name
                                     ),
                                 ));

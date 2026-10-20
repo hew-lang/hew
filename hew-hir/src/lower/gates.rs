@@ -4,51 +4,18 @@ use super::*;
 
 // ── Target architecture gates ────────────────────────────────────────────────
 
-/// Pre-pass that rejects coroutine-dependent constructs (actors, tasks) on
-/// unsupported targets and blocking channel recv on wasm32.
-///
-/// Fail-closed per slepp A222: emit fatal diagnostics at compile time instead
-/// of allowing runtime panics at `hew-runtime/src/coro.rs:391/:492` (P0.1/P0.2)
-/// or `hew-runtime/src/lib.rs:378/:391` (P0.3/P0.4).
+/// Reject actor-runtime constructs on architectures without a runtime.
+/// Native workers and the WASI cooperative driver share the checked actor and
+/// supervisor ABI. The source-order pass repeats these checks after resetting
+/// diagnostics from its type pre-pass.
 pub(super) fn check_target_gates(ctx: &mut LowerCtx, program: &Program) {
-    // P0.1: Actor runtime ABI gate.
-    //   - x86_64, aarch64: native multi-threaded work-stealing scheduler — admitted.
-    //   - wasm32: cooperative single-threaded scheduler (`scheduler_wasm.rs`) with
-    //     C ABI parity to native — admitted (#1821).
-    //   - TargetArch::Other: no scheduler — rejected.
-    //
-    // P0.2: Supervisor restart machinery gate.
-    //   Supervisors require `SupervisorChildGet`/`Stop`/nested-restart which are
-    //   not implemented in the wasm32 runtime. Supervisors remain gated on
-    //   {x86_64, aarch64} until #1475 is resolved.
-    //
-    // Suspension itself uses target-agnostic LLVM llvm.coro.*; the gap for
-    // actors on wasm32 was the scheduler/mailbox ABI, now closed.
-    if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+    if matches!(ctx.target_arch, TargetArch::Other) {
         check_coroutine_gate(ctx, program);
     }
-
-    // NB: P0.3 + P0.4 (wasm blocking channel recv) intentionally NOT dispatched
-    // here. They are dispatched separately AFTER the type pre-pass's
-    // diagnostics.clear() at line ~921 so the gate's diagnostics survive into
-    // LowerOutput. See check_wasm_blocking_recv_gate at the post-clear call
-    // site for the dispatch. The coroutine gate IS duplicated by inline
-    // Item::Actor / Item::Supervisor checks in the source-order pass below; the
-    // wasm gate has no such inline counterpart so the survival-ordering is
-    // essential.
 }
 
-/// Check for actor/supervisor usage on targets without the actor runtime ABI.
-///
-/// Called only when `target_arch` is not `x86_64` or `aarch64`.
-///
-/// Actor gate: wasm32 is admitted (cooperative scheduler + mailbox exist in
-/// `scheduler_wasm.rs`; #1821). Only `TargetArch::Other` (unknown triples)
-/// is rejected for actors.
-///
-/// Supervisor gate: wasm32 is still rejected — supervisor restart machinery
-/// (`SupervisorChildGet`/`Stop`/nested-restart) is not yet implemented in
-/// the wasm32 runtime (#1475).
+/// Check actor/supervisor usage on an architecture without the runtime ABI.
+/// Called only for unsupported target architectures.
 pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
     let target_name = match ctx.target_arch {
         TargetArch::Wasm32 => "wasm32",
@@ -80,7 +47,7 @@ pub(super) fn check_coroutine_gate(ctx: &mut LowerCtx, program: &Program) {
                 }
             }
             Item::Supervisor(supervisor_decl) => {
-                // The wasm32 runtime has no supervisor restart machinery.
+                // The unsupported target has no supervisor restart runtime.
                 ctx.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::TargetCoroutineUnsupported {
                         target_arch: target_name.to_string(),

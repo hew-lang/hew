@@ -54,7 +54,7 @@ actor WorkerActor {
     receive fn work() {}
 }
 ";
-    let output = lower(source, TargetArch::Wasm32);
+    let output = lower(source, TargetArch::Other);
 
     let coroutine_diagnostics: Vec<_> = output
         .diagnostics
@@ -72,6 +72,15 @@ actor WorkerActor {
         result.is_err(),
         "into_result() should fail with unsupported target gate"
     );
+}
+
+#[test]
+fn wasm32_target_lowers_supervisor_restart_program() {
+    let source =
+        include_str!("../../../tests/core-acceptance/cases/supervisor-restart-one-for-one.hew");
+    lower(source, TargetArch::Wasm32)
+        .into_result()
+        .expect("WASI lowers the shared checked supervisor program");
 }
 
 #[test]

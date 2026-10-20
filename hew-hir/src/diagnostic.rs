@@ -400,15 +400,9 @@ pub enum HirDiagnosticKind {
         /// (e.g. `"path.basename"`).
         suggested_qualified: String,
     },
-    /// Target architecture does not support actors/supervisors. The program
-    /// uses a coroutine-dependent construct (actor decl, supervisor decl) but
-    /// the target arch is not in the set `{x86_64, aarch64}` that has the full
-    /// actor runtime ABI (scheduler, mailbox, supervisor restart machinery).
-    /// Suspension itself is target-agnostic LLVM `llvm.coro.*`; the gap is the
-    /// surrounding actor runtime substrate (`hew_actor_*`, `hew_supervisor_*`,
-    /// `hew_mailbox_*`) which is not yet ported to wasm32 or other targets.
-    /// Fail-closed per slepp A222: compile-time diagnostic instead of a
-    /// linker error or silent runtime failure.
+    /// The target has no actor/supervisor runtime ABI. Native x86_64/aarch64
+    /// workers and the WASI cooperative driver provide the checked ABI;
+    /// other architectures are rejected before linking.
     TargetCoroutineUnsupported {
         /// Target architecture name (e.g. `"riscv64"`).
         target_arch: String,

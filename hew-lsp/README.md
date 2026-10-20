@@ -4,10 +4,14 @@ Language Server Protocol implementation for Hew.
 
 Shipped IDE/LSP features for Hew source files include:
 
-- Real-time diagnostics (parse errors, type errors)
+- Real-time and pull diagnostics (parse errors, type errors)
 - Completions
 - Hover information
 - Go-to-definition, including record field accesses at use sites
+- Go-to-type-definition for checked nominal values and named types
+- Go-to-implementation for traits, trait methods and nominal receivers
+- Document highlights that respect binding, member and field identity
+- Nested selection ranges for tokens, expressions, statements and bodies
 - Find references
 - Rename (with prepare support)
 - Document symbols
@@ -22,6 +26,18 @@ Shipped IDE/LSP features for Hew source files include:
 - Folding ranges
 - Code lenses for reference counts and test execution
 - Execute command support for running Hew tests (`hew.runTest`)
+
+Type-definition and implementation navigation use the checker’s declaration
+identities and prefer unsaved buffers when locating declarations. Primitive
+types without authored declarations return no location. Binding and parameter
+declarations work even when unused, including destructured bindings. Implementation results
+identify authored methods in the current compilation’s module graph.
+
+Document diagnostic requests return a full report or an unchanged report when
+the previous result ID still names the same diagnostics. Pulls wait for pending
+edits and their dependent documents to finish analysis. Clients that advertise
+diagnostic refresh support receive refresh requests after source changes.
+Workspace-wide diagnostic pulls are not advertised.
 
 ## Usage
 

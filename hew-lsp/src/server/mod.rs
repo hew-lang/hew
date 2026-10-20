@@ -79,6 +79,10 @@ use hew_types::TypeCheckOutput;
 use serde_json::{json, Value};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::request::{
+    GotoImplementationParams, GotoImplementationResponse, GotoTypeDefinitionParams,
+    GotoTypeDefinitionResponse,
+};
 use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyIncomingCallsParams, CallHierarchyItem,
     CallHierarchyOutgoingCall, CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams,
@@ -113,6 +117,10 @@ use tower_lsp_server::ls_types::{
 pub struct TestsParams {
     text_document: Option<TextDocumentIdentifier>,
 }
+use tower_lsp_server::ls_types::{
+    DocumentDiagnosticParams, DocumentDiagnosticReportResult, DocumentHighlight,
+    DocumentHighlightParams, SelectionRange, SelectionRangeParams,
+};
 use tower_lsp_server::ls_types::{DocumentLink, DocumentLinkOptions, DocumentLinkParams};
 use tower_lsp_server::ls_types::{
     InlayHint, InlayHintOptions, InlayHintParams, InlayHintServerCapabilities, SignatureHelp,
@@ -228,6 +236,25 @@ fn build_server_capabilities() -> ServerCapabilities {
         }),
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         definition_provider: Some(OneOf::Left(true)),
+        type_definition_provider: Some(
+            tower_lsp_server::ls_types::TypeDefinitionProviderCapability::Simple(true),
+        ),
+        implementation_provider: Some(
+            tower_lsp_server::ls_types::ImplementationProviderCapability::Simple(true),
+        ),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        selection_range_provider: Some(
+            tower_lsp_server::ls_types::SelectionRangeProviderCapability::Simple(true),
+        ),
+        diagnostic_provider: Some(
+            tower_lsp_server::ls_types::DiagnosticServerCapabilities::Options(
+                tower_lsp_server::ls_types::DiagnosticOptions {
+                    inter_file_dependencies: true,
+                    workspace_diagnostics: false,
+                    ..Default::default()
+                },
+            ),
+        ),
         document_symbol_provider: Some(OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
@@ -429,12 +456,18 @@ pub struct HewLanguageServer {
     open_documents: RwLock<HashMap<Url, OpenDocument>>,
     rename_document_changes: RwLock<bool>,
     watched_files_supported: RwLock<bool>,
+    diagnostic_refresh_supported: RwLock<bool>,
     workspace_roots: RwLock<Vec<PathBuf>>,
     /// One CPU-heavy rename job per server, including cancelled requests whose
     /// blocking computation is still running.
     rename_jobs: Arc<tokio::sync::Semaphore>,
     /// Per-URI generation counters used by the debounced analysis path.
     analysis_versions: AnalysisVersions,
+    /// Completed generations include refreshes of all importing documents.
+    completed_analysis_versions: AnalysisVersions,
+    /// Serialize source scheduling, dependent refresh, close and pull snapshots.
+    analysis_jobs: Arc<tokio::sync::Mutex<()>>,
+    diagnostic_reports: RwLock<handlers::editor::DiagnosticReports>,
     /// Failures from the CLI test stream, kept separate from source diagnostics.
     test_diagnostics: Arc<DashMap<Url, Vec<Diagnostic>>>,
     /// A failed deterministic test's last seed, keyed by its exact selector.
@@ -459,9 +492,13 @@ impl HewLanguageServer {
             open_documents: RwLock::new(HashMap::new()),
             rename_document_changes: RwLock::new(false),
             watched_files_supported: RwLock::new(false),
+            diagnostic_refresh_supported: RwLock::new(false),
             workspace_roots: RwLock::new(Vec::new()),
             rename_jobs: Arc::new(tokio::sync::Semaphore::new(1)),
             analysis_versions: Arc::new(DashMap::new()),
+            completed_analysis_versions: Arc::new(DashMap::new()),
+            analysis_jobs: Arc::new(tokio::sync::Mutex::new(())),
+            diagnostic_reports: RwLock::new(handlers::editor::DiagnosticReports::default()),
             test_diagnostics: Arc::new(DashMap::new()),
             test_seeds: Arc::new(DashMap::new()),
             test_run_versions: Arc::new(DashMap::new()),
@@ -557,6 +594,14 @@ impl HewLanguageServer {
     /// The function itself is synchronous — analysis runs in a `tokio::spawn`
     /// task so the handler path returns immediately.
     fn reanalyze(&self, uri: &Url, source: &str) {
+        // Callers hold analysis_jobs while scheduling. Watchers and generation
+        // refreshes must preserve a newer authored buffer over analyzed text.
+        let source = self
+            .open_documents
+            .read()
+            .ok()
+            .and_then(|open| open.get(uri).map(|document| document.source.clone()))
+            .unwrap_or_else(|| source.to_owned());
         self.test_diagnostics.remove(uri);
         if let Some(path) = uri.to_checked_file_path() {
             let prefix = format!("{}::", workspace::normalize_workspace_path(&path).display());
@@ -575,14 +620,20 @@ impl HewLanguageServer {
         let documents = Arc::clone(&self.documents);
         let test_diagnostics = Arc::clone(&self.test_diagnostics);
         let versions = Arc::clone(&self.analysis_versions);
+        let completed = Arc::clone(&self.completed_analysis_versions);
+        let analysis_jobs = Arc::clone(&self.analysis_jobs);
+        let refresh_supported = self
+            .diagnostic_refresh_supported
+            .read()
+            .is_ok_and(|supported| *supported);
         let uri = uri.clone();
-        let source = source.to_owned();
         let extra_pkg_paths = self.extra_pkg_paths.clone();
 
         tokio::spawn(async move {
             // Debounce: wait for the window to expire before running the pipeline.
             tokio::time::sleep(tokio::time::Duration::from_millis(DEBOUNCE_MS)).await;
 
+            let analysis = analysis_jobs.lock().await;
             // Bail if a newer edit has already superseded this one.
             if versions.get(&uri).map(|v| *v) != Some(version) {
                 return;
@@ -590,10 +641,15 @@ impl HewLanguageServer {
 
             let published =
                 refresh_document_and_dependents(&uri, &source, &documents, &extra_pkg_paths);
+            completed.insert(uri.clone(), version);
             for (updated_uri, diagnostics) in with_test_diagnostics(published, &test_diagnostics) {
                 client
                     .publish_diagnostics(updated_uri, diagnostics, None)
                     .await;
+            }
+            drop(analysis);
+            if refresh_supported {
+                let _ = client.workspace_diagnostic_refresh().await;
             }
         });
     }
@@ -606,6 +662,17 @@ impl HewLanguageServer {
                     .publish_diagnostics(uri, diagnostics, None)
                     .await;
             }
+        }
+        self.refresh_pull_diagnostics().await;
+    }
+
+    async fn refresh_pull_diagnostics(&self) {
+        let supported = self
+            .diagnostic_refresh_supported
+            .read()
+            .is_ok_and(|supported| *supported);
+        if supported {
+            let _ = self.client.workspace_diagnostic_refresh().await;
         }
     }
 
@@ -805,6 +872,7 @@ impl LanguageServer for HewLanguageServer {
             .map(|path| workspace::normalize_workspace_path(&path))
             .collect::<HashSet<_>>();
         let changed_keys: HashSet<_> = changed.iter().map(source_file_key).collect();
+        let _analysis = self.analysis_jobs.lock().await;
         let dependents: Vec<_> = self
             .documents
             .iter()
@@ -842,6 +910,41 @@ impl LanguageServer for HewLanguageServer {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         Ok(handlers::navigation::goto_definition(self, &params))
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: GotoTypeDefinitionParams,
+    ) -> Result<Option<GotoTypeDefinitionResponse>> {
+        Ok(handlers::editor::type_definition(self, &params))
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> Result<Option<GotoImplementationResponse>> {
+        Ok(handlers::editor::implementations(self, &params))
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        Ok(handlers::editor::document_highlights(self, &params))
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        Ok(handlers::editor::selection_ranges(self, &params))
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReportResult> {
+        handlers::editor::diagnostic(self, &params).await
     }
 
     async fn document_symbol(
@@ -891,6 +994,7 @@ impl LanguageServer for HewLanguageServer {
         &self,
         params: tower_lsp_server::ls_types::TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
+        let _analysis = self.analysis_jobs.lock().await;
         Ok(handlers::navigation::prepare_rename(self, &params))
     }
 

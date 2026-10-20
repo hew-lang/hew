@@ -1,0 +1,14 @@
+[package]
+name = "hew-calendar"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Shared UTC calendar conversion, parsing and formatting for Hew"
+readme = "README.md"
+repository = "https://github.com/hew-lang/hew"
+
+[dependencies]
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

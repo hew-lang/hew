@@ -42,6 +42,7 @@ type SandboxCompiler = (
 declare global {
   var __hewSandboxCompileToSandboxBytecode: SandboxCompiler | undefined;
   var __hewSandboxExecuteCodec: ((request: string) => string) | undefined;
+  var __hewSandboxExecuteCalendar: ((request: string) => string) | undefined;
   var compileToSandboxBytecode: SandboxCompiler | undefined;
 }
 
@@ -70,6 +71,7 @@ export function runProgram(
   const trace = runBytecode(bytecode, {
     fixtureId: "page-run",
     codecBridge: globalThis.__hewSandboxExecuteCodec,
+    calendarBridge: globalThis.__hewSandboxExecuteCalendar,
     traceId: "trace:page-run",
     replay: { inputs: [{ kind: "stdin", data: stdin }] },
   });

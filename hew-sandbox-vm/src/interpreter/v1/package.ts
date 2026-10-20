@@ -538,6 +538,7 @@ export type TermV1 =
   | (TermBase &
       CallShape & {
         op: "extern.call";
+        aggregate_result_shape?: number | null;
         extern: number;
         result_shape: number | null;
       })

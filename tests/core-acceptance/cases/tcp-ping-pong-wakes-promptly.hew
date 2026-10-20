@@ -3,7 +3,6 @@
 // meets `WouldBlock` arms readiness at once, and the reactor wakes at once.
 import std.net;
 
-import std.time.datetime;
 
 fn echo(listener: net.Listener) {
     let conn = listener.accept().expect("accept");
@@ -28,13 +27,13 @@ fn main() {
         let server = fork echo(listener);
         let client = net.connect(address).expect("connect");
         for _ in 0..100 {
-            let start = datetime.now_nanos();
+            let start = instant.now();
             client.send("x".to_bytes()).expect("send");
             match client.recv() {
                 .Some(_) => {}
                 .None => panic("server closed"),
             }
-            let sample = datetime.now_nanos() - start;
+            let sample = start.elapsed().nanos();
             var index = sorted.len();
             sorted.push(sample);
             while index > 0 && sorted[index - 1] > sample {

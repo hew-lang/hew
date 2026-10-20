@@ -19,11 +19,13 @@ globalThis.__hewSandboxCompileToSandboxBytecode =
   wasmModule.compileToSandboxBytecode ?? wasmModule.default?.compileToSandboxBytecode;
 assert.equal(typeof globalThis.__hewSandboxCompileToSandboxBytecode, "function");
 globalThis.__hewSandboxExecuteCodec = wasmModule.executeCodec ?? wasmModule.default?.executeCodec;
+globalThis.__hewSandboxExecuteCalendar = wasmModule.executeCalendar ?? wasmModule.default?.executeCalendar;
 
 test.after(() => {
   fs.rmSync(wasmDir, { recursive: true, force: true });
   delete globalThis.__hewSandboxCompileToSandboxBytecode;
   delete globalThis.__hewSandboxExecuteCodec;
+  delete globalThis.__hewSandboxExecuteCalendar;
 });
 
 test("runProgram hello_world returns stdout and zero exit code", () => {
@@ -294,3 +296,12 @@ fn main() { var fresh = Ticket { id: 1 }; ${body} }
     assert.equal(result.stdout, expected);
   });
 }
+
+
+test("runProgram shares checked UTC calendar semantics with native", () => {
+  const source = fs.readFileSync(path.join(repoRoot, "tests/core-acceptance/cases/timestamp-calendar.hew"), "utf8");
+  const result = runProgram(source, "");
+  assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.stdout, "timestamp calendar ok\n");
+});

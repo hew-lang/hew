@@ -1,3 +1,4 @@
+import { calendarResultFields } from "./calendar.js";
 /// Load-time admission for a verified SIR package.
 ///
 /// The package declares what it needs: `runtime_families` names every runtime
@@ -230,6 +231,29 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
             message: "timestamp clock lacks its checked result shape",
             span: null,
           };
+        }
+      }
+      if (term.op === "extern.call") {
+        const symbol = pkg.externs[term.extern]?.symbol ?? "";
+        const fields = calendarResultFields(symbol);
+        if (fields) {
+          const shape =
+            term.aggregate_result_shape == null
+              ? undefined
+              : pkg.aggregates[term.aggregate_result_shape];
+          if (
+            !shape ||
+            shape.fields.length !== fields.length ||
+            shape.fields.some((field, index) => field !== fields[index])
+          ) {
+            return {
+              category: "invalid_package",
+              code: "sandbox.package.calendar_shape",
+              capability: symbol,
+              message: "calendar operation lacks its checked result shape",
+              span: null,
+            };
+          }
         }
       }
       if (term.op === "timestamp.binary") {

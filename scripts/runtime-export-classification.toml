@@ -889,24 +889,16 @@ stable-stdlib = [
   "hew_cidr_hosts",
   "hew_cidr_network",
   "hew_constant_time_eq_hew",
+  "hew_calendar_components",
+  "hew_calendar_format",
+  "hew_calendar_from_parts",
+  "hew_calendar_parse",
   "hew_cron_free",
   "hew_cron_is_valid",
   "hew_cron_last_error",
   "hew_cron_next_hew",
   "hew_cron_parse",
   "hew_cron_to_string",
-  "hew_datetime_day",
-  "hew_datetime_format",
-  "hew_datetime_hour",
-  "hew_datetime_last_error",
-  "hew_datetime_minute",
-  "hew_datetime_month",
-  "hew_datetime_now_ms",
-  "hew_datetime_now_nanos",
-  "hew_datetime_parse",
-  "hew_datetime_second",
-  "hew_datetime_weekday",
-  "hew_datetime_year",
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
@@ -4760,97 +4752,6 @@ release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
 
-# datetime — hew-std/src/time/datetime.rs. Scalar epoch math; format and
-# last_error return fresh strings; parse borrows both strings.
-[[ownership.contracts]]
-symbol = "hew_datetime_day"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_format"
-result = "fresh"
-params = ["borrow", "borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_hour"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_last_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_minute"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_month"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_now_ms"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_now_nanos"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_parse"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_second"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_weekday"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_year"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# cron — hew-std/src/time/cron.rs. parse returns a Box'd HewCronExpr (freed
-# by hew_cron_free); next_hew returns a scalar-only HewCronNextResult struct;
-# last_error/to_string return fresh strings.
 [[ownership.contracts]]
 symbol = "hew_cron_free"
 result = "none"
@@ -7492,3 +7393,37 @@ result = "none"
 params = ["consume", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
+
+# Calendar result records transfer their managed string fields to the caller.
+
+[[ownership.contracts]]
+symbol = "hew_calendar_components"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_format"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_from_parts"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_parse"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"

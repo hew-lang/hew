@@ -2989,6 +2989,58 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_components( i64, u32, ) -> HewCalendarPartsResult"
+      },
+      "symbol": "hew_calendar_components"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_format( i64, u32, *const HewString, ) -> HewCalendarTextResult"
+      },
+      "symbol": "hew_calendar_format"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "not-applicable",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_from_parts( i64, i64, i64, i64, i64, i64, u32, ) -> HewCalendarTimeResult"
+      },
+      "symbol": "hew_calendar_from_parts"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_calendar_parse( *const HewString, *const HewString, ) -> HewCalendarTimeResult"
+      },
+      "symbol": "hew_calendar_parse"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -5393,162 +5445,6 @@
         "native": "fn hew_cwd() -> *mut HewString"
       },
       "symbol": "hew_cwd"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_day( i64) -> i64"
-      },
-      "symbol": "hew_datetime_day"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_format( i64, *const HewString, ) -> *mut HewString"
-      },
-      "symbol": "hew_datetime_format"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_hour( i64) -> i64"
-      },
-      "symbol": "hew_datetime_hour"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_last_error() -> *mut HewString"
-      },
-      "symbol": "hew_datetime_last_error"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_minute( i64) -> i64"
-      },
-      "symbol": "hew_datetime_minute"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_month( i64) -> i64"
-      },
-      "symbol": "hew_datetime_month"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_now_ms() -> i64"
-      },
-      "symbol": "hew_datetime_now_ms"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_now_nanos() -> i64"
-      },
-      "symbol": "hew_datetime_now_nanos"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_parse( *const HewString, *const HewString) -> i64"
-      },
-      "symbol": "hew_datetime_parse"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_second( i64) -> i64"
-      },
-      "symbol": "hew_datetime_second"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_weekday( i64) -> i64"
-      },
-      "symbol": "hew_datetime_weekday"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable-stdlib",
-      "extent": "not-applicable",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_datetime_year( i64) -> i64"
-      },
-      "symbol": "hew_datetime_year"
     },
     {
       "availability": [

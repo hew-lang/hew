@@ -423,6 +423,7 @@ class ExecutorV1 {
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
+      calendarBridge: options.calendarBridge,
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();
@@ -1992,8 +1993,7 @@ class ExecutorV1 {
         : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
-      const aggregateId =
-        term.op === "runtime.call" ? term.aggregate_result_shape : null;
+      const aggregateId = term.aggregate_result_shape;
       const aggregate =
         aggregateId == null ? null : (this.pkg.aggregates[aggregateId] ?? null);
       value = shim(this.host, args, shape, aggregate);

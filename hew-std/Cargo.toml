@@ -19,6 +19,7 @@ crate-type = ["staticlib", "lib"]
 # on wasm32, so listing them unconditionally would break the wasm build.
 
 [dependencies]
+hew-calendar = { path = "../hew-calendar" }
 regex = "1.12.4"
 # Shared ABI + runtime (path deps).
 hew-cabi = { path = "../hew-cabi" }

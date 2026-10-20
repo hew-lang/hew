@@ -2,6 +2,7 @@
 members = [
   "hew-cabi",
   "hew-codec",
+  "hew-calendar",
   "hew-expand",
   "hew-std",
   "std/text/template",

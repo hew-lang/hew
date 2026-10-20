@@ -1854,6 +1854,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hew-calendar"
+version = "0.6.2"
+dependencies = [
+ "chrono",
+]
+
+[[package]]
 name = "hew-capability-gen"
 version = "0.6.2"
 dependencies = [
@@ -2161,6 +2168,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "hew-cabi",
+ "hew-calendar",
  "hew-runtime",
  "ipnet",
  "jsonwebtoken",
@@ -2225,6 +2233,7 @@ version = "0.6.2"
 dependencies = [
  "assert_cmd",
  "hew-analysis",
+ "hew-calendar",
  "hew-codec",
  "hew-compile",
  "hew-hir",

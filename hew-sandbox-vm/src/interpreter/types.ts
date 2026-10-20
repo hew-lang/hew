@@ -173,6 +173,7 @@ export interface RunOptions {
   /** Supplied process arguments including argv[0]. Defaults to ["main.hew"]. */
   argv?: readonly string[];
   codecBridge?: (request: string) => string;
+  calendarBridge?: (request: string) => string;
   propertyInput?: number[];
   fixtureId?: string;
   traceId?: string;

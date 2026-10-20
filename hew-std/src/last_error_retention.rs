@@ -136,15 +136,6 @@ fn smtp_last_error_result_is_transferred() {
     );
 }
 
-#[test]
-fn datetime_last_error_result_is_transferred() {
-    assert_slot_backed_result_is_transferred(
-        "hew_datetime_last_error",
-        ErrorSlotKind::Datetime,
-        crate::time::datetime::hew_datetime_last_error,
-    );
-}
-
 /// Managed diagnostics keep complete text after the slot changes or clears.
 fn assert_managed_error_is_transferred(
     slot: ErrorSlotKind,

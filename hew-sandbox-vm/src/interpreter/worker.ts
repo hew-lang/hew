@@ -34,6 +34,7 @@ worker.addEventListener("message", (event: MessageEvent<WorkerRequest>) => {
     const trace = runBytecode(bytecode, {
       ...options,
       codecBridge: globalThis.__hewSandboxExecuteCodec,
+      calendarBridge: globalThis.__hewSandboxExecuteCalendar,
     });
     worker.postMessage({
       id,

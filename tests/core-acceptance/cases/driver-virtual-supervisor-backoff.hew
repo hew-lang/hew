@@ -1,4 +1,3 @@
-import std.time.datetime;
 
 actor Worker {
     let value: i64 = 7;
@@ -18,7 +17,7 @@ supervisor App {
 
 fn main() {
     let app = spawn App;
-    let started = datetime.now_ms();
+    let started = instant.now();
     for _ in 0 .. 9 {
         let _ = app.worker.crash_me();
         let fresh = {
@@ -31,7 +30,7 @@ fn main() {
             .Err(_) => panic("restarted child unavailable"),
         }
     }
-    let elapsed = datetime.now_ms() - started;
+    let elapsed = started.elapsed().millis();
     println(elapsed >= 50000 && elapsed < 52000);
     stop(app);
     stopped(app);

@@ -447,9 +447,16 @@ fn jwt_and_password_results_are_transferred() {
 fn datetime_and_cron_results_are_transferred() {
     let format = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
     assert_managed_transferred(
-        "hew_datetime_format",
+        "hew_calendar_format",
         // SAFETY: format owns a live managed strftime format.
-        || unsafe { crate::time::datetime::hew_datetime_format(0, format.as_ptr()) },
+        || {
+            // SAFETY: format owns a live managed strftime format.
+            let result =
+                unsafe { crate::time::datetime::hew_calendar_format(0, 0, format.as_ptr()) };
+            assert_eq!(result.status, 0);
+            assert!(result.message.is_null());
+            result.text
+        },
         |text| assert_eq!(text, "1970-01-01T00:00:00Z"),
     );
 

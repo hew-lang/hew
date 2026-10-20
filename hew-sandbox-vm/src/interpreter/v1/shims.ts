@@ -1,3 +1,4 @@
+import { executeCalendar } from "./calendar.js";
 import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
 /// The VM's runtime-family and extern shim table.
@@ -44,6 +45,7 @@ export interface ShimHost {
   /// A snapshot of the supplied process arguments, including argv[0].
   readonly argv: readonly string[];
   unixTimeMillis(): number;
+  calendarBridge?: (request: string) => string;
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   closePipe?(value: VmValue): void;
@@ -959,6 +961,25 @@ function bigMax(left: bigint, right: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | undefined> = {
+  hew_calendar_format: (host, args, _variant, shape) =>
+    executeCalendar(host.calendarBridge, "hew_calendar_format", args, shape),
+  hew_calendar_parse: (host, args, _variant, shape) =>
+    executeCalendar(host.calendarBridge, "hew_calendar_parse", args, shape),
+  hew_calendar_components: (host, args, _variant, shape) =>
+    executeCalendar(
+      host.calendarBridge,
+      "hew_calendar_components",
+      args,
+      shape,
+    ),
+  hew_calendar_from_parts: (host, args, _variant, shape) =>
+    executeCalendar(
+      host.calendarBridge,
+      "hew_calendar_from_parts",
+      args,
+      shape,
+    ),
+
   hew_args_count: (host) => int(BigInt(host.argv.length)),
   // A native null managed string is canonical empty. Each result owns fresh
   // string storage; releasing it cannot change the host's supplied arguments.

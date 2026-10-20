@@ -2,7 +2,6 @@ import std.os;
 
 import std.string;
 
-import std.time.datetime;
 
 fn scalar(iterations: i64) -> i64 {
     var state = 1;
@@ -79,7 +78,7 @@ fn main() {
             original.push((i % 251) as u8);
         }
     }
-    let start = datetime.now_nanos();
+    let start = instant.now();
     let checksum = match workload {
         "scalar" => scalar(iterations),
         "vector_scan" => vector_scan(iterations, size, values),
@@ -88,6 +87,6 @@ fn main() {
         "bytes_cow" => bytes_cow(iterations, size, original),
         _ => panic("unknown workload"),
     };
-    let elapsed = datetime.now_nanos() - start;
+    let elapsed = start.elapsed().nanos();
     println("{\"workload\":\"" + workload + f"\",\"iterations\":{iterations},\"size\":{size},\"elapsed_ns\":{elapsed},\"checksum\":{checksum}" + "}");
 }

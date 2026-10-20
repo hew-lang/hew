@@ -9,7 +9,6 @@
 //! }
 //! ```
 
-import std.time.datetime;
 
 /// Supplied by the benchmark dispatcher.
 pub type Bencher {
@@ -24,22 +23,22 @@ impl BencherMethods for Bencher {
     fn iter<T>(self, f: fn() -> T) {
         var iterations: i64 = 1;
         loop {
-            let start = datetime.now_nanos();
+            let start = instant.now();
             for i in 0..iterations {
                 f();
             }
-            let elapsed = datetime.now_nanos() - start;
+            let elapsed = start.elapsed().nanos();
             if elapsed >= 1000000 || iterations >= 1048576 {
                 break;
             }
             iterations = iterations * 2;
         }
         for sample in 0..31 {
-            let start = datetime.now_nanos();
+            let start = instant.now();
             for i in 0..iterations {
                 f();
             }
-            let elapsed = datetime.now_nanos() - start;
+            let elapsed = start.elapsed().nanos();
             unsafe {
                 hew_bench_record(elapsed, iterations);
             }

@@ -1854,7 +1854,8 @@ impl<'m> Walker<'m> {
                 normal,
                 unwind,
                 ..
-            } => serde_json::json!({
+            } => {
+                let mut call = serde_json::json!({
                 "op": "extern.call",
                 "extern": self.extern_id(&signature.symbol),
                 "args": boundaries(args),
@@ -1862,7 +1863,13 @@ impl<'m> Walker<'m> {
                 "result_shape": self.result_shape(result),
                 "normal": encode_edge(normal),
                 "unwind": encode_unwind(unwind),
-            }),
+                });
+                let shape = self.aggregate_result_shape(result);
+                if !shape.is_null() {
+                    call["aggregate_result_shape"] = shape;
+                }
+                call
+            }
 
             SemTerminator::Panic {
                 message,

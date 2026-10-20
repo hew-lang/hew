@@ -3137,8 +3137,8 @@ impl Conn {
 }
    ```
 
-   Declaring `close` as an inline method inside the type body is rejected
-   with `ResourceCloseSourceUnsupported`.
+   Methods belong in `impl` blocks. Declaring `close` inside the type body
+   is a parse error that directs the programmer to `impl Conn { ... }`.
 
 2. **Unit return required.** The inherent-impl `close` body must return
    unit. A `close` declared to return `Result<(), E>` (or any non-unit

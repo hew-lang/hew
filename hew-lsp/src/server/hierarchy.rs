@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use hew_analysis::calls::{
     collect_calls_in_block, collect_calls_in_item, collect_calls_in_named_body,
 };
-use hew_parser::ast::{Item, TraitItem, TypeBodyItem, TypeDeclKind};
+use hew_parser::ast::{Item, TraitItem, TypeDeclKind};
 use hew_parser::ParseResult;
 use hew_types::check::scope::Resolution;
 use hew_types::{DeclarationKind, DefId, TypeCheckOutput};
@@ -76,24 +76,6 @@ pub(super) fn find_callable_at_offset(
                             SymbolKind::METHOD,
                             (&method.fn_span, &method.decl_span),
                             None,
-                        ));
-                    }
-                }
-            }
-            Item::TypeDecl(declaration) => {
-                for method in declaration.body.iter().filter_map(|part| match part {
-                    TypeBodyItem::Method(method) => Some(method),
-                    _ => None,
-                }) {
-                    if contains(&method.decl_span) {
-                        return Some(callable_item(
-                            uri,
-                            source,
-                            lo,
-                            method.name.name.as_str(),
-                            SymbolKind::METHOD,
-                            (&method.fn_span, &method.decl_span),
-                            Some(format!("type {}", declaration.name)),
                         ));
                     }
                 }
@@ -248,10 +230,6 @@ fn caller_item_contains_body(
             .methods
             .iter()
             .any(|method| has_range(&method.fn_span)),
-        Item::TypeDecl(declaration) => declaration
-            .body
-            .iter()
-            .any(|part| matches!(part, TypeBodyItem::Method(method) if has_range(&method.fn_span))),
         Item::Actor(actor) => {
             actor
                 .methods

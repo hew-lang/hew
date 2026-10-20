@@ -150,11 +150,6 @@ impl LowerCtx {
             marker,
             is_opaque: facts.is_opaque,
             is_indirect: decl.is_indirect,
-            consuming_methods: decl
-                .consuming_methods
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
             type_params,
             fields,
             variants,

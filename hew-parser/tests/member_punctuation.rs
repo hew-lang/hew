@@ -5,7 +5,8 @@ use hew_parser::{
 
 const CURRENT: &str = r#"
 #[wire] type Packet { label: string @1; count: i64 @2; reserved @4, @5; }
-type Point { x: i64; y: i64; fn total(point: Point) -> i64 { point.x + point.y } }
+type Point { x: i64; y: i64; }
+impl Point { fn total(point: Point) -> i64 { point.x + point.y } }
 enum Reply { Ready; Value { label: string; count: i64; } Failed(string); }
 actor Counter {
     var count: i64 = 0;

@@ -1,7 +1,7 @@
 use hew_parser::ast::Ident;
 use hew_parser::ast::{
     Block, ConditionItem, Expr, Item, LambdaParam, MatchArm, Pattern, PatternField, SelectArm,
-    Span, Stmt, StringPart, TraitItem, TypeBodyItem,
+    Span, Stmt, StringPart, TraitItem,
 };
 use hew_parser::ParseResult;
 
@@ -11,7 +11,6 @@ pub(crate) enum BodyKind {
     ActorInit,
     ActorReceive,
     ActorMethod,
-    TypeMethod,
     ImplMethod,
     TraitMethod,
     Const,
@@ -289,22 +288,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     );
                 }
             }
-            Item::TypeDecl(type_decl) => {
-                for body_item in &type_decl.body {
-                    if let TypeBodyItem::Method(method) = body_item {
-                        let body_info = BodyInfo {
-                            kind: BodyKind::TypeMethod,
-                            name: Some(method.name.name.as_str()),
-                            span: Some(&method.fn_span),
-                        };
-                        self.walk_block_body(
-                            &method.body,
-                            body_info,
-                            params_to_bindings(self.source, body_info.span, &method.params),
-                        );
-                    }
-                }
-            }
             Item::Impl(impl_decl) => {
                 for method in &impl_decl.methods {
                     let body_info = BodyInfo {
@@ -391,6 +374,7 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                     .leave_body(body_info, Self::context(Some(body_info)));
             }
             Item::Record(_) // records carry no callable bodies by design (fields only)
+            | Item::TypeDecl(_)
             | Item::Macro(_) | Item::MacroCall(_) | Item::Import(_)
             | Item::ExternBlock(_)
             | Item::TypeAlias(_) => {}
@@ -497,27 +481,6 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 {
                     let body_info = BodyInfo {
                         kind: BodyKind::ImplMethod,
-                        name: Some(method.name.name.as_str()),
-                        span: Some(&method.fn_span),
-                    };
-                    self.walk_block_body(
-                        &method.body,
-                        body_info,
-                        params_to_bindings(self.source, body_info.span, &method.params),
-                    );
-                    true
-                } else {
-                    false
-                }
-            }
-            Item::TypeDecl(type_decl) => {
-                if let Some(TypeBodyItem::Method(method)) = type_decl
-                    .body
-                    .iter()
-                    .find(|body_item| matches!(body_item, TypeBodyItem::Method(method) if method.name == Ident::new(body_name)))
-                {
-                    let body_info = BodyInfo {
-                        kind: BodyKind::TypeMethod,
                         name: Some(method.name.name.as_str()),
                         span: Some(&method.fn_span),
                     };

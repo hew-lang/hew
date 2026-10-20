@@ -3872,7 +3872,7 @@ pub struct Checker {
     /// program-wide `declared_type_param_names` fallback. Set (via
     /// `enter_primary_sig_scope` / `exit_primary_sig_scope`) around the PRIMARY
     /// resolution of EVERY item signature — free functions, actor methods and
-    /// receive fns, inline type-body methods, impl methods, and trait method
+    /// receive fns, impl methods, and trait method
     /// signatures — where the item's own type-param scope is reliably
     /// reconstructed (its bounds frame is pushed before the annotations resolve,
     /// and the enclosing container's generics are pushed by the enter helper).

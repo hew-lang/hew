@@ -1047,7 +1047,6 @@ impl Builder {
             resource_marker: ResourceMarker::None,
             serial_case: None,
             is_opaque: false,
-            consuming_methods: Vec::new(),
             lang_item: None,
         }
     }
@@ -1431,11 +1430,6 @@ impl Builder {
                         }
                     }
                 },
-                TypeBodyItem::Method(_) => {
-                    return Err(self.error(
-                        "generated machine data declaration unexpectedly contains a method",
-                    ))
-                }
             }
         }
         Ok(())

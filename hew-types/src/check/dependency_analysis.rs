@@ -507,7 +507,6 @@ fn item_has_inferred_declaration(item: &Item) -> bool {
                 || where_clause_has_infer(declaration.where_clause.as_ref())
                 || declaration.body.iter().any(|item| match item {
                     TypeBodyItem::Field { ty, .. } => type_has_infer(&ty.0),
-                    TypeBodyItem::Method(function) => signature_has_infer(function),
                     TypeBodyItem::Variant(variant) => match &variant.kind {
                         VariantKind::Unit => false,
                         VariantKind::Tuple(types) => types.iter().any(|ty| type_has_infer(&ty.0)),

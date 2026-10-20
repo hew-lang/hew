@@ -33,8 +33,8 @@ pub(crate) enum AttrPosition {
     ExternFn,
     /// A position no attribute is legal in (`const`, `import`, `supervisor`,
     /// `machine`, a type alias, a tuple-form record, an `impl`/`extern`
-    /// block's own header, an inline method inside a `type { .. }` body, an
-    /// actor `init`/`let`/`var` field). No table entry ever names this
+    /// block's own header, an actor `init`/`let`/`var` field).
+    /// No table entry ever names this
     /// variant, so every attribute found here is unconditionally
     /// `E_UNKNOWN_ATTRIBUTE`.
     Unsupported,

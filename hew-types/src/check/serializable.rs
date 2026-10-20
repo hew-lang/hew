@@ -205,7 +205,6 @@ impl Checker {
                         fields,
                     });
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
         self.refuse_key_collisions(td, &members);

@@ -1862,7 +1862,8 @@ enum Result {
     Err(i32);
 }
 
-type Worker {
+type Worker {}
+impl Worker {
     fn process(input: i32, point: Point, result: Result) -> i32 {
         if input > 0 {
             let then_local = input;
@@ -3800,7 +3801,7 @@ machine Traffic {
 
     #[test]
     fn document_symbols_with_children() {
-        let source = "type Point {\n    x: i32;\n    y: i32;\n    fn distance() -> i32 {\n        0\n    }\n}\n";
+        let source = "type Point {\n    x: i32;\n    y: i32;\n}\nimpl Point {\n    fn distance() -> i32 {\n        0\n    }\n}\n";
         let parse_result = hew_parser::parse(source);
         let lo = compute_line_offsets(source);
         let analysis_symbols = hew_analysis::symbols::build_document_symbols(source, &parse_result);
@@ -3816,9 +3817,13 @@ machine Traffic {
         let children = point_sym.children.as_ref().unwrap();
         let child_names: Vec<&str> = children.iter().map(|c| c.name.as_str()).collect();
         assert!(
-            child_names.contains(&"x") && child_names.contains(&"distance"),
-            "children should include fields and methods, got: {child_names:?}"
+            child_names.contains(&"x") && child_names.contains(&"y"),
+            "type children should include fields, got: {child_names:?}"
         );
+        assert!(symbols.iter().any(|symbol| symbol
+            .children
+            .as_ref()
+            .is_some_and(|children| children.iter().any(|child| child.name == "distance"))));
     }
 
     #[test]

@@ -759,10 +759,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::ResourceMissingClose { .. } => "ResourceMissingClose",
         K::LinearNoConsumingMethods { .. } => "LinearNoConsumingMethods",
         K::ResourceGenericUnsupported { .. } => "ResourceGenericUnsupported",
-        K::ResourceCloseSourceUnsupported { .. } => "ResourceCloseSourceUnsupported",
-        K::LinearConsumingMethodSourceUnsupported { .. } => {
-            "LinearConsumingMethodSourceUnsupported"
-        }
         K::ResourceCloseMustReturnUnit { .. } => "ResourceCloseMustReturnUnit",
         K::CloseableOpaqueMustBeResource { .. } => "CloseableOpaqueMustBeResource",
         K::OpaqueResourceCloseMismatch { .. } => "OpaqueResourceCloseMismatch",

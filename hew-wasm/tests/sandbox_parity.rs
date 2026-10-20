@@ -849,6 +849,21 @@ fn generic_sort_and_reverse_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn impl_method_ownership_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "impl_method_ownership",
+            source_rel: "tests/core-acceptance/cases/impl-method-ownership.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn checked_for_loops_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

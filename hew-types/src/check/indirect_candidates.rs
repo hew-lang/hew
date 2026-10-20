@@ -55,7 +55,6 @@ impl Checker {
                     DeclarationKind::Function
                         | DeclarationKind::ExternFunction
                         | DeclarationKind::TraitMethod
-                        | DeclarationKind::TypeMethod
                         | DeclarationKind::ImplMethod
                         | DeclarationKind::DefaultImplMethod
                 ) =>

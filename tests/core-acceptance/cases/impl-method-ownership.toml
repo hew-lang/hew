@@ -1,0 +1,10 @@
+[[case]]
+id = "impl-method-ownership"
+intent = "Associated construction and borrowing, mutating and consuming impl methods compose with owned collections and optional results."
+source = "cases/impl-method-ownership.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\nAPPLES\nempty\n"
+exit = 0

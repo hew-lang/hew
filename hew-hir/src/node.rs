@@ -792,9 +792,6 @@ pub struct HirTypeDecl {
     /// dereference. Construction emits `hew_alloc` + write + ptr-store;
     /// drop emits `hew_dealloc` after recursively freeing sub-trees.
     pub is_indirect: bool,
-    /// Names of methods declared with a `consume self` receiver in the
-    /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
-    pub consuming_methods: Vec<String>,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// non-generic type decls. SIR substitutes exact instance arguments
     /// into these parameters when deriving semantic fields and variants.

@@ -1,0 +1,41 @@
+type Cart {
+    items: Vec<string>;
+}
+
+impl Cart {
+    fn new() -> Cart {
+        Cart { items: [] }
+    }
+
+    fn add(var self, consume item: string) {
+        self.items.push(item);
+    }
+
+    fn count(self) -> i64 {
+        self.items.len()
+    }
+
+    fn checkout(consume self) -> Option<string> {
+        if self.items.is_empty() {
+            .None
+        } else {
+            let first = self.items[0];
+            .Some(first.to_upper())
+        }
+    }
+}
+
+fn main() {
+    var cart = Cart.new();
+    cart.add("apples");
+    cart.add("pears");
+    println(cart.count());
+    match cart.checkout() {
+        .Some(item) => println(item),
+        .None => println("unexpected empty cart"),
+    }
+    match Cart.new().checkout() {
+        .Some(_) => println("unexpected item"),
+        .None => println("empty"),
+    }
+}

@@ -561,18 +561,6 @@ fn load_source(
                         },
                     );
                 }
-                for item in decl.body {
-                    if let TypeBodyItem::Method(method) = item {
-                        let declaration = format!("{}::{}", decl.name, method.name);
-                        load_function_attributes(
-                            authority,
-                            source,
-                            &method,
-                            declaration,
-                            AuthorityDeclarationKind::Method,
-                        )?;
-                    }
-                }
             }
             Item::Trait(decl) => {
                 if let Some(key) = decl.lang_item.as_deref() {

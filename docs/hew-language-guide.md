@@ -1309,6 +1309,13 @@ Pass strings and scalars without ceremony and keep using them. Concatenation wit
 
 ## Types — records and enums
 
+Type and enum bodies declare data. Put ordinary methods in a sibling `impl`
+block, including associated functions and methods that borrow, mutate or consume
+`self`. A method written inside the data declaration is a parse error; the
+diagnostic points to the required `impl TypeName { ... }` form. Trait default
+bodies, actor handlers and lifecycle methods, and machine bodies keep their own
+declaration forms.
+
 ### Record declaration, construction, field access
 
 ```hew

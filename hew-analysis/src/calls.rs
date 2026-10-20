@@ -627,20 +627,4 @@ mod tests {
             "sibling beta's foo_b must NOT appear in alpha outgoing calls"
         );
     }
-
-    /// Regression: `TypeDecl` method must not bleed into sibling methods.
-    #[test]
-    fn named_body_typedecl_method_no_sibling_bleed() {
-        let source = "type Foo { fn alpha() { td_a(); } fn beta() { td_b(); } }";
-        let pr = parse(source);
-        let mut calls = Vec::new();
-        let found = collect_calls_in_named_body(&pr.program.items[0].0, "alpha", &mut calls);
-        assert!(found, "alpha should be found in TypeDecl");
-        let ns = names(&calls);
-        assert!(ns.contains(&"td_a"), "alpha should call td_a");
-        assert!(
-            !ns.contains(&"td_b"),
-            "sibling beta's td_b must NOT appear in alpha outgoing calls"
-        );
-    }
 }

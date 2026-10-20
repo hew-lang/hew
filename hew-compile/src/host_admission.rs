@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 
-use hew_parser::ast::{Item, Program, TraitItem, TypeBodyItem};
+use hew_parser::ast::{Item, Program, TraitItem};
 use hew_types::check::dispatch::CallTarget;
 use hew_types::check::SpanKey;
 use hew_types::env::TypeBindingId;
@@ -1059,17 +1059,6 @@ fn body_span(item: &Item, site: DeclarationOccurrence) -> Option<Range<usize>> {
                 .nth(ordinal)?;
             method.body.as_ref()?;
             &method.span
-        }
-        (DeclarationKind::TypeMethod, Item::TypeDecl(decl)) => {
-            &decl
-                .body
-                .iter()
-                .filter_map(|part| match part {
-                    TypeBodyItem::Method(method) => Some(method),
-                    _ => None,
-                })
-                .nth(ordinal)?
-                .fn_span
         }
         (DeclarationKind::ActorMethod, Item::Actor(actor)) => &actor.methods.get(ordinal)?.fn_span,
         (DeclarationKind::ActorInit, Item::Actor(actor)) => &actor.init.as_ref()?.span,

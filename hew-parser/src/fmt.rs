@@ -1523,12 +1523,6 @@ impl<'a> Formatter<'a> {
                     self.flush_comments_before(v.span.end);
                     self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                 }
-                TypeBodyItem::Method(f) => {
-                    self.begin_member(self.method_start(f), false);
-                    let has_consuming_self =
-                        decl.consuming_methods.iter().any(|name| name == &f.name);
-                    self.format_type_body_method(f, f.fn_span.end, has_consuming_self);
-                }
             }
         }
         if self.has_comments() {
@@ -1563,39 +1557,6 @@ impl<'a> Formatter<'a> {
             self.write("\")]\n");
         }
         self.format_serial_case_attr(decl.serial_case);
-    }
-
-    fn format_type_body_method(
-        &mut self,
-        decl: &FnDecl,
-        span_end: usize,
-        has_consuming_self: bool,
-    ) {
-        self.write_outer_doc(decl.doc_comment.as_ref());
-        self.format_attributes(&decl.attributes);
-        self.write_indent();
-        if decl.is_generator {
-            self.write("gen ");
-        }
-        self.write("fn ");
-        self.write_ident(decl.name);
-        self.format_opt_type_params(decl.type_params.as_ref());
-        self.write("(");
-        if has_consuming_self {
-            self.write("consume self");
-            if !decl.params.is_empty() {
-                self.write(", ");
-            }
-        }
-        self.format_params(&decl.params);
-        self.write(")");
-        if let Some(ret) = &decl.return_type {
-            self.format_return_clause(ret);
-        }
-        self.format_opt_where_clause(decl.where_clause.as_ref());
-        self.write(" ");
-        self.format_block(&decl.body, span_end);
-        self.newline();
     }
 
     fn format_wire_type_decl(

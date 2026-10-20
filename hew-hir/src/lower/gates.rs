@@ -175,9 +175,7 @@ pub(super) fn check_binary_operator_gates(ctx: &mut LowerCtx, program: &Program)
             // - Supervisor: `ChildSpec.args` are not lowered by
             //   `lower_supervisor` (`lower.rs` ~line 3936), so any binop in a
             //   child-arg position never reaches MIR.
-            // - TypeDecl: struct/enum field types carry no expressions;
-            //   `TypeBodyItem::Method` is "not lowered into HIR in v0.5"
-            //   (`lower.rs` ~line 3822).
+            // - TypeDecl: struct/enum field types carry no expressions.
             // - TypeAlias / Wire / Record / ExternBlock / Import: no
             //   value-position user expressions.
             Item::Const(_)

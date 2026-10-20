@@ -4247,10 +4247,12 @@ fn struct_init_comparison_does_not_consume_lt_as_type_arg() {
     );
 }
 #[test]
-fn parses_resource_marker_and_consuming_method() {
+fn parses_resource_marker_and_impl_consuming_method() {
     let source = r"#[resource]
 type File {
     fd: int;
+}
+impl File {
     fn close(consume self) -> int {
         0
     }
@@ -4262,21 +4264,26 @@ type File {
         "unexpected parse errors: {:?}",
         result.errors
     );
-    assert_eq!(result.program.items.len(), 1);
+    assert_eq!(result.program.items.len(), 2);
     let (item, _span) = &result.program.items[0];
     let Item::TypeDecl(td) = item else {
         panic!("expected TypeDecl, got {item:?}");
     };
     assert_eq!(td.resource_marker, ResourceMarker::Resource);
-    assert_eq!(td.consuming_methods, vec![Ident::new("close")]);
+    let Item::Impl(methods) = &result.program.items[1].0 else {
+        panic!("expected Impl");
+    };
+    assert!(methods.methods[0].consumes_self);
     assert_eq!(td.name, Ident::new("File"));
 }
 
 #[test]
-fn parses_linear_marker_and_multiple_consuming_methods() {
+fn parses_linear_marker_and_impl_consuming_methods() {
     let source = r"#[linear]
 type Txn {
     id: int;
+}
+impl Txn {
     fn commit(consume self) -> int {
         0
     }
@@ -4298,10 +4305,16 @@ type Txn {
         panic!("expected TypeDecl");
     };
     assert_eq!(td.resource_marker, ResourceMarker::Linear);
-    // Only `commit` and `rollback` consume; `id(self: Txn)` does not.
+    let Item::Impl(methods) = &result.program.items[1].0 else {
+        panic!("expected Impl");
+    };
     assert_eq!(
-        td.consuming_methods,
-        vec![Ident::new("commit"), Ident::new("rollback")],
+        methods
+            .methods
+            .iter()
+            .map(|method| method.consumes_self)
+            .collect::<Vec<_>>(),
+        vec![true, true, false],
     );
 }
 
@@ -4313,6 +4326,8 @@ fn retired_consuming_self_receiver_is_refused_with_fix_it() {
             #[resource]
             type File {
                 fd: int,
+            }
+            impl File {
                 fn close(consuming self) -> int { 0 }
             }
         ";
@@ -4334,7 +4349,6 @@ fn unmarked_type_has_no_resource_marker() {
         panic!("expected TypeDecl");
     };
     assert_eq!(td.resource_marker, ResourceMarker::None);
-    assert!(td.consuming_methods.is_empty());
 }
 
 #[test]
@@ -4481,8 +4495,6 @@ package indirect enum PackageLinear {
 fn resource_markers_reject_nested_declarations_that_do_not_carry_them() {
     let source = r#"
 type Host {
-    #[resource]
-    fn inline_method() {}
 }
 
 trait Surface {
@@ -4516,7 +4528,7 @@ actor Worker {
 
     assert_eq!(
         marker_errors.len(),
-        6,
+        5,
         "nested ownership-marker misuse must fail closed: {:?}",
         result.errors
     );
@@ -5331,7 +5343,7 @@ fn extern_symbol_attribute_on_actor_is_rejected() {
 }
 
 #[test]
-fn extern_symbol_attribute_on_type_decl_method_is_rejected() {
+fn attributed_inline_type_method_is_rejected() {
     // Methods declared inline in a type body are not `impl` methods —
     // declare them in an `impl` block instead.
     let src = r#"
@@ -5346,8 +5358,8 @@ fn extern_symbol_attribute_on_type_decl_method_is_rejected() {
         result
             .errors
             .iter()
-            .any(|e| e.message.contains("`#[extern_symbol]`")),
-        "expected an `#[extern_symbol]` placement diagnostic, got: {:?}",
+            .any(|e| e.message.contains("E_TYPE_METHOD_IN_DECL")),
+        "expected a method placement diagnostic, got: {:?}",
         result.errors
     );
 }

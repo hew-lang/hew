@@ -5,8 +5,7 @@
 //! than LSP positions.
 
 use hew_parser::ast::{
-    condition_exprs, Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeBodyItem,
-    TypeExpr,
+    condition_exprs, Block, CallArg, Expr, Item, Span, Stmt, StringPart, TraitItem, TypeExpr,
 };
 use hew_parser::ParseResult;
 use hew_types::check::{FnSig, SpanKey};
@@ -75,26 +74,6 @@ fn collect_inlay_hints_from_item(
                     hints,
                 );
                 collect_inlay_hints_from_block(source, &method.body, tc, hints);
-            }
-        }
-        Item::TypeDecl(td) => {
-            for body_item in &td.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    push_named_return_type_hint(
-                        source,
-                        &method.fn_span,
-                        method.return_type.is_none(),
-                        checked_decl_sig(tc, &method.fn_span, method.name.name.as_str()).or_else(
-                            || {
-                                tc.sigs()
-                                    .get(format!("{}::{}", td.name, method.name).as_str())
-                                    .cloned()
-                            },
-                        ),
-                        hints,
-                    );
-                    collect_inlay_hints_from_block(source, &method.body, tc, hints);
-                }
             }
         }
         Item::Impl(i) => {

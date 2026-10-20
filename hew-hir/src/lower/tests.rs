@@ -3506,7 +3506,6 @@ fn opaque_resource_with_variants_emits_checker_boundary_violation() {
         marker: ResourceMarker::Resource,
         is_opaque: true,
         is_indirect: false,
-        consuming_methods: Vec::new(),
         type_params: Vec::new(),
         fields: Vec::new(),
         variants: vec![HirVariant {

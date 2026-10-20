@@ -385,6 +385,39 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("poll supervisor construction")?;
         self.builder.position_at_end(poll);
         let cancelled = self.state_value("hew_coro_state_is_cancelled", frame.state)?;
+        let cancelled = self
+            .builder
+            .build_int_compare(
+                IntPredicate::NE,
+                cancelled,
+                self.ctx.i32_type().const_zero(),
+                "supervisor.cancelled",
+            )
+            .llvm_ctx("inspect construction cancellation")?;
+        let cancelling = self
+            .ctx
+            .append_basic_block(self.value, "supervisor.cancelling");
+        let inspect = self
+            .ctx
+            .append_basic_block(self.value, "supervisor.inspect");
+        self.builder
+            .build_conditional_branch(cancelled, cancelling, inspect)
+            .llvm_ctx("retain the originating cancellation reason")?;
+        self.builder.position_at_end(cancelling);
+        let reason = self.state_value("hew_coro_state_cancel_code", frame.state)?;
+        self.builder
+            .build_unconditional_branch(inspect)
+            .llvm_ctx("drain cancelled construction")?;
+        self.builder.position_at_end(inspect);
+        let cancelled = self
+            .builder
+            .build_phi(self.ctx.i32_type(), "supervisor.cancel.reason")
+            .llvm_ctx("select construction cancellation reason")?;
+        cancelled.add_incoming(&[
+            (&self.ctx.i32_type().const_zero(), poll),
+            (&reason, cancelling),
+        ]);
+        let cancelled = cancelled.as_basic_value();
         let ready = call_value(
             &self.builder,
             poll_fn,
@@ -623,25 +656,15 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         }
         let token = self.poll_supervisor_construction(operation)?;
         self.store(result, token.into())?;
-        let refused = self
+        // The transferred fault owns its category, including deadline and
+        // cancellation. Reconstructing a status from the invalid token would
+        // erase that category before scope recovery consumes it.
+        let fault = self
             .builder
-            .build_int_compare(
-                IntPredicate::EQ,
-                token,
-                word.const_zero(),
-                "supervisor.refused",
-            )
-            .llvm_ctx("check supervisor construction")?;
-        Ok(self
-            .builder
-            .build_select(
-                refused,
-                self.ctx.i32_type().const_int(1, false),
-                self.ctx.i32_type().const_zero(),
-                "supervisor.status",
-            )
-            .llvm_ctx("select supervisor construction status")?
-            .into_int_value())
+            .build_load(ptr, self.active_fault, "supervisor.fault")
+            .llvm_ctx("read the final construction diagnostic")?
+            .into_pointer_value();
+        self.state_value("hew_fault_code", fault)
     }
 
     /// `sup.child`: the stable role, minted from the supervisor handle and the

@@ -82,9 +82,8 @@ impl NativeInvocation {
         }
     }
 
-    pub(super) fn cancel(&self) {
-        self.completion
-            .cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+    pub(super) fn cancel(&self, reason: i32) {
+        self.completion.cancel_construction(reason);
     }
 
     /// Resume only after readiness; the caller serializes every poll and keeps
@@ -340,14 +339,15 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
 }
 
 /// Advance initial construction; cancellation drains the active callback and
-/// canonical rollback before final completion.
+/// canonical rollback before final completion. `cancellation` is zero while
+/// running, otherwise the caller's ordinary cancellation fault code.
 ///
 /// # Safety
 /// The caller exclusively owns a live operation until take/free.
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
     op: *mut HewSupervisorConstruction,
-    cancelled: c_int,
+    cancellation: c_int,
 ) -> c_int {
     // SAFETY: The caller exclusively owns this live operation, its retained parent and boxed invocation through final rollback.
     unsafe {
@@ -360,9 +360,15 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
             return c_int::from(op.final_state);
         }
         // SAFETY: the operation retains its private parent until rollback transfer.
-        let cancelled = cancelled != 0 || (*op.supervisor).cancelled.load(Ordering::Acquire);
+        let cancellation = match cancellation {
+            0 if (*op.supervisor).cancelled.load(Ordering::Acquire) => {
+                crate::fault::HEW_FAULT_CANCELLED
+            }
+            code => code,
+        };
+        let cancelled = cancellation != 0;
         if cancelled && op.fault.is_null() {
-            op.fault = crate::fault::hew_fault_new(crate::fault::HEW_FAULT_CANCELLED);
+            op.fault = crate::fault::hew_fault_new(cancellation);
         }
         loop {
             if op.invocation.is_none() {
@@ -383,7 +389,7 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
                 .as_mut()
                 .unwrap_or_else(|| std::process::abort());
             if cancelled {
-                invocation.cancel();
+                invocation.cancel(cancellation);
             }
             let Some(outcome) = invocation.poll() else {
                 return 0;
@@ -426,7 +432,13 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_poll(
             return 1;
         }
         if op.fault.is_null() {
-            op.fault = crate::fault::hew_fault_new(crate::internal::types::HewError::ErrOom as i32);
+            op.fault = crate::fault::hew_fault_new(
+                if (*op.supervisor).cancelled.load(Ordering::Acquire) {
+                    crate::fault::HEW_FAULT_CANCELLED
+                } else {
+                    crate::internal::types::HewError::ErrOom as i32
+                },
+            );
         }
         op.rollback();
         op.final_state = op
@@ -724,7 +736,7 @@ impl NativeReconstruction {
             let Some((publication, invocation)) = self.invocation.as_mut() else {
                 return true;
             };
-            invocation.cancel();
+            invocation.cancel(crate::fault::HEW_FAULT_CANCELLED);
             let Some(outcome) = invocation.poll() else {
                 return false;
             };
@@ -790,6 +802,7 @@ mod tests {
         dropped: Arc<AtomicUsize>,
         ignore_cancellation: bool,
         cancel_on_resume: bool,
+        expected_cancellation: i32,
     }
 
     #[repr(C)]
@@ -829,8 +842,16 @@ mod tests {
             }
             // SAFETY: the invocation exclusively resumes its live state.
             let cancelled = coro_state::hew_coro_state_is_cancelled(frame.state) != 0;
+            let code = if cancelled {
+                coro_state::hew_coro_state_cancel_code(frame.state)
+            } else {
+                0
+            };
+            if cancelled {
+                assert_eq!(code, config.expected_cancellation);
+            }
             let status = if cancelled && !config.ignore_cancellation {
-                crate::fault::HEW_FAULT_CANCELLED
+                code
             } else {
                 // SAFETY: this fixture spawns an empty, independently owned actor.
                 let actor = actor::hew_actor_spawn(ptr::null_mut(), 0, None);
@@ -897,12 +918,19 @@ mod tests {
     #[test]
     fn supervisor_resumable_initial_construction_destroys_frame_before_config() {
         let _runtime = crate::runtime_test_guard();
-        for (cancelled, ignore_cancellation, cancel_on_resume) in [
-            (false, false, false),
-            (true, false, false),
-            (true, true, false),
-            (false, true, true),
+        for (cancellation, ignore_cancellation, cancel_on_resume) in [
+            (0, false, false),
+            (crate::fault::HEW_FAULT_CANCELLED, false, false),
+            (crate::fault::HEW_FAULT_CANCELLED, true, false),
+            (crate::fault::HEW_FAULT_DEADLINE, false, false),
+            (crate::fault::HEW_FAULT_DEADLINE, true, false),
+            (0, true, true),
         ] {
+            let expected_cancellation = if cancel_on_resume {
+                crate::fault::HEW_FAULT_CANCELLED
+            } else {
+                cancellation
+            };
             let destroyed = Arc::new(AtomicUsize::new(0));
             let dropped = Arc::new(AtomicUsize::new(0));
             let (ready, waker) = crate::wake::blocking::Readiness::new();
@@ -924,6 +952,7 @@ mod tests {
                     dropped: Arc::clone(&dropped),
                     ignore_cancellation,
                     cancel_on_resume,
+                    expected_cancellation,
                 });
                 let op = hew_supervisor_native_spawn_new(
                     STRATEGY_ONE_FOR_ONE,
@@ -939,17 +968,17 @@ mod tests {
                 assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 0);
                 assert_eq!(destroyed.load(Ordering::Acquire), 0);
                 assert_eq!(dropped.load(Ordering::Acquire), 0);
-                while hew_supervisor_native_spawn_poll(op, c_int::from(cancelled)) == 0 {
+                while hew_supervisor_native_spawn_poll(op, cancellation) == 0 {
                     ready.wait();
                 }
                 assert_eq!(destroyed.load(Ordering::Acquire), 1);
                 let mut fault = ptr::null_mut();
                 let token = hew_supervisor_native_spawn_take(op, &raw mut fault);
                 hew_supervisor_native_spawn_free(op);
-                if cancelled || cancel_on_resume {
+                if cancellation != 0 || cancel_on_resume {
                     assert_eq!(token, HewLocalPidId::INVALID);
                     assert!(!fault.is_null());
-                    assert_eq!((*fault).code(), crate::fault::HEW_FAULT_CANCELLED);
+                    assert_eq!((*fault).code(), expected_cancellation);
                     crate::fault::hew_fault_drop(fault);
                 } else {
                     assert!(fault.is_null());
@@ -997,6 +1026,7 @@ mod tests {
                     dropped: Arc::clone(&dropped),
                     ignore_cancellation,
                     cancel_on_resume: false,
+                    expected_cancellation: crate::fault::HEW_FAULT_CANCELLED,
                 });
                 let op = hew_supervisor_native_spawn_new(
                     STRATEGY_ONE_FOR_ONE,

@@ -1703,6 +1703,12 @@ impl TypeFactService {
                 ..
             } => match builtin {
                 crate::BuiltinType::NodeId | crate::BuiltinType::Location => Ok(true),
+                crate::BuiltinType::Timestamp => self.members_have_capability(
+                    &self.declared_capability_members(ty)?,
+                    ValueCapability::Hash,
+                    walk,
+                    calls,
+                ),
                 crate::BuiltinType::Vec => {
                     if args.len() != 1 {
                         return Err(ClassError::UnknownDeclaration {
@@ -2603,6 +2609,7 @@ fn main() {}"#,
                 | BuiltinType::DownReason
                 | BuiltinType::DownNotification
                 | BuiltinType::Instant
+            | BuiltinType::Timestamp
                 | BuiltinType::Unit
                 | BuiltinType::Duration
                 | BuiltinType::Range

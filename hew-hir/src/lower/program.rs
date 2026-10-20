@@ -2250,6 +2250,20 @@ pub fn lower_program(
         for (ordinal, (item, span)) in builtins.items.iter().enumerate() {
             ctx.current_item_ordinal = ordinal;
             ctx.current_module_idx = builtin_item_index(ordinal);
+            if let Item::Function(function) = item {
+                let declaration =
+                    ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
+                let called = declaration.is_some_and(|declaration| {
+                    ctx.direct_call_targets.values().any(|target| {
+                        matches!(target, CallTarget::User(target) if *target == declaration)
+                    })
+                });
+                if called {
+                    if let Some(function) = ctx.lower_fn(function, span.clone()) {
+                        items.push(HirItem::Function(function));
+                    }
+                }
+            }
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
                     let owner = format!("std.builtins.{}", function.name);

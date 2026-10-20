@@ -48,6 +48,7 @@ import type {
 } from "./package.js";
 import { runtimeTag } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
+import { timestampBinary } from "./timestamp.js";
 import {
   selectedValue,
   collectionOperation,
@@ -1546,6 +1547,26 @@ class ExecutorV1 {
           term.value ? this.boundary(act, term.value) : UNIT,
         );
         return;
+      case "timestamp.binary": {
+        const outcome = timestampBinary(
+          this.pkg,
+          term,
+          this.read(act, term.lhs),
+          this.read(act, term.rhs),
+        );
+        if (outcome === null) {
+          const failure = term.failures.find(
+            (edge) => edge.trap === "integer_overflow",
+          );
+          if (!failure)
+            throw new Error("timestamp arithmetic lacks its overflow edge");
+          this.takeEdge(act, failure.edge);
+        } else {
+          this.define(act, term.result.value, outcome);
+          this.takeEdge(act, term.normal);
+        }
+        return;
+      }
       case "checked.binary": {
         const failure = checkedFailure(
           term.binary_op,

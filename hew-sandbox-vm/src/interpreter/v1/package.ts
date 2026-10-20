@@ -476,6 +476,18 @@ export type TermV1 =
       failures: CheckedFailure[];
       ty: string;
     })
+  | (TermBase & {
+      op: "timestamp.binary";
+      binary_op: "Add" | "Subtract";
+      lhs: Operand;
+      rhs: Operand;
+      lhs_timestamp: boolean;
+      rhs_timestamp: boolean;
+      shape: number | null;
+      result: ValueDef;
+      normal: Edge;
+      failures: CheckedFailure[];
+    })
   | (TermBase & { op: "unreachable" })
   | (TermBase &
       CallShape & {

@@ -691,6 +691,7 @@
             "branch",
             "switch.variant",
             "checked.binary",
+            "timestamp.binary",
             "unreachable",
             "call",
             "indirect.call",

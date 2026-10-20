@@ -1,0 +1,30 @@
+// Wall-clock values retain their nominal type and nanoseconds through ordinary storage.
+type Envelope {
+    sent: timestamp;
+    label: string;
+}
+
+fn carry(value: timestamp) -> timestamp {
+    value
+}
+
+fn main() {
+    let before = timestamp.from_unix_nanos(-1);
+    let (seconds, nanos) = before.unix_parts();
+    assert(seconds == -1);
+    assert(nanos == 999999999);
+    assert(before.unix_secs_floor() == -1);
+    let epoch = timestamp.from_unix_secs(0);
+    assert((before + 1ns).unix_secs_floor() == 0);
+    assert(epoch - before == 1ns);
+    assert((epoch - 1ns).unix_parts() == before.unix_parts());
+    assert((1ns + before).unix_parts() == epoch.unix_parts());
+
+    // This value predates the range of an i64 nanosecond epoch.
+    let early = timestamp.from_unix_secs(-62167219200);
+    let shifted = early + 123ns;
+    let envelope = Envelope { sent: carry(shifted), label: "sample" };
+    assert(envelope.sent.unix_parts() == (-62167219200, 123 as u32));
+    assert(envelope.sent - early == 123ns);
+    println("timestamp values ok");
+}

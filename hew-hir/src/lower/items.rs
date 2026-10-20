@@ -253,6 +253,7 @@ impl LowerCtx {
             });
         if !target_is_alias
             && !is_duration_ctor_block
+            && !(self.lowering_injected_items && builtin_impl_kind == Some(BuiltinType::Timestamp))
             && !is_std_method_surface
             && !is_declaring_encoding_impl
             && decl.trait_bound.is_none()

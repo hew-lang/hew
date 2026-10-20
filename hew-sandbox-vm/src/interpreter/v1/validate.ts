@@ -83,6 +83,7 @@ const TERMS = new Set([
   "switch.variant",
   "return",
   "checked.binary",
+  "timestamp.binary",
   "dyn.call",
   "call",
   "indirect.call",
@@ -209,6 +210,30 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       }
       const term = block.term;
+      if (term.op === "timestamp.binary") {
+        const both = term.lhs_timestamp && term.rhs_timestamp;
+        const validOperation =
+          (term.binary_op === "Add" &&
+            term.lhs_timestamp !== term.rhs_timestamp) ||
+          (term.binary_op === "Subtract" && term.lhs_timestamp);
+        const shape =
+          term.shape === null ? undefined : pkg.aggregates[term.shape];
+        if (
+          !validOperation ||
+          (both ? term.shape !== null : !shape || shape.fields.length !== 2) ||
+          term.failures.length !== 1 ||
+          term.failures[0]?.trap !== "integer_overflow"
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "timestamp.binary",
+            message:
+              "timestamp arithmetic lacks its checked operands, result shape or overflow edge",
+            span: null,
+          };
+        }
+      }
       if (
         term.op === "runtime.call" &&
         pkg.runtime_families[term.family]?.family === "BytesDecodeUtf8"

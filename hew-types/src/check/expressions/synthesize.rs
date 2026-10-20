@@ -2047,6 +2047,13 @@ impl Checker {
             (Ty::Duration, r, BinaryOp::Divide) if r.is_integer() => Ty::Duration,
             // duration / duration → i64 (ratio)
             (Ty::Duration, Ty::Duration, BinaryOp::Divide) => Ty::I64,
+            // A wall-clock moment is advanced only by a duration. Its
+            // difference is checked against the existing duration range.
+            (l, Ty::Duration, BinaryOp::Add | BinaryOp::Subtract) if l.is_timestamp() => {
+                left.clone()
+            }
+            (Ty::Duration, r, BinaryOp::Add) if r.is_timestamp() => right.clone(),
+            (l, r, BinaryOp::Subtract) if l.is_timestamp() && r.is_timestamp() => Ty::Duration,
             // instant + duration → instant (advance a point in time by a duration)
             (l, Ty::Duration, BinaryOp::Add) if l.is_instant() => left.clone(),
             // duration + instant → instant (commutative: duration + instant)

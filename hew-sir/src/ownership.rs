@@ -394,6 +394,9 @@ pub fn checked_binary_failure_kinds(
     const DIV_SIGNED: &[TrapKind] = &[TrapKind::DivideByZero, TrapKind::SignedMinDivNegOne];
     const SHIFT: &[TrapKind] = &[TrapKind::ShiftOutOfRange];
 
+    if ty.is_builtin(hew_types::BuiltinType::Timestamp) {
+        return matches!(op, BinaryOp::Add | BinaryOp::Subtract).then_some(OVERFLOW);
+    }
     if !ty.is_integer() && *ty != ResolvedTy::Duration {
         return None;
     }
@@ -436,6 +439,20 @@ pub fn checked_binary_types_match(
 ) -> bool {
     use hew_parser::ast::BinaryOp;
     use ResolvedTy::{Duration, I64};
+    let timestamp = |ty: &ResolvedTy| ty.is_builtin(hew_types::BuiltinType::Timestamp);
+    if timestamp(lhs) || timestamp(rhs) {
+        return match op {
+            BinaryOp::Add => {
+                (timestamp(lhs) && *rhs == Duration && result == lhs)
+                    || (*lhs == Duration && timestamp(rhs) && result == rhs)
+            }
+            BinaryOp::Subtract => {
+                (timestamp(lhs) && *rhs == Duration && result == lhs)
+                    || (timestamp(lhs) && timestamp(rhs) && *result == Duration)
+            }
+            _ => false,
+        };
+    }
     if lhs.is_integer() && lhs == rhs && lhs == result {
         return true;
     }

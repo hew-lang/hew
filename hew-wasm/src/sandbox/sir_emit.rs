@@ -1626,6 +1626,52 @@ impl<'m> Walker<'m> {
                 normal,
                 failures,
                 ..
+            } if self
+                .value_types
+                .get(&lhs.value)
+                .is_some_and(|ty| ty.is_builtin(hew_types::BuiltinType::Timestamp))
+                || self
+                    .value_types
+                    .get(&rhs.value)
+                    .is_some_and(|ty| ty.is_builtin(hew_types::BuiltinType::Timestamp)) =>
+            {
+                let shape = if result.ty.is_builtin(hew_types::BuiltinType::Timestamp) {
+                    Some(
+                        self.module
+                            .aggregate_shape_for_type(&result.ty)
+                            .ok_or_else(|| {
+                                EmitError::new("timestamp result lacks its aggregate shape")
+                            })?
+                            .id
+                            .0,
+                    )
+                } else {
+                    None
+                };
+                serde_json::json!({
+                    "op": "timestamp.binary",
+                    "binary_op": format!("{op:?}"),
+                    "lhs": operand(lhs),
+                    "rhs": operand(rhs),
+                    "lhs_timestamp": self.value_types[&lhs.value].is_builtin(hew_types::BuiltinType::Timestamp),
+                    "rhs_timestamp": self.value_types[&rhs.value].is_builtin(hew_types::BuiltinType::Timestamp),
+                    "shape": shape,
+                    "result": value_def(result),
+                    "normal": encode_edge(normal),
+                    "failures": failures.iter().map(|failure| serde_json::json!({
+                        "trap": trap_name(failure.kind),
+                        "edge": encode_edge(&failure.edge),
+                    })).collect::<Vec<_>>(),
+                })
+            }
+            SemTerminator::CheckedBinary {
+                op,
+                lhs,
+                rhs,
+                result,
+                normal,
+                failures,
+                ..
             } => serde_json::json!({
                 "op": "checked.binary",
                 "binary_op": format!("{op:?}"),

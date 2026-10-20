@@ -63,6 +63,7 @@ fn builtin_named_type_from_builtin(builtin: Option<BuiltinType>) -> Option<Built
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Instant
+            | BuiltinType::Timestamp
             | BuiltinType::Trap
             | BuiltinType::JsonValue
             | BuiltinType::YamlValue
@@ -1829,6 +1830,12 @@ impl Ty {
     #[must_use]
     pub fn is_duration(&self) -> bool {
         matches!(self, Ty::Duration)
+    }
+
+    /// Check if this is the wall-clock `timestamp` primitive.
+    #[must_use]
+    pub fn is_timestamp(&self) -> bool {
+        matches!(self, Ty::Named { head: crate::TypeHead::Builtin(BuiltinType::Timestamp), args } if args.is_empty())
     }
 
     /// Check if this is the `instant` type.

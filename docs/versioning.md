@@ -6,9 +6,9 @@ Hew is pre-1.0. The compiler version and language edition are separate:
 
 Development builds use the next planned release version followed by
 `-dev.X+<commit>`. `X` is the number of commits since the nearest reachable Hew
-release tag, such as `v0.6.3`; unrelated toolchain or backup tags do not reset it.
-For example, development after v0.6.3 identifies itself as `0.6.4-dev.X`.
-The workspace stores only the base version (`0.6.4`); the build derives the
+release tag, such as `v0.6.4`; unrelated toolchain or backup tags do not reset it.
+For example, development after v0.6.4 identifies itself as `0.6.5-dev.X`.
+The workspace stores only the base version (`0.6.5`); the build derives the
 development count and commit. A clean build at the matching release tag reports
 the plain release version. Accurate counts require the release tags and their
 history to be available in the checkout.

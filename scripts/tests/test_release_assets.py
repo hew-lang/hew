@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise required products, explicit deferrals and native-only package staging."""
+"""Exercise required products, optional notes and native-only package staging."""
 
 import hashlib
 import importlib.util
@@ -16,11 +16,6 @@ assets = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(assets)
 SHA = "a" * 40
 VERSION = "0.6.3"
-DETAIL = {
-    "owner": "release maintainer",
-    "reason": "packaging tool unavailable; native qualification passed",
-    "evidence": "https://example.invalid/qualification",
-}
 
 
 class ReleaseInventory(unittest.TestCase):
@@ -83,24 +78,21 @@ class ReleaseInventory(unittest.TestCase):
             )
         self.assertIn(f"hew-v{VERSION}-platforms.json", checksums.read_text())
 
-    def test_failed_secondary_packaging_keeps_linux_and_browser_delivery_with_explicit_evidence(
-        self,
-    ):
-        for target in ["windows-x86_64", "freebsd-x86_64"]:
+    def test_patch_delivers_linux_and_browser_without_optional_outputs_or_notes(self):
+        for target in set(assets.NATIVE) - assets.PRIMARY:
             (
                 self.directory / f"hew-v{VERSION}-{target}{assets.NATIVE[target]}"
             ).unlink()
         self.jobs["build"]["result"] = "failure"
         self.jobs["build-freebsd"]["result"] = "cancelled"
-        receipt = self.assemble(
-            {name: DETAIL for name in ["windows-x86_64", "freebsd-x86_64"]}
-        )
+        for job in assets.OPTIONAL_JOBS:
+            self.jobs[job]["result"] = "failure"
+        receipt = self.assemble()
         self.assertEqual(receipt["jobs"]["build"], "failure")
-        self.assertEqual(receipt["platforms"]["windows-x86_64"]["state"], "deferred")
-        self.assertEqual(
-            receipt["platforms"]["freebsd-x86_64"]["evidence"], DETAIL["evidence"]
-        )
-        self.assertEqual(receipt["platforms"]["darwin-aarch64"]["state"], "available")
+        self.assertEqual(receipt["jobs"]["build-freebsd"], "cancelled")
+        for target in (set(assets.NATIVE) - assets.PRIMARY) | assets.OPTIONAL_JOBS:
+            self.assertEqual(receipt["platforms"][target]["state"], "unavailable")
+        self.assertEqual(receipt["notes"], {})
 
     def test_failed_optional_wasi_is_reported_without_changing_native_requirements(
         self,
@@ -110,11 +102,12 @@ class ReleaseInventory(unittest.TestCase):
         self.assertEqual(receipt["platforms"]["wasm32-wasip1"]["state"], "not-produced")
         self.assertEqual(receipt["platforms"]["wasm32-wasip1"]["result"], "failure")
 
-    def test_missing_linux_browser_or_successful_package_output_is_refused(self):
+    def test_missing_linux_or_browser_output_is_refused(self):
         for name in [
+            f"hew-v{VERSION}-linux-x86_64.tar.gz",
             f"hew-v{VERSION}-linux-aarch64.tar.gz",
+            f"hew-lang-wasm-{VERSION}.tgz",
             f"hew-lang-sandbox-vm-{VERSION}.tgz",
-            "hew_0.6.3_amd64.deb",
         ]:
             path = self.directory / name
             content = path.read_bytes()
@@ -130,18 +123,24 @@ class ReleaseInventory(unittest.TestCase):
                 self.assemble()
             self.jobs[name]["result"] = "success"
 
-    def test_missing_secondary_needs_documented_patch_deferral(self):
+    def test_optional_notes_are_informational_and_minor_still_requires_platforms(self):
         (self.directory / f"hew-v{VERSION}-darwin-aarch64.tar.gz").unlink()
-        for deferrals in [
-            {},
-            {"darwin-aarch64": {"reason": "missing"}},
-            {"linux-x86_64": DETAIL},
-            {"darwin-aarch64": {**DETAIL, "evidence": ""}},
-        ]:
-            with self.assertRaises(ValueError):
-                self.assemble(deferrals)
-        with self.assertRaisesRegex(ValueError, "patch deferrals"):
-            self.assemble({"darwin-aarch64": DETAIL}, version="0.7.0")
+        notes = {"darwin-aarch64": {"state": "available"}, "other": "useful context"}
+        receipt = self.assemble(notes)
+        self.assertEqual(receipt["notes"], notes)
+        self.assertEqual(receipt["platforms"]["darwin-aarch64"]["state"], "unavailable")
+        for path in self.directory.iterdir():
+            path.rename(path.with_name(path.name.replace(VERSION, "0.7.0")))
+        with self.assertRaisesRegex(ValueError, "required qualified archive"):
+            self.assemble(notes, version="0.7.0")
+
+    def test_missing_optional_package_output_records_actual_success(self):
+        (self.directory / "hew_0.6.3_amd64.deb").unlink()
+        receipt = self.assemble()
+        self.assertEqual(
+            receipt["platforms"]["linux-packages"],
+            {"state": "unavailable", "result": "success", "missing": ["hew_*.deb"]},
+        )
 
     def test_prerelease_records_unproduced_distro_packages_even_when_note_step_succeeds(
         self,
@@ -157,16 +156,6 @@ class ReleaseInventory(unittest.TestCase):
             receipt["platforms"]["linux-packages"]["state"], "not-produced"
         )
         self.assertEqual(receipt["jobs"]["linux-packages"], "success")
-
-    def test_channel_deferral_keeps_its_actual_failure_and_evidence(self):
-        self.jobs["docker-image"]["result"] = "failure"
-        with self.assertRaisesRegex(ValueError, "packaging needs"):
-            self.assemble()
-        receipt = self.assemble({"docker-image": DETAIL})
-        self.assertEqual(
-            receipt["platforms"]["docker-image"],
-            {"state": "deferred", "result": "failure", **DETAIL},
-        )
 
 
 class NativePackage(unittest.TestCase):

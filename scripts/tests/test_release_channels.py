@@ -299,7 +299,7 @@ class HomebrewDelivery(unittest.TestCase):
         self.calls = []
         self.terminal = {"status": "completed", "conclusion": "success"}
 
-    def test_deferred_macos_keeps_homebrew_unpublished_without_credentials(self):
+    def test_unavailable_macos_keeps_homebrew_unpublished_without_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             previous = Path.cwd()
             os.chdir(tmp)
@@ -310,10 +310,7 @@ class HomebrewDelivery(unittest.TestCase):
                     "source": SHA,
                     "platforms": {
                         "darwin-aarch64": {
-                            "state": "deferred",
-                            "owner": "maintainer",
-                            "reason": "notarization service unavailable",
-                            "evidence": "qualification run",
+                            "state": "unavailable",
                         }
                     },
                 }

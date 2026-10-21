@@ -52,7 +52,7 @@ on:
         type: boolean
         default: true
       deferrals:
-        description: 'Patch deferrals as JSON: {"windows-x86_64":{"owner":"...","reason":"...","evidence":"..."}}'
+        description: 'Optional release notes as JSON: {"windows-x86_64":"Packaging context or qualification link"}'
         type: string
         default: "{}"
 
@@ -1302,7 +1302,7 @@ jobs:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Release assets — required Linux/browser products plus available optional
-  # outputs. Failed/deferred producers remain explicit in the checked receipt.
+  # outputs. Failed/unavailable producers remain explicit in the checked receipt.
   # ─────────────────────────────────────────────────────────────────────────
   release-assets:
     needs:

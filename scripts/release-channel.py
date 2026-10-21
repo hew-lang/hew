@@ -232,7 +232,7 @@ def publish_homebrew() -> None:
         ):
             raise RuntimeError("Homebrew platform receipt source/version differs")
         macos = receipt.get("platforms", {}).get("darwin-aarch64", {})
-        if macos.get("state") == "deferred":
+        if macos.get("state") == "unavailable":
             message = "Homebrew deferred: macOS archive unavailable. " + json.dumps(
                 macos
             )

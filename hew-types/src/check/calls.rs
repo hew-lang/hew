@@ -1355,7 +1355,7 @@ impl Checker {
     pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
         use crate::stdlib_authority::Intrinsic;
 
-        if let CallTarget::ImplMethod(declaration) = target {
+        if let CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) = target {
             self.note_impl_import_use(*declaration);
         }
         let intrinsic = match target {

@@ -1350,6 +1350,34 @@ fn register() {
     // check time on wasm32, before undefined runtime imports can be emitted.
 
     #[test]
+    fn wasm_cluster_observation_refuses_operations_but_keeps_data_helpers() {
+        for call in [
+            "cluster.snapshot()",
+            "cluster.watch()",
+            r#"cluster.wait_registered("service")"#,
+            "cluster.wait_departed(member)",
+        ] {
+            let source = format!(
+                "import std.net.cluster; fn observe(member: cluster.Member) {{ let _ = {call}; }}"
+            );
+            let output = check_wasm_with_registry(&source);
+            assert!(
+                platform_error_contains(&output, "Distributed node"),
+                "{call} must fail at native node capability admission: {:?}",
+                output.errors
+            );
+        }
+        let output = check_wasm_with_registry(
+            "import std.net.cluster; fn local_names(view: cluster.Snapshot) -> i64 { view.local_registrations().len() }"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "pure snapshot helpers remain portable: {:?}",
+            output.errors
+        );
+    }
+
+    #[test]
     fn wasm_rejects_node_start() {
         let output = check_wasm(r#"fn main() { Node.start("a@127.0.0.1:9000"); }"#);
         assert!(

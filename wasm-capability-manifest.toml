@@ -704,7 +704,27 @@ native_only_modules = ["os"]
 [[feature]]
 id = "distributed"
 generate = "refuse"
+generate_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 generate_endpoints = [
+  "hew_node_watch_open",
+  "hew_node_watch_status",
+  "hew_node_watch_changes",
+  "hew_node_watch_snapshot",
+  "hew_node_watch_free",
+  "hew_node_snapshot_current",
+  "hew_node_snapshot_valid",
+  "hew_node_snapshot_local",
+  "hew_node_snapshot_count",
+  "hew_node_snapshot_member",
+  "hew_node_snapshot_registration",
+  "hew_node_snapshot_free",
   "hew_node_api_start_config",
   "hew_node_api_connect",
   "hew_node_api_connect_string",
@@ -720,7 +740,27 @@ generate_endpoints = [
   "hew_remote_call_take",
 ]
 deterministic = "refuse"
+deterministic_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 deterministic_endpoints = [
+  "hew_node_watch_open",
+  "hew_node_watch_status",
+  "hew_node_watch_changes",
+  "hew_node_watch_snapshot",
+  "hew_node_watch_free",
+  "hew_node_snapshot_current",
+  "hew_node_snapshot_valid",
+  "hew_node_snapshot_local",
+  "hew_node_snapshot_count",
+  "hew_node_snapshot_member",
+  "hew_node_snapshot_registration",
+  "hew_node_snapshot_free",
   "hew_node_api_start_config",
   "hew_node_api_connect",
   "hew_node_api_connect_string",
@@ -737,7 +777,7 @@ deterministic_endpoints = [
 ]
 enum_variant = "Distributed"
 label = "Distributed node and remote-actor operations"
-prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations"
+prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `std.net.cluster` observation operations, remote actor calls, and remote monitor/link operations"
 reason = "the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
@@ -745,6 +785,14 @@ runtime_status = "Key-derived identity, durable sessions, authenticated mesh rou
 categories = ["stdlib", "distributed", "actor"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(distributed):"
+native_only_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 
 [[feature]]
 id = "stdin-input"

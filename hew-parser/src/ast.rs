@@ -2065,11 +2065,16 @@ pub struct MachineDecl {
 impl MachineDecl {
     /// Authored rules, including rules scoped to compound states.
     pub fn authored_transitions(&self) -> impl Iterator<Item = &MachineTransition> {
-        self.transitions.iter().chain(
-            self.composite_groups
-                .iter()
-                .flat_map(|group| &group.parent_transitions),
-        )
+        self.transitions
+            .iter()
+            .chain(self.composite_groups.iter().flat_map(|group| {
+                group.parent_transitions.iter().chain(
+                    group
+                        .regions
+                        .iter()
+                        .flat_map(|region| &region.parent_transitions),
+                )
+            }))
     }
 
     /// Authored hooks and the declaration whose payload they bind.
@@ -2095,16 +2100,36 @@ impl MachineDecl {
     pub fn state_path(&self, name: Ident) -> Vec<Ident> {
         let mut path = vec![name];
         let mut current = name;
-        for _ in 0..self.composite_groups.len() {
-            let Some(parent) = self
+        for _ in 0..=self.composite_groups.len() * 2 {
+            if let Some(parent) = self
                 .composite_groups
                 .iter()
                 .find(|group| group.members.contains(&current))
-            else {
-                break;
-            };
-            current = parent.name;
-            path.push(current);
+            {
+                current = parent.name;
+                path.push(current);
+                continue;
+            }
+            if let Some(region) = self
+                .composite_groups
+                .iter()
+                .flat_map(|group| &group.regions)
+                .find(|region| region.members.contains(&current))
+            {
+                current = region.name;
+                path.push(current);
+                continue;
+            }
+            if let Some(parent) = self
+                .composite_groups
+                .iter()
+                .find(|group| group.regions.iter().any(|region| region.name == current))
+            {
+                current = parent.name;
+                path.push(current);
+                continue;
+            }
+            break;
         }
         path.reverse();
         path
@@ -2118,9 +2143,15 @@ pub struct CompositeGroup {
     pub name: Ident,
     /// Direct child declarations, in source order.
     pub members: Vec<Ident>,
-    /// The substate marked `initial` — the state entered when the composite is
-    /// targeted by name.
-    pub initial: Ident,
+    /// The substate marked `initial` for an exclusive composite. A parallel
+    /// composite instead stores one initial child on each region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<Ident>,
+    /// Regions make this composite a parallel configuration. Each region
+    /// stores its own typed active child; no combined-state variants are
+    /// generated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<MachineRegion>,
     /// Compound entry hook, evaluated before entering its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<Block>,
@@ -2135,6 +2166,21 @@ pub struct CompositeGroup {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_transitions: Vec<MachineTransition>,
     /// Byte span of the whole `state Name { … }` block.
+    #[serde(default)]
+    pub span: Span,
+}
+
+/// One independently active branch of a parallel composite state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineRegion {
+    pub name: Ident,
+    /// Direct child declarations, in source order.
+    pub members: Vec<Ident>,
+    /// The direct child entered when this region is initialized.
+    pub initial: Ident,
+    /// Region-level transitions are retained with their source scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_transitions: Vec<MachineTransition>,
     #[serde(default)]
     pub span: Span,
 }

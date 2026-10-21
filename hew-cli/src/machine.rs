@@ -300,10 +300,13 @@ fn print_mermaid_title(name: &str, type_params: &[String]) {
 }
 
 fn parent(machine: &MachineDecl, name: Ident) -> Option<&hew_parser::ast::CompositeGroup> {
-    machine
-        .composite_groups
-        .iter()
-        .find(|group| group.members.contains(&name))
+    machine.composite_groups.iter().find(|group| {
+        group.members.contains(&name)
+            || group
+                .regions
+                .iter()
+                .any(|region| region.name == name || region.members.contains(&name))
+    })
 }
 
 fn print_mermaid_group(
@@ -312,8 +315,18 @@ fn print_mermaid_group(
     depth: usize,
 ) {
     let indent = "    ".repeat(depth);
-    println!("{indent}state {} {{", group.name);
-    println!("{indent}    [*] --> {}", group.initial);
+    println!(
+        "{indent}state {}{} {{",
+        group.name,
+        if group.regions.is_empty() {
+            ""
+        } else {
+            " <<parallel>>"
+        }
+    );
+    if let Some(initial) = group.initial {
+        println!("{indent}    [*] --> {initial}");
+    }
     for member in &group.members {
         if let Some(child) = machine
             .composite_groups
@@ -324,6 +337,22 @@ fn print_mermaid_group(
         } else {
             println!("{indent}    {member}");
         }
+    }
+    for region in &group.regions {
+        println!("{indent}    state {} {{", region.name);
+        println!("{indent}        [*] --> {}", region.initial);
+        for member in &region.members {
+            if let Some(child) = machine
+                .composite_groups
+                .iter()
+                .find(|child| child.name == *member)
+            {
+                print_mermaid_group(machine, child, depth + 2);
+            } else {
+                println!("{indent}        {member}");
+            }
+        }
+        println!("{indent}    }}");
     }
     println!("{indent}}}");
 }
@@ -336,7 +365,9 @@ fn print_dot_group(machine: &MachineDecl, group: &hew_parser::ast::CompositeGrou
         "{indent}    __start_{} [shape=point, width=0.2];",
         group.name
     );
-    println!("{indent}    __start_{} -> {};", group.name, group.initial);
+    if let Some(initial) = group.initial {
+        println!("{indent}    __start_{} -> {initial};", group.name);
+    }
     for member in &group.members {
         if let Some(child) = machine
             .composite_groups
@@ -347,6 +378,33 @@ fn print_dot_group(machine: &MachineDecl, group: &hew_parser::ast::CompositeGrou
         } else {
             println!("{indent}    {member};");
         }
+    }
+    for region in &group.regions {
+        println!(
+            "{indent}    subgraph cluster_{}_{} {{",
+            group.name, region.name
+        );
+        println!("{indent}        label=\"{}\";", region.name);
+        println!(
+            "{indent}        __start_{}_{} [shape=point, width=0.2];",
+            group.name, region.name
+        );
+        println!(
+            "{indent}        __start_{}_{} -> {};",
+            group.name, region.name, region.initial
+        );
+        for member in &region.members {
+            if let Some(child) = machine
+                .composite_groups
+                .iter()
+                .find(|child| child.name == *member)
+            {
+                print_dot_group(machine, child, depth + 2);
+            } else {
+                println!("{indent}        {member};");
+            }
+        }
+        println!("{indent}    }}");
     }
     println!("{indent}}}");
 }
@@ -589,7 +647,7 @@ fn print_json_ast(machine: &MachineDecl) {
             "guarded": rule.guard.is_some(), "reenter": rule.reenter,
             "external": rule.reenter || rule.target_state != Ident::new(source),
         })).collect::<Vec<_>>(),
-        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name.to_string(), "path": machine.state_path(group.name).iter().map(ToString::to_string).collect::<Vec<_>>(), "parent": parent(machine, group.name).map(|owner| owner.name.to_string()), "initial": group.initial.to_string(), "members": group.members.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>(),
+        "composites": machine.composite_groups.iter().map(|group| serde_json::json!({"name": group.name.to_string(), "path": machine.state_path(group.name).iter().map(ToString::to_string).collect::<Vec<_>>(), "parent": parent(machine, group.name).map(|owner| owner.name.to_string()), "initial": group.initial.map(|initial| initial.to_string()), "members": group.members.iter().map(ToString::to_string).collect::<Vec<_>>(), "regions": group.regions.iter().map(|region| serde_json::json!({"name": region.name.to_string(), "initial": region.initial.to_string(), "members": region.members.iter().map(ToString::to_string).collect::<Vec<_>>()})).collect::<Vec<_>>()})).collect::<Vec<_>>(),
     });
     println!("{value}");
 }

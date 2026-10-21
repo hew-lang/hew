@@ -2138,7 +2138,13 @@ impl<'a> Formatter<'a> {
         let composite_members: std::collections::HashSet<Ident> = decl
             .composite_groups
             .iter()
-            .flat_map(|g| g.members.iter().copied())
+            .flat_map(|g| {
+                g.members.iter().copied().chain(
+                    g.regions
+                        .iter()
+                        .flat_map(|region| region.members.iter().copied()),
+                )
+            })
             .collect();
 
         // Sections and members print in source order; a synthesized machine
@@ -2453,7 +2459,11 @@ impl<'a> Formatter<'a> {
         if initial {
             self.write("initial ");
         }
-        self.write("state ");
+        self.write(if group.regions.is_empty() {
+            "state "
+        } else {
+            "parallel state "
+        });
         self.write_ident(group.name);
         self.write(" {\n");
         self.indent += 1;
@@ -2506,7 +2516,7 @@ impl<'a> Formatter<'a> {
             match item {
                 MachineMember::State(state) => {
                     self.write_indent();
-                    if group.initial == state.name {
+                    if group.initial == Some(state.name) {
                         self.write("initial ");
                     }
                     let own_fields: Vec<_> = state.fields.iter().collect();
@@ -2518,7 +2528,7 @@ impl<'a> Formatter<'a> {
                         decl,
                         child,
                         span_end,
-                        group.initial == child.name,
+                        group.initial == Some(child.name),
                     );
                     self.end_member(child.span.end);
                 }
@@ -2530,6 +2540,9 @@ impl<'a> Formatter<'a> {
                 }
                 _ => unreachable!("a compound contains only states and rules"),
             }
+        }
+        for region in &group.regions {
+            self.format_machine_region(decl, region, span_end);
         }
         if self.has_comments() {
             self.flush_block_end_comments(group.span.end);
@@ -2838,6 +2851,46 @@ impl<'a> Formatter<'a> {
 
         self.indent -= 1;
         self.writeln("}");
+    }
+
+    fn format_machine_region(
+        &mut self,
+        decl: &MachineDecl,
+        region: &crate::ast::MachineRegion,
+        span_end: usize,
+    ) {
+        self.write_indent();
+        self.write("region ");
+        self.write_ident(region.name);
+        self.write(" {\n");
+        self.indent += 1;
+        for member in &region.members {
+            if let Some(state) = decl.states.iter().find(|state| state.name == *member) {
+                self.write_indent();
+                if region.initial == state.name {
+                    self.write("initial ");
+                }
+                let own_fields: Vec<_> = state.fields.iter().collect();
+                self.format_machine_substate(state.name, &own_fields, state, span_end);
+                self.end_member(state.span.end);
+            } else if let Some(child) = decl
+                .composite_groups
+                .iter()
+                .find(|child| child.name == *member)
+            {
+                self.format_machine_composite(decl, child, span_end, region.initial == child.name);
+                self.end_member(child.span.end);
+            }
+        }
+        for rule in &region.parent_transitions {
+            self.write_indent();
+            self.format_machine_transition(rule, span_end);
+            self.newline();
+            self.end_member(rule.span.end);
+        }
+        self.indent -= 1;
+        self.write_indent();
+        self.write("}\n");
     }
 
     fn format_child_spec(&mut self, spec: &ChildSpec) {

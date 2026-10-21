@@ -437,6 +437,8 @@ impl Parser<'_> {
                 }
                 self.expect(&Token::RightBrace)?;
                 self.refuse_mark_after_body();
+            } else if self.peek_machine_kw("parallel") {
+                self.parse_machine_parallel(&mut states, &mut composite_groups)?;
             } else if self.peek() == Some(&Token::State) {
                 self.parse_machine_state_or_composite(&mut states, &mut composite_groups)?;
             } else if self.peek() == Some(&Token::Event) {
@@ -806,6 +808,17 @@ impl Parser<'_> {
                     initial = Some(substate);
                 }
                 member_names.push(substate);
+            } else if self.peek_machine_kw("parallel") {
+                let substate = self.parse_machine_parallel(states, composite_groups)?;
+                if is_initial {
+                    if initial.replace(substate).is_some() {
+                        self.error_at(
+                            format!("composite state `{composite_name}` declares more than one initial substate"),
+                            self.peek_span(),
+                        );
+                    }
+                }
+                member_names.push(substate);
             } else if is_initial {
                 self.error_at(
                     "`initial` must be followed by a substate declaration \
@@ -845,7 +858,8 @@ impl Parser<'_> {
         composite_groups.push(CompositeGroup {
             name: composite_name,
             members: member_names,
-            initial: initial_name,
+            initial: Some(initial_name),
+            regions: Vec::new(),
             entry,
             exit,
             fields,
@@ -854,6 +868,126 @@ impl Parser<'_> {
         });
 
         Some(composite_name)
+    }
+
+    /// Parse a parallel compound whose active configuration is represented by
+    /// one typed value per region.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "parallel state fields, hooks and regions are parsed in declaration order"
+    )]
+    fn parse_machine_parallel(
+        &mut self,
+        states: &mut Vec<MachineState>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<Ident> {
+        let start = self.peek_span().start;
+        self.eat_machine_kw("parallel");
+        self.expect(&Token::State)?;
+        let name = self.expect_ident()?;
+        self.expect(&Token::LeftBrace)?;
+        let mut fields = Vec::new();
+        let mut entry = None;
+        let mut exit = None;
+        let mut regions = Vec::new();
+        let mut parent_transitions = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if self.peek() == Some(&Token::Entry) {
+                self.advance();
+                entry = Some(self.parse_block()?);
+            } else if self.peek() == Some(&Token::Exit) {
+                self.advance();
+                exit = Some(self.parse_block()?);
+            } else if self.peek() == Some(&Token::On) {
+                parent_transitions.push(self.parse_machine_transition()?);
+            } else if self.peek_machine_kw("region") {
+                regions.push(self.parse_machine_region(states, composite_groups)?);
+            } else {
+                let field = self.expect_ident()?;
+                self.expect(&Token::Colon)?;
+                let ty = self.parse_type()?;
+                self.expect_member_terminator("field");
+                fields.push((field, ty));
+            }
+        }
+        self.expect(&Token::RightBrace)?;
+        self.refuse_mark_after_body();
+        if regions.is_empty() {
+            self.error_at(
+                format!("parallel state `{name}` must declare at least one `region`"),
+                start..self.last_token_end,
+            );
+        }
+        composite_groups.push(CompositeGroup {
+            name,
+            members: Vec::new(),
+            initial: None,
+            regions,
+            entry,
+            exit,
+            fields,
+            parent_transitions,
+            span: start..self.last_token_end,
+        });
+        Some(name)
+    }
+
+    /// Parse one region and its direct initial child.
+    fn parse_machine_region(
+        &mut self,
+        states: &mut Vec<MachineState>,
+        composite_groups: &mut Vec<CompositeGroup>,
+    ) -> Option<MachineRegion> {
+        let start = self.peek_span().start;
+        self.eat_machine_kw("region");
+        let name = self.expect_ident()?;
+        self.expect(&Token::LeftBrace)?;
+        let mut members = Vec::new();
+        let mut initial = None;
+        let mut parent_transitions = Vec::new();
+        while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            let is_initial = self.eat_machine_kw("initial");
+            let child = if self.peek() == Some(&Token::State) {
+                Some(self.parse_machine_state_or_composite(states, composite_groups)?)
+            } else if self.peek_machine_kw("parallel") {
+                Some(self.parse_machine_parallel(states, composite_groups)?)
+            } else if self.peek() == Some(&Token::On) && !is_initial {
+                parent_transitions.push(self.parse_machine_transition()?);
+                continue;
+            } else {
+                self.error_at(
+                    format!(
+                        "expected a state declaration or parent-level `on` rule in region `{name}`"
+                    ),
+                    self.peek_span(),
+                );
+                break;
+            };
+            let child = child?;
+            if is_initial && initial.replace(child).is_some() {
+                self.error_at(
+                    format!("region `{name}` declares more than one initial state"),
+                    self.peek_span(),
+                );
+            }
+            members.push(child);
+        }
+        self.expect(&Token::RightBrace)?;
+        self.refuse_mark_after_body();
+        let Some(initial) = initial else {
+            self.error_at(
+                format!("region `{name}` must mark exactly one direct child `initial`"),
+                start..self.last_token_end,
+            );
+            return None;
+        };
+        Some(MachineRegion {
+            name,
+            members,
+            initial,
+            parent_transitions,
+            span: start..self.last_token_end,
+        })
     }
 
     /// Parse a state pattern: `_` (wildcard) or a state name, optionally a

@@ -600,7 +600,7 @@ fn composite_parent_rules_retain_authored_scope() {
     assert_eq!(m.composite_groups.len(), 1);
     let group = &m.composite_groups[0];
     assert_eq!(group.name, Ident::new("Connected"));
-    assert_eq!(group.initial, Ident::new("Authenticating"));
+    assert_eq!(group.initial, Some(Ident::new("Authenticating")));
     assert_eq!(
         group.members,
         vec![
@@ -608,6 +608,58 @@ fn composite_parent_rules_retain_authored_scope() {
             Ident::new("Active"),
             Ident::new("Draining")
         ]
+    );
+}
+
+#[test]
+fn parallel_regions_keep_typed_paths_and_round_trip() {
+    let source = r"machine Checkout {
+    events { Pay; Reserve; }
+
+    parallel state Running {
+        region payment {
+            initial state Waiting;
+            state Paid;
+        }
+        region stock {
+            initial state Empty;
+            state Reserved;
+        }
+    }
+
+    on Pay: Running.payment.Waiting => Running.payment.Paid;
+    on Reserve: Running.stock.Empty => Running.stock.Reserved;
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let machine = first_machine_named(&parsed.program, "Checkout");
+    let running = &machine.composite_groups[0];
+    assert_eq!(running.name, Ident::new("Running"));
+    assert_eq!(running.initial, None);
+    assert_eq!(running.regions.len(), 2);
+    assert_eq!(running.regions[0].name, Ident::new("payment"));
+    assert_eq!(running.regions[0].initial, Ident::new("Waiting"));
+    assert_eq!(running.regions[1].initial, Ident::new("Empty"));
+    assert_eq!(
+        machine.state_path(Ident::new("Paid")),
+        ["Running", "payment", "Paid"].map(Ident::new)
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse failed: {:?}\n--- formatted ---\n{formatted}",
+        reparsed.errors
+    );
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "parallel region AST changed after format round-trip:\n{formatted}"
     );
 }
 

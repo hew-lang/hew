@@ -214,13 +214,20 @@ pub(super) fn normalize(
                 // items, in authored machine order.
                 let old_sources = sources.clone();
                 for (ordinal, (item, _)) in old_items.iter().enumerate() {
-                    if matches!(item, Item::Machine(machine) if !crate::ty::is_reserved_type_name(machine.name.name.as_str()))
-                    {
-                        let source = old_sources
-                            .get(ordinal)
-                            .or_else(|| module.source_paths.first());
-                        if let Some(source) = source {
-                            sources.extend(std::iter::repeat_n(source.clone(), 6));
+                    if let Item::Machine(machine) = item {
+                        if !crate::ty::is_reserved_type_name(machine.name.name.as_str()) {
+                            let source = old_sources
+                                .get(ordinal)
+                                .or_else(|| module.source_paths.first());
+                            if let Some(source) = source {
+                                let region_types = machine
+                                    .composite_groups
+                                    .iter()
+                                    .map(|group| group.regions.len())
+                                    .sum::<usize>();
+                                sources
+                                    .extend(std::iter::repeat_n(source.clone(), 6 + region_types));
+                            }
                         }
                     }
                 }
@@ -408,6 +415,16 @@ struct Builder {
 fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
     Ident {
         name: hew_parser::ast::Symbol::intern(&format!("{}{suffix}", machine.name)),
+        ctx: machine.name.ctx,
+    }
+}
+
+fn machine_region_companion(machine: &MachineDecl, group: Ident, region: Ident) -> Ident {
+    Ident {
+        name: hew_parser::ast::Symbol::intern(&format!(
+            "{}Region{}{}",
+            machine.name, group, region
+        )),
         ctx: machine.name.ctx,
     }
 }
@@ -747,15 +764,43 @@ impl Builder {
         } else {
             Some(machine.type_params.clone())
         };
-        let mut state_enum = self.enum_decl(
-            machine.name,
-            &machine
-                .states
-                .iter()
-                .map(|state| (state.name, state.fields.clone()))
-                .collect::<Vec<_>>(),
-            machine.visibility,
-        );
+        let parallel_groups = hierarchy.parallel_groups(machine);
+        let mut region_enums = Vec::new();
+        let mut region_types = HashMap::new();
+        for group in &parallel_groups {
+            let group_name = hierarchy.name(machine, *group);
+            for region in hierarchy.group_regions(machine, *group) {
+                let region_name = hierarchy.name(machine, region);
+                let region_type = machine_region_companion(machine, group_name, region_name);
+                let variants = hierarchy
+                    .region_leaf_states(machine, region)
+                    .into_iter()
+                    .map(|state| (state, hierarchy.region_state_fields(state, region)))
+                    .collect::<Vec<_>>();
+                let mut declaration = self.enum_decl(region_type, &variants, machine.visibility);
+                declaration.type_params.clone_from(&params);
+                declaration.where_clause.clone_from(&machine.where_clause);
+                region_enums.push(declaration);
+                region_types.insert(region_name, region_type);
+            }
+        }
+        let mut state_variants: Vec<VariantFields> = machine
+            .states
+            .iter()
+            .filter(|state| hierarchy.state_region(state.name).is_none())
+            .map(|state| (state.name, state.fields.clone()))
+            .collect();
+        for group in &parallel_groups {
+            let group_name = hierarchy.name(machine, *group);
+            let mut fields = hierarchy.inherited_fields(machine, *group)?;
+            for region in hierarchy.group_regions(machine, *group) {
+                let region_name = hierarchy.name(machine, region);
+                let ty = self.machine_region_ty(machine, group_name, region_name);
+                fields.push((region_name, ty));
+            }
+            state_variants.push((group_name, fields));
+        }
+        let mut state_enum = self.enum_decl(machine.name, &state_variants, machine.visibility);
         state_enum.origin = DeclarationOrigin::MachineState;
         state_enum.type_params.clone_from(&params);
         state_enum.where_clause.clone_from(&machine.where_clause);
@@ -883,12 +928,11 @@ impl Builder {
         state_name.origin = DeclarationOrigin::MachineCompanion;
         state_name.visibility = machine.visibility;
         let receiver = self.ident("self");
-        let arms = machine
-            .states
+        let arms = state_variants
             .iter()
-            .map(|state| {
-                let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
-                let body = self.expr(Expr::Literal(Literal::String(state.name.to_string())));
+            .map(|(name, fields)| {
+                let pattern = self.pattern(*name, fields, "_$machine_in_");
+                let body = self.expr(Expr::Literal(Literal::String(name.to_string())));
                 MatchArm {
                     append_separator: None,
                     pattern,
@@ -968,6 +1012,19 @@ impl Builder {
             spans.push(start..self.next_span);
         }
         spans.extend([report_span, implementation_span, contract_span]);
+        for mut declaration in region_enums {
+            let start = self.next_span;
+            self.refresh_generics(
+                declaration.type_params.as_mut(),
+                declaration.where_clause.as_mut(),
+            );
+            self.refresh_type_decl(&mut declaration);
+            self.span();
+            let span = start..self.next_span;
+            self.source_spans.insert(span.clone(), self.origin.clone());
+            generated.push(Item::TypeDecl(declaration));
+            spans.push(span);
+        }
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());
         }
@@ -1185,6 +1242,9 @@ impl Builder {
         let input_binding = self.var(INPUT, Some(input_ty), empty);
         let mut state_arms = Vec::new();
         for state in &machine.states {
+            if hierarchy.state_region(state.name).is_some() {
+                continue;
+            }
             let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
             let locals = self.state_locals(state);
             let mut event_arms = Vec::new();
@@ -1232,6 +1292,64 @@ impl Builder {
             let event = self.ident("event");
             let dispatch = self.expr(Expr::Match {
                 scrutinee: Box::new(event),
+                arms: event_arms,
+            });
+            let body = self.block(locals, dispatch);
+            state_arms.push(MatchArm {
+                append_separator: None,
+                pattern,
+                guard: None,
+                body,
+            });
+        }
+        for group in hierarchy.parallel_groups(machine) {
+            let group_name = hierarchy.name(machine, group);
+            let mut fields = hierarchy.inherited_fields(machine, group)?;
+            for region in hierarchy.group_regions(machine, group) {
+                let region_name = hierarchy.name(machine, region);
+                fields.push((
+                    region_name,
+                    self.machine_region_ty(machine, group_name, region_name),
+                ));
+            }
+            let config = MachineState {
+                name: group_name,
+                fields,
+                entry: None,
+                exit: None,
+                span: self.span(),
+            };
+            let pattern = self.pattern(group_name, &config.fields, "_$machine_in_");
+            let locals = self.state_locals(&config);
+            let mut event_arms = Vec::new();
+            for event in &machine.events {
+                let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
+                let ignored = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
+                let disposition_target = self.ident(DISPOSITION);
+                let set_ignored = self.stmt(Stmt::Assign {
+                    target: disposition_target,
+                    op: None,
+                    value: ignored,
+                });
+                let current = self.state_value(machine, &config);
+                let input_target = self.ident(INPUT);
+                let input_value = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
+                let input = self.stmt(Stmt::Assign {
+                    target: input_target,
+                    op: None,
+                    value: input_value,
+                });
+                let body = self.block(vec![input, set_ignored], current);
+                event_arms.push(MatchArm {
+                    append_separator: None,
+                    pattern: event_pattern,
+                    guard: None,
+                    body,
+                });
+            }
+            let event_value = self.ident("event");
+            let dispatch = self.expr(Expr::Match {
+                scrutinee: Box::new(event_value),
                 arms: event_arms,
             });
             let body = self.block(locals, dispatch);
@@ -1397,6 +1515,30 @@ impl Builder {
         (
             TypeExpr::Named {
                 path: Path::single(machine_companion(machine, suffix), span.clone()),
+                type_args: (!args.is_empty()).then_some(args),
+            },
+            span,
+        )
+    }
+
+    fn machine_region_ty(
+        &mut self,
+        machine: &MachineDecl,
+        group: Ident,
+        region: Ident,
+    ) -> Spanned<TypeExpr> {
+        let args = machine
+            .type_params
+            .iter()
+            .map(|param| self.ty(param.name))
+            .collect::<Vec<_>>();
+        let span = self.span();
+        (
+            TypeExpr::Named {
+                path: Path::single(
+                    machine_region_companion(machine, group, region),
+                    span.clone(),
+                ),
                 type_args: (!args.is_empty()).then_some(args),
             },
             span,

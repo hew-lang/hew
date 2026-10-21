@@ -18,6 +18,7 @@ pub(super) struct NodeId(usize);
 enum Declaration {
     Leaf(usize),
     Compound(usize),
+    Region { group: usize, region: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,7 @@ struct Node {
     declaration: Declaration,
     parent: Option<NodeId>,
     initial: Option<NodeId>,
+    fields: Vec<(Ident, Spanned<TypeExpr>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,33 +53,100 @@ impl Hierarchy {
             rules: Vec::new(),
         };
         for (index, state) in machine.states.iter().enumerate() {
-            result.insert(state.name, state.span.clone(), Declaration::Leaf(index))?;
+            result.insert(
+                state.name,
+                state.span.clone(),
+                Declaration::Leaf(index),
+                state.fields.clone(),
+            )?;
         }
         for (index, group) in machine.composite_groups.iter().enumerate() {
-            result.insert(group.name, group.span.clone(), Declaration::Compound(index))?;
+            result.insert(
+                group.name,
+                group.span.clone(),
+                Declaration::Compound(index),
+                group.fields.clone(),
+            )?;
+            for (region_index, region) in group.regions.iter().enumerate() {
+                result.insert(
+                    region.name,
+                    region.span.clone(),
+                    Declaration::Region {
+                        group: index,
+                        region: region_index,
+                    },
+                    Vec::new(),
+                )?;
+            }
         }
         for group in &machine.composite_groups {
             let parent = result.names[&group.name];
-            for member in &group.members {
-                let child = result.resolve(*member, group.span.clone())?;
-                if result.nodes[child.0].parent.replace(parent).is_some() {
+            if group.regions.is_empty() {
+                for member in &group.members {
+                    let child = result.resolve(*member, group.span.clone())?;
+                    if result.nodes[child.0].parent.replace(parent).is_some() {
+                        return Err(refusal(
+                            group.span.clone(),
+                            format!("state `{member}` has more than one parent"),
+                        ));
+                    }
+                }
+                let initial = group.initial.ok_or_else(|| {
+                    refusal(
+                        group.span.clone(),
+                        format!(
+                            "composite state `{}` must declare an initial state",
+                            group.name
+                        ),
+                    )
+                })?;
+                let initial = result.resolve(initial, group.span.clone())?;
+                if result.nodes[initial.0].parent != Some(parent) {
                     return Err(refusal(
                         group.span.clone(),
-                        format!("state `{member}` has more than one parent"),
+                        format!(
+                            "initial state `{}` must be a direct child of `{}`",
+                            group.initial.expect("checked above"),
+                            group.name
+                        ),
                     ));
                 }
+                result.nodes[parent.0].initial = Some(initial);
+            } else {
+                if group.initial.is_some() || !group.members.is_empty() {
+                    return Err(refusal(
+                        group.span.clone(),
+                        format!(
+                            "parallel state `{}` declares exclusive children",
+                            group.name
+                        ),
+                    ));
+                }
+                for region in &group.regions {
+                    let region_node = result.names[&region.name];
+                    result.nodes[region_node.0].parent = Some(parent);
+                    for member in &region.members {
+                        let child = result.resolve(*member, region.span.clone())?;
+                        if result.nodes[child.0].parent.replace(region_node).is_some() {
+                            return Err(refusal(
+                                region.span.clone(),
+                                format!("state `{member}` has more than one parent"),
+                            ));
+                        }
+                    }
+                    let initial = result.resolve(region.initial, region.span.clone())?;
+                    if result.nodes[initial.0].parent != Some(region_node) {
+                        return Err(refusal(
+                            region.span.clone(),
+                            format!(
+                                "initial state `{}` must be a direct child of region `{}`",
+                                region.initial, region.name
+                            ),
+                        ));
+                    }
+                    result.nodes[region_node.0].initial = Some(initial);
+                }
             }
-            let initial = result.resolve(group.initial, group.span.clone())?;
-            if result.nodes[initial.0].parent != Some(parent) {
-                return Err(refusal(
-                    group.span.clone(),
-                    format!(
-                        "initial state `{}` must be a direct child of `{}`",
-                        group.initial, group.name
-                    ),
-                ));
-            }
-            result.nodes[parent.0].initial = Some(initial);
         }
         for (name, node) in &result.names {
             let mut visited = Vec::new();
@@ -118,6 +187,13 @@ impl Hierarchy {
                     .parent_transitions
                     .iter()
                     .map(move |rule| (rule, Some(scope)))
+                    .chain(group.regions.iter().flat_map(|region| {
+                        let scope = self.names[&region.name];
+                        region
+                            .parent_transitions
+                            .iter()
+                            .map(move |rule| (rule, Some(scope)))
+                    }))
             }))
             .collect::<Vec<_>>();
         for (rule, scope) in authored {
@@ -248,6 +324,7 @@ impl Hierarchy {
         name: Ident,
         span: Span,
         declaration: Declaration,
+        fields: Vec<(Ident, Spanned<TypeExpr>)>,
     ) -> Result<(), TypeError> {
         let id = NodeId(self.nodes.len());
         if self.names.insert(name, id).is_some() {
@@ -260,6 +337,7 @@ impl Hierarchy {
             declaration,
             parent: None,
             initial: None,
+            fields,
         });
         Ok(())
     }
@@ -318,10 +396,7 @@ impl Hierarchy {
         let mut fields = Vec::new();
         let mut owners = HashMap::new();
         for owner in self.ancestors(node).into_iter().rev() {
-            let declared = match self.nodes[owner.0].declaration {
-                Declaration::Leaf(index) => &machine.states[index].fields,
-                Declaration::Compound(index) => &machine.composite_groups[index].fields,
-            };
+            let declared = &self.nodes[owner.0].fields;
             for (field, ty) in declared {
                 if let Some(prior) = owners.insert(*field, owner) {
                     return Err(refusal(
@@ -339,6 +414,70 @@ impl Hierarchy {
         Ok(fields)
     }
 
+    pub(super) fn parallel_groups(&self, machine: &MachineDecl) -> Vec<NodeId> {
+        machine
+            .composite_groups
+            .iter()
+            .filter(|group| !group.regions.is_empty())
+            .filter_map(|group| self.names.get(&group.name).copied())
+            .collect()
+    }
+
+    pub(super) fn group_regions(&self, machine: &MachineDecl, group: NodeId) -> Vec<NodeId> {
+        let Declaration::Compound(index) = self.nodes[group.0].declaration else {
+            return Vec::new();
+        };
+        machine.composite_groups[index]
+            .regions
+            .iter()
+            .filter_map(|region| self.names.get(&region.name).copied())
+            .collect()
+    }
+
+    pub(super) fn state_region(&self, state: Ident) -> Option<NodeId> {
+        let state = *self.names.get(&state)?;
+        self.ancestors(state)
+            .into_iter()
+            .find(|node| matches!(self.nodes[node.0].declaration, Declaration::Region { .. }))
+    }
+
+    /// Fields owned inside the region, excluding shared parent payload.
+    pub(super) fn region_state_fields(
+        &self,
+        state: Ident,
+        region: NodeId,
+    ) -> Vec<(Ident, Spanned<TypeExpr>)> {
+        let mut fields = self
+            .ancestors(*self.names.get(&state).expect("checked state declaration"))
+            .into_iter()
+            .take_while(|node| *node != region)
+            .collect::<Vec<_>>();
+        fields.reverse();
+        fields
+            .into_iter()
+            .flat_map(|node| self.nodes[node.0].fields.clone())
+            .collect()
+    }
+
+    pub(super) fn region_leaf_states(&self, machine: &MachineDecl, region: NodeId) -> Vec<Ident> {
+        machine
+            .states
+            .iter()
+            .filter_map(|state| {
+                let leaf = self.names.get(&state.name)?;
+                let path = self.ancestors(*leaf);
+                let regions = path
+                    .iter()
+                    .filter(|node| {
+                        matches!(self.nodes[node.0].declaration, Declaration::Region { .. })
+                    })
+                    .copied()
+                    .collect::<Vec<_>>();
+                (regions.as_slice() == [region]).then_some(state.name)
+            })
+            .collect()
+    }
+
     pub(super) fn leaf(&self, mut node: NodeId) -> NodeId {
         while let Some(child) = self.nodes[node.0].initial {
             node = child;
@@ -350,6 +489,9 @@ impl Hierarchy {
         match self.nodes[node.0].declaration {
             Declaration::Leaf(index) => machine.states[index].name,
             Declaration::Compound(index) => machine.composite_groups[index].name,
+            Declaration::Region { group, region } => {
+                machine.composite_groups[group].regions[region].name
+            }
         }
     }
 
@@ -357,6 +499,9 @@ impl Hierarchy {
         match self.nodes[node.0].declaration {
             Declaration::Leaf(index) => machine.states[index].span.clone(),
             Declaration::Compound(index) => machine.composite_groups[index].span.clone(),
+            Declaration::Region { group, region } => {
+                machine.composite_groups[group].regions[region].span.clone()
+            }
         }
     }
 
@@ -393,6 +538,7 @@ impl Hierarchy {
                 &machine.composite_groups[index].entry,
                 &machine.composite_groups[index].exit,
             ),
+            Declaration::Region { .. } => return None,
         };
         if entry {
             enter.as_ref()

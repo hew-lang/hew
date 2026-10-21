@@ -11,14 +11,14 @@ pub(crate) use crate::ast::{
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
     ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImplTypeAlias,
     ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal,
-    MachineDecl, MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MatchArm, NamingCase, NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path,
-    Pattern, PatternField, Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl,
-    RecordDecl, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata, WireReserved,
+    MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
+    MachineTransitionBodyForm, MatchArm, NamingCase, NominalPatternPayload, OverflowFallback,
+    OverflowPolicy, Param, Path, Pattern, PatternField, Program, QualifiedAssocExpr,
+    QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker, RestartPolicy,
+    SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
+    WherePredicate, WireFieldMeta, WireMetadata, WireReserved,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;

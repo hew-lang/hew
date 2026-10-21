@@ -3385,8 +3385,15 @@ fn run_client(scenario: string) -> i64 {
 
 #[wire]
 machine TransitHistory<T> {
-    events { Resume { seed: T; } Advance; Leave; }
-    emits { Changed { value: T; } Counted { value: i64; } }
+    events {
+        Resume { seed: T; }
+        Advance;
+        Leave;
+    }
+    emits {
+        Changed { value: T; }
+        Counted { value: i64; }
+    }
     state Off;
     parallel state On {
         seed: T;
@@ -3466,7 +3473,9 @@ actor TransitCounter {
         TransitMachineReply { state: current, report, retained }
     }
     #[wire]
-    receive fn machine_count() -> i64 { machine_calls }
+    receive fn machine_count() -> i64 {
+        machine_calls
+    }
     var total: i64 = 0;
     var stalled: i64 = 0;
     #[wire]
@@ -3486,9 +3495,13 @@ actor TransitCounter {
         stalled
     }
     #[wire]
-    receive fn held_count() -> i64 { stalled }
+    receive fn held_count() -> i64 {
+        stalled
+    }
     #[wire]
-    receive fn echo(value: string) -> string { value }
+    receive fn echo(value: string) -> string {
+        value
+    }
     #[wire]
     receive fn location() -> string {
         let location = Node.lookup("transit-server").expect("origin name");
@@ -3568,8 +3581,7 @@ fn wait_transit_successor(previous: Location) -> Location {
     loop {
         let current = observation.snapshot().expect("successor snapshot");
         for item in current.registrations {
-            if item.name == "transit-server" && item.location.node_id() == previous.node_id()
-                && item.location.incarnation() > previous.incarnation() {
+            if item.name == "transit-server" && item.location.node_id() == previous.node_id() && item.location.incarnation() > previous.incarnation() {
                 return item.location;
             }
         }
@@ -3579,7 +3591,11 @@ fn wait_transit_successor(previous: Location) -> Location {
 
 fn run_transitive_restart(role: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
-    let port = if role == "server" { os.env("HEW_DIST_ORIGIN_BIND_PORT") ?? "0" } else { "0" };
+    let port = if role == "server" {
+        os.env("HEW_DIST_ORIGIN_BIND_PORT") ?? "0"
+    } else {
+        "0"
+    };
     start_admitted(kx, role, "server", f"127.0.0.1:{port}");
     let counter = spawn TransitCounter;
     Node.register(f"transit-{role}", counter);

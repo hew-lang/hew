@@ -133,7 +133,15 @@ fn compiled_node_binary() -> &'static Path {
     static NODE_BINARY: OnceLock<CompiledNodeBinary> = OnceLock::new();
     &NODE_BINARY
         .get_or_init(|| {
-            require_codegen();
+            let compiler = match std::env::var_os("HEW_DIST_E2E_HEW_BIN") {
+                // An explicit compiler carries its own staged runtime; leave
+                // those products intact for the caller's qualification.
+                Some(compiler) => PathBuf::from(compiler),
+                None => {
+                    require_codegen();
+                    hew_binary()
+                }
+            };
 
             let source = repo_root()
                 .join("hew-cli")
@@ -150,8 +158,6 @@ fn compiled_node_binary() -> &'static Path {
             let emit_dir = tempfile::tempdir().expect("create dist_node compile dir");
             let emit_path = emit_dir.path().to_path_buf();
 
-            let compiler =
-                std::env::var_os("HEW_DIST_E2E_HEW_BIN").map_or_else(hew_binary, PathBuf::from);
             let mut command = Command::new(compiler);
             command.arg("compile");
             let sanitize = std::env::var("HEW_SANITIZE_ADDRESS").is_ok_and(|value| value == "1");

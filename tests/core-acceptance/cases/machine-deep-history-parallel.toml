@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-deep-history-parallel"
+intent = "Observed departures are canonical despite repeated requests, preserve nested parallel payload after exit hooks, restore fresh enclosing and sibling values, capture completed intermediate configurations, and roll back the history owner on a stabilization limit."
+source = "cases/machine-deep-history-parallel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "parallel and intermediate deep history passed\n"
+stderr = ""
+exit = 0

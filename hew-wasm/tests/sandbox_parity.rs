@@ -1848,3 +1848,27 @@ fn machine_internal_reactions_match_native() {
         assert_case(&case, "");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn machine_deep_history_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-deep-history",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history.hew",
+        },
+        ParityCase {
+            test_name: "machine-deep-history-parallel",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history-parallel.hew",
+        },
+        ParityCase {
+            test_name: "machine-deep-history-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}

@@ -1,0 +1,61 @@
+import std.machine.history;
+
+machine Session {
+    events {
+        Pause { divisor: i64; }
+        Resume { saved: Option<SessionSubtree>; divisor: i64; }
+    }
+    emits {
+        Pending { label: string; }
+    }
+    state Closed {
+        entry {
+            emit Pending { label: "closed" };
+            let _value = 10 / event.divisor;
+        }
+    }
+    state Active {
+        state Reviewing {
+            label: string;
+            entry {
+                emit Pending { label: state.label + ":entry" };
+                let _value = 10 / event.divisor;
+            }
+            exit {
+                state.label += ":exit";
+            }
+        }
+        initial Reviewing { label: "fresh" };
+    }
+    on Pause: Active => Closed;
+    on Resume: Closed => _ {
+        match event.saved {
+            .Some(.Active { snapshot }) => snapshot.restore(),
+            .None => Active,
+        }
+    }
+    default { state }
+}
+
+fn main() {
+    let initial: Session = .Reviewing { label: "original".to_upper() };
+    var owner = history.track(initial, [SessionScope.Active]);
+    let before_capture = owner;
+    let capture_failed = scope {
+        let _report = owner.step(.Pause { divisor: 0 });
+        false
+    } handle failure { true };
+    assert(capture_failed && owner == before_capture);
+    assert(owner.saved(.Active).is_none());
+    let _pause = owner.step(.Pause { divisor: 1 });
+    let before_restore = owner;
+    let entry_failed = scope {
+        let _report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 0 });
+        false
+    } handle failure { true };
+    assert(entry_failed && owner == before_restore);
+    let report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 1 });
+    assert(report.outputs == [.Pending { label: "ORIGINAL:exit:entry" }]);
+    assert(owner.state() == .Reviewing { label: "ORIGINAL:exit" });
+    println("deep history atomic rollback passed");
+}

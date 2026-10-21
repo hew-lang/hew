@@ -1,0 +1,61 @@
+//! Retain selected compound subtrees alongside an ordinary machine value.
+//!
+//! Saved subtrees are independent values. Restore them explicitly in a
+//! computed transition, supplying fresh payload for their enclosing states.
+
+pub type Owner<M: Machine> {
+    current: M;
+    requested: Vec<M.Scope>;
+    entries: Vec<MachineDeparture<M.Scope, M.Subtree>>;
+}
+
+impl<M: Machine> Owner<M> where M.Scope: Eq {
+    /// Return an independent copy of the current machine.
+    fn state(self) -> M {
+        self.current
+    }
+
+    /// Return the most recently departed subtree for this scope, if any.
+    fn saved(self, target: M.Scope) -> Option<M.Subtree> {
+        for entry in self.entries {
+            if entry.target == target {
+                return .Some(entry.subtree);
+            }
+        }
+        .None
+    }
+
+    /// Commit a step and its departures with the ordinary stabilization bound.
+    fn step(var self, event: M.Event) -> M.Step {
+        self.step_with_limit(event, 1024).expect("machine history step failed")
+    }
+
+    /// Commit the machine and saved subtrees together after a successful step.
+    fn step_with_limit(var self, event: M.Event, limit: i64) -> Result<M.Step, MachineStepError> {
+        var staged = self;
+        let observed = match staged.current.step_observed_with_limit(event, limit, staged.requested) {
+            .Ok(value) => value,
+            .Err(error) => return .Err(error),
+        };
+        for departure in observed.departures {
+            var replaced = false;
+            for index in 0..staged.entries.len() {
+                if staged.entries[index].target == departure.target {
+                    staged.entries[index] = departure;
+                    replaced = true;
+                    break;
+                }
+            }
+            if !replaced {
+                staged.entries.push(departure);
+            }
+        }
+        self = staged;
+        .Ok(observed.report)
+    }
+}
+
+/// Start tracking departures from the requested compound scopes.
+pub fn track<M: Machine>(initial: M, requested: Vec<M.Scope>) -> Owner<M> {
+    Owner { current: initial, requested: requested, entries: [] }
+}

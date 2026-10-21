@@ -74,9 +74,13 @@ For `machine M`, the compiler supplies:
 | `step(var self, event: M.Event) -> MStep` | Staged evaluation with at most 1024 transition sets |
 | `step_with_limit(var self, event: M.Event, limit: i64) -> Result<MStep, MachineStepError>` | Staged evaluation with an explicit positive bound |
 | `state_name(self) -> string` | Current state tag |
+| `MScope` | Unit variants naming the machine's compound states |
+| `MSubtree` | Typed departure snapshots, one variant per compound state |
+| `step_observed_with_limit(var self, event: M.Event, limit: i64, requested: Vec<MScope>)` | The same bounded evaluator, returning `Result<MachineObservedStep<MStep, MScope, MSubtree>, MachineStepError>` |
 
 Each machine implements the compiler-generated `Machine` interface. Its
 associated `Event` and `Step` types identify the input and report types;
+`Scope` and `Subtree` identify the opt-in departure observation types;
 `step_info(report)` returns the common `MachineStepInfo` view. Handwritten
 implementations cannot replace the checked machine evaluator. A report's
 `input` is the source event tag; `rules` contains the zero-based source rule
@@ -390,6 +394,81 @@ Saved history belongs to the machine value. Ordinary copies retain independent
 history; equality and supported JSON/CBOR codecs include it. Constructing a new
 state value starts with empty history. A failed exit, initializer, body or entry
 commits neither the candidate configuration nor its saved history or outputs.
+
+## Deep history as an ordinary library value
+
+`std.machine.history` retains requested compound subtrees alongside a machine.
+The owner is an ordinary value: copying it copies both the current machine and
+its saved subtrees. `state()` returns the current machine; `saved(target)`
+returns the latest departed subtree or `None` before its first departure.
+
+```hew
+import std.machine.history;
+
+machine Document {
+    events {
+        Pause;
+        Resume { title: string; saved: Option<DocumentSubtree>; }
+    }
+    state Closed;
+    state Editing {
+        title: string;
+        state Review { text: string; }
+        initial Review { text: "new draft" };
+    }
+    on Pause: Editing => Closed;
+    on Resume: Closed => _ {
+        match event.saved {
+            .Some(.Editing { snapshot }) => snapshot.restore(event.title),
+            .None => Editing { title: event.title },
+        }
+    }
+    default { state }
+}
+
+fn main() {
+    let initial: Document = .Closed;
+    var owner = history.track(initial, [DocumentScope.Editing]);
+    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) });
+    let _pause = owner.step(.Pause);
+    let _resume = owner.step(.Resume { title: "reopened", saved: owner.saved(.Editing) });
+    assert(owner.state() == .Review { title: "reopened", text: "new draft" });
+}
+```
+
+Each requested departure saves the active descendants and their complete
+payloads, including all nested parallel regions. It excludes the requested
+compound's own payload, its ancestors' payloads and native shallow-history
+slots. A `DocumentSubtree.Editing { snapshot }` contains a
+`DocumentEditingSnapshot`; its variants name the possible active
+configurations below `Editing`.
+
+`snapshot.restore(...)` constructs an ordinary machine value. Its arguments
+provide fresh enclosing payloads in outer-to-inner declaration order. When the
+requested compound lies inside a parallel region, the arguments also provide
+the sibling region configurations, in the enclosing state's field order.
+Sibling parameters start with `Parent_region`; scalar parameters start with
+their source field names. A numeric suffix disambiguates collisions. For example, restoring `Nested` inside `Work.left` with
+`Work.seed`, sibling `Work.right` and `Nested.revision` takes
+`restore(seed, Work_right, revision)`. The saved descendants remain intact.
+Returning the constructed value from a computed transition runs normal entry
+hooks and participates in the ordinary staged commit. Before the first saved
+departure, the caller's `None` arm uses the normal initial constructors.
+
+The low-level `step_observed_with_limit` returns `report` and an ordered
+`departures` vector. Each departure has a typed `target` and `subtree`.
+Capture occurs after the transition set's exit hooks and before its bodies;
+within a set, deeper scopes precede ancestors, with source declaration order
+breaking ties. Duplicate requests capture a scope once. Internal completion
+and `always` sets use the same boundary, so a subtree entered and exited during
+one call is observable even when absent from the final machine. Unrequested
+subtrees are not captured. Ordinary `step` and `step_with_limit` request none.
+
+The library stages its current machine and retained entries together. Its
+`step_with_limit(event, limit)` returns the ordinary typed bound errors; its
+`step(event)` uses the default bound of 1024 transition sets. A bound error or
+an ordinary guard, exit, body or entry fault commits neither machine nor saved
+subtrees. Saved values returned earlier remain independent of later departures.
 
 ## Observed ownership
 

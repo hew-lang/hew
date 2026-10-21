@@ -298,6 +298,7 @@ impl Builder {
         hierarchy: &Hierarchy,
     ) -> Result<Block, TypeError> {
         let mut shell = self.step_body_shell(machine);
+        shell.stmts.extend(self.observation_prelude(machine));
         let limit = self.ident("limit");
         let zero = self.integer(0);
         let invalid = self.binary(hew_parser::ast::BinaryOp::LessEqual, limit, zero);
@@ -363,7 +364,8 @@ impl Builder {
         let candidate = self.ident(WORK);
         self.finish_step(machine, &mut shell, candidate);
         let report = *shell.trailing_expr.take().expect("step report");
-        shell.trailing_expr = Some(Box::new(self.result("Ok", report)));
+        let observed = self.observed_report(report);
+        shell.trailing_expr = Some(Box::new(self.result("Ok", observed)));
         Ok(shell)
     }
 
@@ -509,6 +511,7 @@ impl Builder {
         stmts.push(self.if_do(selected, vec![refuse, charge]));
         self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
         self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
+        self.capture_departures(machine, hierarchy, &ordered, &mut stmts)?;
         let mut bodies = ordered.clone();
         bodies.sort_by_key(|index| machine.transitions[*index].span.start);
         for index in bodies {
@@ -570,13 +573,7 @@ impl Builder {
         stmts: &mut Vec<Spanned<Stmt>>,
     ) -> Result<(), TypeError> {
         let mut nodes = hierarchy.hook_nodes();
-        nodes.sort_by_key(|node| {
-            let depth = hierarchy.ancestors(*node).len();
-            (
-                if entry { depth } else { usize::MAX - depth },
-                hierarchy.span(machine, *node).start,
-            )
-        });
+        nodes.sort_by_key(|node| hierarchy.boundary_order_key(machine, *node, entry));
         for node in nodes {
             let Some(hook) = hierarchy.hooks(machine, node, entry) else {
                 continue;

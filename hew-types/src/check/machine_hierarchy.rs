@@ -496,6 +496,20 @@ impl Hierarchy {
             .collect()
     }
 
+    /// Canonical order for hooks and observed departures at a transition boundary.
+    pub(super) fn boundary_order_key(
+        &self,
+        machine: &MachineDecl,
+        node: NodeId,
+        entry: bool,
+    ) -> (usize, usize) {
+        let depth = self.ancestors(node).len();
+        (
+            if entry { depth } else { usize::MAX - depth },
+            self.span(machine, node).start,
+        )
+    }
+
     pub(super) fn configurations_compatible(&self, first: NodeId, second: NodeId) -> bool {
         let choices = |node| {
             self.configurations(self.container(node))

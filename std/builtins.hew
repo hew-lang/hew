@@ -475,9 +475,23 @@ impl Display for Location {
 pub trait Machine {
     type Event;
     type Step;
+    type Scope;
+    type Subtree;
 
+    fn step_observed_with_limit(var self, event: Self.Event, limit: i64, requested: Vec<Self.Scope>) -> Result<MachineObservedStep<Self.Step, Self.Scope, Self.Subtree>, MachineStepError>;
     fn step(var self, event: Self.Event) -> Self.Step;
     fn step_info(self, report: Self.Step) -> MachineStepInfo;
+}
+
+/// Ordered, opt-in snapshots taken after exit hooks and before transition bodies.
+pub type MachineDeparture<S, T> {
+    target: S;
+    subtree: T;
+}
+
+pub type MachineObservedStep<R, S, T> {
+    report: R;
+    departures: Vec<MachineDeparture<S, T>>;
 }
 
 /// A bounded machine step did not commit its staged configuration or outputs.

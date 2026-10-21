@@ -26,6 +26,7 @@ use super::machine_hierarchy::{Hierarchy, NodeId};
 
 mod configuration;
 mod history;
+mod observation;
 use crate::error::{TypeError, TypeErrorKind};
 
 /// The program the checker checks and HIR lowers when the compiler writes
@@ -912,13 +913,15 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} fn step_with_limit(var self, event: {name}.Event{generic}, limit: i64) -> Result<{name}Step{generic}, MachineStepError> {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} fn step_with_limit(var self, event: {name}.Event{generic}, limit: i64) -> Result<{name}Step{generic}, MachineStepError> {{}} fn step_observed_with_limit(var self, event: {name}.Event{generic}, limit: i64, requested: Vec<{name}Scope>) -> Result<MachineObservedStep<{name}Step{generic}, {name}Scope, {name}Subtree{generic}>, MachineStepError> {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; type Scope = {name}Scope; type Subtree = {name}Subtree{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
         let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
         let machine_names = [
             machine.name,
             machine_companion(machine, "Output"),
             machine_companion(machine, "Step"),
             machine_companion(machine, "StepDisposition"),
+            machine_companion(machine, "Scope"),
+            machine_companion(machine, "Subtree"),
         ];
         for (token, span) in hew_lexer::Lexer::new(&source) {
             if let hew_lexer::Token::Identifier(spelling) = token {
@@ -1011,9 +1014,14 @@ impl Builder {
         let bounded = &mut implementation.methods[2];
         bounded.origin = DeclarationOrigin::MachineStep;
         bounded.visibility = machine.visibility;
-        bounded.params[1].name = Ident::new(configuration::EVENT);
-        bounded.body = self.configuration_step(machine, &hierarchy)?;
+        bounded.body = self.unobserved_step();
         self.refresh_signature(bounded);
+        let observed = &mut implementation.methods[3];
+        observed.origin = DeclarationOrigin::MachineStep;
+        observed.visibility = machine.visibility;
+        observed.params[1].name = Ident::new(configuration::EVENT);
+        observed.body = self.configuration_step(machine, &hierarchy)?;
+        self.refresh_signature(observed);
         let implementation_span = impl_start..self.next_span;
         let contract_start = self.next_span;
         let Item::Impl(mut contract) = shell.next().expect("machine trait shell").0 else {
@@ -1051,6 +1059,12 @@ impl Builder {
         };
         self.refresh_signature(&mut forwarding);
         contract.methods.insert(0, forwarding);
+        let mut observed = implementation.methods[3].clone();
+        observed.origin = DeclarationOrigin::MachineCompanion;
+        observed.params[1].name = Ident::new("event");
+        observed.body = self.observed_forwarding();
+        self.refresh_signature(&mut observed);
+        contract.methods.push(observed);
         let contract_span = contract_start..self.next_span;
         let mut generated = vec![
             Item::TypeDecl(state_enum),
@@ -1099,6 +1113,10 @@ impl Builder {
             self.span();
             generated.push(Item::TypeDecl(declaration));
             spans.push(start..self.next_span);
+        }
+        for (item, span) in self.observation_declarations(machine, &hierarchy)? {
+            generated.push(item);
+            spans.push(span);
         }
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());

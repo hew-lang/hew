@@ -201,23 +201,6 @@ pub unsafe extern "C" fn hew_location_node_id(location: *const HewLocation) -> H
     location.node
 }
 
-/// Return the node-local actor slot carried by a location.
-///
-/// Fails closed to `0` when `location` is null.
-///
-/// # Safety
-///
-/// `location` must point to a readable `HewLocation`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_location_slot(location: *const HewLocation) -> u64 {
-    if location.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `location` is readable.
-    let location = unsafe { *location };
-    location.slot
-}
-
 /// Return the node-session incarnation carried by a location.
 ///
 /// Fails closed to `0` when `location` is null.
@@ -950,31 +933,27 @@ mod tests {
     fn location_field_accessors_read_the_exact_fields() {
         let location = sample_location();
         // SAFETY: `location` is a live, readable `HewLocation` for this call.
-        let (node, slot, incarnation) = unsafe {
+        let (node, incarnation) = unsafe {
             (
                 hew_location_node_id(&raw const location),
-                hew_location_slot(&raw const location),
                 hew_location_incarnation(&raw const location),
             )
         };
         assert_eq!(node, location.node);
-        assert_eq!(slot, location.slot);
         assert_eq!(incarnation, location.incarnation);
     }
 
     #[test]
     fn location_field_accessors_fail_closed_on_null() {
         // SAFETY: every accessor documents a null pointer as a fail-closed input.
-        let (node, slot, incarnation, display) = unsafe {
+        let (node, incarnation, display) = unsafe {
             (
                 hew_location_node_id(std::ptr::null()),
-                hew_location_slot(std::ptr::null()),
                 hew_location_incarnation(std::ptr::null()),
                 hew_location_display(std::ptr::null()),
             )
         };
         assert_eq!(node, HewNodeId::default());
-        assert_eq!(slot, 0);
         assert_eq!(incarnation, 0);
         assert!(display.is_null());
     }

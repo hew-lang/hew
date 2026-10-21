@@ -77,7 +77,6 @@ pub fn compiler_synthetic_identity_endpoint(name: &str) -> Option<&str> {
     match name {
         "hew_node_id_display"
         | "hew_location_node_id"
-        | "hew_location_slot"
         | "hew_location_incarnation"
         | "hew_location_display" => Some(name),
         _ => None,
@@ -96,7 +95,6 @@ mod tests {
         for endpoint in [
             "hew_node_id_display",
             "hew_location_node_id",
-            "hew_location_slot",
             "hew_location_incarnation",
             "hew_location_display",
         ] {

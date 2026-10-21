@@ -23,10 +23,16 @@ fn main() -> i64 {
         .Ok(found) => found,
         .Err(_) => return 2,
     };
-    if location.node_id() != node_id { return 3; }
-    if location.slot() == 0 || location.incarnation() == 0 { return 4; }
+    if location.node_id() != node_id {
+        return 3;
+    }
+    if location.incarnation() == 0 {
+        return 4;
+    }
     let same = Node.lookup("identity-worker").expect("same registration");
-    if same != location { return 5; }
+    if same != location {
+        return 5;
+    }
     if Node.id().expect("same node") != node_id {
         return 7;
     }
@@ -41,7 +47,9 @@ fn main() -> i64 {
         return 9;
     }
     let alias = worker;
-    if !(alias is worker) { return 10; }
+    if !(alias is worker) {
+        return 10;
+    }
     let node_text = to_string(node_id);
     let location_text = to_string(location);
     let same_text = f"{same}";

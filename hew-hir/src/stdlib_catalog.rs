@@ -2336,13 +2336,6 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     direct(
-        "hew_location_slot",
-        BuiltinClass::ClassB,
-        &[BuiltinTy::U64],
-        BuiltinTy::U64,
-        BuiltinLinkage::CalleeNameDispatchOnly,
-    ),
-    direct(
         "hew_location_incarnation",
         BuiltinClass::ClassB,
         &[BuiltinTy::U64],

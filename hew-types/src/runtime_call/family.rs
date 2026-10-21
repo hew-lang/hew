@@ -187,7 +187,6 @@ pub enum RuntimeCallFamily {
     /// return either a fresh owned string or a bit-copied field.
     NodeIdDisplay,
     LocationNodeId,
-    LocationSlot,
     LocationIncarnation,
     LocationDisplay,
     NodeIdentityKey,
@@ -1126,7 +1125,6 @@ impl RuntimeCallFamily {
         match endpoint {
             "hew_node_id_display" => Some(Self::NodeIdDisplay),
             "hew_location_node_id" => Some(Self::LocationNodeId),
-            "hew_location_slot" => Some(Self::LocationSlot),
             "hew_location_incarnation" => Some(Self::LocationIncarnation),
             "hew_location_display" => Some(Self::LocationDisplay),
             "stream.pair_sink" => Some(Self::StreamPairSink),

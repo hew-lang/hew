@@ -28,7 +28,6 @@ fn main() -> i64 {
             let again = Node.lookup("node-lookup-location-worker").expect("same registration");
             assert(location == again);
             assert(location.node_id() == Node.id().expect("running node"));
-            assert(location.slot() > 0);
             assert(location.incarnation() > 0);
             0
         }

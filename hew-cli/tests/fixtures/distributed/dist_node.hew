@@ -736,7 +736,7 @@ actor WireProbe {
 #[wire]
 type DistIdentity {
     node_id: string @1;
-    slot: u64 @2;
+    location: string @2;
     incarnation: u32 @3;
 }
 
@@ -755,8 +755,8 @@ actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
         let self_pid: Result<Location, LookupError> = Node.lookup("identity");
         let identity = match self_pid {
-            Result.Ok(pid) => DistIdentity { node_id: pid.node_id().display(), slot: pid.slot(), incarnation: pid.incarnation() },
-            Result.Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
+            Result.Ok(pid) => DistIdentity { node_id: pid.node_id().display(), location: pid.display(), incarnation: pid.incarnation() },
+            Result.Err(_) => DistIdentity { node_id: "", location: "", incarnation: 0 },
         };
         IdentityResp.Value(identity)
     }
@@ -880,9 +880,7 @@ actor RemoteCrashObserver {
     fn on_link(note: CrashNotification) {
         match note.target {
             DownTarget.Remote(location) => {
-                assert(location.node_id().display() == expected.node_id().display());
-                assert(location.slot() == expected.slot());
-                assert(location.incarnation() == expected.incarnation());
+                assert(location == expected);
             }
             DownTarget.Local(_) => panic("remote link reported a local origin"),
             DownTarget.Role(_) => panic("remote link reported a local role origin"),
@@ -1922,16 +1920,12 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
     };
     let location = discover_with_retry("identity").expect("identity metadata");
     let remote_node = location.node_id();
-    let remote_slot = location.slot();
+    let remote_location = location.display();
     let remote_incarnation = location.incarnation();
     // Discovery metadata must match the identity returned across the wire.
     if local_node.display() == remote_node.display() {
         println("FAIL identity_location node-ids-not-distinct");
         return 3;
-    }
-    if remote_slot == 0 {
-        println("FAIL identity_location slot-zero");
-        return 4;
     }
     let inspected = identity.handle(IdentityReq.Inspect);
     match inspected {
@@ -1946,8 +1940,8 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
                         println("FAIL identity_location node-mismatch");
                         return 8;
                     }
-                    if actual.slot != remote_slot {
-                        println("FAIL identity_location slot-mismatch");
+                    if actual.location != remote_location {
+                        println("FAIL identity_location location-mismatch");
                         return 9;
                     }
                     if actual.incarnation != remote_incarnation {
@@ -1958,7 +1952,7 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
             }
         }
     }
-    println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} slot={remote_slot} incarnation={remote_incarnation}");
+    println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} location={remote_location} incarnation={remote_incarnation}");
     0
 }
 

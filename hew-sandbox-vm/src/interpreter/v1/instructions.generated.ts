@@ -670,7 +670,6 @@ export type RuntimeCallFamily =
   | "NodeId"
   | "NodeIdDisplay"
   | "LocationNodeId"
-  | "LocationSlot"
   | "LocationIncarnation"
   | "LocationDisplay"
   | "NodeIdentityKey"

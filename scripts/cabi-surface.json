@@ -10917,21 +10917,6 @@
         "native",
         "wasm32-wasip1"
       ],
-      "classification": "non-declarable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_location_slot( *const HewLocation) -> u64",
-        "wasm32-wasip1": "fn hew_location_slot( *const HewLocation) -> u64"
-      },
-      "symbol": "hew_location_slot"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

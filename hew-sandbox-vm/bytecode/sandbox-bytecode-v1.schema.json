@@ -4094,16 +4094,6 @@
               "type": "null"
             },
             "family": {
-              "const": "LocationSlot"
-            }
-          }
-        },
-        {
-          "properties": {
-            "detail": {
-              "type": "null"
-            },
-            "family": {
               "const": "LocationIncarnation"
             }
           }

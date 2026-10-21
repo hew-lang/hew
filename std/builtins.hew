@@ -436,9 +436,6 @@ impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
     fn node_id(self) -> NodeId {}
-    /// Return the actor's node-local slot.
-    #[extern_symbol(hew_location_slot)]
-    fn slot(self) -> u64 {}
     /// Return the node-session incarnation.
     #[extern_symbol(hew_location_incarnation)]
     fn incarnation(self) -> u32 {}

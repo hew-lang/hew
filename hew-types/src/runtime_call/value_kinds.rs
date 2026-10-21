@@ -149,7 +149,7 @@ pub enum RuntimeValueKind {
     BuiltinNominal(BuiltinType),
     /// The argument's own checked type, required to carry this builtin
     /// identity. A declared accessor names its value as an ordinary parameter
-    /// rather than a method receiver (`hew_location_slot(location)`), so identity
+    /// rather than a method receiver (`hew_location_node_id(location)`), so identity
     /// is checked on the argument itself. One authority for that identity: the
     /// type's own `builtin` discriminator, never the receiver table.
     BuiltinArgument(BuiltinType),

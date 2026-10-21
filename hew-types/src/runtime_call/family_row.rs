@@ -4977,22 +4977,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Direct,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::LocationSlot => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_location_slot",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::Location),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::U64),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::LocationIncarnation => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "hew_location_incarnation",

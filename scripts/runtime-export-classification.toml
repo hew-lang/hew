@@ -1536,7 +1536,6 @@ non-declarable = [
   "hew_location_format",
   "hew_location_incarnation",
   "hew_location_node_id",
-  "hew_location_slot",
   "hew_machine_emit_push",
   "hew_machine_emit_step_enter",
   "hew_machine_emit_step_exit_keep",

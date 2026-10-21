@@ -1294,7 +1294,7 @@ fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
 }
 
 /// Node identity/location proof across two OS processes. The remote actor's
-/// key-backed node id, slot, and session incarnation must match the registry
+/// key-backed node id, complete location and session incarnation must match the registry
 /// lookup exactly, and its node id must differ from the client's.
 #[test]
 fn node_identity_location_and_incarnation_cross_process() {
@@ -1329,7 +1329,10 @@ fn node_identity_location_and_incarnation_cross_process() {
         local, remote,
         "two processes must have distinct node ids: {line}"
     );
-    assert_ne!(parse_u64("slot"), 0, "actor slot must be non-zero: {line}");
+    assert!(
+        field("location").starts_with(remote),
+        "location must carry its node identity: {line}"
+    );
     assert_ne!(
         parse_u64("incarnation"),
         0,

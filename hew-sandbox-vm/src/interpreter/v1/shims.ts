@@ -780,7 +780,6 @@ const UNIT_FAMILIES = {
   NodeId: refused("NodeId"),
   NodeIdDisplay: refused("NodeIdDisplay"),
   LocationNodeId: refused("LocationNodeId"),
-  LocationSlot: refused("LocationSlot"),
   LocationIncarnation: refused("LocationIncarnation"),
   LocationDisplay: refused("LocationDisplay"),
   NodeIdentityKey: refused("NodeIdentityKey"),

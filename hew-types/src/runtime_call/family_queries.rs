@@ -818,7 +818,6 @@ impl RuntimeCallFamily {
             | F::NodeId
             | F::NodeIdDisplay
             | F::LocationNodeId
-            | F::LocationSlot
             | F::LocationIncarnation
             | F::LocationDisplay
             | F::NodeIdentityKey

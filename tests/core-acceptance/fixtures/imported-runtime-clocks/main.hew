@@ -1,0 +1,9 @@
+import clock_source;
+
+fn main() {
+    let direct = timestamp.now();
+    assert(direct.unix_secs_floor() > 0);
+    assert(clock_source.seconds() > 0);
+    assert(clock_source.elapsed() >= 0ns);
+    println("imported runtime clocks ok");
+}

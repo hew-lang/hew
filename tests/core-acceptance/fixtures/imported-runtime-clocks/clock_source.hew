@@ -1,0 +1,9 @@
+pub fn seconds() -> i64 {
+    let current = timestamp.now();
+    current.unix_secs_floor()
+}
+
+pub fn elapsed() -> duration {
+    let start = instant.now();
+    start.elapsed()
+}

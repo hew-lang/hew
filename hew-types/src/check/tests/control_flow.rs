@@ -137,6 +137,59 @@ fn timestamp_now_uses_its_declared_runtime_target() {
     );
 }
 
+#[test]
+fn dependency_associated_clocks_keep_declared_runtime_targets() {
+    let parsed = hew_parser::parse(
+        r"
+        pub fn wall_clock() -> i64 {
+            let current = timestamp.now();
+            current.unix_secs_floor()
+        }
+        pub fn monotonic_clock() -> duration {
+            let start = instant.now();
+            start.elapsed()
+        }
+        ",
+    );
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let program = make_program_with_module_graph(parsed.program.items.clone());
+    let module = hew_parser::module::ModulePath::new(["mymod"]);
+    let module_idx = program
+        .module_graph
+        .as_ref()
+        .unwrap()
+        .file_span_indices()
+        .module_base(&module)
+        .unwrap_or_default();
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    for ((item, _), family) in parsed.program.items.iter().zip([
+        crate::RuntimeCallFamily::TimestampNow,
+        crate::RuntimeCallFamily::InstantNow,
+    ]) {
+        let Item::Function(function) = item else {
+            panic!("clock function");
+        };
+        let Stmt::Let {
+            value: Some((_, span)),
+            ..
+        } = &function.body.stmts[0].0
+        else {
+            panic!("clock acquisition");
+        };
+        let key = SpanKey::in_module(span, module_idx);
+        assert!(
+            matches!(output.method_call_rewrites.get(&key),
+                Some(crate::MethodCallRewrite::RewriteModuleQualifiedToFunction {
+                    target: crate::check::dispatch::CallTarget::Runtime(actual), ..
+                }) if actual == &family),
+            "{}: {:#?}",
+            function.name,
+            output.method_call_rewrites.get(&key)
+        );
+    }
+}
+
 // ── Supervisor child slot index tests ────────────────────────────────────
 //
 // These tests verify that the checker assigns correct slot indices to

@@ -79,18 +79,35 @@ mod tests {
         }
     }
 
+    fn method_provenance(
+        declaration: crate::DefId,
+        name: &str,
+    ) -> crate::check::types::ImplMethodProvenance {
+        crate::check::types::ImplMethodProvenance {
+            declaration,
+            trait_method: None,
+            receiver: None,
+            receiver_args: vec![],
+            receiver_parameters: vec![],
+            name: name.to_string(),
+            is_inherent: true,
+            span: 0..0,
+        }
+    }
+
     #[test]
     fn canonical_std_io_runtime_methods_require_provenance_and_checked_signature() {
+        let mut canonical = Checker::default();
+        let push_declaration = canonical.defs.mint_for_test("bytes::push");
         let push_signature = FnSig {
+            impl_method: Some(method_provenance(push_declaration, "push")),
             params: vec![Ty::U8],
             return_type: Ty::Unit,
             ..FnSig::default()
         };
-        let mut canonical = Checker::default();
-        canonical.extern_method_origins.insert(
-            "bytes::push".to_string(),
-            (Some("std.io".to_string()), true),
-        );
+        canonical
+            .extern_method_origins
+            .insert(push_declaration, (Some("std.io".to_string()), true));
         assert_eq!(
             canonical.canonical_std_io_runtime_method_family(
                 "bytes::push",
@@ -113,8 +130,7 @@ mod tests {
 
         let wrong_signature = FnSig {
             params: vec![Ty::I64],
-            return_type: Ty::Unit,
-            ..FnSig::default()
+            ..push_signature.clone()
         };
         assert_eq!(
             canonical.canonical_std_io_runtime_method_family(
@@ -126,24 +142,29 @@ mod tests {
             "the runtime ABI family is not admitted by symbol spelling and arity alone",
         );
 
+        let len_declaration = canonical.defs.mint_for_test("string::len");
+        let byte_len_declaration = canonical.defs.mint_for_test("string::byte_len");
         let len_signature = FnSig {
+            impl_method: Some(method_provenance(len_declaration, "len")),
             params: vec![],
             return_type: Ty::I64,
             ..FnSig::default()
         };
-        canonical.extern_method_origins.insert(
-            "string::len".to_string(),
-            (Some("std.string".to_string()), true),
-        );
-        canonical.extern_method_origins.insert(
-            "string::byte_len".to_string(),
-            (Some("std.string".to_string()), true),
-        );
+        let byte_len_signature = FnSig {
+            impl_method: Some(method_provenance(byte_len_declaration, "byte_len")),
+            ..len_signature.clone()
+        };
+        canonical
+            .extern_method_origins
+            .insert(len_declaration, (Some("std.string".to_string()), true));
+        canonical
+            .extern_method_origins
+            .insert(byte_len_declaration, (Some("std.string".to_string()), true));
         assert_eq!(
             canonical.canonical_std_io_runtime_method_family(
                 "string::byte_len",
                 "hew_string_byte_length",
-                &len_signature,
+                &byte_len_signature,
             ),
             Some(crate::runtime_call::RuntimeCallFamily::StringByteLen),
         );
@@ -151,7 +172,7 @@ mod tests {
             lookalike.canonical_std_io_runtime_method_family(
                 "string::byte_len",
                 "hew_string_byte_length",
-                &len_signature,
+                &byte_len_signature,
             ),
             None,
             "a user extern cannot select the byte-length runtime operation",

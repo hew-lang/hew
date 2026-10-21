@@ -1,5 +1,11 @@
 # Unreleased
 
+## Native compilation
+
+O0 compilation removes dead coroutine cleanup helpers after splitting, while
+retaining dynamic, exported and explicitly retained function roots. Cancellation
+and task-result cleanup preserve their existing behaviour.
+
 ## Distributed actors
 
 Cluster admission uses one explicit trust root. Enrolled nodes can authenticate

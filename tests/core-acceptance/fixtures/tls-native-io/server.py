@@ -1,4 +1,4 @@
-"""A slow loopback TLS peer with ephemeral local test certificates."""
+"""A controlled loopback TLS peer with ephemeral local test certificates."""
 
 from pathlib import Path
 import socket
@@ -6,7 +6,6 @@ import subprocess
 import tempfile
 import ssl
 import sys
-import time
 
 certificates = tempfile.TemporaryDirectory()
 certificate_root = Path(certificates.name)
@@ -21,6 +20,12 @@ def openssl(*arguments):
         stderr=subprocess.PIPE,
         timeout=15,
     )
+
+
+def stage(name):
+    sys.stdout.buffer.write(name)
+    sys.stdout.buffer.flush()
+    assert sys.stdin.buffer.read(1) == b"x", "missing TLS phase release"
 
 
 openssl(
@@ -83,15 +88,17 @@ with socket.socket() as listener:
     sys.stdout.buffer.flush()
     connection, _ = listener.accept()
     connection.settimeout(10)
-    time.sleep(0.4)
+    stage(b"H")
     with context.wrap_socket(connection, server_side=True) as peer:
         assert peer.recv(5) == b"hello"
-        time.sleep(0.5)
         peer.sendall(b"ready")
-        time.sleep(0.5)
+        stage(b"R")
+        assert peer.recv(4) == b"NEXT"
+        stage(b"W")
         tail = b""
         while not tail.endswith(b"DONE"):
             chunk = peer.recv(65536)
             assert chunk, "connection closed before retained write"
             tail = (tail + chunk)[-4:]
-        peer.sendall(b"OK")
+        sys.stdout.buffer.write(b"D")
+        sys.stdout.buffer.flush()

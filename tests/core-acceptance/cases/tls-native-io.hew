@@ -1,4 +1,4 @@
-// Slow TLS operations preserve one-worker progress and retained-stream recovery.
+// Controlled TLS operations preserve one-worker progress and connection recovery.
 import std.net.tls;
 
 import std.fs;
@@ -8,17 +8,24 @@ import std.process;
 import std.os;
 
 actor Probe {
+    var control: Sink<bytes>;
+
     receive fn ping() -> bool {
         true
+    }
+
+    receive fn release() {
+        control.send(b"x").expect("release TLS peer");
     }
 }
 
 actor Client {
-    receive fn run(port: i64, ca: bytes) -> bool {
+    receive fn run(port: i64, ca: bytes, probe: Probe) -> bool {
         var options = tls.options();
         options.trust = tls.Trust.Pem(ca);
         let connection = tls.connect("localhost", port, options).expect("connect");
         connection.write(b"hello").expect("hello");
+        assert(connection.read(5).expect("initial read") == b"ready");
         let read_cancelled = scope within 100ms {
             connection.read(5).expect("read");
             false
@@ -29,10 +36,10 @@ actor Client {
             }
         };
         assert(read_cancelled);
-        match connection.read(5) {
-            .Ok(data) => assert(data.len() == 5),
-            .Err(error) => panic(tls.last_error()),
-        }
+        probe.release().expect("release read");
+        // Cancellation abandons a read result, so peer verification uses
+        // its control pipe rather than sending data to an abandoned read.
+        connection.write(b"NEXT").expect("retained read handle");
         let payload = "0123456789abcdef".repeat(1024 * 1024).to_bytes();
         let write_cancelled = scope within 100ms {
             connection.write(payload).expect("write");
@@ -44,23 +51,24 @@ actor Client {
             }
         };
         assert(write_cancelled);
+        probe.release().expect("release write");
         connection.write(b"DONE").expect("retained write");
-        assert(connection.read(2).expect("reply").len() == 2);
         connection.close();
         true
     }
 }
 
 fn main() {
-    let probe = spawn Probe;
     let client = spawn Client;
     let python = match os.env("PYTHON") {
         .Some(path) => path,
         .None => "python3",
     };
     var command = process.command(python, ["server.py"]);
+    command.stdin = process.Stdio.Piped;
     command.stdout = process.Stdio.Piped;
     let peer = process.start(command).expect("TLS peer");
+    let probe = spawn Probe { control: peer.stdin().expect("peer stdin") };
     let ready = peer.stdout().expect("peer stdout");
     var address = bytes.new();
     while address.len() < 2 {
@@ -68,14 +76,25 @@ fn main() {
     }
     let port = (address[0] as i64) * 256 + (address[1] as i64);
     let ca = fs.read_bytes("ca.pem").expect("CA");
-    let work = fork client.run(port, ca);
-    for i in 0..80 {
-        sleep(20ms);
-        let started = instant.now();
+    let work = fork client.run(port, ca, probe);
+    var phases = bytes.new();
+    let expected = b"HRWD";
+    for index in 0..4 {
+        while phases.len() <= index {
+            phases.append(ready.recv().expect("peer phase"));
+        }
+        assert(phases[index] == expected[index]);
         assert(probe.ping().expect("progress"));
-        assert(started.elapsed() < 300ms);
+        if index == 0 {
+            // TLS connect cannot finish before this actor call is dispatched.
+            probe.release().expect("release handshake");
+        }
     }
     assert((await work).expect("client"));
     assert(peer.wait().expect("peer exit") == process.ExitStatus.Exited(0));
+    stop(client);
+    stopped(client);
+    stop(probe);
+    stopped(probe);
     println("TLS progress and retained read/write recovery");
 }

@@ -1,6 +1,7 @@
 //! Control-frame authority, ask rejection, registry gossip and SWIM tests.
 
 use super::*;
+use crate::connection::control::encode_registry_gossip_control;
 
 #[test]
 fn link_controls_from_wrong_authenticated_peer_are_rejected() {
@@ -407,4 +408,99 @@ fn swim_frame_imports_piggybacked_gossip() {
         drop(Box::from_raw(sends));
     }
     drop(ops);
+}
+
+#[test]
+fn registry_names_require_the_exact_authenticated_origin_session_and_publication() {
+    let mut transport = HewTransport {
+        ops: std::ptr::null(),
+        r#impl: std::ptr::null_mut(),
+    };
+    let registry = crate::hew_node::HewRegistry::default();
+    let config = crate::cluster::ClusterConfig {
+        local_node_id: 1,
+        ..Default::default()
+    };
+    // SAFETY: every borrowed object remains live until explicit manager teardown.
+    unsafe {
+        let cluster = crate::cluster::hew_cluster_new(&raw const config);
+        let mgr = hew_connmgr_new(&raw mut transport, None, std::ptr::null_mut(), cluster, 1);
+        (*mgr).registry = &raw const registry;
+        for conn in [10, 11] {
+            let mut actor = test_actor(conn);
+            actor.peer_node_id = if conn == 10 { 2 } else { 3 };
+            actor.posture = Posture::Strict;
+            actor.peer_feature_flags = HEW_FEATURE_SUPPORTS_GOSSIP;
+            actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+            (&*mgr)
+                .connections
+                .access(|connections| connections.push(actor));
+        }
+        let relay_token = test_publish_claim(&*mgr, 2, 10);
+        let origin_token = test_publish_claim(&*mgr, 3, 11);
+        let old_session = test_node_session(3);
+        let old_location = test_location(3, 88);
+        let bytes = encode_registry_gossip_control("origin", old_location, true).unwrap();
+        let WireFrame::Control(old) = decode_wire_frame(&bytes).unwrap() else {
+            panic!("control frame");
+        };
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 10, relay_token, &old);
+        assert_eq!(registry.current_local_name(old_session, "origin"), None);
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 11, origin_token, &old);
+        assert_eq!(
+            registry.current_local_name(old_session, "origin"),
+            Some(old_location)
+        );
+
+        let token = next_publication_token(&*mgr).unwrap();
+        let mut replacement = test_actor(12);
+        replacement.posture = Posture::Strict;
+        replacement.peer_identity = Some(old_session.node_id);
+        replacement.peer_node_id = 3;
+        replacement.peer_session_incarnation = 2;
+        replacement.publication_token = token;
+        replacement
+            .state
+            .store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr)
+            .connections
+            .access(|connections| connections.push(replacement));
+        assert!(matches!(
+            reserve_identity_claim(&*mgr, old_session.node_id, 3, 2, None, 12, token, None),
+            ClaimReservation::Reserved { .. }
+        ));
+        assert!(publish_identity_claim(
+            &*mgr,
+            old_session.node_id,
+            12,
+            token
+        ));
+        assert_eq!(registry.current_local_name(old_session, "origin"), None);
+        // Neither the old connection nor a stale body on the new connection
+        // can resurrect a predecessor registration after fresh publication.
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 11, origin_token, &old);
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 12, token, &old);
+        assert_eq!(registry.current_local_name(old_session, "origin"), None);
+        let fresh_session = crate::envelope::NodeSessionIdentity {
+            node_id: old_session.node_id,
+            session_incarnation: 2,
+        };
+        let fresh_location = Location::direct(old_session.node_id, 89, 2).unwrap();
+        let bytes = encode_registry_gossip_control("origin", fresh_location, true).unwrap();
+        let WireFrame::Control(fresh) = decode_wire_frame(&bytes).unwrap() else {
+            panic!("control frame");
+        };
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 12, token, &fresh);
+        assert_eq!(
+            registry.current_local_name(fresh_session, "origin"),
+            Some(fresh_location)
+        );
+        handle_control_frame(mgr, HEW_FEATURE_SUPPORTS_GOSSIP, 11, origin_token, &old);
+        assert_eq!(
+            registry.current_local_name(fresh_session, "origin"),
+            Some(fresh_location)
+        );
+        hew_connmgr_free(mgr);
+        crate::cluster::hew_cluster_free(cluster);
+    }
 }

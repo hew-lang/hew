@@ -1391,7 +1391,16 @@ fn mesh_large_requests_replies_and_declared_errors_preserve_following_frames() {
 /// A relay carries an independent authenticated origin session and its grant.
 #[test]
 fn three_enrolled_nodes_discover_call_and_revoke_through_a_relay() {
-    let scene = SecureScenario::with_roles(false, &["server", "relay", "client"]);
+    run_transitive_scenario(false);
+}
+
+#[test]
+fn three_mesh_nodes_authenticate_tls_through_a_relay() {
+    run_transitive_scenario(true);
+}
+
+fn run_transitive_scenario(mesh: bool) {
+    let scene = SecureScenario::with_roles(mesh, &["server", "relay", "client"]);
     let mut origin = scene.spawn_server("transitive");
     let _origin_stdout = wait_for_server_ready(&mut origin);
     let origin_port = std::fs::read_to_string(scene.kx_dir.path().join("server.ready")).unwrap();
@@ -1410,6 +1419,68 @@ fn three_enrolled_nodes_discover_call_and_revoke_through_a_relay() {
     );
     assert!(!stdout.contains("FAIL "), "{stdout}");
     let _ = run_client_to_completion(origin, 0, StderrExpectation::Ignore);
+    let _ = run_client_to_completion(relay, 0, StderrExpectation::Ignore);
+}
+
+#[test]
+fn relayed_call_fails_once_then_higher_origin_session_rejoins_without_replay() {
+    let scene = SecureScenario::with_roles(false, &["server", "relay", "client"]);
+    let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = reservation.local_addr().unwrap().port().to_string();
+    drop(reservation);
+    let mut origin = scene.spawn_server_with_env(
+        "transitive_restart",
+        &[("HEW_DIST_ORIGIN_BIND_PORT", &port)],
+    );
+    let _first_output = wait_for_server_ready(&mut origin);
+    let mut relay = scene.spawn(
+        "relay",
+        "transitive_restart",
+        &[("HEW_DIST_ORIGIN_PORT", &port)],
+    );
+    let _relay_output = wait_for_server_ready(&mut relay);
+    let relay_port = std::fs::read_to_string(scene.kx_dir.path().join("relay.ready")).unwrap();
+    let mut client = scene.spawn_client(
+        "transitive_restart",
+        &[("HEW_DIST_RELAY_PORT", &relay_port)],
+    );
+    let mut reader = BufReader::new(client.child.stdout.take().unwrap());
+    let mut captured = String::new();
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0, "{captured}");
+        captured.push_str(&line);
+        if line.contains("READY_TRANSIT_RESTART") {
+            break;
+        }
+    }
+    // Observable handler admission precedes origin/carrier loss. The relay's
+    // configured-seed owner discovers the same-key replacement.
+    origin.child.kill().unwrap();
+    origin.child.wait().unwrap();
+    let mut replacement = scene.spawn_server_with_env(
+        "transitive_restart",
+        &[("HEW_DIST_ORIGIN_BIND_PORT", &port)],
+    );
+    let _replacement_output = wait_for_server_ready(&mut replacement);
+    reader.read_to_string(&mut captured).unwrap();
+    let status = client.child.wait().unwrap();
+    let mut diagnostics = String::new();
+    client
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut diagnostics)
+        .unwrap();
+    assert!(status.success(), "{status:?}\n{captured}\n{diagnostics}");
+    assert!(
+        captured.contains(
+            "PASS transitive carrier-loss higher-session old-grant-fenced no-replay fresh-call"
+        ),
+        "{captured}"
+    );
+    let _ = run_client_to_completion(replacement, 0, StderrExpectation::Ignore);
     let _ = run_client_to_completion(relay, 0, StderrExpectation::Ignore);
 }
 

@@ -13,6 +13,10 @@ use crate::util::MutexExt;
 use super::{close_circuit, send_control, Circuit, SendConnMgr, CHUNK_BYTES};
 use crate::connection::ConnectionTransport;
 
+#[cfg(feature = "quic")]
+#[path = "tls.rs"]
+mod tls;
+
 #[derive(Debug, Default)]
 struct Incoming {
     chunks: VecDeque<Vec<u8>>,
@@ -127,20 +131,53 @@ impl Endpoint {
 struct Driver {
     manager: SendConnMgr,
     circuit: Arc<Circuit>,
+    #[cfg(feature = "quic")]
+    tls: Option<Mutex<tls::Tls>>,
 }
 
 pub(super) fn connection(
     manager: *mut crate::connection::HewConnMgr,
     circuit: Arc<Circuit>,
-) -> ConnectionTransport {
+    initiator: bool,
+) -> Option<ConnectionTransport> {
+    // SAFETY: the tracked admission worker pins the manager through this call.
+    #[cfg(feature = "quic")]
+    let manager_ref = unsafe { &*manager };
+    #[cfg(feature = "quic")]
+    let tls = match manager_ref.auth.transport() {
+        crate::peer_binding::TransportSelection::Tcp => None,
+        crate::peer_binding::TransportSelection::QuicMesh => {
+            match tls::new(&manager_ref.auth, initiator) {
+                Ok(tls) => Some(Mutex::new(tls)),
+                Err(error) => {
+                    crate::set_last_error(error);
+                    close_circuit(manager_ref, &circuit, None);
+                    return None;
+                }
+            }
+        }
+    };
+    #[cfg(not(feature = "quic"))]
+    let _ = initiator;
     let driver = Box::new(Driver {
         manager: SendConnMgr(manager),
         circuit,
+        #[cfg(feature = "quic")]
+        tls,
     });
-    ConnectionTransport::owned(HewTransport {
-        ops: &raw const OPS,
+    #[cfg(feature = "quic")]
+    if driver.tls.is_some() && !tls::handshake(&driver) {
+        close_circuit(manager_ref, &driver.circuit, None);
+        return None;
+    }
+    #[cfg(feature = "quic")]
+    let ops = if driver.tls.is_some() { &TLS_OPS } else { &OPS };
+    #[cfg(not(feature = "quic"))]
+    let ops = &OPS;
+    Some(ConnectionTransport::owned(HewTransport {
+        ops,
         r#impl: Box::into_raw(driver).cast(),
-    })
+    }))
 }
 
 pub(crate) unsafe fn is_noise_transport(transport: *const HewTransport) -> bool {
@@ -162,15 +199,27 @@ unsafe extern "C" fn send(
     if data.is_null() || conn != driver.circuit.conn_id || length > MAX_FRAME_SIZE {
         return -1;
     }
+    // SAFETY: the transport contract supplies the advertised readable payload.
+    let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
+    #[cfg(feature = "quic")]
+    if driver.tls.is_some() {
+        return if tls::send(driver, data) {
+            c_int::try_from(length).unwrap_or(-1)
+        } else {
+            -1
+        };
+    }
+    send_raw(driver, data)
+}
+
+fn send_raw(driver: &Driver, data: &[u8]) -> c_int {
     let Some(endpoint) = &driver.circuit.endpoint else {
         return -1;
     };
-    // SAFETY: the transport contract supplies the advertised readable payload.
-    let data = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), length) };
     // SAFETY: the connection/worker lease pins the manager until this driver drops.
     let manager = unsafe { &*driver.manager.0 };
     let mut offset = endpoint.send_offset.lock_or_recover();
-    let header = u32::try_from(length)
+    let header = u32::try_from(data.len())
         .expect("frame limit fits u32")
         .to_le_bytes();
     for chunk in std::iter::once(header.as_slice()).chain(data.chunks(CHUNK_BYTES)) {
@@ -202,7 +251,7 @@ unsafe extern "C" fn send(
         }
         *offset = next;
     }
-    c_int::try_from(length).unwrap_or(-1)
+    c_int::try_from(data.len()).unwrap_or(-1)
 }
 
 unsafe extern "C" fn recv(
@@ -223,7 +272,15 @@ unsafe extern "C" fn recv(
     };
     // SAFETY: the transport contract supplies the advertised writable buffer.
     let output = unsafe { std::slice::from_raw_parts_mut(data.cast::<u8>(), capacity) };
-    if let Some(length) = endpoint.recv(output) {
+    #[cfg(feature = "quic")]
+    let result = if driver.tls.is_some() {
+        tls::recv(driver, output)
+    } else {
+        endpoint.recv(output)
+    };
+    #[cfg(not(feature = "quic"))]
+    let result = endpoint.recv(output);
+    if let Some(length) = result {
         return length;
     }
     // SAFETY: the reader/worker owns its manager lease until this driver drops.
@@ -262,6 +319,38 @@ static OPS: HewTransportOps = HewTransportOps {
     destroy: Some(destroy),
 };
 
+#[cfg(feature = "quic")]
+static TLS_OPS: HewTransportOps = HewTransportOps {
+    connect: None,
+    listen: None,
+    accept: None,
+    send: Some(send),
+    recv: Some(recv),
+    close_conn: Some(close),
+    destroy: Some(destroy),
+};
+
+#[cfg(feature = "quic")]
+pub(crate) unsafe fn is_tls_transport(transport: *const HewTransport) -> bool {
+    // SAFETY: the caller pins a live transport, or supplies null.
+    unsafe { transport.as_ref() }
+        .is_some_and(|transport| std::ptr::eq(transport.ops, &raw const TLS_OPS))
+}
+
+#[cfg(feature = "quic")]
+pub(crate) unsafe fn peer_spki(transport: *const HewTransport, conn: c_int) -> Option<Vec<u8>> {
+    // SAFETY: the caller pins a live transport for this credential projection.
+    if !unsafe { is_tls_transport(transport) } {
+        return None;
+    }
+    // SAFETY: the exact ops identity establishes this private driver type.
+    let driver = unsafe { &*(*transport).r#impl.cast::<Driver>() };
+    if conn != driver.circuit.conn_id {
+        return None;
+    }
+    tls::peer_spki(driver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +384,67 @@ mod tests {
         assert!(!endpoint.push(0, vec![0; MAX_FRAME_SIZE + 5]));
         assert!(endpoint.push(0, u32::MAX.to_le_bytes().to_vec()));
         assert_eq!(endpoint.recv(&mut [0; 16]), None);
+    }
+    #[test]
+    fn carrier_retirement_wakes_its_reader_and_cannot_close_a_replacement() {
+        use crate::connection::relay::{Carrier, CircuitKey};
+        let mut transport = HewTransport {
+            ops: std::ptr::null(),
+            r#impl: std::ptr::null_mut(),
+        };
+        // SAFETY: this test pins transport and manager until both readers join.
+        unsafe {
+            let manager = crate::connection::hew_connmgr_new(
+                &raw mut transport,
+                None,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                1,
+            );
+            let owner = &*manager;
+            let carrier = Carrier {
+                conn: 7,
+                publication: 1,
+            };
+            let circuit = owner
+                .relay
+                .install(CircuitKey { carrier, id: 1 }, None, &[])
+                .unwrap();
+            let reading = Arc::clone(&circuit);
+            let started = Arc::new(std::sync::Barrier::new(2));
+            let reader_started = Arc::clone(&started);
+            let worker = std::thread::spawn(move || {
+                reader_started.wait();
+                reading.endpoint.as_ref().unwrap().recv(&mut [0; 16])
+            });
+            started.wait();
+            super::super::carrier_lost(owner, 7, 1);
+            assert_eq!(worker.join().unwrap(), None);
+            assert!(circuit.closed.load(std::sync::atomic::Ordering::Acquire));
+            let successor = owner
+                .relay
+                .install(
+                    CircuitKey {
+                        carrier: Carrier {
+                            conn: 7,
+                            publication: 2,
+                        },
+                        id: 1,
+                    },
+                    None,
+                    &[],
+                )
+                .unwrap();
+            super::super::carrier_lost(owner, 7, 1);
+            let endpoint = successor.endpoint.as_ref().unwrap();
+            let mut bytes = 4_u32.to_le_bytes().to_vec();
+            bytes.extend_from_slice(b"live");
+            assert!(endpoint.push(0, bytes));
+            let mut output = [0; 4];
+            assert_eq!(endpoint.recv(&mut output), Some(4));
+            assert_eq!(&output, b"live");
+            crate::connection::hew_connmgr_free(manager);
+            assert_eq!(endpoint.recv(&mut output), None);
+        }
     }
 }

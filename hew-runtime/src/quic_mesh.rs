@@ -201,7 +201,7 @@ impl MeshTls {
 }
 
 /// Extract the `SubjectPublicKeyInfo` DER bytes from a parsed X.509 certificate.
-fn extract_spki_from_cert_der(cert_der: &[u8]) -> Result<Vec<u8>, MeshError> {
+pub(crate) fn extract_spki_from_cert_der(cert_der: &[u8]) -> Result<Vec<u8>, MeshError> {
     let certificate = rustls_pki_types::CertificateDer::from(cert_der);
     let parsed = webpki::EndEntityCert::try_from(&certificate)
         .map_err(|error| MeshError::Tls(format!("invalid peer certificate: {error}")))?;
@@ -452,7 +452,7 @@ struct InstalledMeshAuth {
 
 /// Build a listener-ready [`MeshTls`] (+ leaf SPKI) from type-erased snapshot
 /// identity material (DER cert chain + PKCS#8 key + precomputed SPKI).
-fn mesh_tls_from_material(material: &MeshIdentityMaterial) -> MeshIdentity {
+pub(crate) fn mesh_tls_from_material(material: &MeshIdentityMaterial) -> MeshIdentity {
     let cert_chain = material
         .cert_chain_der()
         .iter()
@@ -1875,11 +1875,11 @@ impl QuicMesh {
 const HEW_MESH_ALPN: &[u8] = b"hew-mesh/3";
 const MESH_IDLE_TIMEOUT_SECS: u64 = 30;
 
-/// Build Quinn server and client configs from a [`MeshTls`].
-fn build_tls_configs(
+/// Build mutually authenticated TLS configs for direct and relayed carriage.
+pub(crate) fn checked_tls_configs(
     tls: &MeshTls,
     cluster_admission: bool,
-) -> Result<(quinn::ServerConfig, quinn::ClientConfig), MeshError> {
+) -> Result<(rustls::ServerConfig, rustls::ClientConfig), MeshError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
 
     // ── Server config (verifies client certs via SPKI allowlist) ────────────
@@ -1902,19 +1902,6 @@ fn build_tls_configs(
 
     server_rustls.alpn_protocols = vec![HEW_MESH_ALPN.to_vec()];
 
-    let quinn_server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_rustls)
-        .map_err(|e| MeshError::Tls(format!("quinn server crypto: {e}")))?;
-
-    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quinn_server_crypto));
-    let transport = Arc::get_mut(&mut server_config.transport)
-        .ok_or_else(|| MeshError::Tls("could not configure transport".into()))?;
-    transport.max_idle_timeout(Some(
-        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(MESH_IDLE_TIMEOUT_SECS))
-            .unwrap(),
-    ));
-    // Enable datagrams (required for send_datagram / recv_datagram surface).
-    transport.datagram_receive_buffer_size(Some(64 * 1024));
-
     // ── Client config (verifies server cert via SPKI allowlist) ─────────────
 
     let server_verifier = Arc::new(SpkiServerVerifier {
@@ -1931,6 +1918,28 @@ fn build_tls_configs(
         .map_err(|e| MeshError::Tls(format!("client auth cert: {e}")))?;
 
     client_rustls.alpn_protocols = vec![HEW_MESH_ALPN.to_vec()];
+
+    Ok((server_rustls, client_rustls))
+}
+
+/// Build Quinn carriage from the shared authenticated TLS configuration.
+fn build_tls_configs(
+    tls: &MeshTls,
+    cluster_admission: bool,
+) -> Result<(quinn::ServerConfig, quinn::ClientConfig), MeshError> {
+    let (server_rustls, client_rustls) = checked_tls_configs(tls, cluster_admission)?;
+    let quinn_server_crypto = quinn::crypto::rustls::QuicServerConfig::try_from(server_rustls)
+        .map_err(|e| MeshError::Tls(format!("quinn server crypto: {e}")))?;
+
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(quinn_server_crypto));
+    let transport = Arc::get_mut(&mut server_config.transport)
+        .ok_or_else(|| MeshError::Tls("could not configure transport".into()))?;
+    transport.max_idle_timeout(Some(
+        quinn::IdleTimeout::try_from(std::time::Duration::from_secs(MESH_IDLE_TIMEOUT_SECS))
+            .unwrap(),
+    ));
+    // Enable datagrams (required for send_datagram / recv_datagram surface).
+    transport.datagram_receive_buffer_size(Some(64 * 1024));
 
     let quinn_client_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(client_rustls)
         .map_err(|e| MeshError::Tls(format!("quinn client crypto: {e}")))?;

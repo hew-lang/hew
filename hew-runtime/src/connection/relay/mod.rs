@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, Weak};
 use crate::envelope::{self, ControlFrame, NodeSessionIdentity};
 use crate::node_identity::NodeId;
 use crate::node_protocol_generated as wire;
-use crate::peer_binding::{ClaimState, TransportSelection};
+use crate::peer_binding::ClaimState;
 use crate::util::MutexExt;
 use crate::{set_last_error, transport::with_connection_attempt_deadline};
 
@@ -52,6 +52,7 @@ struct Pending {
 
 #[derive(Debug, Default)]
 struct State {
+    closed: bool,
     circuits: HashMap<CircuitKey, Arc<Circuit>>,
     slots: Vec<Weak<Circuit>>,
     incoming_open: HashMap<Carrier, u64>,
@@ -67,9 +68,19 @@ pub(super) struct RelayHub {
 }
 
 impl RelayHub {
-    fn install(&self, left: CircuitKey, right: Option<CircuitKey>) -> Option<Arc<Circuit>> {
+    fn install(
+        &self,
+        left: CircuitKey,
+        right: Option<CircuitKey>,
+        cancelled: &[Arc<AtomicBool>],
+    ) -> Option<Arc<Circuit>> {
         let mut state = self.state.lock_or_recover();
-        if state.circuits.contains_key(&left)
+        // Teardown sets the existing publication flag before taking this same
+        // owner lock to close circuits. It either observes this installation,
+        // or installation observes cancellation and refuses it.
+        if state.closed
+            || cancelled.iter().any(|flag| flag.load(Ordering::Acquire))
+            || state.circuits.contains_key(&left)
             || right.is_some_and(|key| state.circuits.contains_key(&key))
         {
             return None;
@@ -101,8 +112,11 @@ impl RelayHub {
         Some(circuit)
     }
 
-    fn accept_open(&self, key: CircuitKey) -> bool {
+    fn accept_open(&self, key: CircuitKey, removed: &AtomicBool) -> bool {
         let mut state = self.state.lock_or_recover();
+        if state.closed || removed.load(Ordering::Acquire) {
+            return false;
+        }
         let previous = state.incoming_open.entry(key.carrier).or_default();
         if key.id == 0 || key.id <= *previous {
             return false;
@@ -194,17 +208,36 @@ pub(super) fn carrier_lost(manager: &HewConnMgr, conn: c_int, publication: u64) 
 }
 
 pub(super) fn shutdown(manager: &HewConnMgr) {
-    let circuits = manager
-        .relay
-        .state
-        .lock_or_recover()
-        .circuits
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let circuits = {
+        let mut state = manager.relay.state.lock_or_recover();
+        state.closed = true;
+        state.circuits.values().cloned().collect::<Vec<_>>()
+    };
     for circuit in circuits {
         close_circuit(manager, &circuit, None);
     }
+}
+
+fn install_circuit(
+    manager: &HewConnMgr,
+    left: CircuitKey,
+    right: Option<CircuitKey>,
+) -> Option<Arc<Circuit>> {
+    let left_owner = claim_send(manager, left.carrier.conn, Some(left.carrier.publication))?;
+    let mut cancelled = vec![left_owner.publication_removed()];
+    let right_owner = if let Some(right) = right {
+        Some(claim_send(
+            manager,
+            right.carrier.conn,
+            Some(right.carrier.publication),
+        )?)
+    } else {
+        None
+    };
+    if let Some(owner) = &right_owner {
+        cancelled.push(owner.publication_removed());
+    }
+    manager.relay.install(left, right, &cancelled)
 }
 
 fn predecessor(manager: &HewConnMgr, expected: NodeSessionIdentity) -> Option<ReconnectOwner> {
@@ -224,8 +257,13 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
     let manager_ref = unsafe { &*manager };
     let previous = predecessor(manager_ref, expected);
     let conn_id = circuit.conn_id;
-    let io = transport::connection(manager, circuit);
     with_connection_attempt_deadline(|| {
+        let initiator = manager_ref
+            .local_identity
+            .is_some_and(|identity| identity.to_bytes() < expected.node_id.to_bytes());
+        let Some(io) = transport::connection(manager, circuit, initiator) else {
+            return;
+        };
         // SAFETY: the owned I/O lease, tracked worker and exact expected origin
         // remain live throughout the common direct/relayed admission transaction.
         unsafe {
@@ -237,7 +275,7 @@ fn admit(manager: *mut HewConnMgr, circuit: Arc<Circuit>, expected: NodeSessionI
                 previous.as_ref(),
                 &mut None,
             )
-        }
+        };
     });
 }
 
@@ -271,7 +309,6 @@ pub(super) fn observe_hint(
         return;
     };
     if manager_ref.reconnect_shutdown.load(Ordering::Acquire)
-        || manager_ref.auth.transport() != TransportSelection::Tcp
         || manager_ref.auth.admission().is_none()
         || local.node_id.to_bytes() >= expected.node_id.to_bytes()
     {
@@ -292,9 +329,11 @@ pub(super) fn observe_hint(
     };
     let displaced = {
         let mut state = manager_ref.relay.state.lock_or_recover();
-        if state.pending.get(&expected.node_id).is_some_and(|pending| {
-            pending.expected.session_incarnation >= expected.session_incarnation
-        }) {
+        if state.closed
+            || state.pending.get(&expected.node_id).is_some_and(|pending| {
+                pending.expected.session_incarnation >= expected.session_incarnation
+            })
+        {
             return;
         }
         let occupied = state
@@ -381,7 +420,7 @@ fn open_origin(
         carrier,
         id: next_publication_token(manager_ref)?,
     };
-    let circuit = manager_ref.relay.install(key, None)?;
+    let circuit = install_circuit(manager_ref, key, None)?;
     let retained = {
         let mut state = manager_ref.relay.state.lock_or_recover();
         state
@@ -486,18 +525,22 @@ fn handle_open(
         carrier,
         id: open.circuit,
     };
-    if !manager_ref.relay.accept_open(key) {
+    let Some(carrier_owner) = claim_send(manager_ref, conn, Some(carrier.publication)) else {
+        return;
+    };
+    if !manager_ref
+        .relay
+        .accept_open(key, &carrier_owner.publication_removed())
+    {
         set_last_error("relay rejected a replayed circuit open");
         return;
     }
     if target == local {
-        if origin.node_id.to_bytes() >= local.node_id.to_bytes()
-            || manager_ref.auth.transport() != TransportSelection::Tcp
-        {
+        if origin.node_id.to_bytes() >= local.node_id.to_bytes() {
             send_close(manager_ref, key);
             return;
         }
-        let Some(circuit) = manager_ref.relay.install(key, None) else {
+        let Some(circuit) = install_circuit(manager_ref, key, None) else {
             send_close(manager_ref, key);
             return;
         };
@@ -536,7 +579,7 @@ fn handle_open(
             },
             id,
         };
-        let Some(circuit) = manager_ref.relay.install(key, Some(right)) else {
+        let Some(circuit) = install_circuit(manager_ref, key, Some(right)) else {
             send_close(manager_ref, key);
             return;
         };
@@ -624,30 +667,30 @@ mod tests {
     #[test]
     fn circuit_open_replay_is_bound_to_the_carrier_publication() {
         let hub = RelayHub::default();
-        assert!(!hub.accept_open(key(1, 0)));
-        assert!(hub.accept_open(key(1, 3)));
-        assert!(!hub.accept_open(key(1, 3)));
-        assert!(!hub.accept_open(key(1, 2)));
-        assert!(hub.accept_open(key(1, 4)));
-        assert!(hub.accept_open(key(2, 1)));
-        assert!(!hub.accept_open(key(1, 3)));
+        assert!(!hub.accept_open(key(1, 0), &AtomicBool::new(false)));
+        assert!(hub.accept_open(key(1, 3), &AtomicBool::new(false)));
+        assert!(!hub.accept_open(key(1, 3), &AtomicBool::new(false)));
+        assert!(!hub.accept_open(key(1, 2), &AtomicBool::new(false)));
+        assert!(hub.accept_open(key(1, 4), &AtomicBool::new(false)));
+        assert!(hub.accept_open(key(2, 1), &AtomicBool::new(false)));
+        assert!(!hub.accept_open(key(1, 3), &AtomicBool::new(false)));
     }
 
     #[test]
     fn retained_endpoint_prevents_slot_reuse_and_stale_key_adoption() {
         let hub = RelayHub::default();
-        let first = hub.install(key(1, 1), None).unwrap();
+        let first = hub.install(key(1, 1), None, &[]).unwrap();
         let mut circuits = vec![Arc::clone(&first)];
         for id in 2..=MAX_CIRCUITS {
-            circuits.push(hub.install(key(1, id as u64), None).unwrap());
+            circuits.push(hub.install(key(1, id as u64), None, &[]).unwrap());
         }
-        assert!(hub.install(key(1, 100), None).is_none());
+        assert!(hub.install(key(1, 100), None, &[]).is_none());
         hub.state.lock_or_recover().circuits.remove(&first.left);
-        assert!(hub.install(key(2, 1), None).is_none());
+        assert!(hub.install(key(2, 1), None, &[]).is_none());
         circuits.remove(0);
         let previous_slot = first.conn_id;
         drop(first);
-        let successor = hub.install(key(2, 1), None).unwrap();
+        let successor = hub.install(key(2, 1), None, &[]).unwrap();
         assert_eq!(successor.conn_id, previous_slot);
         assert!(!hub
             .state
@@ -658,5 +701,75 @@ mod tests {
             &hub.state.lock_or_recover().circuits[&key(2, 1)],
             &successor,
         ));
+    }
+    #[test]
+    fn cancelled_carrier_and_shutdown_refuse_late_circuit_installation() {
+        let hub = RelayHub::default();
+        let removed = Arc::new(AtomicBool::new(false));
+        let flags = [Arc::clone(&removed)];
+        let first = hub.install(key(1, 1), None, &flags).unwrap();
+        removed.store(true, Ordering::Release);
+        assert!(hub.install(key(1, 2), None, &flags).is_none());
+        assert!(!hub.accept_open(key(1, 2), &removed));
+        assert!(!hub
+            .state
+            .lock_or_recover()
+            .incoming_open
+            .contains_key(&key(1, 2).carrier));
+        // Cancellation belongs to an exact publication, so a successor has
+        // its own live flag and cannot receive the predecessor's stale key.
+        let successor = [Arc::new(AtomicBool::new(false))];
+        assert!(hub.install(key(2, 1), None, &successor).is_some());
+        hub.state.lock_or_recover().closed = true;
+        assert!(hub.install(key(2, 2), None, &successor).is_none());
+        assert!(!hub.accept_open(key(2, 3), &AtomicBool::new(false)));
+        assert_eq!(first.left, key(1, 1));
+    }
+    #[test]
+    fn checked_relay_open_rejects_malformed_nested_sessions_and_full_input() {
+        let session = wire::WireSession {
+            node: vec![16; 16],
+            incarnation: 1,
+        };
+        let open = wire::RelayOpen {
+            circuit: 17,
+            origin: session.clone(),
+            target: session,
+        };
+        let encoded = open.encode(hew_codec::Format::Cbor);
+        assert_eq!(
+            wire::RelayOpen::decode(hew_codec::Format::Cbor, &encoded).unwrap(),
+            open
+        );
+        // The nested origin map begins after the circuit and origin tags;
+        // its two required fields end immediately before target tag 3.
+        let mut unknown = encoded.clone();
+        unknown[4] = 0xa3;
+        unknown.splice(25..25, [9, 0]);
+        let mut duplicate = encoded.clone();
+        duplicate[4] = 0xa3;
+        duplicate.splice(25..25, [2, 1]);
+        let mut missing = encoded.clone();
+        missing[4] = 0xa1;
+        missing.drain(23..25);
+        let mut wide = encoded.clone();
+        wide.splice(24..25, [0x1b, 0, 0, 0, 1, 0, 0, 0, 0]);
+        let mut negative = encoded.clone();
+        negative[2] = 0x20;
+        let mut trailing = encoded;
+        trailing.push(0);
+        for invalid in [unknown, duplicate, missing, wide, negative, trailing] {
+            assert!(wire::RelayOpen::decode(hew_codec::Format::Cbor, &invalid).is_err());
+        }
+        let zero = wire::WireSession {
+            node: vec![0; 16],
+            incarnation: 1,
+        };
+        assert!(envelope::checked_session(&zero, 2).is_err());
+        let zero_session = wire::WireSession {
+            node: vec![16; 16],
+            incarnation: 0,
+        };
+        assert!(envelope::checked_session(&zero_session, 2).is_err());
     }
 }

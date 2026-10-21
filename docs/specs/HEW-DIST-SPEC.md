@@ -258,6 +258,9 @@ Version 12 adds checked relay-open, byte-chunk and close controls. An admitted
 carrier may introduce another enrolled node's identity and session as a hint.
 The recipient establishes a separate end-to-end authenticated logical session
 through the carrier before accepting that origin's names, grants or calls.
+Noise uses the same transcript and credential verification as direct TCP; TLS
+uses the direct mesh certificate verifier and identity material. Both feed the
+same checked enrolment, session, publication and grant authorities.
 The carrier forwards opaque protected bytes; its own credential cannot attest
 to another node's identity. Circuit identifiers, ordered byte offsets and the
 carrier's exact publication fence replay and endpoint reuse. Carrier loss

@@ -1767,7 +1767,10 @@ fn start_admitted(kx: string, my_role: string, peer_role: string, bind: string) 
     if seed_scenario && my_role == "server" {
         let _ = wait_for_file(f"{kx}/seed.start-server");
     }
-    let seeds = if seed_scenario && my_role == "client" {
+    let seeds = if active_scenario == "transitive_restart" && my_role == "relay" {
+        let port = os.env("HEW_DIST_ORIGIN_PORT").expect("origin seed");
+        [f"127.0.0.1:{port}"]
+    } else if seed_scenario && my_role == "client" {
         let port = os.env("HEW_DIST_SEED_PORT") ?? "";
         [f"127.0.0.1:{port}"]
     } else {
@@ -3382,6 +3385,7 @@ fn run_client(scenario: string) -> i64 {
 
 actor TransitCounter {
     var total: i64 = 0;
+    var stalled: i64 = 0;
     #[wire]
     receive fn add(amount: i64) -> i64 {
         total += amount;
@@ -3391,6 +3395,17 @@ actor TransitCounter {
     receive fn read() -> i64 {
         total
     }
+    #[wire]
+    receive fn held(kx: string) -> i64 {
+        stalled += 1;
+        publish_atomic(kx, "transit.inflight", "1");
+        let _ = wait_for_file(f"{kx}/transit.release");
+        stalled
+    }
+    #[wire]
+    receive fn held_count() -> i64 { stalled }
+    #[wire]
+    receive fn echo(value: string) -> string { value }
     #[wire]
     receive fn location() -> string {
         let location = Node.lookup("transit-server").expect("origin name");
@@ -3433,6 +3448,11 @@ fn run_transitive(role: string) -> i64 {
         let service: TransitCounter = peer.receive_service<TransitCounter>().expect("origin grant");
         assert(service.location().expect("authenticated origin location") == f"{origin}");
         assert(service.add(42).expect("transitive actor call") == 42);
+        if os.env("HEW_DIST_TRANSPORT") == .Some("quic-mesh") {
+            let large = "relay".repeat(32768);
+            assert(service.echo(large).expect("large relayed TLS request and reply") == large);
+            assert(service.echo("after").expect("following relayed TLS frame") == "after");
+        }
         publish_atomic(kx, "transit.revoke", "1");
         let _ = wait_for_file(f"{kx}/transit.revoked");
         match service.add(100) {
@@ -3449,11 +3469,80 @@ fn run_transitive(role: string) -> i64 {
     0
 }
 
+fn wait_transit_successor(previous: Location) -> Location {
+    let observation = cluster.watch().expect("successor observation");
+    loop {
+        let current = observation.snapshot().expect("successor snapshot");
+        for item in current.registrations {
+            if item.name == "transit-server" && item.location.node_id() == previous.node_id()
+                && item.location.incarnation() > previous.incarnation() {
+                return item.location;
+            }
+        }
+        assert(observation.changes.recv().is_some());
+    }
+}
+
+fn run_transitive_restart(role: string) -> i64 {
+    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+    let port = if role == "server" { os.env("HEW_DIST_ORIGIN_BIND_PORT") ?? "0" } else { "0" };
+    start_admitted(kx, role, "server", f"127.0.0.1:{port}");
+    let counter = spawn TransitCounter;
+    Node.register(f"transit-{role}", counter);
+    if role == "server" {
+        let _ = signal_server_listening(kx);
+        println(f"READY {unsafe { hew_dist_bound_port() }}");
+        let client = cluster.wait_registered("transit-client").expect("authenticated client origin");
+        let peer = Node.peer(client.node_id()).expect("authenticated client peer");
+        let export = peer.export(counter).expect("restart origin grant");
+        let _ = wait_for_file(f"{kx}/transit.done");
+        export.close();
+    } else if role == "relay" {
+        let own_port = f"{unsafe { hew_dist_bound_port() }}";
+        publish_atomic(kx, "relay.ready", own_port);
+        println(f"READY {own_port}");
+        let _ = wait_for_file(f"{kx}/transit.done");
+    } else {
+        let relay_port = os.env("HEW_DIST_RELAY_PORT").expect("relay address");
+        Node.connect(f"127.0.0.1:{relay_port}").expect("client admits relay");
+        let old_location = cluster.wait_registered("transit-server").expect("first origin");
+        let peer = Node.peer(old_location.node_id()).expect("first end-to-end peer");
+        let old: TransitCounter = peer.receive_service<TransitCounter>().expect("first grant");
+        assert(old.add(42).expect("initial mutation") == 42);
+        scope {
+            let interrupted = fork old.held(kx);
+            let _ = wait_for_file(f"{kx}/transit.inflight");
+            println("READY_TRANSIT_RESTART");
+            match await interrupted {
+                .Err(ActorError.ConnectionDropped) => {}
+                _ => panic("carrier loss did not fail its one admitted call"),
+            }
+        };
+        let fresh_location = wait_transit_successor(old_location);
+        let fresh_peer = Node.peer(fresh_location.node_id()).expect("higher origin session");
+        let fresh: TransitCounter = fresh_peer.receive_service<TransitCounter>().expect("fresh origin grant");
+        assert(fresh.read().expect("fresh state") == 0);
+        assert(fresh.held_count().expect("no replay") == 0);
+        match old.read() {
+            .Err(ActorError.Dead) => {}
+            _ => panic("old origin session regained authority"),
+        }
+        assert(fresh.add(7).expect("fresh call") == 7);
+        publish_atomic(kx, "transit.done", "1");
+        println("PASS transitive carrier-loss higher-session old-grant-fenced no-replay fresh-call");
+    }
+    Node.shutdown();
+    0
+}
+
 fn main() -> i64 {
     let role = os.env("HEW_DIST_ROLE") ?? "";
     var scenario = os.env("HEW_DIST_SCENARIO") ?? "";
     if scenario == "" {
         scenario = "remote_ask";
+    }
+    if scenario == "transitive_restart" {
+        return run_transitive_restart(role);
     }
     if scenario == "transitive" {
         return run_transitive(role);

@@ -2,7 +2,7 @@
 //!
 //! Every admitted connection carries exactly one [`ChannelProtection`]: TCP
 //! connections are protected by Noise-XX and quic-mesh connections by the
-//! transport's mutually pinned TLS 1.3. There is no unprotected variant, so a
+//! transport's authenticated TLS 1.3. There is no unprotected variant, so a
 //! connection actor cannot exist without a channel and no send or read path
 //! has a plaintext arm. [`establish`] is the only constructor reachable
 //! outside tests, and it picks the protection from the transport's ops
@@ -84,7 +84,7 @@ pub(crate) enum ChannelRefusal {
     PlaintextPeer,
     /// The Noise-XX handshake failed or could not pick roles.
     NoiseHandshake,
-    /// The peer's authenticated Noise key is not pinned on this node.
+    /// The peer credential has no configured admission authority.
     KeyNotPinned,
     /// The authenticated Noise key differs from the key in the peer's record.
     KeyMismatch,
@@ -105,12 +105,10 @@ impl fmt::Display for ChannelRefusal {
             Self::NoLocalNoiseIdentity => "no stable local Noise identity is loaded",
             Self::PlaintextPeer => "peer does not offer Noise; plaintext node channels are refused",
             Self::NoiseHandshake => "noise handshake failed",
-            Self::KeyNotPinned => "peer Noise key is not pinned",
-            Self::KeyMismatch => "authenticated Noise key does not match the v2 handshake key",
+            Self::KeyNotPinned => "peer credential has no installed cluster admission",
+            Self::KeyMismatch => "authenticated Noise key does not match the checked handshake key",
             #[cfg(feature = "quic")]
-            Self::MeshRecordCarriesNoiseKey => {
-                "quic-mesh v2 handshake carried a non-zero Noise key"
-            }
+            Self::MeshRecordCarriesNoiseKey => "TLS node handshake carried a non-zero Noise key",
             #[cfg(feature = "quic")]
             Self::MeshCredentialUnavailable => "quic-mesh peer certificate is unavailable",
         })
@@ -323,7 +321,10 @@ pub(super) unsafe fn channel_kind(transport: *const HewTransport) -> Option<Chan
     }
     #[cfg(feature = "quic")]
     // SAFETY: forwarded caller contract; the check is null-safe.
-    if unsafe { crate::quic_mesh::hew_transport_is_quic_mesh(transport) } {
+    if unsafe { crate::quic_mesh::hew_transport_is_quic_mesh(transport) }
+        // SAFETY: forwarded caller contract; the relay check is null-safe.
+        || unsafe { super::relay::transport::is_tls_transport(transport) }
+    {
         return Some(ChannelKind::QuicMeshTls);
     }
     None
@@ -375,9 +376,9 @@ pub(super) unsafe fn establish(
             let (noise, peer_static_key) =
                 unsafe { upgrade_noise(transport, conn_id, local, peer, local_private_key) }
                     .ok_or(ChannelRefusal::NoiseHandshake)?;
-            // Per-node pre-gate (issue #2652, D14): the authenticated key must
-            // be pinned in this node's snapshot. Claim reservation later binds
-            // it to the claimed NodeId.
+            // Installed cluster admission is verified below by the common
+            // admission transaction. Native test fixtures may supply explicit
+            // synthetic bindings without an operator enrolment.
             if auth.admission().is_none() && !auth.noise_pubkey_allowlisted(&peer_static_key) {
                 return Err(ChannelRefusal::KeyNotPinned);
             }
@@ -394,12 +395,14 @@ pub(super) unsafe fn establish(
             if peer.static_noise_pubkey != [0; NOISE_STATIC_PUBKEY_LEN] {
                 return Err(ChannelRefusal::MeshRecordCarriesNoiseKey);
             }
-            // The mTLS handshake already pinned the peer's leaf SPKI (D6);
-            // binding it ties the claimed NodeId to that key.
+            // TLS proved possession of the peer's certificate key. The common
+            // admission transaction verifies its enrolment and key-derived NodeId.
             // SAFETY: forwarded caller contract.
-            let spki =
-                unsafe { crate::quic_mesh::hew_transport_quic_mesh_peer_spki(transport, conn_id) }
-                    .ok_or(ChannelRefusal::MeshCredentialUnavailable)?;
+            let spki = unsafe {
+                crate::quic_mesh::hew_transport_quic_mesh_peer_spki(transport, conn_id)
+                    .or_else(|| super::relay::transport::peer_spki(transport, conn_id))
+            }
+            .ok_or(ChannelRefusal::MeshCredentialUnavailable)?;
             Ok((
                 ChannelProtection::QuicMeshTls(Mutex::new(false)),
                 PeerCredential::Spki(spki),

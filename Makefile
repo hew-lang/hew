@@ -672,7 +672,7 @@ sandbox-vm-test: sandbox-vm-deps
 # The local browser package supplies the same codec bridge used by the VM.
 SANDBOX_PARITY_ARGS ?=
 SANDBOX_PARITY_RUNNER ?= cargo test -p hew-wasm
-sandbox-parity: hew-native sandbox-vm-deps wasm
+sandbox-parity: hew-native sandbox-vm-deps $(if $(strip $(HEW_WASM_MODULE)),,wasm)
 	npm --prefix hew-sandbox-vm run build
 	$(TEST_RUN_ENV) $(SANDBOX_PARITY_RUNNER) $(SANDBOX_PARITY_ARGS)
 

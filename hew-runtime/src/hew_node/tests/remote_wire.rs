@@ -114,7 +114,7 @@ fn wire_route_slot_peer_observes_configured_slot() {
 
     let (node1, _node1_port, node2, node2_port) = start_authorized_quic_mesh_pair(ID_A, ID_B);
 
-    let connect_addr = CString::new(format!("{ID_B}@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.

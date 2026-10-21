@@ -133,14 +133,13 @@ fn compiled_node_binary() -> &'static Path {
     static NODE_BINARY: OnceLock<CompiledNodeBinary> = OnceLock::new();
     &NODE_BINARY
         .get_or_init(|| {
-            let compiler = match std::env::var_os("HEW_DIST_E2E_HEW_BIN") {
-                // An explicit compiler carries its own staged runtime; leave
-                // those products intact for the caller's qualification.
-                Some(compiler) => PathBuf::from(compiler),
-                None => {
-                    require_codegen();
-                    hew_binary()
-                }
+            // An explicit compiler carries its own staged runtime; leave
+            // those products intact for the caller's qualification.
+            let compiler = if let Some(compiler) = std::env::var_os("HEW_DIST_E2E_HEW_BIN") {
+                PathBuf::from(compiler)
+            } else {
+                require_codegen();
+                hew_binary()
             };
 
             let source = repo_root()

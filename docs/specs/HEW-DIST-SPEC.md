@@ -261,20 +261,20 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 9 handshake
+## 4. Protocol-version 10 handshake
 
-Version 9 carries disjoint direct-actor and stable-role destinations throughout
-requests, grants, registry gossip and observations. Upgrade communicating nodes
+Version 10 carries disjoint direct-actor and stable-role destinations throughout
+requests, grants, registry gossip and observations, plus typed route-size failures. Upgrade communicating nodes
 together: earlier peers fail the handshake before route publication. There is
 no downgrade or legacy location codec.
 
 Every connection exchanges exactly 72 bytes before actor traffic. The layout
-magic remains `HEW\x02`; the independently checked protocol version is `9`:
+magic remains `HEW\x02`; the independently checked protocol version is `10`:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `9` |
+| `4` | 2 | protocol version, big-endian, value `10` |
 | `6` | 2 | reserved, zero |
 | `8` | 4 | schema hash, big-endian |
 | `12` | 4 | feature flags, big-endian |
@@ -286,7 +286,7 @@ magic remains `HEW\x02`; the independently checked protocol version is `9`:
 The receiver MUST reject:
 
 - any length other than 72 bytes;
-- magic other than `HEW\x02` or protocol version other than `9`;
+- magic other than `HEW\x02` or protocol version other than `10`;
 - non-zero reserved bytes;
 - an all-zero `NodeId`;
 - session incarnation `0`;
@@ -303,7 +303,7 @@ buried member.
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by
-`hew-runtime/schemas/envelope.cddl`. The wire schema version is `9`.
+`hew-runtime/schemas/envelope.cddl`. The wire schema version is `10`.
 
 Envelope key `5` names the canonical dotted handler declaration for a request,
 or carries reply status `0` (success) / `1` (rejection), or withdrawal tag `2`. Local dispatch indices
@@ -356,6 +356,34 @@ public error is `StaleRef`.
 When a connection is superseded, the previous connection loses data-plane and
 control-plane authority immediately. Payload-carried route hints never restore
 that authority.
+
+### 6.1 Message size and route capacity
+
+Local actor calls transfer ordinary values without wire serialization or a
+transport-derived size cap. `#[wire]` supplies the portable codec; it does not
+restrict a local value to a network frame's capacity.
+
+A remote route checks the complete encoded frame, including the body, handler
+identity, locations and envelope metadata, before consuming a cipher nonce or
+writing bytes. Encoded expansion counts. TCP Noise currently admits one
+plaintext frame of at most 65,519 bytes; QUIC mesh admits a framed payload of
+at most 16 MiB. These are transport capacities, not a public body-size API.
+Transparent segmentation of large Noise messages remains future transport work.
+
+An oversized request reports `ActorError.MessageTooLarge`. A reject-policy
+call or mailbox submission instead returns its sealed unaccepted request as
+`ActorError.Rejected`, with `SendError.MessageTooLarge`. It can be redirected
+to a compatible local actor through the existing `.to(target)` operation.
+The destination handler has not claimed that request. Other pending or later
+calls keep their connection and authority.
+
+An oversized successful reply or declared handler error reports
+`ActorError.MessageTooLarge` through a bounded terminal failure. The handler
+has already run; its reply is released once and is neither truncated nor
+replayed. Only `Rejected` returns an unaccepted request for safe resubmission.
+Other error variants alone establish neither handler execution nor permission
+to repeat a call. Hostile inbound frames still obey the bounded transport
+length checks and authenticated decoding rules.
 
 ## 7. Registry and names
 

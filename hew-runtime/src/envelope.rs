@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 9;
+pub const WIRE_VERSION: u8 = 10;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).

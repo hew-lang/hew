@@ -741,10 +741,13 @@ pub unsafe extern "C" fn hew_actor_call_poll(operation: *mut HewActorCall) -> i3
 }
 
 /// Whether a ready status hands the unaccepted request back to the caller: a
-/// Reject call refused for a full mailbox or for runtime shutdown. A Wait call
+/// Reject call refused for capacity, route size or runtime shutdown. A Wait call
 /// cannot reject, so cleanup releases its request instead.
 fn call_returns_request(reject: bool, status: i32) -> bool {
-    reject && (status == AskError::MailboxFull as i32 || status == AskError::LocalShutdown as i32)
+    reject
+        && (status == AskError::MailboxFull as i32
+            || status == AskError::LocalShutdown as i32
+            || status == AskError::MessageTooLarge as i32)
 }
 
 /// Transfer the selected reply, or the original request on a Reject refusal.

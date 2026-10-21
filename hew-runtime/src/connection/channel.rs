@@ -124,8 +124,9 @@ impl std::error::Error for ChannelRefusal {}
 pub(crate) enum ChannelError {
     /// The caller declined to prepare a frame after transport admission.
     Preparation,
-    /// The frame does not fit one Noise transport message.
-    FrameTooLarge { len: usize },
+    /// The complete encoded frame exceeds this authenticated route's capacity.
+    /// No frame bytes or cipher nonce were consumed.
+    FrameTooLarge { len: usize, max: usize },
     /// Noise refused to encrypt the frame.
     Seal,
     /// An earlier frame send failed; the channel is dead.
@@ -139,10 +140,9 @@ pub(crate) enum ChannelError {
 impl fmt::Display for ChannelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::FrameTooLarge { len } => write!(
+            Self::FrameTooLarge { len, max } => write!(
                 f,
-                "frame of {len} bytes exceeds the {} byte channel limit",
-                NOISE_MAX_MSG_SIZE - NOISE_TAG_LEN
+                "frame of {len} bytes exceeds the {max} byte channel limit"
             ),
             Self::Preparation => f.write_str("frame preparation declined"),
             Self::Seal => f.write_str("channel encryption failed"),
@@ -156,6 +156,20 @@ impl fmt::Display for ChannelError {
 impl std::error::Error for ChannelError {}
 
 impl ChannelProtection {
+    /// Validate the actual encoded frame before encryption or transport writes.
+    fn check_frame_len(&self, len: usize) -> Result<(), ChannelError> {
+        let max = match self {
+            Self::TcpNoise(_) => NOISE_MAX_MSG_SIZE - NOISE_TAG_LEN,
+            #[cfg(feature = "quic")]
+            Self::QuicMeshTls(_) => crate::transport::MAX_FRAME_SIZE,
+        };
+        if len > max {
+            Err(ChannelError::FrameTooLarge { len, max })
+        } else {
+            Ok(())
+        }
+    }
+
     /// Seal one frame and send it whole on `conn_id`.
     ///
     /// # Safety
@@ -191,9 +205,7 @@ impl ChannelProtection {
                 }
                 let prepared = prepare().ok_or(ChannelError::Preparation)?;
                 let frame = prepared.as_ref();
-                if frame.len() + NOISE_TAG_LEN > NOISE_MAX_MSG_SIZE {
-                    return Err(ChannelError::FrameTooLarge { len: frame.len() });
-                }
+                self.check_frame_len(frame.len())?;
                 let mut sealed = vec![0u8; frame.len() + NOISE_TAG_LEN];
                 let n = noise
                     .cipher
@@ -216,6 +228,7 @@ impl ChannelProtection {
                 }
                 let prepared = prepare().ok_or(ChannelError::Preparation)?;
                 let frame = prepared.as_ref();
+                self.check_frame_len(frame.len())?;
                 // SAFETY: forwarded caller contract.
                 if unsafe { send_frame(transport, conn_id, frame) } {
                     Ok(())
@@ -480,17 +493,57 @@ mod tests {
     }
 
     #[test]
-    fn noise_send_refuses_a_frame_over_the_message_limit() {
-        let (local, _peer) = ChannelProtection::test_noise_pair();
-        let (_state, mut transport) = recording_transport();
+    fn noise_size_refusal_preserves_frame_boundaries_nonce_and_channel() {
+        let (local, mut peer) = ChannelProtection::test_noise_pair();
+        let (state, mut transport) = recording_transport();
         let limit = NOISE_MAX_MSG_SIZE - NOISE_TAG_LEN;
-        // SAFETY: the recording transport is live for both calls.
-        unsafe {
-            assert!(local.send(&raw mut transport, 1, &vec![0u8; limit]).is_ok());
-            assert_eq!(
-                local.send(&raw mut transport, 1, &vec![0u8; limit + 1]),
-                Err(ChannelError::FrameTooLarge { len: limit + 1 })
-            );
+        for len in [limit - 1, limit, limit + 1, 3] {
+            // SAFETY: the test owns this recording transport and complete frame.
+            let outcome = unsafe { local.send(&raw mut transport, 1, &vec![7u8; len]) };
+            if len > limit {
+                assert_eq!(
+                    outcome,
+                    Err(ChannelError::FrameTooLarge { len, max: limit })
+                );
+            } else {
+                assert_eq!(outcome, Ok(()));
+            }
+        }
+        let sent = state.sent.lock_or_recover();
+        assert_eq!(sent.len(), 3, "size refusal must write no frame");
+        for (frame, len) in sent.iter().zip([limit - 1, limit, 3]) {
+            let mut plaintext = vec![0u8; frame.len()];
+            let decoded = peer
+                .read_message(frame, &mut plaintext)
+                .expect("no nonce gap after refusal");
+            assert_eq!(decoded, len);
+            assert!(plaintext[..decoded].iter().all(|byte| *byte == 7));
+        }
+    }
+
+    #[cfg(feature = "quic")]
+    #[test]
+    fn mesh_size_refusal_preserves_transport_and_subsequent_frames() {
+        let local = ChannelProtection::QuicMeshTls(Mutex::new(false));
+        let (state, mut transport) = recording_transport();
+        let limit = crate::transport::MAX_FRAME_SIZE;
+        for len in [limit - 1, limit, limit + 1, 3] {
+            // SAFETY: the test owns this recording transport and complete frame.
+            let outcome = unsafe { local.send(&raw mut transport, 1, &vec![7u8; len]) };
+            if len > limit {
+                assert_eq!(
+                    outcome,
+                    Err(ChannelError::FrameTooLarge { len, max: limit })
+                );
+            } else {
+                assert_eq!(outcome, Ok(()));
+            }
+        }
+        let sent = state.sent.lock_or_recover();
+        assert_eq!(sent.len(), 3, "size refusal must write no frame");
+        for (frame, len) in sent.iter().zip([limit - 1, limit, 3]) {
+            assert_eq!(frame.len(), len);
+            assert!(frame.iter().all(|byte| *byte == 7));
         }
     }
 

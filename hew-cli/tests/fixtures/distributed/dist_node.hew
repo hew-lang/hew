@@ -881,6 +881,141 @@ fn scenario_stable_role(kx: string) -> i64 {
     0
 }
 
+// Route capacity is a wire boundary; ordinary local actors retain their values.
+actor SizeProbe {
+    var calls: i64 = 0;
+    var remembered_len: i64 = 0;
+    #[wire]
+    receive fn accept(value: string) -> i64 {
+        calls += 1;
+        value.len()
+    }
+    #[wire]
+    receive fn expanded(values: Vec<i64>) -> i64 {
+        calls += 1;
+        values.len()
+    }
+    #[wire]
+    receive fn record(value: string) {
+        calls += 1;
+        remembered_len = value.len();
+    }
+    #[wire]
+    receive fn reply(size: i64) -> string {
+        calls += 1;
+        "r".repeat(size)
+    }
+    #[wire]
+    receive fn decline(size: i64) -> i64 fails string {
+        calls += 1;
+        return error "e".repeat(size);
+    }
+    #[wire]
+    receive fn held(kx: string) -> i64 {
+        publish_atomic(kx, "size.pending", "1");
+        let _ = wait_for_file(f"{kx}/size.release");
+        calls += 1;
+        42
+    }
+    #[wire]
+    receive fn count() -> i64 {
+        calls
+    }
+    #[wire]
+    receive fn last_len() -> i64 {
+        remembered_len
+    }
+}
+
+actor SizeWaiter {
+    let service: SizeProbe;
+    let completed: Sink<i64>;
+    receive fn run(kx: string) {
+        let value = service.held(kx).expect("pending call survives unrelated size refusal");
+        completed.send(value).expect("pending call completion");
+    }
+}
+
+fn scenario_server_message_size(peer: net.PeerSession, kx: string) {
+    let service = spawn SizeProbe;
+    let export = peer.export(service).expect("size grant");
+    let _ = wait_for_file(f"{kx}/size.done");
+    assert(service.count().expect("exact remote executions") == 6);
+    export.close();
+    stop(service);
+    stopped(service);
+}
+
+fn scenario_message_size(kx: string) -> i64 {
+    let service = fixture_peer().receive_service<SizeProbe>().expect("size grant");
+    let local = spawn SizeProbe;
+    assert(local.accept("x".repeat(70000)).expect("local values do not use Noise framing") == 70000);
+    assert(local.reply(70000).expect("large local reply").len() == 70000);
+    match local.decline(70000) {
+        .Err(ActorError.Failed(value)) => assert(value.len() == 70000),
+        _ => panic("local declared failure acquired a transport cap"),
+    }
+    assert(service.accept("small").expect("initial call") == 5);
+    let (completed, completion): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("pending size call");
+    let waiter = spawn SizeWaiter { service: service, completed: completed };
+    mailbox(waiter).run(kx).expect("start unrelated pending call");
+    let _ = wait_for_file(f"{kx}/size.pending");
+    match service.accept("x".repeat(70000)) {
+        .Err(ActorError.MessageTooLarge) => {}
+        _ => panic("oversized request lacked its typed failure"),
+    }
+    match mailbox(service, on_full: .Reject).record("retained".repeat(10000)) {
+        .Err(ActorError.Rejected(failure)) => {
+            assert(failure.reason == SendError.MessageTooLarge);
+            failure.message.to(local).expect("unaccepted request moves to local actor");
+        }
+        _ => panic("oversized submission lost its unaccepted request"),
+    }
+    assert(local.last_len().expect("sealed request preserved its value") == 80000);
+    match policy(service, on_full: .Reject).accept("q".repeat(70000)) {
+        .Err(ActorError.Rejected(failure)) => {
+            assert(failure.reason == SendError.MessageTooLarge);
+            assert(failure.message.to(local).expect("unaccepted completion redirects locally") == 70000);
+        }
+        _ => panic("oversized reject-policy call lost its request"),
+    }
+    // The native vector storage fits the Noise plaintext capacity, but its
+    // CBOR elements expand to nine bytes each. Check complete encoded size.
+    var expanded: Vec<i64> = Vec.new();
+    for i in 0..8000 {
+        expanded.push(9223372036854775807);
+    }
+    match service.expanded(expanded) {
+        .Err(ActorError.MessageTooLarge) => {}
+        _ => panic("encoded expansion escaped the route limit"),
+    }
+    publish_atomic(kx, "size.release", "1");
+    assert(completion.recv().expect("unrelated pending call retained") == 42);
+    assert(service.count().expect("requests refused before claim") == 2);
+    match policy(service, on_full: .Reject).reply(70000) {
+        .Err(ActorError.MessageTooLarge) => {}
+        _ => panic("oversized reply did not produce a terminal failure"),
+    }
+    match service.decline(70000) {
+        .Err(ActorError.MessageTooLarge) => {}
+        _ => panic("oversized declared error did not produce a terminal failure"),
+    }
+    assert(service.count().expect("reply handlers executed once") == 4);
+    assert(service.reply(3).expect("connection survives size failures") == "rrr");
+    match service.decline(3) {
+        .Err(ActorError.Failed(value)) => assert(value == "eee"),
+        _ => panic("small declared error changed after size refusal"),
+    }
+    assert(service.count().expect("no replay or truncation") == 6);
+    stop(waiter);
+    stopped(waiter);
+    stop(local);
+    stopped(local);
+    publish_atomic(kx, "size.done", "1");
+    println("PASS message_size local-large request-refused retained-request encoded-expansion reply-failed declared-error connection-survives no-replay");
+    0
+}
+
 // ── Cross-node link ───────────────────────────────────────────────────────────
 //
 // The link scenarios prove the OTP "linked processes die together" semantic
@@ -1719,6 +1854,11 @@ fn run_server(scenario: string) {
     }
     if scenario == "service_grants" {
         scenario_server_service_grants(kx);
+        Node.shutdown();
+        return;
+    }
+    if scenario == "message_size" {
+        scenario_server_message_size(peer, kx);
         Node.shutdown();
         return;
     }
@@ -3162,6 +3302,8 @@ fn run_client(scenario: string) -> i64 {
         scenario_quarantine_rejoin()
     } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
         scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
+    } else if scenario == "message_size" {
+        scenario_message_size(kx)
     } else if scenario == "stable_role" {
         scenario_stable_role(kx)
     } else if scenario == "service_grants" {

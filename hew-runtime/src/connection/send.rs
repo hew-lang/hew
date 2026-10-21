@@ -94,7 +94,7 @@ impl SendClaim {
         }
     }
 
-    fn send_prepared_result<B: AsRef<[u8]>>(
+    pub(crate) fn send_prepared_result<B: AsRef<[u8]>>(
         &self,
         prepare: impl FnOnce() -> Option<B>,
     ) -> Result<(), ChannelError> {

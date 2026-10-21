@@ -32,6 +32,7 @@ fn main() -> i64 {
             ActorError.NodeNotRunning => 6,
             ActorError.RoutingFailed => 8,
             ActorError.EncodeFailed => 9,
+            ActorError.MessageTooLarge => 13,
             ActorError.ConnectionDropped => 10,
             ActorError.Partition => 11,
             ActorError.Refused => 12,

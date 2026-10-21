@@ -5741,6 +5741,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
       return "ActorErrorRoutingFailed";
     case "EncodeFailed":
       return "ActorErrorEncodeFailed";
+    case "MessageTooLarge":
+      return "ActorErrorMessageTooLarge";
     case "ConnectionDropped":
       return "ActorErrorConnectionDropped";
     case "Partition":
@@ -5752,6 +5754,8 @@ function actorErrorRole(reason: string): RuntimeVariantRole {
 
 function sendErrorRole(reason: string): RuntimeVariantRole {
   switch (reason) {
+    case "MessageTooLarge":
+      return "SendErrorMessageTooLarge";
     case "Full":
       return "SendErrorFull";
     case "Closed":

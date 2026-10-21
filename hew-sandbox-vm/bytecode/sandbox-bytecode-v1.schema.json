@@ -8116,6 +8116,12 @@
               "minimum": 0,
               "type": "integer"
             },
+            "ActorErrorMessageTooLarge": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
             "ActorErrorNodeNotRunning": {
               "format": "uint32",
               "maximum": 4294967295,
@@ -8291,6 +8297,12 @@
               "type": "integer"
             },
             "SendErrorLocalShutdown": {
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "SendErrorMessageTooLarge": {
               "format": "uint32",
               "maximum": 4294967295,
               "minimum": 0,

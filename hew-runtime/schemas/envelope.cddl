@@ -173,7 +173,7 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 9        ; current schema version; decoders reject unknown values
+wire-version = 10        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     1 => node-id, ; node

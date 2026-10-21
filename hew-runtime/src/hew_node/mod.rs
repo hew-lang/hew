@@ -1011,6 +1011,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
         x if x == AskError::MonitorLost as i32 => Some(AskError::MonitorLost),
         x if x == AskError::HandlerTrapped as i32 => Some(AskError::HandlerTrapped),
         x if x == AskError::Refused as i32 => Some(AskError::Refused),
+        x if x == AskError::MessageTooLarge as i32 => Some(AskError::MessageTooLarge),
         _ => None,
     }
 }
@@ -1020,6 +1021,7 @@ fn ask_error_from_code(code: i32) -> Option<AskError> {
 enum AskRejectionReasonCode {
     Timeout = AskError::Timeout as u8,
     EncodeFailed = AskError::EncodeFailed as u8,
+    MessageTooLarge = AskError::MessageTooLarge as u8,
     SendFailed = AskError::SendFailed as u8,
     PayloadSizeMismatch = AskError::PayloadSizeMismatch as u8,
     WorkerAtCapacity = AskError::WorkerAtCapacity as u8,
@@ -1052,6 +1054,7 @@ impl AskRejectionReasonCode {
         let code = match reason {
             AskError::Timeout => Self::Timeout,
             AskError::EncodeFailed => Self::EncodeFailed,
+            AskError::MessageTooLarge => Self::MessageTooLarge,
             AskError::SendFailed => Self::SendFailed,
             AskError::PayloadSizeMismatch => Self::PayloadSizeMismatch,
             AskError::WorkerAtCapacity => Self::WorkerAtCapacity,
@@ -1079,6 +1082,7 @@ impl AskRejectionReasonCode {
             None => unreachable!("one-byte rejection"),
             Some(x) if x == Self::Timeout as u8 => Ok(AskError::Timeout),
             Some(x) if x == Self::EncodeFailed as u8 => Ok(AskError::EncodeFailed),
+            Some(x) if x == Self::MessageTooLarge as u8 => Ok(AskError::MessageTooLarge),
             Some(x) if x == Self::SendFailed as u8 => Ok(AskError::SendFailed),
             Some(x) if x == Self::PayloadSizeMismatch as u8 => Ok(AskError::PayloadSizeMismatch),
             Some(x) if x == Self::WorkerAtCapacity as u8 => Ok(AskError::WorkerAtCapacity),

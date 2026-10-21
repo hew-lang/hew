@@ -458,19 +458,19 @@ pub(super) fn send_reply_envelope(
     //
     // The read lock is held for the entire duration of `conn_mgr` access via
     // the `read_access` closure.
-    with_current_node_read(|guard| {
+    let oversized = with_current_node_read(|guard| {
         if *guard == 0 {
-            return;
+            return false;
         }
         if shutdown_started.load(Ordering::Acquire) {
-            return;
+            return false;
         }
 
         // SAFETY: the current-node guard pins this manager for the reply.
         let Some(send_claim) = (unsafe {
             connection::claim_send_to_route(&*conn_mgr, target_node_id, Some(publication))
         }) else {
-            return;
+            return false;
         };
 
         // Encode the reply envelope with request_id set and source_node_id = 0
@@ -490,12 +490,28 @@ pub(super) fn send_reply_envelope(
             Ok(bytes) => bytes,
             Err(err) => {
                 set_last_error(format!("send_reply_envelope: {err}"));
-                return;
+                return false;
             }
         };
 
-        send_claim.send(&bytes);
+        matches!(
+            send_claim.send_prepared_result(|| Some(bytes)),
+            Err(connection::ChannelError::FrameTooLarge { .. })
+        )
     });
+    if oversized {
+        // The handler has already run. Report a bounded terminal failure, never
+        // a nonadmission acknowledgement that could invite replay. The node
+        // read guard above is released before this reacquires current authority.
+        send_rejection_reply(
+            target_node_id,
+            request_id,
+            publication,
+            AskError::MessageTooLarge,
+            conn_mgr,
+            shutdown_started,
+        );
+    }
 }
 
 pub(super) fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop: &AtomicBool) {

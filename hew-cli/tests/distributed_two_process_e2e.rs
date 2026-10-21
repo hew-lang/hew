@@ -1196,6 +1196,15 @@ fn stable_role_grant_survives_worker_restart_without_replaying_calls() {
     assert!(!stdout.contains("FAIL "), "{stdout}");
 }
 
+/// Frame-size refusals preserve unaccepted requests and healthy connections;
+/// oversized replies report failure after exactly one handler execution.
+#[test]
+fn message_size_refusals_preserve_requests_and_connection() {
+    let stdout = run_two_process_scenario("message_size");
+    assert!(stdout.contains("PASS message_size local-large request-refused retained-request encoded-expansion reply-failed declared-error connection-survives no-replay"), "{stdout}");
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]

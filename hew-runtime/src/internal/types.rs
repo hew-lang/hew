@@ -386,6 +386,9 @@ pub enum AskError {
     HandlerTrapped = 22,
     /// A receiving interceptor refused the delivery without entering its handler.
     Refused = 23,
+    /// The complete encoded request or reply exceeds the selected route capacity.
+    /// A request is refused before writes; a reply may follow handler execution.
+    MessageTooLarge = 24,
 }
 
 /// The public `ActorError` variant a runtime ask failure folds to.
@@ -403,13 +406,14 @@ pub enum ActorErrorRole {
     NodeNotRunning,
     RoutingFailed,
     EncodeFailed,
+    MessageTooLarge,
     ConnectionDropped,
     Partition,
 }
 
 impl AskError {
     /// Every runtime ask status, indexed by its discriminant.
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::None,
         Self::NodeNotRunning,
         Self::RoutingFailed,
@@ -434,6 +438,7 @@ impl AskError {
         Self::MonitorLost,
         Self::HandlerTrapped,
         Self::Refused,
+        Self::MessageTooLarge,
     ];
 
     /// The public role this status reports; `None` is the success sentinel.
@@ -469,6 +474,7 @@ impl AskError {
             | Self::Backpressure => ActorErrorRole::RoutingFailed,
             // A payload could not be coded on either side of the wire.
             Self::EncodeFailed | Self::DecodeFailure => ActorErrorRole::EncodeFailed,
+            Self::MessageTooLarge => ActorErrorRole::MessageTooLarge,
             Self::ConnectionDropped => ActorErrorRole::ConnectionDropped,
             Self::Partition => ActorErrorRole::Partition,
         })

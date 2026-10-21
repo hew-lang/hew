@@ -79,6 +79,9 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
             super::package::RuntimeVariantRole::ActorErrorRoutingFailed
         }
         Role::ActorErrorEncodeFailed => super::package::RuntimeVariantRole::ActorErrorEncodeFailed,
+        Role::ActorErrorMessageTooLarge => {
+            super::package::RuntimeVariantRole::ActorErrorMessageTooLarge
+        }
         Role::ActorErrorConnectionDropped => {
             super::package::RuntimeVariantRole::ActorErrorConnectionDropped
         }
@@ -97,6 +100,9 @@ fn runtime_role_name(role: SirRuntimeVariantRole) -> super::package::RuntimeVari
         Role::SendErrorUnauthorized => super::package::RuntimeVariantRole::SendErrorUnauthorized,
         Role::SendErrorInvalidMessage => {
             super::package::RuntimeVariantRole::SendErrorInvalidMessage
+        }
+        Role::SendErrorMessageTooLarge => {
+            super::package::RuntimeVariantRole::SendErrorMessageTooLarge
         }
         Role::SendErrorTimedOut => super::package::RuntimeVariantRole::SendErrorTimedOut,
         Role::SendErrorWriteTimedOut => super::package::RuntimeVariantRole::SendErrorWriteTimedOut,

@@ -306,8 +306,12 @@ fn start_export(
                 .then_some(bytes)
         },
         move |result| {
-            if result.is_err() {
-                completion_table.fail(request_id, AskError::ConnectionDropped);
+            if let Err(error) = result {
+                let reason = match error {
+                    connection::ChannelError::FrameTooLarge { .. } => AskError::MessageTooLarge,
+                    _ => AskError::ConnectionDropped,
+                };
+                completion_table.fail(request_id, reason);
             }
         },
     ) {

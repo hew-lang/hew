@@ -624,6 +624,7 @@ pub mod mailbox_header;
 pub mod mpsc;
 /// Key-derived distributed node identity and carried actor-location values.
 pub mod node_identity;
+mod node_protocol_generated;
 /// Runtime-instance state — the de-globalized home for process-wide
 /// authorities (native-only; the WASM cooperative scheduler keeps its own state
 /// model).

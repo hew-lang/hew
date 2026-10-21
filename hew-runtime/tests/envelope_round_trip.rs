@@ -225,8 +225,9 @@ fn envelope_frame(
 
 fn assert_published_schema(rule: &str, bytes: &[u8]) {
     let schema = format!(
-        "start = {rule}\n{}",
-        include_str!("../schemas/envelope.cddl")
+        "start = {rule}\n{}\n{}",
+        include_str!("../schemas/envelope.cddl"),
+        include_str!("../schemas/node-controls.generated.cddl")
     );
     cddl::validate_cbor_from_slice(&schema, bytes, None).unwrap_or_else(|error| {
         panic!("encoded {rule} does not conform to the published schema: {error:?}")
@@ -400,6 +401,29 @@ fn service_offer_and_request_reject_noncanonical_authority() {
         handlers: vec!["tests.Service.read".into()],
     };
     let bytes = encode_service_offer_payload(&offer).unwrap();
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(7u64)),
+            (int(2u64), location_value(offer.target)),
+            (
+                int(3u64),
+                Value::Map(vec![
+                    (
+                        int(1u64),
+                        Value::Bytes(offer.recipient.node_id.to_bytes().to_vec())
+                    ),
+                    (int(2u64), int(4u32)),
+                ])
+            ),
+            (
+                int(4u64),
+                Value::Array(vec![Value::Text("tests.Service.read".into())])
+            ),
+            (int(5u64), int(3u64)),
+        ])),
+        "preserve the existing service-offer CBOR bytes"
+    );
     assert_eq!(decode_service_offer_payload(&bytes).unwrap(), offer);
     let mut trailing = bytes.clone();
     trailing.push(0);
@@ -1535,6 +1559,18 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
         close_fault: None,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(4242u64)),
+            (int(2u64), location_value(original.target)),
+            (int(3u64), down_reason_value(5)),
+            (int(4u64), int(1i32)),
+            (int(5u64), int(2u8)),
+            (int(6u64), Value::Null),
+        ])),
+        "preserve the existing monitor-DOWN CBOR bytes"
+    );
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
     assert_eq!(decoded, original);
 
@@ -1585,7 +1621,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&malformed_target)),
-        Err(MonitorPayloadError::MalformedField { key: 2, .. })
+        Err(MonitorPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".target"
     ));
 
     let untyped_reason = Value::Map(vec![
@@ -1598,7 +1634,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&untyped_reason)),
-        Err(MonitorPayloadError::MalformedField { key: 3, .. })
+        Err(MonitorPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".reason"
     ));
 
     let unknown_reason_tag = Value::Map(vec![
@@ -2118,4 +2154,150 @@ fn monitor_control_frame_round_trips_through_wire_frame() {
         decode_monitor_req_payload(&decoded.payload).expect("payload should decode"),
         req
     );
+}
+
+fn fields_at<'a>(value: &'a mut Value, path: &[u64]) -> &'a mut Vec<(Value, Value)> {
+    let Value::Map(fields) = value else {
+        panic!("control record map")
+    };
+    if let Some((key, tail)) = path.split_first() {
+        let child = &mut fields
+            .iter_mut()
+            .find(|(field, _)| *field == int(*key))
+            .unwrap()
+            .1;
+        fields_at(child, tail)
+    } else {
+        fields
+    }
+}
+
+fn checked_control_values() -> (Value, Value) {
+    use hew_runtime::envelope::{encode_service_offer_payload, ServiceOfferPayload};
+    let offer = ServiceOfferPayload {
+        request_id: 3,
+        grant_id: 7,
+        target: location(1, 8, 2),
+        recipient: node_session(2, 4),
+        handlers: vec!["tests.Service.read".into()],
+    };
+    let offer_value = decode_value(&encode_service_offer_payload(&offer).unwrap());
+    let down = MonitorDownPayload {
+        ref_id: 3,
+        target: offer.target,
+        reason: -1,
+        crash_kind: 0,
+        end_reason: 2,
+        close_fault: Some((-7, "cleanup diagnostic".into())),
+    };
+    let down_value = decode_value(&encode_monitor_down_payload(&down).unwrap());
+    (offer_value, down_value)
+}
+
+#[test]
+fn checked_controls_refuse_unknown_duplicate_and_missing_nested_fields() {
+    use hew_runtime::envelope::decode_service_offer_payload;
+    let (offer_value, down_value) = checked_control_values();
+    // Every nested map must obey the same shared strict-reader policy.
+    for (value, paths, monitor) in [
+        (offer_value.clone(), vec![vec![], vec![2], vec![3]], false),
+        (
+            down_value.clone(),
+            vec![vec![], vec![2], vec![3], vec![6]],
+            true,
+        ),
+    ] {
+        for path in paths {
+            for mutation in 0..3 {
+                let mut invalid = value.clone();
+                let fields = fields_at(&mut invalid, &path);
+                match mutation {
+                    0 => fields.push((int(99u64), int(0u64))),
+                    1 => fields.push(fields[0].clone()),
+                    _ => {
+                        fields.remove(0);
+                    }
+                }
+                let bytes = value_to_cbor(&invalid);
+                let refused = if monitor {
+                    decode_monitor_down_payload(&bytes).is_err()
+                } else {
+                    decode_service_offer_payload(&bytes).is_err()
+                };
+                assert!(
+                    refused,
+                    "nested path {path:?}, mutation {mutation}, monitor {monitor}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn checked_controls_refuse_invalid_integer_widths_and_identities() {
+    use hew_runtime::envelope::decode_service_offer_payload;
+    let (offer_value, down_value) = checked_control_values();
+    for (value, path, key, invalid_value, monitor) in [
+        (
+            offer_value.clone(),
+            vec![2],
+            3,
+            int(u64::from(u32::MAX) + 1),
+            false,
+        ),
+        (
+            offer_value.clone(),
+            vec![3],
+            2,
+            int(u64::from(u32::MAX) + 1),
+            false,
+        ),
+        (offer_value.clone(), vec![], 1, int(-1i64), false),
+        (
+            offer_value.clone(),
+            vec![2],
+            1,
+            Value::Bytes(vec![1; 15]),
+            false,
+        ),
+        (
+            offer_value.clone(),
+            vec![2],
+            1,
+            Value::Bytes(vec![0; 16]),
+            false,
+        ),
+        (offer_value.clone(), vec![2], 4, int(2u32), false),
+        (offer_value.clone(), vec![3], 2, int(0u32), false),
+        (
+            down_value.clone(),
+            vec![3],
+            2,
+            int(i64::from(i32::MIN) - 1),
+            true,
+        ),
+        (
+            down_value.clone(),
+            vec![6],
+            1,
+            int(i64::from(i32::MAX) + 1),
+            true,
+        ),
+        (down_value.clone(), vec![], 5, int(256u32), true),
+        (down_value, vec![], 4, Value::Float(1.5), true),
+    ] {
+        let mut invalid = value;
+        fields_at(&mut invalid, &path)
+            .iter_mut()
+            .find(|(field, _)| *field == int(key))
+            .unwrap()
+            .1 = invalid_value;
+        let bytes = value_to_cbor(&invalid);
+        let refused = if monitor {
+            decode_monitor_down_payload(&bytes).is_err()
+        } else {
+            decode_service_offer_payload(&bytes).is_err()
+        };
+        assert!(refused, "integer/identity boundary at {path:?}/{key}");
+    }
 }

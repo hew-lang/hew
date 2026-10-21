@@ -281,9 +281,11 @@ stateDiagram-v2
 ## 6. Wire Protocol Frame Format (CBOR)
 
 The Hew runtime encodes inter-node actor messages as CBOR (RFC 8949) frames.
-The schema is specified in `hew-runtime/schemas/envelope.cddl` (frame container)
-and `hew-runtime/schemas/wire-body.cddl` (per-type message body). The Rust
-types are in `hew-runtime/src/envelope.rs`.
+The structural schemas are `hew-runtime/schemas/envelope.cddl` together with
+`node-controls.generated.cddl` (frame container), and
+`hew-runtime/schemas/wire-body.cddl` (per-type message body). Checked internal
+Hew declarations generate the service-offer and terminal-observation structures;
+`hew-runtime/src/envelope.rs` retains domain validation and other frame codecs.
 
 ### 6.1 Frame structure
 

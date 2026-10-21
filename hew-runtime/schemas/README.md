@@ -1,22 +1,36 @@
 # hew-runtime/schemas
 
-This directory contains the CDDL schema files that are the **doc-of-truth**
-for the Hew CBOR wire protocol.
+This directory contains structural CDDL for the Hew CBOR wire protocol.
+`protocol/node_controls.hew` owns the service-offer and monitor-DOWN structures,
+including their nested location, session, reason and cleanup records. Ordinary
+checker data plans generate `src/node_protocol_generated.rs` and
+`schemas/node-controls.generated.cddl`; use `make node-protocol` to regenerate
+and `make node-protocol-check` to detect drift. Standalone runtime builds consume
+the checked-in Rust and do not invoke the compiler or generator.
+
+Read `envelope.cddl` together with `node-controls.generated.cddl`. Runtime
+adapters own semantic validation (identity, grants, sorted interfaces, terminal
+reason tags and resource bounds); the generated schema describes data structure,
+not those admission rules. The remaining frame, membership and handshake shapes
+have not yet moved to checked Hew declarations.
 
 ## What is CDDL?
 
 [CDDL (Concise Data Definition Language, RFC 8610)](https://www.rfc-editor.org/rfc/rfc8610)
-is a schema language for CBOR and JSON data structures. Each `.cddl` file in
-this directory specifies the exact shape of one family of wire frames. The Rust
-types in `src/envelope.rs` and the codec in `src/connection/reader.rs` MUST
-remain consistent with these definitions.
+is a schema language for CBOR and JSON data structures. The checked
+`protocol/node_controls.hew` declarations generate both
+`src/node_protocol_generated.rs` and `schemas/node-controls.generated.cddl`.
+The adapters in `src/envelope.rs` retain domain policy. Remaining legacy
+protocol structures in that module and the frame reader must stay consistent
+with their manually maintained CDDL until they move to checked declarations.
 
 ## Files
 
-| File             | Covers                                                                                                         |
-| ---------------- | -------------------------------------------------------------------------------------------------------------- |
-| `envelope.cddl`  | Control frames and data envelope frames (CBOR wire layer) — the transport CONTAINER                            |
-| `wire-body.cddl` | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
+| File                           | Covers                                                                                                         |
+| ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
+| `node-controls.generated.cddl` | Checked service-offer and monitor-DOWN data structures                                                         |
+| `envelope.cddl`                | Control frames and data envelope frames (CBOR wire layer) — the transport CONTAINER                            |
+| `wire-body.cddl`               | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
 
 The fixed-width authenticated handshake is specified in HEW-DIST-SPEC §4.
 

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 mod core_acceptance;
 mod ir_size;
+mod node_protocol;
 mod ratchet;
 mod syntax_data;
 
@@ -54,6 +55,7 @@ fn run() -> Result<()> {
         Some("core-acceptance") => core_acceptance::run(&args[1..]),
         Some("ir-size") => ir_size::run(&args[1..]),
         Some("sandbox-bytecode") => sandbox_bytecode(&args[1..]),
+        Some("node-protocol") => node_protocol::run(&args[1..]),
         Some("syntax-data") => syntax_data::run(&args[1..]),
         Some("runtime-declarations") => runtime_declarations(&args[1..]),
         Some("--help" | "-h") => {
@@ -104,6 +106,7 @@ fn usage() -> String {
         "  ir-size           compare O2 LLVM instruction counts with ir-budget.tsv",
         "  runtime-declarations  write or check declaration-owned FFI metadata",
         "  syntax-data       write or check checker-owned primitive syntax metadata",
+        "  node-protocol     write or check checked internal node data bindings",
     ]
     .join("\n")
 }

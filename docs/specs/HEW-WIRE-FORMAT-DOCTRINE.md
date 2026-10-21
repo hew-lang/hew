@@ -30,9 +30,13 @@ markers per the project's `Shims, Stubs, and Seams` rule.
 ### Decision
 
 The Hew runtime's actor-to-actor wire format is **CBOR** (RFC 8949), with
-the schema defined in **CDDL** (RFC 8610). The doc-of-truth schema is
-[`hew-runtime/schemas/envelope.cddl`][cddl]. The Rust-native frame types
-that conform to that schema live in
+structural schemas described in **CDDL** (RFC 8610).
+[`hew-runtime/schemas/envelope.cddl`][cddl] combines with
+`hew-runtime/schemas/node-controls.generated.cddl`. Service-offer and terminal
+observation structures are checked Hew declarations in
+`hew-runtime/protocol/node_controls.hew`; their generated Rust walks use the
+ordinary format-neutral codec Sink/Source. Runtime adapters retain semantic
+validation. The remaining Rust-native frame codecs live in
 [`hew-runtime/src/envelope.rs`][envelope-rs].
 
 [cddl]: ../../hew-runtime/schemas/envelope.cddl
@@ -97,7 +101,8 @@ the frame does not interpret it. The bytes inside that `bstr` are the
 **per-`#[wire]`-type CBOR body** the codegen serializer emits for the
 message being sent, and they have their own doc-of-truth schema in
 [`hew-runtime/schemas/wire-body.cddl`][wire-body-cddl]. Together,
-`envelope.cddl` (the container) and `wire-body.cddl` (the body) make the
+`envelope.cddl` with `node-controls.generated.cddl` (the container) and
+`wire-body.cddl` (the body) make the
 whole internode wire — frame and body — CDDL-described.
 
 [wire-body-cddl]: ../../hew-runtime/schemas/wire-body.cddl

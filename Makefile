@@ -635,9 +635,9 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # Deterministic generated repository artifacts. Behavioral ratchets remain
 # owned by their named test targets; they are intentionally not re-recorded by
 # a generic command from observed compiler output.
-baselines: syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
+baselines: node-protocol syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
@@ -1773,3 +1773,11 @@ sandbox-bytecode: sandbox-vm-deps ## Generate: Rust-owned sandbox instruction ty
 sandbox-bytecode-check: sandbox-vm-deps ## Check: generated sandbox instruction types and schema
 	cargo run -p xtask -- sandbox-bytecode --check
 	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --check
+
+.PHONY: node-protocol node-protocol-check
+node-protocol: ## Generate: checked internal node control bindings and CDDL
+	cargo run -p xtask -- node-protocol --write
+
+LINT_GATES += node-protocol-check
+node-protocol-check: ## Check: internal node control bindings match checked Hew plans
+	cargo run -p xtask -- node-protocol --check

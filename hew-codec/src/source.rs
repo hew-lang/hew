@@ -13,11 +13,13 @@ use crate::{DecodeError, Format};
 /// Pulls follow the same grammar as [`crate::Sink`] events. A record hands
 /// out every member exactly once, in declaration order: a present key, or
 /// `null` for an absent `ACCEPT_ABSENT` or `SKIP` member, so the walk never
-/// tracks presence itself. Unknown keys are skipped. After any error the walk
+/// tracks presence itself. Unknown keys are skipped unless the caller selects
+/// [`Source::reject_unknown_fields`]. After any error the walk
 /// abandons the source.
 #[derive(Debug)]
 pub struct Source<'t> {
     format: Format,
+    reject_unknown_fields: bool,
     stack: Vec<Frame<'t>>,
     staged: Option<Value>,
     path: Vec<String>,
@@ -90,11 +92,20 @@ impl<'t> Source<'t> {
     pub fn from_value(format: Format, value: Value) -> Self {
         Self {
             format,
+            reject_unknown_fields: false,
             stack: Vec::new(),
             staged: Some(value),
             path: Vec::new(),
             last: String::new(),
         }
+    }
+
+    /// Require every record key to belong to its checked table, recursively.
+    /// Ordinary user data keeps its evolving unknown-field behaviour by default.
+    #[must_use]
+    pub fn reject_unknown_fields(mut self) -> Self {
+        self.reject_unknown_fields = true;
+        self
     }
 
     /// The path of the value being read: `.field`, `[index]`, `["key"]`,
@@ -504,6 +515,11 @@ impl<'t> Source<'t> {
                 .position(|member| !member.has(Member::SKIP) && self.is_key(&table, member, &key))
             {
                 values[index] = Some(value);
+            } else if self.reject_unknown_fields {
+                return Err(DecodeError::Invalid {
+                    path: self.path(),
+                    reason: format!("unknown record field {}", key.render_key()),
+                });
             }
         }
         self.stack.push(Frame::Record {

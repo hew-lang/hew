@@ -68,8 +68,8 @@ function wrappingPackage(binaryOp, lhs, rhs, ty, printKind) {
   };
 }
 
-function runWrapping(binaryOp, lhs, rhs, ty = "i64", printKind = "I64") {
-  const trace = runBytecode(wrappingPackage(binaryOp, lhs, rhs, ty, printKind), {
+async function runWrapping(binaryOp, lhs, rhs, ty = "i64", printKind = "I64") {
+  const trace = await runBytecode(wrappingPackage(binaryOp, lhs, rhs, ty, printKind), {
     fixtureId: "wrapping-arith",
     traceId: "trace:wrapping-arith",
     replay: { seed: 42, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
@@ -79,35 +79,35 @@ function runWrapping(binaryOp, lhs, rhs, ty = "i64", printKind = "I64") {
   return trace.final_state.stdout.join("").trim();
 }
 
-test("WrappingAdd wraps i64::MAX &+ 1 to i64::MIN", () => {
-  assert.equal(runWrapping("WrappingAdd", I64_MAX, "1"), I64_MIN);
+test("WrappingAdd wraps i64::MAX &+ 1 to i64::MIN", async () => {
+  assert.equal(await runWrapping("WrappingAdd", I64_MAX, "1"), I64_MIN);
 });
 
-test("WrappingSub wraps i64::MIN &- 1 to i64::MAX", () => {
-  assert.equal(runWrapping("WrappingSub", I64_MIN, "1"), I64_MAX);
+test("WrappingSub wraps i64::MIN &- 1 to i64::MAX", async () => {
+  assert.equal(await runWrapping("WrappingSub", I64_MIN, "1"), I64_MAX);
 });
 
-test("WrappingMul wraps i64::MAX &* 2 to -2", () => {
+test("WrappingMul wraps i64::MAX &* 2 to -2", async () => {
   // i64::MAX * 2 is 2^64 - 2, which truncates to -2.
-  assert.equal(runWrapping("WrappingMul", I64_MAX, "2"), "-2");
+  assert.equal(await runWrapping("WrappingMul", I64_MAX, "2"), "-2");
 });
 
-test("WrappingMul wraps i64::MIN &* -1 back to i64::MIN", () => {
+test("WrappingMul wraps i64::MIN &* -1 back to i64::MIN", async () => {
   // -(i64::MIN) is 2^63, unrepresentable, so two's complement leaves i64::MIN.
-  assert.equal(runWrapping("WrappingMul", I64_MIN, "-1"), I64_MIN);
+  assert.equal(await runWrapping("WrappingMul", I64_MIN, "-1"), I64_MIN);
 });
 
-test("wrapping arithmetic truncates at the operand's own width", () => {
+test("wrapping arithmetic truncates at the operand's own width", async () => {
   // The operand type the package records is what wraps, so a narrower type
   // wraps sooner: 127 &+ 1 leaves i8 at its minimum rather than reaching 128.
-  assert.equal(runWrapping("WrappingAdd", "127", "1", "i8", "I32"), "-128");
-  assert.equal(runWrapping("WrappingAdd", "255", "1", "u8", "U8"), "0");
-  assert.equal(runWrapping("WrappingMul", "2147483647", "2", "i32", "I32"), "-2");
+  assert.equal(await runWrapping("WrappingAdd", "127", "1", "i8", "I32"), "-128");
+  assert.equal(await runWrapping("WrappingAdd", "255", "1", "u8", "U8"), "0");
+  assert.equal(await runWrapping("WrappingMul", "2147483647", "2", "i32", "I32"), "-2");
 });
 
-test("non-overflow wrapping arithmetic still matches native", () => {
+test("non-overflow wrapping arithmetic still matches native", async () => {
   // Negative controls: in-range wrapping ops are unchanged by the truncation.
-  assert.equal(runWrapping("WrappingAdd", "2", "3"), "5");
-  assert.equal(runWrapping("WrappingSub", "10", "4"), "6");
-  assert.equal(runWrapping("WrappingMul", "-6", "7"), "-42");
+  assert.equal(await runWrapping("WrappingAdd", "2", "3"), "5");
+  assert.equal(await runWrapping("WrappingSub", "10", "4"), "6");
+  assert.equal(await runWrapping("WrappingMul", "-6", "7"), "-42");
 });

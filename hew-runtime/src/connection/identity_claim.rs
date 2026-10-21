@@ -17,7 +17,7 @@ use super::gossip::flush_registry_gossip_to_connection;
 use super::handshake::close_transport_conn;
 #[cfg(test)]
 use super::reconnect::next_publication_token;
-use super::HewConnMgr;
+use super::{HewConnMgr, ReconnectOwner};
 
 /// Bounded wait for an in-flight `Reserved` claim to resolve, in ms. Mirrors the
 /// handshake timeout ceiling: a stuck reservation must not wedge admission.
@@ -45,6 +45,10 @@ pub(super) enum ClaimReservation {
 /// - `Reserved` (another admission in flight) ⇒ wait on the condvar until it
 ///   publishes/aborts, then re-evaluate; on timeout ⇒ reject.
 /// - absent ⇒ insert `Reserved`; no supersede.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "admission carries the authenticated claim and optional reconnect predecessor"
+)]
 pub(super) fn reserve_identity_claim(
     mgr: &HewConnMgr,
     node_id: NodeId,
@@ -53,6 +57,7 @@ pub(super) fn reserve_identity_claim(
     credential: Option<&PeerCredential>,
     conn_id: c_int,
     publication_token: u64,
+    predecessor: Option<&ReconnectOwner>,
 ) -> ClaimReservation {
     if route_slot == 0 || session_incarnation == 0 {
         return ClaimReservation::Rejected(format!(
@@ -62,6 +67,28 @@ pub(super) fn reserve_identity_claim(
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     loop {
+        if mgr.reconnect_shutdown.load(Ordering::Acquire)
+            || crate::transport::connection_attempt_remaining()
+                .is_some_and(|remaining| remaining.is_zero())
+        {
+            return ClaimReservation::Rejected("connection attempt cancelled or expired".into());
+        }
+        // A provisional admission may abort and restore the exact retired
+        // predecessor. Let it use the bounded wait below before deciding
+        // whether this retry lost its publication authority.
+        let reserved = map
+            .get(&node_id)
+            .is_some_and(|claim| claim.state == ClaimState::Reserved);
+        if !reserved
+            && predecessor.is_some_and(|owner| {
+                owner.node_id != node_id
+                    || !map.get(&node_id).is_some_and(|claim| owner.matches(claim))
+            })
+        {
+            return ClaimReservation::Rejected(format!(
+                "stale reconnect predecessor for NodeId {node_id}"
+            ));
+        }
         match map.get(&node_id) {
             Some(existing) if existing.state != ClaimState::Reserved => {
                 if existing.credential.as_ref() == credential && existing.route_slot == route_slot {
@@ -109,7 +136,12 @@ pub(super) fn reserve_identity_claim(
                 // publish or abort, then re-evaluate. Bounded to avoid wedging.
                 let (guard, timeout) = condvar.wait_timeout_or_recover(
                     map,
-                    std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                    crate::transport::connection_attempt_remaining().map_or(
+                        std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                        |remaining| {
+                            remaining.min(std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS))
+                        },
+                    ),
                 );
                 map = guard;
                 if timeout.timed_out() {
@@ -242,6 +274,7 @@ pub(super) fn reserve_unverified_identity_claim(
         None,
         conn_id,
         token,
+        None,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {
@@ -273,6 +306,7 @@ pub(super) fn reserve_claim(
         credential,
         conn_id,
         publication_token,
+        None,
     )
 }
 
@@ -489,12 +523,12 @@ pub(super) fn publish_identity_connection_established(
     }
 
     if let Some(previous) = superseded.as_ref().filter(|previous| {
-        previous.state == ClaimState::Published
-            && previous.session_incarnation != peer_session_incarnation
+        previous.state == ClaimState::Published && previous.publication_token != publication_token
     }) {
-        crate::hew_node::fan_out_monitor_lost_for_session(
+        crate::hew_node::fan_out_monitor_lost_for_publication(
             peer_identity,
             previous.session_incarnation,
+            previous.publication_token,
         );
     }
 
@@ -726,6 +760,7 @@ pub(super) fn retire_identity_connection_publication(
     mgr: &HewConnMgr,
     peer_identity: Option<NodeId>,
     peer_route_slot: u16,
+    peer_session_incarnation: u32,
     conn_id: c_int,
     publication_token: u64,
     publication_sync: &Arc<Mutex<()>>,
@@ -768,11 +803,14 @@ pub(super) fn retire_identity_connection_publication(
         };
     }
 
-    // Cross-node monitor connection-drop fan-out: the connection to
-    // `peer_node_id` is gone, so every local watcher of an actor on that node
-    // gets a MonitorLost DOWN — unless it already received a definitive
-    // clean-exit / crash DOWN (only Pending slots are armed; exactly-once).
-    crate::hew_node::fan_out_monitor_lost_for_identity(peer_identity);
+    // Settle monitor/link observations registered by this exact publication.
+    // A replacement publication may already own observations for the same
+    // identity and session, so cleanup must not fan out by identity alone.
+    crate::hew_node::fan_out_monitor_lost_for_publication(
+        peer_identity,
+        peer_session_incarnation,
+        publication_token,
+    );
 }
 
 #[cfg(test)]
@@ -787,6 +825,7 @@ pub(super) fn retire_connection_publication(
         mgr,
         Some(test_node_identity(peer_route_slot)),
         peer_route_slot,
+        1,
         conn_id,
         publication_token,
         publication_sync,

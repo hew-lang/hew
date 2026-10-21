@@ -32,7 +32,7 @@ pub struct LockedPackage {
     /// Package source: `"registry"`, `"path"`, or `"local"`.
     #[serde(default = "default_source", skip_serializing_if = "is_default_source")]
     pub source: String,
-    /// Canonical registry identity when `source = "registry"`.
+    /// Canonical registry identity, or cache scope for `source = "local"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry: Option<String>,
     /// Local dependency path when `source = "path"`.
@@ -217,13 +217,13 @@ pub fn validate_lockfile(lockfile: &LockFile) -> Result<(), LockError> {
             package: package.name.clone(),
             reason: format!("invalid version `{}`: {error}", package.version),
         })?;
-        if !matches!(package.source.as_str(), "registry" | "path") {
+        if !matches!(package.source.as_str(), "registry" | "local" | "path") {
             return Err(LockError::InvalidEntry {
                 package: package.name.clone(),
                 reason: format!("unsupported source `{}`", package.source),
             });
         }
-        if package.source == "registry" {
+        if matches!(package.source.as_str(), "registry" | "local") {
             let registry = package
                 .registry
                 .as_deref()

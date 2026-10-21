@@ -35,11 +35,24 @@ fn main() -> i64 {
         .Err(.Config) => {}
         _ => return 7,
     }
-    let failed_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-{os.pid()}.key", peers: Vec.new(), seeds: ["127.0.0.1:1"] };
-    match Node.start(failed_seed) {
-        .Err(.Unreachable) => {}
+    var malformed_seed = configured_at("127.0.0.1:0");
+    malformed_seed.seeds = ["1@missing-port"];
+    match Node.start(malformed_seed) {
+        .Err(.Config) => {}
+        _ => return 8,
+    }
+    var conflicting_seeds = configured_at("127.0.0.1:0");
+    conflicting_seeds.seeds = ["1@127.0.0.1:1", "2@127.0.0.1:1"];
+    match Node.start(conflicting_seeds) {
+        .Err(.Config) => {}
+        _ => return 9,
+    }
+    let absent_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-{os.pid()}.key", peers: Vec.new(), seeds: ["127.0.0.1:1"] };
+    match Node.start(absent_seed) {
+        .Ok(_) => {}
         _ => return 3,
     }
+    Node.shutdown();
     let retry = configured_at("127.0.0.1:0");
     if !starts(retry) {
         return 4;
@@ -52,6 +65,7 @@ fn main() -> i64 {
     Node.shutdown();
     var restart = configured_at("127.0.0.1:0");
     restart.transport = NodeTransport.QuicMesh;
+    restart.seeds = ["localhost:1"];
     restart.key = f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-mesh-{os.pid()}.key";
     if !starts(restart) {
         return 6;

@@ -550,3 +550,38 @@ fn main() {
 "#,
     );
 }
+
+#[test]
+fn supervisor_wiring_uses_owner_token_and_rejects_reversed_dependency_order() {
+    let mut module = lower_source(
+        r"
+actor Backend { receive fn ping() {} }
+actor Frontend { init(backend: Backend) {} receive fn ping() {} }
+supervisor Shop {
+    child frontend: Frontend wired_to: { backend: backend };
+    child backend: Backend;
+}
+fn main() { let app = spawn Shop; stop(app); stopped(app); }
+",
+    );
+    let supervisor = &module.supervisors[0];
+    assert_eq!(supervisor.startup_order, vec![1, 0]);
+    let callable = module.callable(supervisor.children[0].spawn).unwrap();
+    assert_eq!(callable.signature.params[0].ty, supervisor.handle_ty);
+    assert_eq!(
+        callable.signature.params[0].passing,
+        SemParamPassing::Consume
+    );
+    module.supervisors[0].startup_order = vec![0, 1];
+    let errors = verify_module(&module);
+    assert!(
+        format!("{errors:?}").contains("dependent before its sibling"),
+        "{errors:#?}"
+    );
+    module.supervisors[0].startup_order = vec![1, 1];
+    let errors = verify_module(&module);
+    assert!(
+        format!("{errors:?}").contains("declaration permutation"),
+        "{errors:#?}"
+    );
+}

@@ -436,9 +436,6 @@ impl Location {
     /// Return the stable node identity.
     #[extern_symbol(hew_location_node_id)]
     fn node_id(self) -> NodeId {}
-    /// Return the actor's node-local slot.
-    #[extern_symbol(hew_location_slot)]
-    fn slot(self) -> u64 {}
     /// Return the node-session incarnation.
     #[extern_symbol(hew_location_incarnation)]
     fn incarnation(self) -> u32 {}
@@ -722,6 +719,37 @@ impl IntoIterator for string {
 }
 
 // ---------------------------------------------------------------------------
+// HashMap — source-defined collection conveniences
+// ---------------------------------------------------------------------------
+impl<K: Hash + Eq, V: Clone> HashMap<K, V> {
+    /// Return an independent value, computing and inserting it only when absent.
+    /// A factory failure occurs before the map is changed.
+    pub fn get_or_insert_with(var self, consume key: K, factory: fn() -> V) -> V {
+        match self.get(key) {
+            .Some(value) => value,
+            .None => {
+                let value = factory();
+                self.insert(key, value.clone());
+                value
+            }
+        }
+    }
+
+    /// Replace an existing value using an independent copy, returning the new value.
+    /// An absent key skips the callback. Callback failure preserves the old entry.
+    pub fn update(var self, consume key: K, transform: fn(V) -> V) -> Option<V> {
+        match self.get(key) {
+            .Some(previous) => {
+                let value = transform(previous);
+                self.insert(key, value.clone());
+                .Some(value)
+            }
+            .None => .None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // HashMapIter — concrete IntoIterator impl for HashMap<K, V>
 // ---------------------------------------------------------------------------
 /// An owned snapshot cursor over a map's paired keys and values.
@@ -993,6 +1021,133 @@ impl Error for string {}
 impl bytes {
     fn clone(self) -> bytes {
         self
+    }
+}
+
+/// An absolute Unix wall-clock moment with nanosecond precision.
+///
+/// Construction and field access are sealed by the compiler. Use the explicit
+/// Unix-unit methods; a timestamp never implicitly becomes an integer or instant.
+pub type timestamp {
+    seconds: i64;
+    nanoseconds: u32;
+}
+
+/// An invalid normalized timestamp or an overflowing Unix-unit conversion.
+pub enum TimestampError {
+    InvalidNanoseconds;
+    OutOfRange;
+}
+
+impl Display for TimestampError {
+    fn fmt(self) -> string {
+        match self {
+            TimestampError.InvalidNanoseconds => "timestamp nanoseconds must be less than one billion",
+            TimestampError.OutOfRange => "timestamp does not fit the requested Unix unit",
+        }
+    }
+}
+
+impl Error for TimestampError {}
+
+impl timestamp {
+    /// Read the host wall clock as normalized Unix seconds and nanoseconds.
+    #[runtime(family = TimestampNow, authority = Ambient, lowering = direct, target = native, classification = stable, c_return = storage)]
+    #[extern_symbol(hew_timestamp_now)]
+    fn now() -> timestamp {
+        timestamp { seconds: 0, nanoseconds: 0 }
+    }
+}
+
+impl timestamp {
+    /// Construct normalized Unix seconds and a nanosecond fraction.
+    fn from_unix_parts(seconds: i64, nanos: u32) -> timestamp fails TimestampError {
+        if nanos >= 1000000000 {
+            return error TimestampError.InvalidNanoseconds;
+        }
+        timestamp { seconds: seconds, nanoseconds: nanos }
+    }
+
+    fn from_unix_secs(value: i64) -> timestamp {
+        timestamp { seconds: value, nanoseconds: 0 }
+    }
+
+    fn from_unix_millis(value: i64) -> timestamp {
+        var seconds = value / 1000;
+        var fraction = value % 1000;
+        if fraction < 0 {
+            seconds -= 1;
+            fraction += 1000;
+        }
+        timestamp { seconds: seconds, nanoseconds: (fraction * 1000000) as u32 }
+    }
+
+    fn from_unix_micros(value: i64) -> timestamp {
+        var seconds = value / 1000000;
+        var fraction = value % 1000000;
+        if fraction < 0 {
+            seconds -= 1;
+            fraction += 1000000;
+        }
+        timestamp { seconds: seconds, nanoseconds: (fraction * 1000) as u32 }
+    }
+
+    fn from_unix_nanos(value: i64) -> timestamp {
+        var seconds = value / 1000000000;
+        var fraction = value % 1000000000;
+        if fraction < 0 {
+            seconds -= 1;
+            fraction += 1000000000;
+        }
+        timestamp { seconds: seconds, nanoseconds: fraction as u32 }
+    }
+
+    fn unix_parts(self) -> (i64, u32) {
+        (self.seconds, self.nanoseconds)
+    }
+
+    /// Whole Unix seconds rounded toward negative infinity.
+    fn unix_secs_floor(self) -> i64 {
+        self.seconds
+    }
+
+    /// Whole Unix milliseconds rounded toward negative infinity.
+    fn unix_millis_floor(self) -> i64 fails TimestampError {
+        timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000)?
+    }
+
+    /// Whole Unix microseconds rounded toward negative infinity.
+    fn unix_micros_floor(self) -> i64 fails TimestampError {
+        timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000000)?
+    }
+
+    /// Exact Unix nanoseconds, failing when the i64 result cannot hold them.
+    fn unix_nanos(self) -> i64 fails TimestampError {
+        timestamp_unix_units_floor(self.seconds, self.nanoseconds, 1000000000)?
+    }
+}
+
+// Conversion policy is shared by the explicit unit methods. Splitting the
+// negative boundary avoids overflowing a product whose final sum still fits.
+fn timestamp_unix_units_floor(seconds: i64, nanos: u32, scale: i64) -> i64 fails TimestampError {
+    let fraction = (nanos as i64) / (1000000000 / scale);
+    let maximum: i64 = 9223372036854775807;
+    let minimum: i64 = -9223372036854775808;
+    let high_seconds = maximum / scale;
+    let low_seconds = minimum / scale - 1;
+    if seconds > high_seconds || seconds < low_seconds {
+        return error TimestampError.OutOfRange;
+    }
+    if seconds == high_seconds && fraction > maximum % scale {
+        return error TimestampError.OutOfRange;
+    }
+    if seconds == low_seconds && fraction < scale + minimum % scale {
+        return error TimestampError.OutOfRange;
+    }
+    if seconds < 0 {
+        (seconds + 1) * scale + (fraction - scale)
+    } else {
+        seconds * scale + fraction
     }
 }
 

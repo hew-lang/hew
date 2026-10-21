@@ -1,23 +1,7 @@
 import { renderStdout, type VmValue } from "../values.js";
 
-interface Field {
-  name: string;
-  recipe: number;
-}
-export type StructuralRecipe =
-  | { kind: "scalar" | "unit" }
-  | { kind: "display"; callee: number }
-  | { kind: "identity"; name: string }
-  | { kind: "tuple" | "vector" | "map"; members: number[] }
-  | { kind: "record"; name: string; fields: Field[] }
-  | {
-      kind: "enum";
-      cases: Array<{
-        name: string;
-        kind: "unit" | "tuple" | "struct";
-        fields: Field[];
-      }>;
-    };
+import type { StructuralRecipe } from "./package.js";
+export type { StructuralRecipe } from "./package.js";
 
 type Part = string | { recipe: number; value: VmValue };
 

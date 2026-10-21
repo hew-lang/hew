@@ -6,13 +6,13 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
-    DocumentFormattingParams, DocumentLink, DocumentLinkParams, DocumentSymbol,
+    DocumentChanges, DocumentFormattingParams, DocumentLink, DocumentLinkParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, Documentation, FoldingRange, FoldingRangeKind,
     FoldingRangeParams, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintParams, InlayHintTooltip, InsertTextFormat, MarkupContent, MarkupKind,
-    ParameterInformation, ParameterLabel, Position, SemanticTokens, SemanticTokensParams,
-    SemanticTokensResult, SignatureHelp, SignatureHelpParams, SignatureInformation, TextEdit,
-    Uri as Url, WorkspaceEdit,
+    OneOf, OptionalVersionedTextDocumentIdentifier, ParameterInformation, ParameterLabel, Position,
+    SemanticTokens, SemanticTokensParams, SemanticTokensResult, SignatureHelp, SignatureHelpParams,
+    SignatureInformation, TextDocumentEdit, TextEdit, Uri as Url, WorkspaceEdit,
 };
 use tracing::warn;
 
@@ -108,6 +108,7 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
     doc: &DocumentState,
     diag: &Diagnostic,
     requested_kinds: Option<&[CodeActionKind]>,
+    version: Option<i32>,
 ) -> Vec<CodeActionOrCommand> {
     if diag.code
         == Some(tower_lsp_server::ls_types::NumberOrString::String(
@@ -140,14 +141,20 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
         .and_then(|d| d.get("kind"))
         .and_then(serde_json::Value::as_str)
         .map(String::from);
-    let suggestions = diagnostic_suggestions(diag);
-    let start = position_to_offset(&doc.source, &doc.line_offsets, diag.range.start);
-    let end = position_to_offset(&doc.source, &doc.line_offsets, diag.range.end);
-    let info = hew_analysis::code_actions::DiagnosticInfo {
-        kind: kind.clone(),
-        message: diag.message.clone(),
-        span: hew_analysis::OffsetSpan { start, end },
-        suggestions,
+    let Some(data) = diag.data.as_ref() else {
+        return vec![];
+    };
+    if data.get("sourceUri").and_then(serde_json::Value::as_str) != Some(uri.as_str()) {
+        return vec![];
+    }
+    let info = match serde_json::from_value::<hew_analysis::code_actions::DiagnosticInfo>(
+        data.clone(),
+    ) {
+        Ok(info) => info,
+        Err(error) => {
+            warn!(target: "hew-lsp", %error, "invalid structured diagnostic fixes; returning no actions");
+            return vec![];
+        }
     };
     let actions = hew_analysis::code_actions::build_code_actions(&doc.source, &[info]);
     let mut lsp_actions = Vec::new();
@@ -166,10 +173,14 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
                 new_text: e.new_text.clone(),
             })
             .collect();
-        let mut changes = HashMap::new();
-        changes.insert(uri.clone(), text_edits);
         let edit = WorkspaceEdit {
-            changes: Some(changes),
+            document_changes: Some(DocumentChanges::Edits(vec![TextDocumentEdit {
+                text_document: OptionalVersionedTextDocumentIdentifier {
+                    uri: uri.clone(),
+                    version,
+                },
+                edits: text_edits.into_iter().map(OneOf::Left).collect(),
+            }])),
             ..Default::default()
         };
 
@@ -184,7 +195,6 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
         }
 
         if kind.as_deref() == Some("UnusedImport")
-            && action.title == "Remove unused import"
             && code_action_kind_matches_filter(&remove_unused_imports_kind(), requested_kinds)
         {
             lsp_actions.push(CodeActionOrCommand::CodeAction(CodeAction {
@@ -198,25 +208,6 @@ pub(crate) fn lsp_code_actions_for_diagnostic(
     }
 
     lsp_actions
-}
-
-fn diagnostic_suggestions(diag: &Diagnostic) -> Vec<String> {
-    let Some(raw_suggestions) = diag.data.as_ref().and_then(|data| data.get("suggestions")) else {
-        return vec![];
-    };
-
-    match serde_json::from_value::<Vec<String>>(raw_suggestions.clone()) {
-        Ok(suggestions) => suggestions,
-        Err(error) => {
-            warn!(
-                target: "hew-lsp",
-                diagnostic_message = %diag.message,
-                error = %error,
-                "failed to deserialize code-action suggestions; returning empty suggestion list"
-            );
-            vec![]
-        }
-    }
 }
 
 pub(crate) fn completion(
@@ -464,11 +455,15 @@ pub(crate) fn code_action(
     server: &HewLanguageServer,
     params: &CodeActionParams,
 ) -> CodeActionResponse {
-    code_action_response(&server.documents, params)
+    let Ok(open) = server.open_documents.read() else {
+        return vec![];
+    };
+    code_action_response(&server.documents, &open, params)
 }
 
 pub(crate) fn code_action_response(
     documents: &DashMap<Url, DocumentState>,
+    open: &HashMap<Url, super::super::OpenDocument>,
     params: &CodeActionParams,
 ) -> CodeActionResponse {
     let uri = &params.text_document.uri;
@@ -481,6 +476,12 @@ pub(crate) fn code_action_response(
         return vec![];
     };
 
+    let Some(authored) = open
+        .get(uri)
+        .filter(|authored| authored.source == doc.source)
+    else {
+        return vec![];
+    };
     let mut lsp_actions = Vec::new();
     for diag in &params.context.diagnostics {
         lsp_actions.extend(lsp_code_actions_for_diagnostic(
@@ -488,6 +489,7 @@ pub(crate) fn code_action_response(
             &doc,
             diag,
             params.context.only.as_deref(),
+            Some(authored.version),
         ));
     }
     lsp_actions

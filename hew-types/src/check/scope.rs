@@ -456,6 +456,60 @@ impl Scopes {
         }
     }
 
+    /// Credit the import route supplying a selected declaration's module.
+    /// Impl lookup can select a method on a prelude type without resolving a
+    /// written module name. Follow the same file-local module bindings here;
+    /// an umbrella supplies the declarations reached through its peer files.
+    pub(crate) fn mark_import_provider_used(
+        &mut self,
+        file: ModuleId,
+        provider: ModuleId,
+        defs: &DefTable,
+    ) {
+        let provider = self.namespace_of(provider);
+        if self.namespace_of(file) == provider {
+            return;
+        }
+        let mut pending = std::collections::VecDeque::new();
+        if let Some(scope) = self.files.get(&file) {
+            for (binding, site) in scope.imports.values() {
+                if let Binding::Module(module) = binding {
+                    pending.push_back((*module, vec![*site]));
+                }
+            }
+        }
+        pending.make_contiguous().sort_by_key(|(module, route)| {
+            (route[0].start, route[0].end, defs.module_path(*module))
+        });
+        let mut visited = std::collections::HashSet::new();
+        while let Some((module, route)) = pending.pop_front() {
+            let namespace = self.namespace_of(module);
+            if namespace == provider {
+                self.used_imports.extend(route);
+                return;
+            }
+            if !visited.insert(namespace) {
+                continue;
+            }
+            let mut imports: Vec<_> = self
+                .files
+                .iter()
+                .filter(|(file, _)| self.namespace_of(**file) == namespace)
+                .flat_map(|(_, scope)| scope.imports.values())
+                .filter_map(|(binding, site)| match binding {
+                    Binding::Module(module) => Some((*module, *site)),
+                    _ => None,
+                })
+                .collect();
+            imports.sort_by_key(|(_, site)| (defs.module_path(site.file), site.start, site.end));
+            for (module, site) in imports {
+                let mut route = route.clone();
+                route.push(site);
+                pending.push_back((module, route));
+            }
+        }
+    }
+
     /// Credit an import resolved by an earlier shared frontend stage.
     pub(crate) fn mark_import_used(&mut self, site: ImportSite) {
         self.used_imports.insert(site);

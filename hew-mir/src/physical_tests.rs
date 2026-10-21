@@ -62,6 +62,48 @@ fn exclusive_receiver() -> (PhysicalModule, CallableId) {
 }
 
 #[test]
+fn supervisor_construction_requires_the_resumable_callable_abi() {
+    let semantic = lower_source(
+        r"
+        actor Worker { receive fn ping() -> i64 { 7 } }
+        supervisor Tree { child worker: Worker; }
+        fn construct() -> Tree { spawn Tree }
+        fn main() { let tree = construct(); stop(tree); stopped(tree); }
+        ",
+    );
+    let mut target = target_for_inventory(&semantic);
+    for ty in semantic.actors.iter().map(|actor| &actor.handle_ty).chain(
+        semantic
+            .supervisors
+            .iter()
+            .map(|supervisor| &supervisor.handle_ty),
+    ) {
+        target.insert_layout(
+            ty.clone(),
+            PhysicalLayout {
+                size: 8,
+                align: 8,
+                repr: PhysicalRepr::Integer { bits: 64 },
+            },
+        );
+    }
+    let physical = lower_physical_module(&semantic, target)
+        .expect("supervisor construction lowers through its typed boundary")
+        .into_unverified();
+    let constructor = physical
+        .callables
+        .iter()
+        .find(|callable| physical.defs.path(callable.declaration) == "construct")
+        .expect("construction helper");
+    assert!(constructor.is_resumable);
+    let mut invalid = physical.clone();
+    invalid.callables[constructor.id.0 as usize].is_resumable = false;
+    let error = verify_physical_module(&invalid)
+        .expect_err("the verifier must reject a synchronous supervisor constructor");
+    assert!(error.message.contains("resumable"), "{error:?}");
+}
+
+#[test]
 fn cloned_sink_requires_its_exact_owner_descriptor() {
     let mut semantic =
         lower_source("fn main(sink: Sink<i64>) { let _ = sink.try_send(1); let sibling = sink.clone(); sibling.close(); }");

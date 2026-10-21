@@ -203,7 +203,7 @@ fn publication_refuses_peer_whose_route_slot_is_reserved() {
         // A pending gossip event that a successful publication would drain.
         (&*cluster).emit_registry_add(
             "counter",
-            crate::node_identity::Location::new(NodeId::from_bytes([7; 16]), 9, 3)
+            crate::node_identity::Location::direct(NodeId::from_bytes([7; 16]), 9, 3)
                 .expect("test location should be valid"),
         );
         assert_eq!((&*cluster).registry_gossip_count(), 1);
@@ -426,7 +426,7 @@ fn publication_refuses_peer_the_cluster_rejects() {
         // A pending gossip event that a successful publication would drain.
         (&*cluster).emit_registry_add(
             "counter",
-            crate::node_identity::Location::new(NodeId::from_bytes([7; 16]), 9, 3)
+            crate::node_identity::Location::direct(NodeId::from_bytes([7; 16]), 9, 3)
                 .expect("test location should be valid"),
         );
         assert_eq!((&*cluster).registry_gossip_count(), 1);

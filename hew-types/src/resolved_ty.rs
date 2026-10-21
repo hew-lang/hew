@@ -107,7 +107,7 @@ pub enum ResolvedTy {
         args: Vec<ResolvedTy>,
         /// `#[opaque]`-handle discriminator. `true` means this `Named` resolved
         /// to a type declared `#[opaque]` (a pointer-width runtime handle such
-        /// as `json.Value` / `cron.Expr`) during HIR name resolution; `false`
+        /// as `json.Value`) during HIR name resolution; `false`
         /// means it is an ordinary user record/enum/actor or builtin.
         ///
         /// This is the type-identity carrier that lets the actor-state
@@ -1118,7 +1118,7 @@ impl ResolvedTy {
     }
 
     /// Construct a `Named` for a `#[opaque]` runtime-handle type (e.g.
-    /// `json.Value`, `cron.Expr`). Sets `is_opaque: true` so the actor-state
+    /// `json.Value`). Sets `is_opaque: true` so the actor-state
     /// clone/drop classifier recognises the handle by type identity.
     #[must_use]
     pub fn named_opaque(nominal: crate::NominalHead, args: Vec<ResolvedTy>) -> Self {

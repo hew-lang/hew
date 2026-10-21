@@ -2290,8 +2290,7 @@ impl Checker {
                     .iter()
                     .filter_map(|item| match item {
                         hew_parser::ast::TypeBodyItem::Variant(variant) => Some(variant),
-                        hew_parser::ast::TypeBodyItem::Field { .. }
-                        | hew_parser::ast::TypeBodyItem::Method(_) => None,
+                        hew_parser::ast::TypeBodyItem::Field { .. } => None,
                     })
                     .enumerate()
                 {
@@ -2301,25 +2300,6 @@ impl Checker {
                         variant.name,
                         owner,
                         format!("{path}::{member_path} {}", variant.name),
-                        false,
-                    );
-                }
-                for (index, method) in decl
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
-                        hew_parser::ast::TypeBodyItem::Field { .. }
-                        | hew_parser::ast::TypeBodyItem::Variant(_) => None,
-                    })
-                    .enumerate()
-                {
-                    declare(
-                        Kind::TypeMethod,
-                        index,
-                        method.name,
-                        owner,
-                        format!("{path}::{}", method.name),
                         false,
                     );
                 }
@@ -2644,22 +2624,6 @@ impl Checker {
                     span,
                     decl.type_params.as_deref().unwrap_or_default(),
                 );
-                for (index, method) in decl
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        hew_parser::ast::TypeBodyItem::Method(method) => Some(method),
-                        _ => None,
-                    })
-                    .enumerate()
-                {
-                    declare(
-                        Kind::TypeMethod,
-                        index,
-                        &method.fn_span,
-                        method.type_params.as_deref().unwrap_or_default(),
-                    );
-                }
             }
             Item::Record(decl) => declare(
                 Kind::Record,
@@ -2832,11 +2796,8 @@ impl Checker {
         self.finish_program(program, normalized_program.as_ref())
     }
 
-    /// Check embedded executable bodies only when the ordinary module walk
-    /// did not own them. Declaration registration and body facts share the
-    /// selected source and its original item ordinals.
-    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
-        if self.checking_embedded_builtins
+    fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
+        !(self.checking_embedded_builtins
             || program.module_graph.as_ref().is_some_and(|graph| {
                 graph
                     .modules
@@ -2849,8 +2810,14 @@ impl Checker {
                             )
                         })
                     })
-            })
-        {
+            }))
+    }
+
+    /// Check embedded executable bodies only when the ordinary module walk
+    /// did not own them. Declaration registration and body facts share the
+    /// selected source and its original item ordinals.
+    fn check_embedded_builtin_impl_bodies(&mut self, program: &Program) {
+        if !self.owns_embedded_builtin_bodies(program) {
             return;
         }
         let builtin_program = self.builtin_program();
@@ -2862,9 +2829,16 @@ impl Checker {
         for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
             self.current_item_ordinal = ordinal;
             if let Item::Function(function) = item {
-                // Retain the declared signature's annotation facts; its
-                // compiler-owned endpoint supplies execution, not the stub.
-                self.register_fn_sig(function);
+                // Compiler-owned endpoints have documentation stubs. Ordinary
+                // source helpers retain the same checked body facts as imports.
+                if self
+                    .named_item_declaration(function.name)
+                    .is_some_and(|declaration| {
+                        matches!(self.source_call_target(declaration), CallTarget::User(_))
+                    })
+                {
+                    self.check_function(function);
+                }
             }
             if let Item::Impl(implementation) = item {
                 // Runtime declarations have documentation stubs, not Hew bodies.
@@ -2915,6 +2889,7 @@ impl Checker {
             warnings: self.warnings.clone(),
             user_clone_record_seeds: self.user_clone_record_seeds.clone(),
             expr_types: self.expr_types.clone(),
+            binding_types: self.binding_types.clone(),
             annotation_types: self.annotation_types.clone(),
             interpolation_display_types: self.interpolation_display_types.clone(),
             unrendered_assertion_operands: self.unrendered_assertion_operands.clone(),
@@ -3003,6 +2978,8 @@ impl Checker {
             chain_values: self.chain_values.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
             spawn_argument_slots: self.spawn_argument_slots.clone(),
+            supervisor_wiring: self.supervisor_wiring.clone(),
+            supervisor_startup_order: self.supervisor_startup_order.clone(),
             named_argument_calls: self.named_argument_calls.clone(),
             effect_graph: self.effect_graph.clone(),
             direct_call_targets: self.direct_call_targets.clone(),
@@ -3277,6 +3254,7 @@ impl Checker {
         self.select_builtin_program(program);
         self.mint_source_declaration_identities(program);
         self.register_builtins();
+        self.register_embedded_builtin_function_signatures(program);
         self.capture_protected_prelude_bindings();
         self.bind_builtins_prelude_in_scope();
         self.reject_non_root_protected_prelude_declarations(program);
@@ -3532,6 +3510,8 @@ impl Checker {
             }
         }
 
+        self.credit_public_impl_provider_imports();
+
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {
@@ -3546,6 +3526,12 @@ impl Checker {
                 }
                 if !self.scopes.import_used(import.site) {
                     self.warnings.push(TypeError {
+                        fixes: vec![hew_parser::diagnostic::DiagnosticFix::replace(
+                            "Remove unused import",
+                            import.span.clone(),
+                            "",
+                            hew_parser::diagnostic::Applicability::MachineApplicable,
+                        )],
                         severity: crate::error::Severity::Warning,
                         kind: TypeErrorKind::UnusedImport,
                         span: import.span.clone(),
@@ -3965,6 +3951,17 @@ impl Checker {
                 resolved_annotation_types.insert(site, ty);
             }
         }
+        let mut resolved_binding_types = HashMap::new();
+        for (binding, (ty, module)) in std::mem::take(&mut self.binding_types) {
+            self.current_module = module;
+            let ty = self.finalize_type_for_handoff(&ty);
+            if let Ok(ty) = ResolvedTy::from_ty(&ty) {
+                let ty = restore_member_opacity(ty, &self.defs, &|name| {
+                    self.class_declarations().is_opaque_type(name)
+                });
+                resolved_binding_types.insert(binding, ty);
+            }
+        }
         self.current_module = saved_module;
 
         // The §6.3 fact table describes an accepted program. A rejected one
@@ -4031,6 +4028,16 @@ impl Checker {
                 )
             })
             .collect();
+        let source_function_targets = resolved_fn_sigs
+            .keys()
+            .filter(|declaration| self.defs.kind(**declaration) == crate::DeclarationKind::Function)
+            .map(|declaration| {
+                (
+                    *declaration,
+                    self.call_target_for_signature(self.defs.path(*declaration)),
+                )
+            })
+            .collect();
         let mut output = TypeCheckOutput {
             selected_builtin_program: self.selected_builtin_program.clone(),
             input_references: std::mem::take(&mut self.input_references),
@@ -4043,6 +4050,7 @@ impl Checker {
             declaration_type_parameters: self.scopes.declaration_parameter_facts(),
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
+            resolved_binding_types,
             normalized_program: normalized_program.cloned(),
             select_sources: std::mem::take(&mut self.select_sources),
             race_operands: std::mem::take(&mut self.race_operands),
@@ -4052,6 +4060,8 @@ impl Checker {
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),
             spawn_argument_slots: std::mem::take(&mut self.spawn_argument_slots),
+            supervisor_wiring: std::mem::take(&mut self.supervisor_wiring),
+            supervisor_startup_order: std::mem::take(&mut self.supervisor_startup_order),
             expr_types: resolved_expr_types,
             interpolation_display_types: std::mem::take(&mut self.interpolation_display_types),
             unrendered_assertion_operands: std::mem::take(&mut self.unrendered_assertion_operands),
@@ -4120,6 +4130,7 @@ impl Checker {
             fn_sig_keys: self.fn_sig_keys.clone(),
             builtin_fn_sigs: resolved_builtin_fn_sigs,
             direct_call_targets: std::mem::take(&mut self.direct_call_targets),
+            source_function_targets,
             imported_impl_body_facts,
             indirect_call_candidates: std::mem::take(&mut self.indirect_call_candidates),
             callable_argument_flows,
@@ -4208,8 +4219,19 @@ impl Checker {
         if let Some(normalized) = normalized_program {
             normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
+                // Generated extents can map to a whole authored declaration,
+                // rather than an exact editable token. Keep their prose but do
+                // not publish a replacement against that coarse origin.
+                diagnostic.fixes.retain(|fix| {
+                    fix.edits.iter().all(|edit| {
+                        normalized
+                            .source_span(&(edit.span.start..edit.span.end))
+                            .is_none()
+                    })
+                });
                 if let Some(source) = normalized.source_span(&diagnostic.span) {
                     diagnostic.span = source.clone();
+                    diagnostic.fixes.clear();
                 }
             }
             Self::project_machine_expr_types(normalized, &mut output.expr_types);
@@ -4549,6 +4571,7 @@ impl Checker {
             LintLevel::Deny => crate::error::Severity::Error,
         };
         let diag = TypeError {
+            fixes: Vec::new(),
             severity,
             kind: TypeErrorKind::Lint(id),
             span: span.clone(),
@@ -5613,6 +5636,7 @@ pub(crate) fn emit_unresolved_closure_diagnostics(
         if !capture_facts.contains_key(&key) {
             let name = hint_name.clone().unwrap_or_else(|| "<closure>".to_string());
             out.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::ClosureCaptureModeUnresolved { name: name.clone() },
                 span: span.clone(),
@@ -5629,6 +5653,7 @@ pub(crate) fn emit_unresolved_closure_diagnostics(
         }
         if !escape_facts.contains_key(&key) {
             out.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::ClosureEscapeKindUnresolved,
                 span: span.clone(),

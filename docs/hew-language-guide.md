@@ -447,6 +447,9 @@ fn main() {
 
 `0..n` iterates 0 through n-1; `0..=n` includes n. The loop binding may be a named identifier or `_` (wildcard). Use `_` when the loop body does not need the iteration value.
 
+Ranges are accepted as loop iterables and range selectors for indexing or
+slicing; they are not standalone values that can be stored in a binding.
+
 ### for x in collection
 
 ```hew
@@ -456,6 +459,15 @@ fn main() {
     var total = 0;
     for x in v { total += x; }
     println(total);   // 60
+}
+```
+
+For a fixed-size array, `[value; count]` repeats the value `count` times:
+
+```hew
+fn main() {
+    let zeros = [0; 4];
+    println(zeros[2]); // 0
 }
 ```
 
@@ -813,7 +825,7 @@ fn main() {
 }
 ```
 
-`.contains_key(k)` returns `bool`; `.remove(k)` returns `Option<V>` — the removed value if the key was present, or `None`. Consume it with `match`. Bind a method result to a `let` before interpolating — nested double-quotes break the f-string parser. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
+`.contains_key(k)` returns `bool`; `.remove(k)` returns `Option<V>` — the removed value if the key was present, or `None`. Consume it with `match`. Nested string literals can appear inside interpolation expressions; bind a method result when that makes the expression easier to read. Test emptiness with `m.len() == 0`, or remove every entry at once with `m.clear()`.
 
 ### Supported HashMap value types
 
@@ -1296,6 +1308,13 @@ fn main() {
 Pass strings and scalars without ceremony and keep using them. Concatenation with `+` builds a new string; it does not mutate the argument.
 
 ## Types — records and enums
+
+Type and enum bodies declare data. Put ordinary methods in a sibling `impl`
+block, including associated functions and methods that borrow, mutate or consume
+`self`. A method written inside the data declaration is a parse error; the
+diagnostic points to the required `impl TypeName { ... }` form. Trait default
+bodies, actor handlers and lifecycle methods, and machine bodies keep their own
+declaration forms.
 
 ### Record declaration, construction, field access
 
@@ -2059,16 +2078,28 @@ actor Risky {
     }
     #[on(crash)]
     fn on_fail(info: CrashInfo) -> CrashAction {
-        panic("crash observed")
+        CrashAction.Restart
+    }
+    receive fn fail() {
+        panic("forced crash")
     }
     receive fn value() -> i64 {
         n
     }
 }
 
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    child worker: Risky { n: 0 };
+}
+
 fn main() {
-    let r = spawn Risky { n: 0 };
-    let v = r.value();
+    let app = spawn App;
+    let worker = app.worker;
+    let _ = worker.fail(); // the Err completion makes the crash pending
+    restarted(worker);
+    let v = worker.value(); // the retained role handle resolves its replacement
     match v {
         .Ok(x) => println(f"n={x}"),
         .Err(_) => println("failed"),
@@ -2076,7 +2107,12 @@ fn main() {
 }
 ```
 
-Declare `#[on(crash)]` as `fn name(info: CrashInfo) -> CrashAction` and satisfy the return type with a diverging `panic(...)` body. The body is observation/logging only; supervisor restart policy drives behaviour.
+`#[on(crash)]` runs for a supervised child after a crash. Return
+`CrashAction.Restart` to request a replacement, or `CrashAction.GiveUp` to
+leave the role stopped. `restarted(role)` waits until that role is live again
+or permanently gone. The retained role handle resolves the current incarnation
+after a restart, and the replacement starts from the child declaration and
+configuration.
 
 ### Free functions callable from receive fns
 
@@ -2251,9 +2287,10 @@ terminal cleanup, including a stop someone else requested.
 Both delivery views apply to a lambda handle. `mailbox(handle)` submits one
 way, so it accepts only a lambda that owes its caller nothing; a lambda that
 returns a value is refused there, and the handle itself is how you wait for
-the reply. `policy(handle)` completes like the handle and chooses only how a
-full mailbox is answered. A lambda actor declares no mailbox, so both views
-default to `.Wait`.
+the reply. `handle(msg)` and the secondary spelling `handle.send(msg)` both
+wait for completion and return the same `Result`. `policy(handle)` completes
+like the handle and chooses only how a full mailbox is answered. A lambda
+actor declares no mailbox, so both views default to `.Wait`.
 
 ```hew
 fn main() {
@@ -3770,12 +3807,10 @@ value, and any later use of the binding is a use-after-consume error. Naming the
 first parameter after the target type (`fn greet(p: Person)`) is not a receiver
 form; the fix-it rewrites it to `self`.
 
-`var self` is available on trait methods. On an inherent `impl` method it is
-refused today (`E_LIMIT_INHERENT_VAR_SELF`), because an inherent method receives
-the value and the mutation would not reach the caller — declare the method on a
-trait with a `var self` receiver and implement that trait for your type.
+`var self` works on both trait methods and inherent `impl` methods. In either
+case, call it through a `var` binding so the mutation updates the receiver.
 
-A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. When both the implementing type and its impl come from a directory module (for example, `import gm.{ Dog };`), inherited defaults are unavailable and the call reports `no method 'greet' on 'gm.Dog'`.
+A trait method can carry a default body (`fn shout(self) -> string { self.greet() + "!!!" }` inside the trait declaration); an `impl` only needs to supply the methods it overrides, and an uncalled default falls back to the trait's body, dispatching through `self.method()` like any other trait call. Defaults work within a single file and across a file import (`import "other.hew";`, including a default that dispatches back through a required method declared in another file). Defaults also work when only the _trait_ comes from a directory module (`import mymod.{ Greet };`) and the implementing type is local. Defaults also work when the trait, implementing type and impl come from a directory module in a package (for example, `import gm.{ Dog };`), including defaults that call the type's required methods.
 
 ### Choosing between methods with the same name
 
@@ -4197,36 +4232,55 @@ fn main() {
 }
 ```
 
-### std.time.datetime — timestamps and date arithmetic
+### std.time.datetime — timestamps and UTC calendar views
 
 ```hew
 import std.time.datetime;
+
 fn main() {
-    let now = datetime.now_ms();             // i64 epoch milliseconds
-    println(datetime.to_iso8601(now));       // 2026-06-23T18:42:22Z
-    match datetime.format(now, "%Y-%m-%d") {
-        .Ok(text) => println(text),
-        .Err(error) => println(f"format error: {error}"),
-    }
+    let started = instant.now();
+    let now: timestamp = timestamp.now();
+    println(datetime.to_iso8601(now).expect("calendar range"));
 
-    println(datetime.year(now));    // 2026
-    println(datetime.month(now));   // 6
-    println(datetime.day(now));     // 23
-    println(datetime.hour(now));    // 18
-    println(datetime.minute(now));  // 42
+    let fields = datetime.components(now).expect("calendar range");
+    println(fields.year);
+    println(fields.month);
+    println(fields.day);
 
-    let tomorrow = datetime.add_days(now, 1);
-    let diff = datetime.diff_secs(tomorrow, now);
-    println(diff);                  // 86400
-
-    match datetime.parse("2026-01-01T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ") {
-        .Ok(ts) => println(datetime.year(ts)),   // 2026
-        .Err(e) => println(f"parse error: {e}"),
-    }
+    let tomorrow = now + 24h;
+    assert(tomorrow - now == 24h);
+    let parsed = datetime.parse_iso8601("2026-01-01T01:30:00.123456789+01:30")
+        .expect("valid datetime");
+    assert(datetime.to_iso8601(parsed).expect("calendar range")
+        == "2026-01-01T00:00:00.123456789Z");
+    println(started.elapsed());
 }
 ```
 
-Timestamps are `i64` epoch milliseconds throughout. `to_iso8601` formats as RFC 3339 UTC; `format(ts, fmt)` uses strftime-style patterns. `year`/`month`/`day`/`hour`/`minute`/`second`/`weekday` extract components. `add_days` / `add_hours` perform arithmetic; `diff_secs` returns the signed difference. Use `try_parse` when the input may be malformed; the format string must describe a complete date and time (a date-only pattern such as `"%Y-%m-%d"` fails with "input is not enough for unique date and time").
+`timestamp` stores normalized signed Unix seconds and a nanosecond fraction.
+Use `timestamp.now()` for wall time and `instant.now()` for monotonic elapsed
+time. Neither converts implicitly to an integer or to the other clock.
+
+Calendar operations return checked `DateTimeError.Range`, `Format` or `Parse`
+errors. They use Chrono's proleptic Gregorian calendar, years -262143 through
++262142; timestamps outside that range remain valid but cannot be converted
+to civil fields. `components` and the individual `year`, `month`, `day`,
+`hour`, `minute`, `second` and `weekday` accessors all use UTC. Monday is
+weekday zero. `from_parts` checks a UTC year, month, day, hour, minute, second
+and nanosecond fraction.
+
+`format(value, pattern)` and `parse(text, pattern)` use Chrono's strftime
+dialect. `%.f` preserves a nonzero fractional second; `%.9f` always prints
+nine fractional digits. Parsing requires enough fields to determine a full
+date and time. Missing offsets mean UTC; explicit numeric offsets normalize
+to UTC. `to_iso8601` preserves fractional precision and `parse_iso8601`
+accepts Z or a numeric offset. Unix time excludes leap seconds, so a parsed
+leap second returns an error.
+
+`add_days` adds elapsed 24-hour durations, `add_hours` adds elapsed hours,
+and `diff_secs` returns whole elapsed seconds truncated towards zero.
+These operations use checked duration arithmetic; they do not imply named
+time-zone or daylight-saving rules.
 
 ### std.deque — double-ended queue
 
@@ -4399,6 +4453,23 @@ Prefer a `pub const` over a zero-argument wrapper function
 (`pub fn max_retries() -> i64 { 3 }`) for a fixed value — the const form is
 shorter, makes the value's constancy visible at the call site, and avoids a
 function-call indirection for something that never varies.
+
+### Applying diagnostic fixes
+
+Preview safe edits with `hew check --fix --dry-run main.hew`, then apply them
+with `hew check --fix main.hew`. The compiler rechecks changed sources. Automatic
+application selects only a single `machine_applicable` alternative per diagnostic
+and stays within the selected package or loose module. Dependencies, the standard
+library and generated files are left for their owners.
+
+`hew check --format json` includes each diagnostic's exact `source_hash` and
+`fixes`: a title, applicability and byte-range edits. Editors use the same
+producer-owned alternatives with document versions and UTF-16 positions. Spelling
+choices and underscore-prefix suggestions require a programmer's choice;
+`has_placeholders` actions such as missing match arms require completing the
+inserted body. Neither is applied automatically. Conflicting edits or changed
+inputs stop application before writing. Each file is replaced atomically; an I/O
+failure reports which files were updated and which remain.
 
 ### Suppressing a lint
 
@@ -4900,8 +4971,8 @@ fn main() {
 }
 ```
 
-Compile a pattern with `regex.new` (panics on bad syntax; use `try_new` for a
-`Result`). `capture(input, group)` / `capture_named(input, name)` return the
+Compile a pattern with `regex.new`; invalid syntax panics. `capture(input, group)` /
+`capture_named(input, name)` return the
 indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is the
 whole match. `find_all` returns every whole match as a `Vec<string>`;
 `find_all_submatch` returns a row-major `CaptureMatches` table — `rows.len()`
@@ -5236,10 +5307,11 @@ actor Watcher {
 `MonitorRef.id()` matches `DownNotification.monitor`. Closing the handle
 removes the registration and delivers no notification.
 
-The complete protocol and identity rules are normative in
-[`HEW-DIST-SPEC.md`](specs/HEW-DIST-SPEC.md). Distributed nodes, remote
-messaging, and link/monitor propagation are native-only; wasm32 rejects these
-surfaces.
+Local links and monitors use the same notification and lifetime rules on
+native and WASI targets. The complete protocol and identity rules are normative
+in [`HEW-DIST-SPEC.md`](specs/HEW-DIST-SPEC.md). Distributed nodes, remote
+messaging, and link/monitor propagation between nodes remain native-only;
+wasm32 rejects those distributed operations.
 
 ### TLS client
 

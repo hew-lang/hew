@@ -623,7 +623,7 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
 
     // SAFETY: node2 is a live test node.
     let node2_ref = unsafe { node2.as_ptr().as_ref() }.expect("test node must be live");
-    let location = Location::new(
+    let location = Location::direct(
         node2_ref
             .auth
             .node_identity()
@@ -1221,10 +1221,14 @@ fn connection_drop_wakes_pending_remote_ask() {
 /// must resolve a pending remote ask IMMEDIATELY with `AskError::Partition`,
 /// not hang to the caller's deadline. The connection-drop test above proves
 /// the socket-drop cause; this proves the SWIM-DEAD cause through the
-/// node-side fan-out (`fail_remote_asks_for_node`), with the socket left
+/// node-side fan-out (`fail_remote_and_quarantine`), with the socket left
 /// open so the only thing that resolves the ask is the failure-detector
 /// verdict — distinct from `ConnectionDropped`.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "exercise pending ask, SWIM death and cleanup in one owned node lifecycle"
+)]
 fn swim_dead_wakes_pending_remote_ask_with_partition() {
     let _guard = crate::runtime_test_guard();
     let _real_sched;
@@ -1300,9 +1304,55 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         seen
     });
 
-    // Declare node 331 DEAD via the node-side partition fan-out WITHOUT
-    // touching the socket — the SWIM/phi-accrual verdict, not a TCP drop.
-    fail_remote_asks_for_node(331);
+    // Re-admit a higher durable session before the old terminal verdict drains.
+    // Keep the socket open so the replacement's pending ask remains unresolved.
+    // SAFETY: node1 remains live until the test teardown.
+    let (session, publication, incarnation) =
+        unsafe { &*(*node1.as_ptr()).cluster }.member_owner(331);
+    assert!(publication.is_some());
+    let old_session = session.expect("the authenticated peer has a durable session");
+    let old_publication = publication.expect("the authenticated peer has a publication");
+    // Publication counters are per manager; the same number in another live
+    // node must not be swept by this manager's terminal verdict.
+    // SAFETY: node2 remains valid and owns its connection manager until teardown.
+    let other_manager_key = ConnectionKey::new(
+        unsafe { (*node2.as_ptr()).conn_mgr.cast_const() },
+        outbound_conn_id,
+    );
+    let (other_manager_id, other_manager_pending) = reply_table().register_with_waker(
+        other_manager_key,
+        None,
+        PendingReplyKind::Ask(old_publication),
+    );
+    let replacement_publication = old_publication + 1;
+    let (replacement_id, replacement_pending) = reply_table().register_with_waker(
+        outbound_key,
+        None,
+        PendingReplyKind::Ask(replacement_publication),
+    );
+    let publication_sync = Arc::new(Mutex::new(()));
+    let publication_removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: node1's cluster and the synchronization values remain live here.
+    let admitted = unsafe {
+        crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+            (*node1.as_ptr()).cluster,
+            331,
+            old_session + 1,
+            replacement_publication,
+            &publication_sync,
+            &publication_removed,
+        )
+    };
+    assert_eq!(admitted, 1, "the higher session should be admitted");
+
+    // The stale SWIM-DEAD settles asks owned by the retired publication but
+    // cannot fail the replacement's entry or quarantine the replacement.
+    fail_remote_and_quarantine(
+        331,
+        Some(old_session),
+        Some(old_publication),
+        incarnation.expect("the authenticated peer has a membership record"),
+    );
 
     let (replied, ask_err) = ask_handle.join().expect("ask thread panicked");
     assert!(
@@ -1316,6 +1366,28 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
         AskError::Partition as i32,
         "SWIM-DEAD should report Partition, not ConnectionDropped or Timeout"
     );
+    assert!(
+        replacement_pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none(),
+        "a stale verdict must leave the replacement's pending ask alone"
+    );
+    assert!(
+        other_manager_pending
+            .outcome
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_none(),
+        "a duplicate token from another connection manager must remain pending"
+    );
+    assert!(
+        !quarantine_is_blocked(331, Some(old_session + 1), 1),
+        "a stale verdict must not quarantine the replacement"
+    );
+    reply_table().remove(replacement_id);
+    reply_table().remove(other_manager_id);
     // The ask has no deadline of its own, so only the fan-out can have
     // resolved it.
     // Exactly-once: the entry was drained on the first fan-out, so a second
@@ -1331,7 +1403,12 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
             "partition fan-out must remove the pending entry (no leak, exactly-once)"
         );
     }
-    fail_remote_asks_for_node(331); // second verdict: no panic, no double-wake.
+    fail_remote_and_quarantine(
+        331,
+        Some(old_session),
+        Some(old_publication),
+        incarnation.expect("the authenticated peer has a membership record"),
+    ); // second verdict: no panic, no double-wake.
 
     // SAFETY: the actor and nodes were allocated in this test and remain valid here.
     unsafe {

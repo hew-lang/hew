@@ -23,7 +23,6 @@ pub use close::{
     hew_actor_stop_native, hew_actor_terminate_native, hew_actor_wait_free, hew_actor_wait_new,
     hew_actor_wait_poll, hew_actor_wait_take_fault, HewNativeActorWait, NativeActorCompletion,
 };
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use close::{wait_from_target, NativeWaitTarget};
 #[path = "actor_native_wait_graph.rs"]
 pub(crate) mod wait_graph;
@@ -337,10 +336,9 @@ pub extern "C" fn hew_native_runtime_finish(source_status: i32) -> i32 {
 /// Run every actor to a stop and reclaim the runtime, returning a non-zero
 /// status when shutdown itself failed.
 ///
-/// Natively this is the shutdown phase machine; on the single-thread driver it
-/// runs inline, the driver doing the work the workers would. wasm32 has no
-/// shutdown machine: the process drains its ready list and due timers until
-/// nothing is left to run.
+/// Native processes use the shutdown phase machine. WASI drives the same
+/// supervisor and actor terminal owners inline, then closes local admission
+/// and verifies that all routes and teardown leases have drained.
 fn drain_to_quiescence() -> i32 {
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -355,6 +353,43 @@ fn drain_to_quiescence() -> i32 {
     #[cfg(target_arch = "wasm32")]
     {
         crate::driver::run_to_quiescence();
+        if !crate::supervisor::roots::stop_registered_supervisors() {
+            return 1;
+        }
+        // Root teardown can enqueue detached incarnation frees. Drain them
+        // before selecting the remaining process-owned actors.
+        crate::driver::run_to_quiescence();
+        let actors = crate::lifetime::live_actors::snapshot_live_incarnations();
+        for &target in &actors {
+            crate::lifetime::live_actors::with_live_incarnation(target, |actor| {
+                // SAFETY: the exact incarnation pin protects this stop request.
+                unsafe { crate::actor::hew_actor_request_stop(actor.as_ptr()) };
+            });
+        }
+        for target in actors {
+            let actor = crate::lifetime::live_actors::with_live_incarnation(
+                target,
+                crate::lifetime::live_actors::ActorPin::as_ptr,
+            );
+            let Some(actor) = actor else { continue };
+            // SAFETY: the single driver cannot retire this freshly resolved
+            // actor before free takes over. Release the lookup pin first so
+            // free can drain admitted pins; never retain another actor address
+            // across the scheduler progress made by this call.
+            if unsafe { crate::actor::hew_actor_free(actor) } != 0 {
+                return 1;
+            }
+        }
+        crate::driver::run_to_quiescence();
+        crate::lifetime::local_handles::begin_current_shutdown();
+        crate::lifetime::local_handles::close_current_supervisor_teardown_admission();
+        if !crate::lifetime::local_handles::wait_for_current_supervisor_teardowns(
+            std::time::Duration::from_secs(5),
+        ) {
+            return 1;
+        }
+        crate::lifetime::local_handles::assert_current_actor_routes_empty();
+        crate::lifetime::local_handles::assert_current_supervisors_empty();
         0
     }
 }

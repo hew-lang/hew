@@ -1,4 +1,4 @@
-//! Node-session service offers and exact-actor export admission.
+//! Node-session service offers and semantic-target export admission.
 
 use super::{
     ConnectionKey, PendingReply, PendingReplyKind, ReplyOutcome, ReplyRoutingTable, ReplyStatus,
@@ -6,7 +6,8 @@ use super::{
 use crate::envelope::{NodeSessionIdentity, ServiceOfferPayload};
 use crate::internal::types::AskError;
 use crate::lifetime::live_actors::{self, ActorIncarnation};
-use crate::node_identity::Location;
+use crate::lifetime::local_handles::{self, HewLocalPidId};
+use crate::node_identity::{Location, Target};
 use crate::util::MutexExt;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,8 +18,56 @@ const SERVICE_OFFER_LIMIT: usize = 256;
 
 #[derive(Debug)]
 struct ExportRecord {
-    target: ActorIncarnation,
+    authority: ExportAuthority,
+    dispatch: usize,
     offer: ServiceOfferPayload,
+}
+
+/// A role grant owns the declared role authority, independently of its worker.
+#[derive(Debug)]
+enum ExportAuthority {
+    Direct(ActorIncarnation),
+    Role(HewLocalPidId),
+}
+
+impl ExportAuthority {
+    fn accepts(&self, selected: ActorIncarnation) -> bool {
+        match self {
+            Self::Direct(target) => *target == selected,
+            Self::Role(_) => true,
+        }
+    }
+
+    fn live(&self) -> bool {
+        match self {
+            Self::Direct(target) => live_actors::with_live_incarnation(*target, |_| ()).is_some(),
+            Self::Role(root) => crate::supervisor::actor_role_authority_live(*root),
+        }
+    }
+}
+
+fn export_metadata(
+    local_route: u16,
+    location: Location,
+) -> Result<(ExportAuthority, usize), AskError> {
+    match location.target() {
+        Target::Direct(_) => {
+            local_handles::with_current_target_actor(location.target(), local_route, |actor| {
+                // SAFETY: the target helper pins this exact actor during the borrow.
+                let dispatch = unsafe { (*actor).dispatch }.ok_or(AskError::Unauthorized)? as usize;
+                // SAFETY: the same send pin retains this incarnation.
+                let target = unsafe { ActorIncarnation::of(actor) };
+                Ok((ExportAuthority::Direct(target), dispatch))
+            })
+            .ok_or(AskError::StaleRef)?
+        }
+        Target::Role(id) => {
+            let token = local_handles::carried_role(id.get()).ok_or(AskError::StaleRef)?;
+            let (root, dispatch) =
+                crate::supervisor::actor_role_export_metadata(token).ok_or(AskError::StaleRef)?;
+            Ok((ExportAuthority::Role(root), dispatch))
+        }
+    }
 }
 
 struct ImportWaiter {
@@ -104,13 +153,14 @@ impl ServiceExports {
 
     pub(super) fn export(
         self: &Arc<Self>,
+        local_route: u16,
         recipient: NodeSessionIdentity,
         request_id: u64,
-        target: ActorIncarnation,
         location: Location,
         mut handlers: Vec<String>,
     ) -> Result<(ExportLease, ServiceOfferPayload), AskError> {
         handlers.sort();
+        let (authority, dispatch) = export_metadata(local_route, location)?;
         let mut state = self.state.lock_or_recover();
         if state.closed {
             return Err(AskError::LocalShutdown);
@@ -129,16 +179,14 @@ impl ServiceExports {
         };
         crate::envelope::encode_service_offer_payload(&offer)
             .map_err(|_| AskError::EncodeFailed)?;
-        let pin = live_actors::pin_actor_by_id(target.actor_id()).ok_or(AskError::StaleRef)?;
-        if pin.actor().spawn_serial != target.spawn_serial() {
+        if !authority.live() {
             return Err(AskError::StaleRef);
         }
-        let dispatch =
-            pin.actor().dispatch.ok_or(AskError::Unauthorized)? as *const std::ffi::c_void;
+        let dispatch_ptr = dispatch as *const std::ffi::c_void;
         if !offer.handlers.iter().all(|handler| {
-            crate::xnode_serial::local_message(dispatch, handler).is_some_and(|message| {
-                crate::xnode_serial::lookup_request(dispatch, message).is_some()
-                    && crate::xnode_serial::lookup_reply(dispatch, message).is_some()
+            crate::xnode_serial::local_message(dispatch_ptr, handler).is_some_and(|message| {
+                crate::xnode_serial::lookup_request(dispatch_ptr, message).is_some()
+                    && crate::xnode_serial::lookup_reply(dispatch_ptr, message).is_some()
             })
         }) {
             return Err(AskError::Unauthorized);
@@ -146,7 +194,8 @@ impl ServiceExports {
         state.exports.insert(
             grant_id,
             ExportRecord {
-                target,
+                authority,
+                dispatch,
                 offer: offer.clone(),
             },
         );
@@ -301,11 +350,11 @@ impl ServiceExports {
         true
     }
 
-    /// Lifecycle rights share the export's recipient and exact incarnation; each
+    /// Lifecycle rights share the export's recipient and semantic target; each
     /// setup must also retain its currently authenticated publication.
     pub(crate) fn claim_observation<R>(
         &self,
-        target: ActorIncarnation,
+        location: Location,
         peer: NodeSessionIdentity,
         grant: u64,
         publication_removed: &AtomicBool,
@@ -317,18 +366,21 @@ impl ServiceExports {
         }
         let record = state.exports.get(&grant).ok_or(AskError::Unauthorized)?;
         if grant == 0
-            || record.target != target
+            || record.offer.target != location
             || record.offer.recipient != peer
             || publication_removed.load(Ordering::Acquire)
         {
             return Err(AskError::Unauthorized);
+        }
+        if !record.authority.live() {
+            return Err(AskError::StaleRef);
         }
         Ok(claim())
     }
 
     fn claim<R>(
         &self,
-        target: ActorIncarnation,
+        destination: (Location, ActorIncarnation),
         peer: NodeSessionIdentity,
         grant: u64,
         handler: &str,
@@ -339,10 +391,17 @@ impl ServiceExports {
         if state.closed {
             return Err(AskError::LocalShutdown);
         }
-        live_actors::with_live_incarnation(target, |_| ()).ok_or(AskError::StaleRef)?;
+        let (location, target) = destination;
+        let dispatch = live_actors::with_live_incarnation(target, |pin| {
+            pin.actor().dispatch.map(|dispatch| dispatch as usize)
+        })
+        .flatten()
+        .ok_or(AskError::StaleRef)?;
         let record = state.exports.get(&grant).ok_or(AskError::Unauthorized)?;
         if grant == 0
-            || record.target != target
+            || record.offer.target != location
+            || !record.authority.accepts(target)
+            || record.dispatch != dispatch
             || record.offer.recipient != peer
             || record
                 .offer
@@ -351,6 +410,9 @@ impl ServiceExports {
                 .is_err()
         {
             return Err(AskError::Unauthorized);
+        }
+        if !record.authority.live() {
+            return Err(AskError::StaleRef);
         }
         if publication_removed.load(Ordering::Acquire) {
             return Err(AskError::ConnectionDropped);
@@ -375,6 +437,7 @@ impl Drop for ExportLease {
 #[derive(Debug)]
 pub(crate) struct RemoteAdmission {
     pub(crate) owner: Arc<ServiceExports>,
+    pub(crate) location: Location,
     pub(crate) target: ActorIncarnation,
     pub(crate) peer: NodeSessionIdentity,
     pub(crate) grant: u64,
@@ -383,8 +446,13 @@ pub(crate) struct RemoteAdmission {
 }
 
 impl RemoteAdmission {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "admission binds a semantic destination, selected incarnation and authenticated publication"
+    )]
     pub(crate) fn new(
         manager: &crate::connection::HewConnMgr,
+        location: Location,
         target: ActorIncarnation,
         peer: crate::node_identity::NodeId,
         publication: u64,
@@ -396,6 +464,7 @@ impl RemoteAdmission {
                 .ok_or(AskError::Unauthorized)?;
         let admission = Self {
             owner: Arc::clone(&manager.service_exports),
+            location,
             target,
             peer: connection.peer_session(),
             grant,
@@ -408,7 +477,7 @@ impl RemoteAdmission {
 
     pub(crate) fn claim<R>(&self, claim: impl FnOnce() -> R) -> Result<R, AskError> {
         self.owner.claim(
-            self.target,
+            (self.location, self.target),
             self.peer,
             self.grant,
             &self.handler,

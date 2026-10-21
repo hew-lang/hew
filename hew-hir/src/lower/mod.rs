@@ -266,16 +266,6 @@ const SYNTHETIC_MONITOR_ITEM: ItemId = ItemId(u32::MAX / 2 - 10);
 /// builtin with no AST `fn` item. Resolves to
 /// `ResolvedRef::Builtin(ActorUnlink)` via `builtin_family`.
 const SYNTHETIC_UNLINK_ITEM: ItemId = ItemId(u32::MAX / 2 - 18);
-/// Synthetic-builtin sentinel `ItemId` for the static `instant::now()`
-/// constructor. The `impl instant` block in `std/builtins.hew` binds it via
-/// `#[extern_symbol(hew_instant_now)]`, but a no-receiver static call resolves
-/// through the bare callee name `"instant::now"` (the parser joins the `::`
-/// path into one identifier). Seeding it here with `builtin_family`
-/// (`InstantNow`) makes `lower_identifier` resolve the callee to
-/// `ResolvedRef::Builtin(InstantNow)`, so MIR's `runtime_symbol_for_call_expr`
-/// reads `hew_instant_now` off the catalog bijection — mirroring `link` /
-/// `monitor`. `instant` is i64-backed, so `return_ty` is `I64`.
-const SYNTHETIC_INSTANT_NOW_ITEM: ItemId = ItemId(u32::MAX / 2 - 19);
 
 /// Synthetic-builtin sentinel `ItemId`s for the pipe layout-witness
 /// recv/send symbols (`hew_stream_next_layout`, `hew_stream_try_next_layout`,
@@ -820,8 +810,8 @@ struct LowerCtx {
     opaque_resource_candidates: hew_types::OpaqueResourceCandidateGraph,
     /// Resource declarations for which `check_resource_close_discipline`
     /// already pushed a user-facing close-discipline diagnostic
-    /// (`ResourceMissingClose`, `ResourceCloseMustReturnUnit` or
-    /// `ResourceCloseSourceUnsupported`). `admit_resource_record_lifecycles`
+    /// (`ResourceMissingClose` or `ResourceCloseMustReturnUnit`).
+    /// `admit_resource_record_lifecycles`
     /// consults this set so it never re-derives the same missing-or-invalid
     /// close fact as a `CheckerBoundaryViolation`: that diagnostic means an
     /// HIR-internal invariant broke on a program this pass already believes
@@ -908,6 +898,8 @@ struct LowerCtx {
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// Checker-bound slots of each spawn and supervisor child.
     spawn_argument_slots: HashMap<SpanKey, Vec<hew_types::check::SpawnSlot>>,
+    supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     checked_call_effects: HashMap<SpanKey, hew_types::check::effects::SuspensionEffect>,
     select_sources: HashMap<SpanKey, Vec<hew_types::check::CheckedSelectSource>>,
     race_operands: HashMap<SpanKey, Vec<hew_types::check::RaceOperandKind>>,

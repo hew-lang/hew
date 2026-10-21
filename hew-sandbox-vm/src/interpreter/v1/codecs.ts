@@ -2,28 +2,7 @@ import { UNIT, stringValue, type VmValue } from "../values.js";
 import { runtimeTag, type PackageV1, type TermV1 } from "./package.js";
 import { collectionOperation, type ValueProgram } from "./value-operations.js";
 
-type Key = { name: string; tag: number | null; flags: number };
-type Node =
-  | string
-  | { Float: { bits: number } }
-  | { Signed: { min: number; max: number } }
-  | { Unsigned: { max: number } }
-  | { Tuple: number[] }
-  | { Array: { element: number; len: number } }
-  | { Sequence: number }
-  | { Set: number }
-  | { Map: { key: number; value: number } }
-  | { Record: [Key, number][] }
-  | { Variant: [Key, number | null][] }
-  | { Option: number };
-interface Shape {
-  root: number;
-  nodes: Node[];
-  names: string[];
-  aggregates: (number | null)[];
-  variants: (number | null)[];
-  grouped_payloads: boolean[];
-}
+import type { CodecShape as Shape } from "./instructions.generated.js";
 type Bridge =
   | null
   | boolean
@@ -199,7 +178,13 @@ function* fromBridge(
   }
   if ("Map" in node || "Set" in node) {
     const family = "Map" in node ? "Map" : "Set";
-    const map = yield* collectionOperation(pkg, family, "New", [], [], null);
+    const map = yield* collectionOperation(
+      pkg,
+      { handler: "collection", family, operation: "New" },
+      [],
+      [],
+      null,
+    );
     for (const item of array(value)) {
       const itemFields = array(item);
       const pair = "Map" in node ? itemFields : [itemFields[0]!, null];
@@ -219,8 +204,7 @@ function* fromBridge(
       const size = map.entries.size;
       yield* collectionOperation(
         pkg,
-        family,
-        "Insert",
+        { handler: "collection", family, operation: "Insert" },
         [map, key, member],
         context.callbacks[id] ?? [],
         null,

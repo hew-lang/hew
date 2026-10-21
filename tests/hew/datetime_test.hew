@@ -2,12 +2,12 @@
 
 import std.time.datetime;
 
-fn assert_parse_ok(actual: Result<i64, datetime.DateTimeError>) -> i64 {
+fn assert_parse_ok(actual: Result<timestamp, datetime.DateTimeError>) -> timestamp {
     match actual {
         .Ok(value) => value,
         .Err(message) => {
             panic(f"{message}");
-            0
+            timestamp.from_unix_secs(0)
         }
     }
 }
@@ -24,10 +24,7 @@ fn test_try_parse_full_timestamp_formats_back_to_date() {
 #[test]
 fn test_try_parse_invalid_timestamp_returns_err() {
     match datetime.parse("not-a-date", "%Y-%m-%dT%H:%M:%SZ") {
-        .Ok(value) => {
-            panic(f"expected invalid parse to fail, got {value}");
-            assert(value == 0);
-        }
+        .Ok(_) => panic("expected invalid parse to fail"),
         .Err(.Parse(message)) => assert(!message.is_empty()),
         .Err(other) => panic(f"expected a parse failure, got {other}"),
     }
@@ -35,16 +32,18 @@ fn test_try_parse_invalid_timestamp_returns_err() {
 
 #[test]
 fn test_try_format_rejects_invalid_directive_with_error() {
-    match datetime.format(0, "%Q") {
+    match datetime.format(timestamp.from_unix_secs(0), "%Q") {
         .Ok(_) => assert(false),
         .Err(error) => assert(error == datetime.DateTimeError.Format("invalid datetime format directive")),
     }
 }
 
 #[test]
-#[should_panic]
 fn test_year_rejects_out_of_range_epoch() {
-    datetime.year(9223372036854775807);
+    match datetime.year(timestamp.from_unix_secs(9223372036854775807)) {
+        .Err(.Range(_)) => {}
+        _ => panic("expected checked calendar range error"),
+    }
 }
 
 #[test]
@@ -52,8 +51,8 @@ fn test_add_days_and_add_hours_shift_fixed_timestamp() {
     let base = assert_parse_ok(datetime.parse("2025-07-10T00:00:00Z", "%Y-%m-%dT%H:%M:%SZ"));
     let plus_two_days = datetime.add_days(base, 2);
     let plus_six_hours = datetime.add_hours(base, 6);
-    assert(datetime.to_iso8601(plus_two_days) == "2025-07-12T00:00:00Z");
-    assert(datetime.to_iso8601(plus_six_hours) == "2025-07-10T06:00:00Z");
+    assert(datetime.to_iso8601(plus_two_days).expect("calendar") == "2025-07-12T00:00:00Z");
+    assert(datetime.to_iso8601(plus_six_hours).expect("calendar") == "2025-07-10T06:00:00Z");
 }
 
 #[test]
@@ -65,6 +64,5 @@ fn test_diff_secs_matches_fixed_interval() {
 
 #[test]
 fn test_now_surfaces_positive_time_values() {
-    assert(datetime.now_ms() > 0);
-    assert(datetime.now_secs() > 0);
+    assert(timestamp.now() > timestamp.from_unix_secs(0));
 }

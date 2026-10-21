@@ -487,7 +487,6 @@ pub(crate) fn record_actor_crash() {
 }
 
 // KEEP(wasm32): supervisor.rs restart path.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_actor_restart() {
     ACTORS_RESTARTS_TOTAL.fetch_add(1, Ordering::Relaxed);
 }

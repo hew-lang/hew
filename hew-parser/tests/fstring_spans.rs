@@ -117,11 +117,10 @@ fn fstring_span_binary_expression_inner_nodes() {
                         "'a' left-node span start should be 23, got {}",
                         left.1.start
                     );
-                    // end = start of next token (+), which is 25 (parser convention:
-                    // span.end == next-token.start, not the character's own end byte)
+                    // The identifier excludes the following whitespace.
                     assert_eq!(
-                        left.1.end, 25,
-                        "'a' left-node span end should be 25 (start of '+'), got {}",
+                        left.1.end, 24,
+                        "'a' left-node span end should be 24 (after 'a'), got {}",
                         left.1.end
                     );
                     assert_eq!(

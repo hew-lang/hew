@@ -1672,20 +1672,6 @@ impl Checker {
                             &format!("type `{}`", td.name),
                         ));
                     }
-
-                    for body_item in &td.body {
-                        if let TypeBodyItem::Method(method) = body_item {
-                            let method_name = format!("{}::{}", td.name, method.name);
-                            if self.fn_sig_inference_holes.get(&method_name).is_some_and(
-                                |hole_vars| self.inference_holes_still_unresolved(hole_vars),
-                            ) {
-                                self.errors.push(TypeError::inference_failed(
-                                    span.clone(),
-                                    &format!("signature of method `{method_name}`"),
-                                ));
-                            }
-                        }
-                    }
                 }
                 Item::TypeAlias(type_alias) => {
                     // Fail closed only for user-written root `_` holes; nested holes
@@ -2958,12 +2944,23 @@ impl Checker {
                         // `type mismatch: expected `Unit`, found `()``. Reject it
                         // here with the canonical hint. A user-declared
                         // `type Unit` shadows this reservation (local-shadows-global).
-                        self.report_error_with_suggestions(
-                            TypeErrorKind::UndefinedType,
-                            &te.1,
-                            "unknown type `Unit`".to_string(),
-                            vec!["the unit type is written `()`".to_string()],
+                        self.errors.push(
+                            TypeError::new(
+                                TypeErrorKind::UndefinedType,
+                                te.1.clone(),
+                                "unknown type `Unit`",
+                            )
+                            .with_suggestion("the unit type is written `()`")
+                            .with_fix(
+                                hew_parser::diagnostic::DiagnosticFix::replace(
+                                    "Use `()`",
+                                    te.1.clone(),
+                                    "()",
+                                    hew_parser::diagnostic::Applicability::MaybeIncorrect,
+                                ),
+                            ),
                         );
+
                         return Ty::Error;
                     }
                     _ => {}

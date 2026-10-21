@@ -1153,23 +1153,8 @@ pub fn lower_program(
             };
             let marker = hir_decl.marker;
             let close_method = if marker == ResourceMarker::Resource {
-                hir_decl
-                    .consuming_methods
-                    .iter()
-                    .find(|m| m.as_str() == "close")
-                    .cloned()
-                    // W3.030 Q-α-B: a `#[resource]` whose `close` lives in a
-                    // sibling inherent-impl block must still register the
-                    // close-method symbol so the MIR elaborator's
-                    // `resource_drop_fn` emits `Some("<T>::close")` rather
-                    // than `None`. Without this fallback the type-class
-                    // table would record `(Resource, None)` for the broadened
-                    // surface and drop-elaboration would silently elide the
-                    // close call.
-                    .or_else(|| {
-                        ctx.inherent_close_signature(hir_decl.declaration)
-                            .map(|_| "close".to_string())
-                    })
+                ctx.inherent_close_signature(hir_decl.declaration)
+                    .map(|_| "close".to_string())
             } else {
                 None
             };
@@ -1318,15 +1303,8 @@ pub fn lower_program(
                                 continue;
                             };
                             let close_method = if hir_decl.marker == ResourceMarker::Resource {
-                                hir_decl
-                                    .consuming_methods
-                                    .iter()
-                                    .find(|m| m.as_str() == "close")
-                                    .cloned()
-                                    .or_else(|| {
-                                        ctx.inherent_close_signature(hir_decl.declaration)
-                                            .map(|_| "close".to_string())
-                                    })
+                                ctx.inherent_close_signature(hir_decl.declaration)
+                                    .map(|_| "close".to_string())
                             } else {
                                 None
                             };
@@ -1716,11 +1694,9 @@ pub fn lower_program(
                 }
             }
             Item::Supervisor(decl) => {
-                // P0.2: Fail-closed gate: supervisor restart machinery
-                // (`SupervisorChildGet`, `Stop`, nested-restart) is not yet
-                // available on wasm32 (#1475). Supervisors remain restricted
-                // to x86_64/aarch64 until that work lands.
-                if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64) {
+                // Native and WASI share the checked supervisor runtime.
+                // Other architectures have no runtime implementation.
+                if matches!(ctx.target_arch, TargetArch::Other) {
                     ctx.diagnostics.push(HirDiagnostic::new(
                         HirDiagnosticKind::TargetCoroutineUnsupported {
                             target_arch: format!("{:?}", ctx.target_arch),
@@ -1729,7 +1705,7 @@ pub fn lower_program(
                         span.clone(),
                         format!(
                             "supervisor '{}' requires supervisor restart machinery \
-                             (x86_64/aarch64 only; wasm32 support tracked in #1475)",
+                             (unsupported target)",
                             decl.name
                         ),
                     ));
@@ -2138,10 +2114,9 @@ pub fn lower_program(
                         // layout here.
                         Item::Actor(actor) => {
                             // Fail-closed target gate: actors require the actor
-                            // runtime ABI (x86_64/aarch64), same as the root-item
+                            // runtime ABI, same as the root-item
                             // actor arm in the source-order emit pass.
-                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
-                            {
+                            if matches!(ctx.target_arch, TargetArch::Other) {
                                 ctx.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::TargetCoroutineUnsupported {
                                         target_arch: format!("{:?}", ctx.target_arch),
@@ -2150,7 +2125,7 @@ pub fn lower_program(
                                     span.clone(),
                                     format!(
                                         "actor '{}' requires the actor runtime ABI \
-                                         (x86_64/aarch64 only)",
+                                         (unsupported target)",
                                         actor.name
                                     ),
                                 ));
@@ -2168,8 +2143,7 @@ pub fn lower_program(
                         // lowering with a handle no declaration answers. The
                         // root arm gates the target the same way.
                         Item::Supervisor(supervisor) => {
-                            if !matches!(ctx.target_arch, TargetArch::X86_64 | TargetArch::Aarch64)
-                            {
+                            if matches!(ctx.target_arch, TargetArch::Other) {
                                 ctx.diagnostics.push(HirDiagnostic::new(
                                     HirDiagnosticKind::TargetCoroutineUnsupported {
                                         target_arch: format!("{:?}", ctx.target_arch),
@@ -2178,7 +2152,7 @@ pub fn lower_program(
                                     span.clone(),
                                     format!(
                                         "supervisor '{}' requires supervisor restart machinery \
-                                         (x86_64/aarch64 only; wasm32 support tracked in #1475)",
+                                         (unsupported target)",
                                         supervisor.name
                                     ),
                                 ));
@@ -2241,6 +2215,11 @@ pub fn lower_program(
         let saved_module = ctx.current_module_name.replace("std.builtins".to_string());
         let saved_injected = ctx.lowering_injected_items;
         ctx.lowering_injected_items = true;
+        let private_helpers = super::private_refs::collect_builtin_private_fn_closure(
+            &mut ctx,
+            builtins,
+            builtin_item_index,
+        );
         let saved_some = ctx
             .machine_ctor_registry
             .insert("Some".to_string(), ("Option".to_string(), 0));
@@ -2250,6 +2229,20 @@ pub fn lower_program(
         for (ordinal, (item, span)) in builtins.items.iter().enumerate() {
             ctx.current_item_ordinal = ordinal;
             ctx.current_module_idx = builtin_item_index(ordinal);
+            if let Item::Function(function) = item {
+                let declaration =
+                    ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0);
+                let ordinary = declaration.is_some_and(|declaration| {
+                    matches!(type_check_output.source_function_targets.get(&declaration),
+                        Some(CallTarget::User(target)) if *target == declaration)
+                });
+                if ordinary && (function.visibility.is_pub() || private_helpers.contains(&ordinal))
+                {
+                    if let Some(function) = ctx.lower_fn(function, span.clone()) {
+                        items.push(HirItem::Function(function));
+                    }
+                }
+            }
             if let Item::ExternBlock(block) = item {
                 for function in &block.functions {
                     let owner = format!("std.builtins.{}", function.name);

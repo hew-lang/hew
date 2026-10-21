@@ -802,6 +802,7 @@ pub(super) async fn rename(
     position: Position,
     new_name: &str,
 ) -> Result<Option<WorkspaceEdit>, RenameError> {
+    let analysis = server.analysis_jobs.lock().await;
     let snapshot = server
         .open_documents
         .read()
@@ -828,6 +829,7 @@ pub(super) async fn rename(
         }
         Some(PreparedRename::Project(project)) => project,
     };
+    drop(analysis);
     let roots =
         roots.ok_or_else(|| refused(&project.query.path, "workspace roots are unavailable"))?;
     // Preserve the request's authored text and position even if another job
@@ -861,6 +863,7 @@ pub(super) async fn rename(
             "rename analysis could not finish; retry the request",
         )
     })??;
+    let _analysis = server.analysis_jobs.lock().await;
     complete_rename(server, &snapshot, planned)
 }
 

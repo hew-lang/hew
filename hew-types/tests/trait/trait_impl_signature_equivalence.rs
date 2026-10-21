@@ -388,3 +388,110 @@ impl Lift for Box {
         "renamed method-level type param must be accepted; got mismatch errors: {sig_mismatch_errors:#?}",
     );
 }
+
+#[test]
+fn inherited_impl_signatures_use_applied_supertrait_arguments() {
+    let source =
+        include_str!("../../../tests/core-acceptance/cases/inherited-trait-signatures.hew");
+    let output = typecheck_isolated(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
+fn inherited_impl_signature_rejects_primary_trait_argument_order() {
+    for (signature, detail) in [
+        (
+            "fn echo(self, marker: string, consume value: i64) -> i64 { value }",
+            "parameter",
+        ),
+        (
+            "fn echo(self, marker: i64, consume value: string) -> i64 { 0 }",
+            "return type",
+        ),
+    ] {
+        let source = format!(
+            "trait Echo<A, B> {{ fn echo(self, marker: A, consume value: B) -> B; }}
+             trait Flip<X, Y>: Echo<Y, X> {{}}
+             type Fixed {{}}
+             impl Echo<i64, string> for Fixed {{
+                 fn echo(self, marker: i64, consume value: string) -> string {{ value }}
+             }}
+             impl Flip<string, i64> for Fixed {{ {signature} }}"
+        );
+        let output = typecheck_isolated(&source);
+        assert!(
+            has_trait_impl_sig_mismatch(&output, detail),
+            "{detail}: {:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn inherited_impl_signature_keeps_missing_supertrait_diagnostic_independent() {
+    let output = typecheck_isolated(
+        "trait Echo<A, B> { fn echo(self, marker: A, consume value: B) -> B; }
+         trait Flip<X, Y>: Echo<Y, X> {}
+         type Fixed {}
+         impl Flip<string, i64> for Fixed {
+             fn echo(self, marker: i64, consume value: string) -> string { value }
+         }",
+    );
+    assert!(
+        output.errors.iter().any(|error| {
+            error.kind == TypeErrorKind::BoundsNotSatisfied
+                && error.message.contains("supertrait `Echo`")
+        }),
+        "{:#?}",
+        output.errors
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .all(|error| !matches!(error.kind, TypeErrorKind::TraitImplSignatureMismatch { .. })),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inherited_impl_signature_checks_every_applied_ancestor() {
+    let declarations = "trait Value<T> { fn value(self) -> T; }
+        trait Numbers: Value<i64> {}
+        trait Words: Value<string> {}
+        trait Both: Numbers + Words {}
+        type Fixed {}
+        impl Value<i64> for Fixed { fn value(self) -> i64 { 7 } }
+        impl Value<string> for Fixed { fn value(self) -> string { \"seven\" } }
+        impl Numbers for Fixed {}
+        impl Words for Fixed {}";
+    let control = typecheck_isolated(&format!("{declarations} impl Both for Fixed {{}}"));
+    assert!(control.errors.is_empty(), "{:#?}", control.errors);
+    for method in [
+        "fn value(self) -> i64 { 7 }",
+        "fn value(self) -> string { \"seven\" }",
+    ] {
+        let output = typecheck_isolated(&format!(
+            "{declarations} impl Both for Fixed {{ {method} }}"
+        ));
+        assert!(
+            has_trait_impl_sig_mismatch(&output, "return type"),
+            "{:#?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn index_shorthand_infers_get_and_at_signature_arguments() {
+    let output = typecheck_embedded_builtins_isolated(
+        "type Grid { value: i64; }
+         impl Index for Grid {
+             type Output = i64;
+             fn get(self, index: i64) -> Option<i64> { .Some(self.value + index) }
+             fn at(self, index: i64) -> i64 { self.value + index }
+         }",
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

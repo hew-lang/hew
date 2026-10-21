@@ -18,5 +18,5 @@ fn main() {
         .Err(_) => (),
     }
     let parsed = cron.parse("* * * * *");
-    parsed.close();
+    assert(parsed.next(timestamp.from_unix_secs(0)) == timestamp.from_unix_secs(60));
 }

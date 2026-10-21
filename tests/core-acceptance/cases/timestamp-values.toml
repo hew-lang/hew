@@ -1,0 +1,10 @@
+[[case]]
+id = "timestamp-values"
+intent = "Wide wall-clock values preserve normalized nanoseconds through records, calls and checked arithmetic, including dates outside an i64 nanosecond epoch."
+source = "cases/timestamp-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "timestamp values ok\n"
+exit = 0

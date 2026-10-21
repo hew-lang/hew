@@ -262,9 +262,6 @@ fn hover_field_declaration_at_offset(
                             )
                             .end;
                         }
-                        TypeBodyItem::Method(method) => {
-                            search_from = search_from.max(method.decl_span.end);
-                        }
                     }
                 }
             }
@@ -384,18 +381,6 @@ fn hover_binding_in_item(
                     hover_binding_in_block(&method.body, type_output, word, word_span, offset)
                 {
                     return Some(result);
-                }
-            }
-            None
-        }
-        Item::TypeDecl(type_decl) => {
-            for body_item in &type_decl.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    if let Some(result) =
-                        hover_binding_in_block(&method.body, type_output, word, word_span, offset)
-                    {
-                        return Some(result);
-                    }
                 }
             }
             None
@@ -1282,23 +1267,6 @@ fn hover_param_in_item(
             }
             None
         }
-        Item::TypeDecl(type_decl) => {
-            for body_item in &type_decl.body {
-                if let TypeBodyItem::Method(method) = body_item {
-                    let key = format!("{}::{}", type_decl.name, method.name);
-                    if let Some(result) = hover_param_in_method(
-                        method,
-                        fn_sigs.get(key.as_str()),
-                        word,
-                        word_span,
-                        offset,
-                    ) {
-                        return Some(result);
-                    }
-                }
-            }
-            None
-        }
         Item::Impl(impl_decl) => {
             let TypeExpr::Named {
                 path: named_path, ..
@@ -1567,6 +1535,7 @@ mod tests {
         TypeCheckOutput {
             expr_types: HashMap::new(),
             resolved_expr_types: HashMap::new(),
+            resolved_binding_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -1807,7 +1776,7 @@ mod tests {
     #[test]
     fn hover_shows_method_param_type() {
         let source =
-            "type Counter {\n    fn bump(counter: Counter, n: i32) -> i32 {\n        n\n    }\n}";
+            "type Counter {}\nimpl Counter {\n    fn bump(counter: Counter, n: i32) -> i32 {\n        n\n    }\n}";
         let pr = hew_parser::parse(source);
         let tc = type_check(&pr);
         let offset = source.find("n: i32").unwrap();
@@ -1903,6 +1872,7 @@ mod tests {
         let tc = TypeCheckOutput {
             expr_types,
             resolved_expr_types: HashMap::new(),
+            resolved_binding_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2010,6 +1980,7 @@ mod tests {
         let tc = TypeCheckOutput {
             expr_types,
             resolved_expr_types: HashMap::new(),
+            resolved_binding_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2132,6 +2103,7 @@ mod tests {
         let tc = TypeCheckOutput {
             expr_types,
             resolved_expr_types: HashMap::new(),
+            resolved_binding_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),
@@ -2304,6 +2276,7 @@ mod tests {
         let tc = TypeCheckOutput {
             expr_types,
             resolved_expr_types: HashMap::new(),
+            resolved_binding_types: HashMap::new(),
             is_type_patterns: HashMap::new(),
             assign_target_kinds: HashMap::new(),
             assign_target_shapes: HashMap::new(),

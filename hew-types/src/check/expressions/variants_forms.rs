@@ -668,9 +668,10 @@ else needs `impl Display for {rendered}`)"
                 } else {
                     format!("undefined variable `{name}`")
                 };
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedVariable,
                     span,
+                    Some(span),
                     message,
                     similar,
                 );
@@ -1168,6 +1169,7 @@ else needs `impl Display for {rendered}`)"
             // `RedundantIs` warning so the user is told before they wonder
             // why their else-branch never runs.
             self.warnings.push(crate::error::TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Warning,
                 kind: TypeErrorKind::RedundantIs,
                 span: span.clone(),

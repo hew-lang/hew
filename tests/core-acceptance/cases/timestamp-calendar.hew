@@ -1,0 +1,42 @@
+import std.time.datetime;
+
+fn main() {
+    let before = timestamp.from_unix_parts(-1, 999999999).expect("normalized");
+    assert(datetime.to_iso8601(before).expect("format") == "1969-12-31T23:59:59.999999999Z");
+    let offset = datetime.parse_iso8601("1970-01-01T01:29:59.999999999+01:30").expect("offset");
+    assert(offset == before);
+    assert(datetime.parse_iso8601(datetime.to_iso8601(before).expect("text")).expect("round trip") == before);
+    let leap_day = datetime.from_parts(2400, 2, 29, 12, 34, 56, 123456789).expect("leap day");
+    let fields = datetime.components(leap_day).expect("components");
+    assert(fields.year == 2400 && fields.month == 2 && fields.day == 29);
+    assert(fields.hour == 12 && fields.minute == 34 && fields.second == 56);
+    assert(fields.nanosecond == 123456789 && fields.days_in_month == 29);
+    assert(datetime.parse(datetime.format(leap_day, "%Y/%m/%d %H:%M:%S%.9f").expect("format"), "%Y/%m/%d %H:%M:%S%.9f").expect("parse") == leap_day);
+    let wide = datetime.from_parts(12000, 1, 1, 0, 0, 0, 1).expect("wide year");
+    assert(datetime.parse_iso8601(datetime.to_iso8601(wide).expect("wide text")).expect("wide parse") == wide);
+    match datetime.components(timestamp.from_unix_secs(9223372036854775807)) {
+        .Err(.Range(message)) => assert(!message.is_empty()),
+        _ => panic("expected range error"),
+    }
+    match datetime.parse_iso8601("2016-12-31T23:59:60Z") {
+        .Err(.Parse(message)) => assert(message.contains("leap seconds")),
+        _ => panic("expected leap-second error"),
+    }
+    match datetime.from_parts(2025, 2, 29, 0, 0, 0, 0) {
+        .Err(.Parse(_)) => {}
+        _ => panic("expected invalid date"),
+    }
+    match datetime.format(before, "%Q") {
+        .Err(.Format(_)) => {}
+        _ => panic("expected format error"),
+    }
+    for i in 0..40 {
+        let text = datetime.to_iso8601(leap_day + i * 1ns).expect("loop format");
+        assert(datetime.parse_iso8601(text).expect("loop parse") == leap_day + i * 1ns);
+        match datetime.parse("invalid", "%Y-%m-%d") {
+            .Err(.Parse(message)) => assert(!message.is_empty()),
+            _ => panic("expected repeated parse error"),
+        }
+    }
+    println("timestamp calendar ok");
+}

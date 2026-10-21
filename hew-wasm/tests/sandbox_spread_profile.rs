@@ -6,6 +6,7 @@
 //! carries that walk into the package, rather than admitting the literal and
 //! silently dropping the spliced elements.
 
+use hew_types::{RuntimeCallFamily, VecValueOp};
 use hew_wasm::sandbox::{compile_to_sandbox_bytecode, SandboxBytecodePackageV1};
 
 const PROFILE: &str = "sandbox-vm-export";
@@ -43,18 +44,19 @@ fn compile(source: &str) -> SandboxBytecodePackageV1 {
 ///
 /// A `runtime.call` names its family by table index, so the count joins through
 /// the package's own `runtime_families` rather than matching an opcode name.
-fn vector_call_counts(package: &SandboxBytecodePackageV1, operation: &str) -> usize {
-    let Some(family) = package.runtime_families.iter().find(|entry| {
-        entry.family == "Vector"
-            && entry.detail.as_ref().and_then(serde_json::Value::as_str) == Some(operation)
-    }) else {
+fn vector_call_counts(package: &SandboxBytecodePackageV1, operation: VecValueOp) -> usize {
+    let Some(family) = package
+        .runtime_families
+        .iter()
+        .find(|entry| entry.identity == RuntimeCallFamily::Vector(operation))
+    else {
         return 0;
     };
     package
         .functions
         .iter()
         .flat_map(|function| &function.blocks)
-        .filter(|block| block.term["op"] == "runtime.call" && block.term["family"] == family.id)
+        .filter(|block| matches!(block.term.kind, hew_wasm::sandbox::bytecode::TermKind::RuntimeCall { family: id, .. } if id == family.id))
         .count()
 }
 
@@ -63,11 +65,11 @@ fn spread_emits_the_same_vector_walk_as_the_hand_written_loop() {
     let spread = compile(SPREAD);
     let walk = compile(WALK);
 
-    for operation in ["Len", "Index", "Push"] {
+    for operation in [VecValueOp::Len, VecValueOp::Index, VecValueOp::Push] {
         assert_eq!(
             vector_call_counts(&spread, operation),
             vector_call_counts(&walk, operation),
-            "the spread makes the same number of Vector({operation}) calls as the walk it stands for"
+            "the spread makes the same number of Vector({operation:?}) calls as the walk it stands for"
         );
     }
 }
@@ -78,10 +80,10 @@ fn spread_does_not_silently_drop_its_operand() {
     // still be admitted, emitting only the plain element pushes and none of
     // the walk. Any one of these at zero means the elements went nowhere.
     let spread = compile(SPREAD);
-    for operation in ["Len", "Index"] {
+    for operation in [VecValueOp::Len, VecValueOp::Index] {
         assert!(
             vector_call_counts(&spread, operation) > 0,
-            "the spread walks its operand: Vector({operation}) must appear"
+            "the spread walks its operand: Vector({operation:?}) must appear"
         );
     }
 }

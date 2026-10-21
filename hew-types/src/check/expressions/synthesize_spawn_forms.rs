@@ -23,6 +23,13 @@ use crate::BuiltinType;
 use hew_parser::ast::FieldLabel;
 use std::collections::VecDeque;
 
+#[derive(Clone, Copy)]
+pub(in crate::check) struct StructInitSite<'a> {
+    pub path: &'a hew_parser::ast::Path,
+    pub field_labels: &'a [hew_parser::ast::FieldLabel],
+    pub span: &'a Span,
+}
+
 impl Checker {
     /// A resource destructor owns its receiver and may transfer one field to
     /// the external release operation. Close-body cleanup retains every field
@@ -54,9 +61,10 @@ impl Checker {
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
+        field_span: Option<&Span>,
         span: &Span,
     ) -> Ty {
-        self.check_field_access_with_type_args(object, field, None, span)
+        self.check_field_access_with_type_args(object, field, field_span, None, span)
     }
 
     #[expect(
@@ -67,6 +75,7 @@ impl Checker {
         &mut self,
         object: &Spanned<Expr>,
         field: &str,
+        field_span: Option<&Span>,
         type_args: Option<&[Spanned<TypeExpr>]>,
         span: &Span,
     ) -> Ty {
@@ -95,9 +104,10 @@ impl Checker {
                 field,
                 self.current_actor_fields.iter().map(|f| f.name.as_str()),
             );
-            self.report_error_with_suggestions(
+            self.report_error_with_suggestions_at(
                 TypeErrorKind::UndefinedField,
                 span,
+                field_span,
                 format!("actor state has no field `{field}`"),
                 similar,
             );
@@ -302,6 +312,17 @@ impl Checker {
                 Ty::Error
             }
             Ty::Named { head, args } => {
+                if head.builtin() == Some(BuiltinType::Timestamp)
+                    && !self.checking_embedded_builtins
+                    && !self.checking_canonical_stdlib_source("std.builtins")
+                {
+                    self.report_error(
+                        TypeErrorKind::InvalidOperation,
+                        span,
+                        "timestamp fields are private; use unix_parts() or an explicit Unix-unit conversion".to_string(),
+                    );
+                    return Ty::Error;
+                }
                 let name = head.registry_key();
                 // A role retains the child's complete type after substituting
                 // the owning supervisor's concrete arguments.
@@ -374,9 +395,10 @@ impl Checker {
                             .chain(children.pools.iter())
                             .map(|(name, _)| name.as_str());
                         let similar = crate::error::find_similar(field, names);
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedField,
                             span,
+                            field_span,
                             format!(
                                 "supervisor `{}` has no child named `{field}`",
                                 sup_head.registry_key()
@@ -401,9 +423,10 @@ impl Checker {
                     } else {
                         let similar =
                             crate::error::find_similar(field, td.fields.keys().map(String::as_str));
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedField,
                             span,
+                            field_span,
                             format!("no field `{field}` on type `{name}`"),
                             similar,
                         );
@@ -1126,8 +1149,17 @@ impl Checker {
         fields: &[(Ident, Spanned<Expr>)],
         type_args: Option<&[Spanned<TypeExpr>]>,
         base: Option<&Spanned<Expr>>,
-        span: &Span,
+        site: StructInitSite<'_>,
     ) -> Ty {
+        let span = site.span;
+        let name_span = site
+            .path
+            .segments
+            .as_slice()
+            .first()
+            .filter(|_| site.path.segments.len() == 1)
+            .map(|segment| &segment.1);
+
         let resolved = matches!(
             resolution,
             Some(
@@ -1274,9 +1306,10 @@ impl Checker {
                                 )
                             })
                             .unwrap_or_default();
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedType,
                             span,
+                            name_span,
                             format!("module `{module_short}` has no exported type `{type_name}`"),
                             similar,
                         );
@@ -1335,9 +1368,10 @@ impl Checker {
                                 )
                             })
                             .unwrap_or_default();
-                        self.report_error_with_suggestions(
+                        self.report_error_with_suggestions_at(
                             TypeErrorKind::UndefinedType,
                             span,
+                            name_span,
                             format!("module `{module_short}` has no exported type `{type_name}`"),
                             similar,
                         );
@@ -1434,6 +1468,18 @@ impl Checker {
         // `published_bare_type_qualified` resolves a bare import reference.
         // `opaque_type_ids` stores exact declaration identities. A
         // same-leaf type from another module must not acquire opacity.
+        if self.named_ty_for_key(name, vec![]).is_timestamp()
+            && !self.checking_embedded_builtins
+            && !self.checking_canonical_stdlib_source("std.builtins")
+        {
+            self.report_error(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "timestamp construction requires an explicit Unix-unit or Unix-parts constructor"
+                    .to_string(),
+            );
+            return Ty::Error;
+        }
         let unqualified = name.split_once('.').map_or(name, |(_, unqual)| unqual);
         let canonical_owner_is_current_source = name
             .rsplit_once('.')
@@ -1517,7 +1563,7 @@ impl Checker {
                     .or_insert_with(|| Ty::Var(TypeVar::fresh()));
             }
 
-            for (field_name, (expr, es)) in fields {
+            for (field_index, (field_name, (expr, es))) in fields.iter().enumerate() {
                 if let Some(declared_ty) = td.fields.get(field_name.name.as_str()) {
                     // Substitute already-inferred type params into the expected type.
                     // Use parallel substitution so a swap map {"A": B, "B": A} does not
@@ -1549,9 +1595,10 @@ impl Checker {
                         field_name.name.as_str(),
                         td.fields.keys().map(String::as_str),
                     );
-                    self.report_error_with_suggestions(
+                    self.report_error_with_suggestions_at(
                         TypeErrorKind::UndefinedField,
                         span,
+                        site.field_labels.get(field_index).map(|label| &label.span),
                         format!(
                             "no field `{field_name}` on {} `{name}`",
                             value_type_kind_label(td.kind)
@@ -1650,7 +1697,7 @@ impl Checker {
                 }
             }
 
-            for (field_name, (expr, es)) in fields {
+            for (field_index, (field_name, (expr, es))) in fields.iter().enumerate() {
                 if let Some((_, declared_ty)) = variant_fields
                     .iter()
                     .find(|(n, _)| n == field_name.name.as_str())
@@ -1681,9 +1728,10 @@ impl Checker {
                         field_name.name.as_str(),
                         variant_fields.iter().map(|(n, _)| n.as_str()),
                     );
-                    self.report_error_with_suggestions(
+                    self.report_error_with_suggestions_at(
                         TypeErrorKind::UndefinedField,
                         span,
+                        site.field_labels.get(field_index).map(|label| &label.span),
                         format!("no field `{field_name}` on variant `{name}`"),
                         similar,
                     );
@@ -1727,9 +1775,10 @@ impl Checker {
                     .chain(self.type_aliases.keys().map(|id| self.defs.path(*id)))
                     .chain(self.known_types.iter().map(String::as_str)),
             );
-            self.report_error_with_suggestions(
+            self.report_error_with_suggestions_at(
                 TypeErrorKind::UndefinedType,
                 span,
+                name_span,
                 format!("undefined type `{}`", name.replace("::", ".")),
                 similar,
             );
@@ -1756,6 +1805,7 @@ impl Checker {
         args: &[(Ident, Spanned<Expr>)],
         labels: &[FieldLabel],
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
+        typed_arguments: &HashMap<usize, Ty>,
     ) {
         let definition = self.lookup_type_def(actor_name);
         let registered = self.registered_spawn_identity(actor_name);
@@ -1764,6 +1814,7 @@ impl Checker {
         let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
+            let typed = typed_arguments.get(&index);
             let key_span = labels
                 .get(index)
                 .map_or_else(|| as_.clone(), |label| label.span.clone());
@@ -1773,7 +1824,7 @@ impl Checker {
                     &key_span,
                     format!("spawn of `{actor_name}` names `{field_name}` more than once"),
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1799,7 +1850,7 @@ impl Checker {
                          arguments"
                     ),
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1814,7 +1865,7 @@ impl Checker {
                     keys,
                     &key_span,
                 );
-                let ty_raw = self.synthesize(arg, as_);
+                let ty_raw = typed.cloned().unwrap_or_else(|| self.synthesize(arg, as_));
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
@@ -1838,21 +1889,28 @@ impl Checker {
                 _ => None,
             };
             let declared = declared_owned.as_ref().or(declared);
-            let ty_raw = match declared {
-                Some(declared_ty) => {
-                    let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
-                        self.head_type_def(*head)
-                            .is_some_and(|td| td.kind == TypeDefKind::Actor)
-                    } else {
-                        false
-                    };
-                    if is_bare_actor {
-                        self.synthesize(arg, as_)
-                    } else {
-                        self.check_against(arg, as_, declared_ty)
-                    }
+            let ty_raw = if let Some(typed) = typed {
+                if let Some(expected) = declared {
+                    self.expect_type(expected, typed, as_);
                 }
-                None => self.synthesize(arg, as_),
+                typed.clone()
+            } else {
+                match declared {
+                    Some(declared_ty) => {
+                        let is_bare_actor = if let Ty::Named { head, .. } = declared_ty {
+                            self.head_type_def(*head)
+                                .is_some_and(|td| td.kind == TypeDefKind::Actor)
+                        } else {
+                            false
+                        };
+                        if is_bare_actor {
+                            self.synthesize(arg, as_)
+                        } else {
+                            self.check_against(arg, as_, declared_ty)
+                        }
+                    }
+                    None => self.synthesize(arg, as_),
+                }
             };
             self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
         }
@@ -2056,6 +2114,25 @@ impl Checker {
         labels: &[FieldLabel],
         span: &Span,
     ) -> Ty {
+        self.check_spawn_with_typed_arguments(
+            target,
+            type_args,
+            args,
+            labels,
+            span,
+            &HashMap::new(),
+        )
+    }
+
+    pub(in crate::check) fn check_spawn_with_typed_arguments(
+        &mut self,
+        target: &Spanned<Expr>,
+        type_args: &[Spanned<TypeExpr>],
+        args: &[(Ident, Spanned<Expr>)],
+        labels: &[FieldLabel],
+        span: &Span,
+        typed_arguments: &HashMap<usize, Ty>,
+    ) -> Ty {
         let Ok(actor_name) = self.resolve_spawn_target(target, span) else {
             return Ty::Error;
         };
@@ -2065,6 +2142,9 @@ impl Checker {
                 .type_def_at(&name)
                 .is_some_and(|definition| definition.kind == TypeDefKind::Supervisor)
             {
+                // Initial construction may await child callbacks and rollback,
+                // independently of any particular child's inferred effects.
+                self.mark_body_suspends("supervisor construction");
                 "supervisor"
             } else {
                 "actor"
@@ -2098,7 +2178,13 @@ impl Checker {
                 .copied()
                 .zip(resolved_type_args.iter().cloned())
                 .collect();
-            self.check_spawn_constructor_args(&name, args, labels, Some(&type_subst));
+            self.check_spawn_constructor_args(
+                &name,
+                args,
+                labels,
+                Some(&type_subst),
+                typed_arguments,
+            );
             let registered = self.registered_spawn_identity(&name);
             if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
                 // Bind each key the target accepts to its written value or

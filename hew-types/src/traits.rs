@@ -522,7 +522,7 @@ impl TraitRegistry {
             | Ty::Char
             | Ty::Duration
             | Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::Instant),
+                head: crate::TypeHead::Builtin(BuiltinType::Instant | BuiltinType::Timestamp),
                 ..
             }
             | Ty::Unit

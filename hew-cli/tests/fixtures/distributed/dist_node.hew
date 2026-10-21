@@ -31,6 +31,7 @@ import std.fs;
 import std.stream;
 
 import std.net;
+import std.net.cluster;
 
 import std.encoding.utf8;
 
@@ -613,14 +614,14 @@ actor RemoteClosingActor {
 }
 
 fn scenario_server_remote_stopped(kx: string, fail_close: bool) {
-    let target = spawn RemoteClosingActor {
-        state: RemoteCloseState { directory: kx, fail_close: fail_close }
-    };
+    let target = spawn RemoteClosingActor { state: RemoteCloseState { directory: kx, fail_close: fail_close } };
     let peer = fixture_peer();
     let export = peer.export(target).expect("terminal observation grant");
     assert(wait_for_file(f"{kx}/close.entered") == "1");
     var attempts = 0;
-    while (unsafe { hew_dist_monitor_remote_watcher_count() }) == 0 {
+    while (unsafe {
+        hew_dist_monitor_remote_watcher_count()
+    }) == 0 {
         attempts = attempts + 1;
         assert(attempts < 600);
         sleep(10ms);
@@ -690,6 +691,11 @@ actor KeyValue {
             // partition probe is the only path that can resolve the pending ask
             // early. The harness SIGKILLs this process before the sleep ends.
             KvReq.Stall => {
+                if (os.env("HEW_DIST_SCENARIO") ?? "") == "persistent_seed" {
+                    store.insert("seed-held", "started");
+                    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+                    publish_atomic(kx, "seed.inflight", "1");
+                }
                 sleep(10s);
                 KvResp.Ack
             }
@@ -730,7 +736,7 @@ actor WireProbe {
 #[wire]
 type DistIdentity {
     node_id: string @1;
-    slot: u64 @2;
+    location: string @2;
     incarnation: u32 @3;
 }
 
@@ -749,11 +755,130 @@ actor IdentityProbe {
     receive fn handle(_req: IdentityReq) -> IdentityResp {
         let self_pid: Result<Location, LookupError> = Node.lookup("identity");
         let identity = match self_pid {
-            Result.Ok(pid) => DistIdentity { node_id: pid.node_id().display(), slot: pid.slot(), incarnation: pid.incarnation() },
-            Result.Err(_) => DistIdentity { node_id: "", slot: 0, incarnation: 0 },
+            Result.Ok(pid) => DistIdentity { node_id: pid.node_id().display(), location: pid.display(), incarnation: pid.incarnation() },
+            Result.Err(_) => DistIdentity { node_id: "", location: "", incarnation: 0 },
         };
         IdentityResp.Value(identity)
     }
+}
+
+#[wire]
+enum RoleReq {
+    Read @0;
+    Add(i64) @1;
+    Crash @2;
+}
+
+actor RoleService {
+    var value: i64;
+    #[wire]
+    receive fn handle(request: RoleReq) -> i64 {
+        match request {
+            RoleReq.Read => value,
+            RoleReq.Add(amount) => {
+                value += amount;
+                value
+            }
+            RoleReq.Crash => {
+                let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+                fs.append(f"{kx}/role.calls", "x").expect("record admitted crash");
+                panic("restart exported role");
+            }
+        }
+    }
+}
+
+supervisor RoleRack {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: RoleService { value: 0 };
+}
+
+supervisor RoleGroup {
+    child rack: RoleRack;
+}
+
+actor RoleObserver {
+    var registration: Result<MonitorRef, LinkError>;
+    let completed: Sink<Location>;
+    receive fn arm(service: RoleService) {
+        registration = monitor(service);
+        assert(registration_id(registration) != 0);
+    }
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        match note.target {
+            DownTarget.Remote(location) => completed.send(location).expect("one-shot role notice"),
+            _ => panic("role observation lost its remote identity"),
+        }
+    }
+}
+
+fn scenario_server_stable_role(peer: net.PeerSession, kx: string) {
+    let group = spawn RoleGroup;
+    let rack = group.rack;
+    let role = rack.worker;
+    assert(Node.register("stable-role", role) == 0);
+    let original = Node.lookup("stable-role").expect("role registration");
+    let export = peer.export(role).expect("role grant");
+    let _ = wait_for_file(f"{kx}/role.crashed");
+    restarted(role);
+    assert(role.handle(RoleReq.Read).expect("replacement") == 0);
+    assert(Node.lookup("stable-role").expect("role survives restart") == original);
+    assert(fs.read(f"{kx}/role.calls").expect("crash count") == "x");
+    publish_atomic(kx, "role.restarted", "1");
+    let _ = wait_for_file(f"{kx}/role.fresh");
+    stop(rack);
+    restarted(rack);
+    assert(Node.lookup("stable-role").expect("nested owner replacement preserves role") == original);
+    assert(role.handle(RoleReq.Read).expect("replacement nested owner") == 0);
+    let new_export = peer.export(role).expect("new export after nested owner restart");
+    publish_atomic(kx, "role.owner-restarted", "1");
+    let _ = wait_for_file(f"{kx}/role.owner-fresh");
+    stop(group);
+    stopped(group);
+    match Node.lookup("stable-role") {
+        .Err(.NotFound) => {}
+        _ => panic("closed role retained discovery"),
+    }
+    publish_atomic(kx, "role.closed", "1");
+    let _ = wait_for_file(f"{kx}/role.done");
+    new_export.close();
+    export.close();
+}
+
+fn scenario_stable_role(kx: string) -> i64 {
+    let service = fixture_peer().receive_service<RoleService>().expect("stable role grant");
+    let original = discover_with_retry("stable-role").expect("role metadata");
+    let (completed, notices): (Sink<Location>, Stream<Location>) = stream.pipe(1).expect("role notices");
+    let observer = spawn RoleObserver { registration: .Err(.NoContext), completed: completed };
+    observer.arm(service).expect("monitor role");
+    assert(service.handle(RoleReq.Add(5)).expect("first worker") == 5);
+    match service.handle(RoleReq.Crash) {
+        .Err(_) => {}
+        _ => panic("crashed call replayed or completed"),
+    }
+    assert(notices.recv().expect("selected worker completed") == original);
+    publish_atomic(kx, "role.crashed", "1");
+    let _ = wait_for_file(f"{kx}/role.restarted");
+    assert(Node.lookup("stable-role").expect("same role metadata") == original);
+    assert(service.handle(RoleReq.Read).expect("same grant replacement") == 0);
+    assert(service.handle(RoleReq.Add(7)).expect("fresh role call") == 7);
+    publish_atomic(kx, "role.fresh", "1");
+    let _ = wait_for_file(f"{kx}/role.owner-restarted");
+    assert(service.handle(RoleReq.Read).expect("existing grant after nested owner restart") == 0);
+    let new_service = fixture_peer().receive_service<RoleService>().expect("new grant after owner restart");
+    assert(new_service.handle(RoleReq.Add(9)).expect("new export call") == 9);
+    assert(service.handle(RoleReq.Read).expect("same semantic target") == 9);
+    publish_atomic(kx, "role.owner-fresh", "1");
+    let _ = wait_for_file(f"{kx}/role.closed");
+    match service.handle(RoleReq.Read) {
+        .Err(_) => {}
+        _ => panic("closed role retained call authority"),
+    }
+    publish_atomic(kx, "role.done", "1");
+    println("PASS stable_role same-location same-grant one-shot-monitor no-replay replacement-call nested-owner-restart new-export owner-close");
+    0
 }
 
 // ── Cross-node link ───────────────────────────────────────────────────────────
@@ -874,9 +999,7 @@ actor RemoteCrashObserver {
     fn on_link(note: CrashNotification) {
         match note.target {
             DownTarget.Remote(location) => {
-                assert(location.node_id().display() == expected.node_id().display());
-                assert(location.slot() == expected.slot());
-                assert(location.incarnation() == expected.incarnation());
+                assert(location == expected);
             }
             DownTarget.Local(_) => panic("remote link reported a local origin"),
             DownTarget.Role(_) => panic("remote link reported a local role origin"),
@@ -1502,7 +1625,18 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     } else {
         peer_key
     };
-    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: [] };
+    let active_scenario = os.env("HEW_DIST_SCENARIO") ?? "";
+    let seed_scenario = active_scenario == "persistent_seed" || active_scenario == "persistent_seed_stop";
+    if seed_scenario && my_role == "server" {
+        let _ = wait_for_file(f"{kx}/seed.start-server");
+    }
+    let seeds = if seed_scenario && my_role == "client" {
+        let port = os.env("HEW_DIST_SEED_PORT") ?? "";
+        [f"1@127.0.0.1:{port}"]
+    } else {
+        Vec.new()
+    };
+    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: seeds };
     match Node.start(config) {
         Result.Ok(_) => {}
         Result.Err(_) => {
@@ -1548,10 +1682,16 @@ fn discover_with_retry(name: string) -> Result<Location, LookupError> {
 fn run_server(scenario: string) {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
     // A replacement server comes back on the port its predecessor published.
-    let addr = if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
+    let base_addr = if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
         f"127.0.0.1:{wait_for_server_listening(kx)}"
     } else {
         "127.0.0.1:0"
+    };
+    let addr = if scenario == "persistent_seed" {
+        let port = os.env("HEW_DIST_SEED_PORT") ?? "";
+        f"127.0.0.1:{port}"
+    } else {
+        base_addr
     };
     start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
@@ -1579,6 +1719,11 @@ fn run_server(scenario: string) {
     }
     if scenario == "service_grants" {
         scenario_server_service_grants(kx);
+        Node.shutdown();
+        return;
+    }
+    if scenario == "stable_role" {
+        scenario_server_stable_role(peer, kx);
         Node.shutdown();
         return;
     }
@@ -1899,16 +2044,12 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
     };
     let location = discover_with_retry("identity").expect("identity metadata");
     let remote_node = location.node_id();
-    let remote_slot = location.slot();
+    let remote_location = location.display();
     let remote_incarnation = location.incarnation();
     // Discovery metadata must match the identity returned across the wire.
     if local_node.display() == remote_node.display() {
         println("FAIL identity_location node-ids-not-distinct");
         return 3;
-    }
-    if remote_slot == 0 {
-        println("FAIL identity_location slot-zero");
-        return 4;
     }
     let inspected = identity.handle(IdentityReq.Inspect);
     match inspected {
@@ -1923,8 +2064,8 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
                         println("FAIL identity_location node-mismatch");
                         return 8;
                     }
-                    if actual.slot != remote_slot {
-                        println("FAIL identity_location slot-mismatch");
+                    if actual.location != remote_location {
+                        println("FAIL identity_location location-mismatch");
                         return 9;
                     }
                     if actual.incarnation != remote_incarnation {
@@ -1935,7 +2076,7 @@ fn scenario_identity_location(identity: IdentityProbe) -> i64 {
             }
         }
     }
-    println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} slot={remote_slot} incarnation={remote_incarnation}");
+    println(f"PASS identity_location local={local_node.display()} remote={remote_node.display()} location={remote_location} incarnation={remote_incarnation}");
     0
 }
 
@@ -2943,18 +3084,86 @@ fn scenario_stale_incarnation_restart(old: KeyValue, kx: string, port: string) -
     }
 }
 
+fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
+    assert(old.handle(KvReq.Put(KvPut { key: "seed-first", val: "authenticated" })).expect("seed call") == KvResp.Ack);
+    match old.handle(KvReq.GetKey("seed-first")) {
+        .Ok(KvResp.Value(value)) => assert(value == "authenticated"),
+        _ => panic("initial seed call"),
+    }
+    let old_location = cluster.wait_registered("kv").expect("seed location");
+    let before = cluster.snapshot().expect("authenticated membership");
+    assert(before.local_registrations().is_empty());
+    var predecessor = before.local;
+    for member in before.members {
+        if member.id == old_location.node_id() {
+            predecessor = member;
+        }
+    }
+    assert(predecessor.id == old_location.node_id());
+    assert(predecessor.session == old_location.incarnation());
+    scope {
+        let interrupted = fork old.handle(KvReq.Stall);
+        let _ = wait_for_file(f"{kx}/seed.inflight");
+        println("READY_SEED_RESTART");
+        match await interrupted {
+            .Err(ActorError.ConnectionDropped) => {}
+            _ => panic("in-flight seed request must fail once"),
+        }
+    };
+    let _ = wait_for_file(f"{kx}/server.restarted");
+    let fresh_peer = fixture_peer();
+    let fresh = fresh_peer.receive_service<KeyValue>().expect("fresh seed grant");
+    let _wire = fresh_peer.receive_service<WireProbe>().expect("fresh wire grant");
+    let _identity = fresh_peer.receive_service<IdentityProbe>().expect("fresh identity grant");
+    let fresh_location = cluster.wait_registered("kv").expect("fresh seed location");
+    cluster.wait_departed(predecessor).expect("predecessor departure despite rejoin");
+    let after = cluster.snapshot().expect("rejoined membership");
+    var rejoined = false;
+    for member in after.members {
+        if member.id == predecessor.id && member.session == fresh_location.incarnation() {
+            rejoined = true;
+        }
+    }
+    assert(rejoined);
+    assert(fresh_location.incarnation() > old_location.incarnation());
+    match fresh.handle(KvReq.GetKey("seed-held")) {
+        .Ok(KvResp.Value(value)) => assert(value == ""),
+        _ => panic("interrupted request replayed on restart"),
+    }
+    assert(fresh.handle(KvReq.Put(KvPut { key: "colour", val: "green" })).expect("fresh seed call") == KvResp.Ack);
+    match fresh.handle(KvReq.GetKey("colour")) {
+        .Ok(KvResp.Value(value)) => assert(value == "green"),
+        _ => panic("rejoined seed call"),
+    }
+    println("PASS persistent_seed absent-start authenticated-call higher-session no-replay fresh-call");
+    0
+}
+
 fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
     start_pinned(kx, "client", "server", "127.0.0.1:0");
+    if scenario == "persistent_seed" || scenario == "persistent_seed_stop" {
+        println("READY_SEED_STARTED");
+        if scenario == "persistent_seed_stop" {
+            let _ = wait_for_file(f"{kx}/seed.stop-now");
+            Node.shutdown();
+            println("PASS persistent_seed_stop active-attempt-joined");
+            return 0;
+        }
+    }
     let bound_port = wait_for_server_listening(kx);
     let port = os.env("HEW_DIST_PROXY_PORT") ?? bound_port;
-    let _ = Node.connect(f"1@127.0.0.1:{port}");
+    if scenario != "persistent_seed" {
+        let _ = Node.connect(f"1@127.0.0.1:{port}");
+    }
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
         scenario_quarantine_rejoin()
     } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
         scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
+    } else if scenario == "stable_role" {
+        scenario_stable_role(kx)
     } else if scenario == "service_grants" {
         scenario_service_grants(kx, port)
     } else {
@@ -2962,7 +3171,9 @@ fn run_client(scenario: string) -> i64 {
         let kv = peer.receive_service<KeyValue>().expect("kv grant");
         let wp = peer.receive_service<WireProbe>().expect("wire grant");
         let identity = peer.receive_service<IdentityProbe>().expect("identity grant");
-        if scenario == "deadline_budget" {
+        if scenario == "persistent_seed" {
+            scenario_persistent_seed(kv, kx)
+        } else if scenario == "deadline_budget" {
             scenario_deadline_budget()
         } else if scenario == "identity_location" {
             scenario_identity_location(identity)

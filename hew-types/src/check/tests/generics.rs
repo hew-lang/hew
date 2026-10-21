@@ -2560,24 +2560,6 @@ fn main() -> i64 { 0 }
 ",
         ),
         (
-            "inline type-body method",
-            r"fn id<T>(x: T) -> T {
-    x
-}
-
-type Holder {
-    v: i64;
-    fn bad(h: Holder, x: T) -> i64 {
-        0
-    }
-}
-
-fn main() -> i64 {
-    0
-}
-",
-        ),
-        (
             "impl method",
             r"fn id<T>(x: T) -> T {
     x
@@ -2646,34 +2628,6 @@ fn main() -> i64 { 0 }
         r"
 trait Foo { fn idm<T>(self, x: T) -> T; }
 fn main() -> i64 { 0 }
-",
-    ),
-    (
-        "inline type-body method, type-level generic",
-        r"type Holder<T> {
-    value: T;
-    fn first(h: Holder<T>) -> T {
-        h.value
-    }
-}
-
-fn main() -> i64 {
-    0
-}
-",
-    ),
-    (
-        "inline type-body method's own generic",
-        r"type Box {
-    v: i64;
-    fn idm<T>(b: Box, x: T) -> T {
-        x
-    }
-}
-
-fn main() -> i64 {
-    0
-}
 ",
     ),
     (
@@ -4791,62 +4745,6 @@ fn main() -> i64 { 0 }
             .iter()
             .any(|e| e.message.contains("shadows the type parameter")),
         "a distinct trait method parameter must be admitted; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn inline_type_body_method_type_parameter_shadowing_the_type_is_refused() {
-    // A method declared inside the type body shadows the type's own parameter
-    // just as an `impl` block method shadows the impl's.
-    let source = r"type Holder<T> {
-    value: T;
-
-    fn same<T>(holder: Holder<T>, marker: T) -> bool {
-        let _ = holder;
-        let _ = marker;
-        true
-    }
-}
-
-fn main() -> i64 {
-    0
-}
-";
-    let output = check_source(source);
-    assert!(
-        output.errors.iter().any(|e| {
-            e.message.contains("method type parameter `T` shadows")
-                && e.message.contains("the type `Holder`")
-        }),
-        "an inline type-body method's shadow must be refused; got: {:?}",
-        output.errors
-    );
-}
-
-#[test]
-fn inline_type_body_method_with_a_distinct_type_parameter_is_admitted() {
-    let source = r"type Holder<T> {
-    value: T;
-
-    fn same<U>(holder: Holder<T>, marker: U) -> bool {
-        let _ = holder;
-        let _ = marker;
-        true
-    }
-}
-
-fn main() -> i64 {
-    0
-}
-";
-    let output = check_source(source);
-    assert!(
-        !output
-            .errors
-            .iter()
-            .any(|e| e.message.contains("shadows the type parameter")),
-        "a distinct inline type-body method parameter must be admitted; got: {:?}",
         output.errors
     );
 }

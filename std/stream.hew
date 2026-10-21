@@ -166,7 +166,7 @@ pub enum Decoded<T> {
 /// discarded a malformed record). `encode` returns one item's frame. Values
 /// are copy-on-write, so the caller keeps what `decode` hands back: a `var`
 /// parameter is the callee's own copy and cannot advance the caller's
-/// buffer. `Lines`, `LengthPrefixed` and `Slip` are the shipped codecs.
+/// buffer. `Lines`, `FixedWidth`, `LengthPrefixed` and `Slip` are the shipped codecs.
 /// `Stream<bytes>.lines()` retains its separate line-normalization and EOF
 /// behaviour; `frames(Lines {})` delivers typed codec errors.
 pub trait Codec<T> {
@@ -280,6 +280,50 @@ impl Codec<string> for Lines {
         var out = item.to_bytes();
         out.push(10);
         out
+    }
+}
+
+/// Frames a byte stream into records of exactly `width` bytes.
+///
+/// Construct with `FixedWidth.new(width)`, which rejects zero or negative
+/// widths. `decode` keeps a short final record buffered until more bytes
+/// arrive; if the stream ends before it is complete, `frames` reports the
+/// existing terminal incomplete-frame error. `encode` panics when an item
+/// does not match the configured width, since `Codec.encode` returns bytes
+/// directly and cannot report an error.
+pub type FixedWidth {
+    width: i64;
+}
+
+impl FixedWidth {
+    /// Create a fixed-width codec. Records must contain at least one byte.
+    fn new(width: i64) -> Result<FixedWidth, CodecError> {
+        if width <= 0 {
+            return .Err(CodecError.Malformed(f"fixed record width {width} must be positive"));
+        }
+        .Ok(FixedWidth { width: width })
+    }
+}
+
+impl Codec<bytes> for FixedWidth {
+    fn decode(self, buf: bytes) -> Result<Decoded<bytes>, CodecError> {
+        if self.width <= 0 {
+            return .Err(CodecError.Malformed(f"fixed record width {self.width} must be positive"));
+        }
+        if buf.len() < self.width {
+            return .Ok(Decoded.Incomplete(buf));
+        }
+        .Ok(Decoded.Frame(buf[0..self.width], buf[self.width..buf.len()]))
+    }
+
+    fn encode(self, item: bytes) -> bytes {
+        if self.width <= 0 {
+            panic(f"stream.FixedWidth: record width {self.width} must be positive");
+        }
+        if item.len() != self.width {
+            panic(f"stream.FixedWidth: item of {item.len()} bytes does not match record width {self.width}");
+        }
+        item
     }
 }
 

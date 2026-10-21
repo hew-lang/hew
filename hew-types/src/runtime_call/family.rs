@@ -26,6 +26,7 @@ use strum::EnumIter;
 /// behind a wildcard arm; every consumer must add the new arm at the
 /// next slice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum RuntimeCallFamily {
     AsyncIo(AsyncIoOp),
     Semaphore(super::SemaphoreOp),
@@ -155,6 +156,7 @@ pub enum RuntimeCallFamily {
     InstantDurationSince,
     InstantElapsed,
     InstantNow,
+    TimestampNow,
 
     // --- Math intrinsics ---------------------------------------------------
     // User-visible callee identities carried on MIR `Terminator::Call`; not
@@ -185,7 +187,6 @@ pub enum RuntimeCallFamily {
     /// return either a fresh owned string or a bit-copied field.
     NodeIdDisplay,
     LocationNodeId,
-    LocationSlot,
     LocationIncarnation,
     LocationDisplay,
     NodeIdentityKey,
@@ -485,6 +486,7 @@ pub enum CanonicalExternTy {
     VecChar,
     Duration,
     Instant,
+    Timestamp,
 }
 
 impl CanonicalExternTy {
@@ -501,6 +503,10 @@ impl CanonicalExternTy {
             Self::Instant => matches!(
                 ty,
                 crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Instant), args, .. } if args.is_empty()
+            ),
+            Self::Timestamp => matches!(
+                ty,
+                crate::Ty::Named { head: crate::TypeHead::Builtin(crate::BuiltinType::Timestamp), args, .. } if args.is_empty()
             ),
             Self::VecString => matches!(
                 ty,
@@ -1119,7 +1125,6 @@ impl RuntimeCallFamily {
         match endpoint {
             "hew_node_id_display" => Some(Self::NodeIdDisplay),
             "hew_location_node_id" => Some(Self::LocationNodeId),
-            "hew_location_slot" => Some(Self::LocationSlot),
             "hew_location_incarnation" => Some(Self::LocationIncarnation),
             "hew_location_display" => Some(Self::LocationDisplay),
             "stream.pair_sink" => Some(Self::StreamPairSink),

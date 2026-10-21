@@ -444,27 +444,21 @@ fn jwt_and_password_results_are_transferred() {
 }
 
 #[test]
-fn datetime_and_cron_results_are_transferred() {
+fn calendar_format_result_is_transferred() {
     let format = ManagedString::new("%Y-%m-%dT%H:%M:%SZ");
     assert_managed_transferred(
-        "hew_datetime_format",
+        "hew_calendar_format",
         // SAFETY: format owns a live managed strftime format.
-        || unsafe { crate::time::datetime::hew_datetime_format(0, format.as_ptr()) },
+        || {
+            // SAFETY: format owns a live managed strftime format.
+            let result =
+                unsafe { crate::time::datetime::hew_calendar_format(0, 0, format.as_ptr()) };
+            assert_eq!(result.status, 0);
+            assert!(result.message.is_null());
+            result.text
+        },
         |text| assert_eq!(text, "1970-01-01T00:00:00Z"),
     );
-
-    let source = ManagedString::new("0 15 10 * * * *");
-    // SAFETY: source owns a live managed cron expression.
-    let cron = unsafe { crate::time::cron::hew_cron_parse(source.as_ptr()) };
-    assert!(!cron.is_null());
-    assert_managed_transferred(
-        "hew_cron_to_string",
-        // SAFETY: cron stays live through the measurement.
-        || unsafe { crate::time::cron::hew_cron_to_string(cron) },
-        |text| assert!(!text.is_empty()),
-    );
-    // SAFETY: to_string borrowed the live cron handle.
-    unsafe { crate::time::cron::hew_cron_free(cron) };
 }
 
 #[test]

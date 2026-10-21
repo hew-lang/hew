@@ -109,6 +109,34 @@ fn instant_now_publishes_typed_runtime_target() {
     );
 }
 
+#[test]
+fn timestamp_now_uses_its_declared_runtime_target() {
+    let output =
+        check_source("fn main() { let value = timestamp.now(); let _ = value.unix_parts(); }");
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert!(
+        super::root_values(&output.direct_call_targets).any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(crate::RuntimeCallFamily::TimestampNow)
+        ))
+    );
+
+    let authored = check_source(
+        r"
+        type timestamp { value: i64; }
+        impl timestamp { fn now() -> i64 { 42 } }
+        fn main() { let value: i64 = timestamp.now(); }
+    ",
+    );
+    assert!(authored.errors.is_empty(), "{:#?}", authored.errors);
+    assert!(
+        !super::root_values(&authored.direct_call_targets).any(|target| matches!(
+            target,
+            crate::check::dispatch::CallTarget::Runtime(crate::RuntimeCallFamily::TimestampNow)
+        ))
+    );
+}
+
 // ── Supervisor child slot index tests ────────────────────────────────────
 //
 // These tests verify that the checker assigns correct slot indices to

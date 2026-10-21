@@ -1,6 +1,6 @@
 [[case]]
 id = "node-config-atomic-lifecycle"
-intent = "NodeConfig.at reaches its source-owned builtin body, Node.start applies one complete configuration transaction, and invalid or failed configurations leave the next start clean."
+intent = "Node.start applies a complete configuration transaction, rejects malformed or conflicting seeds before startup, and keeps local startup successful while configured seeds are absent."
 source = "cases/node-config-atomic-lifecycle.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 15

@@ -171,20 +171,23 @@ pub fn glob(pattern: string) -> Result<GlobResult, PathError> {
 /// }
 /// ```
 pub fn combine(a: string, b: string) -> string {
-    if b.starts_with("/") {
-        // Force a fresh heap allocation so the caller and this scope each own
-        // their own copy. Returning `b` directly would alias the caller's
-        // drop slot against ours and cause a double-free on heap inputs.
-        return "" + b;
+    let windows = native_separator() == "\\";
+    if windows && has_volume(b) {
+        return b;
     }
-    if a == "" {
-        // Same: must not return the borrowed parameter directly.
-        return "" + b;
+    if rooted(b, windows) {
+        if windows && has_volume(a) && !b.starts_with("\\\\") && !b.starts_with("//") {
+            return a[0..volume_end(a)] + b;
+        }
+        return b;
     }
-    if a.ends_with("/") {
+    if a.is_empty() {
+        return b;
+    }
+    if ends_separator(a, windows) || (windows && a.ends_with(":")) {
         return a + b;
     }
-    a + "/" + b
+    a + native_separator() + b
 }
 
 /// Return the directory portion of a path.
@@ -199,13 +202,12 @@ pub fn combine(a: string, b: string) -> string {
 /// }
 /// ```
 pub fn dirname(p: string) -> string {
-    let s = strip_trailing_slash(p);
-    let pos = last_slash_pos(s);
-    if pos < 0 {
-        return "";
-    }
-    if pos == 0 {
-        return "/";
+    let windows = native_separator() == "\\";
+    let s = strip_trailing_separator(p, windows);
+    let root = root_end(s, windows);
+    let pos = last_separator_pos(s, windows);
+    if pos < root {
+        return s[0..root];
     }
     s[0..pos]
 }
@@ -222,18 +224,15 @@ pub fn dirname(p: string) -> string {
 /// }
 /// ```
 pub fn basename(p: string) -> string {
-    let s = strip_trailing_slash(p);
-    if s == "/" {
+    let windows = native_separator() == "\\";
+    let s = strip_trailing_separator(p, windows);
+    let root = root_end(s, windows);
+    if s.len() <= root {
         return "";
     }
-    let pos = last_slash_pos(s);
-    if pos < 0 {
-        // Return a fresh allocation so the callee drops `s` (Q1) once here
-        // and the caller receives and drops its own copy (Q2) once at its scope
-        // exit.  Returning `s` directly aliases both drop slots against Q1 and
-        // causes a double-free when the caller also holds a `let`-bound result
-        // (e.g. `let base = basename(p)` in `extension`).
-        return "" + s;
+    let pos = last_separator_pos(s, windows);
+    if pos < root {
+        return s[root..s.len()];
     }
     s[pos + 1 .. s.len()]
 }
@@ -295,8 +294,10 @@ pub fn absolute(p: string) -> string {
 }
 
 /// Lexically clean a path: collapse repeated separators, drop `.` segments,
-/// and resolve `..` segments against the preceding component. Follows Go's
-/// `filepath.Clean` semantics. Does not touch the filesystem — it has no
+/// and resolve `..` segments against the preceding component. This function
+/// currently interprets portable `/` separators on every platform; Windows
+/// drive and UNC normalization is not implemented. Follows Go's `path.Clean`
+/// semantics. Does not touch the filesystem — it has no
 /// symlink awareness, so a cleaned path can still escape a directory the
 /// caller intended to stay inside if any component is a symlink. Returns
 /// `"."` for an empty path.
@@ -348,36 +349,99 @@ pub fn normalize(p: string) -> string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────
-/// Strip a single trailing slash from a path, preserving the root `/`.
-fn strip_trailing_slash(p: string) -> string {
-    if p == "/" {
-        // Force a fresh heap allocation; returning `p` directly aliases the
-        // caller's drop slot and causes a double-free on heap-allocated inputs.
-        return "" + p;
+// The VM uses portable '/' paths. Native code supplies only the platform
+// separator; lexical interpretation stays here for every consumer.
+fn native_separator() -> string {
+    unsafe {
+        hew_path_separator()
     }
-    if p.len() > 1 && p.ends_with("/") {
-        return p[0 .. p.len() - 1];
-    }
-    // No-op path: must not return the borrowed parameter directly.
-    "" + p
 }
 
-/// Return the index of the last `/` in `s`, or `-1` if none.
-fn last_slash_pos(s: string) -> i64 {
-    let first = match s.find("/") {
-        .Some(i) => i,
-        .None => return -1,
+fn ends_separator(p: string, windows: bool) -> bool {
+    p.ends_with("/") || (windows && p.ends_with("\\"))
+}
+
+fn rooted(p: string, windows: bool) -> bool {
+    p.starts_with("/") || (windows && p.starts_with("\\"))
+}
+
+fn has_volume(p: string) -> bool {
+    has_drive(p) || p.starts_with("\\\\") || p.starts_with("//")
+}
+
+fn has_drive(p: string) -> bool {
+    match p.find(":") {
+        .Some(1) => true,
+        _ => false,
+    }
+}
+
+fn first_separator_pos(p: string, start: i64, windows: bool) -> i64 {
+    let rest = p[start..p.len()];
+    let slash = match rest.find("/") {
+        .Some(index) => start + index,
+        .None => p.len(),
     };
-    var last = first;
-    var search_from = first + 1;
-    while search_from < s.len() {
-        let rest = s[search_from..s.len()];
-        let next = match rest.find("/") {
-            .Some(i) => i,
-            .None => return last,
+    if windows {
+        let backslash = match rest.find("\\") {
+            .Some(index) => start + index,
+            .None => p.len(),
         };
-        last = search_from + next;
-        search_from = last + 1;
+        if backslash < slash {
+            return backslash;
+        }
+    }
+    slash
+}
+
+fn volume_end(p: string) -> i64 {
+    if has_drive(p) {
+        return 2;
+    }
+    if p.starts_with("\\\\") || p.starts_with("//") {
+        let server = first_separator_pos(p, 2, true);
+        if server < p.len() {
+            return first_separator_pos(p, server + 1, true);
+        }
+        return server;
+    }
+    0
+}
+
+fn root_end(p: string, windows: bool) -> i64 {
+    let volume = if windows {
+        volume_end(p)
+    } else {
+        0
+    };
+    if volume < p.len() && rooted(p[volume..p.len()], windows) {
+        return volume + 1;
+    }
+    volume
+}
+
+fn strip_trailing_separator(p: string, windows: bool) -> string {
+    let root = root_end(p, windows);
+    var end = p.len();
+    while end > root && ends_separator(p[0..end], windows) {
+        end -= 1;
+    }
+    if end == p.len() {
+        return p;
+    }
+    p[0..end]
+}
+
+fn last_separator_pos(s: string, windows: bool) -> i64 {
+    var last: i64 = -1;
+    var start: i64 = 0;
+    while start < s.len() {
+        let next = first_separator_pos(s, start, windows);
+        if next == s.len() {
+            break;
+        }
+        last = next;
+        start = next + 1;
     }
     last
 }
@@ -402,7 +466,7 @@ fn last_dot_pos(s: string) -> i64 {
     last
 }
 
-// ── FFI bindings (filesystem operations only) ────────────────────────
+// ── FFI bindings (host operations only) ────────────────────────
 extern "C" {
     fn hew_glob(pattern: string) -> GlobResultHandle;
     fn hew_glob_is_valid(result: GlobResultHandle) -> bool;
@@ -414,4 +478,5 @@ extern "C" {
     fn hew_path_is_file(path: string) -> bool;
     fn hew_path_is_dir(path: string) -> bool;
     fn hew_path_absolute(path: string) -> string;
+    fn hew_path_separator() -> string;
 }

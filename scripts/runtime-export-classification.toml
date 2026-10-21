@@ -225,18 +225,17 @@ stable = [
   "hew_bytes_from_static",
   "hew_bytes_from_str",
   "hew_bytes_index",
-  "hew_bytes_slice_owned",
   "hew_bytes_new",
   "hew_bytes_pop",
   "hew_bytes_push",
   "hew_bytes_set",
   "hew_bytes_slice",
+  "hew_bytes_slice_owned",
   "hew_cancel_token_cancel",
   "hew_cancel_token_is_requested",
   "hew_cancel_token_new_child",
   "hew_cancel_token_release",
   "hew_cancel_token_retain",
-  "hew_stream_recv_cancel_cleanup",
   "hew_char_to_string",
   "hew_clear_error",
   "hew_cluster_alive_count",
@@ -303,22 +302,22 @@ stable = [
   "hew_file_exists",
   "hew_file_open_read",
   "hew_file_open_write",
+  "hew_file_read",
+  "hew_file_read_bytes",
   "hew_file_read_close",
   "hew_file_read_is_valid",
   "hew_file_read_remaining",
-  "hew_file_write_close",
-  "hew_file_write_handle",
-  "hew_file_write_is_valid",
-  "hew_file_read",
-  "hew_file_read_bytes",
-  "hew_file_read_stream_collect_string",
   "hew_file_read_stream_close",
+  "hew_file_read_stream_collect_string",
   "hew_file_read_stream_is_valid",
   "hew_file_read_stream_open",
   "hew_file_size",
   "hew_file_write",
   "hew_file_write_atomic",
   "hew_file_write_bytes",
+  "hew_file_write_close",
+  "hew_file_write_handle",
+  "hew_file_write_is_valid",
   "hew_float_to_string",
   "hew_fs_copy",
   "hew_fs_create_new",
@@ -340,6 +339,7 @@ stable = [
   "hew_hashmap_clear_layout",
   "hew_hashmap_clone_layout",
   "hew_hashmap_contains_key_layout",
+  "hew_hashmap_entries_layout",
   "hew_hashmap_free_layout",
   "hew_hashmap_free_layout_walk",
   "hew_hashmap_get_borrow_layout",
@@ -352,7 +352,6 @@ stable = [
   "hew_hashmap_iter_new_layout",
   "hew_hashmap_iter_next_layout",
   "hew_hashmap_keys_layout",
-  "hew_hashmap_entries_layout",
   "hew_hashmap_len_layout",
   "hew_hashmap_new_with_layout",
   "hew_hashmap_remove_layout",
@@ -394,6 +393,15 @@ stable = [
   "hew_join_branch_failed",
   "hew_last_error",
   "hew_listener_is_valid",
+  "hew_local_pid_actor_id",
+  "hew_local_pid_ask",
+  "hew_local_pid_ask_with_channel",
+  "hew_local_pid_send",
+  "hew_local_pid_supervisor_child_get",
+  "hew_local_pid_supervisor_is_running",
+  "hew_local_pid_supervisor_pool_child_ref_get",
+  "hew_local_pid_supervisor_stop",
+  "hew_local_pid_unlink",
   "hew_log_emit",
   "hew_log_emit_ex",
   "hew_log_encode_field_value",
@@ -401,15 +409,6 @@ stable = [
   "hew_log_get_level",
   "hew_log_set_format",
   "hew_log_set_level",
-  "hew_local_pid_actor_id",
-  "hew_local_pid_ask",
-  "hew_local_pid_ask_with_channel",
-  "hew_local_pid_send",
-  "hew_local_pid_supervisor_child_get",
-  "hew_local_pid_supervisor_pool_child_ref_get",
-  "hew_local_pid_supervisor_is_running",
-  "hew_local_pid_supervisor_stop",
-  "hew_local_pid_unlink",
   "hew_mailbox_capacity",
   "hew_mailbox_has_user_messages",
   "hew_mailbox_len",
@@ -424,7 +423,6 @@ stable = [
   "hew_memory_bytes_live",
   "hew_memory_dealloc_count",
   "hew_memory_peak_bytes",
-  # --- user metrics (#1862) ---
   "hew_metric_counter_add",
   "hew_metric_counter_inc",
   "hew_metric_counter_register",
@@ -438,7 +436,6 @@ stable = [
   "hew_metric_histogram_register_simple",
   "hew_metric_vec_register",
   "hew_metric_vec_with",
-  # --- end user metrics (#1862) ---
   "hew_milliseconds",
   "hew_msg_envelope_new",
   "hew_msg_envelope_payload_ptr",
@@ -449,20 +446,32 @@ stable = [
   "hew_node_api_identity_key",
   "hew_node_api_load_keys",
   "hew_node_api_register_by_pid",
-  "hew_node_api_register_by_pid_string",
+  "hew_node_api_register_handle_string",
   "hew_node_api_set_transport",
   "hew_node_api_shutdown",
-  "hew_node_api_start_config",
   "hew_node_api_start",
+  "hew_node_api_start_config",
   "hew_node_api_unregister",
   "hew_node_connect",
   "hew_node_demonitor",
   "hew_node_free",
   "hew_node_new",
   "hew_node_register",
+  "hew_node_snapshot_count",
+  "hew_node_snapshot_current",
+  "hew_node_snapshot_free",
+  "hew_node_snapshot_local",
+  "hew_node_snapshot_member",
+  "hew_node_snapshot_registration",
+  "hew_node_snapshot_valid",
   "hew_node_start",
   "hew_node_stop",
   "hew_node_unregister",
+  "hew_node_watch_changes",
+  "hew_node_watch_free",
+  "hew_node_watch_open",
+  "hew_node_watch_snapshot",
+  "hew_node_watch_status",
   "hew_noise_key_load",
   "hew_noise_key_save",
   "hew_noise_keygen",
@@ -478,6 +487,7 @@ stable = [
   "hew_path_exists",
   "hew_path_is_dir",
   "hew_path_is_file",
+  "hew_path_separator",
   "hew_pid",
   "hew_pid_is_local",
   "hew_pid_local_node",
@@ -502,9 +512,11 @@ stable = [
   "hew_process_signalled",
   "hew_process_start",
   "hew_process_start_shell",
+  "hew_process_start_with_options",
   "hew_process_status",
   "hew_process_take_pipe",
   "hew_process_wait_error",
+  "hew_quic_mesh_local_spki",
   "hew_random_choices_vec",
   "hew_random_gauss",
   "hew_random_randint",
@@ -527,12 +539,12 @@ stable = [
   "hew_registry_unregister",
   "hew_reply",
   "hew_reply_channel_cancel",
-  "hew_reply_channel_publish_cancelled",
-  "hew_reply_channel_publish_task_failed",
   "hew_reply_channel_failure_kind",
   "hew_reply_channel_free",
   "hew_reply_channel_is_orphaned",
   "hew_reply_channel_new",
+  "hew_reply_channel_publish_cancelled",
+  "hew_reply_channel_publish_task_failed",
   "hew_reply_channel_retain",
   "hew_reply_channel_set_parked_waiter",
   "hew_reply_channel_set_reply_drop_fn",
@@ -561,9 +573,9 @@ stable = [
   "hew_sink_clone",
   "hew_sink_close",
   "hew_sink_detach_await",
+  "hew_sink_finish",
   "hew_sink_flush",
   "hew_sink_is_valid",
-  "hew_sink_finish",
   "hew_sink_write",
   "hew_sink_write_bytes",
   "hew_sink_write_string",
@@ -571,12 +583,12 @@ stable = [
   "hew_sleep_until_ns",
   "hew_stderr_write",
   "hew_stream_await_next",
-  "hew_stream_detach_await",
   "hew_stream_channel",
   "hew_stream_chunks",
   "hew_stream_close",
   "hew_stream_collect_string",
   "hew_stream_count",
+  "hew_stream_detach_await",
   "hew_stream_from_bytes",
   "hew_stream_from_file_read",
   "hew_stream_has_error",
@@ -588,8 +600,6 @@ stable = [
   "hew_stream_last_write_committed",
   "hew_stream_lines",
   "hew_stream_next_layout",
-  "hew_stream_try_next_layout",
-  "hew_stream_try_send_layout",
   "hew_stream_next_sized",
   "hew_stream_next_view",
   "hew_stream_pair_free",
@@ -598,16 +608,19 @@ stable = [
   "hew_stream_pair_stream",
   "hew_stream_pipe",
   "hew_stream_pop_layout",
+  "hew_stream_recv_cancel_cleanup",
   "hew_stream_send_layout",
   "hew_stream_take",
+  "hew_stream_try_next_layout",
+  "hew_stream_try_send_layout",
   "hew_string_abort_index_oob",
   "hew_string_abort_oob",
   "hew_string_builder_append_bool",
   "hew_string_builder_append_char",
   "hew_string_builder_append_f64",
   "hew_string_builder_append_i64",
-  "hew_string_builder_append_literal",
   "hew_string_builder_append_identity",
+  "hew_string_builder_append_literal",
   "hew_string_builder_append_string",
   "hew_string_builder_append_u64",
   "hew_string_builder_finish",
@@ -660,8 +673,14 @@ stable = [
   "hew_supervisor_get_child_supervisor",
   "hew_supervisor_get_child_wait",
   "hew_supervisor_is_running",
-  "hew_supervisor_new",
   "hew_supervisor_nested_get",
+  "hew_supervisor_new",
+  "hew_supervisor_pool_add_slot",
+  "hew_supervisor_pool_child_get",
+  "hew_supervisor_pool_len",
+  "hew_supervisor_pool_member_add",
+  "hew_supervisor_pool_member_add_static",
+  "hew_supervisor_pool_member_remove",
   "hew_supervisor_role_ask",
   "hew_supervisor_role_ask_with_channel",
   "hew_supervisor_role_send",
@@ -670,15 +689,9 @@ stable = [
   "hew_supervisor_set_child_state_borrowed",
   "hew_supervisor_set_child_state_clone",
   "hew_supervisor_set_child_state_drop",
-  "hew_supervisor_set_config_drop_fn",
   "hew_supervisor_set_circuit_breaker",
+  "hew_supervisor_set_config_drop_fn",
   "hew_supervisor_stop",
-  "hew_supervisor_pool_add_slot",
-  "hew_supervisor_pool_child_get",
-  "hew_supervisor_pool_len",
-  "hew_supervisor_pool_member_add",
-  "hew_supervisor_pool_member_add_static",
-  "hew_supervisor_pool_member_remove",
   "hew_task_free",
   "hew_task_scope_cancel_token",
   "hew_tcp_accept",
@@ -687,8 +700,8 @@ stable = [
   "hew_tcp_connect",
   "hew_tcp_connect_timed",
   "hew_tcp_connect_timeout",
-  "hew_tcp_listen",
   "hew_tcp_incoming",
+  "hew_tcp_listen",
   "hew_tcp_listener_close",
   "hew_tcp_listener_local_port",
   "hew_tcp_read",
@@ -701,8 +714,8 @@ stable = [
   "hew_timer_wheel_cancel",
   "hew_timer_wheel_free",
   "hew_timer_wheel_new",
-  "hew_timer_wheel_remove",
   "hew_timer_wheel_next_deadline_ms",
+  "hew_timer_wheel_remove",
   "hew_timer_wheel_schedule",
   "hew_timer_wheel_schedule_handle",
   "hew_timer_wheel_tick",
@@ -710,7 +723,6 @@ stable = [
   "hew_trace_enable",
   "hew_trace_end",
   "hew_trace_event_count",
-  "hew_quic_mesh_local_spki",
   "hew_trace_get_context",
   "hew_trace_is_enabled",
   "hew_trace_lifecycle",
@@ -740,6 +752,7 @@ stable = [
   "hew_vec_abort_oob",
   "hew_vec_abort_pop_empty",
   "hew_vec_append",
+  "hew_vec_borrow_owned",
   "hew_vec_clear",
   "hew_vec_clone",
   "hew_vec_clone_layout",
@@ -759,10 +772,7 @@ stable = [
   "hew_vec_free_owned_walk",
   "hew_vec_from_u8_data",
   "hew_vec_get_bool",
-  "hew_vec_borrow_owned",
   "hew_vec_get_clone",
-  "hew_vec_take_owned",
-  "hew_vec_take_all",
   "hew_vec_get_f32",
   "hew_vec_get_f64",
   "hew_vec_get_generic",
@@ -869,6 +879,8 @@ stable = [
   "hew_vec_sort_i32",
   "hew_vec_sort_i64",
   "hew_vec_swap",
+  "hew_vec_take_all",
+  "hew_vec_take_owned",
   "hew_vec_truncate",
   "hew_vtable_dispatch_panic_on_oob",
   "hew_weak_clone_rc",
@@ -889,24 +901,10 @@ stable-stdlib = [
   "hew_cidr_hosts",
   "hew_cidr_network",
   "hew_constant_time_eq_hew",
-  "hew_cron_free",
-  "hew_cron_is_valid",
-  "hew_cron_last_error",
-  "hew_cron_next_hew",
-  "hew_cron_parse",
-  "hew_cron_to_string",
-  "hew_datetime_day",
-  "hew_datetime_format",
-  "hew_datetime_hour",
-  "hew_datetime_last_error",
-  "hew_datetime_minute",
-  "hew_datetime_month",
-  "hew_datetime_now_ms",
-  "hew_datetime_now_nanos",
-  "hew_datetime_parse",
-  "hew_datetime_second",
-  "hew_datetime_weekday",
-  "hew_datetime_year",
+  "hew_calendar_components",
+  "hew_calendar_format",
+  "hew_calendar_from_parts",
+  "hew_calendar_parse",
   "hew_deflate_compress_hew",
   "hew_deflate_decompress_hew",
   "hew_dns_lookup_host",
@@ -1227,6 +1225,7 @@ non-declarable = [
   "hew_de_failed",
   "hew_de_free",
   "hew_de_int",
+  "hew_de_u64",
   "hew_de_is_null",
   "hew_de_map_begin",
   "hew_de_map_next",
@@ -1537,7 +1536,6 @@ non-declarable = [
   "hew_location_format",
   "hew_location_incarnation",
   "hew_location_node_id",
-  "hew_location_slot",
   "hew_machine_emit_push",
   "hew_machine_emit_step_enter",
   "hew_machine_emit_step_exit_keep",
@@ -1575,7 +1573,7 @@ non-declarable = [
   # emits the literal and the call); user code has no way to name it that is
   # not a forged system-dispatch registration.
   "hew_supervisor_add_child_spec",
-  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_spawn` spawns
+  # SYSTEM-LANE PROVENANCE BOUNDARY. `hew_supervisor_native_spawn_new` adopts the config and its polling operation spawns
   # every declared child from compiler-emitted adapters, and the shared
   # restart path installs the runtime's own system dispatch on each
   # incarnation. It is the whole lowering of a `supervisor` declaration; user
@@ -1588,8 +1586,10 @@ non-declarable = [
   "hew_supervisor_native_role_owner",
   "hew_supervisor_native_role_request",
   "hew_supervisor_native_role_wait_new",
-  "hew_supervisor_native_spawn",
-  "hew_supervisor_role_await_send",
+  "hew_supervisor_native_spawn_free",
+  "hew_supervisor_native_spawn_new",
+  "hew_supervisor_native_spawn_poll",
+  "hew_supervisor_native_spawn_take",
   "hew_supervisor_stop_native",
   "hew_supervisor_terminate_native",
   # SYSTEM-LANE PROVENANCE BOUNDARY. Installs the runtime's own
@@ -3774,6 +3774,24 @@ release-symbol = "hew_process_drop"
 discharge-depth = "shallow"
 
 [[ownership.contracts]]
+symbol = "hew_process_start_with_options"
+result = "fresh"
+params = [
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+  "borrow",
+]
+release-symbol = "hew_process_drop"
+discharge-depth = "shallow"
+
+[[ownership.contracts]]
 symbol = "hew_process_status"
 result = "none"
 params = ["borrow"]
@@ -4107,6 +4125,14 @@ discharge-depth = "none"
 symbol = "hew_path_absolute"
 result = "fresh"
 params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_path_separator"
+result = "fresh"
+params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -4755,141 +4781,6 @@ result-retention = "transferred"
 symbol = "hew_uuid_v7"
 result = "fresh"
 params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-# datetime — hew-std/src/time/datetime.rs. Scalar epoch math; format and
-# last_error return fresh strings; parse borrows both strings.
-[[ownership.contracts]]
-symbol = "hew_datetime_day"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_format"
-result = "fresh"
-params = ["borrow", "borrow"]
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_hour"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_last_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_minute"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_month"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_now_ms"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_now_nanos"
-result = "none"
-params = []
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_parse"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_second"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_weekday"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_datetime_year"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-# cron — hew-std/src/time/cron.rs. parse returns a Box'd HewCronExpr (freed
-# by hew_cron_free); next_hew returns a scalar-only HewCronNextResult struct;
-# last_error/to_string return fresh strings.
-[[ownership.contracts]]
-symbol = "hew_cron_free"
-result = "none"
-params = ["consume"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_is_valid"
-result = "none"
-params = ["borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_last_error"
-result = "fresh"
-params = []
-release-symbol = "hew_string_drop"
-discharge-depth = "shallow"
-result-retention = "transferred"
-
-[[ownership.contracts]]
-symbol = "hew_cron_next_hew"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
-[[ownership.contracts]]
-symbol = "hew_cron_parse"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_cron_free"
-discharge-depth = "shallow"
-
-[[ownership.contracts]]
-symbol = "hew_cron_to_string"
-result = "fresh"
-params = ["borrow"]
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
@@ -6813,26 +6704,6 @@ params = ["borrow", "borrow", "borrow", "borrow", "borrow"]
 release-symbol = ""
 discharge-depth = "none"
 
-# hew-runtime/src/supervisor.rs: cooperative owner-scoped stable-role tell.
-# The mailbox copies the payload and retains its waiter slot only while parked;
-# the sender, role words, and exact-incarnation output remain borrowed.
-[[ownership.contracts]]
-symbol = "hew_supervisor_role_await_send"
-result = "none"
-params = [
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "borrow",
-  "retain",
-  "borrow",
-  "borrow",
-]
-release-symbol = ""
-discharge-depth = "none"
-
 # hew-runtime/src/supervisor.rs: owner-scoped stable-role ask. The payload is
 # deep-copied by the mailbox; the reply channel gains one queued sender ref
 # (retain), released internally on a failed submission — the caller's creator
@@ -7489,5 +7360,148 @@ discharge-depth = "none"
 symbol = "hew_host_value_release"
 result = "none"
 params = ["consume", "borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+# Calendar result records transfer their managed string fields to the caller.
+
+[[ownership.contracts]]
+symbol = "hew_calendar_components"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_format"
+result = "fresh"
+params = ["borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_from_parts"
+result = "fresh"
+params = ["borrow", "borrow", "borrow", "borrow", "borrow", "borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_calendar_parse"
+result = "fresh"
+params = ["borrow", "borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_node_watch_open"
+result = "fresh"
+params = []
+release-symbol = "hew_node_watch_free"
+discharge-depth = "deep"
+resource-result-type = "std.net.cluster.NativeWatch"
+result-retention = "resource-transfer"
+result-retention-basis = "fresh Box owns one Arc subscription; free drops that owner and finishes the sole producer, without keeping a node pointer"
+
+[[ownership.contracts]]
+symbol = "hew_node_watch_status"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.cluster.NativeWatch"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_watch_changes"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.cluster.NativeWatch"]
+release-symbol = "hew_stream_pair_free"
+discharge-depth = "deep"
+resource-result-type = "std.stream.StreamPair"
+result-retention = "resource-transfer"
+result-retention-basis = "the unique readable end is transferred once into a fresh stream pair; pair extraction clears its owner and ordinary stream close releases the consumer"
+
+[[ownership.contracts]]
+symbol = "hew_node_watch_snapshot"
+result = "fresh"
+params = ["borrow"]
+resource-param-types = ["std.net.cluster.NativeWatch"]
+release-symbol = "hew_node_snapshot_free"
+discharge-depth = "deep"
+resource-result-type = "std.net.cluster.NativeSnapshot"
+result-retention = "resource-transfer"
+result-retention-basis = "fresh Box owns immutable copies of canonical metadata; snapshot_free drops all copied names and the sole snapshot owner"
+
+[[ownership.contracts]]
+symbol = "hew_node_watch_free"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.cluster.NativeWatch"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_current"
+result = "fresh"
+params = []
+release-symbol = "hew_node_snapshot_free"
+discharge-depth = "deep"
+resource-result-type = "std.net.cluster.NativeSnapshot"
+result-retention = "resource-transfer"
+result-retention-basis = "fresh Box owns immutable copies of canonical metadata; snapshot_free drops all copied names and the sole snapshot owner"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.cluster.NativeSnapshot"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_local"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.cluster.NativeSnapshot"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_count"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.cluster.NativeSnapshot", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_member"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.cluster.NativeSnapshot", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+# Registration records transfer their fresh managed name field, as calendar
+# result records do. The snapshot retains its independent Rust string copy.
+symbol = "hew_node_snapshot_registration"
+result = "fresh"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.cluster.NativeSnapshot", ""]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_node_snapshot_free"
+result = "none"
+params = ["consume"]
+resource-param-types = ["std.net.cluster.NativeSnapshot"]
 release-symbol = ""
 discharge-depth = "none"

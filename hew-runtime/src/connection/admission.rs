@@ -24,8 +24,8 @@ use super::identity_claim::{
 use super::reader::reader_loop;
 use super::reconnect::next_publication_token;
 use super::{
-    ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr, SendConnMgr,
-    SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
+    ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr,
+    ReconnectOwner, SendConnMgr, SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
 };
 
 pub(super) fn install_connection_actor(
@@ -86,11 +86,32 @@ pub(super) fn install_connection_actor(
 /// `mgr` must be a valid pointer returned by [`hew_connmgr_new`](super::manager::hew_connmgr_new).
 /// `conn_id` must be a valid connection ID from the transport.
 #[no_mangle]
+pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
+    // SAFETY: the caller provides a live manager and an owned transport connection.
+    unsafe { add_connection(mgr, conn_id, None) }
+}
+
+pub(super) unsafe fn add_connection(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    predecessor: Option<&ReconnectOwner>,
+) -> c_int {
+    // SAFETY: the caller provides a live manager and owned connection.
+    unsafe { add_connection_recording_owner(mgr, conn_id, predecessor, &mut None) }
+}
+
+/// Return the exact admitted publication even if its reader retires before
+/// admission returns. Looking up a recycled transport id afterwards is unsound.
 #[expect(
     clippy::too_many_lines,
-    reason = "connection event loop handles all states"
+    reason = "authenticated admission is one transaction"
 )]
-pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -> c_int {
+pub(super) unsafe fn add_connection_recording_owner(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    predecessor: Option<&ReconnectOwner>,
+    admitted_owner: &mut Option<ReconnectOwner>,
+) -> c_int {
     if mgr.is_null() {
         // Cannot close conn_id: no transport pointer available.  This is API
         // misuse; the caller retains ownership of conn_id in this case only.
@@ -285,6 +306,7 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         Some(&peer_credential),
         conn_id,
         claim_token,
+        predecessor,
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {
@@ -400,6 +422,11 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
         return -1;
     }
 
+    *admitted_owner = Some(ReconnectOwner {
+        node_id: peer_hs.node_id,
+        session_incarnation: peer_hs.session_incarnation,
+        publication_token,
+    });
     0
 }
 
@@ -514,6 +541,7 @@ pub(super) fn remove_connection(
         Some((
             conn.peer_node_id,
             conn.peer_identity,
+            conn.peer_session_incarnation,
             conn.publication_token,
             Arc::clone(&conn.publication_sync),
             Arc::clone(&conn.publication_removed),
@@ -523,6 +551,7 @@ pub(super) fn remove_connection(
     let Some((
         peer_node_id,
         peer_identity,
+        peer_session_incarnation,
         publication_token,
         publication_sync,
         publication_removed,
@@ -672,6 +701,7 @@ pub(super) fn remove_connection(
         mgr,
         peer_identity,
         peer_node_id,
+        peer_session_incarnation,
         conn_id,
         publication_token,
         &publication_sync,

@@ -1,7 +1,6 @@
 //! Resource lifecycle admission and close/consume discipline.
 
 use super::*;
-use hew_parser::ast::Ident;
 
 /// Match the receiver of a resource's inherent `close` implementation.
 /// Some source-owned resource carriers still lack a nominal receiver identity
@@ -555,48 +554,13 @@ impl LowerCtx {
         })
     }
 
-    /// W3.030 Stage 1 — three layered checks on `#[resource]` close:
-    ///
-    ///   1. Inline `TypeBodyItem::Method` named `close` is rejected
-    ///      unconditionally (Q-α-B): the inline form is a silent
-    ///      trap today (E8 — body not lowered, drop dispatcher
-    ///      emits an unresolvable symbol). Emit
-    ///      `ResourceCloseSourceUnsupported`. Short-circuit further
-    ///      checks for this type — exactly one named diagnostic
-    ///      per `close` slot (review R-4 determinism contract).
-    ///
-    ///   2. Otherwise look for an inherent-impl `<T>::close`
-    ///      (published on the checker signature). Presence satisfies the broadened
-    ///      `ResourceMissingClose` check (Q-α-B); a non-unit return
-    ///      type triggers `ResourceCloseMustReturnUnit` (Q-β-C).
-    ///
-    ///   3. Otherwise no `close` is reachable from any surface;
-    ///      emit `ResourceMissingClose` as before.
+    /// Require an inherent `close` method with a unit return type.
     pub(super) fn check_resource_close_discipline(
         &mut self,
         decl: &TypeDecl,
         span: &Span,
         declaration: hew_types::DefId,
     ) {
-        let inline_close = decl
-            .body
-            .iter()
-            .any(|item| matches!(item, TypeBodyItem::Method(m) if m.name == Ident::new("close")));
-        if inline_close {
-            self.resource_close_discipline_failures.insert(declaration);
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::ResourceCloseSourceUnsupported {
-                    name: decl.name.to_string(),
-                },
-                span.clone(),
-                "`#[resource]` types must declare `close` in a sibling \
-                 inherent-impl block (`impl T { fn close(consume self) { ... } }`); \
-                 the inline `type T { fn close(consume self) ... }` \
-                 surface is not lowered in v0.5 and would silently fail \
-                 link-time drop dispatch",
-            ));
-            return;
-        }
         if let Some(sig) = self.inherent_close_signature(declaration) {
             if sig.return_type != hew_types::Ty::Unit {
                 let display = sig.return_type.to_string();
@@ -646,37 +610,13 @@ impl LowerCtx {
     /// sibling inherent-impl block (`impl T { fn commit(consume self) { … } }`)
     /// — the form that lowers to a callable consume target.
     ///
-    ///   1. A type-body `consume self` method (`type T { fn m(consume self)
-    ///      … }`) is rejected: it is not lowered to a callable symbol, so a call
-    ///      raises `IndirectCallUnsupported` at the call site, leaving the type
-    ///      unusable. Fail-close here at the declaration with a directive to the
-    ///      supported surface, mirroring the `#[resource]` inline-`close`
-    ///      rejection.
-    ///   2. Otherwise the type must carry a sibling-inherent consuming method
-    ///      (published on the checker signature); without one no exit path exhausts
-    ///      a binding — `LinearNoConsumingMethods`.
     pub(super) fn check_linear_consume_discipline(
         &mut self,
         decl: &TypeDecl,
         span: &Span,
         declaration: hew_types::DefId,
     ) {
-        let has_inline_consuming = decl.body.iter().any(|item| {
-            matches!(item, TypeBodyItem::Method(m)
-                if decl.consuming_methods.iter().any(|n| n == &m.name))
-        });
-        if has_inline_consuming {
-            self.diagnostics.push(HirDiagnostic::new(
-                HirDiagnosticKind::LinearConsumingMethodSourceUnsupported {
-                    name: decl.name.to_string(),
-                },
-                span.clone(),
-                "`#[linear]` types must declare their `consume self` method in a \
-                 sibling inherent-impl block (`impl T { fn commit(consume self) \
-                 { ... } }`); the inline `type T { fn commit(consume self) ... }` \
-                 surface is not lowered to a callable consume target",
-            ));
-        } else if !self.fn_sigs.values().any(|sig| {
+        if !self.fn_sigs.values().any(|sig| {
             sig.consumes_receiver
                 && sig.impl_method.as_ref().is_some_and(|origin| {
                     origin.is_inherent && origin.receiver.as_ref() == Some(&declaration)

@@ -75,12 +75,11 @@ they never trigger a source build. C, C++ and assembly inputs and system library
 requirements still follow the package manifest.
 
 Publishers build the native archive before acquiring a short-lived publication
-grant, then publish it after its matching source package:
+grant, then submit source and native archives through one publication plan:
 
 ```sh
 hew native build --target x86_64-unknown-linux-gnu --output target/native.tar.zst
-hew publish
-hew native publish target/native.tar.zst
+hew publish --native-archive target/native.tar.zst
 ```
 
 Native publication uses the existing registry login and signing key, refuses
@@ -112,6 +111,7 @@ record and archive before reporting success.
 - `hew publish [--registry <NAME>]` — Publish package to a remote registry (requires `hew login`; fails if the remote publish fails)
   - `--registry`, `-r` — Use a named registry from config
   - `--local` — Install into the local package registry only; never contacts a remote registry
+  - `--native-archive <PATH>` — Attach a native archive to its selected source package; repeat for multiple targets or workspace members (remote publication only)
 - `hew list` — List installed packages
 - `hew search <QUERY> [--category <CATEGORY>] [--page <N>] [--per-page <N>] [--registry <NAME>]` — Search for packages
   - `--registry`, `-r` — Use a named registry from config
@@ -126,6 +126,26 @@ record and archive before reporting success.
 - `hew index sync` — Sync the local package index from the registry
 - `hew index resolve <PACKAGE> [--version <VER>]` — Resolve a package version from the local index
 - `hew index list <PACKAGE>` — List all versions of a package in the local index
+
+### Local publication
+
+For an unpublished package, create a signing key with `hew key generate`, then
+run `hew publish --local` in the package directory. A consumer with an ordinary
+version requirement can select that cache entry using `hew install --offline`.
+The resulting `source = "local"` lock can subsequently be used with
+`hew install --locked`. Normal online installation selects registry-confirmed
+packages and ignores local publications.
+
+Local publication retains the exact source archive and a separate local-origin
+record. Native code builds from those checked source bytes with the matching
+Rust toolchain; it does not query or acquire registry-native archives. Local
+locks cannot contain signed native archive pins. Missing or damaged provenance
+refuses reuse. Package content cannot supply the reserved provenance files.
+
+A local publish cannot replace a verified registry generation with different
+content. Publishing the same tree preserves that verified generation and its
+origin. Native archive attachments require remote publication; `--local` cannot
+attach a binary to a verified remote generation.
 
 ### Developer Tools
 
@@ -231,3 +251,13 @@ The resolver supports semver version requirements:
 | `^1.0`  | Compatible (>=1.0.0, <2.0.0)  |
 | `~1.0`  | Approximate (>=1.0.0, <1.1.0) |
 | `>=1.0` | Greater or equal              |
+
+Native archives attach to the same source or workspace publication plan with
+repeatable `--native-archive PATH` inputs. They share its credentials or trusted
+publishing grant, signing key and verified readback. A source version that
+already exists still discovers missing requested native artifacts. Every
+native descriptor must name a selected native source package and its exact
+published source archive checksum; a same-tree source with different compression
+retains the registry archive identity. Rebuild a mismatched native input from
+the verified installed source archive, rather than changing its descriptor.
+`--dry-run` validates and compares both kinds without authentication or uploads.

@@ -41,7 +41,7 @@
 #   make baselines-check           — verify deterministic generated metadata
 #   make wasm-capability-check     — verify manifest-owned generated outputs
 #   make playground-manifest-check — verify examples/playground/manifest.json freshness
-#   make sandbox-fixtures-check    — verify sandbox VM bytecode fixtures are fresh
+#   make sandbox-fixtures-check    — verify sandbox VM fixture sources compile
 #   make sandbox-fixtures-record   — regenerate fixture bytecode and golden traces
 #   make sandbox-vm-deps           — install hew-sandbox-vm npm deps (hash-stamped, idempotent)
 #   make sandbox-parity            — native hew run ↔ sandbox VM parity harness
@@ -585,6 +585,19 @@ playground-manifest: wasm-capability
 playground-manifest-check: wasm-capability-check
 	$(PYTHON) scripts/gen-playground-manifest.py --check
 
+.PHONY: syntax-data syntax-data-check editor-syntax
+syntax-data:
+	cargo run -p xtask -- syntax-data --write
+
+syntax-data-check:
+	cargo run -p xtask -- syntax-data --check
+
+editor-syntax: syntax-data
+	node tools/downstream/generate-nano.mjs
+	HEW_TEXTMATE_TEMPLATE="$(MAKEFILE_ROOT)/editors/sublime/Hew.tmLanguage.json" node tools/downstream/generate-tmgrammar.mjs
+	cp dist/hew.nanorc editors/nano/hew.nanorc
+	cp dist/hew.tmLanguage.json editors/sublime/Hew.tmLanguage.json
+
 sandbox-fixtures:
 	cargo run -p xtask -- sandbox-fixtures
 
@@ -622,9 +635,9 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # Deterministic generated repository artifacts. Behavioral ratchets remain
 # owned by their named test targets; they are intentionally not re-recorded by
 # a generic command from observed compiler output.
-baselines: wasm-capability playground-manifest sandbox-fixtures licenses cabi-surface
+baselines: syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
@@ -649,8 +662,10 @@ unicode-tables: ## Generate: export native Unicode character operations for the 
 unicode-tables-check: ## Check: verify sandbox Unicode tables match the native runtime
 	cargo run -p hew-runtime --example unicode_tables -- --check hew-sandbox-vm/src/interpreter/unicode-data.ts
 
+HEW_NATIVE_BIN ?= $(DEBUG_HEW)
+
 sandbox-vm-test: sandbox-vm-deps
-	npm --prefix hew-sandbox-vm test
+	HEW_NATIVE_BIN="$(HEW_NATIVE_BIN)" npm --prefix hew-sandbox-vm test
 
 # Native Hew <-> sandbox VM parity harness. The browser compiler package is
 # excluded from generic nextest runs and owned here with Node provisioned.
@@ -674,7 +689,12 @@ playground-wasi-check: wasm-runtime hew-native
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e checked_tasks_select_and_scope_cleanup_run_under_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e actor_periodic_timer_reaches_quiescence_on_native_and_wasi -- --exact
 	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e curated_playground_examples_run_under_wasi -- --exact
-	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_restart_one_for_one_runs_under_wasi -- --exact
+
+.PHONY: wasi-actor-lifecycle-check
+wasi-actor-lifecycle-check: wasm-runtime hew-native ## Test: native and WASI actor lifecycle behaviour
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervisor_restart_one_for_one_runs_under_wasi -- --exact
+	$(TEST_RUN_ENV) cargo test -p hew-cli --test wasi_run_e2e supervised_actor_lifecycle_runs_under_wasi -- --exact
 
 # Standard per-branch gate: validate workflow syntax locally, then run the lint
 # graph, tooling tests, compiler measurements and the three Make-owned Linux
@@ -1084,6 +1104,12 @@ test-cabi:
 # (libhew_runtime.a for wasm32-wasip1) is needed by wasm32-wasi eval tests
 # even when they are expected to fail before codegen (the linker search runs
 # before the fast typecheck path reports its diagnostic).
+# Source/native publication policy uses the in-process loopback registry; it
+# does not need compiler/runtime or sandbox artefacts.
+.PHONY: test-package-publish
+test-package-publish:
+	$(TEST_RUN_ENV) cargo nextest run --profile ci --no-fail-fast -p hew-pkg --lib --test test_publish
+
 test-compiler-pipeline: test-artifacts
 	$(TEST_RUN_ENV) cargo nextest run --profile ci \
 		-p hew-lexer \
@@ -1736,3 +1762,14 @@ clean: ## Develop: remove generated build and test artifacts
 		"$(CURDIR)/.tmp/pkg-import-actual.txt" \
 		"$(CURDIR)/.tmp/scanner-test-input.txt" \
 		"$(CURDIR)/.tmp/stdlib-io-scanner-oracle-input.txt"
+
+
+.PHONY: sandbox-bytecode sandbox-bytecode-check
+LINT_GATES += sandbox-bytecode-check
+sandbox-bytecode: sandbox-vm-deps ## Generate: Rust-owned sandbox instruction types and schema
+	cargo run -p xtask -- sandbox-bytecode --write
+	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --write
+
+sandbox-bytecode-check: sandbox-vm-deps ## Check: generated sandbox instruction types and schema
+	cargo run -p xtask -- sandbox-bytecode --check
+	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --check

@@ -95,13 +95,10 @@ categories = ["runtime", "failure"]
 [[feature]]
 id = "actor-crash-containment"
 label = "Actor-local panic/trap containment and restart"
-checker = "todo"
-runtime = "unavailable"
-runtime_status = "A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked handler, init and start faults release owned state and return through failure edges; supervised faults use the shared restart and settlement policy"
 categories = ["runtime", "actors", "failure"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(actor-crash-containment):"
-note = "Tier 2 basic actor dispatch remains supported, but panic/trap containment is a separate capability. Host-side native parity tests may unwind to exercise bookkeeping; they are not evidence that the production WASI artifact can recover."
 
 [[feature]]
 id = "generators"
@@ -172,29 +169,21 @@ categories = ["runtime", "actors"]
 
 [[feature]]
 id = "supervision-trees"
-enum_variant = "SupervisionTrees"
 label = "Supervision tree operations"
 prose_label = "Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`)"
-reason = "they require OS threads for restart strategies and child supervision"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Checked child construction, restart strategies, stable roles and cooperative teardown use the shared actor runtime"
 categories = ["runtime", "supervision"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(supervision):"
 
 [[feature]]
 id = "link-monitor"
-enum_variant = "LinkMonitor"
 label = "Link/monitor operations"
 prose_label = "Actor `link` / `unlink` / `monitor` / `demonitor`"
-reason = "they rely on OS threads to watch linked actors and propagate exits"
-checker = "reject"
-runtime = "native-only"
-runtime_status = "The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface"
+checker = "pass"
+runtime = "implemented"
+runtime_status = "Local actor and role observations share typed LINK/DOWN delivery and owned subscription cleanup"
 categories = ["runtime", "actors"]
-tracking = "WASM-TODO"
-tracking_label = "WASM-TODO(link-monitor):"
 
 [[feature]]
 id = "structured-concurrency"
@@ -269,21 +258,17 @@ generate_functions = [
   "std.stream.open",
   "std.fs.open_read",
   "std.fs.open_write",
-  "std.fs.open_read_dir",
-  "std.fs.open_write_dir",
 ]
 generate_endpoints = [
   "hew_stream_from_file_read",
   "hew_file_read_stream_open",
   "hew_file_open_read",
   "hew_file_open_write",
-  "hew_dir_open_read",
-  "hew_dir_open_write",
 ]
 enum_variant = "FilesystemStreams"
-label = "File-backed streams and resources"
-prose_label = "`std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`, `std.fs.open_read_dir` and `std.fs.open_write_dir`"
-reason = "file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available"
+label = "Ambient files and file-backed streams"
+prose_label = "`std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`"
+reason = "ambient file constructors and file-backed streams are unavailable on wasm32; WASI directory resources are separately classified"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
@@ -295,9 +280,19 @@ native_only_functions = [
   "std.stream.open",
   "std.fs.open_read",
   "std.fs.open_write",
-  "std.fs.open_read_dir",
-  "std.fs.open_write_dir",
 ]
+
+[[feature]]
+id = "directory-resources"
+label = "Host-supplied directory resources"
+checker = "pass"
+runtime = "host-dependent"
+runtime_status = "WASI preview1 uses explicitly preopened directories; the browser VM uses explicitly supplied OPFS descendant handles with existing directional directory/file owners and asynchronous host completion; external picker handles are refused"
+reason = "the host must explicitly supply directory authority; no ambient directory is granted by default; browser cancellation drains or aborts pending file operations, while synchronous WASI host syscalls cannot be interrupted after entry"
+generate = "refuse"
+generate_functions = ["std.fs.open_read_dir", "std.fs.open_write_dir"]
+generate_endpoints = ["hew_dir_open_read", "hew_dir_open_write"]
+categories = ["stdlib", "filesystem"]
 
 [[feature]]
 id = "termination-signals"
@@ -524,6 +519,8 @@ generate_functions = [
   "std.process.run",
   "std.process.run_argv",
   "std.process.start",
+  "std.process.start_with_options",
+  "std.process.Command.output_with_options",
   "std.process.Child.wait",
   "std.process.Child.try_wait",
   "std.process.Child.terminate",
@@ -532,6 +529,7 @@ generate_functions = [
 generate_endpoints = [
   "hew_process_start_shell",
   "hew_process_start",
+  "hew_process_start_with_options",
   "hew_process_exit_stream",
   "hew_process_poll",
   "hew_process_signal",
@@ -541,6 +539,8 @@ deterministic_functions = [
   "std.process.run",
   "std.process.run_argv",
   "std.process.start",
+  "std.process.start_with_options",
+  "std.process.Command.output_with_options",
   "std.process.Child.wait",
   "std.process.Child.try_wait",
   "std.process.Child.terminate",
@@ -549,6 +549,7 @@ deterministic_functions = [
 deterministic_endpoints = [
   "hew_process_start_shell",
   "hew_process_start",
+  "hew_process_start_with_options",
   "hew_process_exit_stream",
   "hew_process_poll",
   "hew_process_signal",
@@ -703,12 +704,32 @@ native_only_modules = ["os"]
 [[feature]]
 id = "distributed"
 generate = "refuse"
+generate_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 generate_endpoints = [
+  "hew_node_watch_open",
+  "hew_node_watch_status",
+  "hew_node_watch_changes",
+  "hew_node_watch_snapshot",
+  "hew_node_watch_free",
+  "hew_node_snapshot_current",
+  "hew_node_snapshot_valid",
+  "hew_node_snapshot_local",
+  "hew_node_snapshot_count",
+  "hew_node_snapshot_member",
+  "hew_node_snapshot_registration",
+  "hew_node_snapshot_free",
   "hew_node_api_start_config",
   "hew_node_api_connect",
   "hew_node_api_connect_string",
   "hew_node_api_set_transport",
-  "hew_node_api_register_by_pid_string",
+  "hew_node_api_register_handle_string",
   "hew_node_api_lookup_location_string",
   "hew_node_api_shutdown",
   "hew_node_peer_new",
@@ -719,12 +740,32 @@ generate_endpoints = [
   "hew_remote_call_take",
 ]
 deterministic = "refuse"
+deterministic_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 deterministic_endpoints = [
+  "hew_node_watch_open",
+  "hew_node_watch_status",
+  "hew_node_watch_changes",
+  "hew_node_watch_snapshot",
+  "hew_node_watch_free",
+  "hew_node_snapshot_current",
+  "hew_node_snapshot_valid",
+  "hew_node_snapshot_local",
+  "hew_node_snapshot_count",
+  "hew_node_snapshot_member",
+  "hew_node_snapshot_registration",
+  "hew_node_snapshot_free",
   "hew_node_api_start_config",
   "hew_node_api_connect",
   "hew_node_api_connect_string",
   "hew_node_api_set_transport",
-  "hew_node_api_register_by_pid_string",
+  "hew_node_api_register_handle_string",
   "hew_node_api_lookup_location_string",
   "hew_node_api_shutdown",
   "hew_node_peer_new",
@@ -736,7 +777,7 @@ deterministic_endpoints = [
 ]
 enum_variant = "Distributed"
 label = "Distributed node and remote-actor operations"
-prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations"
+prose_label = "`Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `std.net.cluster` observation operations, remote actor calls, and remote monitor/link operations"
 reason = "the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32"
 checker = "reject"
 runtime = "native-only"
@@ -744,6 +785,14 @@ runtime_status = "Key-derived identity, durable sessions, authenticated mesh rou
 categories = ["stdlib", "distributed", "actor"]
 tracking = "WASM-TODO"
 tracking_label = "WASM-TODO(distributed):"
+native_only_functions = [
+  "std.net.cluster.snapshot",
+  "std.net.cluster.watch",
+  "std.net.cluster.wait_registered",
+  "std.net.cluster.wait_departed",
+  "std.net.cluster.Subscription.snapshot",
+  "std.net.cluster.Subscription.wait_shutdown",
+]
 
 [[feature]]
 id = "stdin-input"
@@ -851,12 +900,6 @@ generate_endpoints = ["hew_glob", "hew_path_is_file", "hew_path_is_dir"]
 # ---------------------------------------------------------------------------
 
 [[backlog]]
-id = "actor-crash-containment"
-gap = "Actor-local panic/trap containment and restart on production WASI"
-blocker = "The shipped wasm32-wasip1 Rust sysroot supports panic=abort; containment requires a supported unwind runtime or an explicit generated-code status/CPS failure ABI"
-tracking_label = "WASM-TODO(actor-crash-containment):"
-
-[[backlog]]
 id = "wasi-sockets"
 gap = "Raw socket-backed Hew networking surface"
 blocker = "Stable cross-host socket abstraction above host-provided WASI sockets"
@@ -943,18 +986,6 @@ id = "distributed"
 gap = "Key-backed distributed identity, remote-actor messaging, and lifecycle parity"
 blocker = "wasm peer transport plus authenticated identity/session, registry, SWIM, full-Location routing, and cross-node monitor/link authorities"
 tracking_label = "WASM-TODO(distributed):"
-
-[[backlog]]
-id = "supervision"
-gap = "Supervision tree restart strategies"
-blocker = "OS-thread-free supervision design"
-tracking_label = "WASM-TODO(supervision):"
-
-[[backlog]]
-id = "link-monitor"
-gap = "Actor link/monitor fault propagation"
-blocker = "OS-thread-free exit propagation"
-tracking_label = "WASM-TODO(link-monitor):"
 
 [[backlog]]
 id = "actor-drain"
@@ -1067,9 +1098,3 @@ tracking_label = "WASM-TODO(wasi-errno):"
 # by `curated_playground_examples_run_under_wasi`; omission is not evidence of
 # pass by itself.
 # ---------------------------------------------------------------------------
-
-[[playground_wasi]]
-id = "concurrency/supervisor"
-status = "unsupported"
-capability = "supervision-trees"
-reason = "Uses supervision trees, which Tier 2 rejects"

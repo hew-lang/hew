@@ -16,6 +16,38 @@ export class FrameScheduler {
   private readonly replaySteps: Array<{ id: string; ticket: number }>;
   private nextTicket = 0;
   private replayIndex = 0;
+  private readonly pendingHostOperations = new Set<Promise<void>>();
+  private hostReady: (() => void) | undefined;
+
+  /// A host operation retains its borrowed inputs until its completion is queued.
+  /// Promise callbacks only enqueue work; frame execution stays in this scheduler.
+  submitHost<T>(
+    id: string,
+    operation: Promise<T>,
+    completed: (result: T) => void,
+    failed: (error: unknown) => void,
+  ): void {
+    let completion: Promise<void>;
+    const deliver = (resume: () => void): void => {
+      this.pendingHostOperations.delete(completion);
+      this.enqueue(id, resume);
+      this.hostReady?.();
+      this.hostReady = undefined;
+    };
+    completion = operation.then(
+      (result) => deliver(() => completed(result)),
+      (error: unknown) => deliver(() => failed(error)),
+    );
+    this.pendingHostOperations.add(completion);
+  }
+
+  /// A terminal VM failure cannot execute more source instructions. Producers
+  /// still drain before their continuations and borrowed frame references retire.
+  async retireHost(): Promise<void> {
+    await Promise.all(this.pendingHostOperations);
+    this.ready.length = 0;
+    this.timers.length = 0;
+  }
 
   constructor(
     private readonly trace: TraceBuilder,
@@ -74,9 +106,18 @@ export class FrameScheduler {
     }
   }
 
-  run(): void {
-    while (this.ready.length > 0 || this.timers.length > 0) {
-      if (this.ready.length === 0) {
+  async run(): Promise<void> {
+    while (
+      this.ready.length > 0 ||
+      this.timers.length > 0 ||
+      this.pendingHostOperations.size > 0
+    ) {
+      if (this.ready.length === 0 && this.timers.length === 0) {
+        await new Promise<void>((resolve) => {
+          this.hostReady = resolve;
+        });
+      }
+      if (this.ready.length === 0 && this.timers.length > 0) {
         const next = Math.min(...this.timers.map((timer) => timer.at));
         this.trace.advanceVirtualClock(next - this.trace.virtualTimeMs, null);
         this.fireTimers();

@@ -184,11 +184,9 @@ pub(super) fn reader_loop(
                         continue;
                     }
                     if envelope.message == crate::envelope::EnvelopeMessage::Withdraw {
-                        mgr_ref.inbound_asks.withdraw(
-                            crate::pid::hew_pid_make(mgr_ref.local_node_id, target.slot()),
-                            claim_token,
-                            envelope.request_id,
-                        );
+                        mgr_ref
+                            .inbound_asks
+                            .withdraw(target, claim_token, envelope.request_id);
                         continue;
                     }
                     let crate::envelope::EnvelopeMessage::Service {
@@ -218,7 +216,7 @@ pub(super) fn reader_loop(
                     // at envelope-owned bytes valid for this call.
                     unsafe {
                         router_fn(
-                            crate::pid::hew_pid_make(mgr_ref.local_node_id, target.slot()),
+                            target.into(),
                             identity.as_ptr(),
                             payload_ptr,
                             envelope.payload.len(),

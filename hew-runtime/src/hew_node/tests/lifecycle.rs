@@ -2,6 +2,32 @@
 
 use super::*;
 
+fn seed_authenticated_dead_peer(
+    cluster: &crate::cluster::HewCluster,
+    peer: u16,
+    session: u32,
+    publication: u64,
+    incarnation: u64,
+) {
+    assert!(cluster.admit_authenticated_session(peer, session));
+    let publication_sync = Arc::new(Mutex::new(()));
+    let publication_removed = Arc::new(AtomicBool::new(false));
+    // SAFETY: the test owns this live cluster and retains the publication
+    // synchronization values for the duration of the call.
+    let published = unsafe {
+        crate::cluster::hew_cluster_notify_connection_established_for_token_if_not_removed(
+            std::ptr::from_ref(cluster).cast_mut(),
+            peer,
+            session,
+            publication,
+            &publication_sync,
+            &publication_removed,
+        )
+    };
+    assert_eq!(published, 1, "the authenticated publication should succeed");
+    cluster.seed_member_for_test(peer, crate::cluster::MEMBER_DEAD, incarnation);
+}
+
 #[test]
 fn accept_thread_stop_reports_panic_and_consumes_handle() {
     let _runtime_guard = crate::runtime_test_guard();
@@ -48,27 +74,27 @@ fn quarantine_insert_blocks_then_evict_clears() {
     let _guard = crate::runtime_test_guard();
     // Insert quarantines the peer at the dead incarnation; a same-or-lower
     // live incarnation is blocked, a higher live incarnation is not.
-    quarantine_insert(7, 5);
+    quarantine_insert(7, Some(1), 5);
     assert!(
-        quarantine_is_blocked(7, 5),
+        quarantine_is_blocked(7, Some(1), 5),
         "equal live incarnation is blocked"
     );
     assert!(
-        quarantine_is_blocked(7, 4),
+        quarantine_is_blocked(7, Some(1), 4),
         "lower live incarnation is blocked"
     );
     assert!(
-        !quarantine_is_blocked(7, 6),
+        !quarantine_is_blocked(7, Some(1), 6),
         "a live incarnation past the quarantined one is not blocked"
     );
     assert!(
-        !quarantine_is_blocked(8, 5),
+        !quarantine_is_blocked(8, Some(1), 5),
         "an unrelated node is not blocked"
     );
     // Eviction clears the entry.
-    quarantine_evict(7);
+    quarantine_evict(7, Some(1), 6);
     assert!(
-        !quarantine_is_blocked(7, 5),
+        !quarantine_is_blocked(7, Some(1), 5),
         "evicted node is sendable again"
     );
 }
@@ -76,8 +102,8 @@ fn quarantine_insert_blocks_then_evict_clears() {
 #[test]
 fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
     let registry = HewRegistry::default();
-    let old = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 100, 3).unwrap();
-    let new = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 200, 3).unwrap();
+    let old = Location::direct(crate::node_identity::NodeId::from_bytes([1; 16]), 100, 3).unwrap();
+    let new = Location::direct(crate::node_identity::NodeId::from_bytes([1; 16]), 200, 3).unwrap();
     registry
         .remote_names
         .lock_or_recover()
@@ -102,31 +128,46 @@ fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
 #[test]
 fn quarantine_insert_is_monotonic() {
     let _guard = crate::runtime_test_guard();
-    quarantine_insert(9, 3);
+    quarantine_insert(9, Some(1), 3);
     // A higher-incarnation death overwrites.
-    quarantine_insert(9, 7);
+    quarantine_insert(9, Some(1), 7);
     assert!(
-        quarantine_is_blocked(9, 7),
+        quarantine_is_blocked(9, Some(1), 7),
         "blocked at the higher incarnation"
     );
     assert!(
-        quarantine_is_blocked(9, 6),
+        quarantine_is_blocked(9, Some(1), 6),
         "blocked below the higher incarnation"
     );
     // A lower-incarnation death never regresses the recorded incarnation.
-    quarantine_insert(9, 2);
+    quarantine_insert(9, Some(1), 2);
     assert!(
-        quarantine_is_blocked(9, 7),
+        quarantine_is_blocked(9, Some(1), 7),
         "a lower re-insert must not regress the quarantined incarnation"
     );
+}
+
+#[test]
+fn delayed_quarantine_from_old_owner_cannot_replace_successor() {
+    let _guard = crate::runtime_test_guard();
+    quarantine_insert(10, Some(2), 3);
+    quarantine_insert(10, Some(1), 99);
+    assert!(quarantine_is_blocked(10, Some(2), 3));
+    assert!(
+        !quarantine_is_blocked(10, Some(1), 99),
+        "a delayed old-session verdict cannot become the current quarantine owner"
+    );
+
+    quarantine_insert(10, Some(2), 5);
+    assert!(quarantine_is_blocked(10, Some(2), 5));
 }
 
 #[test]
 fn quarantine_evict_absent_node_is_noop() {
     let _guard = crate::runtime_test_guard();
     // No panic, no effect.
-    quarantine_evict(123);
-    assert!(!quarantine_is_blocked(123, 1));
+    quarantine_evict(123, Some(1), 1);
+    assert!(!quarantine_is_blocked(123, Some(1), 1));
 }
 
 /// Proving gate B: a `Quarantine`-policy send to a buried peer fails closed at
@@ -153,8 +194,8 @@ fn quarantine_blocks_send_under_policy_then_clears_on_evict() {
     // The peer is known to the cluster, buried (DEAD) at incarnation 5. Seed
     // the membership table so the live-incarnation lookup resolves, and record
     // the quarantine at the incarnation it died at.
-    cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
-    quarantine_insert(PEER, 5);
+    seed_authenticated_dead_peer(cluster, PEER, 1, 10, 5);
+    quarantine_insert(PEER, Some(1), 5);
 
     // Under a Quarantine policy the buried peer (live incarnation 5 <=
     // quarantined 5) is blocked.
@@ -186,7 +227,7 @@ fn quarantine_blocks_send_under_policy_then_clears_on_evict() {
     }
 
     // Evict (the readmission edge) clears the block under Quarantine too.
-    quarantine_evict(PEER);
+    quarantine_evict(PEER, Some(1), 6);
     {
         let mut ctx = crate::execution_context::HewExecutionContext {
             partition_policy: crate::execution_context::PartitionPolicy::Quarantine.to_slot(),
@@ -241,8 +282,8 @@ fn set_partition_policy_symbol_drives_the_quarantine_gate() {
     assert!(!node.cluster.is_null());
     // SAFETY: cluster is valid while the node is running.
     let cluster = unsafe { &*node.cluster };
-    cluster.seed_member_for_test(PEER, crate::cluster::MEMBER_DEAD, 5);
-    quarantine_insert(PEER, 5);
+    seed_authenticated_dead_peer(cluster, PEER, 1, 10, 5);
+    quarantine_insert(PEER, Some(1), 5);
 
     // Install a dispatch context with the DEFAULT (null) policy slot, then
     // drive the policy purely through the C-ABI setter.
@@ -470,11 +511,12 @@ fn local_registry_register_and_lookup() {
 
     let actor_name = CString::new("hew-node-local-registry").expect("valid actor name");
     let missing_name = CString::new("hew-node-missing-registry").expect("valid actor name");
-    let actor_id = (u64::from(102u16) << 48) | 0x1234;
 
     // SAFETY: node and C string pointers are valid for each call.
     unsafe {
         assert_eq!(hew_node_start(node.as_ptr()), 0);
+        let actor = spawn_remote_test_actor(noop_dispatch);
+        let actor_id = (*actor).id;
         assert_eq!(
             hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
             0
@@ -484,10 +526,8 @@ fn local_registry_register_and_lookup() {
             local_actor_location(&*node.as_ptr(), actor_id)
         );
         assert_eq!(lookup_exact(node.as_ptr(), missing_name.as_ptr()), None);
-        assert_eq!(
-            crate::registry::hew_registry_unregister(actor_name.as_ptr()),
-            0
-        );
+        assert_eq!(hew_node_unregister(node.as_ptr(), actor_name.as_ptr()), 0);
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
     }
 
@@ -532,7 +572,6 @@ fn actor_free_unregisters_named_actor_and_emits_gossip_remove() {
 
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
-        assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
@@ -575,11 +614,9 @@ fn node_stop_unregisters_local_names() {
             lookup_exact(node.as_ptr(), actor_name.as_ptr()),
             local_actor_location(&*node.as_ptr(), actor_id)
         );
-        assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
         assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
-        assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
     }
@@ -601,7 +638,10 @@ fn two_node_connect_and_handshake() {
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
     let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
-    let actor_id = (u64::from(202u16) << 48) | 0x63;
+    crate::pid::hew_pid_set_local_node(202);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    // SAFETY: the allocation remains live until cleanup below.
+    let actor_id = unsafe { (*actor).id };
     // SAFETY: pointers are valid in this scope.
     unsafe {
         assert_eq!(
@@ -619,7 +659,7 @@ fn two_node_connect_and_handshake() {
 
     // SAFETY: pointers remain valid until dropped.
     unsafe {
-        let _ = crate::registry::hew_registry_unregister(actor_name.as_ptr());
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         assert_eq!(hew_node_stop(node2.as_ptr()), 0);
     }
@@ -639,7 +679,11 @@ fn exact_identity_prunes_remote_names_for_departed_node() {
         map.insert("other-node".to_owned(), test_location(303, 0x20));
     }
 
-    let _ = take_registry_names_if(&registry, |location| location.node() == test_node_id(202));
+    let _ = take_registry_names_if(
+        &registry,
+        |location| location.node() == test_node_id(202),
+        |_| {},
+    );
 
     let map = registry.remote_names.lock_or_recover();
     assert!(!map.contains_key("remote-a"));
@@ -663,10 +707,14 @@ fn test_node_unregister() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 50) };
     let name = c"test_unreg_actor";
+    crate::pid::hew_pid_set_local_node(50);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    // SAFETY: the allocation remains live through every registration.
+    let actor_id = unsafe { (*actor).id };
 
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), actor_id), 0);
         let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
@@ -674,7 +722,7 @@ fn test_node_unregister() {
         );
         assert_eq!(
             Location::try_from(found).unwrap(),
-            local_actor_location(&*node, 999).unwrap()
+            local_actor_location(&*node, actor_id).unwrap()
         );
     }
 
@@ -698,7 +746,10 @@ fn test_node_unregister() {
     }
 
     // SAFETY: node was allocated by hew_node_new above.
-    unsafe { hew_node_free(node) };
+    unsafe {
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
+        hew_node_free(node);
+    };
 }
 
 #[test]
@@ -714,16 +765,23 @@ fn register_same_name_repoints_future_lookup() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 51) };
     let name = c"l18_primary";
+    crate::pid::hew_pid_set_local_node(51);
+    let (first, second) = (
+        spawn_remote_test_actor(noop_dispatch),
+        spawn_remote_test_actor(noop_dispatch),
+    );
+    // SAFETY: both allocations remain live through all name changes.
+    let (first_id, second_id) = unsafe { ((*first).id, (*second).id) };
 
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, name.as_ptr(), 7001), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), first_id), 0);
         assert_eq!(
-            hew_node_register(node, name.as_ptr(), 7001),
+            hew_node_register(node, name.as_ptr(), first_id),
             0,
             "registering the same location is idempotent"
         );
-        assert_eq!(hew_node_register(node, name.as_ptr(), 7002), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), second_id), 0);
         let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
@@ -731,7 +789,7 @@ fn register_same_name_repoints_future_lookup() {
         );
         assert_eq!(
             Location::try_from(found).unwrap(),
-            local_actor_location(&*node, 7002).unwrap()
+            local_actor_location(&*node, second_id).unwrap()
         );
     }
 
@@ -739,9 +797,11 @@ fn register_same_name_repoints_future_lookup() {
     let other = c"l18_secondary";
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, other.as_ptr(), 7002), 0);
-        let _ = crate::registry::hew_registry_unregister(name.as_ptr());
-        let _ = crate::registry::hew_registry_unregister(other.as_ptr());
+        assert_eq!(hew_node_register(node, other.as_ptr(), second_id), 0);
+        assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
+        assert_eq!(hew_node_unregister(node, other.as_ptr()), 0);
+        assert_eq!(crate::actor::hew_actor_free(first), 0);
+        assert_eq!(crate::actor::hew_actor_free(second), 0);
         hew_node_free(node);
     }
 }
@@ -794,9 +854,7 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
         let exact = Location::try_from(target).unwrap();
         assert_eq!(
             routing::hew_routing_lookup_location((*node).routing_table, exact),
-            routing::LocationRoute::Local {
-                actor_id: (*actor).id
-            }
+            routing::LocationRoute::Local {}
         );
         assert_eq!(
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
@@ -875,8 +933,11 @@ fn remote_lookup_via_registry_gossip() {
             n.registry.cast::<c_void>(),
         );
 
-        // Local lookup should not find it (not registered locally).
-        assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
+        // Canonical node metadata identifies this as a remote registration.
+        assert_ne!(
+            Location::try_from(remote_location).unwrap().node(),
+            n.auth.node_identity().unwrap()
+        );
 
         // Node lookup should find it via remote_names.
         let mut found = HewLocation::default();
@@ -919,7 +980,8 @@ fn register_emits_gossip_event() {
         assert_eq!(hew_node_start(node.as_ptr()), 0);
 
         let name = c"gossip_actor";
-        let pid: u64 = (u64::from(111u16) << 48) | 0x2A;
+        let actor = spawn_remote_test_actor(noop_dispatch);
+        let pid = (*actor).id;
         assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
 
         // The cluster should have a pending registry gossip event.
@@ -927,7 +989,7 @@ fn register_emits_gossip_event() {
         assert!(!n.cluster.is_null());
         assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
 
-        let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
     }
     crate::registry::hew_registry_clear();

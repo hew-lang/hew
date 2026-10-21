@@ -23,6 +23,7 @@ use crate::internal::types::{HewActorState, HewDispatchFn, HewLifecycleFn, HewSy
 use crate::mailbox;
 use crate::mailbox_header::HewSysMsg;
 use crate::pool::{HewActorPool, PoolStrategy};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::scheduler;
 use crate::set_last_error;
 use crate::timer_wheel::{
@@ -535,10 +536,8 @@ pub const CRASH_ACTION_KILL: i32 = 2;
 // ── Exit reasons ─────────────────────────────────────────────────────────
 //
 // Trap error codes and the typed `ExitReason` live in
-// [`crate::internal::types`] because both native and WASM arena/dispatch
-// paths must stamp the canonical code on an actor crash, and the supervisor
-// module is `cfg(not(target_arch = "wasm32"))`. They are re-exported here so
-// existing `crate::supervisor::*` call sites keep resolving.
+// [`crate::internal::types`] so every runtime path uses the same canonical
+// code for an actor crash. They are re-exported here for supervisor callers.
 pub use crate::internal::types::{
     ExitReason, HEW_TRAP_ACTOR_SEND_FAILED, HEW_TRAP_DIVIDE_BY_ZERO, HEW_TRAP_HEAP_EXCEEDED,
     HEW_TRAP_INDEX_OUT_OF_BOUNDS, HEW_TRAP_INTEGER_OVERFLOW, HEW_TRAP_SHIFT_OUT_OF_RANGE,
@@ -634,6 +633,8 @@ struct PendingGroupRestart {
     /// Each failure the restart answers, with the crash record it rules on.
     failures: Vec<(RestartChildRole, FaultRecord)>,
     stopping: Vec<StoppedIncarnation>,
+    construction: Option<native::NativeReconstruction>,
+    readiness: Arc<ConstructionReadiness>,
     /// Registered with every completion in `stopping`; the registrations are
     /// weak, so this is what keeps them live.
     waker: Arc<crate::wake::OwnedWaker>,
@@ -643,10 +644,13 @@ impl PendingGroupRestart {
     fn new(sup: *mut HewSupervisor) -> Self {
         // SAFETY: the caller keeps `sup` live; the direct id is immutable.
         let supervisor = unsafe { (*sup).local_pid_id };
+        let readiness = Arc::new(ConstructionReadiness::default());
         Self {
             failures: Vec::new(),
             stopping: Vec::new(),
-            waker: group_restart_waker(supervisor),
+            construction: None,
+            waker: group_restart_waker(supervisor, Arc::clone(&readiness)),
+            readiness,
         }
     }
 
@@ -688,32 +692,70 @@ impl PendingGroupRestart {
     }
 }
 
-/// A waker that signals [`HewSysMsg::GroupRestart`] to one supervisor through
-/// its stable handle, so a completion never reaches a closed supervisor.
+/// Readiness survives mailbox closure so the unique teardown owner can drain
+/// a cancelled constructor without relying on another supervisor dispatch.
+#[derive(Default)]
+struct ConstructionReadiness {
+    ready: Mutex<bool>,
+    changed: Condvar,
+}
+
+impl ConstructionReadiness {
+    fn clear(&self) {
+        *self.ready.lock_or_recover() = false;
+    }
+
+    fn wait(&self, deadline: Instant) {
+        if crate::driver::active() {
+            crate::driver::drain_poll(Duration::ZERO);
+        } else {
+            let ready = self.ready.lock_or_recover();
+            if !*ready {
+                drop(self.changed.wait_timeout_or_recover(
+                    ready,
+                    deadline.saturating_duration_since(Instant::now()),
+                ));
+            }
+        }
+    }
+}
+
+/// A readiness signal reaches both the live supervisor and a teardown owner
+/// after mailbox admission closes. Neither path owns a frame pointer.
 fn group_restart_waker(
     supervisor: crate::lifetime::local_handles::HewLocalPidId,
+    readiness: Arc<ConstructionReadiness>,
 ) -> Arc<crate::wake::OwnedWaker> {
-    type Target = crate::lifetime::local_handles::HewLocalPidId;
-    unsafe extern "C" fn group_restart_wake(context: *mut c_void) {
-        // SAFETY: every descriptor holder retains this allocation.
-        signal_group_restart(unsafe { *context.cast::<Target>() });
+    struct Target {
+        supervisor: crate::lifetime::local_handles::HewLocalPidId,
+        readiness: Arc<ConstructionReadiness>,
     }
-    unsafe extern "C" fn group_restart_retain(context: *mut c_void) {
+    unsafe extern "C" fn wake(context: *mut c_void) {
+        // SAFETY: every descriptor holder retains this target allocation.
+        let target = unsafe { &*context.cast::<Target>() };
+        *target.readiness.ready.lock_or_recover() = true;
+        target.readiness.changed.notify_one();
+        signal_group_restart(target.supervisor);
+    }
+    unsafe extern "C" fn retain(context: *mut c_void) {
         // SAFETY: the descriptor contract requires a live Arc reference.
         unsafe { Arc::increment_strong_count(context.cast::<Target>()) };
     }
-    unsafe extern "C" fn group_restart_release(context: *mut c_void) {
+    unsafe extern "C" fn release(context: *mut c_void) {
         // SAFETY: consumes exactly one reference acquired by retain.
         unsafe { Arc::decrement_strong_count(context.cast::<Target>()) };
     }
-    let target = Arc::new(supervisor);
+    let target = Arc::new(Target {
+        supervisor,
+        readiness,
+    });
     let descriptor = crate::wake::HewWaker {
         context: Arc::as_ptr(&target).cast_mut().cast(),
-        wake: group_restart_wake,
-        retain: group_restart_retain,
-        release: group_restart_release,
+        wake,
+        retain,
+        release,
     };
-    // SAFETY: `target` keeps the allocation live during retain.
+    // SAFETY: target keeps the allocation live during retain.
     Arc::new(unsafe { crate::wake::OwnedWaker::retain(&descriptor) })
 }
 
@@ -900,6 +942,134 @@ pub(crate) struct ChildSupervisorStopped {
     child_token: crate::lifetime::local_handles::HewLocalPidId,
 }
 
+/// Lifecycle mailbox inputs retained until native constructors have finished.
+#[derive(Clone, Copy)]
+enum ConstructionEvent {
+    Actor(ChildEvent),
+    Escalated(ChildSupervisorEscalation),
+    Stopped(ChildSupervisorStopped),
+    Delayed(DelayedRestartEvent),
+}
+
+impl ConstructionEvent {
+    fn record(self) -> FaultRecord {
+        FaultRecord::from_raw(match self {
+            Self::Actor(event) => event.fault_record,
+            Self::Escalated(event) => event.fault_record,
+            Self::Stopped(_) => 0,
+            Self::Delayed(event) => event.fault_record,
+        })
+    }
+
+    /// The caller keeps the parent actor live through mailbox admission.
+    unsafe fn send(self, target: *mut HewActor) -> bool {
+        match self {
+            Self::Actor(event) => {
+                let kind = if event.exit_state == HewActorState::Crashed as c_int {
+                    HewSysMsg::ChildCrashed
+                } else {
+                    HewSysMsg::ChildStopped
+                };
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        kind,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildEvent>(),
+                    )
+                }
+            }
+            Self::Escalated(event) => {
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::ChildSupervisorEscalated,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildSupervisorEscalation>(),
+                    )
+                }
+            }
+            Self::Delayed(event) => {
+                // SAFETY: admission copies this typed payload into the mailbox.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::DelayedRestart,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<DelayedRestartEvent>(),
+                    )
+                }
+            }
+            Self::Stopped(event) => {
+                // SAFETY: the target is live and admission copies this typed payload.
+                unsafe {
+                    actor::send_system_message(
+                        target,
+                        HewSysMsg::ChildSupervisorStopped,
+                        (&raw const event).cast_mut().cast(),
+                        std::mem::size_of::<ChildSupervisorStopped>(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// Admit an ordinary lifecycle event without dispatching beside constructors.
+/// The caller retains the parent until this synchronous handoff completes.
+unsafe fn admit_child_event(sup: *mut HewSupervisor, event: ConstructionEvent) -> bool {
+    // SAFETY: the caller keeps the supervisor live for this phase observation.
+    if unsafe { (*sup).constructing.load(Ordering::Acquire) } {
+        // SAFETY: the caller keeps the supervisor live through this admission.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        // The phase closes under this same lock, after its mailbox handoff.
+        // SAFETY: the caller keeps both atomic fields live.
+        if unsafe { (*sup).constructing.load(Ordering::Acquire) } {
+            // SAFETY: cancellation closes admission before draining this buffer.
+            if unsafe { (*sup).cancelled.load(Ordering::Acquire) } {
+                return false;
+            }
+            roster.construction_events.push(event);
+            return true;
+        }
+    }
+    // Construction publishes self_actor before its release of constructing.
+    // SAFETY: the caller retains the parent and its child-notification target.
+    let target = unsafe { (*sup).self_actor };
+    if target.is_null() {
+        return false;
+    }
+    // SAFETY: the parent retains its dispatch actor through this admission.
+    unsafe { event.send(target) }
+}
+
+/// Complete construction's event handoff before enabling direct notifications.
+unsafe fn flush_construction_events(sup: *mut HewSupervisor, target: *mut HewActor) {
+    loop {
+        let events = {
+            // SAFETY: start retains the parent through this phase transition.
+            let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+            if roster.construction_events.is_empty() {
+                // SAFETY: release publishes self_actor to later direct senders.
+                unsafe { (*sup).constructing.store(false, Ordering::Release) };
+                return;
+            }
+            std::mem::take(&mut roster.construction_events)
+        };
+        for event in events {
+            // SAFETY: start retains the parent and its initialized dispatch actor.
+            if unsafe { (*sup).cancelled.load(Ordering::Acquire) || !event.send(target) } {
+                crate::exit_status::settle_supervised_fault(
+                    event.record(),
+                    FaultRuling::Unrecovered,
+                );
+            }
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Supervisor init function type (for nested supervisor restart)
 // ---------------------------------------------------------------------------
@@ -972,6 +1142,9 @@ pub(crate) struct SupervisorRoster {
     child_specs: Vec<InternalChildSpec>,
     child_count: usize,
     next_child_spec_identity: u64,
+    /// Compiler-provided construction order, expressed in stable declaration identities.
+    native_startup_order: Vec<u64>,
+    construction_events: Vec<ConstructionEvent>,
     child_supervisors: Vec<*mut HewSupervisor>,
     child_supervisor_tokens: Vec<crate::lifetime::local_handles::HewLocalPidId>,
     child_supervisor_specs: Vec<Option<SupervisorChildSpec>>,
@@ -999,7 +1172,10 @@ unsafe impl Send for SupervisorRoster {}
 /// Supervisor managing a set of child actors.
 pub struct HewSupervisor {
     /// Runtime authority that owns this allocation's stable handle control.
+    #[cfg(not(target_arch = "wasm32"))]
     runtime: *const crate::runtime::RuntimeInner,
+    /// Exact local-handle authority retained until supervisor teardown drains.
+    handles: *const crate::lifetime::local_handles::LocalHandles,
     /// Direct stable identity for this exact supervisor allocation.
     local_pid_id: crate::lifetime::local_handles::HewLocalPidId,
     strategy: c_int,
@@ -1007,6 +1183,9 @@ pub struct HewSupervisor {
     window_secs: c_int,
 
     running: AtomicI32,
+    /// Private native construction permits calls through already started roles.
+    /// This does not make the supervisor running for lifecycle observations.
+    constructing: AtomicBool,
     /// Wait-free cancellation observation for public/hot read paths. The
     /// restart-timer control mirrors this state under its mutex only for timer
     /// wakeup and raw-borrow exclusion.
@@ -1047,6 +1226,7 @@ const SUPERVISOR_QUIESCENCE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Canonical cleanup runs after workers have stopped, but an in-flight
 /// delayed-restart callback can still hold a raw supervisor borrow. Its
 /// bounded lease retains the allocation instead of freeing under that borrow.
+#[cfg(not(target_arch = "wasm32"))]
 const SUPERVISOR_CLEANUP_TIMER_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Default)]
@@ -1429,6 +1609,33 @@ fn run_restart_timer_released_hook_for_test() {
     }
 }
 
+/// Close admission immediately; the teardown claim retains allocation ownership
+/// while its suspended constructor releases pins before their final drain.
+unsafe fn begin_supervisor_access_close(
+    sup: *mut HewSupervisor,
+) -> Option<(
+    Arc<crate::lifetime::local_handles::SupervisorControl>,
+    *const crate::lifetime::local_handles::LocalHandles,
+)> {
+    // SAFETY: callers provide a live allocation created by `hew_supervisor_new`;
+    // copy scalars without creating a whole-supervisor reference.
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    // SAFETY: the handle authority outlives every registered supervisor control.
+    let handles = unsafe { handles.as_ref() }?;
+    let control = handles.supervisor_control_for_raw(token, sup)?;
+    // Cancellation waits behind any roster publisher that acquired its lock
+    // first. Later publishers refuse it, so this observer snapshot is final.
+    request_supervisor_shutdown(sup);
+    // SAFETY: this teardown owner keeps the raw allocation live until close.
+    control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
+    let won_close = control.begin_close();
+    handles.retire_supervisor_route(&control);
+    if won_close {
+        run_supervisor_close_hook_for_test();
+    }
+    Some((control, std::ptr::from_ref(handles)))
+}
+
 unsafe fn close_supervisor_access(
     sup: *mut HewSupervisor,
     timeout: Duration,
@@ -1437,49 +1644,21 @@ unsafe fn close_supervisor_access(
     if FAIL_NEXT_SUPERVISOR_ACCESS_CLOSE.with(|slot| slot.replace(false)) {
         return None;
     }
-    // SAFETY: callers provide a live allocation created by `hew_supervisor_new`;
-    // copy scalars without creating a whole-supervisor reference.
-    let (runtime_ptr, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime_ptr.is_null() {
-        return None;
-    }
-    // SAFETY: the runtime outlives every registered supervisor control.
-    let runtime = unsafe { &*runtime_ptr };
-    let control = runtime
-        .local_handles
-        .supervisor_control_for_raw(token, sup)?;
-    // Cancellation waits behind any roster publisher that acquired its lock
-    // first. Later publishers refuse it, so this observer snapshot is final.
-    request_supervisor_shutdown(sup);
-    // SAFETY: this teardown owner keeps the raw allocation live until close.
-    control.retain_role_wait_targets(unsafe { snapshot_role_wait_targets(sup) });
-    let won_close = control.begin_close();
-    runtime.local_handles.retire_supervisor_route(&control);
-    if won_close {
-        run_supervisor_close_hook_for_test();
-    }
+    // SAFETY: the caller retains the allocation through admission closure/drain.
+    let (control, handles) = unsafe { begin_supervisor_access_close(sup) }?;
     if !control.wait_for_pins(timeout) {
         return None;
     }
-    Some(ClosedSupervisorAccess {
-        control,
-        handles: &raw const runtime.local_handles,
-    })
+    Some(ClosedSupervisorAccess { control, handles })
 }
 
 unsafe fn begin_supervisor_teardown(
     sup: *mut HewSupervisor,
 ) -> Option<crate::lifetime::local_handles::SupervisorTeardownLease> {
     // SAFETY: callers provide a live allocation created by `hew_supervisor_new`.
-    let runtime_ptr = unsafe { (*sup).runtime };
-    if runtime_ptr.is_null() {
-        return None;
-    }
-    // SAFETY: cleanup cannot reclaim the runtime until this admission either
-    // fails under the closed gate or returns a lease that cleanup must drain.
-    unsafe { &*runtime_ptr }
-        .local_handles
-        .begin_supervisor_teardown()
+    let handles = unsafe { (*sup).handles };
+    // SAFETY: cleanup retains this authority until admitted teardown leases drain.
+    unsafe { handles.as_ref() }?.begin_supervisor_teardown()
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -1609,14 +1788,17 @@ struct InternalChildSpec {
     native_spawn: Option<HewNativeChildSpawnFn>,
 }
 
-/// Spawn one incarnation of a declared native child from the supervisor's
-/// config. Returns its stable handle, or `INVALID` with the refusal in the
-/// fault slot.
-pub type HewNativeChildSpawnFn =
-    unsafe extern "C-unwind" fn(
-        *const c_void,
-        *mut *mut crate::fault::HewFault,
-    ) -> crate::lifetime::local_handles::HewLocalPidId;
+/// Begin one declared child invocation. The caller retains config and output
+/// storage through final suspension and destroys the returned LLVM frame before
+/// releasing the coroutine state. A synchronous adapter returns null after
+/// publishing its ordinary private status into `state`.
+pub type HewNativeChildSpawnFn = unsafe extern "C-unwind" fn(
+    crate::lifetime::local_handles::HewLocalPidId,
+    *const c_void,
+    *mut crate::lifetime::local_handles::HewLocalPidId,
+    *mut *mut crate::fault::HewFault,
+    *mut crate::coro_state::HewCoroState,
+) -> *mut c_void;
 
 /// One state-drop descriptor shared by every immutable template generation.
 /// The setter may arrive after the initial generation was constructed; an
@@ -1775,10 +1957,12 @@ struct DeferredFree(*mut HewActor);
 unsafe impl Send for DeferredFree {}
 
 /// Wrapper to stop an exhausted child supervisor off the scheduler thread.
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, Debug)]
 struct DeferredSupervisorStop(*mut HewSupervisor);
 // SAFETY: ownership is transferred to the background thread after the parent
 // replaces its slot with a fresh child supervisor.
+#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Send for DeferredSupervisorStop {}
 
 // ---------------------------------------------------------------------------
@@ -1912,11 +2096,6 @@ fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     // SAFETY: caller guarantees the child and its non-null parent edge remain
     // live through this synchronous notification; copy only scalar fields.
     let (parent, index_in_parent) = unsafe { ((*sup).parent, (*sup).index_in_parent) };
-    // SAFETY: caller guarantees parent is valid.
-    let parent_actor = unsafe { (*parent).self_actor };
-    if parent_actor.is_null() {
-        return false;
-    }
     let Ok(supervisor_index) = u32::try_from(index_in_parent) else {
         eprintln!(
             "[supervisor] refusing to escalate: child-supervisor index {index_in_parent} exceeds u32"
@@ -1936,15 +2115,8 @@ fn escalate_to_parent(sup: *mut HewSupervisor, record: FaultRecord) -> bool {
     };
     // SAFETY: caller keeps `sup` live while this scalar tracing id is copied.
     let sup_actor_id = supervisor_actor_id(sup);
-    // SAFETY: parent.self_actor is valid.
-    let accepted = unsafe {
-        actor::send_system_message(
-            parent_actor,
-            HewSysMsg::ChildSupervisorEscalated,
-            (&raw const event).cast::<c_void>().cast_mut(),
-            std::mem::size_of::<ChildSupervisorEscalation>(),
-        )
-    };
+    // SAFETY: the child retains its parent through this synchronous handoff.
+    let accepted = unsafe { admit_child_event(parent, ConstructionEvent::Escalated(event)) };
 
     // Observability (read-only side effect, AFTER the escalation decision and
     // dispatch): record that this supervisor escalated to its parent. Never
@@ -2386,16 +2558,19 @@ fn stop_and_maybe_escalate(sup: *mut HewSupervisor, record: FaultRecord) -> Faul
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn stop_owned_deferred_supervisor(
     deferred: DeferredSupervisorStop,
     teardown: crate::lifetime::local_handles::SupervisorTeardownLease,
 ) {
     // SAFETY: the claimed supervisor and its owning runtime remain live until
     // this teardown lease is released; leave that runtime before releasing it.
+    #[cfg(not(target_arch = "wasm32"))]
     let context = unsafe { crate::runtime::enter(&*(*deferred.0).runtime) };
     // SAFETY: teardown ownership was claimed by the caller before this thread
     // was spawned, so this background thread is the unique destructor.
     unsafe { stop_supervisor_owned(deferred.0, &teardown) };
+    #[cfg(not(target_arch = "wasm32"))]
     drop(context);
     drop(teardown);
 }
@@ -2413,23 +2588,35 @@ fn spawn_owned_deferred_supervisor_stop(
         return false;
     }
 
-    let sup_addr = sup as usize;
-    if let Ok(handle) = std::thread::Builder::new()
-        .name("deferred-sup-stop".into())
-        .spawn(move || {
-            stop_owned_deferred_supervisor(
-                DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
-                teardown,
-            );
-        })
+    #[cfg(target_arch = "wasm32")]
     {
-        // Register the teardown thread so `cleanup_all_actors` joins it
-        // before sweeping the actors this thread still dereferences.
-        crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+        crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
+            supervisor: sup,
+            root_unregistered: false,
+            teardown,
+        });
         true
-    } else {
-        eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
-        false
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let sup_addr = sup as usize;
+        if let Ok(handle) = std::thread::Builder::new()
+            .name("deferred-sup-stop".into())
+            .spawn(move || {
+                stop_owned_deferred_supervisor(
+                    DeferredSupervisorStop(sup_addr as *mut HewSupervisor),
+                    teardown,
+                );
+            })
+        {
+            // Register the teardown thread so `cleanup_all_actors` joins it
+            // before sweeping the actors this thread still dereferences.
+            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
+            true
+        } else {
+            eprintln!("hew: warning: failed to spawn deferred supervisor-stop thread");
+            false
+        }
     }
 }
 
@@ -2446,26 +2633,33 @@ fn spawn_deferred_restart_free(deferred: Vec<DeferredFree>) {
     if deferred.is_empty() {
         return;
     }
-    match std::thread::Builder::new()
-        .name("deferred-free".into())
-        .spawn(move || {
-            for d in deferred {
-                // SAFETY: actor was stopped; supervisor no longer references it.
-                // Explicit provenance plus the actor's one-shot
-                // `state_drop_consumed` bit decide typed-drop authority. A
-                // stopped fresh sibling did not consume crash escrow, a
-                // sibling that did is already marked, and a shallow-template
-                // borrower never owned it; the common path handles all three.
-                unsafe { actor::hew_actor_free(d.0) };
+    #[cfg(target_arch = "wasm32")]
+    {
+        crate::driver::publish_actor_free(deferred.into_iter().map(|actor| actor.0).collect());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        match std::thread::Builder::new()
+            .name("deferred-free".into())
+            .spawn(move || {
+                for d in deferred {
+                    // SAFETY: actor was stopped; supervisor no longer references it.
+                    // Explicit provenance plus the actor's one-shot
+                    // `state_drop_consumed` bit decide typed-drop authority. A
+                    // stopped fresh sibling did not consume crash escrow, a
+                    // sibling that did is already marked, and a shallow-template
+                    // borrower never owned it; the common path handles all three.
+                    unsafe { actor::hew_actor_free(d.0) };
+                }
+            }) {
+            Ok(handle) => {
+                // Register the teardown thread so `cleanup_all_actors` joins it
+                // before sweeping the actors this thread still dereferences.
+                crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
             }
-        }) {
-        Ok(handle) => {
-            // Register the teardown thread so `cleanup_all_actors` joins it
-            // before sweeping the actors this thread still dereferences.
-            crate::lifetime::live_actors::push_deferred_teardown_thread(handle);
-        }
-        Err(_) => {
-            eprintln!("hew: warning: failed to spawn deferred-free thread");
+            Err(_) => {
+                eprintln!("hew: warning: failed to spawn deferred-free thread");
+            }
         }
     }
 }
@@ -2563,14 +2757,19 @@ fn should_fail_delayed_restart_arm() -> bool {
 mod child;
 mod crash;
 mod lifecycle;
+mod native;
 mod pool;
 mod restart;
 mod role;
+pub(crate) mod roots;
 mod teardown;
 
 pub use child::*;
-pub(crate) use crash::*;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use crash::free_supervisor_resources;
+pub use crash::hew_supervisor_handle_crash;
 pub use lifecycle::*;
+pub use native::*;
 pub use pool::*;
 pub(crate) use restart::*;
 pub use role::*;

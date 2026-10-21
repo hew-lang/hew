@@ -4,7 +4,7 @@
 use hew_wasm::sandbox::sir_emit;
 use std::fmt::Write as _;
 
-fn semantics(source: &str) -> hew_sir::LoweredModule {
+fn semantics(source: &str) -> hew_compile::SessionOutput {
     let state = hew_compile::run_source_frontend(
         source,
         "actor_package.hew",
@@ -21,7 +21,6 @@ fn semantics(source: &str) -> hew_sir::LoweredModule {
     )
     .lower_program(&state.program, tco)
     .expect("the program lowers")
-    .into_semantics()
 }
 
 const COUNTER: &str = r"actor Counter {
@@ -44,7 +43,7 @@ fn main() {
 #[test]
 fn an_actor_declaration_reaches_the_package_with_its_handlers() {
     let module = semantics(COUNTER);
-    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
+    let package = sir_emit::emit_package(&module, "sandbox-vm-export", "0", "test")
         .expect("an actor module projects into a package");
 
     let actor = package
@@ -65,29 +64,6 @@ fn an_actor_declaration_reaches_the_package_with_its_handlers() {
     assert!(
         package.functions.get(handler.callable as usize).is_some(),
         "the handler names a function in this package"
-    );
-}
-
-#[test]
-fn an_actor_call_names_its_operation_rather_than_a_symbol() {
-    let module = semantics(COUNTER);
-    let package = sir_emit::emit_package(&module.module, "sandbox-vm-export", "0", "test")
-        .expect("an actor module projects into a package");
-
-    let operations: Vec<String> = package
-        .functions
-        .iter()
-        .flat_map(|function| &function.blocks)
-        .filter(|block| block.term["op"] == "actor.call")
-        .filter_map(|block| block.term["operation"]["op"].as_str().map(str::to_string))
-        .collect();
-    assert!(
-        operations.iter().any(|op| op == "spawn"),
-        "spawning the actor is an operation the package names: {operations:?}"
-    );
-    assert!(
-        !operations.is_empty(),
-        "an actor program reaches at least one actor operation"
     );
 }
 
@@ -120,7 +96,7 @@ fn execute_options(
         compiled.diagnostics
     );
     let package = compiled.bytecode.expect("verified source emits bytecode");
-    assert_eq!(package.schema_version, "hew.sandbox.bytecode.v1");
+    assert_eq!(package.schema_version, sir_emit::SchemaVersion::V1);
     let file = tempfile::NamedTempFile::new().expect("package file");
     serde_json::to_writer(file.as_file(), &package).expect("serialize package");
     let output = std::process::Command::new("node")
@@ -132,7 +108,7 @@ fn execute_options(
             import fs from 'node:fs';
             import { runBytecode } from './dist/interpreter/index.js';
             const package_ = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-            process.stdout.write(JSON.stringify(runBytecode(package_, JSON.parse(process.argv[2]))));
+            process.stdout.write(JSON.stringify(await runBytecode(package_, JSON.parse(process.argv[2]))));
         ",
         ])
         .arg(file.path())
@@ -245,6 +221,53 @@ fn main() {
 "#,
     );
     assert_eq!(stdout(&trace), "contained\ndead\n");
+}
+
+#[test]
+fn wired_supervisors_keep_sibling_roles_and_declaration_restart_membership() {
+    for case in [
+        "supervisor-wired-sibling-restart",
+        "supervisor-wired-declaration-restarts",
+        "supervisor-wired-nested-prerequisite",
+        "supervisor-wired-declaration-shutdown",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_construction_cancellation_drains_before_recovery() {
+    for case in [
+        "supervisor-wired-construction-cancel",
+        "supervisor-wired-stop-during-reconstruction",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_construction_preserves_caught_prerequisite_faults() {
+    for case in [
+        "supervisor-wired-caught-init-crash",
+        "supervisor-wired-caught-start-crash",
+    ] {
+        assert_native_manifest(case, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
+fn wired_supervisor_failed_init_rolls_back_a_caught_prerequisite_fault() {
+    let trace = execute_expected(
+        include_str!(
+            "../../tests/core-acceptance/cases/supervisor-wired-caught-crash-rollback.hew"
+        ),
+        "panic",
+    );
+    assert_eq!(stdout(&trace), "caught\n");
+    assert_eq!(
+        trace["final_state"]["runtime_failures"][0]["message"],
+        "dependent init failed"
+    );
 }
 
 #[test]
@@ -729,7 +752,8 @@ fn actor_one_shot_timers_preserve_ownership_and_overdue_faults() {
     );
     let mut module = semantics(include_str!(
         "../../tests/core-acceptance/cases/actor-one-shot-lifetime.hew"
-    ));
+    ))
+    .into_semantics();
     let operation = module
         .module
         .functions

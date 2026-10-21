@@ -131,18 +131,18 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     let identity = test_node_identity(42);
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1),
+        reserve_identity_claim(mgr, identity, 42, 7, None, 100, 1, None),
         ClaimReservation::Reserved { superseded: None }
     ));
     assert!(publish_identity_claim(mgr, identity, 100, 1));
     assert!(retire_identity_claim(mgr, identity, 100, 1));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2),
+        reserve_identity_claim(mgr, identity, 42, 6, None, 200, 2, None),
         ClaimReservation::Rejected(_)
     ));
 
-    let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2) {
+    let equal_superseded = match reserve_identity_claim(mgr, identity, 42, 7, None, 200, 2, None) {
         ClaimReservation::Reserved {
             superseded: Some(retired),
         } => retired,
@@ -157,7 +157,7 @@ fn retired_identity_claim_rejects_lower_session_and_allows_reconnect() {
     abort_identity_claim(mgr, identity, 200, 2, Some(equal_superseded));
 
     assert!(matches!(
-        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3),
+        reserve_identity_claim(mgr, identity, 42, 8, None, 300, 3, None),
         ClaimReservation::Reserved {
             superseded: Some(LiveClaim {
                 state: ClaimState::Retired,
@@ -315,50 +315,75 @@ fn claim_publish_aborts_when_superseded_in_reserve_window() {
 }
 
 #[test]
-fn claim_reserve_waits_on_reserved_then_proceeds_after_abort() {
+fn claim_reserve_waits_on_reserved_then_checks_predecessor() {
     use std::sync::atomic::{AtomicBool, Ordering};
-    let (mgr_ptr, transport) = claim_test_mgr();
-    // A reserves node 42 (Reserved), does not yet publish or abort.
-    {
-        // SAFETY: mgr_ptr live until free.
+    for publish_successor in [false, true] {
+        let (mgr_ptr, transport) = claim_test_mgr();
+        // SAFETY: the manager stays live until the waiter is joined below.
         let mgr = unsafe { &*mgr_ptr };
         assert!(matches!(
-            reserve_claim(mgr, 42, None, 100, 1),
+            reserve_claim(mgr, 42, None, 90, 90),
             ClaimReservation::Reserved { .. }
         ));
+        assert!(publish_claim(mgr, 42, 90, 90));
+        assert!(retire_claim(mgr, 42, 90, 90));
+        let predecessor = ReconnectOwner {
+            node_id: test_node_identity(42),
+            session_incarnation: 1,
+            publication_token: 90,
+        };
+        let ClaimReservation::Reserved { superseded } = reserve_claim(mgr, 42, None, 100, 100)
+        else {
+            panic!("provisional successor must reserve the retired claim");
+        };
+
+        let mgr_addr = mgr_ptr as usize;
+        let returned = Arc::new(AtomicBool::new(false));
+        let returned_thread = Arc::clone(&returned);
+        let waiter = std::thread::spawn(move || {
+            // SAFETY: the test joins this thread before freeing the manager.
+            let mgr = unsafe { &*(mgr_addr as *mut HewConnMgr) };
+            let outcome = reserve_identity_claim(
+                mgr,
+                predecessor.node_id,
+                42,
+                1,
+                None,
+                200,
+                200,
+                Some(&predecessor),
+            );
+            returned_thread.store(true, Ordering::Release);
+            matches!(outcome, ClaimReservation::Reserved { .. })
+        });
+
+        // The guarded retry must wait for the provisional admission's outcome.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let blocked_until_resolution = !returned.load(Ordering::Acquire);
+        if publish_successor {
+            assert!(publish_claim(mgr, 42, 100, 100));
+        } else {
+            abort_claim(mgr, 42, 100, 100, superseded);
+        }
+        let reserved = waiter.join().expect("retry waiter must not panic");
+        let owner = claim_snapshot(mgr, 42).expect("resolved claim must remain");
+        free_claim_test_mgr(mgr_ptr, transport);
+
+        assert!(
+            blocked_until_resolution,
+            "retry returned before the provisional claim resolved"
+        );
+        assert_eq!(reserved, !publish_successor);
+        assert_eq!(owner.conn_id, if publish_successor { 100 } else { 200 });
+        assert_eq!(
+            owner.state,
+            if publish_successor {
+                ClaimState::Published
+            } else {
+                ClaimState::Reserved
+            }
+        );
     }
-
-    let mgr_addr = mgr_ptr as usize;
-    let b_reserved = Arc::new(AtomicBool::new(false));
-    let b_reserved_thread = Arc::clone(&b_reserved);
-    // B arrives for 42, observes Reserved, and must WAIT (not reject).
-    let b = std::thread::spawn(move || {
-        // SAFETY: mgr stays live until the test joins this thread.
-        let mgr = unsafe { &*(mgr_addr as *mut HewConnMgr) };
-        let outcome = reserve_claim(mgr, 42, None, 200, 2);
-        b_reserved_thread.store(true, Ordering::Release);
-        matches!(outcome, ClaimReservation::Reserved { .. })
-    });
-
-    // Give B time to reach the wait; it must not have returned yet.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-    assert!(
-        !b_reserved.load(Ordering::Acquire),
-        "B must block while A's reservation is in flight"
-    );
-
-    // A aborts → signals the condvar → B wakes, sees absent, reserves.
-    {
-        // SAFETY: mgr_ptr live.
-        let mgr = unsafe { &*mgr_ptr };
-        abort_claim(mgr, 42, 100, 1, None);
-    }
-    let b_ok = b.join().expect("B thread should not panic");
-    assert!(b_ok, "B should reserve after A aborts");
-    // SAFETY: mgr_ptr live.
-    let owner = claim_snapshot(unsafe { &*mgr_ptr }, 42).expect("B now owns 42");
-    assert_eq!(owner.conn_id, 200);
-    free_claim_test_mgr(mgr_ptr, transport);
 }
 
 /// Concurrent restoration of BLOCK-3: many admissions race for the same

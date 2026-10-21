@@ -1,0 +1,252 @@
+//! Current local knowledge of membership and registered names.
+//!
+//! Watches coalesce readiness and re-read authoritative snapshots. They are not
+//! lossless event logs. Locations are discovery metadata, never actor authority.
+
+import std.stream;
+
+pub enum ObserveError {
+    NotRunning;
+    Limit;
+}
+
+impl Display for ObserveError {
+    fn fmt(self) -> string {
+        match self {
+            .NotRunning => "the observed node is not running",
+            .Limit => "node observation subscription limit reached",
+        }
+    }
+}
+
+impl Error for ObserveError {}
+
+pub enum State {
+    Alive;
+    Suspect;
+    Dead;
+    Left;
+}
+
+/// One node session in this node's authenticated membership view.
+pub type Member {
+    id: NodeId;
+    session: u32;
+    state: State;
+}
+
+/// An exact discovery location. This value grants no actor access.
+pub type Registration {
+    name: string;
+    location: Location;
+}
+
+/// Immutable local knowledge, including both local and remote registrations.
+pub type Snapshot {
+    local: Member;
+    members: Vec<Member>;
+    registrations: Vec<Registration>;
+}
+
+impl Snapshot {
+    /// Restrict the registration view to this node's own stable identity.
+    fn local_registrations(self) -> Vec<Registration> {
+        var result: Vec<Registration> = [];
+        for item in self.registrations {
+            if item.location.node_id() == self.local.id {
+                result.push(item);
+            }
+        }
+        result
+    }
+}
+
+#[resource]
+#[opaque]
+type NativeWatch {
+}
+
+impl NativeWatch {
+    fn close(consume self) {
+        unsafe {
+            hew_node_watch_free(self)
+        };
+    }
+}
+
+#[resource]
+#[opaque]
+type NativeSnapshot {
+}
+
+impl NativeSnapshot {
+    fn close(consume self) {
+        unsafe {
+            hew_node_snapshot_free(self)
+        };
+    }
+}
+
+type RawMember {
+    id: NodeId;
+    session: u32;
+    state: i32;
+}
+
+fn member(raw: RawMember) -> Member {
+    let state = match raw.state {
+        0 => State.Alive,
+        1 => State.Suspect,
+        2 => State.Dead,
+        3 => State.Left,
+        _ => panic("invalid canonical membership state"),
+    };
+    Member { id: raw.id, session: raw.session, state: state }
+}
+
+fn read_snapshot(consume raw: NativeSnapshot) -> Snapshot fails ObserveError {
+    if !unsafe {
+        hew_node_snapshot_valid(raw)
+    } {
+        return error .NotRunning;
+    }
+    let local = member(unsafe {
+        hew_node_snapshot_local(raw)
+    });
+    var members: Vec<Member> = [];
+    var registrations: Vec<Registration> = [];
+    for index in 0 .. unsafe {
+        hew_node_snapshot_count(raw, false)
+    } {
+        members.push(member(unsafe {
+            hew_node_snapshot_member(raw, index)
+        }));
+    }
+    for index in 0 .. unsafe {
+        hew_node_snapshot_count(raw, true)
+    } {
+        registrations.push(unsafe {
+            hew_node_snapshot_registration(raw, index)
+        });
+    }
+    Snapshot { local: local, members: members, registrations: registrations }
+}
+
+/// A single owner of one node-instance subscription.
+///
+/// `initial` is taken after subscribing. Several mutations may yield one
+/// readiness item, or a racing mutation may already appear in `initial`.
+/// Receive readiness, then call `snapshot()` to read current knowledge.
+/// Reads never adopt a successor node. `changes` ends after teardown finishes.
+#[resource]
+pub type Subscription {
+    initial: Snapshot;
+    changes: stream.Stream<()>;
+    handle: NativeWatch;
+}
+
+impl Subscription {
+    /// Read the subscribed instance, or NotRunning once its admission closes.
+    fn snapshot(self) -> Snapshot fails ObserveError {
+        read_snapshot(unsafe {
+            hew_node_watch_snapshot(self.handle)
+        })?
+    }
+
+    /// Wait for this instance's teardown to finish. Ordinary scope cancellation
+    /// releases the wait; it does not request node shutdown.
+    fn wait_shutdown(self) {
+        while self.changes.recv().is_some() {}
+    }
+
+    fn close(consume self) {}
+}
+
+/// Copy current canonical metadata. Both registration views are local knowledge,
+/// not a quorum, a liveness guarantee or callable actor authority.
+pub fn snapshot() -> Snapshot fails ObserveError {
+    read_snapshot(unsafe {
+        hew_node_snapshot_current()
+    })?
+}
+
+/// Subscribe before reading the initial snapshot, without a lost-change window.
+pub fn watch() -> Subscription fails ObserveError {
+    let handle = unsafe {
+        hew_node_watch_open()
+    };
+    match unsafe {
+        hew_node_watch_status(handle)
+    } {
+        0 => {}
+        2 => return error .Limit,
+        _ => return error .NotRunning,
+    }
+    let pair = unsafe {
+        hew_node_watch_changes(handle)
+    };
+    let changes: stream.Stream<()> = stream.pair_stream(pair);
+    pair.close();
+    let initial = read_snapshot(unsafe {
+        hew_node_watch_snapshot(handle)
+    })?;
+    Subscription { initial: initial, changes: changes, handle: handle }
+}
+
+/// Wait cancellably until the name currently resolves in this node's view.
+/// No request is replayed and the returned Location grants no actor access.
+pub fn wait_registered(name: string) -> Location fails ObserveError {
+    let observation = watch()?;
+    loop {
+        let current = observation.snapshot()?;
+        for item in current.registrations {
+            if item.name == name {
+                return item.location;
+            }
+        }
+        if observation.changes.recv().is_none() {
+            return error .NotRunning;
+        }
+    }
+}
+
+/// Wait until this exact member session is absent, Dead or Left in the local
+/// view. A higher-session rejoin cannot hide the predecessor's departure.
+pub fn wait_departed(target: Member) fails ObserveError {
+    let observation = watch()?;
+    loop {
+        let current = observation.snapshot()?;
+        var present = false;
+        for item in current.members {
+            if item.id == target.id && item.session == target.session {
+                match item.state {
+                    .Alive | .Suspect => {
+                        present = true;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !present {
+            return;
+        }
+        if observation.changes.recv().is_none() {
+            return error .NotRunning;
+        }
+    }
+}
+
+extern "C" {
+    fn hew_node_watch_open() -> NativeWatch;
+    fn hew_node_watch_status(watch: NativeWatch) -> i64;
+    fn hew_node_watch_changes(watch: NativeWatch) -> stream.StreamPair;
+    fn hew_node_watch_snapshot(watch: NativeWatch) -> NativeSnapshot;
+    fn hew_node_watch_free(consume watch: NativeWatch);
+    fn hew_node_snapshot_current() -> NativeSnapshot;
+    fn hew_node_snapshot_valid(snapshot: NativeSnapshot) -> bool;
+    fn hew_node_snapshot_local(snapshot: NativeSnapshot) -> RawMember;
+    fn hew_node_snapshot_count(snapshot: NativeSnapshot, registrations: bool) -> i64;
+    fn hew_node_snapshot_member(snapshot: NativeSnapshot, index: i64) -> RawMember;
+    fn hew_node_snapshot_registration(snapshot: NativeSnapshot, index: i64) -> Registration;
+    fn hew_node_snapshot_free(consume snapshot: NativeSnapshot);
+}

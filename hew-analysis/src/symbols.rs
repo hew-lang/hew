@@ -202,22 +202,6 @@ fn item_to_symbol(source: &str, item: &Item, item_span: OffsetSpan) -> SymbolInf
                         body_cursor = symbol.selection_span.end;
                         symbol
                     }
-                    TypeBodyItem::Method(m) => {
-                        let method_span = if m.fn_span.is_empty() {
-                            None
-                        } else {
-                            Some(OffsetSpan::from(m.fn_span.clone()))
-                        };
-                        let symbol = child_symbol(
-                            source,
-                            m.name.name.as_str(),
-                            SymbolKind::Method,
-                            method_span,
-                            m.decl_span.start.max(item_span.start),
-                        );
-                        body_cursor = symbol.selection_span.end;
-                        symbol
-                    }
                     TypeBodyItem::Field { name, ty, .. } => {
                         let symbol = field_symbol(
                             source,
@@ -498,6 +482,8 @@ mod tests {
         let source = r"type Point {
     x: i32;
     y: i32;
+}
+impl Point {
     fn distance() -> i32 {
         0
     }
@@ -528,7 +514,10 @@ machine Traffic {
             .iter()
             .find(|symbol| symbol.name == "x")
             .unwrap();
-        let method = point
+        let method = symbols
+            .iter()
+            .find(|symbol| symbol.kind == SymbolKind::Impl)
+            .unwrap()
             .children
             .iter()
             .find(|symbol| symbol.name == "distance")

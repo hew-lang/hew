@@ -782,6 +782,10 @@ pub enum Stmt {
     },
     While {
         label: Option<Ident>,
+        /// Written keyword and condition extent, including grouping punctuation.
+        /// Absent for synthetic or deserialized syntax.
+        #[serde(skip)]
+        header_span: Option<Span>,
         condition: Spanned<Expr>,
         body: Block,
     },
@@ -1104,6 +1108,10 @@ impl<'de> serde::Deserialize<'de> for Literal {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MatchArm {
+    /// Site for a comma needed before appending another arm; absent when the
+    /// authored body already has a separator or closes with a brace.
+    #[serde(skip)]
+    pub append_separator: Option<usize>,
     pub pattern: Spanned<Pattern>,
     pub guard: Option<Spanned<Expr>>,
     pub body: Spanned<Expr>,
@@ -1329,9 +1337,7 @@ pub struct FnDecl {
     /// `#[linear]` type's consuming method). The receiver is moved into the call
     /// and a later use of the binding surfaces `UseAfterMove`; the checker
     /// registers the method into its consume-receiver set so the move-checker
-    /// marks the receiver consumed. Only meaningful on inherent-impl methods —
-    /// type-body `consume self` methods carry the same fact through
-    /// `TypeDecl.consuming_methods` instead.
+    /// marks the receiver consumed. Only meaningful on inherent-impl methods.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub consumes_self: bool,
 }
@@ -1441,10 +1447,6 @@ pub struct TypeDecl {
     /// `*mut T`. Orthogonal to `resource_marker` (representation vs ownership).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_opaque: bool,
-    /// Names of methods declared with a `consume self` receiver in this type body.
-    /// Populated by the parser; used by the type checker to validate ownership rules.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub consuming_methods: Vec<Ident>,
     /// Lang-item key from `#[lang_item("key")]`, if present.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang_item: Option<String>,
@@ -1475,8 +1477,8 @@ pub struct TypeAliasDecl {
 /// A `record` named-field declaration.
 ///
 /// Records are pure data carriers: they hold named, typed fields and support
-/// generic type parameters and where-clauses.  Methods, variants, and tuple
-/// forms are not permitted (those belong to `TypeDecl`).
+/// generic type parameters and where-clauses. Methods belong in `impl` blocks;
+/// variants belong to enum declarations.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordDecl {
     #[serde(default)]
@@ -1569,7 +1571,6 @@ pub enum TypeBodyItem {
         span: Span,
     },
     Variant(VariantDecl),
-    Method(FnDecl),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -9,17 +9,19 @@ use std::time::Duration;
 use rand::rng;
 use rand::RngExt;
 
+use crate::peer_binding::ClaimState;
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 
-use super::admission::hew_connmgr_add;
+use super::admission::add_connection;
 use super::handshake::close_transport_conn;
 use super::manager::{hew_connmgr_configure_reconnect, hew_connmgr_expect_peer};
 use super::{
-    HewConnMgr, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
+    HewConnMgr, ReconnectOwner, ReconnectPlan, SendConnMgr, RECONNECT_DEFAULT_MAX_RETRIES,
     RECONNECT_INITIAL_BACKOFF_MS, RECONNECT_JITTER_MAX_PERCENT, RECONNECT_JITTER_MIN_PERCENT,
     RECONNECT_MAX_BACKOFF_MS, RECONNECT_SLEEP_SLICE_MS,
 };
+use crate::util::MutexExt;
 
 pub(super) fn normalize_max_retries(max_retries: c_int) -> u32 {
     if max_retries <= 0 {
@@ -33,20 +35,26 @@ fn jittered_backoff_ms(base_ms: u64) -> u64 {
     let mut rng = rng();
     let jitter_pct = rng.random_range(RECONNECT_JITTER_MIN_PERCENT..=RECONNECT_JITTER_MAX_PERCENT);
     let jittered = base_ms.saturating_mul(jitter_pct) / 100;
-    jittered.max(1)
+    jittered.clamp(1, RECONNECT_MAX_BACKOFF_MS)
 }
 
 fn sleep_until_retry(shutdown: &AtomicBool, delay_ms: u64) -> bool {
-    let mut remaining = delay_ms;
-    while remaining > 0 {
+    let deadline = crate::request_deadline::RequestDeadline::after(
+        i64::try_from(delay_ms.saturating_mul(1_000_000)).unwrap_or(i64::MAX),
+    );
+    loop {
         if shutdown.load(Ordering::Acquire) {
             return false;
         }
-        let slice = remaining.min(RECONNECT_SLEEP_SLICE_MS);
-        thread::sleep(Duration::from_millis(slice));
-        remaining -= slice;
+        let remaining_ns = deadline.remaining().unwrap_or(0);
+        if remaining_ns <= 0 {
+            return true;
+        }
+        let remaining = u64::try_from(remaining_ns).unwrap_or(0);
+        thread::sleep(Duration::from_nanos(
+            remaining.min(RECONNECT_SLEEP_SLICE_MS * 1_000_000),
+        ));
     }
-    !shutdown.load(Ordering::Acquire)
 }
 
 pub(super) fn collect_finished_reconnect_workers(mgr: &HewConnMgr) {
@@ -91,8 +99,19 @@ pub(super) fn reconnect_plan(mgr: &HewConnMgr, conn_id: c_int) -> Option<Reconne
     }
     mgr.connections.access(|conns| {
         let conn = conns.iter().find(|c| c.conn_id == conn_id)?;
+        if conn.peer_identity.is_some_and(|identity| {
+            mgr.seed_identities
+                .access(|identities| identities.contains(&identity))
+        }) {
+            return None;
+        }
         let reconnect = conn.reconnect.as_ref()?;
         Some(ReconnectPlan {
+            predecessor: ReconnectOwner {
+                node_id: conn.peer_identity?,
+                session_incarnation: conn.peer_session_incarnation,
+                publication_token: conn.publication_token,
+            },
             target_addr: reconnect.target_addr.clone(),
             max_retries: reconnect.max_retries.max(1),
             expected_node_id: reconnect.expected_node_id,
@@ -169,22 +188,55 @@ pub(super) enum ReconnectAttemptOutcome {
     /// The attempt failed before reaching the identity gate (invalid
     /// address, transport connect failure).
     TransportError,
+    /// Shutdown or a successor publication made this worker obsolete.
+    Cancelled,
+}
+
+fn reconnect_may_retry(mgr: &HewConnMgr, plan: &ReconnectPlan) -> bool {
+    !mgr.reconnect_shutdown.load(Ordering::Acquire)
+        && mgr
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&plan.predecessor.node_id)
+            .is_some_and(|claim| {
+                // A provisional successor can still abort and restore the
+                // predecessor; only a resolved claim can obsolete this retry.
+                claim.state == ClaimState::Reserved || plan.predecessor.matches(claim)
+            })
 }
 
 /// Runs one reconnect attempt: connect, replay the pinned peer identity
 /// (`plan.expected_node_id`) if any, install via `hew_connmgr_add`, and
 /// re-arm reconnect on success.
 ///
-/// Extracted from the retry loop so both the worker and tests can drive the
-/// exact install sequence deterministically and same-thread. Bare-address
-/// reconnects (`plan.expected_node_id.is_none()`) skip straight to
-/// `hew_connmgr_add`, unchanged from before this pin was threaded through.
+/// The retired predecessor remains authoritative through reservation, even
+/// when another connection publishes while this attempt is handshaking.
+/// Both the worker and tests drive this same install sequence.
 pub(super) fn reconnect_attempt(
     mgr_ptr: *mut HewConnMgr,
     plan: &ReconnectPlan,
     dropped_conn_id: c_int,
     attempt: u32,
 ) -> ReconnectAttemptOutcome {
+    crate::transport::with_connection_attempt_deadline(|| {
+        reconnect_attempt_inner(mgr_ptr, plan, dropped_conn_id, attempt)
+    })
+}
+
+fn reconnect_attempt_inner(
+    mgr_ptr: *mut HewConnMgr,
+    plan: &ReconnectPlan,
+    dropped_conn_id: c_int,
+    attempt: u32,
+) -> ReconnectAttemptOutcome {
+    // SAFETY: workers are joined before manager free; tests retain the manager.
+    let Some(mgr) = (unsafe { mgr_ptr.as_ref() }) else {
+        return ReconnectAttemptOutcome::Cancelled;
+    };
+    if !reconnect_may_retry(mgr, plan) {
+        return ReconnectAttemptOutcome::Cancelled;
+    }
     let Ok(target_addr) = std::ffi::CString::new(plan.target_addr.as_str()) else {
         set_last_error(format!(
             "hew_connmgr_reconnect: invalid reconnect address for dropped conn {dropped_conn_id}"
@@ -219,12 +271,16 @@ pub(super) fn reconnect_attempt(
     }
 
     // SAFETY: manager pointer is valid until shutdown and join in free.
-    if unsafe { hew_connmgr_add(mgr_ptr, new_conn_id) } != 0 {
+    if unsafe { add_connection(mgr_ptr, new_conn_id, Some(&plan.predecessor)) } != 0 {
         // hew_connmgr_add owns conn_id cleanup on failure (closes the
         // transport connection on all failure paths, including a
         // pinned-identity mismatch) and has already recorded the specific
         // rejection reason via set_last_error.
-        return ReconnectAttemptOutcome::Rejected;
+        return if reconnect_may_retry(mgr, plan) {
+            ReconnectAttemptOutcome::Rejected
+        } else {
+            ReconnectAttemptOutcome::Cancelled
+        };
     }
 
     let retries = i32::try_from(plan.max_retries).unwrap_or(i32::MAX);
@@ -267,9 +323,10 @@ fn reconnect_worker_loop(
             return;
         }
 
-        if reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt)
-            == ReconnectAttemptOutcome::Installed
-        {
+        if matches!(
+            reconnect_attempt(mgr_ptr, &plan, dropped_conn_id, attempt),
+            ReconnectAttemptOutcome::Installed | ReconnectAttemptOutcome::Cancelled
+        ) {
             return;
         }
 
@@ -282,4 +339,141 @@ fn reconnect_worker_loop(
         "hew_connmgr_reconnect: giving up after {} attempts for dropped conn {dropped_conn_id}, addr={}",
         plan.max_retries, plan.target_addr
     ));
+}
+
+/// Install one persistent discovery owner per distinct configured target.
+/// The node startup lock excludes shutdown until the worker is registered.
+pub(crate) unsafe fn start_seed(mgr: *mut HewConnMgr, target: super::SeedTarget) -> bool {
+    // SAFETY: caller retains the manager through registration.
+    let Some(manager) = (unsafe { mgr.as_ref() }) else {
+        return false;
+    };
+    let inserted = manager.seed_targets.access(|seeds| {
+        if let Some(existing) = seeds
+            .iter()
+            .find(|seed| seed.target_addr == target.target_addr)
+        {
+            if existing != &target {
+                return Err(());
+            }
+            Ok(false)
+        } else {
+            seeds.push(target.clone());
+            Ok(true)
+        }
+    });
+    match inserted {
+        Ok(false) => return true,
+        Ok(true) => {}
+        Err(()) => {
+            set_last_error("Node::start: conflicting pins for one seed address");
+            return false;
+        }
+    }
+    let send = SendConnMgr(mgr);
+    let worker = thread::Builder::new()
+        .name("hew-seed".into())
+        .spawn(move || {
+            seed_worker_loop(&send, &target);
+        });
+    match worker {
+        Ok(worker) => {
+            manager
+                .reconnect_workers
+                .access(|workers| workers.push(worker));
+            true
+        }
+        Err(error) => {
+            set_last_error(format!("Node::start: cannot start seed discovery: {error}"));
+            false
+        }
+    }
+}
+
+/// A seed follows the latest authenticated publication for its discovered
+/// identity. A successor transfers supervision; it never revives a stale
+/// predecessor or replays actor requests.
+pub(super) fn seed_predecessor(mgr: &HewConnMgr, owner: &ReconnectOwner) -> Option<ReconnectOwner> {
+    let claims = mgr.claims.0.lock_or_recover();
+    let claim = claims.get(&owner.node_id)?;
+    (claim.state == crate::peer_binding::ClaimState::Retired).then_some(ReconnectOwner {
+        node_id: owner.node_id,
+        session_incarnation: claim.session_incarnation,
+        publication_token: claim.publication_token,
+    })
+}
+
+fn seed_worker_loop(send: &SendConnMgr, target: &super::SeedTarget) {
+    let mgr_ptr = send.0;
+    // SAFETY: the manager joins all registered workers before freeing itself.
+    let mgr = unsafe { &*mgr_ptr };
+    let mut owner = None;
+    let mut backoff = RECONNECT_INITIAL_BACKOFF_MS;
+    while !mgr.reconnect_shutdown.load(Ordering::Acquire) {
+        let predecessor = match owner.as_ref() {
+            Some(owner) => {
+                let Some(predecessor) = seed_predecessor(mgr, owner) else {
+                    if !sleep_until_retry(&mgr.reconnect_shutdown, RECONNECT_SLEEP_SLICE_MS) {
+                        return;
+                    }
+                    continue;
+                };
+                Some(predecessor)
+            }
+            None => None,
+        };
+        let installed = crate::transport::with_connection_attempt_deadline(|| {
+            seed_attempt(mgr_ptr, target, predecessor.as_ref())
+        });
+        if let Some(admitted) = installed {
+            mgr.seed_identities.access(|identities| {
+                if !identities.contains(&admitted.node_id) {
+                    identities.push(admitted.node_id);
+                }
+            });
+            owner = Some(admitted);
+            backoff = RECONNECT_INITIAL_BACKOFF_MS;
+            if !sleep_until_retry(&mgr.reconnect_shutdown, jittered_backoff_ms(backoff)) {
+                return;
+            }
+            continue;
+        }
+        if !sleep_until_retry(&mgr.reconnect_shutdown, jittered_backoff_ms(backoff)) {
+            return;
+        }
+        backoff = backoff.saturating_mul(2).min(RECONNECT_MAX_BACKOFF_MS);
+    }
+}
+
+fn seed_attempt(
+    mgr_ptr: *mut HewConnMgr,
+    target: &super::SeedTarget,
+    predecessor: Option<&ReconnectOwner>,
+) -> Option<ReconnectOwner> {
+    // SAFETY: the worker's manager remains live until it is joined.
+    let mgr = unsafe { &*mgr_ptr };
+    if mgr.reconnect_shutdown.load(Ordering::Acquire) {
+        return None;
+    }
+    let address = std::ffi::CString::new(target.target_addr.as_str()).ok()?;
+    // SAFETY: manager and address remain valid through admission.
+    let conn_id = unsafe { connect_addr(mgr_ptr, &address) }.ok()?;
+    if let Some(expected) = target.expected_node_id {
+        // SAFETY: the dial returned a live, uninstalled connection.
+        if unsafe { hew_connmgr_expect_peer(mgr_ptr, conn_id, expected) } != 0 {
+            // SAFETY: admission has not taken ownership.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            return None;
+        }
+    }
+    let mut owner = None;
+    // SAFETY: admission consumes the connection on every path. It checks the
+    // exact predecessor after authentication and before publishing any route.
+    if unsafe {
+        super::admission::add_connection_recording_owner(mgr_ptr, conn_id, predecessor, &mut owner)
+    } != 0
+    {
+        return None;
+    }
+    owner
 }

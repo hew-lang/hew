@@ -106,15 +106,13 @@ pub extern "C" fn hew_pid_serial(pid: u64) -> u64 {
 /// It is sound because a remote actor cannot be spelled with route slot `0`, and
 /// cannot be spelled with this node's slot either:
 ///
-/// - No packed pid crosses the wire. The distributed vocabulary is
-///   `node_identity::Location` (`NodeId` + actor slot + session incarnation),
-///   whose decoder refuses actor slot `0` (`Location::new`); the packed form is
-///   minted receiver-side by `routing::hew_routing_lookup_location` and the
-///   `connection.rs` ingress handlers.
-/// - Those mint sites take the high half from a registered route slot, and
-///   `routing::hew_routing_add_route` refuses both `0` and the table's own
-///   `local_route_slot`. `peer_binding::PeerAuthSnapshot::validate` refuses the
-///   same collision one layer earlier, at node start.
+/// Distributed routing keeps `Location` values (`NodeId`, session and tagged
+/// direct actor or stable role identity) through transport selection. Imported
+/// services retain that semantic identity in their ordinary handle metadata;
+/// they never become packed local actor IDs. Ingress resolves a target through
+/// this receiver's canonical actor/role authority and pins the exact worker.
+/// Native route publication separately refuses both `0` and this process's
+/// slot, so a remote transport cannot acquire a local reservation.
 #[no_mangle]
 pub extern "C" fn hew_pid_is_local(pid: u64) -> c_int {
     let pid_node = hew_pid_node(pid);

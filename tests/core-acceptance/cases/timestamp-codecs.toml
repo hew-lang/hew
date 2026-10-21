@@ -1,0 +1,10 @@
+[[case]]
+id = "timestamp-codecs"
+intent = "Timestamp codecs preserve the full normalized range and reject malformed fractions before publishing values, including nested owned records and map keys."
+source = "cases/timestamp-codecs.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "timestamp codecs ok\n"
+exit = 0

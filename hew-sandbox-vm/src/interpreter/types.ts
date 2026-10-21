@@ -116,8 +116,10 @@ export interface ReplayConfig {
 }
 
 export interface VirtualClock {
+  // Unix coordinate chosen for the start of the run.
   epoch_ms: number;
   tick_ms: number;
+  // Current Unix coordinate, already including epoch_ms.
   current_ms: number;
 }
 
@@ -168,9 +170,13 @@ export interface SandboxTrace {
 }
 
 export interface RunOptions {
+  /** Explicit browser filesystem authority; absent roots grant no access. */
+  directoryRoots?: import("./v1/browser-directory.js").DirectoryRoots;
+  signal?: AbortSignal;
   /** Supplied process arguments including argv[0]. Defaults to ["main.hew"]. */
   argv?: readonly string[];
   codecBridge?: (request: string) => string;
+  calendarBridge?: (request: string) => string;
   propertyInput?: number[];
   fixtureId?: string;
   traceId?: string;

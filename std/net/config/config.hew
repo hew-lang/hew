@@ -1,0 +1,189 @@
+//! Node configuration from `[cluster]` in `hew.toml` and `HEW_NODE_*` overrides.
+//!
+//! Import `std.net` to use `NodeConfig.load()`. Configuration loading
+//! does not start a node or create identity files; `Node.start(config)` applies it.
+
+import std.encoding.toml;
+
+import std.fs;
+
+import std.os;
+
+import std.path;
+
+/// A configuration could not be read or a field has the wrong form.
+pub type ConfigError {
+    source: string;
+    field: string;
+    message: string;
+}
+
+impl Display for ConfigError {
+    fn fmt(self) -> string {
+        if self.field.is_empty() {
+            f"{self.source}: {self.message}"
+        } else {
+            f"{self.source}: {self.field}: {self.message}"
+        }
+    }
+}
+
+impl Error for ConfigError {}
+
+fn problem(source: string, field: string, message: string) -> ConfigError {
+    ConfigError { source: source, field: field, message: message }
+}
+
+fn field(table: toml.Value, name: string, source: string) -> Option<toml.Value> fails ConfigError {
+    match table.get_field(name) {
+        .Ok(value) => value,
+        .Err(_) => return error problem(source, "cluster", "expected a table"),
+    }
+}
+
+fn text_field(table: toml.Value, name: string, source: string) -> Option<string> fails ConfigError {
+    match field(table, name, source)? {
+        .None => .None,
+        .Some(value) => match value.get_string() {
+            .Ok(text) => .Some(text),
+            .Err(_) => return error problem(source, f"cluster.{name}", "expected a string"),
+        }
+    }
+}
+
+fn strings(value: toml.Value, source: string, name: string) -> Vec<string> fails ConfigError {
+    let count = match value.array_len() {
+        .Ok(count) => count,
+        .Err(_) => return error problem(source, name, "expected an array of strings"),
+    };
+    var result: Vec<string> = Vec.new();
+    for index in 0..count {
+        let item = value.array_get(index).expect("checked array").expect("checked index");
+        match item.get_string() {
+            .Ok(text) => result.push(text),
+            .Err(_) => return error problem(source, f"{name}[{index}]", "expected a string"),
+        }
+    }
+    result
+}
+
+fn string_list(table: toml.Value, name: string, source: string) -> Vec<string> fails ConfigError {
+    match field(table, name, source)? {
+        .Some(value) => strings(value, source, f"cluster.{name}")?,
+        .None => Vec.new(),
+    }
+}
+
+fn env_list(name: string, fallback: Vec<string>, field_name: string) -> Vec<string> fails ConfigError {
+    match os.env(name) {
+        .None => fallback,
+        .Some(text) => {
+            let document = match toml.parse(f"values = {text}") {
+                .Ok(value) => value,
+                .Err(error) => return error problem(name, field_name, to_string(error)),
+            };
+            if document.keys().expect("table").array_len().expect("keys") != 1 {
+                return error problem(name, field_name, "expected one TOML array");
+            }
+            strings(document.get_field("values").expect("table").expect("values"), name, field_name)?
+        }
+    }
+}
+
+fn transport(text: string, source: string) -> NodeTransport fails ConfigError {
+    match text {
+        "tcp" => NodeTransport.Tcp,
+        "quic-mesh" => NodeTransport.QuicMesh,
+        _ => return error problem(source, "cluster.transport", "expected tcp or quic-mesh"),
+    }
+}
+
+fn read_cluster(file: string, explicit: bool) -> toml.Value fails ConfigError {
+    let text = match fs.read(file) {
+        .Ok(text) => text,
+        .Err(fs.IoError.NotFound(_)) => {
+            if !explicit {
+                return toml.table();
+            }
+            return error problem(file, "", "configuration file not found");
+        }
+        .Err(error) => return error problem(file, "", to_string(error)),
+    };
+    let document = match toml.parse(text) {
+        .Ok(document) => document,
+        .Err(error) => return error problem(file, "", to_string(error)),
+    };
+    let cluster = match document.get_field("cluster").expect("TOML document is a table") {
+        .Some(cluster) => cluster,
+        .None => return toml.table(),
+    };
+    let keys = match cluster.keys() {
+        .Ok(keys) => keys,
+        .Err(_) => return error problem(file, "cluster", "expected a table"),
+    };
+    for index in 0..keys.array_len().expect("keys array") {
+        let key = keys.array_get(index).expect("array").expect("index").get_string().expect("key");
+        match key {
+            "bind" | "transport" | "key" | "peers" | "seeds" => {}
+            _ => return error problem(file, f"cluster.{key}", "unknown field"),
+        }
+    }
+    cluster
+}
+
+impl NodeConfig {
+    /// Read `[cluster]` from `hew.toml`, or the file selected by
+    /// `HEW_NODE_CONFIG`, then apply `HEW_NODE_*` overrides. A missing default
+    /// file permits environment-only configuration; an explicit file must exist.
+    /// `bind` and `key` are required. Lists in the environment use TOML array
+    /// syntax, including `[]` to clear a list. File key paths are relative to
+    /// the configuration directory; environment key paths are relative to cwd.
+    fn load() -> NodeConfig fails ConfigError {
+        let selected = os.env("HEW_NODE_CONFIG");
+        let file = selected ?? "hew.toml";
+        if file.is_empty() {
+            return error problem("HEW_NODE_CONFIG", "", "expected a file path");
+        }
+        let explicit = match selected {
+            .Some(_) => true,
+            .None => false,
+        };
+        let cluster = read_cluster(file, explicit)?;
+        let file_bind = text_field(cluster, "bind", file)? ?? "";
+        let file_key = text_field(cluster, "key", file)? ?? "";
+        let file_transport = text_field(cluster, "transport", file)? ?? "tcp";
+        let file_peers = string_list(cluster, "peers", file)?;
+        let file_seeds = string_list(cluster, "seeds", file)?;
+        let bind = os.env("HEW_NODE_BIND") ?? file_bind;
+        if bind.is_empty() {
+            let source = match os.env("HEW_NODE_BIND") {
+                .Some(_) => "HEW_NODE_BIND",
+                .None => file,
+            };
+            return error problem(source, "cluster.bind", "required non-empty string");
+        }
+        let key = match os.env("HEW_NODE_KEY") {
+            .Some(key) => {
+                if key.is_empty() {
+                    return error problem("HEW_NODE_KEY", "cluster.key", "required non-empty path");
+                }
+                key
+            }
+            .None => {
+                if file_key.is_empty() {
+                    return error problem(file, "cluster.key", "required non-empty path");
+                }
+                path.combine(path.dirname(path.absolute(file)), file_key)
+            }
+        };
+        // Validate the file's schema even when an environment override is set.
+        let file_selection = transport(file_transport, file)?;
+        let selection = match os.env("HEW_NODE_TRANSPORT") {
+            .Some(text) => transport(text, "HEW_NODE_TRANSPORT")?,
+            .None => file_selection,
+        };
+        let peers = env_list("HEW_NODE_PEERS", file_peers, "cluster.peers")?;
+        let seeds = env_list("HEW_NODE_SEEDS", file_seeds, "cluster.seeds")?;
+        NodeConfig { bind: bind, transport: selection, key: key, peers: peers, seeds: seeds }
+    }
+}

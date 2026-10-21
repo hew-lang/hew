@@ -1,0 +1,12 @@
+[[case]]
+id = "supervisor-wired-file-construction"
+intent = "Nested declared-child constructors await native file I/O and sibling roles on one scheduler worker; retained roles survive reconstruction."
+source = "cases/supervisor-wired-file-construction.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+env = { HEW_WORKERS = "1" }
+
+[case.expected]
+stdout = "file-backed supervisor construction\n"
+stderr = "hew: failure: UserPanic (212): file-backed reconstruction\nhew: actor crash in Ledger.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): file-backed checkout reconstruction\nhew: actor crash in Checkout.fail (actor 2): UserPanic\n"
+exit = 0

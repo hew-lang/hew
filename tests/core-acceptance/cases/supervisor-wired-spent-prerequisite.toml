@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-spent-prerequisite"
+intent = "A spent prerequisite stays an ordinary dead sibling role; its dependent survives and can reconstruct without resurrecting it or inheriting a cleanup dependency."
+source = "cases/supervisor-wired-spent-prerequisite.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): checkout restart with spent prerequisite\nhew: actor crash in Checkout.fail (actor 2): UserPanic\n"
+exit = 0

@@ -13,7 +13,7 @@ use crate::mailbox_header::header_validate;
 /// Drop glue invoked once, before the envelope releases its payload allocation.
 pub type HewMsgEnvelopeDropFn = unsafe extern "C" fn(*mut c_void);
 
-/// Typed cleanup supplied by a raw C message producer at admission.
+/// Typed cleanup supplied by a message producer at admission.
 #[derive(Clone, Copy)]
 pub(crate) struct IngressDrop {
     pub message: i32,
@@ -42,7 +42,7 @@ pub struct HewMsgEnvelope {
     pub release_reply: *mut c_void,
     /// One-shot start/loss claim, attached only after the timer releases its payload.
     pub(crate) timer: Option<std::sync::Arc<crate::timer_actor::OneShot>>,
-    /// Raw C adapter cleanup, consumed when its dispatch adapter claims fields.
+    /// Undelivered payload or lifecycle cleanup, consumed at dispatch entry.
     pub(crate) ingress_drop: Option<IngressDrop>,
     /// The same immutable request state retained by its optional reply owner.
     pub(crate) request: Option<std::sync::Arc<crate::request_state::RequestState>>,

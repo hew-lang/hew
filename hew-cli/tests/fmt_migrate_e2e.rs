@@ -213,11 +213,11 @@ fn an_io_failure_names_written_and_unwritten_files() {
     assert!(!failed.status.success());
     let report = stderr(&failed);
     assert!(
-        report.contains("migrated before the failure:") && report.contains("one.hew"),
+        report.contains("updated before the failure:") && report.contains("one.hew"),
         "{report}"
     );
     assert!(
-        report.contains("not migrated:") && report.contains("two.hew"),
+        report.contains("not updated:") && report.contains("two.hew"),
         "{report}"
     );
     assert!(std::fs::read_to_string(first.join("one.hew"))

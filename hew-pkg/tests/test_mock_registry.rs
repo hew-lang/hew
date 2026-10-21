@@ -1019,3 +1019,177 @@ fn servers_use_different_ports() {
     let mock2 = MockRegistry::start();
     assert_ne!(mock1.api_url(), mock2.api_url());
 }
+
+#[test]
+fn publish_preserves_registry_rejection_details_and_success_statuses() {
+    use hew_pkg::client::{PublishMetadata, PublishRequest};
+
+    let request = PublishRequest {
+        metadata: PublishMetadata {
+            name: "hew.db.sqlite".to_string(),
+            vers: "0.4.0".to_string(),
+            description: "SQLite bindings".to_string(),
+            license: "MIT".to_string(),
+            authors: vec![],
+            deps: vec![],
+            features: std::collections::BTreeMap::new(),
+            edition: None,
+            hew: None,
+            keywords: None,
+            categories: None,
+            homepage: None,
+            repository: None,
+            documentation: None,
+        },
+        checksum: "sha256:fixture".to_string(),
+        signature: "ed25519:fixture".to_string(),
+        key_fingerprint: "SHA256:fixture".to_string(),
+    };
+    for (status, body, expected) in [
+        (
+            400,
+            r#"{"message":"native package metadata is invalid","error":"bad_request"}"#,
+            Some("native package metadata is invalid"),
+        ),
+        (
+            409,
+            r#"{"error":"version already exists"}"#,
+            Some("version already exists"),
+        ),
+        (200, "{}", None),
+        (201, "{}", None),
+    ] {
+        let mock = MockRegistry::start();
+        mock.add_override(
+            "PUT",
+            "/api/v1/packages/",
+            MockResponse::Json {
+                status,
+                body: body.to_string(),
+            },
+        );
+        let client = RegistryClient::with_url(mock.api_url()).with_token("fixture".to_string());
+        let result = client.publish("hew.db.sqlite", "0.4.0", b"tarball", &request);
+        match (result, expected) {
+            (
+                Err(ApiError::Server {
+                    status: actual,
+                    message,
+                }),
+                Some(expected),
+            ) => {
+                assert_eq!(actual, status);
+                assert_eq!(message, expected);
+            }
+            (Ok(()), None) => {}
+            other => panic!("unexpected publish result: {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn registry_error_excerpts_are_bounded_and_survive_non_json_responses() {
+    for (body, expected) in [
+        (
+            b"upstream validation failed".to_vec(),
+            "upstream validation failed".to_string(),
+        ),
+        (vec![], "HTTP 400".to_string()),
+        (
+            b"invalid \xff response".to_vec(),
+            "invalid \u{fffd} response".to_string(),
+        ),
+        (
+            vec![b'x'; 1024 * 1024],
+            format!("{} [truncated]", "x".repeat(8192)),
+        ),
+    ] {
+        let mock = MockRegistry::start();
+        mock.add_override(
+            "POST",
+            "/api/v1/login/device",
+            MockResponse::Raw {
+                status: 400,
+                body,
+                content_type: "text/plain".to_string(),
+            },
+        );
+        let error = RegistryClient::with_url(mock.api_url())
+            .login_device()
+            .unwrap_err();
+        match error {
+            ApiError::Server { status, message } => {
+                assert_eq!(status, 400);
+                assert_eq!(message, expected);
+            }
+            other => panic!("expected server error, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn parsed_endpoints_check_status_before_accepting_success_shaped_bodies() {
+    use hew_pkg::native_prebuilt::NativeIdentity;
+
+    for status in [200, 400] {
+        let mock = MockRegistry::start();
+        mock.add_override(
+            "POST",
+            "/api/v1/login/token",
+            MockResponse::Json {
+                status,
+                body: r#"{"token":"must-not-accept-on-error","error":"authorization_pending"}"#
+                    .to_string(),
+            },
+        );
+        mock.add_override(
+            "GET",
+            "/oidc",
+            MockResponse::Json {
+                status,
+                body: r#"{"value":"must-not-accept-on-error","message":"OIDC refused"}"#
+                    .to_string(),
+            },
+        );
+        mock.add_override("GET", "/api/v1/packages/", MockResponse::Json {
+            status,
+            body: r#"{"cksum":"a","sig":"b","key_fp":"c","dl":"d","error":"native record refused"}"#.to_string(),
+        });
+        let client = RegistryClient::with_url(mock.api_url());
+        let token = client.login_token("device");
+        let oidc = client.github_actions_oidc_token(
+            &format!("{}/oidc", mock.raw_url()),
+            "fixture",
+            "registry",
+        );
+        let native = client.get_native(
+            "hew.db.sqlite",
+            "0.4.0",
+            &NativeIdentity {
+                target: "x86_64-unknown-linux-gnu".to_string(),
+                hew: "0.6.3".to_string(),
+                rustc_release: "1.90.0".to_string(),
+                rustc_host: "x86_64-unknown-linux-gnu".to_string(),
+            },
+        );
+        if status == 200 {
+            assert_eq!(
+                token.unwrap().error.as_deref(),
+                Some("authorization_pending")
+            );
+            assert_eq!(oidc.unwrap(), "must-not-accept-on-error");
+            assert_eq!(native.unwrap().cksum, "a");
+        } else {
+            for (error, expected) in [
+                (token.unwrap_err(), "authorization_pending"),
+                (oidc.unwrap_err(), "OIDC refused"),
+                (native.unwrap_err(), "native record refused"),
+            ] {
+                assert!(
+                    matches!(error, ApiError::Server { status: 400, ref message } if message == expected),
+                    "{error:?}"
+                );
+            }
+        }
+    }
+}

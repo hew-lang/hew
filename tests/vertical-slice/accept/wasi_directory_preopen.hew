@@ -1,0 +1,81 @@
+import std.fs;
+import std.stream;
+
+// This wrapper makes cancellation cleanup observable while the field remains
+// the sole owner of the actual host directory descriptor.
+#[resource]
+type TrackedRoot {
+    directory: fs.ReadDir;
+}
+
+impl TrackedRoot {
+    fn close(consume self) {
+        let TrackedRoot { directory } = self;
+        directory.close();
+        println("closed cancelled root");
+    }
+}
+
+fn held_root(consume parked: stream.Sink<i64>, consume gate: stream.Stream<i64>) -> i64 {
+    let root = TrackedRoot { directory: fs.open_read_dir("root").expect("cancelled root") };
+    parked.send(1).expect("root acquired");
+    parked.close();
+    let _ = gate.recv();
+    // Cancellation must happen before this host file operation is entered.
+    println("unexpected file entry");
+    root.directory.read("payload").expect("not entered").len()
+}
+
+fn winner(consume parked: stream.Stream<i64>) -> i64 {
+    let _ = parked.recv().expect("wait for acquired root");
+    parked.close();
+    7
+}
+
+fn main() {
+    let other = fs.open_read_dir("outside").expect("separate supplied root");
+    assert(other.read("value").expect("separate grant is real") == "outside".to_bytes());
+    other.close();
+    let read = fs.open_read_dir("root").expect("open supplied root");
+    let write = fs.open_write_dir("root").expect("open writable root");
+    let data = read.read("payload").expect("real file read");
+    assert(data.len() == 65536);
+    assert(read.read("empty").expect("empty file read").len() == 0);
+    assert(read.read("contained").expect("contained symlink") == "inside".to_bytes());
+    assert(read.read("safe-chain").expect("safe symlink chain") == "inside".to_bytes());
+    assert(read.read("child/../payload").expect("contained parent path") == data);
+    assert(read.read("child").is_err());
+    for path in ["../outside/value", "/outside/value", "escape", "escape-chain", "absolute", "host-absolute"] {
+        assert(read.read(path).is_err());
+        assert(write.write(path, "changed".to_bytes()).is_err());
+    }
+    for path in ["..", "../outside", "/outside", "escape-dir"] {
+        assert(read.subdir(path).is_err());
+        assert(write.subdir(path).is_err());
+    }
+    let child = read.subdir("child").expect("narrow root");
+    let input = read.open_read("child/value").expect("independent child reader");
+    let output = write.open_write("copied").expect("independent child writer");
+    read.close();
+    write.close();
+    assert(input.read().expect("reader after parent close") == "inside".to_bytes());
+    assert(child.read("value").expect("subdirectory after parent close") == "inside".to_bytes());
+    assert(child.read("nest/../value").expect("contained child parent path") == "inside".to_bytes());
+    assert(child.read("../payload").is_err());
+    assert(child.read("back").is_err());
+    output.write(data).expect("writer after parent close");
+    input.close();
+    output.close();
+    child.close();
+    let (_hold, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    let (parked_tx, parked): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("parked");
+    let selected = await race [
+        winner(parked),
+        held_root(parked_tx, gate),
+    ];
+    assert(selected == 7);
+    let reopened = fs.open_read_dir("root").expect("root after cancellation");
+    assert(reopened.read("child/value").expect("root usable") == "inside".to_bytes());
+    reopened.close();
+    println("supplied directory remains rooted");
+}

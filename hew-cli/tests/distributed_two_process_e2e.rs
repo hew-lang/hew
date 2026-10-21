@@ -1187,6 +1187,15 @@ fn authenticated_service_grants_supply_and_revoke_exact_interface() {
     assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
 }
 
+/// The same authenticated grant follows one stable role through replacement,
+/// while the admitted crash and its one-shot monitor retain the selected worker.
+#[test]
+fn stable_role_grant_survives_worker_restart_without_replaying_calls() {
+    let stdout = run_two_process_scenario("stable_role");
+    assert!(stdout.contains("PASS stable_role same-location same-grant one-shot-monitor no-replay replacement-call nested-owner-restart new-export owner-close"), "{stdout}");
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]
@@ -1294,7 +1303,7 @@ fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
 }
 
 /// Node identity/location proof across two OS processes. The remote actor's
-/// key-backed node id, slot, and session incarnation must match the registry
+/// key-backed node id, complete location and session incarnation must match the registry
 /// lookup exactly, and its node id must differ from the client's.
 #[test]
 fn node_identity_location_and_incarnation_cross_process() {
@@ -1329,7 +1338,10 @@ fn node_identity_location_and_incarnation_cross_process() {
         local, remote,
         "two processes must have distinct node ids: {line}"
     );
-    assert_ne!(parse_u64("slot"), 0, "actor slot must be non-zero: {line}");
+    assert!(
+        field("location").starts_with(remote),
+        "location must carry its node identity: {line}"
+    );
     assert_ne!(
         parse_u64("incarnation"),
         0,
@@ -1724,4 +1736,107 @@ fn discovery_metadata_display_releases_temporary_and_named_strings() {
             iterations
         );
     }
+}
+
+/// Configured discovery survives an absent listener and a refused handshake,
+/// then rejoins a same-key higher session without replaying the interrupted call.
+#[test]
+fn configured_seed_discovers_and_rejoins_without_explicit_connect() {
+    let scene = SecureScenario::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("seed port");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let env = [("HEW_DIST_SEED_PORT", port.as_str())];
+    let mut server = scene.spawn_server_with_env("persistent_seed", &env);
+    let mut client = scene.spawn_client("persistent_seed", &env);
+    let stdout = client.child.stdout.take().expect("client stdout");
+    let mut reader = BufReader::new(stdout);
+    let mut captured = String::new();
+    reader
+        .read_line(&mut captured)
+        .expect("seed startup marker");
+    assert!(captured.contains("READY_SEED_STARTED"), "{captured}");
+    // A live socket that refuses the protocol must not end seed discovery.
+    let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    let refused = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "seed never dialled");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("seed accept: {error}"),
+        }
+    };
+    drop(refused);
+    drop(listener);
+    // The seed is now absent; only the configured supervisor can discover
+    // the server once this gate permits its local start.
+    std::fs::write(scene.kx_dir.path().join("seed.start-server"), "1").unwrap();
+    let _first_stdout = wait_for_server_ready(&mut server);
+    loop {
+        let mut line = String::new();
+        assert_ne!(reader.read_line(&mut line).unwrap(), 0, "{captured}");
+        captured.push_str(&line);
+        if line.contains("READY_SEED_RESTART") {
+            break;
+        }
+    }
+    server.child.kill().expect("kill admitted peer during call");
+    server.child.wait().unwrap();
+    let mut replacement = scene.spawn_server_with_env(
+        "persistent_seed",
+        &[
+            ("HEW_DIST_SEED_PORT", port.as_str()),
+            ("HEW_DIST_RESTARTED", "1"),
+        ],
+    );
+    let _replacement_stdout = wait_for_server_ready(&mut replacement);
+    reader.read_to_string(&mut captured).unwrap();
+    let status = client.child.wait().unwrap();
+    let mut stderr = String::new();
+    client
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    assert!(status.success(), "{status:?}\n{captured}\n{stderr}");
+    assert!(captured.contains("PASS persistent_seed absent-start authenticated-call higher-session no-replay fresh-call"), "{captured}");
+}
+
+#[test]
+fn configured_seed_shutdown_joins_a_stalled_handshake() {
+    let scene = SecureScenario::new();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("seed port");
+    listener.set_nonblocking(true).unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let env = [("HEW_DIST_SEED_PORT", port.as_str())];
+    let _server = scene.spawn_server_with_env("persistent_seed_stop", &env);
+    let mut client = scene.spawn_client("persistent_seed_stop", &env);
+    let mut reader = BufReader::new(client.child.stdout.take().unwrap());
+    let mut startup = String::new();
+    reader.read_line(&mut startup).unwrap();
+    assert!(startup.contains("READY_SEED_STARTED"), "{startup}");
+    let deadline = Instant::now() + SERVER_READY_TIMEOUT;
+    let _stalled = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                assert!(Instant::now() < deadline, "seed never dialled");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("seed accept: {error}"),
+        }
+    };
+    // Keep the socket open without sending a handshake. Shutdown must await
+    // the bounded admission owner, rather than detach it or close a reused id.
+    client.child.stdout = Some(reader.into_inner());
+    std::fs::write(scene.kx_dir.path().join("seed.stop-now"), "1").unwrap();
+    let output = run_client_to_completion(client, 0, StderrExpectation::NoFaultDiagnostics);
+    assert!(
+        output.contains("PASS persistent_seed_stop active-attempt-joined"),
+        "{output}"
+    );
 }

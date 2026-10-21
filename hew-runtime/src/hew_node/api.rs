@@ -8,7 +8,7 @@ use super::{
     TransportSelection,
 };
 use crate::connection;
-use crate::node_identity::{HewLocation, HewNodeId};
+use crate::node_identity::{HewLocation, HewNodeId, Location};
 use crate::peer_binding::TransportSelection as PeerTransport;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
@@ -26,14 +26,36 @@ unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CStr
     let c_addr = unsafe { CStr::from_ptr(addr) };
     let addr_text = c_addr.to_string_lossy();
     if let Some((prefix, target)) = addr_text.split_once('@') {
-        if let Ok(node_id) = prefix.parse::<u16>() {
-            if node_id != 0 && !target.is_empty() {
-                let c_target = CString::new(target.as_bytes()).ok()?;
-                return Some((Some(node_id), c_target));
-            }
+        let node_id = prefix.parse::<u16>().ok().filter(|node_id| *node_id != 0)?;
+        if target.is_empty() {
+            return None;
         }
+        return Some((Some(node_id), CString::new(target.as_bytes()).ok()?));
+    }
+    if c_addr.to_bytes().is_empty() {
+        return None;
     }
     Some((None, CString::new(c_addr.to_bytes()).ok()?))
+}
+
+/// Validate seed syntax without resolving a hostname or requiring its peer
+/// to be present. TCP's transport accepts numeric socket addresses; QUIC also
+/// accepts a host and port through its existing platform resolver.
+fn valid_seed_address(address: &str, transport: u8) -> bool {
+    if address.parse::<std::net::SocketAddr>().is_ok() {
+        return true;
+    }
+    if transport != 1 {
+        return false;
+    }
+    let Some((host, port)) = address.rsplit_once(':') else {
+        return false;
+    };
+    !host.is_empty()
+        && !host
+            .chars()
+            .any(|character| character.is_whitespace() || "/\\@[]:#?".contains(character))
+        && port.parse::<u16>().is_ok()
 }
 
 /// Connect to a remote node and register routing for its node ID.
@@ -47,6 +69,13 @@ unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CStr
 /// - `addr` must be a valid NUL-terminated C string.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_connect(node: *mut HewNode, addr: *const c_char) -> c_int {
+    crate::transport::with_connection_attempt_deadline(|| {
+        // SAFETY: caller's node and address contracts extend through admission.
+        unsafe { node_connect_inner(node, addr) }
+    })
+}
+
+unsafe fn node_connect_inner(node: *mut HewNode, addr: *const c_char) -> c_int {
     if node.is_null() || addr.is_null() {
         set_last_error("hew_node_connect: node or addr is null");
         return NodeFailure::Refused as c_int;
@@ -448,17 +477,42 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         set_last_error("Node::start: bind contains NUL");
         return -1;
     };
-    let mut seed_addresses = Vec::with_capacity(seeds.len());
+    let mut seed_targets: Vec<connection::SeedTarget> = Vec::with_capacity(seeds.len());
     for seed in seeds {
-        if seed == bind {
+        let Ok(seed) = CString::new(seed) else {
+            set_last_error("Node::start: seed contains NUL");
+            return NodeFailure::Config as c_int;
+        };
+        // SAFETY: this seed C string remains live throughout parsing.
+        let Some((expected_node_id, target_addr)) =
+            (unsafe { parse_connect_target(seed.as_ptr()) })
+        else {
+            set_last_error("Node::start: invalid seed target");
+            return NodeFailure::Config as c_int;
+        };
+        let target_addr = target_addr.to_string_lossy().into_owned();
+        if !valid_seed_address(&target_addr, config.transport) {
+            set_last_error("Node::start: invalid seed address");
+            return NodeFailure::Config as c_int;
+        }
+        if target_addr == bind {
             continue;
         }
-        if let Ok(seed) = CString::new(seed) {
-            seed_addresses.push(seed);
-        } else {
-            set_last_error("Node::start: seed contains NUL");
-            return -1;
+        let target = connection::SeedTarget {
+            target_addr,
+            expected_node_id,
+        };
+        if let Some(existing) = seed_targets
+            .iter()
+            .find(|existing| existing.target_addr == target.target_addr)
+        {
+            if existing != &target {
+                set_last_error("Node::start: conflicting pins for one seed address");
+                return NodeFailure::Config as c_int;
+            }
+            continue;
         }
+        seed_targets.push(target);
     }
 
     // A complete config replaces an incomplete transaction rather than adding
@@ -506,15 +560,24 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         return status;
     }
 
-    for seed in seed_addresses {
-        // SAFETY: each seed C string is live for the duration of this call.
-        let status = unsafe { hew_node_api_connect(seed.as_ptr()) };
-        if status != 0 {
-            // SAFETY: a successful start above owns the singleton public node;
-            // shutdown releases it and resets its staging state.
-            unsafe { node_api_shutdown_inner() };
-            return status;
+    let seeds_started = with_current_node_read(|guard| {
+        let node = *guard as *mut HewNode;
+        if node.is_null() {
+            return false;
         }
+        for target in seed_targets {
+            // SAFETY: the read lock keeps the node and manager alive until
+            // their configured seed worker has been registered for shutdown.
+            if !unsafe { connection::start_seed((*node).conn_mgr, target) } {
+                return false;
+            }
+        }
+        true
+    });
+    if !seeds_started {
+        // SAFETY: this start transaction owns the singleton node.
+        unsafe { node_api_shutdown_inner() };
+        return NodeFailure::Refused as c_int;
     }
     0
 }
@@ -784,11 +847,11 @@ pub unsafe extern "C" fn hew_node_api_register(
     })
 }
 
-/// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
+/// Native direct-actor registration adapter for an already-known packed ID.
 ///
-/// An actor handle lowers to a bare `u64` PID at this ABI boundary rather than a
-/// `*mut HewActor` pointer. The caller
-/// extracts the PID via `hew_actor_pid` before passing it here.
+/// Source `Node.register` passes its ordinary actor handle through
+/// [`hew_node_api_register_handle_string`], preserving direct and role identity.
+/// This native adapter accepts only an exact direct actor ID.
 ///
 /// Returns 0 on success, -1 on any of the fail-closed conditions:
 /// - `name` is null
@@ -847,17 +910,37 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
 ///
 /// `name` must be null (the Hew empty string) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_register_by_pid_string(
+pub unsafe extern "C" fn hew_node_api_register_handle_string(
     name: *const HewString,
-    pid: u64,
+    token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> c_int {
-    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    // SAFETY: the caller lends a live managed name for this synchronous copy.
     let Ok(name) = (unsafe { string_to_cstring(name) }) else {
         set_last_error("Node::register: name contains an embedded NUL");
         return -1;
     };
-    // SAFETY: CString provides a live NUL-terminated pointer for this call.
-    unsafe { hew_node_api_register_by_pid(name.as_ptr(), pid) }
+    let Some(location) = super::service_api::local_actor_identity(token) else {
+        set_last_error("Node::register: actor authority is not live");
+        return -1;
+    };
+    let (status, observer) = with_current_node_read(|current| {
+        // SAFETY: the current-node read guard pins the node and its registry.
+        let Some(node) = (unsafe { (*current as *const HewNode).as_ref() }) else {
+            return (-1, None);
+        };
+        if node.state.load(Ordering::Acquire) != super::NODE_STATE_RUNNING
+            || node.auth.node_identity() != Some(location.node())
+            || node.auth.session_incarnation() != Some(location.incarnation())
+        {
+            return (-1, None);
+        }
+        // SAFETY: the node is pinned and the owned name remains live.
+        unsafe { super::register_location(node, name.as_ptr(), location) }
+    });
+    if let Some(observer) = observer {
+        observer.notify();
+    }
+    status
 }
 
 /// `Node::unregister(name)` — remove a name registration from the active node.
@@ -1369,7 +1452,7 @@ pub unsafe extern "C" fn hew_node_id_format(node: *const HewNodeId) -> *mut c_ch
     unsafe { owned_identity_string(&format!("{:016x}{:016x}", node.hi, node.lo)) }
 }
 
-/// Format a full location as `<node-hex>/<slot>@<session>`.
+/// Format a full location as `<node-hex>/<target-kind>:<identity>@<session>`.
 ///
 /// # Safety
 ///
@@ -1381,13 +1464,11 @@ pub unsafe extern "C" fn hew_location_format(location: *const HewLocation) -> *m
     }
     // SAFETY: caller guarantees `location` is readable.
     let location = unsafe { *location };
+    let Ok(location) = Location::try_from(location) else {
+        return ptr::null_mut();
+    };
     // SAFETY: the formatted string is copied into Hew-owned storage.
-    unsafe {
-        owned_identity_string(&format!(
-            "{:016x}{:016x}/{}@{}",
-            location.node.hi, location.node.lo, location.slot, location.incarnation
-        ))
-    }
+    unsafe { owned_identity_string(&location.to_string()) }
 }
 
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it

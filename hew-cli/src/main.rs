@@ -34,6 +34,7 @@ mod diagnostic_json;
 mod doc;
 mod eval;
 mod explain_cow;
+mod fixes;
 mod generate;
 mod help;
 mod host;
@@ -43,6 +44,7 @@ mod migrate_checks;
 mod migrate_fails;
 mod migrate_variants;
 mod native_link;
+mod node;
 mod package;
 mod platform;
 mod playground;
@@ -1916,6 +1918,19 @@ fn cmd_expand(args: &args::ExpandArgs) {
     }
 }
 
+/// Keep fix refusals on the selected diagnostic output channel.
+fn render_fix_refusal(error: &str, json: bool) {
+    if json {
+        diagnostic_json::push_json_diagnostic(diagnostic_json::coded_message_diagnostic(
+            "E_FIX_REFUSED",
+            error,
+            DiagChannel::User,
+        ));
+    } else {
+        eprintln!("Error: {error}");
+    }
+}
+
 fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     let json = a.format == args::DiagnosticFormat::Json;
 
@@ -1960,7 +1975,30 @@ fn cmd_check_run(a: &args::CheckArgs) -> i32 {
     }
 
     let frontend_started = std::time::Instant::now();
-    let (result, state) = match hew_compile::check_file_with_state(&input, &frontend_options) {
+    let mut checked = hew_compile::check_file_with_state(&input, &frontend_options);
+    if a.fix {
+        let diagnostics = match &checked {
+            Ok((result, _)) => &result.diagnostics,
+            Err(failure) => &failure.diagnostics,
+        };
+        match fixes::apply(
+            &resolved.source(),
+            &frontend_options,
+            diagnostics,
+            a.dry_run,
+        ) {
+            Ok(changed) if changed > 0 && !a.dry_run => {
+                checked = hew_compile::check_file_with_state(&input, &frontend_options);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                compile::render_frontend_diagnostics(diagnostics);
+                render_fix_refusal(&error, json);
+                return 1;
+            }
+        }
+    }
+    let (result, state) = match checked {
         Ok(result) => result,
         Err(failure) => {
             let channel = compile::render_frontend_diagnostics(&failure.diagnostics);
@@ -2676,17 +2714,21 @@ fn original_offset(original: &str, migrated: &str, offset: usize) -> Option<usiz
 /// holds the bytes the plan was built from.
 fn apply_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
     refuse_stale_inputs(changed)?;
-    write_migrations(changed)
+    write_source_changes(changed, "Migrated")
 }
 
 /// The apply phase rereads every planned file; any file whose bytes differ
 /// from the ones the plan was built from stops the whole run before a write.
-fn refuse_stale_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
-    let stale = changed
+fn stale_source_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Vec<String> {
+    changed
         .iter()
         .filter(|(file, original, _)| std::fs::read(file).ok().as_ref() != Some(original))
         .map(|(file, _, _)| file.display().to_string())
-        .collect::<Vec<_>>();
+        .collect::<Vec<_>>()
+}
+
+fn refuse_stale_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
+    let stale = stale_source_inputs(changed);
     if stale.is_empty() {
         return Ok(());
     }
@@ -2697,9 +2739,9 @@ fn refuse_stale_inputs(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()
     Err(())
 }
 
-/// Write each migrated file in order. An I/O failure stops at that file and
-/// names the files already migrated and those still to do.
-fn write_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
+/// Write each changed file in order. An I/O failure stops at that file and
+/// names the files already updated and those still to do.
+fn write_source_changes(changed: &[(&PathBuf, Vec<u8>, String)], action: &str) -> Result<(), ()> {
     for (index, (file, _, migrated)) in changed.iter().enumerate() {
         if let Err(error) = replace_file(file, migrated) {
             eprintln!("Error: cannot write {}: {error}", file.display());
@@ -2710,16 +2752,16 @@ fn write_migrations(changed: &[(&PathBuf, Vec<u8>, String)]) -> Result<(), ()> {
                     .collect::<Vec<_>>()
             };
             eprintln!(
-                "migrated before the failure: {}",
+                "updated before the failure: {}",
                 list_or_none(&names(&changed[..index]))
             );
-            eprintln!("not migrated: {}", list_or_none(&names(&changed[index..])));
+            eprintln!("not updated: {}", list_or_none(&names(&changed[index..])));
             eprintln!(
-                "fix the cause and run the migration again; migrated files are left as they are"
+                "fix the cause and run the command again; updated files are left as they are"
             );
             return Err(());
         }
-        eprintln!("Migrated {}", file.display());
+        eprintln!("{action} {}", file.display());
     }
     Ok(())
 }

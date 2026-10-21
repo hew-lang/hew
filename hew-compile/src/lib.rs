@@ -147,6 +147,12 @@ enum SourceContent {
 }
 
 impl SourceSet {
+    /// Whether missing documents are read from the host filesystem.
+    #[must_use]
+    pub fn uses_filesystem(&self) -> bool {
+        self.filesystem
+    }
+
     #[must_use]
     pub fn is_file(&self, path: &Path) -> bool {
         self.contains(path) || (self.filesystem && path.is_file())
@@ -1794,7 +1800,18 @@ fn macro_type_origin(
     program: &Program,
     mut diagnostic: hew_types::TypeError,
 ) -> hew_types::TypeError {
+    // Expansion attribution may fall back to the whole invocation. Such an
+    // origin is useful for reporting, but is not an exact editable range.
+    diagnostic.fixes.retain(|fix| {
+        fix.edits.iter().all(|edit| {
+            program
+                .expansions
+                .source_origin(&(edit.span.start..edit.span.end))
+                .is_none()
+        })
+    });
     if let Some((path, span)) = program.expansions.source_origin(&diagnostic.span) {
+        diagnostic.fixes.clear();
         if let Some((invocation_path, invocation_span)) =
             program.expansions.invocation_origin(&diagnostic.span)
         {
@@ -4908,6 +4925,56 @@ mod tests {
             open.stopped.is_none(),
             "the open buffer declares `bonus`: {:#?}",
             open.diagnostics
+        );
+    }
+
+    #[test]
+    fn imported_external_impl_credits_direct_and_umbrella_import_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source(
+            dir.path(),
+            "methods.hew",
+            "impl NodeConfig { pub fn answer() -> i64 { 42 } }",
+        );
+        write_source(dir.path(), "umbrella.hew", "import methods;");
+        write_source(dir.path(), "idle.hew", "pub fn unrelated() -> i64 { 0 }");
+        for import in [
+            "import methods;",
+            "import umbrella;",
+            "import umbrella as tools;",
+        ] {
+            let source =
+                format!("{import}\nimport idle;\nfn main() -> i64 {{ NodeConfig.answer() }}");
+            let input = write_source(dir.path(), "main.hew", &source);
+            let state = run_document_frontend(&input, &FrontendOptions::default());
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+            let output = state
+                .typecheck_result
+                .as_ref()
+                .and_then(|result| result.tco.as_ref())
+                .unwrap();
+            let unused: Vec<_> = output
+                .warnings
+                .iter()
+                .filter(|warning| warning.kind == hew_types::error::TypeErrorKind::UnusedImport)
+                .map(|warning| warning.message.as_str())
+                .collect();
+            assert_eq!(
+                unused,
+                ["unused import: `idle`"],
+                "{import}: {:?}",
+                output.warnings
+            );
+        }
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "fn main() -> i64 { NodeConfig.answer() }",
+        );
+        let missing = run_document_frontend(&input, &FrontendOptions::default());
+        assert!(
+            missing.stopped.is_some(),
+            "the supplying import is required"
         );
     }
 
@@ -9263,6 +9330,34 @@ mod source_analysis_batch_tests {
         assert_eq!(checked_resolutions(fresh), checked_resolutions(checked));
         assert_eq!(finalized_facts(fresh), finalized_facts(checked));
         shared
+    }
+
+    #[test]
+    fn invalid_dependencies_bootstrap_once_and_keep_complete_diagnostics() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("greeting.hew"),
+            "pub fn identity<T>(value: T) -> T { value + true }",
+        )
+        .unwrap();
+        let options = test_options();
+        let mut batch = SourceAnalysisBatch::new(options.clone());
+        for (name, source) in [
+            (
+                "integer.hew",
+                "import greeting; fn main() -> i64 { greeting.identity(1) }",
+            ),
+            (
+                "string.hew",
+                "import greeting; fn main() -> string { greeting.identity(\"one\") }",
+            ),
+        ] {
+            let label = dir.path().join(name);
+            let state = assert_equivalent(source, label.to_str().unwrap(), &options, &mut batch);
+            assert!(state.stopped.is_some());
+        }
+        assert_eq!(batch.dependency_bootstraps(), 1);
+        assert_eq!(batch.reused_roots(), 0);
     }
 
     #[test]

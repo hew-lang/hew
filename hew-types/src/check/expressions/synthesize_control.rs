@@ -36,6 +36,7 @@ impl Checker {
         // `await` then joins that task.
         if matches!(expr, Expr::Call { .. } | Expr::MethodCall { .. }) {
             self.errors.push(TypeError {
+                fixes: Vec::new(),
                 severity: crate::error::Severity::Error,
                 kind: TypeErrorKind::InvalidOperation,
                 span: span.clone(),
@@ -1898,6 +1899,8 @@ impl Checker {
                     || right_resolved.is_duration()
                     || left_resolved.is_instant()
                     || right_resolved.is_instant()
+                    || left_resolved.is_timestamp()
+                    || right_resolved.is_timestamp()
                 {
                     return self.check_duration_arithmetic(
                         op,

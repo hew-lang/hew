@@ -160,26 +160,26 @@ function traitPackage(options = {}) {
   };
 }
 
-function run(bytecode) {
-  return runBytecode(bytecode, {
+async function run(bytecode) {
+  return await runBytecode(bytecode, {
     fixtureId: "trait-object",
     traceId: "trace:trait-object",
     replay: { seed: 1, step_budget: 1000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
   });
 }
 
-test("a dyn call reaches the implementation through its vtable slot", () => {
-  const trace = run(traitPackage());
+test("a dyn call reaches the implementation through its vtable slot", async () => {
+  const trace = await run(traitPackage());
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(trace.final_state.stdout.join(""), "hello Ada\n");
   assert.equal(trace.final_state.exit_code, 0);
 });
 
-test("the slot number is matched, not used as a position in the slot array", () => {
+test("the slot number is matched, not used as a position in the slot array", async () => {
   // Two slots in an order that does not match their numbers: resolving by
   // position would call the wrong method.
-  const trace = run(
+  const trace = await run(
     traitPackage({
       vtables: [
         {
@@ -197,15 +197,15 @@ test("the slot number is matched, not used as a position in the slot array", () 
   assert.equal(trace.final_state.stdout.join(""), "hello Ada\n");
 });
 
-test("a dyn call names a slot the vtable does not carry", () => {
-  const trace = run(traitPackage({ callSlot: 9 }));
+test("a dyn call names a slot the vtable does not carry", async () => {
+  const trace = await run(traitPackage({ callSlot: 9 }));
 
   assert.equal(trace.result, "runtime_failure");
   assert.match(trace.final_state.runtime_failures[0].message, /no slot 9/);
   assert.deepEqual(trace.final_state.stdout, []);
 });
 
-test("a trait object copies with the value it wraps", () => {
+test("a trait object copies with the value it wraps", async () => {
   // Take a copy of the trait object out of a place, then overwrite the place
   // with a different one. The copy must still carry the record it was made
   // from: if `load.copy` aliased the cell, `speak` would read the new name.
@@ -235,7 +235,7 @@ test("a trait object copies with the value it wraps", () => {
     span: null
   };
 
-  const trace = run(pkg);
+  const trace = await run(pkg);
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(trace.final_state.stdout.join(""), "hello Ada\n");
 
@@ -250,17 +250,17 @@ test("a trait object copies with the value it wraps", () => {
     place: 0,
     span: null
   });
-  const after = run(aliased);
+  const after = await run(aliased);
   assert.equal(after.result, "ok", JSON.stringify(after.final_state.runtime_failures));
   assert.equal(after.final_state.stdout.join(""), "hello Grace\n");
 });
 
-test("the slot's receiver decision is what reaches self", () => {
+test("the slot's receiver decision is what reaches self", async () => {
   // Two `dyn.call`s on the same trait object in one activation. Under a
   // `borrow` receiver the object survives the first call; under `move` the
   // first call consumes it, so the second read fails rather than quietly
   // seeing a spent value.
-  const twice = (receiver) => {
+  const twice = async (receiver) => {
     const pkg = traitPackage({ receiver });
     pkg.functions[0].blocks = [
       {
@@ -314,22 +314,22 @@ test("the slot's receiver decision is what reaches self", () => {
       },
       { id: 3, params: [], ops: [], term: { op: "return", value: null, span: null } }
     ];
-    return run(pkg);
+    return await run(pkg);
   };
 
   // `borrow` is what the emitter records for these methods today.
-  const borrowed = twice("borrow");
+  const borrowed = await twice("borrow");
   assert.equal(borrowed.result, "ok", JSON.stringify(borrowed.final_state.runtime_failures));
   assert.equal(borrowed.final_state.stdout.join(""), "hello Ada\n");
 
   // A `copy` receiver also leaves the object usable: the callee got a clone.
-  const copied = twice("copy");
+  const copied = await twice("copy");
   assert.equal(copied.result, "ok", JSON.stringify(copied.final_state.runtime_failures));
   assert.equal(copied.final_state.stdout.join(""), "hello Ada\n");
 
   // A `move` receiver consumes the trait object, so the second call has
   // nothing left to read.
-  const moved = twice("move");
+  const moved = await twice("move");
   assert.equal(moved.result, "runtime_failure");
   assert.match(
     moved.final_state.runtime_failures[0].message,

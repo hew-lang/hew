@@ -138,13 +138,13 @@ pub enum HirDiagnosticKind {
         expected: usize,
         actual: usize,
     },
-    /// `#[resource]` type body has no method named `close` declared with
-    /// `consume self`. The implicit-drop contract for `@resource` types
+    /// `#[resource]` type has no inherent method named `close` declared with
+    /// `consume self`. The implicit-drop contract for `#[resource]` types
     /// requires this method; missing it is a fail-closed compile error.
     ResourceMissingClose {
         name: String,
     },
-    /// `#[linear]` type body declares zero `consume self` methods. A
+    /// `#[linear]` type has no inherent `consume self` methods. A
     /// linear type with no consuming methods cannot be exhausted on an
     /// exit path, which would make `MirCheck::MustConsume` unable to fire
     /// — caught here as a structural error.
@@ -153,32 +153,6 @@ pub enum HirDiagnosticKind {
     },
     /// An opaque resource carries type parameters without a per-instance release ABI.
     ResourceGenericUnsupported {
-        name: String,
-    },
-    /// `#[resource]` type declares its `close` method inline inside the
-    /// type body (`TypeBodyItem::Method`). In v0.5 the supported surface
-    /// for user-resource `close` lowering is an **inherent impl block**
-    /// (`impl T { fn close(consume self) { ... } }`). The inline form is a silent
-    /// trap today — the method body is not lowered to HIR/MIR, the drop
-    /// elaborator still emits `drop_fn: Some("T::close")`, and codegen
-    /// would resolve to a missing symbol at link time. Fail-closing here
-    /// at the HIR boundary forces users onto the supported surface; the
-    /// inline form may be admitted in a future surface extension.
-    /// (W3.030 Q-α-B ratification.)
-    ResourceCloseSourceUnsupported {
-        /// Type name carrying the inline `close` method.
-        name: String,
-    },
-    /// `#[linear]` type declares its `consume self` method inline in the
-    /// type body (`type T { fn m(consume self) { … } }`). The supported
-    /// surface that lowers to a callable consume target is a sibling inherent
-    /// impl block (`impl T { fn m(consume self) { … } }`). The inline form
-    /// is not lowered to HIR/MIR, so a call to it raises
-    /// `IndirectCallUnsupported` at the call site — making the `#[linear]`
-    /// type unusable. Fail-close here at the declaration with a directive to
-    /// the supported surface instead of trapping the user at every call.
-    LinearConsumingMethodSourceUnsupported {
-        /// Type name carrying the inline consuming method.
         name: String,
     },
     /// `#[resource]` type's `close` method declares a return type other
@@ -426,15 +400,9 @@ pub enum HirDiagnosticKind {
         /// (e.g. `"path.basename"`).
         suggested_qualified: String,
     },
-    /// Target architecture does not support actors/supervisors. The program
-    /// uses a coroutine-dependent construct (actor decl, supervisor decl) but
-    /// the target arch is not in the set `{x86_64, aarch64}` that has the full
-    /// actor runtime ABI (scheduler, mailbox, supervisor restart machinery).
-    /// Suspension itself is target-agnostic LLVM `llvm.coro.*`; the gap is the
-    /// surrounding actor runtime substrate (`hew_actor_*`, `hew_supervisor_*`,
-    /// `hew_mailbox_*`) which is not yet ported to wasm32 or other targets.
-    /// Fail-closed per slepp A222: compile-time diagnostic instead of a
-    /// linker error or silent runtime failure.
+    /// The target has no actor/supervisor runtime ABI. Native `x86_64`/`aarch64`
+    /// workers and the WASI cooperative driver provide the checked ABI;
+    /// other architectures are rejected before linking.
     TargetCoroutineUnsupported {
         /// Target architecture name (e.g. `"riscv64"`).
         target_arch: String,

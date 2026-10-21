@@ -1,0 +1,150 @@
+import std.process;
+
+import std.os;
+
+import std.fs;
+
+import std.io;
+
+import std.encoding.utf8;
+
+fn specification(program: string, args: Vec<string>) -> process.Command {
+    // Keep the original public record literal source-compatible.
+    process.Command { program, args, stdin: .Null, stdout: .Null, stderr: .Null }
+}
+
+fn limits() -> process.CaptureLimits {
+    process.CaptureLimits { timeout: 5s, max_output_bytes: 4096 }
+}
+
+fn probe(program: string, options: process.SpawnOptions) -> string {
+    let result = specification(program, ["probe"]).output_with_options(limits(), options).expect("probe starts");
+    assert(result.status == process.ExitStatus.Exited(7));
+    assert(result.stderr.is_empty());
+    result.stdout
+}
+
+actor Probe {
+    receive fn run(program: string, value: string) -> bool {
+        let options = process.SpawnOptions { environment: .Clear([process.EnvVar { name: "HEW_PROCESS_BOUND", value }]), cwd: .None };
+        probe(program, options) == f"absent|{value}|false|false\n{os.cwd().replace("\\", "/")}\n"
+    }
+}
+
+fn invalid(program: string, options: process.SpawnOptions) {
+    match process.start_with_options(specification(program, ["probe"]), options) {
+        .Err(.InvalidArguments(message)) => assert(!message.contains("private-value")),
+        _ => panic("invalid options accepted"),
+    }
+}
+
+fn main() -> i32 {
+    let args = os.args();
+    if args.len() > 1 {
+        if args[1] == "probe" {
+            if os.env("HEW_PROCESS_BOUND") == .Some("雪 = approved") {
+                assert(os.env("EMPTY") == .Some(""));
+            }
+            println(f"{os.env("HEW_PROCESS_AMBIENT") ?? "absent"}|{os.env("HEW_PROCESS_BOUND") ?? "absent"}|{os.has_env("PATH")}|{os.has_env("HEW_WORKERS")}");
+            println(os.cwd().replace("\\", "/"));
+            return 7;
+        }
+        if args[1] == "echo" {
+            assert(os.env("HEW_PROCESS_BOUND") == .Some("piped"));
+            println(io.read_line() ?? "");
+            return 0;
+        }
+        if args[1] == "sleep" {
+            sleep(30s);
+            return 0;
+        }
+        if args[1] == "cwd" {
+            assert(fs.read(args[2]).expect("read relative cwd marker") == "child directory");
+            return 0;
+        }
+    }
+    let program = args[0];
+    let parent_cwd = os.cwd();
+    let cwd = parent_cwd.replace("\\", "/");
+    let path = os.env("PATH");
+    assert(os.env("HEW_PROCESS_AMBIENT") == .Some("ambient"));
+    let original = specification(program, ["probe"]).output(limits()).expect("legacy output");
+    assert(original.stdout == f"ambient|absent|true|true\n{cwd}\n");
+    assert(probe(program, process.inherited_options()) == original.stdout);
+    let inherited = process.SpawnOptions { environment: .Inherit([process.EnvVar { name: "HEW_PROCESS_BOUND", value: "inherited" }]), cwd: .None };
+    assert(probe(program, inherited) == f"ambient|inherited|true|true\n{cwd}\n");
+    println("default inheritance retained");
+    let cleared = process.SpawnOptions { environment: .Clear([process.EnvVar { name: "HEW_PROCESS_BOUND", value: "replaced" }, process.EnvVar { name: "HEW_PROCESS_BOUND", value: "雪 = approved" }, process.EnvVar { name: "EMPTY", value: "" }]), cwd: .None };
+    assert(probe(program, cleared) == f"absent|雪 = approved|false|false\n{cwd}\n");
+    let empty = process.SpawnOptions { environment: .Clear([]), cwd: .None };
+    assert(probe(program, empty) == f"absent|absent|false|false\n{cwd}\n");
+    println("clear bindings and empty environment isolated");
+    let directory = os.temp_dir();
+    let marker = f"hew-process-options-{os.pid()}";
+    fs.write(f"{directory}/{marker}", "child directory").expect("create child cwd marker");
+    let changed = process.SpawnOptions { environment: .Clear([]), cwd: .Some(directory) };
+    let moved = specification(program, ["cwd", marker]).output_with_options(limits(), changed).expect("child cwd");
+    assert(moved.status == process.ExitStatus.Exited(0));
+    assert(moved.stdout.is_empty() && moved.stderr.is_empty());
+    assert(os.cwd() == parent_cwd);
+    println("per-child working directory retained");
+    let first = spawn Probe;
+    let second = spawn Probe;
+    let tasks = [fork first.run(program, "first"), fork second.run(program, "second")];
+    for result in await tasks {
+        assert(result.expect("concurrent probe answers"));
+    }
+    assert(os.env("HEW_PROCESS_AMBIENT") == .Some("ambient"));
+    assert(os.env("HEW_PROCESS_BOUND") == .None);
+    assert(os.env("PATH") == path);
+    assert(os.cwd() == parent_cwd);
+    println("concurrent environments leave parent unchanged");
+    for name in ["", "BAD=NAME", "BAD\0NAME"] {
+        invalid(program, process.SpawnOptions { environment: .Clear([process.EnvVar { name, value: "private-value" }]), cwd: .None });
+    }
+    invalid(program, process.SpawnOptions { environment: .Inherit([process.EnvVar { name: "NAME", value: "private-value\0" }]), cwd: .None });
+    for directory in ["", "bad\0directory"] {
+        invalid(program, process.SpawnOptions { environment: .Clear([]), cwd: .Some(directory) });
+    }
+    for directory in ["missing-child-options-cwd", f"{directory}/{marker}"] {
+        let bad = process.SpawnOptions { environment: .Clear([]), cwd: .Some(directory) };
+        match process.start_with_options(specification(program, []), bad) {
+            .Err(.LaunchFailed(_)) => {}
+            _ => panic("invalid cwd launched"),
+        }
+    }
+    match process.start_with_options(specification("hew-missing-child-options-program", []), empty) {
+        .Err(.LaunchFailed(_)) => {}
+        _ => panic("missing program launched"),
+    }
+    assert(probe(program, empty) == f"absent|absent|false|false\n{cwd}\n");
+    fs.delete(f"{directory}/{marker}").expect("remove owned cwd marker");
+    println("invalid options and failed launches refused");
+    var echo = specification(program, ["echo"]);
+    echo.stdin = .Piped;
+    echo.stdout = .Piped;
+    let piped = process.SpawnOptions { environment: .Clear([process.EnvVar { name: "HEW_PROCESS_BOUND", value: "piped" }]), cwd: .None };
+    let child = process.start_with_options(echo, piped).expect("owned child starts");
+    let input = child.stdin().expect("piped stdin");
+    let output = child.stdout().expect("piped stdout");
+    input.send("hello\n".to_bytes()).expect("write child stdin");
+    input.finish();
+    var echoed = bytes.new();
+    for chunk in output {
+        echoed.append(chunk);
+    }
+    assert(utf8.decode_lossy(echoed) == "hello\n");
+    assert(child.wait().expect("child wait") == process.ExitStatus.Exited(0));
+    assert(child.wait().expect("cached child wait") == process.ExitStatus.Exited(0));
+    child.kill().expect("cached child is not signalled");
+    match specification(program, ["sleep"]).output_with_options(process.CaptureLimits { timeout: 200ms, max_output_bytes: 4096 }, empty) {
+        .Err(.TimedOut(_)) => {}
+        _ => panic("configured child exceeded timeout"),
+    }
+    match specification(program, ["probe"]).output_with_options(process.CaptureLimits { timeout: 5s, max_output_bytes: 0 }, empty) {
+        .Err(.OutputLimitExceeded(0)) => {}
+        _ => panic("configured child exceeded output budget"),
+    }
+    println("owned child pipes, cached wait and bounded capture retained");
+    0
+}

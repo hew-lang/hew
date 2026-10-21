@@ -21,5 +21,6 @@ pub mod mem;
 pub mod node;
 pub mod sink;
 pub mod string;
+pub mod time;
 pub mod value;
 pub mod vec;

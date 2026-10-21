@@ -859,7 +859,7 @@ impl Builder {
         report.where_clause.clone_from(&machine.where_clause);
         let report_start = self.next_span;
         self.refresh_generics(report.type_params.as_mut(), report.where_clause.as_mut());
-        self.refresh_type_decl(&mut report)?;
+        self.refresh_type_decl(&mut report);
         let report_span = report_start..self.next_span;
         let impl_start = self.next_span;
         let Item::Impl(mut implementation) = shell.next().expect("impl shell").0 else {
@@ -890,6 +890,7 @@ impl Builder {
                 let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
                 let body = self.expr(Expr::Literal(Literal::String(state.name.to_string())));
                 MatchArm {
+                    append_separator: None,
                     pattern,
                     guard: None,
                     body,
@@ -960,7 +961,7 @@ impl Builder {
             if index != 0 {
                 if let Item::TypeDecl(decl) = item {
                     self.refresh_generics(decl.type_params.as_mut(), decl.where_clause.as_mut());
-                    self.refresh_type_decl(decl)?;
+                    self.refresh_type_decl(decl);
                 }
             }
             self.span();
@@ -984,6 +985,7 @@ impl Builder {
                 let pattern = self.pattern(Ident::new(name), &[], "");
                 let body = self.variant(Ident::new(name), Vec::new(), Vec::new());
                 MatchArm {
+                    append_separator: None,
                     pattern,
                     guard: None,
                     body,
@@ -1047,7 +1049,6 @@ impl Builder {
             resource_marker: ResourceMarker::None,
             serial_case: None,
             is_opaque: false,
-            consuming_methods: Vec::new(),
             lang_item: None,
         }
     }
@@ -1222,6 +1223,7 @@ impl Builder {
                 });
                 let selected = self.block(vec![input], selected);
                 event_arms.push(MatchArm {
+                    append_separator: None,
                     pattern: event_pattern,
                     guard: None,
                     body: selected,
@@ -1234,6 +1236,7 @@ impl Builder {
             });
             let body = self.block(locals, dispatch);
             state_arms.push(MatchArm {
+                append_separator: None,
                 pattern,
                 guard: None,
                 body,
@@ -1370,6 +1373,7 @@ impl Builder {
             let result = self.state_value(machine, next);
             let body = self.block(locals, result);
             arms.push(MatchArm {
+                append_separator: None,
                 pattern,
                 guard: None,
                 body,
@@ -1411,7 +1415,7 @@ impl Builder {
         }
     }
 
-    fn refresh_type_decl(&mut self, decl: &mut TypeDecl) -> Result<(), TypeError> {
+    fn refresh_type_decl(&mut self, decl: &mut TypeDecl) {
         for item in &mut decl.body {
             match item {
                 TypeBodyItem::Field { ty, span, .. } => {
@@ -1431,14 +1435,8 @@ impl Builder {
                         }
                     }
                 },
-                TypeBodyItem::Method(_) => {
-                    return Err(self.error(
-                        "generated machine data declaration unexpectedly contains a method",
-                    ))
-                }
             }
         }
-        Ok(())
     }
 
     /// `State { ..base, field: value }` reads the fields the literal does not

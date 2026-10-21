@@ -62,7 +62,7 @@ try {
   const bytecode = JSON.parse(
     fs.readFileSync(args.bytecodePath, "utf8"),
   ) as unknown;
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     replay: {
       seed: args.seed,
       step_budget: DEFAULT_STEP_BUDGET,

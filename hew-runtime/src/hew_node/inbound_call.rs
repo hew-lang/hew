@@ -74,25 +74,33 @@ impl InboundAsks {
     }
 
     /// Only the authenticated connection publication that submitted an ask may retract it.
-    pub(crate) fn withdraw(&self, actor_id: u64, publication: u64, request_id: u64) {
+    pub(crate) fn withdraw(
+        &self,
+        destination: crate::node_identity::Location,
+        publication: u64,
+        request_id: u64,
+    ) {
         let mut targets = self.targets.lock_or_recover();
-        let target = targets
-            .keys()
-            .find(|target| target.actor_id() == actor_id)
-            .copied();
-        let Some(target) = target else {
-            return;
-        };
-        let calls = targets.get_mut(&target).expect("selected target");
-        let index = calls.iter().position(|work| {
-            let call = work.call.lock_or_recover();
-            call.as_ref().is_some_and(|call| {
-                call.publication == publication && call.request_id == request_id
-            })
+        let selected = targets.iter().find_map(|(target, calls)| {
+            calls
+                .iter()
+                .position(|work| {
+                    let call = work.call.lock_or_recover();
+                    call.as_ref().is_some_and(|call| {
+                        call.publication == publication
+                            && call.request_id == request_id
+                            && call
+                                .admission
+                                .as_ref()
+                                .is_some_and(|admission| admission.location == destination)
+                    })
+                })
+                .map(|index| (*target, index))
         });
-        let Some(index) = index else {
+        let Some((target, index)) = selected else {
             return;
         };
+        let calls = targets.get_mut(&target).expect("selected admitted request");
         let work = calls.swap_remove(index);
         if calls.is_empty() {
             targets.remove(&target);

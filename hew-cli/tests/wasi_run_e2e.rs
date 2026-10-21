@@ -208,40 +208,6 @@ fn curated_playground_examples_run_under_wasi() {
     }
 }
 
-#[test]
-fn supervisor_stays_on_the_unsupported_diagnostic_path_under_wasi() {
-    require_wasi_runner();
-
-    let manifest = load_playground_manifest();
-    let supervisor_entry = manifest
-        .iter()
-        .find(|entry| entry.id == "concurrency/supervisor")
-        .expect("concurrency/supervisor entry in manifest");
-    assert_eq!(
-        supervisor_entry.capabilities.wasi, "unsupported",
-        "concurrency/supervisor must declare wasi capability 'unsupported' in manifest"
-    );
-
-    let source = playground_root().join(&supervisor_entry.source_path);
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "supervisor should fail in compile phase\nstdout:\n{stdout}\nstderr:\n{stderr}",
-    );
-    assert!(
-        stderr.contains("not supported on WASM32"),
-        "expected unsupported WASM diagnostic\nstderr:\n{stderr}",
-    );
-    assert!(
-        !stderr.contains("hew.supervisor.new"),
-        "supervisor should be rejected before lowering emits runtime symbols\nstderr:\n{stderr}",
-    );
-}
-
 /// A handler `panic` is contained on both targets.
 ///
 /// The physical path delivers it as a typed fault on the ask's failure edge,
@@ -267,7 +233,7 @@ fn actor_handler_panic_is_contained_on_native_and_wasi() {
 fn main() {
     let crasher = spawn Crasher;
     match crasher.fail() {
-        .Ok(_) => println("contained"),
+        .Ok(_) => panic("faulting handler returned a value"),
         .Err(_) => println("contained"),
     }
     println("survived");
@@ -483,39 +449,8 @@ fn main() {
 }
 
 #[test]
-fn actor_start_panic_remains_module_fatal_on_production_wasi() {
-    require_wasi_runner();
-
-    let source = repo_root()
-        .join("tests")
-        .join("vertical-slice")
-        .join("accept")
-        .join("actor_start_panic_module_fatal.hew");
-    let output = run_wasi_example(&source);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(
-        !output.status.success(),
-        "production WASI must not claim actor containment for on(start) panic\nstdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("intentional on(start) panic") || stderr.contains("unreachable"),
-        "the configured panic policy, not lifecycle transaction validation, must terminate the module; stderr:\n{stderr}"
-    );
-    assert!(
-        !stderr.contains("ActorSendFailed"),
-        "the state write before panic must not fail on an absent lifecycle dispatch domain; stderr:\n{stderr}"
-    );
-}
-
-#[test]
 fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
-    require_codegen();
-    require_wasi_runner();
-    let output_dir = tempdir();
-    let root = repo_root().join("tests/core-acceptance");
-    for name in [
+    assert_native_wasi_cases(&[
         "task-call-values",
         "fork-outlives-timed-select",
         "select-first-completion",
@@ -524,7 +459,119 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
         "select-actor-lifecycle",
         "task-nested-deadline",
         "race-unobserved-result-cleanup",
+    ]);
+}
+
+#[test]
+fn supervisor_restart_one_for_one_runs_under_wasi() {
+    assert_native_wasi_cases(&["supervisor-restart-one-for-one"]);
+}
+
+#[test]
+fn supervised_actor_lifecycle_runs_under_wasi() {
+    assert_native_wasi_cases(&[
+        "actor-typed-notifications",
+        "actor-notification-hooks-suspend",
+        "supervisor-wired-start-fault",
+        "actor-init-deferred-supervised-fault",
+        "supervisor-role-observations",
+        "supervisor-wired-stop-during-reconstruction",
+        "supervisor-stop-waits-for-stop-hooks",
+        "driver-supervisor-backoff-cancel",
+        "actor-start-fault-contained",
+        "actor-periodic-handlers",
+    ]);
+}
+
+/// Actual host files are visible only through an explicit WASI preopen. Unix
+/// supplies the escape symlinks; the same WASI module also runs without grants.
+#[test]
+#[cfg(unix)]
+fn supplied_directory_preopens_preserve_rooted_owners_under_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let temporary = tempdir();
+    let root = temporary.path().join("root");
+    let outside = temporary.path().join("outside");
+    fs::create_dir_all(root.join("child/nest")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    let payload = vec![b'x'; 65536];
+    fs::write(root.join("payload"), &payload).unwrap();
+    fs::write(root.join("empty"), []).unwrap();
+    fs::write(root.join("child/value"), b"inside").unwrap();
+    fs::write(outside.join("value"), b"outside").unwrap();
+    for (target, name) in [
+        ("child/value", "contained"),
+        ("contained", "safe-chain"),
+        ("escape", "escape-chain"),
+        ("../payload", "child/back"),
+        ("../outside/value", "escape"),
+        ("/outside/value", "absolute"),
+        ("../outside", "escape-dir"),
     ] {
+        std::os::unix::fs::symlink(target, root.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(outside.join("value"), root.join("host-absolute")).unwrap();
+    let source = repo_root().join("tests/vertical-slice/accept/wasi_directory_preopen.hew");
+    for level in ["0", "2"] {
+        for target in ["native", "wasm32-wasi"] {
+            let extension = if target == "native" { "" } else { ".wasm" };
+            let binary = temporary
+                .path()
+                .join(format!("directory-{target}-{level}{extension}"));
+            let mut build = support::hew_command();
+            build
+                .current_dir(repo_root())
+                .arg("build")
+                .arg(&source)
+                .args(["--opt-level", level, "-o"])
+                .arg(&binary);
+            if target != "native" {
+                build.args(["--target", target]);
+            }
+            let compiled =
+                support::run_bounded_command(build, format!("directory {target} O{level}"));
+            support::assert_success(&compiled, "compile directory capability");
+            let mut run = if target == "native" {
+                Command::new(&binary)
+            } else {
+                let mut denied = Command::new(support::find_wasmtime().unwrap());
+                denied.arg("run").arg(&binary);
+                let denied = support::run_bounded_command(denied, "directory without preopens");
+                assert!(
+                    !denied.status.success(),
+                    "missing grant must not acquire a directory"
+                );
+                assert!(denied.stdout.is_empty());
+                let mut run = Command::new(support::find_wasmtime().unwrap());
+                run.arg("run")
+                    .arg("--dir")
+                    .arg(format!("{}::root", root.display()))
+                    .arg("--dir")
+                    .arg(format!("{}::outside", outside.display()))
+                    .arg(&binary);
+                run
+            };
+            run.current_dir(temporary.path());
+            let output =
+                support::run_bounded_command(run, format!("supplied directory {target} O{level}"));
+            support::assert_success(&output, "execute supplied directory capability");
+            assert_eq!(
+                output.stdout,
+                b"closed cancelled root\nsupplied directory remains rooted\n"
+            );
+            assert_eq!(fs::read(root.join("copied")).unwrap(), payload);
+            assert_eq!(fs::read(outside.join("value")).unwrap(), b"outside");
+        }
+    }
+}
+
+fn assert_native_wasi_cases(names: &[&str]) {
+    require_codegen();
+    require_wasi_runner();
+    let output_dir = tempdir();
+    let root = repo_root().join("tests/core-acceptance");
+    for name in names {
         let manifest = fs::read_to_string(root.join(format!("cases/{name}.toml")))
             .expect("shared acceptance manifest");
         let manifest: toml::Value = toml::from_str(&manifest).expect("valid manifest");
@@ -596,13 +643,15 @@ fn checked_tasks_select_and_scope_cleanup_run_under_wasi() {
                     if target == "native" || stderr.is_empty() {
                         assert_eq!(actual, stderr, "{name} {target} O{level}");
                     } else {
-                        // WASI has no profiler name registry; compare the fault
-                        // itself, before the actor context diagnostic.
-                        assert_eq!(
-                            actual.lines().next(),
-                            stderr.lines().next(),
-                            "{name} {target} O{level}"
-                        );
+                        // WASI has no profiler name registry; preserve every
+                        // language fault while excluding actor context labels.
+                        let faults = |text: &str| {
+                            text.lines()
+                                .filter(|line| !line.starts_with("hew: actor crash in "))
+                                .map(str::to_owned)
+                                .collect::<Vec<_>>()
+                        };
+                        assert_eq!(faults(&actual), faults(stderr), "{name} {target} O{level}");
                     }
                 }
             }

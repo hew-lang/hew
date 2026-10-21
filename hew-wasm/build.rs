@@ -15,10 +15,14 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 fn main() {
-    let std_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("the crate has a workspace parent")
-        .join("std");
+    // Make exports the checkout identity when sharing a target across sources.
+    println!("cargo:rerun-if-env-changed=HEW_BUILD_SOURCE_ROOT");
+    let std_root = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo supplies the package directory"),
+    )
+    .parent()
+    .expect("the crate has a workspace parent")
+    .join("std");
     println!("cargo:rerun-if-changed=../std");
 
     let mut sources = BTreeMap::new();

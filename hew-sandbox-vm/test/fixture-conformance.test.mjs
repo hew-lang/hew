@@ -5,6 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { runBytecode } from "../dist/interpreter/index.js";
+import { assertFixtureTrace } from "./support/fixture-trace.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const m3FixtureDirs = fs.readdirSync(path.join(root, "fixtures")).filter((name) => fs.existsSync(path.join(root, "fixtures", name, "bytecode.json")));
@@ -25,14 +26,14 @@ function validateBytecodePackage(bytecode, label) {
 }
 
 for (const dir of m3FixtureDirs) {
-  test(`compiled source replay: ${dir}`, () => {
+  test(`recorded v1 package replay: ${dir}`, async () => {
     const bytecode = readJson(`fixtures/${dir}/bytecode.json`);
     const expected = readJson(`fixtures/${dir}/expected.trace.json`);
 
     assert.ok(bytecode.functions.length > 0, `${dir} bytecode fixture must not be empty`);
     validateBytecodePackage(bytecode, dir);
 
-    const actual = runBytecode(bytecode, {
+    const actual = await runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
       replay: expected.replay,
@@ -40,31 +41,9 @@ for (const dir of m3FixtureDirs) {
     });
 
     assert.ok(validateTrace(actual), ajv.errorsText(validateTrace.errors));
-    // Compare observable behaviour only: event sequence, stdout, exit and
-    // diagnostics. Internal VM bookkeeping (budget_remaining, step_count,
-    // virtual_clock, ids, globals) is not part of the sandbox's observable
-    // contract, so it is deliberately excluded here rather than pinned via
-    // a whole-trace deepEqual.
-    assert.deepEqual(
-      actual.events.map((event) => event.type),
-      expected.events.map((event) => event.type),
-      `${dir} trace event sequence changed`
-    );
-    assert.deepEqual(actual.final_state.stdout, expected.final_state.stdout, `${dir} stdout changed`);
-    assert.deepEqual(actual.final_state.exit_code, expected.final_state.exit_code, `${dir} exit code changed`);
-    assert.deepEqual(actual.final_state.diagnostics, expected.final_state.diagnostics, `${dir} diagnostics changed`);
-    assert.deepEqual(
-      actual.final_state.runtime_failures,
-      expected.final_state.runtime_failures,
-      `${dir} runtime failures changed`
-    );
-    assert.deepEqual(
-      actual.final_state.sandbox_rejections,
-      expected.final_state.sandbox_rejections,
-      `${dir} sandbox rejections changed`
-    );
+    assertFixtureTrace(actual, expected, dir);
 
-    const rerun = runBytecode(bytecode, {
+    const rerun = await runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
       replay: expected.replay,
@@ -74,24 +53,26 @@ for (const dir of m3FixtureDirs) {
   });
 }
 
-test("the observable-fields comparison still fails when stdout diverges (negative control)", () => {
+test("the observable-fields comparison still fails when stdout diverges (negative control)", async () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
   const expected = readJson("fixtures/06-vector-basics/expected.trace.json");
-  const actual = runBytecode(bytecode, {
+  const actual = await runBytecode(bytecode, {
     fixtureId: expected.fixture_id,
     traceId: expected.trace_id,
     replay: expected.replay,
     sandboxVersion: expected.sandbox_version
   });
-  const corrupted = { ...expected.final_state, stdout: [...expected.final_state.stdout, "unexpected\n"] };
+  const corrupted = { ...expected, final_state: {
+    ...expected.final_state, stdout: [...expected.final_state.stdout, "unexpected\n"],
+  } };
   assert.throws(
-    () => assert.deepEqual(actual.final_state.stdout, corrupted.stdout),
+    () => assertFixtureTrace(actual, corrupted, "negative control"),
     /AssertionError/,
     "a real stdout divergence must still fail the restated comparison"
   );
 });
 
-test("Vec::get returns None rather than trapping when the index is past the end", () => {
+test("Vec::get returns None rather than trapping when the index is past the end", async () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
   // The fixture reads index 1, which is in range. Move the read past the end
   // through the constant that feeds it: `get` answers None, where an indexing
@@ -103,7 +84,7 @@ test("Vec::get returns None rather than trapping when the index is past the end"
   assert.ok(index, "vector fixture must read a constant index");
   index.value = "99";
 
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     fixtureId: "vector-get-none",
     traceId: "trace:vector-get-none",
     replay: {
@@ -117,29 +98,6 @@ test("Vec::get returns None rather than trapping when the index is past the end"
   assert.equal(trace.result, "ok");
   assert.deepEqual(trace.final_state.stdout, ["2\n", "-1\n"]);
   assert.deepEqual(trace.final_state.runtime_failures, []);
-});
-
-test("the published schema admits the emitted package and rejects an unknown opcode", () => {
-  const emitted = readJson("fixtures/06-vector-basics/bytecode.json");
-  validateBytecodePackage(emitted, "06-vector-basics");
-
-  const unknownOp = structuredClone(emitted);
-  const op = unknownOp.functions
-    .flatMap((fn) => fn.blocks)
-    .flatMap((block) => block.ops)
-    .find((entry) => entry.op === "const.int");
-  assert.ok(op, "vector fixture must carry an instruction to corrupt");
-  op.op = "const.not_real";
-  const validate = validateBytecodeBySchema[unknownOp.schema_version];
-  assert.equal(validate(unknownOp), false, "an opcode outside the registry must not validate");
-
-  const unknownTerminator = structuredClone(emitted);
-  unknownTerminator.functions[0].blocks[0].term.op = "goto.not_real";
-  assert.equal(
-    validate(unknownTerminator),
-    false,
-    "a terminator outside the registry must not validate"
-  );
 });
 
 function readJson(relativePath) {

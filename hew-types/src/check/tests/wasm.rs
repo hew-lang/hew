@@ -479,7 +479,7 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            platform_error_contains(&output, "File-backed streams and resources"),
+            platform_error_contains(&output, "Ambient files and file-backed streams"),
             "stream.open reads through the native I/O reactor and must stay rejected; got: {:?}",
             output.errors
         );
@@ -578,7 +578,9 @@ mod wasm_rejects {
             .iter()
             .filter(|error| {
                 error.kind == TypeErrorKind::PlatformLimitation
-                    && error.message.contains("File-backed streams and resources")
+                    && error
+                        .message
+                        .contains("Ambient files and file-backed streams")
             })
             .count();
         assert_eq!(
@@ -619,7 +621,9 @@ mod wasm_rejects {
                 .iter()
                 .filter(|error| {
                     error.kind == TypeErrorKind::PlatformLimitation
-                        && error.message.contains("File-backed streams and resources")
+                        && error
+                            .message
+                            .contains("Ambient files and file-backed streams")
                 })
                 .count();
             assert_eq!(
@@ -1163,25 +1167,7 @@ fn main() {
     // ── Reject-level features now fail closed on WASM ────────────────────────
 
     fn supervisor_calls_source() -> &'static str {
-        // `pool` is a reserved keyword from S-A (supervisor `pool` child decls).
-        // Use `wp` for the local WorkerPool ref to avoid the keyword conflict.
-        r"actor Worker {
-    receive fn ping() {}
-}
-
-supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 1 within 10s;
-    child w1: Worker;
-}
-
-fn main() {
-    let wp = spawn WorkerPool;
-    let worker = supervisor_child(wp, 0);
-    supervisor_stop(wp);
-    worker.ping();
-}
-"
+        include_str!("../../../../tests/core-acceptance/cases/supervisor-restart-one-for-one.hew")
     }
 
     fn link_monitor_calls_source() -> &'static str {
@@ -1255,19 +1241,11 @@ fn register() {
     }
 
     #[test]
-    fn wasm_rejects_supervisor_calls() {
+    fn wasm_supervisor_calls_are_admitted() {
         let output = check_wasm(supervisor_calls_source());
         assert!(
-            output
-                .errors
-                .iter()
-                .any(|e| e.kind == TypeErrorKind::PlatformLimitation),
-            "supervision operations should be WASM errors; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Supervision tree"),
-            "error message should mention Supervision tree feature; got: {:?}",
+            output.errors.is_empty(),
+            "WASI supervision: {:?}",
             output.errors
         );
     }
@@ -1283,148 +1261,11 @@ fn register() {
     }
 
     #[test]
-    fn wasm_rejects_supervisor_declaration() {
-        let output = check_wasm(
-            r"actor Worker {
-    receive fn ping() {}
-}
-
-supervisor WorkerPool {
-    strategy: one_for_one;
-    intensity: 1 within 10s;
-    child w1: Worker;
-}
-
-fn main() {}
-",
-        );
-        assert!(
-            has_platform_limitation_error(&output),
-            "supervisor declarations should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Supervision tree"),
-            "error message should mention Supervision tree feature; got: {:?}",
-            output.errors
-        );
-    }
-
-    #[test]
-    fn wasm_rejects_link_monitor_calls() {
+    fn wasm_local_link_monitor_calls_are_admitted() {
         let output = check_wasm(link_monitor_calls_source());
         assert!(
-            has_platform_limitation_error(&output),
-            "link/monitor operations should be a WASM error; got errors: {:?}",
-            output.errors
-        );
-        assert!(
-            platform_error_contains(&output, "Link/monitor"),
-            "error message should mention Link/monitor feature; got: {:?}",
-            output.errors
-        );
-    }
-
-    /// Regression for PR #920: the `"link" | "unlink" | "monitor" | "demonitor"`
-    /// bare-name arm in `reject_if_wasm_incompatible_call`
-    /// fired on raw name alone, so an ordinary user function bare-named
-    /// `link`/`monitor` (unrelated signature, no actor handle involved) hard-
-    /// failed a WASM build with the `LinkMonitor` diagnostic pointed at the
-    /// user's own call.
-    #[test]
-    fn wasm_user_defined_link_and_monitor_do_not_reject() {
-        let output = check_wasm_allowing_prelude_redeclaration(
-            "fn link(a: i64, b: i64) -> i64 { a + b } \
-             fn monitor(x: i64) -> i64 { x } \
-             fn main() { link(1, 2); monitor(3); }",
-        );
-        assert!(
-            !has_platform_limitation_error(&output),
-            "user-defined `link`/`monitor` functions must not trigger the LinkMonitor PlatformLimitation error; got errors: {:?}",
-            output.errors
-        );
-    }
-
-    /// Regression for PR #920: same bare-name-match defect for the
-    /// `"supervisor_child" | "supervisor_stop"` `SupervisionTrees` arm.
-    #[test]
-    fn wasm_user_defined_supervisor_child_does_not_reject() {
-        let output = check_wasm_allowing_prelude_redeclaration(
-            "fn supervisor_child(n: i64) -> i64 { n } fn main() { supervisor_child(0); }",
-        );
-        assert!(
-            !has_platform_limitation_error(&output),
-            "a user-defined `supervisor_child` function must not trigger the SupervisionTrees PlatformLimitation error; got errors: {:?}",
-            output.errors
-        );
-    }
-
-    /// M-8: the `#[on(crash)]` crash-handling surface rides supervision — a
-    /// supervisor declaring a crash-hook child is wasm-rejected via the same
-    /// Supervision-tree gate, so the crash payload (CrashInfo/CrashAction) can
-    /// never reach a wasm crash path that fires. Parity is maintained by the
-    /// firing surface (supervisors) being rejected, not the hook code.
-    #[test]
-    fn wasm_rejects_supervisor_with_crash_hook() {
-        let output = check_wasm(
-            r"import std.failure;
-
-actor Crasher {
-    #[on(crash)]
-    fn on_crash(info: CrashInfo) -> CrashAction {
-        CrashAction.Restart
-    }
-}
-
-supervisor App {
-    strategy: one_for_one;
-    intensity: 1 within 10s;
-    child c: Crasher;
-}
-
-fn main() {}
-",
-        );
-        assert!(
-            has_platform_limitation_error(&output)
-                && platform_error_contains(&output, "Supervision tree"),
-            "a supervisor with a #[on(crash)] child must be a WASM error \
-             (Supervision tree); got: {:?}",
-            output.errors
-        );
-    }
-
-    /// M-8: the `#[on(exit)]` linked-actor exit hook (M-7-R) rides the link
-    /// surface — an actor that `link()`s a peer to receive its exit is
-    /// wasm-rejected via the Link/monitor gate, so the `CrashNotification` can
-    /// never reach a wasm exit path that fires. The `#[on(exit)]` hook itself
-    /// compiles on wasm (parity with native), but the delivery surface that
-    /// fires it is rejected.
-    #[test]
-    fn wasm_rejects_link_that_would_fire_exit_hook() {
-        let output = check_wasm(
-            r"
-            import std.failure;
-
-            actor Watcher {
-                #[on(exit)]
-                fn on_peer_exit(note: CrashNotification) {
-                    let _id = note.target;
-                }
-
-                receive fn watch(peer: u64) {
-                    link(peer);
-                }
-            }
-
-            fn main() {}
-        ",
-        );
-        assert!(
-            has_platform_limitation_error(&output)
-                && platform_error_contains(&output, "Link/monitor"),
-            "link() (the surface that fires #[on(exit)]) must be a WASM error \
-             (Link/monitor); got: {:?}",
+            output.errors.is_empty(),
+            "WASI local observations: {:?}",
             output.errors
         );
     }
@@ -1507,6 +1348,34 @@ fn main() {}
 
     // The Node namespace uses the native mesh transport and is refused at
     // check time on wasm32, before undefined runtime imports can be emitted.
+
+    #[test]
+    fn wasm_cluster_observation_refuses_operations_but_keeps_data_helpers() {
+        for call in [
+            "cluster.snapshot()",
+            "cluster.watch()",
+            r#"cluster.wait_registered("service")"#,
+            "cluster.wait_departed(member)",
+        ] {
+            let source = format!(
+                "import std.net.cluster; fn observe(member: cluster.Member) {{ let _ = {call}; }}"
+            );
+            let output = check_wasm_with_registry(&source);
+            assert!(
+                platform_error_contains(&output, "Distributed node"),
+                "{call} must fail at native node capability admission: {:?}",
+                output.errors
+            );
+        }
+        let output = check_wasm_with_registry(
+            "import std.net.cluster; fn local_names(view: cluster.Snapshot) -> i64 { view.local_registrations().len() }"
+        );
+        assert!(
+            output.errors.is_empty(),
+            "pure snapshot helpers remain portable: {:?}",
+            output.errors
+        );
+    }
 
     #[test]
     fn wasm_rejects_node_start() {

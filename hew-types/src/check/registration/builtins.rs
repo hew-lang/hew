@@ -53,6 +53,34 @@ impl Checker {
         }))
     }
 
+    /// Register source helpers before imports can revisit their declarations.
+    /// The ordinary module walk owns these signatures when it includes builtins.
+    pub(in crate::check) fn register_embedded_builtin_function_signatures(
+        &mut self,
+        program: &Program,
+    ) {
+        if !self.owns_embedded_builtin_bodies(program) {
+            return;
+        }
+        let builtin_program = self.builtin_program();
+        let saved_module = self.current_module.replace("std.builtins".to_string());
+        let saved_index = std::mem::replace(&mut self.current_module_idx, u32::MAX);
+        let saved_ordinal = self.current_item_ordinal;
+        let saved_source = self.current_item_source.take();
+        let saved_stdlib = std::mem::replace(&mut self.is_stdlib_source, true);
+        for (ordinal, (item, span)) in builtin_program.items.iter().enumerate() {
+            self.current_item_ordinal = ordinal;
+            if matches!(item, Item::Function(_)) {
+                self.collect_function_item(item, span);
+            }
+        }
+        self.current_item_ordinal = saved_ordinal;
+        self.current_item_source = saved_source;
+        self.is_stdlib_source = saved_stdlib;
+        self.current_module_idx = saved_index;
+        self.current_module = saved_module;
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "all builtins registered in one place"
@@ -72,18 +100,6 @@ impl Checker {
         // no bare spelling for them (A409).
 
         // I/O and system
-        // `instant::now` has no source declaration, but it is an ordinary
-        // compiler-provided runtime call.  Register its joined parser spelling
-        // here so the checker publishes the same typed runtime target that
-        // HIR and MIR consume for every other builtin call.
-        self.register_builtin_fn(
-            "instant::now",
-            vec![],
-            Ty::Named {
-                args: vec![],
-                head: crate::TypeHead::Builtin(BuiltinType::Instant),
-            },
-        );
         self.register_builtin_fn("sleep", vec![Ty::Duration], Ty::Unit);
         for view in ["mailbox", "policy"] {
             self.register_builtin_fn(
@@ -767,7 +783,6 @@ impl Checker {
         // a runtime-looking name.
         // Namespace-qualified builtins retain their exact runtime row symbols.
         let runtime_symbol = match name {
-            "instant::now" => "hew_instant_now".to_string(),
             "Node::peer" => "hew_node_peer_new".to_string(),
             "Node::register" | "Node::lookup" => name.to_string(),
             _ => format!("hew_{name}"),

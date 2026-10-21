@@ -14,18 +14,17 @@ use support::{hew_binary, repo_root, require_codegen};
 
 const TICKER: &str = r#"
 import std.io;
-import std.time.datetime;
 
 fn reader() -> string {
     io.read_line() ?? "eof"
 }
 
 fn ticks() -> i64 {
-    let start = datetime.now_ms();
+    let start = instant.now();
     for _ in 0..20 {
         sleep(20ms);
     }
-    datetime.now_ms() - start
+    start.elapsed().millis()
 }
 
 fn main() {
@@ -44,16 +43,15 @@ fn main() {
 
 const WITHIN: &str = r#"
 import std.io;
-import std.time.datetime;
 
 fn main() {
-    let start = datetime.now_ms();
+    let start = instant.now();
     let first = scope within 200ms {
         io.read_line()
     } handle failure {
         .Some("deadline")
     };
-    println(f"elapsed {datetime.now_ms() - start}");
+    println(f"elapsed {start.elapsed().millis()}");
     println(first ?? "eof");
     println(io.read_line() ?? "eof");
 }

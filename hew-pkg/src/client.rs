@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::fmt::Write as _;
+use std::io::Read as _;
 
 use serde::{Deserialize, Serialize};
 
@@ -203,6 +204,9 @@ impl RegistryClient {
     ) -> Result<crate::native_prebuilt::NativeRecord, ApiError> {
         let url = self.native_url(name, version, identity)?;
         let mut response = self.agent.get(&url).call().map_err(map_ureq_error)?;
+        if !response.status().is_success() {
+            return Err(self.parse_error_response(response));
+        }
         response
             .body_mut()
             .read_json()
@@ -437,6 +441,10 @@ impl RegistryClient {
             .post(&url)
             .send_json(&body)
             .map_err(map_ureq_error)?;
+
+        if !resp.status().is_success() {
+            return Err(self.parse_error_response(resp));
+        }
 
         resp.into_body()
             .read_json()
@@ -758,6 +766,9 @@ impl RegistryClient {
             .header("Authorization", &format!("Bearer {request_token}"))
             .call()
             .map_err(map_ureq_error)?;
+        if !resp.status().is_success() {
+            return Err(self.parse_error_response(resp));
+        }
         let body: OidcResponse = resp
             .into_body()
             .read_json()
@@ -1092,14 +1103,32 @@ impl RegistryClient {
             error: Option<String>,
         }
 
-        let status: u16 = resp.status().into();
+        // Error pages need only a small diagnostic excerpt, even when a proxy
+        // returns a large HTML page. Read one extra byte to detect truncation.
+        const MAX_ERROR_BYTES: usize = 8 * 1024;
 
-        let message = resp
+        let status: u16 = resp.status().into();
+        let mut bytes = Vec::new();
+        let read = resp
             .into_body()
-            .read_json::<ErrorBody>()
+            .into_reader()
+            .take((MAX_ERROR_BYTES + 1) as u64)
+            .read_to_end(&mut bytes);
+        let truncated = bytes.len() > MAX_ERROR_BYTES;
+        bytes.truncate(MAX_ERROR_BYTES);
+        let body = String::from_utf8_lossy(&bytes);
+        let mut message = serde_json::from_slice::<ErrorBody>(&bytes)
             .ok()
             .and_then(|b| b.message.or(b.error))
-            .unwrap_or_else(|| format!("HTTP {status}"));
+            .unwrap_or_else(|| body.trim().to_string());
+        if message.trim().is_empty() {
+            message = format!("HTTP {status}");
+        }
+        if truncated {
+            message.push_str(" [truncated]");
+        } else if let Err(error) = read {
+            let _ = write!(message, " [error reading response: {error}]");
+        }
 
         ApiError::Server { status, message }
     }
@@ -1218,7 +1247,10 @@ fn build_agent() -> ureq::Agent {
             .chain(RustlsConnector::default());
 
     ureq::Agent::with_parts(
-        ureq::config::Config::default(),
+        // Preserve responses for the explicit status checks and ApiError parser.
+        ureq::config::Config::builder()
+            .http_status_as_error(false)
+            .build(),
         connector,
         DefaultResolver::default(),
     )

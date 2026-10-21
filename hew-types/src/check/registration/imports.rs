@@ -46,6 +46,76 @@ impl Checker {
         }
     }
 
+    /// Credit the module that supplied an implementation selected by identity.
+    /// Receiver-owned methods already use the receiver's lexical type binding;
+    /// only an external impl can require an otherwise unnamed module import.
+    pub(in crate::check) fn note_impl_import_use(&mut self, declaration: crate::DefId) {
+        let Some(origin) = self
+            .fn_sigs
+            .get(&declaration)
+            .and_then(|sig| sig.impl_method.as_ref())
+        else {
+            return;
+        };
+        let Some(provider) = self.defs.module(declaration) else {
+            return;
+        };
+        if origin
+            .receiver
+            .and_then(|receiver| self.defs.module(receiver))
+            .is_some_and(|receiver| {
+                self.scopes.namespace_of(receiver) == self.scopes.namespace_of(provider)
+            })
+        {
+            return;
+        }
+        if let Some(site) = self.scope_site() {
+            self.scopes
+                .mark_import_provider_used(site.file, provider, &self.defs);
+        }
+    }
+
+    /// Credit module imports that contribute public impls for external public
+    /// types to the module surface. A façade can expose an associated method
+    /// without calling it locally, so call-site tracking alone would report
+    /// that provider import as unused.
+    pub(in crate::check) fn credit_public_impl_provider_imports(&mut self) {
+        let importers: std::collections::HashSet<_> = self
+            .reportable_imports
+            .iter()
+            .filter(|import| import.source_module.is_some())
+            .map(|import| import.site.file)
+            .collect();
+        if importers.is_empty() {
+            return;
+        }
+
+        let providers: std::collections::HashSet<_> = self
+            .fn_sigs
+            .iter()
+            .filter_map(|(declaration, sig)| {
+                let origin = sig.impl_method.as_ref()?;
+                let receiver = origin.receiver?;
+                if !self.defs.visibility(*declaration).is_pub()
+                    || !self.defs.visibility(receiver).is_pub()
+                {
+                    return None;
+                }
+                let provider = self.defs.module(*declaration)?;
+                let receiver_module = self.defs.module(receiver)?;
+                (self.scopes.namespace_of(provider) != self.scopes.namespace_of(receiver_module))
+                    .then_some(provider)
+            })
+            .collect();
+
+        for importer in importers {
+            for provider in &providers {
+                self.scopes
+                    .mark_import_provider_used(importer, *provider, &self.defs);
+            }
+        }
+    }
+
     /// Credit the binding at the written head of a dotted expression. The
     /// checker calls this only after selecting that expression as a type or
     /// constructor path, so lexical value shadowing has already been ruled out.
@@ -1358,7 +1428,6 @@ impl Checker {
                     // identity and the bare spelling is only the binding this
                     // importer sees, so `spawn Inner` reaches the declaration
                     // SIR matches rather than a bare row of its own.
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     let identity = if owner.is_empty() {
                         sd.name.to_string()
                     } else {

@@ -37,22 +37,6 @@ fn catalog_runtime_symbols_are_classified() {
             | BuiltinLinkage::LayoutDescriptorSymbol { .. } => {
                 continue;
             }
-            // NodeRegisterByPid declares two C-ABI symbols; check both.
-            BuiltinLinkage::NodeRegisterByPid {
-                register_symbol,
-                pid_accessor,
-            } => {
-                for sym in [register_symbol, pid_accessor] {
-                    if !stable.contains(sym) {
-                        failures.push(format!(
-                            "catalog row `{}` (linkage symbol `{sym}`) is not in the \
-                             shared source-declarable runtime inventory",
-                            entry.name,
-                        ));
-                    }
-                }
-                continue;
-            }
         };
 
         // A shim symbol that names a typed runtime-call family (`vec.value.len`)

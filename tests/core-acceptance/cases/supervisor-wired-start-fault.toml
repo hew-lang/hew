@@ -1,0 +1,11 @@
+[[case]]
+id = "supervisor-wired-start-fault"
+intent = "A prerequisite start fault prevents dependent init and rolls back retained owned configuration."
+source = "cases/supervisor-wired-start-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: UserPanic (212): ledger start failed\n"
+exit = 1

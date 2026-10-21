@@ -1,5 +1,5 @@
-//! Behavioural tests for the `std.stream` byte codecs: `LengthPrefixed`
-//! and `Slip`.
+//! Behavioural tests for the `std.stream` byte codecs: `FixedWidth`,
+//! `LengthPrefixed` and `Slip`.
 
 import std.encoding.binary;
 import std.stream;
@@ -41,7 +41,11 @@ fn slip_frames(codec: stream.Slip, wire: bytes, step: i64) -> Vec<bytes> {
     var buffer = bytes.new();
     var at = 0;
     while at < wire.len() {
-        let end = if at + step < wire.len() { at + step } else { wire.len() };
+        let end = if at + step < wire.len() {
+            at + step
+        } else {
+            wire.len()
+        };
         buffer.append(wire[at..end]);
         at = end;
         var more = true;
@@ -60,6 +64,88 @@ fn slip_frames(codec: stream.Slip, wire: bytes, step: i64) -> Vec<bytes> {
         }
     }
     frames
+}
+
+// ── FixedWidth ───────────────────────────────────────────────────────
+#[test]
+fn test_fixed_width_frames_across_chunks_and_with_multiple_records_per_chunk() {
+    let codec = stream.FixedWidth.new(3).expect("positive record width");
+    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(4).expect("pipe");
+    let decoded: stream.Stream<Result<bytes, stream.CodecError>> = input.frames(codec);
+    sink.send(of([1, 2])).expect("first chunk");
+    sink.send(of([3, 4, 5, 6, 7, 8, 9])).expect("remaining records");
+    sink.finish();
+    var frames: Vec<bytes> = Vec.new();
+    while let .Some(result) = decoded.recv() {
+        match result {
+            .Ok(frame) => frames.push(frame),
+            .Err(error) => panic(f"unexpected fixed-width error: {error}"),
+        }
+    }
+    decoded.close();
+    assert(frames.len() == 3);
+    assert(frames[0] == of([1, 2, 3]));
+    assert(frames[1] == of([4, 5, 6]));
+    assert(frames[2] == of([7, 8, 9]));
+}
+
+#[test]
+fn test_fixed_width_reports_trailing_partial_record_once_at_eof() {
+    let codec = stream.FixedWidth.new(3).expect("positive record width");
+    let (sink, input): (stream.Sink<bytes>, stream.Stream<bytes>) = stream.pipe(2).expect("pipe");
+    let decoded: stream.Stream<Result<bytes, stream.CodecError>> = input.frames(codec);
+    sink.send(of([10, 11, 12, 13])).expect("one record and a partial");
+    sink.finish();
+    var frames = 0;
+    var errors = 0;
+    while let .Some(result) = decoded.recv() {
+        match result {
+            .Ok(frame) => {
+                assert(frame == of([10, 11, 12]));
+                frames = frames + 1;
+            }
+            .Err(error) => match error {
+                stream.CodecError.Malformed(detail) => {
+                    assert(detail.contains("incomplete frame at end of stream"));
+                    errors = errors + 1;
+                }
+            }
+        }
+    }
+    decoded.close();
+    assert(frames == 1);
+    assert(errors == 1);
+}
+
+#[test]
+fn test_fixed_width_constructor_rejects_zero_width() {
+    match stream.FixedWidth.new(0) {
+        .Err(stream.CodecError.Malformed(detail)) => assert(detail.contains("must be positive")),
+        _ => panic("a fixed-width codec must reject zero width"),
+    }
+}
+
+#[test]
+fn test_fixed_width_decode_rejects_an_invalid_direct_value() {
+    let codec = stream.FixedWidth { width: 0 };
+    match codec.decode(bytes.new()) {
+        .Err(stream.CodecError.Malformed(detail)) => assert(detail.contains("must be positive")),
+        _ => panic("a directly constructed zero-width codec must be rejected"),
+    }
+}
+
+#[test]
+#[should_panic]
+fn test_fixed_width_encode_rejects_a_mismatched_record_length() {
+    let codec = stream.FixedWidth.new(3).expect("positive record width");
+    codec.encode(of([1, 2]));
+}
+
+#[test]
+#[should_panic]
+fn test_fixed_width_encode_rejects_an_invalid_direct_value() {
+    let codec = stream.FixedWidth { width: 0 };
+    codec.encode(bytes.new());
 }
 
 // ── LengthPrefixed ───────────────────────────────────────────────────

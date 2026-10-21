@@ -66,16 +66,14 @@ test("fixture bytecode provenance is compiled or explicitly deferred", () => {
   }
 });
 
-test("sandbox fixture check fails closed on bytecode drift", () => {
+test("sandbox fixture check rejects a source that no longer compiles", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "hew-sandbox-fixtures-"));
   const tempFixtures = path.join(tempDir, "fixtures");
   fs.cpSync(fixturesRoot, tempFixtures, { recursive: true });
 
   try {
-    const bytecodePath = path.join(tempFixtures, "01-hello-world", "bytecode.json");
-    const bytecode = readJson(bytecodePath);
-    bytecode.compiler_version = "handcrafted-edit";
-    fs.writeFileSync(bytecodePath, `${JSON.stringify(bytecode, null, 2)}\n`);
+    fs.writeFileSync(path.join(tempFixtures, "01-hello-world", "main.hew"),
+      "fn main() { let value: i64 = \"wrong type\"; }\n");
 
     const result = spawnSync("make", ["sandbox-fixtures-check"], {
       cwd: repoRoot,
@@ -83,8 +81,8 @@ test("sandbox fixture check fails closed on bytecode drift", () => {
       encoding: "utf8"
     });
 
-    assert.notEqual(result.status, 0, "sandbox-fixtures-check should fail after a bytecode hand edit");
-    assert.match(result.stderr + result.stdout, /out of date|fixture error/i);
+    assert.notEqual(result.status, 0, "sandbox-fixtures-check should fail after a source type error");
+    assert.match(result.stderr + result.stdout, /compiler produced diagnostics.*type mismatch/i);
   } finally {
     fs.rmSync(tempDir, { recursive: true, force: true });
   }

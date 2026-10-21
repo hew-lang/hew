@@ -44,7 +44,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor(
         (*child).index_in_parent = idx;
         // Unregister from top-level list (was registered in
         // hew_supervisor_start when parent was still null).
-        crate::shutdown::hew_shutdown_unregister_supervisor(child);
+        roots::hew_shutdown_unregister_supervisor(child);
     };
     0
 }
@@ -98,7 +98,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
         // The child was auto-registered as a top-level supervisor in
         // hew_supervisor_start (parent was null at that point). Now that
         // it has a parent, unregister it so only the true root is stopped.
-        crate::shutdown::hew_shutdown_unregister_supervisor(child);
+        roots::hew_shutdown_unregister_supervisor(child);
     };
     0
 }
@@ -417,7 +417,6 @@ pub(crate) fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildL
 /// complete classified lookup; the child token is copied under `roster`.
 /// A restart after return retires that exact token, so a subsequent token send
 /// fails closed instead of retargeting reused storage.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C" fn hew_local_pid_supervisor_child_get(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -430,17 +429,6 @@ pub extern "C" fn hew_local_pid_supervisor_child_get(
     let result = child_get_from_supervisor(sup, key, ChildHandleKind::StableLocalPid);
     drop(pin);
     result
-}
-
-/// Supervisors are unavailable on the wasm runtime; retain an exact symbol so
-/// runtime-family parity stays exhaustive while codegen rejects the substrate.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_local_pid_supervisor_child_get(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-) -> ChildLookupResult {
-    ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown)
 }
 
 /// Test-only hook fired inside [`role_resolve_current_child_id`] in the gap

@@ -333,8 +333,8 @@ fn remove_before_publication_restores_superseded_claim() {
 
 /// Issue #2655: a connection's monitor/link retirement fan-out must honour
 /// the publication token. `retire_connection_publication` fires
-/// `fan_out_monitor_lost_for_node` (arming `MonitorLost` for every pending
-/// cross-node watcher of the peer) ONLY when the retiring connection is the
+/// `fan_out_monitor_lost_for_publication` (arming `MonitorLost` for pending
+/// cross-node watchers owned by that publication) ONLY when the retiring connection is the
 /// current publication owner. A superseded connection — one whose claim was
 /// overwritten by a same-credential reconnect while the peer stays live under
 /// the newer claim — retires nothing and must NOT drive the loss fan-out: the
@@ -354,10 +354,19 @@ fn retire_fans_out_monitor_lost_only_for_the_owning_connection() {
     let rt = crate::runtime::rt_current_opt().expect("test guard installs a runtime");
     let peer: u16 = 42;
     let target = test_location(peer, 7);
-    let _ref_id = rt
-        .monitors
-        .register_remote_monitor(target, 999)
-        .expect("test monitor id");
+    rt.monitors.insert_admitted_observation(
+        1,
+        target,
+        crate::monitor::WatcherAction::Monitor {
+            watcher_actor_id: 999,
+        },
+        crate::monitor::ObservationAuthority {
+            grant: 1,
+            publication: 400,
+            watcher: test_location(43, 8),
+        },
+        None,
+    );
 
     with_reserved_claim(peer, 95, 400, true, |mgr| {
         // SAFETY: mgr is live for the whole closure.

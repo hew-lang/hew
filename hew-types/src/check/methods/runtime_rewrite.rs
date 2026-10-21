@@ -138,7 +138,7 @@ impl Checker {
     /// registered method identity, its canonical stdlib provenance, and the
     /// checked parameter/result shape before a runtime descriptor can cross
     /// the checker boundary.
-    pub(super) fn canonical_std_io_runtime_method_family(
+    pub(in crate::check) fn canonical_std_io_runtime_method_family(
         &self,
         signature_key: &str,
         c_symbol: &str,

@@ -10,10 +10,10 @@
     {
       "phase": "profile",
       "rejection": {
-        "capability": "FileRead::LastErrorKind",
-        "category": "native_only",
+        "capability": "hew_file_read_bytes",
+        "category": "not_implemented",
         "code": "sandbox.capability.unsupported",
-        "message": "Filesystem access requires native execution.",
+        "message": "This language or standard-library operation is not available in the browser runtime yet.",
         "span": null
       },
       "seq": 1,
@@ -45,10 +45,10 @@
     "runtime_failures": [],
     "sandbox_rejections": [
       {
-        "capability": "FileRead::LastErrorKind",
-        "category": "native_only",
+        "capability": "hew_file_read_bytes",
+        "category": "not_implemented",
         "code": "sandbox.capability.unsupported",
-        "message": "Filesystem access requires native execution.",
+        "message": "This language or standard-library operation is not available in the browser runtime yet.",
         "span": null
       }
     ],
@@ -63,7 +63,7 @@
     }
   },
   "fixture_id": "sandbox-reject-filesystem",
-  "hew_version": "0.6.1",
+  "hew_version": "0.6.2",
   "profile": "sandbox.sandbox-vm-export.v0",
   "replay": {
     "inputs": [],

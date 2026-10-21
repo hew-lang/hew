@@ -94,14 +94,14 @@ fn location_format_result_is_transferred() {
             hi: 0x0123_4567_89ab_cdef,
             lo: 0xfedc_ba98_7654_3210,
         },
-        slot: 42,
+        target_id: 42,
         incarnation: 7,
-        reserved: 0,
+        target_kind: 0,
     };
     assert_result_is_transferred(
         "hew_location_format",
         location,
-        "0123456789abcdeffedcba9876543210/42@7",
+        "0123456789abcdeffedcba9876543210/actor:42@7",
         hew_location_format,
     );
 }

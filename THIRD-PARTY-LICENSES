@@ -7,7 +7,7 @@ MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE in this archive).
 
 License summary by SPDX identifier:
   Apache License 2.0 (406 packages)
-  MIT License (116 packages)
+  MIT License (115 packages)
   Unicode License v3 (19 packages)
   BSD 3-Clause "New" or "Revised" License (9 packages)
   ISC License (8 packages)
@@ -7800,7 +7800,6 @@ limitations under the License.
 ================================================================================
 Apache License 2.0
   * rand_core 0.10.1 — https://github.com/rust-random/rand_core
-  * rand_core 0.6.4 — https://github.com/rust-random/rand
   * rand_core 0.9.5 — https://github.com/rust-random/rand
   * rand_pcg 0.10.2 — https://github.com/rust-random/rngs
 
@@ -9242,6 +9241,7 @@ limitations under the License.
 Apache License 2.0
   * hew-analysis 0.6.3 — https://github.com/hew-lang/hew
   * hew-cabi 0.6.3 — https://github.com/hew-lang/hew
+  * hew-calendar 0.6.3 — https://github.com/hew-lang/hew
   * hew-capability-gen 0.6.3 — https://github.com/hew-lang/hew
   * hew-cli 0.6.3 — https://github.com/hew-lang/hew
   * hew-codec 0.6.3 — https://github.com/hew-lang/hew
@@ -9273,11 +9273,11 @@ Apache License 2.0
   * anyhow 1.0.104 — https://github.com/dtolnay/anyhow
   * async-trait 0.1.92 — https://github.com/dtolnay/async-trait
   * aws-lc-sys 0.45.0 — https://github.com/aws/aws-lc-rs
-  * cron 0.17.0 — https://github.com/zslayton/cron
   * dirs-sys 0.5.0 — https://github.com/dirs-dev/dirs-sys-rs
   * dirs 6.0.0 — https://github.com/soc/dirs-rs
   * document-features 0.2.12 — https://github.com/slint-ui/document-features
   * dunce 1.0.5 — https://gitlab.com/kornelski/dunce
+  * dyn-clone 1.0.20 — https://github.com/dtolnay/dyn-clone
   * fastbloom 0.17.0 — https://github.com/tomtomwombat/fastbloom/
   * fiat-crypto 0.2.9 — https://github.com/mit-plv/fiat-crypto
   * fiat-crypto 0.3.0 — https://github.com/mit-plv/fiat-crypto
@@ -9302,7 +9302,6 @@ Apache License 2.0
   * r-efi 5.3.0 — https://github.com/r-efi/r-efi
   * r-efi 6.0.0 — https://github.com/r-efi/r-efi
   * rand 0.10.3 — https://github.com/rust-random/rand
-  * rand 0.8.8 — https://github.com/rust-random/rand
   * rand 0.9.5 — https://github.com/rust-random/rand
   * rand_chacha 0.9.0 — https://github.com/rust-random/rand
   * rand_xorshift 0.4.0 — https://github.com/rust-random/rngs
@@ -9317,6 +9316,7 @@ Apache License 2.0
   * serde 1.0.229 — https://github.com/serde-rs/serde
   * serde_core 1.0.229 — https://github.com/serde-rs/serde
   * serde_derive 1.0.229 — https://github.com/serde-rs/serde
+  * serde_derive_internals 0.30.0 — https://github.com/serde-rs/serde
   * serde_json 1.0.151 — https://github.com/serde-rs/json
   * serde_yaml 0.9.34+deprecated — https://github.com/dtolnay/serde-yaml
   * shlex 2.0.1 — https://github.com/comex/rust-shlex
@@ -11113,6 +11113,34 @@ SOFTWARE.
 
 ================================================================================
 MIT License
+  * schemars 1.2.3 — https://github.com/GREsau/schemars
+  * schemars_derive 1.2.3 — https://github.com/GREsau/schemars
+
+MIT License
+
+Copyright (c) 2019 Graham Esau
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+================================================================================
+MIT License
   * ruzstd 0.9.1 — https://github.com/KillingSpark/zstd-rs
 
 MIT License
@@ -11404,6 +11432,8 @@ MIT License
   * plotters-backend 0.3.7 — https://github.com/plotters-rs/plotters
   * plotters-svg 0.3.7 — https://github.com/plotters-rs/plotters.git
   * plotters 0.3.7 — https://github.com/plotters-rs/plotters
+  * ts-rs-macros 12.0.1 — https://github.com/Aleph-Alpha/ts-rs
+  * ts-rs 12.0.1 — https://github.com/Aleph-Alpha/ts-rs
 
 MIT License
 
@@ -11594,7 +11624,6 @@ DEALINGS IN THE SOFTWARE.
 
 ================================================================================
 MIT License
-  * winnow 0.7.15 — https://github.com/winnow-rs/winnow
   * winnow 1.0.4 — https://github.com/winnow-rs/winnow
 
 Permission is hereby granted, free of charge, to any person obtaining
@@ -11670,35 +11699,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-
-
-================================================================================
-MIT License
-  * phf 0.11.3 — https://github.com/rust-phf/rust-phf
-  * phf_generator 0.11.3 — https://github.com/rust-phf/rust-phf
-  * phf_macros 0.11.3 — https://github.com/rust-phf/rust-phf
-  * phf_shared 0.11.3 — https://github.com/rust-phf/rust-phf
-
-The MIT License (MIT)
-
-Copyright (c) 2014-2022 Steven Fackler, Yuki Okushi
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
-the Software, and to permit persons to whom the Software is furnished to do so,
-subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
-FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
-COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
-IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
-CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 
 ================================================================================

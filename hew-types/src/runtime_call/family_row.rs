@@ -831,6 +831,7 @@ impl RuntimeCallFamily {
             Self::InstantDurationSince => declared::INSTANTDURATIONSINCE.row,
             Self::InstantElapsed => declared::INSTANTELAPSED.row,
             Self::InstantNow => declared::INSTANTNOW.row,
+            Self::TimestampNow => declared::TIMESTAMPNOW.row,
             Self::MathIntrinsic(MathIntrinsic::Sqrt) => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "sqrt",
@@ -4969,22 +4970,6 @@ impl RuntimeCallFamily {
                         effect: E::Borrow,
                     }],
                     result: R::BitCopy(K::BuiltinNominal(BuiltinType::NodeId)),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Direct,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::LocationSlot => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_location_slot",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::BuiltinArgument(BuiltinType::Location),
-                        effect: E::Borrow,
-                    }],
-                    result: R::BitCopy(K::U64),
                     failures: &[],
                 }),
                 staging: RuntimeStaging::Declared,

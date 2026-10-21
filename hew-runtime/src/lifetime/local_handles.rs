@@ -2,15 +2,10 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
-// `AtomicBool` types `SupervisorControl` (native) and the `cfg(test)`
-// registration-failure injector; a wasm32 non-test build has no user.
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicUsize, Ordering};
-#[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 use std::sync::{Condvar, Mutex, PoisonError};
-#[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
@@ -74,14 +69,12 @@ pub(crate) enum Route {
         runtime_id: RuntimeId,
         actor_id: u64,
     },
-    #[cfg(not(target_arch = "wasm32"))]
     Supervisor {
         runtime_id: RuntimeId,
         control_id: HewLocalPidId,
     },
     /// Scalar provenance remains after the allocation is reclaimed, so a
     /// stopped supervisor's declared roles retain distinct identities.
-    #[cfg(not(target_arch = "wasm32"))]
     RetiredSupervisor { runtime_id: RuntimeId },
 }
 
@@ -90,7 +83,6 @@ pub(crate) enum LocalHandleError {
     Exhausted,
     ShuttingDown,
     ActorAlreadyRegistered,
-    #[cfg(not(target_arch = "wasm32"))]
     SupervisorAlreadyRegistered,
     IdentityCollision,
     PublicationAlreadyUsed,
@@ -107,13 +99,6 @@ pub(crate) enum RetireActorResult {
 /// A role keeps its stable token when no child incarnation currently occupies
 /// the slot; when occupied, the pair preserves the full identity across the
 /// later actor pin.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "WASI does not expose the native actor monitor and link hooks"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ObservedActorTarget {
     Actor(u64),
@@ -130,13 +115,9 @@ struct LocalHandleState {
     // A retired identity has no allocation ownership but still names the
     // terminal incarnation for immediate DOWN delivery.
     retired_actors: HashMap<HewLocalPidId, (RuntimeId, u64)>,
-    #[cfg(not(target_arch = "wasm32"))]
     controls: HashMap<HewLocalPidId, Arc<SupervisorControl>>,
-    #[cfg(not(target_arch = "wasm32"))]
     supervisor_tokens: HashMap<usize, HewLocalPidId>,
-    #[cfg(not(target_arch = "wasm32"))]
     supervisor_roles: HashMap<HewLocalPidId, SupervisorRole>,
-    #[cfg(not(target_arch = "wasm32"))]
     supervisor_role_tokens: HashMap<(HewLocalPidId, u32, SupervisorRoleKind), HewLocalPidId>,
     #[cfg(not(target_arch = "wasm32"))]
     imports: HashMap<HewLocalPidId, ImportedActorBinding>,
@@ -149,7 +130,6 @@ struct ImportedActorBinding {
 }
 
 /// The disjoint declared child rosters share one canonical role-token table.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum SupervisorRoleKind {
     Actor,
@@ -157,7 +137,6 @@ pub(crate) enum SupervisorRoleKind {
 }
 
 /// A stable declared role, independent of its current occupant.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone, Copy)]
 struct SupervisorRole {
     kind: SupervisorRoleKind,
@@ -166,9 +145,7 @@ struct SupervisorRole {
     slot: u32,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 const SUPERVISOR_CLOSING_BIT: usize = 1usize << (usize::BITS - 1);
-#[cfg(not(target_arch = "wasm32"))]
 const SUPERVISOR_PIN_MASK: usize = !SUPERVISOR_CLOSING_BIT;
 
 /// Stable liveness authority for one supervisor allocation.
@@ -176,13 +153,11 @@ const SUPERVISOR_PIN_MASK: usize = !SUPERVISOR_CLOSING_BIT;
 /// The high state bit closes admission; the remaining bits count operations
 /// that may dereference the allocation. Reclamation starts only after the
 /// direct route is retired and this count drains to zero.
-#[cfg(not(target_arch = "wasm32"))]
 type RoleWaitTargets = (
     Vec<Option<crate::actor_native::NativeWaitTarget>>,
     Vec<Option<crate::actor_native::NativeWaitTarget>>,
 );
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SupervisorControl {
     supervisor_addr: usize,
     direct_id: HewLocalPidId,
@@ -199,7 +174,6 @@ pub(crate) struct SupervisorControl {
     drained: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SupervisorControl {
     fn new(
         supervisor: *mut crate::supervisor::HewSupervisor,
@@ -230,6 +204,8 @@ impl SupervisorControl {
     }
 
     pub(crate) fn finish_terminal(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::hew_node::retire_current_role_names(self.direct_id);
         let parent = self
             .parent_stop_notification
             .lock()
@@ -359,6 +335,15 @@ impl SupervisorControl {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
+            if crate::driver::active() {
+                drop(guard);
+                crate::driver::step();
+                guard = self
+                    .drain_mutex
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
             let (next, result) = self
                 .drained
                 .wait_timeout(guard, remaining)
@@ -373,10 +358,8 @@ impl SupervisorControl {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct SupervisorPin(Arc<SupervisorControl>);
 
-#[cfg(not(target_arch = "wasm32"))]
 impl SupervisorPin {
     pub(crate) fn supervisor(&self) -> *mut crate::supervisor::HewSupervisor {
         self.0.supervisor()
@@ -387,7 +370,6 @@ impl SupervisorPin {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for SupervisorPin {
     fn drop(&mut self) {
         let previous = self.0.access_state.fetch_sub(1, Ordering::AcqRel);
@@ -410,7 +392,6 @@ impl Drop for SupervisorPin {
 pub(crate) struct LocalHandles {
     state: PoisonSafe<LocalHandleState>,
     publication_gate: PublicationGate,
-    #[cfg(not(target_arch = "wasm32"))]
     supervisor_teardown_gate: SupervisorTeardownGate,
     #[cfg(test)]
     fail_next_registration: AtomicBool,
@@ -430,13 +411,11 @@ struct PublicationGateState {
     in_flight: usize,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct SupervisorTeardownGate {
     state: Mutex<SupervisorTeardownGateState>,
     idle: Condvar,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct SupervisorTeardownGateState {
     accepting: bool,
     in_flight: usize,
@@ -445,13 +424,11 @@ struct SupervisorTeardownGateState {
 /// One destructor owner that remains visible after its access pin and shutdown
 /// root are released. Runtime cleanup closes admission and drains these leases
 /// before it can reclaim actors, controls, or the owning `RuntimeInner`.
-#[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub(crate) struct SupervisorTeardownLease {
     _owner: Arc<SupervisorTeardownOwner>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 struct SupervisorTeardownOwner {
     handles: *const LocalHandles,
 }
@@ -459,14 +436,11 @@ struct SupervisorTeardownOwner {
 // SAFETY: runtime cleanup cannot drop `LocalHandles` until every lease has
 // released itself through the gate. The pointed-to authority therefore outlives
 // a lease moved to a deferred destructor thread.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Send for SupervisorTeardownOwner {}
 // SAFETY: the owner only uses the pointed-to gate through its internally
 // synchronized mutex and condvar, under the same cleanup lifetime guarantee.
-#[cfg(not(target_arch = "wasm32"))]
 unsafe impl Sync for SupervisorTeardownOwner {}
 
-#[cfg(not(target_arch = "wasm32"))]
 impl Drop for SupervisorTeardownOwner {
     fn drop(&mut self) {
         // SAFETY: the cleanup drain described above keeps the authority live.
@@ -529,7 +503,6 @@ impl LocalHandles {
                 }),
                 idle: Condvar::new(),
             },
-            #[cfg(not(target_arch = "wasm32"))]
             supervisor_teardown_gate: SupervisorTeardownGate {
                 state: Mutex::new(SupervisorTeardownGateState {
                     accepting: true,
@@ -567,7 +540,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn begin_shutdown(&self) {
         let mut state = self
             .publication_gate
@@ -584,7 +556,6 @@ impl LocalHandles {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn begin_supervisor_teardown(&self) -> Option<SupervisorTeardownLease> {
         let mut state = self
             .supervisor_teardown_gate
@@ -602,7 +573,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn close_supervisor_teardown_admission(&self) {
         self.supervisor_teardown_gate
             .state
@@ -611,7 +581,6 @@ impl LocalHandles {
             .accepting = false;
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn wait_for_supervisor_teardowns(&self, timeout: Duration) -> bool {
         let deadline = Instant::now().checked_add(timeout);
         let mut state = self
@@ -619,7 +588,7 @@ impl LocalHandles {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        #[cfg(test)]
+        #[cfg(all(test, not(target_arch = "wasm32")))]
         if state.in_flight != 0 {
             drop(state);
             self.run_supervisor_teardown_drain_hook();
@@ -636,6 +605,16 @@ impl LocalHandles {
             let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
                 return false;
             };
+            if crate::driver::active() {
+                drop(state);
+                crate::driver::step();
+                state = self
+                    .supervisor_teardown_gate
+                    .state
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                continue;
+            }
             let (next, result) = self
                 .supervisor_teardown_gate
                 .idle
@@ -743,7 +722,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn register_supervisor_reserved(
         &self,
         runtime_id: RuntimeId,
@@ -898,12 +876,10 @@ impl LocalHandles {
             .access(|state| (state.routes.len(), state.actor_tokens.len()))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn actor_route_count(&self) -> usize {
         self.state.access(|state| state.actor_tokens.len())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn pin_supervisor(
         &self,
         runtime_id: RuntimeId,
@@ -930,7 +906,6 @@ impl LocalHandles {
         Some(pin)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn pin_direct_supervisor(
         &self,
         runtime_id: RuntimeId,
@@ -948,7 +923,6 @@ impl LocalHandles {
         control.try_pin()
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn supervisor_role_owner(
         &self,
         runtime_id: RuntimeId,
@@ -991,7 +965,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn actor_role_owner_slot(
         &self,
         runtime_id: RuntimeId,
@@ -1012,7 +985,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn supervisor_control_for_raw(
         &self,
         token: HewLocalPidId,
@@ -1024,7 +996,6 @@ impl LocalHandles {
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retire_supervisor_route(&self, control: &SupervisorControl) {
         self.state.access(|state| {
             if matches!(
@@ -1046,7 +1017,6 @@ impl LocalHandles {
         });
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn remove_supervisor_control(&self, control: &SupervisorControl) {
         self.state.access(|state| {
             let matches = state
@@ -1075,7 +1045,6 @@ impl LocalHandles {
             .all(|control| control.wait_for_pins(timeout))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     fn supervisor_counts(&self) -> (usize, usize) {
         self.state.access(|state| {
             let routes = state
@@ -1107,7 +1076,6 @@ impl LocalHandlePublication<'_> {
         self.handles.register_actor_reserved(runtime_id, actor_id)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn register_supervisor(
         &self,
         runtime_id: RuntimeId,
@@ -1129,13 +1097,25 @@ impl LocalHandlePublication<'_> {
 static WASM_LOCAL_HANDLES: std::sync::OnceLock<LocalHandles> = std::sync::OnceLock::new();
 
 #[cfg(not(target_arch = "wasm32"))]
-fn current_handles() -> Option<&'static LocalHandles> {
+pub(crate) fn current_handles() -> Option<&'static LocalHandles> {
     crate::runtime::rt_current_opt().map(|rt| &rt.local_handles)
 }
 
 #[cfg(target_arch = "wasm32")]
-fn current_handles() -> Option<&'static LocalHandles> {
+pub(crate) fn current_handles() -> Option<&'static LocalHandles> {
     Some(WASM_LOCAL_HANDLES.get_or_init(LocalHandles::new))
+}
+
+/// Runtime identity corresponding to the selected local-handle authority.
+fn current_runtime_id() -> Option<RuntimeId> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::runtime::rt_current_opt().map(crate::runtime::RuntimeInner::runtime_id)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        Some(RuntimeId::DEFAULT)
+    }
 }
 
 /// Publish one admitted descriptor in the existing actor-handle authority.
@@ -1259,7 +1239,6 @@ pub(crate) fn begin_actor_publication_in(
     handles.begin_publication()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_supervisor_publication_in(
     handles: &LocalHandles,
 ) -> Result<LocalHandlePublication<'_>, LocalHandleError> {
@@ -1268,7 +1247,6 @@ pub(crate) fn begin_supervisor_publication_in(
 
 /// Retire an exact direct actor route in the current runtime authority.
 #[cfg(target_arch = "wasm32")]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn retire_current_actor(token: HewLocalPidId, actor_id: u64) -> RetireActorResult {
     current_handles().map_or(RetireActorResult::AlreadyRetired, |handles| {
         handles.retire_actor(token, actor_id)
@@ -1286,7 +1264,6 @@ pub(crate) fn retire_actor_in(
 }
 
 /// Assert that actor cleanup retired every direct actor route.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn assert_current_actor_routes_empty() {
     let count = current_handles().map_or(0, LocalHandles::actor_route_count);
     assert_eq!(count, 0, "local actor handle routes survived actor cleanup");
@@ -1307,7 +1284,6 @@ pub(crate) fn current_publication_open_for_test() -> bool {
 }
 
 /// Close publication and wait for every in-flight spawn before bulk drain.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_current_shutdown() {
     if let Some(handles) = current_handles() {
         handles.begin_shutdown();
@@ -1319,19 +1295,16 @@ pub(crate) fn close_current_supervisors_for_cleanup(timeout: Duration) -> bool {
     current_handles().is_none_or(|handles| handles.close_supervisors_for_cleanup(timeout))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn close_current_supervisor_teardown_admission() {
     if let Some(handles) = current_handles() {
         handles.close_supervisor_teardown_admission();
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn wait_for_current_supervisor_teardowns(timeout: Duration) -> bool {
     current_handles().is_none_or(|handles| handles.wait_for_supervisor_teardowns(timeout))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn assert_current_supervisors_empty() {
     let counts = current_handles().map_or((0, 0), LocalHandles::supervisor_counts);
     assert_eq!(
@@ -1339,14 +1312,6 @@ pub(crate) fn assert_current_supervisors_empty() {
         (0, 0),
         "local supervisor routes or controls survived runtime cleanup"
     );
-}
-
-#[cfg(target_arch = "wasm32")]
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn finish_current_shutdown() {
-    if let Some(handles) = current_handles() {
-        handles.reopen_after_shutdown();
-    }
 }
 
 #[cfg(test)]
@@ -1381,75 +1346,120 @@ pub(crate) fn install_current_supervisor_teardown_drain_hook_for_test(
         .install_supervisor_teardown_drain_hook(entered, release);
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn pin_current_supervisor(token: HewLocalPidId) -> Option<SupervisorPin> {
-    let runtime = crate::runtime::rt_current_opt()?;
-    runtime
-        .local_handles
-        .pin_supervisor(runtime.runtime_id(), token)
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    handles.pin_supervisor(runtime_id, token)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_role_owner(
     owner: HewLocalPidId,
     slot: u32,
     kind: SupervisorRoleKind,
 ) -> HewLocalPidId {
-    let Some(runtime) = crate::runtime::rt_current_opt() else {
+    let Some(handles) = current_handles() else {
         return HewLocalPidId::INVALID;
     };
-    runtime
-        .local_handles
-        .supervisor_role_owner(runtime.runtime_id(), owner, slot, kind)
+    let Some(runtime_id) = current_runtime_id() else {
+        return HewLocalPidId::INVALID;
+    };
+    handles
+        .supervisor_role_owner(runtime_id, owner, slot, kind)
         .unwrap_or(HewLocalPidId::INVALID)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_actor_role_owner_slot(
     token: HewLocalPidId,
 ) -> Option<(HewLocalPidId, u32, SupervisorRoleKind)> {
-    let runtime = crate::runtime::rt_current_opt()?;
-    runtime
-        .local_handles
-        .actor_role_owner_slot(runtime.runtime_id(), token)
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    handles.actor_role_owner_slot(runtime_id, token)
+}
+
+/// Recover only an existing canonical actor-role token from carried metadata.
+/// Parsing a token never allocates a handle or confers actor authority.
+pub(crate) fn carried_role(raw: u64) -> Option<HewLocalPidId> {
+    let token = HewLocalPidId(usize::try_from(raw).ok()?);
+    let (_, _, kind) = current_actor_role_owner_slot(token)?;
+    (kind == SupervisorRoleKind::Actor).then_some(token)
+}
+
+/// The original stable control owns a role path, including nested roles.
+pub(crate) fn current_actor_role_root(token: HewLocalPidId) -> Option<HewLocalPidId> {
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    handles.state.access(|state| {
+        let role = state.supervisor_roles.get(&token)?;
+        match state.routes.get(&role.root)? {
+            Route::Supervisor {
+                runtime_id: owner, ..
+            }
+            | Route::RetiredSupervisor { runtime_id: owner }
+                if *owner == runtime_id && role.kind == SupervisorRoleKind::Actor =>
+            {
+                Some(role.root)
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Pin exactly the worker selected once by a carried semantic target.
+/// The returned pin seam never resolves a replacement after selection.
+pub(crate) fn with_current_target_actor<R>(
+    target: crate::node_identity::Target,
+    local_route: u16,
+    run: impl FnOnce(*mut crate::actor::HewActor) -> R,
+) -> Option<R> {
+    let (id, serial) = match target {
+        crate::node_identity::Target::Direct(serial) => {
+            let serial = serial.get();
+            if !crate::pid::actor_slot_fits_internal_alias(serial) {
+                return None;
+            }
+            (crate::pid::hew_pid_make(local_route, serial), serial)
+        }
+        crate::node_identity::Target::Role(token) => {
+            crate::supervisor::current_actor_role_identity(carried_role(token.get())?)?
+        }
+    };
+    crate::lifetime::live_actors::with_actor_send_by_identity(id, serial, |pin| run(pin.as_ptr()))
 }
 
 /// Observe the stable control even after close has retired the direct route.
-/// Local PID handles are a native surface: `hew_local_pid_*` is gated off
-/// wasm32, so nothing there mints a token to look up.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_completion(
     token: HewLocalPidId,
 ) -> Option<Arc<crate::actor_native::NativeActorCompletion>> {
-    let runtime = crate::runtime::rt_current_opt()?;
-    runtime.local_handles.state.access(|state| {
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    handles.state.access(|state| {
         let control = state.controls.get(&token)?;
-        (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(&control.completion))
+        (control.runtime_id() == runtime_id).then(|| Arc::clone(&control.completion))
     })
 }
 
 /// Resolve an exact child completion retained before its owner route closed.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_role_wait_target(
     owner: HewLocalPidId,
     slot: u32,
     supervisor: bool,
 ) -> Option<crate::actor_native::NativeWaitTarget> {
     let owner = current_supervisor_role_wait_owner(owner)?;
-    let runtime = crate::runtime::rt_current_opt()?;
-    let control = runtime.local_handles.state.access(|state| {
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    let control = handles.state.access(|state| {
         let control = state.controls.get(&owner)?;
-        (control.runtime_id() == runtime.runtime_id()).then(|| Arc::clone(control))
+        (control.runtime_id() == runtime_id).then(|| Arc::clone(control))
     })?;
     control.role_wait_target(slot, supervisor)
 }
 
 /// Follow a retained nested role path after its root's direct route closes.
 /// Each hop is the exact supervisor incarnation captured at owner shutdown.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option<HewLocalPidId> {
-    let runtime = crate::runtime::rt_current_opt()?;
-    let (root, path) = runtime.local_handles.state.access(|state| {
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    let (root, path) = handles.state.access(|state| {
         let mut current = owner;
         let mut path = Vec::new();
         while let Some(role) = state.supervisor_roles.get(&current) {
@@ -1463,11 +1473,10 @@ pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option
     });
     let mut token = root;
     for slot in path.into_iter().rev() {
-        let control = runtime
-            .local_handles
+        let control = handles
             .state
             .access(|state| state.controls.get(&token).cloned())?;
-        if control.runtime_id() != runtime.runtime_id() {
+        if control.runtime_id() != runtime_id {
             return None;
         }
         token = control
@@ -1481,7 +1490,6 @@ pub(crate) fn current_supervisor_role_wait_owner(owner: HewLocalPidId) -> Option
     Some(token)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_supervisor_control_for_raw(
     token: HewLocalPidId,
     supervisor: *mut crate::supervisor::HewSupervisor,
@@ -1489,21 +1497,19 @@ pub(crate) fn current_supervisor_control_for_raw(
     current_handles()?.supervisor_control_for_raw(token, supervisor)
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_current_supervisor_teardown() -> Option<SupervisorTeardownLease> {
     current_handles()?.begin_supervisor_teardown()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn close_current_supervisor(control: &SupervisorControl) -> bool {
-    let Some(runtime) = crate::runtime::rt_current_opt() else {
+    let Some(handles) = current_handles() else {
         return false;
     };
-    if runtime.runtime_id() != control.runtime_id() {
+    if current_runtime_id() != Some(control.runtime_id()) {
         return false;
     }
     let won_close = control.begin_close();
-    runtime.local_handles.retire_supervisor_route(control);
+    handles.retire_supervisor_route(control);
     won_close
 }
 
@@ -1526,7 +1532,6 @@ pub(crate) fn with_current_actor<R>(
     if let Some(id) = resolve_current_actor(token) {
         return crate::lifetime::live_actors::with_actor_send_by_id(id, f);
     }
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
         return crate::lifetime::live_actors::with_actor_send_by_identity(id, serial, |pin| {
             f(pin.as_ptr())
@@ -1536,13 +1541,6 @@ pub(crate) fn with_current_actor<R>(
 }
 
 /// Resolve an observation target even after its allocation has been reclaimed.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "WASI does not expose the native actor monitor and link hooks"
-    )
-)]
 pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<u64> {
     #[cfg(not(target_arch = "wasm32"))]
     let runtime_id = crate::runtime::rt_current_opt()?.runtime_id();
@@ -1554,14 +1552,6 @@ pub(crate) fn resolve_current_observation_actor(token: HewLocalPidId) -> Option<
 /// Resolve the actor incarnation selected now by a direct handle or actor
 /// role. An empty role is still a valid observation target and retains its
 /// stable role token for the immediate terminal notification.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "WASI does not expose the native actor monitor and link hooks"
-    )
-)]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<ObservedActorTarget> {
     if let Some(actor_id) = resolve_current_observation_actor(token) {
         return Some(ObservedActorTarget::Actor(actor_id));
@@ -1574,20 +1564,6 @@ pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<Ob
     // A role token never falls back to a previous occupant when its slot is
     // empty.
     Some(ObservedActorTarget::Role { token, incarnation })
-}
-
-/// wasm32 currently has no supervised actor-role runtime, so only direct
-/// actor identities can be selected for observation there.
-#[cfg_attr(
-    target_arch = "wasm32",
-    allow(
-        dead_code,
-        reason = "WASI does not expose the native actor monitor and link hooks"
-    )
-)]
-#[cfg(target_arch = "wasm32")]
-pub(crate) fn resolve_current_observed_target(token: HewLocalPidId) -> Option<ObservedActorTarget> {
-    resolve_current_observation_actor(token).map(ObservedActorTarget::Actor)
 }
 
 /// Return the direct token registered for an `ActorId` in the current runtime.

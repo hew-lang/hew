@@ -30,21 +30,21 @@ fn poll_until(mut ready: impl FnMut(u32) -> bool) {
 /// The test runner's timeout is the hang guard.
 const NO_ASK_DEADLINE_MS: u64 = u64::MAX;
 
-fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
+pub(super) fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
     let mut bytes = [0_u8; 16];
     bytes[14..].copy_from_slice(&route_slot.to_be_bytes());
     crate::node_identity::NodeId::from_bytes(bytes)
 }
 
 fn test_location(route_slot: u16, actor_slot: u64) -> Location {
-    Location::new(test_node_id(route_slot), actor_slot, 1).unwrap()
+    Location::direct(test_node_id(route_slot), actor_slot, 1).unwrap()
 }
 
 fn location_for_test_node(node: &TestNode, actor_id: u64) -> Location {
     // SAFETY: `TestNode` owns a live, non-null node pointer for this test.
     let node = unsafe { node.as_ptr().as_ref() }.expect("test node must be live");
     assert_eq!(crate::pid::hew_pid_node(actor_id), node.route_slot);
-    Location::new(
+    Location::direct(
         node.auth
             .node_identity()
             .expect("authorized test node must have an identity"),
@@ -88,17 +88,12 @@ fn granted_target_for_node(
         .node_identity()
         .unwrap();
     let claim = connection::claim_send_by_identity(manager, recipient, None).unwrap();
-    let target = crate::lifetime::live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: this exact actor is pinned until its incarnation is copied.
-        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
-    })
-    .unwrap();
     let (export, offer) = manager
         .service_exports
         .export(
+            manager.local_node_id,
             claim.peer_session(),
             1,
-            target,
             location,
             vec![handler.into()],
         )
@@ -120,7 +115,7 @@ unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Locati
     }
 }
 
-unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
+pub(super) unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
     let snapshot = PeerAuthSnapshot::for_test(test_node_id(route_slot), []);
     // SAFETY: caller owns a stopped test node.
     assert_eq!(unsafe { hew_node_set_auth_snapshot(node, snapshot) }, 0);

@@ -27,6 +27,16 @@ fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
             "set(\"answer\", json.null()).expect(\"set succeeds\")",
         ),
         ("Vec<i64>", "Vec.new()", "push(7)"),
+        (
+            "HashMap<string, i64>",
+            "HashMap.new()",
+            "get_or_insert_with(\"coffee\", || 1)",
+        ),
+        (
+            "HashMap<string, i64>",
+            "HashMap.new()",
+            "update(\"coffee\", |value| value + 1)",
+        ),
     ] {
         for (binding, mutable) in [("var", true), ("let", false)] {
             for (declaration, receiver) in [
@@ -4164,4 +4174,34 @@ fn main() {
 ";
     let output = check_source_with_stdlib(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn collection_updates_require_the_declared_generic_bounds() {
+    for (parameters, missing) in [
+        ("K: Eq, V: Clone", "Hash"),
+        ("K: Hash, V: Clone", "Eq"),
+        ("K: Hash + Eq, V", "Clone"),
+    ] {
+        for (callback, call) in [
+            (
+                "factory: fn() -> V",
+                "values.get_or_insert_with(key, factory)",
+            ),
+            ("transform: fn(V) -> V", "values.update(key, transform)"),
+        ] {
+            let source = format!(
+                "fn missing<{parameters}>(var values: HashMap<K, V>, consume key: K, {callback}) {{ let _ = {call}; }} fn main() {{}}"
+            );
+            let output = check_source_with_stdlib(&source);
+            assert!(
+                output.errors.iter().any(|error| {
+                    error.kind == TypeErrorKind::BoundsNotSatisfied
+                        && error.message.contains(missing)
+                }),
+                "{source}: missing {missing} must be refused: {:?}",
+                output.errors
+            );
+        }
+    }
 }

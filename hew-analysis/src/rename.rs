@@ -261,7 +261,6 @@ impl<'ast> AstVisitor<'ast> for LocalNonFunctionRoles<'_> {
                 for member in &item.body {
                     match member {
                         TypeBodyItem::Field { ty, .. } => self.annotation(&ty.0),
-                        TypeBodyItem::Method(function) => self.function(function),
                         TypeBodyItem::Variant(_) => {}
                     }
                 }

@@ -5,6 +5,7 @@
 //! - `hew_path_is_file`   — test whether a path is a regular file
 //! - `hew_path_is_dir`    — test whether a path is a directory
 //! - `hew_path_absolute`  — resolve a path to an absolute form
+//! - `hew_path_separator` — native separator for Hew lexical path helpers
 //! - `hew_glob`           — expand a glob pattern via POSIX `glob(3)`
 //! - `hew_glob_is_valid`  — whether the expansion completed without error
 //! - `hew_glob_error`     — the expansion failure detail, when there is one
@@ -28,6 +29,14 @@
 
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
 use std::ffi::CStr;
+
+/// Return the native path separator as an owned managed string.
+///
+/// The caller owns the result and releases it with `hew_string_drop`.
+#[no_mangle]
+pub extern "C" fn hew_path_separator() -> *mut HewString {
+    string_from_str(std::path::MAIN_SEPARATOR_STR)
+}
 
 // ── Simple filesystem-metadata helpers ──────────────────────────────────────
 

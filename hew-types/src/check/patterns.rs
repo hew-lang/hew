@@ -548,9 +548,10 @@ impl Checker {
                 continue;
             }
             if !canonical_names.contains(field.name.name.as_str()) {
-                self.report_error_with_suggestions(
+                self.report_error_with_suggestions_at(
                     TypeErrorKind::UndefinedField,
                     span,
+                    Some(&field.name_span),
                     format!(
                         "no field `{}` in record pattern `{pattern_name}`",
                         field.name
@@ -1090,6 +1091,14 @@ impl Checker {
                     is_mutable,
                     span.clone(),
                 );
+                self.env.set_binding_declaration(
+                    *name,
+                    crate::env::BindingDeclaration {
+                        name_span: span.start..span.start + name.name.as_str().len(),
+                        keyword_span: None,
+                        initializer_site: None,
+                    },
+                );
                 self.record_local_resolution(*name, span);
             }
             // TRANSITION(P1): deleted by A1 commit 2
@@ -1270,9 +1279,10 @@ impl Checker {
                                         variant_fields.iter().map(|(n, _)| n.as_str()).collect();
                                     let similar =
                                         crate::error::find_similar(pf.name.name.as_str(), known);
-                                    self.report_error_with_suggestions(
+                                    self.report_error_with_suggestions_at(
                                         TypeErrorKind::UndefinedField,
                                         span,
+                                        Some(&pf.name_span),
                                         format!("no field `{}` on variant `{name}`", pf.name),
                                         similar,
                                     );
@@ -1308,9 +1318,10 @@ impl Checker {
                                         pf.name.name.as_str(),
                                         td.fields.keys().map(String::as_str),
                                     );
-                                    self.report_error_with_suggestions(
+                                    self.report_error_with_suggestions_at(
                                         TypeErrorKind::UndefinedField,
                                         span,
+                                        Some(&pf.name_span),
                                         format!("no field `{}` on type `{name}`", pf.name),
                                         similar,
                                     );
@@ -1386,9 +1397,10 @@ impl Checker {
                                     pf.name.name.as_str(),
                                     td.fields.keys().map(String::as_str),
                                 );
-                                self.report_error_with_suggestions(
+                                self.report_error_with_suggestions_at(
                                     TypeErrorKind::UndefinedField,
                                     span,
+                                    Some(&pf.name_span),
                                     format!("no field `{}` on type `{type_name}`", pf.name),
                                     similar,
                                 );

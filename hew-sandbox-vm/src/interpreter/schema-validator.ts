@@ -1,4 +1,10 @@
-import { isPackageV1, type PackageV1 } from "./v1/package.js";
+import { validPackage } from "./v1/package-validator.generated.js";
+import type { PackageV1 } from "./v1/package.js";
+import { validatePackageGraph } from "./v1/package-graph.js";
+
+declare const checkedPackage: unique symbol;
+/// Shape and reference validity only. Imported bytecode has no SIR ownership proof.
+export type CheckedPackage = PackageV1 & { readonly [checkedPackage]: true };
 
 export class BytecodeValidationError extends Error {
   constructor(readonly errors: string[]) {
@@ -7,55 +13,24 @@ export class BytecodeValidationError extends Error {
   }
 }
 
-/** Check the package envelope before capability admission traverses its tables.
- * Operation support belongs to v1/validate, with one shared executor registry. */
-export function validateBytecodePackage(input: unknown): PackageV1 {
-  if (!isPackageV1(input))
-    throw new BytecodeValidationError(["expected hew.sandbox.bytecode.v1"]);
-  const errors: string[] = [];
-  for (const key of ["profile", "hew_version", "compiler_version"] as const) {
-    if (typeof input[key] !== "string") errors.push(`${key} must be a string`);
-  }
-  for (const key of [
-    "functions",
-    "strings",
-    "bytes",
-    "regex_patterns",
-    "aggregates",
-    "variants",
-    "runtime_families",
-    "externs",
-    "suspend_kinds",
-    "value_capabilities",
-    "closures",
-    "vtables",
-  ] as const) {
-    if (!Array.isArray(input[key])) errors.push(`${key} must be an array`);
-  }
-  if (errors.length) throw new BytecodeValidationError(errors);
-  for (const fn of input.functions) {
-    if (
-      !fn ||
-      !Number.isInteger(fn.id) ||
-      !Array.isArray(fn.params) ||
-      !Array.isArray(fn.places) ||
-      !Array.isArray(fn.blocks)
-    ) {
-      errors.push("malformed function");
-      continue;
+/** Decode an isolated package before capability admission or any host effect.
+ * Cloning prevents a caller or host callback from changing the checked input. */
+export function validateBytecodePackage(input: unknown): CheckedPackage {
+  try {
+    const decoded: unknown = structuredClone(input);
+    if (!validPackage(decoded)) {
+      const reasons = (validPackage.errors ?? []).map(
+        (issue: { instancePath: string; message?: string }) =>
+          `${issue.instancePath || "/"} ${issue.message ?? "invalid value"}`,
+      );
+      throw new Error(
+        reasons.join("; ") || "malformed sandbox bytecode package",
+      );
     }
-    for (const block of fn.blocks) {
-      if (
-        !block ||
-        !Number.isInteger(block.id) ||
-        !Array.isArray(block.params) ||
-        !Array.isArray(block.ops) ||
-        !block.term ||
-        typeof block.term.op !== "string"
-      )
-        errors.push("malformed block");
-    }
+    const pkg = decoded as PackageV1;
+    validatePackageGraph(pkg);
+    return pkg as CheckedPackage;
+  } catch (error) {
+    throw new BytecodeValidationError([String(error)]);
   }
-  if (errors.length) throw new BytecodeValidationError(errors);
-  return input;
 }

@@ -50,6 +50,8 @@
 //! }
 //! ```
 
+import std.net.config;
+
 import std.string;
 
 import std.stream;

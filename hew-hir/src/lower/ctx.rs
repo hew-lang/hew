@@ -60,6 +60,8 @@ impl LowerCtx {
             chain_values: Vec::new(),
             call_argument_slots: tc_output.call_argument_slots.clone(),
             spawn_argument_slots: tc_output.spawn_argument_slots.clone(),
+            supervisor_wiring: tc_output.supervisor_wiring.clone(),
+            supervisor_startup_order: tc_output.supervisor_startup_order.clone(),
             checked_call_effects: tc_output.suspension_effects.calls.clone(),
             select_sources: tc_output.select_sources.clone(),
             race_operands: tc_output.race_operands.clone(),

@@ -55,18 +55,18 @@ function v1Package(overrides = {}) {
   };
 }
 
-function withCompiler(bytecode, body) {
+async function withCompiler(bytecode, body) {
   const previous = globalThis.__hewSandboxCompileToSandboxBytecode;
   globalThis.__hewSandboxCompileToSandboxBytecode = () => ({ diagnostics: [], bytecode });
   try {
-    return body();
+    return await body();
   } finally {
     globalThis.__hewSandboxCompileToSandboxBytecode = previous;
   }
 }
 
-test("runProgram runs a v1 package without the v0 exit patching", () => {
-  const result = withCompiler(v1Package(), () => runProgram("fn main() {}", ""));
+test("runProgram runs a v1 package without the v0 exit patching", async () => {
+  const result = await withCompiler(v1Package(), async () => await runProgram("fn main() {}", ""));
 
   assert.equal(result.stdout, "hello from the page\n");
   assert.equal(result.exit_code, 0);
@@ -76,7 +76,7 @@ test("runProgram runs a v1 package without the v0 exit patching", () => {
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("runProgram publishes the entry's status as the page exit code", () => {
+test("runProgram publishes the entry's status as the page exit code", async () => {
   const statusPackage = v1Package({
     entry: { function: 0, exit: "status" },
     functions: [
@@ -98,11 +98,11 @@ test("runProgram publishes the entry's status as the page exit code", () => {
     ]
   });
 
-  const result = withCompiler(statusPackage, () => runProgram("fn main() -> i64 { 2 }", ""));
+  const result = await withCompiler(statusPackage, async () => await runProgram("fn main() -> i64 { 2 }", ""));
   assert.equal(result.exit_code, 2);
 });
 
-test("runProgram reports a load-time refusal rather than an empty run", () => {
+test("runProgram reports a load-time refusal rather than an empty run", async () => {
   const rejected = v1Package({
     runtime_families: [
       { id: 0, family: "Print", detail: { kind: "Str", newline: true } },
@@ -110,7 +110,7 @@ test("runProgram reports a load-time refusal rather than an empty run", () => {
     ]
   });
 
-  const result = withCompiler(rejected, () => runProgram("fn main() {}", ""));
+  const result = await withCompiler(rejected, async () => await runProgram("fn main() {}", ""));
 
   assert.equal(result.stdout, "");
   assert.equal(result.status, "sandbox_rejected");
@@ -124,11 +124,16 @@ test("runProgram reports a load-time refusal rather than an empty run", () => {
   );
 });
 
-test("an unknown opcode is an invalid package and executes no output", () => {
-  const bytecode = v1Package();
-  bytecode.functions[0].blocks[1].ops.push({ op: "unrecognized.opcode" });
-  const result = withCompiler(bytecode, () => runProgram("", ""));
-  assert.equal(result.status, "sandbox_rejected");
-  assert.equal(result.stdout, "");
-  assert.equal(result.sandbox_rejections[0].category, "invalid_package");
+test("unknown instructions and terminators reject the package before output", async () => {
+  for (const corrupt of [
+    (bytecode) => bytecode.functions[0].blocks[1].ops.push({ op: "unrecognized.opcode" }),
+    (bytecode) => { bytecode.functions[0].blocks[1].term.op = "unrecognized.terminator"; },
+  ]) {
+    const bytecode = v1Package();
+    corrupt(bytecode);
+    const result = await withCompiler(bytecode, async () => await runProgram("", ""));
+    assert.equal(result.status, "sandbox_rejected");
+    assert.equal(result.stdout, "");
+    assert.equal(result.sandbox_rejections[0].category, "invalid_package");
+  }
 });

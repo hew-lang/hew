@@ -54,7 +54,7 @@ fn sender_stamp<'ctx>(
     Ok(stamp)
 }
 
-fn symbol(actor: ActorId, suffix: &str) -> String {
+pub(super) fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
 }
 
@@ -1798,9 +1798,8 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             sources.push(*source);
         }
         if let Some(status) = self.emit_supervisor_boundary(&operation, &sources, result)? {
-            for source in sources {
-                self.clear_owned(source)?;
-            }
+            // Construction clears config owners at adoption, before its first
+            // poll. Child and pool accessors take only copyable role handles.
             self.builder
                 .build_store(self.active_status, status)
                 .llvm_ctx("record supervisor boundary status")?;

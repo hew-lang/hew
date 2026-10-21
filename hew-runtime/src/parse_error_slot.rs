@@ -14,7 +14,7 @@
 //!   process-wide map keyed by actor ID and error kind. Each value keeps an
 //!   errno and detail together, so consumers cannot observe mismatched halves.
 //!   Each error type has its own per-actor slot, so a yaml error cannot clear a
-//!   datetime error and vice-versa.
+//!   XML error and vice-versa.
 //! - When called from outside any actor (main, test, blocking-pool helper),
 //!   `hew_actor_current_id_silent()` returns -1 and the slot falls back to a
 //!   `thread_local!` map so that non-actor callers
@@ -55,11 +55,9 @@ use crate::lifetime::PoisonSafe;
 /// and (3) calling `clear_all_for_actor` on actor death (already wired).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ErrorSlotKind {
-    Datetime,
     Yaml,
     Toml,
     Json,
-    Cron,
     Compress,
     Msgpack,
     Xml,
@@ -378,32 +376,32 @@ mod tests {
     }
 
     /// Different error kinds have independent TLS slots — a yaml error does not
-    /// clear or overwrite a datetime error.
+    /// clear or overwrite an XML error.
     #[test]
     fn thread_fallback_parsers_are_independent() {
         // Use large IDs unlikely to collide with other test state.
-        set_error(ErrorSlotKind::Datetime, "datetime error");
+        set_error(ErrorSlotKind::Xml, "XML error");
         set_error(ErrorSlotKind::Yaml, "yaml error");
 
         assert_eq!(
-            get_error(ErrorSlotKind::Datetime).as_deref(),
-            Some("datetime error"),
-            "datetime error should not be overwritten by yaml write"
+            get_error(ErrorSlotKind::Xml).as_deref(),
+            Some("XML error"),
+            "XML error should not be overwritten by yaml write"
         );
         assert_eq!(
             get_error(ErrorSlotKind::Yaml).as_deref(),
             Some("yaml error"),
         );
 
-        // Clearing yaml must not touch datetime.
+        // Clearing yaml must not touch XML.
         clear_error(ErrorSlotKind::Yaml);
         assert_eq!(
-            get_error(ErrorSlotKind::Datetime).as_deref(),
-            Some("datetime error"),
-            "datetime error must survive yaml clear"
+            get_error(ErrorSlotKind::Xml).as_deref(),
+            Some("XML error"),
+            "XML error must survive yaml clear"
         );
 
-        clear_error(ErrorSlotKind::Datetime);
+        clear_error(ErrorSlotKind::Xml);
     }
 
     /// A slot written on thread A for actor-id X is visible on thread B when
@@ -511,17 +509,13 @@ mod tests {
         const TARGET: u64 = 3_000_001;
         const OTHER: u64 = 3_000_002;
 
-        actor_map_set(
-            TARGET,
-            ErrorSlotKind::Datetime,
-            "target datetime".to_owned(),
-        );
+        actor_map_set(TARGET, ErrorSlotKind::Xml, "target XML".to_owned());
         actor_map_set(TARGET, ErrorSlotKind::Json, "target json".to_owned());
         actor_map_set(OTHER, ErrorSlotKind::Toml, "other toml".to_owned());
 
         actor_map_clear_all_for_actor(TARGET);
 
-        assert_eq!(actor_map_get(TARGET, ErrorSlotKind::Datetime), None);
+        assert_eq!(actor_map_get(TARGET, ErrorSlotKind::Xml), None);
         assert_eq!(actor_map_get(TARGET, ErrorSlotKind::Json), None);
         assert_eq!(
             actor_map_get(OTHER, ErrorSlotKind::Toml).as_deref(),

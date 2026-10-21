@@ -21,6 +21,7 @@ stable = [
   "hew_instant_duration_since",
   "hew_instant_elapsed",
   "hew_instant_now",
+  "hew_timestamp_now",
 ]
 
 [[ownership.contracts]]

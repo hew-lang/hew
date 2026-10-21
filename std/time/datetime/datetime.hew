@@ -1,195 +1,182 @@
-//! Date and time operations.
+//! UTC calendar views of precise wall-clock timestamps.
 //!
-//! Work with timestamps as millisecond-precision epoch values. Extract
-//! date/time components, format and parse date strings, and perform
-//! time arithmetic.
+//! Calendar conversion uses Chrono's proleptic Gregorian range, years -262143
+//! through +262142. A timestamp outside that range remains a valid timestamp
+//! but calendar operations fail with Range. Unix time does not represent leap
+//! seconds; parsing rejects them. Explicit offsets normalize to UTC.
 //!
-//! # Examples
-//!
-//! ```
-//! import std.time.datetime;
-//!
-//! fn main() {
-//!     let now = datetime.now_ms();
-//!     let iso = datetime.to_iso8601(now);
-//!     println(iso);
-//!     let year = datetime.year(now);
-//!     println(year);
-//! }
-//! ```
+//! Use timestamp.now() for wall time and instant.now() for elapsed time.
 
-/// Return the current time as milliseconds since the Unix epoch.
-pub fn now_ms() -> i64 {
-    unsafe {
-        hew_datetime_now_ms() as i64
-    }
-}
-
-/// Return the current time as seconds since the Unix epoch.
-pub fn now_secs() -> i64 {
-    now_ms() / 1000
-}
-
-/// A timestamp that could not be formatted or text that could not be parsed,
-/// with the native reason.
+/// Checked failures at the UTC calendar boundary.
 pub enum DateTimeError {
+    Range(string);
     Format(string);
     Parse(string);
 }
 
 impl Error for DateTimeError {}
 
-/// Format an epoch-millisecond timestamp using a strftime-style format string.
-///
-/// Fails with `DateTimeError.Format` when the epoch or format string is
-/// invalid.
-pub fn format(epoch_ms: i64, fmt: string) -> string fails DateTimeError {
-    let formatted = format_raw(epoch_ms, fmt);
-    let err = datetime_error_message();
-    if err.len() != 0 {
-        return error DateTimeError.Format(err);
-    }
-    formatted
-}
-
-fn datetime_error_message() -> string {
-    unsafe {
-        hew_datetime_last_error()
+impl Display for DateTimeError {
+    fn fmt(self) -> string {
+        match self {
+            .Range(message) => message,
+            .Format(message) => message,
+            .Parse(message) => message,
+        }
     }
 }
 
-fn format_raw(epoch_ms: i64, fmt: string) -> string {
-    unsafe {
-        hew_datetime_format(epoch_ms as i64, fmt)
+/// A UTC calendar view. Monday is weekday zero; Sunday is six.
+pub type Components {
+    year: i64;
+    month: i64;
+    day: i64;
+    hour: i64;
+    minute: i64;
+    second: i64;
+    nanosecond: u32;
+    weekday: i64;
+    days_in_month: i64;
+}
+
+type CalendarTextResult {
+    status: i32;
+    text: string;
+    message: string;
+}
+
+type CalendarTimeResult {
+    status: i32;
+    seconds: i64;
+    nanoseconds: u32;
+    message: string;
+}
+
+type CalendarPartsResult {
+    status: i32;
+    year: i64;
+    month: i64;
+    day: i64;
+    hour: i64;
+    minute: i64;
+    second: i64;
+    nanosecond: u32;
+    weekday: i64;
+    days_in_month: i64;
+    message: string;
+}
+
+fn checked(status: i32, message: string) fails DateTimeError {
+    match status {
+        0 => {}
+        1 => {
+            return error DateTimeError.Range(message);
+        }
+        3 => {
+            return error DateTimeError.Format(message);
+        }
+        _ => {
+            return error DateTimeError.Parse(message);
+        }
     }
 }
 
-fn component_or_panic(value: i64) -> i64 {
-    let err = datetime_error_message();
-    if err.len() != 0 {
-        panic(f"datetime component extraction failed: {err}");
-    }
-    value
+fn checked_time(result: CalendarTimeResult) -> timestamp fails DateTimeError {
+    checked(result.status, result.message)?;
+    timestamp.from_unix_parts(result.seconds, result.nanoseconds).expect("normalized calendar result")
 }
 
-/// Parse a datetime string using the given format and return epoch
-/// milliseconds.
-///
-/// Fails with `DateTimeError.Parse` and the native parser message when
-/// parsing fails.
-pub fn parse(s: string, fmt: string) -> i64 fails DateTimeError {
-    let epoch_ms = unsafe {
-        hew_datetime_parse(s, fmt) as i64
+/// Format a timestamp using Chrono's strftime directives, including fractional
+/// seconds with %.f or %.9f. Calendar output uses UTC.
+pub fn format(value: timestamp, pattern: string) -> string fails DateTimeError {
+    let (seconds, nanos) = value.unix_parts();
+    let result = unsafe {
+        hew_calendar_format(seconds, nanos, pattern)
     };
-    let err = datetime_error_message();
-    if err.len() != 0 {
-        return error DateTimeError.Parse(err);
-    }
-    epoch_ms
+    checked(result.status, result.message)?;
+    result.text
 }
 
-/// Extract the year component from an epoch-millisecond timestamp.
-pub fn year(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_year(epoch_ms as i64)
-    })
+/// Parse strftime-formatted text. A missing offset means UTC; an explicit
+/// offset is converted to UTC. Fractional seconds retain nanosecond precision.
+pub fn parse(text: string, pattern: string) -> timestamp fails DateTimeError {
+    checked_time(unsafe {
+        hew_calendar_parse(text, pattern)
+    })?
 }
 
-/// Extract the month (1–12) from an epoch-millisecond timestamp.
-pub fn month(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_month(epoch_ms as i64)
-    })
+/// Extract the UTC civil fields of a timestamp.
+pub fn components(value: timestamp) -> Components fails DateTimeError {
+    let (seconds, nanos) = value.unix_parts();
+    let result = unsafe {
+        hew_calendar_components(seconds, nanos)
+    };
+    checked(result.status, result.message)?;
+    Components { year: result.year, month: result.month, day: result.day, hour: result.hour, minute: result.minute, second: result.second, nanosecond: result.nanosecond, weekday: result.weekday, days_in_month: result.days_in_month }
 }
 
-/// Extract the day of the month (1–31) from an epoch-millisecond timestamp.
-pub fn day(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_day(epoch_ms as i64)
-    })
+/// Construct a UTC timestamp from civil fields, checking their ranges.
+pub fn from_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, nanosecond: u32) -> timestamp fails DateTimeError {
+    checked_time(unsafe {
+        hew_calendar_from_parts(year, month, day, hour, minute, second, nanosecond)
+    })?
 }
 
-/// Extract the hour (0–23) from an epoch-millisecond timestamp.
-pub fn hour(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_hour(epoch_ms as i64)
-    })
+/// Extract the UTC year.
+pub fn year(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).year
+}
+/// Extract the UTC month (1–12).
+pub fn month(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).month
+}
+/// Extract the UTC day of month.
+pub fn day(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).day
+}
+/// Extract the UTC hour (0–23).
+pub fn hour(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).hour
+}
+/// Extract the UTC minute (0–59).
+pub fn minute(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).minute
+}
+/// Extract the UTC second (0–59).
+pub fn second(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).second
+}
+/// Return the UTC weekday (Monday = 0, Sunday = 6).
+pub fn weekday(value: timestamp) -> i64 fails DateTimeError {
+    (components(value)?).weekday
 }
 
-/// Extract the minute (0–59) from an epoch-millisecond timestamp.
-pub fn minute(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_minute(epoch_ms as i64)
-    })
+/// Add elapsed 24-hour days, with ordinary checked duration arithmetic.
+pub fn add_days(value: timestamp, days: i64) -> timestamp {
+    value + days * 24h
+}
+/// Add elapsed hours.
+pub fn add_hours(value: timestamp, hours: i64) -> timestamp {
+    value + hours * 1h
+}
+/// Return whole elapsed seconds, truncating towards zero.
+pub fn diff_secs(a: timestamp, b: timestamp) -> i64 {
+    (a - b).secs()
 }
 
-/// Extract the second (0–59) from an epoch-millisecond timestamp.
-pub fn second(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_second(epoch_ms as i64)
-    })
+/// Format UTC ISO 8601, preserving the nonzero nanosecond fraction.
+pub fn to_iso8601(value: timestamp) -> string fails DateTimeError {
+    format(value, "%Y-%m-%dT%H:%M:%S%.fZ")?
 }
 
-/// Return the day of the week (0 = Monday, 6 = Sunday).
-pub fn weekday(epoch_ms: i64) -> i64 {
-    component_or_panic(unsafe {
-        hew_datetime_weekday(epoch_ms as i64)
-    })
+/// Parse ISO 8601 with Z or a numeric offset, preserving fractional seconds.
+pub fn parse_iso8601(text: string) -> timestamp fails DateTimeError {
+    parse(text, "%Y-%m-%dT%H:%M:%S%.f%#z")?
 }
 
-/// Add a number of days to an epoch-millisecond timestamp.
-pub fn add_days(epoch_ms: i64, days: i64) -> i64 {
-    epoch_ms + days * 86400000
-}
-
-/// Add a number of hours to an epoch-millisecond timestamp.
-pub fn add_hours(epoch_ms: i64, hours: i64) -> i64 {
-    epoch_ms + hours * 3600000
-}
-
-/// Return the difference in seconds between two epoch-millisecond timestamps.
-pub fn diff_secs(a: i64, b: i64) -> i64 {
-    (a - b) / 1000
-}
-
-/// Format an epoch-millisecond timestamp as an ISO 8601 string.
-///
-/// # Examples
-///
-/// ```
-/// import std.time.datetime;
-///
-/// fn main() {
-///     let iso = datetime.to_iso8601(datetime.now_ms());
-///     // e.g. "2025-07-10T14:30:00Z"
-/// }
-/// ```
-pub fn to_iso8601(epoch_ms: i64) -> string {
-    format_raw(epoch_ms, "%Y-%m-%dT%H:%M:%SZ")
-}
-
-/// Return the current monotonic clock time in nanoseconds.
-///
-/// Uses a monotonic clock not affected by wall-clock adjustments,
-/// suitable for high-resolution benchmarking and timing measurements.
-pub fn now_nanos() -> i64 {
-    unsafe {
-        hew_datetime_now_nanos() as i64
-    }
-}
-
-// ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
-    fn hew_datetime_now_ms() -> i64;
-    fn hew_datetime_now_nanos() -> i64;
-    fn hew_datetime_format(epoch_ms: i64, fmt: string) -> string;
-    fn hew_datetime_parse(s: string, fmt: string) -> i64;
-    fn hew_datetime_last_error() -> string;
-    fn hew_datetime_year(epoch_ms: i64) -> i64;
-    fn hew_datetime_month(epoch_ms: i64) -> i64;
-    fn hew_datetime_day(epoch_ms: i64) -> i64;
-    fn hew_datetime_hour(epoch_ms: i64) -> i64;
-    fn hew_datetime_minute(epoch_ms: i64) -> i64;
-    fn hew_datetime_second(epoch_ms: i64) -> i64;
-    fn hew_datetime_weekday(epoch_ms: i64) -> i64;
+    fn hew_calendar_format(seconds: i64, nanoseconds: u32, pattern: string) -> CalendarTextResult;
+    fn hew_calendar_parse(text: string, pattern: string) -> CalendarTimeResult;
+    fn hew_calendar_components(seconds: i64, nanoseconds: u32) -> CalendarPartsResult;
+    fn hew_calendar_from_parts(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64, nanosecond: u32) -> CalendarTimeResult;
 }

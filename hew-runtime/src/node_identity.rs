@@ -1,6 +1,7 @@
 //! Key-derived node identity and carried actor-location values.
 
 use std::fmt;
+use std::num::NonZeroU64;
 use std::str::FromStr;
 
 use hew_cabi::string::{string_from_str, HewString};
@@ -174,12 +175,12 @@ fn hex_nibble(byte: u8) -> Result<u8, ParseNodeIdError> {
 pub struct HewLocation {
     /// Key-derived node identity.
     pub node: HewNodeId,
-    /// Node-local monotonic actor slot.
-    pub slot: u64,
+    /// Non-zero exact actor serial or canonical role token, selected by `target_kind`.
+    pub target_id: u64,
     /// Durable node-session incarnation.
     pub incarnation: u32,
-    /// Must be zero.
-    pub reserved: u32,
+    /// Target discriminator: zero for an exact actor, one for a stable role.
+    pub target_kind: u32,
 }
 
 // C-ABI accessors for the `NodeId` and `Location` builtins.
@@ -201,23 +202,6 @@ pub unsafe extern "C" fn hew_location_node_id(location: *const HewLocation) -> H
     location.node
 }
 
-/// Return the node-local actor slot carried by a location.
-///
-/// Fails closed to `0` when `location` is null.
-///
-/// # Safety
-///
-/// `location` must point to a readable `HewLocation`.
-#[no_mangle]
-pub unsafe extern "C" fn hew_location_slot(location: *const HewLocation) -> u64 {
-    if location.is_null() {
-        return 0;
-    }
-    // SAFETY: caller guarantees `location` is readable.
-    let location = unsafe { *location };
-    location.slot
-}
-
 /// Return the node-session incarnation carried by a location.
 ///
 /// Fails closed to `0` when `location` is null.
@@ -235,7 +219,7 @@ pub unsafe extern "C" fn hew_location_incarnation(location: *const HewLocation) 
     location.incarnation
 }
 
-/// Format a location as `<node-hex>/<slot>@<incarnation>`, returned as an
+/// Format a location as `<node-hex>/<target-kind>:<identity>@<incarnation>`, returned as an
 /// owned managed string. Reproduces
 /// [`crate::hew_node::hew_location_format`]'s text exactly.
 ///
@@ -253,10 +237,9 @@ pub unsafe extern "C" fn hew_location_display(location: *const HewLocation) -> *
     }
     // SAFETY: caller guarantees `location` is readable.
     let location = unsafe { *location };
-    string_from_str(&format!(
-        "{:016x}{:016x}/{}@{}",
-        location.node.hi, location.node.lo, location.slot, location.incarnation
-    ))
+    Location::try_from(location).map_or(std::ptr::null_mut(), |location| {
+        string_from_str(&location.to_string())
+    })
 }
 
 /// Format a node identity as 32 lowercase hexadecimal digits, returned as an
@@ -280,45 +263,90 @@ pub unsafe extern "C" fn hew_node_id_display(node: *const HewNodeId) -> *mut Hew
     string_from_str(&format!("{:016x}{:016x}", node.hi, node.lo))
 }
 
+/// Semantic node-local destination. The variants have disjoint identity even
+/// when their scalar representations coincide. Neither variant grants access.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum Target {
+    Direct(NonZeroU64),
+    Role(NonZeroU64),
+}
+
+impl Target {
+    pub(crate) const fn id(self) -> u64 {
+        match self {
+            Self::Direct(id) | Self::Role(id) => id.get(),
+        }
+    }
+
+    pub(crate) const fn kind(self) -> u32 {
+        match self {
+            Self::Direct(_) => 0,
+            Self::Role(_) => 1,
+        }
+    }
+}
+
 /// Immutable carried actor location.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 #[repr(transparent)]
 pub struct Location(HewLocation);
 
 impl Location {
-    /// Construct a valid carried actor location.
+    /// Construct a location for one exact actor allocation serial.
     ///
     /// # Errors
+    /// Returns an error when the serial or node-session incarnation is zero.
+    pub fn direct(node: NodeId, serial: u64, incarnation: u32) -> Result<Self, InvalidLocation> {
+        let id = NonZeroU64::new(serial).ok_or(InvalidLocation::ZeroTarget)?;
+        Self::new(node, Target::Direct(id), incarnation)
+    }
+
+    /// Construct a location carrying a canonical stable role token.
     ///
-    /// Returns an error when `slot` or `incarnation` is zero.
-    pub fn new(node: NodeId, slot: u64, incarnation: u32) -> Result<Self, InvalidLocation> {
-        if slot == 0 {
-            return Err(InvalidLocation::ZeroSlot);
-        }
+    /// # Errors
+    /// Returns an error when the token or node-session incarnation is zero.
+    pub fn role(node: NodeId, token: u64, incarnation: u32) -> Result<Self, InvalidLocation> {
+        let id = NonZeroU64::new(token).ok_or(InvalidLocation::ZeroTarget)?;
+        Self::new(node, Target::Role(id), incarnation)
+    }
+
+    fn new(node: NodeId, target: Target, incarnation: u32) -> Result<Self, InvalidLocation> {
         if incarnation == 0 {
             return Err(InvalidLocation::ZeroIncarnation);
         }
         Ok(Self(HewLocation {
             node: node.into(),
-            slot,
+            target_id: target.id(),
             incarnation,
-            reserved: 0,
+            target_kind: target.kind(),
         }))
     }
 
-    /// Node identity projection.
+    /// Stable node identity.
     #[must_use]
     pub const fn node(self) -> NodeId {
         NodeId(self.0.node)
     }
 
-    /// Node-local actor slot projection.
-    #[must_use]
-    pub const fn slot(self) -> u64 {
-        self.0.slot
+    pub(crate) fn target(self) -> Target {
+        let id = NonZeroU64::new(self.0.target_id).expect("validated carried target");
+        match self.0.target_kind {
+            0 => Target::Direct(id),
+            1 => Target::Role(id),
+            _ => unreachable!("validated carried target discriminator"),
+        }
     }
 
-    /// Durable node-session projection.
+    /// Exact actor serial, when this location identifies a direct actor.
+    #[must_use]
+    pub(crate) fn direct_serial(self) -> Option<u64> {
+        match self.target() {
+            Target::Direct(id) => Some(id.get()),
+            Target::Role(_) => None,
+        }
+    }
+
+    /// Durable node-session incarnation.
     #[must_use]
     pub const fn incarnation(self) -> u32 {
         self.0.incarnation
@@ -335,21 +363,28 @@ impl TryFrom<HewLocation> for Location {
     type Error = InvalidLocation;
 
     fn try_from(value: HewLocation) -> Result<Self, Self::Error> {
-        if value.reserved != 0 {
-            return Err(InvalidLocation::NonZeroReserved);
-        }
-        Self::new(value.node.into(), value.slot, value.incarnation)
+        let id = NonZeroU64::new(value.target_id).ok_or(InvalidLocation::ZeroTarget)?;
+        let target = match value.target_kind {
+            0 => Target::Direct(id),
+            1 => Target::Role(id),
+            _ => return Err(InvalidLocation::UnknownTargetKind),
+        };
+        Self::new(value.node.into(), target, value.incarnation)
     }
 }
 
 impl fmt::Display for Location {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self.target() {
+            Target::Direct(_) => "actor",
+            Target::Role(_) => "role",
+        };
         write!(
             formatter,
-            "{}/{:}@{}",
-            NodeId(self.0.node),
-            self.0.slot,
-            self.0.incarnation
+            "{}/{kind}:{}@{}",
+            self.node(),
+            self.target().id(),
+            self.incarnation()
         )
     }
 }
@@ -357,22 +392,22 @@ impl fmt::Display for Location {
 /// Invalid carried-location representation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InvalidLocation {
-    /// Actor slot zero is reserved.
-    ZeroSlot,
+    /// Target identity zero is reserved.
+    ZeroTarget,
     /// Node-session incarnation zero is invalid.
     ZeroIncarnation,
-    /// A C-ABI caller supplied non-zero reserved bits.
-    NonZeroReserved,
+    /// The target discriminator is not part of the carried contract.
+    UnknownTargetKind,
 }
 
 impl fmt::Display for InvalidLocation {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ZeroSlot => formatter.write_str("location actor slot must be nonzero"),
+            Self::ZeroTarget => formatter.write_str("location target identity must be nonzero"),
             Self::ZeroIncarnation => {
                 formatter.write_str("location session incarnation must be nonzero")
             }
-            Self::NonZeroReserved => formatter.write_str("location reserved field must be zero"),
+            Self::UnknownTargetKind => formatter.write_str("unknown location target kind"),
         }
     }
 }
@@ -906,22 +941,41 @@ mod tests {
     #[test]
     fn location_rejects_reserved_values_and_formats_canonically() {
         let node = NodeId::from_bytes([0x11; 16]);
-        assert_eq!(Location::new(node, 0, 1), Err(InvalidLocation::ZeroSlot));
         assert_eq!(
-            Location::new(node, 1, 0),
+            Location::direct(node, 0, 1),
+            Err(InvalidLocation::ZeroTarget)
+        );
+        assert_eq!(
+            Location::direct(node, 1, 0),
             Err(InvalidLocation::ZeroIncarnation)
         );
-        let location = Location::new(node, u64::MAX, u32::MAX).unwrap();
+        let location = Location::direct(node, u64::MAX, u32::MAX).unwrap();
         assert_eq!(
             location.to_string(),
-            "11111111111111111111111111111111/18446744073709551615@4294967295"
+            "11111111111111111111111111111111/actor:18446744073709551615@4294967295"
         );
         let mut raw: HewLocation = location.into();
-        raw.reserved = 1;
+        raw.target_kind = 2;
         assert_eq!(
             Location::try_from(raw),
-            Err(InvalidLocation::NonZeroReserved)
+            Err(InvalidLocation::UnknownTargetKind)
         );
+    }
+
+    #[test]
+    fn direct_and_role_targets_preserve_disjoint_full_width_identity() {
+        let node = NodeId::from_bytes([0x22; 16]);
+        let direct = Location::direct(node, u64::MAX, 9).unwrap();
+        let role = Location::role(node, u64::MAX, 9).unwrap();
+        assert_ne!(direct, role);
+        assert_eq!(role.direct_serial(), None);
+        assert_eq!(direct.direct_serial(), Some(u64::MAX));
+        assert_eq!(Location::try_from(HewLocation::from(role)), Ok(role));
+        assert_eq!(
+            role.to_string(),
+            "22222222222222222222222222222222/role:18446744073709551615@9"
+        );
+        assert_eq!(Location::role(node, 0, 9), Err(InvalidLocation::ZeroTarget));
     }
 
     fn sample_location() -> HewLocation {
@@ -930,9 +984,9 @@ mod tests {
                 hi: 0x0123_4567_89ab_cdef,
                 lo: 0xfedc_ba98_7654_3210,
             },
-            slot: 7,
+            target_id: 7,
             incarnation: 3,
-            reserved: 0,
+            target_kind: 0,
         }
     }
 
@@ -950,31 +1004,27 @@ mod tests {
     fn location_field_accessors_read_the_exact_fields() {
         let location = sample_location();
         // SAFETY: `location` is a live, readable `HewLocation` for this call.
-        let (node, slot, incarnation) = unsafe {
+        let (node, incarnation) = unsafe {
             (
                 hew_location_node_id(&raw const location),
-                hew_location_slot(&raw const location),
                 hew_location_incarnation(&raw const location),
             )
         };
         assert_eq!(node, location.node);
-        assert_eq!(slot, location.slot);
         assert_eq!(incarnation, location.incarnation);
     }
 
     #[test]
     fn location_field_accessors_fail_closed_on_null() {
         // SAFETY: every accessor documents a null pointer as a fail-closed input.
-        let (node, slot, incarnation, display) = unsafe {
+        let (node, incarnation, display) = unsafe {
             (
                 hew_location_node_id(std::ptr::null()),
-                hew_location_slot(std::ptr::null()),
                 hew_location_incarnation(std::ptr::null()),
                 hew_location_display(std::ptr::null()),
             )
         };
         assert_eq!(node, HewNodeId::default());
-        assert_eq!(slot, 0);
         assert_eq!(incarnation, 0);
         assert!(display.is_null());
     }
@@ -983,7 +1033,7 @@ mod tests {
     fn display_accessors_match_the_existing_formatters_exactly() {
         let location = sample_location();
         let expected_node = "0123456789abcdeffedcba9876543210".to_string();
-        let expected_location = "0123456789abcdeffedcba9876543210/7@3".to_string();
+        let expected_location = "0123456789abcdeffedcba9876543210/actor:7@3".to_string();
 
         // SAFETY: both carriers are live and readable; each display returns a
         // fresh owned string that `owned_string_text` releases.
@@ -1027,8 +1077,8 @@ mod tests {
         assert_eq!(std::mem::offset_of!(HewLocation, node), 0);
         assert_eq!(std::mem::offset_of!(HewNodeId, hi), 0);
         assert_eq!(std::mem::offset_of!(HewNodeId, lo), 8);
-        assert_eq!(std::mem::offset_of!(HewLocation, slot), 16);
+        assert_eq!(std::mem::offset_of!(HewLocation, target_id), 16);
         assert_eq!(std::mem::offset_of!(HewLocation, incarnation), 24);
-        assert_eq!(std::mem::offset_of!(HewLocation, reserved), 28);
+        assert_eq!(std::mem::offset_of!(HewLocation, target_kind), 28);
     }
 }

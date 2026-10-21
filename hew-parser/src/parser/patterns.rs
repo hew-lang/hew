@@ -294,6 +294,7 @@ impl Parser<'_> {
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 1 + off;
                     self.errors.push(ParseError {
+                        fixes: Vec::new(),
                         message: msg.to_string(),
                         span: err_start..err_start + 2,
                         hint: None,
@@ -404,9 +405,12 @@ impl Parser<'_> {
         } else {
             self.parse_expr()?
         };
+        let append_separator = (!body_looks_like_block && self.peek() == Some(&Token::RightBrace))
+            .then_some(self.last_token_end);
         self.expect_arm_separator(body_looks_like_block);
 
         Some(MatchArm {
+            append_separator,
             pattern,
             guard,
             body,

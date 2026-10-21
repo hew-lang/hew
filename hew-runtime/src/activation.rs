@@ -1053,9 +1053,9 @@ pub(crate) fn activate_queued_actor(actor: *mut HewActor) {
                 // the system entry point — the discriminator is which arm
                 // of `DispatchTarget` was built, not a value either callee
                 // inspects.
-                // Raw C adapters consume their payload fields on entry. Until
-                // this claim, cancellation and failed pre-dispatch checks leave
-                // the same envelope responsible for typed cleanup.
+                // Adapters consume their payload fields or lifecycle obligation
+                // on entry. Until this claim, cancellation and failed checks
+                // leave the same envelope responsible for typed cleanup.
                 // SAFETY: this activation exclusively owns the envelope.
                 unsafe { (*msg_ref.envelope).ingress_drop = None };
                 let dispatch_result = catch_unwind(AssertUnwindSafe(|| match dispatch {

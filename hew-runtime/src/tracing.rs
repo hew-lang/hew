@@ -1040,11 +1040,6 @@ pub(crate) fn record_rc_survivors(
 /// `discriminator` is carried in the event's `msg_type` slot and is
 /// decision-specific (restart strategy, within-window restart count, or
 /// scheduled backoff delay in ms).
-// KEEP(wasm32): ten call sites in supervisor.rs (restart, escalate, give-up).
-// lib.rs gates `pub mod supervisor` behind `#[cfg(not(target_arch = "wasm32"))]`
-// while `pub mod tracing` is unconditional, so wasm32 is the only build where
-// the callers are compiled out.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_supervisor_event(actor_id: u64, event_type: i32, discriminator: i32) {
     record_lifecycle_event(actor_id, event_type, discriminator);
 }
@@ -1303,7 +1298,6 @@ pub(crate) fn system_context() -> HewTraceContext {
 // supervisor_trace_export_e2e integration test. Same cfg asymmetry as
 // `record_supervisor_event`: the supervisor module is native-only, this module
 // is not.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ensure_supervisor_trace_root() {
     if !TRACING_ENABLED.load(Ordering::Acquire) {
         return;

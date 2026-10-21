@@ -346,6 +346,7 @@ impl LintCtx<'_> {
             LintLevel::Deny => Severity::Error,
         };
         out.push(TypeError {
+            fixes: Vec::new(),
             severity,
             kind: TypeErrorKind::Lint(id),
             span: span.clone(),

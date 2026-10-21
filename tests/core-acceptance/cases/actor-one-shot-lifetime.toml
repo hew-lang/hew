@@ -7,6 +7,7 @@ timeout_seconds = 30
 
 [case.env]
 HEW_WORKERS = "1"
+HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "one-shot ownership and cancellation\n"

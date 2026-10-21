@@ -6,15 +6,17 @@
 //! Generators must use the declared output path's spelling, including case:
 //! missing directories cannot be canonicalized to discover filesystem aliases.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 use std::io;
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
+use std::path::Path;
 #[cfg(not(target_arch = "wasm32"))]
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, PathBuf};
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
 
 /// Filesystem authority required by an operation.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 #[derive(Clone, Copy)]
 pub(crate) enum Access {
     Read,
@@ -206,8 +208,8 @@ pub fn enabled() -> bool {
     {
         !matches!(policy(), Ok(None))
     }
-    // WASI has no host filesystem entry points, but clocks, random values and
-    // arguments still honour the driver's deterministic generator mode.
+    // WASI filesystem entry points deny generator access; clocks, random
+    // values and arguments also honour the driver's deterministic mode.
     #[cfg(target_arch = "wasm32")]
     {
         static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -231,6 +233,24 @@ pub(crate) fn directory_names(path: &Path, names: &mut Vec<String>) -> io::Resul
         Ok(None) => Ok(()),
         Err(error) => Err(denied(error.clone())),
     }
+}
+
+/// WASI grants authority through host preopens. Generator filesystem policy is
+/// not implemented there, so a generator retains default-deny admission.
+#[cfg(target_os = "wasi")]
+pub(crate) fn checked_path(path: &Path, _access: Access) -> io::Result<std::path::PathBuf> {
+    if enabled() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "generator filesystem access is unavailable on WASI",
+        ));
+    }
+    Ok(path.to_path_buf())
+}
+
+#[cfg(target_os = "wasi")]
+pub(crate) fn directory_names(_path: &Path, _names: &mut Vec<String>) -> io::Result<()> {
+    Ok(())
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

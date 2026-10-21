@@ -122,6 +122,8 @@ pub type TypeErrorNote = (Span, String, Option<String>);
 /// A type error with location, message, and diagnostic hints.
 #[derive(Debug, Clone)]
 pub struct TypeError {
+    /// Exact fix alternatives produced with the diagnostic.
+    pub fixes: Vec<hew_parser::diagnostic::DiagnosticFix>,
     /// The severity of this diagnostic.
     pub severity: Severity,
     /// The kind of error
@@ -144,6 +146,7 @@ impl TypeError {
     #[must_use]
     pub fn new(kind: TypeErrorKind, span: Span, message: impl Into<String>) -> Self {
         Self {
+            fixes: Vec::new(),
             severity: Severity::Error,
             kind,
             span,
@@ -190,6 +193,13 @@ impl TypeError {
         source_module: Option<String>,
     ) -> Self {
         self.notes.push((span, note.into(), source_module));
+        self
+    }
+
+    /// Attach a producer-owned fix alternative.
+    #[must_use]
+    pub fn with_fix(mut self, fix: hew_parser::diagnostic::DiagnosticFix) -> Self {
+        self.fixes.push(fix);
         self
     }
 
@@ -284,6 +294,7 @@ impl TypeError {
         detail: impl Into<String>,
     ) -> Self {
         Self {
+            fixes: Vec::new(),
             severity,
             kind: TypeErrorKind::NonExhaustiveMatch,
             span,
@@ -510,7 +521,7 @@ impl TypeError {
     /// Diagnose an Rc payload that can retain itself without a Weak backedge.
     #[must_use]
     pub fn strong_rc_cycle(span: Span, cycle_desc: &str) -> Self {
-        Self {
+        Self { fixes: Vec::new(),
             severity: Severity::Warning,
             kind: TypeErrorKind::StrongRcCycle,
             span,
@@ -527,6 +538,7 @@ impl TypeError {
     #[must_use]
     pub fn actor_ref_cycle(span: Span, cycle_desc: &str) -> Self {
         Self {
+            fixes: Vec::new(),
             severity: Severity::Warning,
             kind: TypeErrorKind::ActorRefCycle,
             span,

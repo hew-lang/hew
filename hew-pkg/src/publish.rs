@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use crate::client::ApiError;
 use crate::workspace::{self, Workspace};
-use crate::{client, index, manifest, registry, resolver, signing, tarball};
+use crate::{client, index, manifest, native_prebuilt, registry, resolver, signing, tarball};
 
 /// Delays between attempts to download a just-published archive, absorbing
 /// CDN and object-store visibility lag after the record is readable.
@@ -29,9 +29,9 @@ const READBACK_DOWNLOAD_BACKOFF: [Duration; 3] = [
 /// A failed publish phase. The CLI prints it after `hew publish: `.
 #[derive(Debug)]
 pub enum PublishError {
-    /// The package is not publishable; nothing touched the network.
+    /// The package or requested publication plan is not publishable.
     Invalid(String),
-    /// No credentials or signing key for an upload; nothing was uploaded.
+    /// Acquiring or renewing upload credentials or a signing key failed.
     Auth(String),
     /// Reading the registry's copy failed, before upload or after a conflict.
     Query(String),
@@ -162,6 +162,242 @@ impl PackedPackage {
     pub fn version(&self) -> &str {
         &self.manifest.package.version
     }
+}
+
+/// The registry comparison of one prepared source package.
+#[derive(Debug)]
+pub struct PreparedSource<'a> {
+    package: &'a PackedPackage,
+    source_checksum: String,
+    skip: Option<Skip>,
+}
+
+impl PreparedSource<'_> {
+    /// The archive identity native attachments must refer to. When an existing
+    /// source has the same tree with different compression, this is its stored
+    /// checksum, not the newly packed archive's checksum.
+    #[must_use]
+    pub fn source_checksum(&self) -> &str {
+        &self.source_checksum
+    }
+}
+
+/// A publication whose entire source set has been compared before any upload.
+#[derive(Debug)]
+pub struct PreparedPublication<'a> {
+    registry: String,
+    sources: Vec<PreparedSource<'a>>,
+    natives: Vec<PreparedNative<'a>>,
+}
+
+impl<'a> PreparedPublication<'a> {
+    /// Read-only source identities selected by the registry comparison.
+    #[must_use]
+    pub fn sources(&self) -> &[PreparedSource<'a>] {
+        &self.sources
+    }
+}
+
+#[derive(Debug)]
+struct PublishedSource {
+    checksum: String,
+    skip: Skip,
+}
+
+/// Compare all sources with the registry, retaining its canonical archive
+/// identities. Report every source drift before authentication or uploads.
+///
+/// # Errors
+/// Returns a registry query or source drift error.
+pub fn prepare_remote<'a>(
+    api_client: &client::RegistryClient,
+    packages: &'a [PackedPackage],
+) -> Result<PreparedPublication<'a>, PublishError> {
+    let mut sources = Vec::new();
+    let mut drift = Vec::new();
+    for package in packages {
+        match compare_with_registry(api_client, package) {
+            Ok(published) => sources.push(PreparedSource {
+                package,
+                source_checksum: published.as_ref().map_or_else(
+                    || package.archive.checksum.clone(),
+                    |source| source.checksum.clone(),
+                ),
+                skip: published.map(|source| source.skip),
+            }),
+            Err(error @ PublishError::Drift { .. }) => drift.push(error),
+            Err(error) => return Err(error),
+        }
+    }
+    PublishError::combine(drift)?;
+    Ok(PreparedPublication {
+        registry: api_client.registry_identity().to_string(),
+        sources,
+        natives: Vec::new(),
+    })
+}
+
+/// An inspected native archive supplied by the publisher. The bytes remain
+/// unchanged: a source checksum mismatch never rewrites its descriptor.
+#[derive(Debug)]
+pub struct NativeArchive {
+    descriptor: native_prebuilt::NativeDescriptor,
+    data: Vec<u8>,
+    checksum: String,
+}
+
+impl NativeArchive {
+    /// Inspect archive contents and the claimed static library, offline.
+    ///
+    /// # Errors
+    /// Returns an invalid native archive or descriptor error.
+    pub fn from_bytes(data: Vec<u8>) -> Result<Self, PublishError> {
+        let descriptor = native_prebuilt::inspect(&data, &std::env::temp_dir())
+            .map_err(PublishError::Invalid)?;
+        let checksum = tarball::checksum_bytes(&data);
+        Ok(Self {
+            descriptor,
+            data,
+            checksum,
+        })
+    }
+
+    #[must_use]
+    pub fn descriptor(&self) -> &native_prebuilt::NativeDescriptor {
+        &self.descriptor
+    }
+}
+
+#[derive(Debug)]
+struct PreparedNative<'a> {
+    archive: &'a NativeArchive,
+    source: &'a PackedPackage,
+    skip: Option<Skip>,
+}
+
+/// An item in the shared source/native publication plan.
+#[derive(Clone, Copy, Debug)]
+pub enum PublicationItem<'a> {
+    Source(&'a PackedPackage),
+    Native(&'a NativeArchive),
+}
+
+impl PublicationItem<'_> {
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Source(package) => package.name(),
+            Self::Native(archive) => &archive.descriptor.name,
+        }
+    }
+
+    #[must_use]
+    pub fn version(&self) -> &str {
+        match self {
+            Self::Source(package) => package.version(),
+            Self::Native(archive) => &archive.descriptor.version,
+        }
+    }
+
+    #[must_use]
+    pub fn checksum(&self) -> &str {
+        match self {
+            Self::Source(package) => &package.archive.checksum,
+            Self::Native(archive) => &archive.checksum,
+        }
+    }
+}
+
+/// Attach inspected archives to canonical source identities, then discover
+/// every requested native identity even when all source versions already exist.
+///
+/// # Errors
+/// Returns invalid membership/source binding, native drift or receipt errors.
+pub fn prepare_with_native<'a>(
+    api_client: &client::RegistryClient,
+    packages: &'a [PackedPackage],
+    archives: &'a [NativeArchive],
+) -> Result<PreparedPublication<'a>, PublishError> {
+    let mut identities = std::collections::BTreeSet::new();
+    for archive in archives {
+        let descriptor = &archive.descriptor;
+        let source = packages
+            .iter()
+            .find(|source| {
+                source.name() == descriptor.name && source.version() == descriptor.version
+            })
+            .ok_or_else(|| {
+                PublishError::Invalid(format!(
+                    "native archive {}@{} has no selected source package",
+                    descriptor.name, descriptor.version
+                ))
+            })?;
+        if source
+            .manifest
+            .native
+            .as_ref()
+            .and_then(manifest::NativeLib::rust_crate)
+            .is_none()
+        {
+            return Err(PublishError::Invalid(format!(
+                "{} is not a Rust native package",
+                descriptor.name
+            )));
+        }
+        let identity = (
+            descriptor.name.clone(),
+            descriptor.version.clone(),
+            descriptor.identity.route().map_err(PublishError::Invalid)?,
+        );
+        if !identities.insert(identity) {
+            return Err(PublishError::Invalid(format!(
+                "duplicate native archive identity for {}@{}",
+                descriptor.name, descriptor.version
+            )));
+        }
+    }
+    let mut publication = prepare_remote(api_client, packages)?;
+    // Validate every descriptor before any native query or authentication.
+    for archive in archives {
+        let source = publication
+            .sources
+            .iter()
+            .find(|source| {
+                source.package.name() == archive.descriptor.name
+                    && source.package.version() == archive.descriptor.version
+            })
+            .ok_or_else(|| {
+                PublishError::Invalid("native archive has no selected source package".into())
+            })?;
+        require_native_source(archive, &source.source_checksum)?;
+    }
+    for archive in archives {
+        let source = publication
+            .sources
+            .iter()
+            .find(|source| {
+                source.package.name() == archive.descriptor.name
+                    && source.package.version() == archive.descriptor.version
+            })
+            .ok_or_else(|| {
+                PublishError::Invalid("native archive has no selected source package".into())
+            })?;
+        publication.natives.push(PreparedNative {
+            archive,
+            source: source.package,
+            skip: compare_native(api_client, archive)?,
+        });
+    }
+    Ok(publication)
+}
+
+fn require_native_source(archive: &NativeArchive, expected: &str) -> Result<(), PublishError> {
+    if archive.descriptor.source_checksum != expected {
+        return Err(PublishError::Invalid(format!(
+            "E_PUBLISH_NATIVE_SOURCE: {}@{} native archive refers to {}, but the published source archive is {expected}; rebuild from the verified installed source archive",
+            archive.descriptor.name, archive.descriptor.version, archive.descriptor.source_checksum)));
+    }
+    Ok(())
 }
 
 /// Validate, check and pack the package rooted at `root`. Offline.
@@ -488,26 +724,58 @@ pub fn publish_all(
     sleep: &dyn Fn(Duration),
     report: &mut dyn FnMut(&PackedPackage, &Outcome),
 ) -> Result<(), PublishError> {
-    let mut skips = Vec::new();
-    let mut drift = Vec::new();
-    for package in packages {
-        match compare_with_registry(&api_client, package) {
-            Ok(skip) => skips.push(skip),
-            Err(error @ PublishError::Drift { .. }) => drift.push(error),
-            Err(error) => return Err(error),
-        }
-    }
-    PublishError::combine(drift)?;
+    let publication = prepare_remote(&api_client, packages)?;
+    publish_prepared(
+        api_client,
+        &publication,
+        dry_run,
+        auth,
+        sleep,
+        &mut |item, outcome| {
+            if let PublicationItem::Source(package) = item {
+                report(package, outcome);
+            }
+        },
+    )
+}
 
+/// Execute a prepared publication through the one authentication and upload
+/// authority. A dry run reports the same plan without acquiring credentials.
+///
+/// # Errors
+/// Returns an authentication, upload or readback error.
+pub fn publish_prepared(
+    api_client: client::RegistryClient,
+    publication: &PreparedPublication<'_>,
+    dry_run: bool,
+    auth: &mut dyn Auth,
+    sleep: &dyn Fn(Duration),
+    report: &mut dyn FnMut(PublicationItem<'_>, &Outcome),
+) -> Result<(), PublishError> {
+    if api_client.registry_identity() != publication.registry {
+        return Err(PublishError::Invalid(
+            "publication plan registry does not match the execution destination".into(),
+        ));
+    }
     let mut uploads = Vec::new();
-    for (package, skip) in packages.iter().zip(skips) {
-        match skip {
-            Some(skip) => report(package, &Outcome::Skipped(skip)),
-            None if dry_run => report(package, &Outcome::WouldPublish),
+    for source in &publication.sources {
+        let package = source.package;
+        match source.skip {
+            Some(skip) => report(PublicationItem::Source(package), &Outcome::Skipped(skip)),
+            None if dry_run => report(PublicationItem::Source(package), &Outcome::WouldPublish),
             None => uploads.push(package),
         }
     }
-    if uploads.is_empty() {
+    let mut native_uploads = Vec::new();
+    for native in &publication.natives {
+        let item = PublicationItem::Native(native.archive);
+        match native.skip {
+            Some(skip) => report(item, &Outcome::Skipped(skip)),
+            None if dry_run => report(item, &Outcome::WouldPublish),
+            None => native_uploads.push(native),
+        }
+    }
+    if uploads.is_empty() && native_uploads.is_empty() {
         return Ok(());
     }
 
@@ -515,7 +783,25 @@ pub fn publish_all(
     let mut api_client = api_client.with_token(signer.token);
     for package in uploads {
         let outcome = upload(&mut api_client, package, &signer.keypair, auth, sleep)?;
-        report(package, &outcome);
+        report(PublicationItem::Source(package), &outcome);
+    }
+    // A concurrent source publisher can win with a differently compressed
+    // archive after preparation. Check the resulting binding before natives.
+    for native in &native_uploads {
+        let stored = compare_with_registry(&api_client, native.source)?.ok_or_else(|| {
+            PublishError::Query("native source disappeared after publication".into())
+        })?;
+        require_native_source(native.archive, &stored.checksum)?;
+    }
+    for native in native_uploads {
+        let outcome = upload_native(
+            &mut api_client,
+            native.archive,
+            &signer.keypair,
+            auth,
+            sleep,
+        )?;
+        report(PublicationItem::Native(native.archive), &outcome);
     }
     Ok(())
 }
@@ -539,18 +825,11 @@ fn upload(
             &request,
         )
     };
-    let mut result = put(api_client);
-    if let Err(ApiError::Server { status: 401, .. }) = result {
-        if let Some(token) = auth.refresh(keypair)? {
-            api_client.set_token(token);
-            result = put(api_client);
-        }
-    }
-    match result {
+    match upload_with_refresh(api_client, keypair, auth, put)? {
         Ok(()) => {}
         Err(conflict @ ApiError::Server { status: 409, .. }) => {
             return match compare_with_registry(api_client, package)? {
-                Some(skip) => Ok(Outcome::Skipped(skip)),
+                Some(source) => Ok(Outcome::Skipped(source.skip)),
                 // The registry reported the version taken but does not serve it.
                 None => Err(PublishError::Remote(conflict)),
             };
@@ -565,6 +844,142 @@ fn upload(
     })
 }
 
+fn upload_with_refresh(
+    api_client: &mut client::RegistryClient,
+    keypair: &signing::KeyPair,
+    auth: &mut dyn Auth,
+    put: impl Fn(&client::RegistryClient) -> Result<(), ApiError>,
+) -> Result<Result<(), ApiError>, PublishError> {
+    let mut result = put(api_client);
+    if let Err(ApiError::Server { status: 401, .. }) = result {
+        if let Some(token) = auth.refresh(keypair)? {
+            api_client.set_token(token);
+            result = put(api_client);
+        }
+    }
+    Ok(result)
+}
+
+fn compare_native(
+    api_client: &client::RegistryClient,
+    archive: &NativeArchive,
+) -> Result<Option<Skip>, PublishError> {
+    let descriptor = &archive.descriptor;
+    let record =
+        match api_client.get_native(&descriptor.name, &descriptor.version, &descriptor.identity) {
+            Ok(record) => record,
+            Err(ApiError::Server { status: 404, .. }) => return Ok(None),
+            Err(error) => return Err(PublishError::Query(error.to_string())),
+        };
+    let served = verify_native_record(api_client, archive, &record, &|_| {})?;
+    if record.cksum == archive.checksum {
+        Ok(Some(Skip::Identical))
+    } else if tarball::unpacked_tree_checksum(&served)
+        .map_err(|e| PublishError::Query(e.to_string()))?
+        == tarball::unpacked_tree_checksum(&archive.data)
+            .map_err(|e| PublishError::Invalid(e.to_string()))?
+    {
+        Ok(Some(Skip::SameTree))
+    } else {
+        Err(PublishError::Invalid(format!(
+            "E_PUBLISH_NATIVE_DRIFT: {}@{} already has different bytes for native identity {}",
+            descriptor.name,
+            descriptor.version,
+            descriptor.identity.route().map_err(PublishError::Invalid)?
+        )))
+    }
+}
+
+fn verify_native_record(
+    api_client: &client::RegistryClient,
+    archive: &NativeArchive,
+    record: &native_prebuilt::NativeRecord,
+    sleep: &dyn Fn(Duration),
+) -> Result<Vec<u8>, PublishError> {
+    let descriptor = &archive.descriptor;
+    let fail = |detail: String| PublishError::Readback {
+        name: descriptor.name.clone(),
+        version: descriptor.version.clone(),
+        detail,
+    };
+    crate::cli::verify_package_signature(api_client, &record.cksum, &record.sig, &record.key_fp)
+        .map_err(fail)?;
+    api_client
+        .verify_native_registry_signature(
+            &descriptor.name,
+            &descriptor.version,
+            &descriptor.source_checksum,
+            &descriptor.identity,
+            record,
+        )
+        .map_err(fail)?;
+    let mut delays = READBACK_DOWNLOAD_BACKOFF.iter();
+    let served = loop {
+        match api_client.download_tarball(&record.dl) {
+            Ok(bytes) => break bytes,
+            Err(error) => match (&error, delays.next()) {
+                (ApiError::Server { status: 404, .. }, Some(delay)) => sleep(*delay),
+                _ => {
+                    return Err(fail(format!(
+                        "cannot download served native archive: {error}"
+                    )))
+                }
+            },
+        }
+    };
+    if tarball::checksum_bytes(&served) != record.cksum
+        || native_prebuilt::inspect(&served, &std::env::temp_dir()).map_err(fail)? != *descriptor
+    {
+        return Err(fail(
+            "native archive integrity or descriptor mismatch".into(),
+        ));
+    }
+    Ok(served)
+}
+
+fn upload_native(
+    api_client: &mut client::RegistryClient,
+    archive: &NativeArchive,
+    keypair: &signing::KeyPair,
+    auth: &mut dyn Auth,
+    sleep: &dyn Fn(Duration),
+) -> Result<Outcome, PublishError> {
+    let signature = keypair.sign(archive.checksum.as_bytes());
+    let key_fingerprint = keypair.fingerprint();
+    let descriptor = &archive.descriptor;
+    let put = |api_client: &client::RegistryClient| {
+        api_client.publish_native(descriptor, &archive.data, &signature, &key_fingerprint)
+    };
+    match upload_with_refresh(api_client, keypair, auth, put)? {
+        Ok(()) => {}
+        Err(conflict @ ApiError::Server { status: 409, .. }) => {
+            return match compare_native(api_client, archive)? {
+                Some(skip) => Ok(Outcome::Skipped(skip)),
+                None => Err(PublishError::Remote(conflict)),
+            };
+        }
+        Err(error) => return Err(PublishError::Remote(error)),
+    }
+    let record = api_client
+        .get_native(&descriptor.name, &descriptor.version, &descriptor.identity)
+        .map_err(|error| PublishError::Query(error.to_string()))?;
+    if record.cksum != archive.checksum
+        || record.sig != signature
+        || record.key_fp != key_fingerprint
+    {
+        return Err(PublishError::Readback {
+            name: descriptor.name.clone(),
+            version: descriptor.version.clone(),
+            detail: "native stored checksum, signature or signing key differs from upload".into(),
+        });
+    }
+    verify_native_record(api_client, archive, &record, sleep)?;
+    Ok(Outcome::Published {
+        signature,
+        key_fingerprint,
+    })
+}
+
 /// Compare `package` with the registry's copy of the same version.
 ///
 /// `Ok(None)` means the registry lacks the version. A differing archive
@@ -573,7 +988,7 @@ fn upload(
 fn compare_with_registry(
     api_client: &client::RegistryClient,
     package: &PackedPackage,
-) -> Result<Option<Skip>, PublishError> {
+) -> Result<Option<PublishedSource>, PublishError> {
     let (name, version) = (package.name(), package.version());
     let record = match api_client.get_package_version(name, version) {
         Ok(record) => record,
@@ -582,7 +997,10 @@ fn compare_with_registry(
     };
     let local = &package.archive.checksum;
     if record.cksum == *local {
-        return Ok(Some(Skip::Identical));
+        return Ok(Some(PublishedSource {
+            checksum: record.cksum,
+            skip: Skip::Identical,
+        }));
     }
     let dl = record.dl.as_deref().ok_or_else(|| {
         PublishError::Query(format!(
@@ -607,7 +1025,10 @@ fn compare_with_registry(
         })
     };
     if tree(&stored, "the registry")? == tree(&package.archive.data, "the local")? {
-        Ok(Some(Skip::SameTree))
+        Ok(Some(PublishedSource {
+            checksum: record.cksum,
+            skip: Skip::SameTree,
+        }))
     } else {
         Err(PublishError::Drift {
             name: name.to_string(),
@@ -715,8 +1136,23 @@ pub(crate) fn publish_local_package(
     let incoming_checksum = tarball::unpacked_tree_checksum(archive)
         .map_err(|error| std::io::Error::other(format!("cannot checksum archive: {error}")))?;
     if let Ok(Some(existing)) = registry.pin_package_dir_for_if_present(&identity, name, version) {
-        if let Some(verified_checksum) = registry::Registry::verified_tree_checksum(existing.path())
-        {
+        let manifest = crate::manifest::parse_manifest(&existing.path().join("hew.toml"))
+            .map_err(std::io::Error::other)?;
+        let provenance = registry::source_provenance(existing.path(), &manifest)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| {
+                std::io::Error::other(
+                    "existing package cache is missing explicit source provenance",
+                )
+            })?;
+        if provenance.registry != identity {
+            return Err(std::io::Error::other(
+                "existing package cache has a different source scope",
+            ));
+        }
+        if provenance.origin == registry::CacheOrigin::Registry {
+            let verified_checksum = registry::Registry::verified_tree_checksum(existing.path())
+                .expect("validated registry provenance retains a tree checksum");
             if verified_checksum != incoming_checksum {
                 return Err(std::io::Error::other(format!(
                     "{name}@{version} is already cached from a verified registry fetch with a \
@@ -735,5 +1171,7 @@ pub(crate) fn publish_local_package(
     }
     let staged = crate::atomic_fs::StagedDir::new(&dest)?;
     tarball::unpack(archive, staged.path()).map_err(std::io::Error::other)?;
+    registry::Registry::write_local_metadata(staged.path(), &identity, name, version, archive)
+        .map_err(std::io::Error::other)?;
     staged.publish_pinned(&dest)
 }

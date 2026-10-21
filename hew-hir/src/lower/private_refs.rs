@@ -41,6 +41,46 @@ pub(super) fn collect_imported_private_fn_closure(
             _ => roots.push((index, span)),
         }
     }
+    close_private_fn_uses(ctx, &private, roots, reachable)
+}
+
+/// Embedded source helpers share imported functions' exact declaration-use
+/// closure, including function values and references inside closures.
+pub(super) fn collect_builtin_private_fn_closure(
+    ctx: &mut LowerCtx,
+    program: &Program,
+    builtin_item_index: impl Fn(usize) -> u32,
+) -> HashSet<usize> {
+    let mut private = HashMap::new();
+    let mut roots = Vec::new();
+    let saved_index = ctx.current_module_idx;
+    let saved_ordinal = ctx.current_item_ordinal;
+    for (ordinal, (item, span)) in program.items.iter().enumerate() {
+        let index = builtin_item_index(ordinal);
+        ctx.current_module_idx = index;
+        ctx.current_item_ordinal = ordinal;
+        match item {
+            Item::Function(function) if !function.visibility.is_pub() => {
+                if let Some(declaration) =
+                    ctx.source_declaration(span, hew_types::DeclarationKind::Function, 0)
+                {
+                    private.insert(declaration, (ordinal, index, span));
+                }
+            }
+            _ => roots.push((index, span)),
+        }
+    }
+    ctx.current_module_idx = saved_index;
+    ctx.current_item_ordinal = saved_ordinal;
+    close_private_fn_uses(ctx, &private, roots, HashSet::new())
+}
+
+fn close_private_fn_uses<'a>(
+    ctx: &LowerCtx,
+    private: &HashMap<hew_types::DefId, (usize, u32, &'a Span)>,
+    mut roots: Vec<(u32, &'a Span)>,
+    mut reachable: HashSet<usize>,
+) -> HashSet<usize> {
     while let Some((index, span)) = roots.pop() {
         for (site, resolution) in &ctx.resolutions {
             if site.module_idx != index || site.start < span.start || site.end > span.end {

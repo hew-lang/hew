@@ -1,0 +1,108 @@
+import std.net;
+import std.fs;
+import std.os;
+import std.path;
+
+fn rejected(source: string, field: string) -> bool {
+    match NodeConfig.load() {
+        .Ok(_) => false,
+        .Err(error) => error.source == source && error.field == field && !error.message.is_empty(),
+    }
+}
+
+fn main() -> i64 {
+    for name in ["HEW_NODE_CONFIG", "HEW_NODE_BIND", "HEW_NODE_KEY", "HEW_NODE_TRANSPORT", "HEW_NODE_PEERS", "HEW_NODE_SEEDS"] {
+        os.remove_env(name).expect("clear override");
+    }
+    let directory = path.combine(os.temp_dir(), f"node-config-load-{os.pid()}");
+    fs.mkdir(directory).expect("create configuration directory");
+    let file = path.combine(directory, "cluster.toml");
+    os.set_env("HEW_NODE_CONFIG", file).expect("select file");
+    if !rejected(file, "") {
+        return 1;
+    }
+    fs.write(file, "[cluster]\nbind = '127.0.0.1:0'\nkey = 'node.key'\npeers = ['pin']\nseeds = ['1@127.0.0.1:1']\n").expect("write config");
+    let original = NodeConfig.load().expect("load file");
+    if original.bind != "127.0.0.1:0" || original.key != path.combine(directory, "node.key") || original.peers != ["pin"] || original.seeds != ["1@127.0.0.1:1"] {
+        return 2;
+    }
+    match original.transport {
+        .Tcp => {}
+        _ => return 3,
+    }
+    if path.exists(original.key) {
+        return 4;
+    }
+    os.set_env("HEW_NODE_BIND", "localhost:8888").expect("bind");
+    os.set_env("HEW_NODE_KEY", "environment.key").expect("key");
+    os.set_env("HEW_NODE_TRANSPORT", "quic-mesh").expect("transport");
+    os.set_env("HEW_NODE_PEERS", "[]").expect("clear peers");
+    os.set_env("HEW_NODE_SEEDS", "['localhost:9000']").expect("seeds");
+    let overridden = NodeConfig.load().expect("overrides");
+    if overridden.bind != "localhost:8888" || overridden.key != "environment.key" || !overridden.peers.is_empty() || overridden.seeds != ["localhost:9000"] {
+        return 5;
+    }
+    match overridden.transport {
+        .QuicMesh => {}
+        _ => return 6,
+    }
+    os.set_env("HEW_NODE_TRANSPORT", "udp").expect("invalid transport");
+    if !rejected("HEW_NODE_TRANSPORT", "cluster.transport") {
+        return 7;
+    }
+    os.set_env("HEW_NODE_TRANSPORT", "tcp").expect("transport");
+    os.set_env("HEW_NODE_SEEDS", "[1]").expect("wrong seed type");
+    if !rejected("HEW_NODE_SEEDS", "cluster.seeds[0]") {
+        return 8;
+    }
+    os.set_env("HEW_NODE_SEEDS", "[]\nextra = true").expect("trailing document");
+    if !rejected("HEW_NODE_SEEDS", "cluster.seeds") {
+        return 9;
+    }
+    os.remove_env("HEW_NODE_SEEDS").expect("clear seeds");
+    fs.write(file, "[cluster]\nbind = 42\n").expect("invalid overridden field");
+    if !rejected(file, "cluster.bind") {
+        return 10;
+    }
+    fs.write(file, "[cluster]\nunknown = true\n").expect("unknown field");
+    if !rejected(file, "cluster.unknown") {
+        return 11;
+    }
+    fs.write(file, "[cluster]\nseeds = 'endpoint'\n").expect("wrong list kind");
+    if !rejected(file, "cluster.seeds") {
+        return 12;
+    }
+    fs.write(file, "cluster = 1").expect("wrong table kind");
+    if !rejected(file, "cluster") {
+        return 13;
+    }
+    fs.write(file, "[cluster").expect("invalid TOML");
+    if !rejected(file, "") {
+        return 14;
+    }
+    os.remove_env("HEW_NODE_CONFIG").expect("use missing default file");
+    let environment_only = NodeConfig.load().expect("environment-only configuration");
+    if environment_only.bind != "localhost:8888" || environment_only.key != "environment.key" {
+        return 16;
+    }
+    os.remove_env("HEW_NODE_BIND").expect("missing bind");
+    if !rejected("hew.toml", "cluster.bind") {
+        return 17;
+    }
+    os.set_env("HEW_NODE_BIND", "127.0.0.1:0").expect("bind");
+    os.remove_env("HEW_NODE_KEY").expect("missing key");
+    if !rejected("hew.toml", "cluster.key") {
+        return 18;
+    }
+    os.set_env("HEW_NODE_CONFIG", file).expect("restore file");
+    fs.write(file, "[cluster]\nbind = '127.0.0.1:0'\nkey = 'node.key'\n").expect("valid config");
+    os.remove_env("HEW_NODE_BIND").expect("clear bind");
+    os.remove_env("HEW_NODE_KEY").expect("clear key");
+    let ready = NodeConfig.load().expect("ready config");
+    Node.start(ready).expect("start loaded config");
+    if Node.identity_key().is_empty() {
+        return 15;
+    }
+    Node.shutdown();
+    0
+}

@@ -1,125 +1,42 @@
+import { calendarResultFields } from "./calendar.js";
 /// Load-time admission for a verified SIR package.
 ///
 /// The package declares what it needs: `runtime_families` names every runtime
 /// call family the instruction stream reaches, and `externs` names every
-/// declared C-ABI symbol. This validator matches each against the shim table
-/// the VM implements. A family or symbol with no shim is refused before a
-/// single instruction runs. Unknown is rejected, never allowed.
+/// declared C-ABI symbol. Admission consumes the same typed host registrations
+/// as execution, including resumable operations and required Wasm bridges.
+/// An unavailable operation is refused before a single instruction runs.
 ///
 /// The check keys on the declared identity: it never matches a symbol prefix
 /// and never reads an instruction stream to guess a capability.
 
 import type { SandboxRejection } from "../types.js";
-import type { PackageV1 } from "./package.js";
+import type { CheckedPackage } from "../schema-validator.js";
 import {
-  SUPPORTED_NATIVE_IO,
-  SUPPORTED_SUSPEND_KINDS,
-  resolveExternShim,
-  resolveRuntimeShim,
+  CODEC_REGISTRATION,
+  registrationRefusal,
+  resolveExtern,
+  resolveRuntime,
+  resolveSuspension,
+  suspensionRefusal,
+  type HostBridges,
+  type Refused,
 } from "./shims.js";
 
 const UNSUPPORTED = "sandbox.capability.unsupported";
-const NATIVE_FAMILIES = new Set(["AsyncIo", "FileRead", "Tcp"]);
-const NATIVE_SUSPENSIONS = new Set(["NativeIo", "Read", "Accept"]);
 
-const OPS = new Set([
-  "coverage.hit",
-  "const.int",
-  "const.bool",
-  "const.float",
-  "const.char",
-  "const.unit",
-  "const.duration",
-  "const.str",
-  "const.bytes",
-  "copy_value",
-  "fork",
-  "move",
-  "destroy_value",
-  "begin_borrow",
-  "end_borrow",
-  "finish_linear_receiver",
-  "alloc_place",
-  "store.init",
-  "store.assign",
-  "load.copy",
-  "load.take",
-  "load.borrow",
-  "end_lifetime",
-  "tuple.make",
-  "tuple.get",
-  "aggregate.make",
-  "aggregate.project_copy",
-  "aggregate.project_borrow",
-  "destructure",
-  "array.make",
-  "array.repeat",
-  "variant.make",
-  "variant.is",
-  "variant.project_copy",
-  "variant.project_borrow",
-  "variant.destructure",
-  "unary",
-  "binary",
-  "cast",
-  "str.eq",
-  "bytes.eq",
-  "function.make",
-  "closure.make",
-  "generator.make",
-  "callable.coerce",
-  "dyn.make",
-  "register_defer",
-  "stream.pipe",
-  "task_scope.enter",
-  "task_scope.close",
-  "task.spawn",
-  "task.invoke",
-  "task.race",
-]);
-const TERMS = new Set([
-  "goto",
-  "branch",
-  "switch.variant",
-  "return",
-  "checked.binary",
-  "dyn.call",
-  "call",
-  "indirect.call",
-  "actor.call",
-  "runtime.call",
-  "extern.call",
-  "value.call",
-  "wire.codec",
-  "panic",
-  "checked_raise",
-  "trap",
-  "cleanup.dispatch",
-  "enter_defer",
-  "finish_defer",
-  "recover_fault",
-  "resume_unwind",
-  "suspend",
-  "unreachable",
-]);
+/// The executor can only be constructed after structural/reference checks and
+/// the canonical host registration have both accepted the same package.
+export class AdmittedPackage {
+  private constructor(readonly bytecode: CheckedPackage) {}
 
-const ACTOR_OPS = new Set([
-  "identity",
-  "spawn",
-  "self_handle",
-  "stop",
-  "terminate",
-  "await_stopped",
-  "await_restarted",
-  "call_start",
-  "call_take",
-  "submit",
-  "stream_start",
-  "timer_schedule",
-  "supervisor_spawn",
-  "supervisor_child",
-  "supervisor_pool_view",
-]);
+  static load(
+    pkg: CheckedPackage,
+    bridges: HostBridges,
+  ): AdmittedPackage | SandboxRejection {
+    return admitPackage(pkg, bridges) ?? new AdmittedPackage(pkg);
+  }
+}
 
 function capabilityMessage(capability: string, native: boolean): string {
   const nativeFeatures: Record<string, string> = {
@@ -154,8 +71,11 @@ function unavailable(capability: string): SandboxRejection {
   };
 }
 
-/// The first refusal, or `null` when every declared capability has a shim.
-export function admitPackage(pkg: PackageV1): SandboxRejection | null {
+/// The first refusal, or `null` when all operations and bridges are available.
+export function admitPackage(
+  pkg: CheckedPackage,
+  bridges: HostBridges = {},
+): SandboxRejection | null {
   if (!pkg.entry) {
     return {
       category: "invalid_package",
@@ -166,7 +86,7 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     };
   }
 
-  const timerResources = new Set<number>();
+  const opaqueResources = new Set<number>();
   for (const function_ of pkg.functions) {
     for (const block of function_.blocks) {
       if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
@@ -188,27 +108,85 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
         };
       if (
         block.term.op === "actor.call" &&
-        !ACTOR_OPS.has(block.term.operation.op)
+        block.term.operation.op === "local_observation"
       )
         return unavailable(`actor.${block.term.operation.op}`);
-      if (
-        block.ops.some(
-          (op) =>
-            op.op === "coverage.hit" &&
-            (!Number.isSafeInteger(op.counter) ||
-              op.counter < 0 ||
-              op.counter > 0xffff_ffff),
-        )
-      ) {
-        return {
-          category: "invalid_package",
-          code: "sandbox.package.invalid_counter",
-          capability: "coverage.hit",
-          message: "coverage counter must be a u32",
-          span: null,
-        };
-      }
       const term = block.term;
+      if (
+        term.op === "runtime.call" &&
+        pkg.runtime_families[term.family]?.family === "TimestampNow"
+      ) {
+        const shape =
+          term.aggregate_result_shape == null
+            ? undefined
+            : pkg.aggregates[term.aggregate_result_shape];
+        if (
+          !shape ||
+          shape.builtin !== "Timestamp" ||
+          shape.fields.length !== 2
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "TimestampNow",
+            message: "timestamp clock lacks its checked result shape",
+            span: null,
+          };
+        }
+      }
+      if (term.op === "extern.call") {
+        const symbol = pkg.externs[term.extern]?.symbol ?? "";
+        const fields = calendarResultFields(symbol);
+        if (fields) {
+          const shape =
+            term.aggregate_result_shape == null
+              ? undefined
+              : pkg.aggregates[term.aggregate_result_shape];
+          if (
+            !shape ||
+            shape.fields.length !== fields.length ||
+            shape.fields.some((field, index) => field !== fields[index])
+          ) {
+            return {
+              category: "invalid_package",
+              code: "sandbox.package.calendar_shape",
+              capability: symbol,
+              message: "calendar operation lacks its checked result shape",
+              span: null,
+            };
+          }
+        }
+      }
+      if (term.op === "timestamp.binary") {
+        const both = term.lhs_timestamp && term.rhs_timestamp;
+        const validOperation =
+          (term.binary_op === "Add" &&
+            term.lhs_timestamp !== term.rhs_timestamp) ||
+          (term.binary_op === "Subtract" && term.lhs_timestamp);
+        const shape =
+          term.shape === null ? undefined : pkg.aggregates[term.shape];
+        if (
+          typeof term.lhs_timestamp !== "boolean" ||
+          typeof term.rhs_timestamp !== "boolean" ||
+          !validOperation ||
+          (both
+            ? term.shape !== null
+            : !shape ||
+              shape.fields.length !== 2 ||
+              shape.builtin !== "Timestamp") ||
+          term.failures.length !== 1 ||
+          term.failures[0]?.trap !== "integer_overflow"
+        ) {
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.timestamp_shape",
+            capability: "timestamp.binary",
+            message:
+              "timestamp arithmetic lacks its checked operands, result shape or overflow edge",
+            span: null,
+          };
+        }
+      }
       if (
         term.op === "runtime.call" &&
         pkg.runtime_families[term.family]?.family === "BytesDecodeUtf8"
@@ -238,6 +216,32 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
             span: null,
           };
       }
+      if (term.op === "extern.call") {
+        const registration = resolveExtern(pkg.externs[term.extern]!);
+        if (
+          registration.kind === "directory" &&
+          "release" in registration.operation
+        ) {
+          const resource =
+            term.result_resource == null
+              ? undefined
+              : pkg.resources?.[term.result_resource];
+          if (
+            resource?.kind !== "nominal" ||
+            resource.release !== registration.operation.release ||
+            term.result == null ||
+            term.result === "never"
+          )
+            return {
+              category: "invalid_package",
+              code: "sandbox.package.owner_result",
+              capability: null,
+              message:
+                "filesystem acquisition lacks its compiler-selected owner release slot",
+              span: null,
+            };
+        }
+      }
       if (term.op === "actor.call" && term.operation.op === "timer_schedule") {
         const operation = term.operation;
         const handler = pkg.actors
@@ -263,11 +267,46 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
               "timer schedule lacks its checked handler, timing or non-waiting admission",
             span: null,
           };
-        timerResources.add(operation.resource);
+        opaqueResources.add(operation.resource);
+      }
+      if (
+        term.op === "actor.call" &&
+        term.operation.op === "supervisor_spawn"
+      ) {
+        const id = term.operation.supervisor;
+        const supervisor = pkg.supervisors?.find((layout) => layout.id === id);
+        const config =
+          term.args.length -
+          (supervisor?.children.some((child) => child.is_pool) ? 1 : 0);
+        if (
+          !supervisor ||
+          config < 0 ||
+          supervisor.children.some((child) => {
+            const params = pkg.functions.find(
+              (fn) => fn.id === child.spawn,
+            )?.params;
+            return !params || ![config, config + 1].includes(params.length);
+          })
+        )
+          return {
+            category: "invalid_package",
+            code: "sandbox.package.supervisor_constructor",
+            capability: null,
+            message:
+              "supervisor constructor signature does not match its config",
+            span: null,
+          };
+      }
+      if (term.op === "wire.codec") {
+        const refusal = registrationRefusal(CODEC_REGISTRATION, bridges);
+        if (refusal) return rejectRegistration(refusal);
       }
       if (term.op === "suspend") {
+        const registration = resolveSuspension(term);
+        if (registration.kind === "refused")
+          return rejectRegistration(registration);
         const mandatoryClose = (pkg.resources ?? []).some(
-          (resource) => resource.close === function_.id,
+          (resource) => "close" in resource && resource.close === function_.id,
         );
         if (
           term.kind === "Safepoint"
@@ -283,38 +322,18 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
             span: null,
           };
       }
-      const unknown =
-        block.ops.find((op) => !OPS.has(op.op))?.op ??
-        (!TERMS.has(block.term.op) ? block.term.op : null);
-      if (unknown)
-        return {
-          category: "invalid_package",
-          code: "sandbox.package.unknown_opcode",
-          capability: unknown,
-          message: `unknown bytecode opcode ${unknown}`,
-          span: null,
-        };
     }
   }
 
   for (const [index, resource] of (pkg.resources ?? []).entries()) {
-    if (
-      resource.kind === "record" &&
-      (resource.shape === undefined ||
-        !pkg.aggregates.some((shape) => shape.id === resource.shape))
-    )
-      return {
-        category: "invalid_package",
-        code: "sandbox.package.resource_shape_missing",
-        capability: null,
-        message: "record resource has no exact aggregate shape",
-        span: null,
-      };
-    if (resource.kind === "opaque" && !timerResources.has(index))
+    if (resource.kind === "opaque" && !opaqueResources.has(index))
       return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&
-      !resolveExternShim(resource.release ?? "")
+      registrationRefusal(
+        resolveExtern({ symbol: resource.release ?? "" }),
+        bridges,
+      )
     )
       return unavailable("resource.external_close");
   }
@@ -371,77 +390,104 @@ export function admitPackage(pkg: PackageV1): SandboxRejection | null {
     if (actor.max_heap_bytes != null) return unavailable("actor.heap_limit");
   }
 
-  for (const entry of pkg.runtime_families) {
-    if (!resolveRuntimeShim(entry)) {
+  for (const supervisor of pkg.supervisors ?? []) {
+    const order =
+      supervisor.startup_order === undefined
+        ? supervisor.children.map((_child, index) => index)
+        : supervisor.startup_order;
+    if (
+      !Array.isArray(order) ||
+      supervisor.children.some(
+        (child) =>
+          child.dependencies !== undefined &&
+          (!Array.isArray(child.dependencies) ||
+            new Set(child.dependencies).size !== child.dependencies.length),
+      )
+    )
       return {
-        category: NATIVE_FAMILIES.has(entry.family)
-          ? "native_only"
-          : "not_implemented",
-        code: UNSUPPORTED,
-        capability: familyIdentity(entry.family, entry.detail),
-        message: capabilityMessage(
-          entry.family,
-          NATIVE_FAMILIES.has(entry.family),
-        ),
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_startup_order",
+        capability: null,
+        message:
+          "supervisor startup order and dependencies must be arrays of unique children",
         span: null,
       };
-    }
+    const ranks = new Map(order.map((child, rank) => [child, rank]));
+    if (
+      order.length !== supervisor.children.length ||
+      ranks.size !== order.length ||
+      order.some(
+        (child) =>
+          !Number.isInteger(child) ||
+          child < 0 ||
+          child >= supervisor.children.length,
+      ) ||
+      supervisor.children.some((child, index) =>
+        (child.dependencies ?? []).some(
+          (dependency) =>
+            !Number.isInteger(dependency) ||
+            dependency < 0 ||
+            !ranks.has(dependency) ||
+            ranks.get(dependency)! >= ranks.get(index)!,
+        ),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_startup_order",
+        capability: null,
+        message:
+          "supervisor startup order must precede each declared dependency",
+        span: null,
+      };
+    if (
+      supervisor.children.some(
+        (child) => !pkg.functions.some((fn) => fn.id === child.spawn),
+      )
+    )
+      return {
+        category: "invalid_package",
+        code: "sandbox.package.supervisor_constructor",
+        capability: null,
+        message: "supervisor child has no constructor callable",
+        span: null,
+      };
+  }
+
+  for (const entry of pkg.runtime_families) {
+    const refusal = registrationRefusal(resolveRuntime(entry), bridges);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   for (const entry of pkg.externs) {
-    if (!resolveExternShim(entry.symbol)) {
-      const native = entry.native_capability;
-      return {
-        category: native === undefined ? "not_implemented" : "native_only",
-        code: UNSUPPORTED,
-        capability: entry.symbol,
-        message:
-          native === undefined
-            ? "This external-library operation is not available in the browser runtime yet."
-            : `${native} require native execution.`,
-        span: null,
-      };
-    }
+    const refusal = registrationRefusal(resolveExtern(entry), bridges);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   for (const kind of pkg.suspend_kinds) {
-    const refused =
-      kind === "NativeIo"
-        ? refusedNativeIo(pkg)
-        : SUPPORTED_SUSPEND_KINDS.has(kind)
-          ? null
-          : kind;
-    if (refused !== null) {
-      return {
-        category: NATIVE_SUSPENSIONS.has(kind)
-          ? "native_only"
-          : "not_implemented",
-        code: UNSUPPORTED,
-        capability: refused,
-        message: capabilityMessage(kind, NATIVE_SUSPENSIONS.has(kind)),
-        span: null,
-      };
-    }
+    const refusal = suspensionRefusal(kind);
+    if (refusal) return rejectRegistration(refusal);
   }
 
   return null;
 }
 
-/// The first native I/O suspension whose operation the VM does not serve.
-function refusedNativeIo(pkg: PackageV1): string | null {
-  for (const function_ of pkg.functions) {
-    for (const block of function_.blocks) {
-      const term = block.term;
-      if (term.op !== "suspend" || term.kind !== "NativeIo") continue;
-      const operation = String(term.detail?.operation);
-      if (!SUPPORTED_NATIVE_IO.has(operation)) return `NativeIo::${operation}`;
-    }
-  }
-  return null;
-}
-
-function familyIdentity(family: string, detail: unknown): string {
-  return typeof detail === "string" && detail.length > 0
-    ? `${family}::${detail}`
-    : family;
+function rejectRegistration(refusal: Refused): SandboxRejection {
+  return {
+    category: refusal.category,
+    code: UNSUPPORTED,
+    capability: refusal.capability,
+    message:
+      refusal.message ??
+      (refusal.capability === "codecBridge" ||
+      refusal.capability === "calendarBridge"
+        ? `This operation requires the ${refusal.capability === "codecBridge" ? "codec" : "calendar"} Wasm bridge.`
+        : refusal.description !== undefined
+          ? `${refusal.description} require native execution.`
+          : capabilityMessage(
+              refusal.capability.split("::")[0]!,
+              refusal.category === "native_only",
+            )),
+    span: null,
+  };
 }

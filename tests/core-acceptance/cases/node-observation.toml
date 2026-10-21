@@ -1,0 +1,10 @@
+[[case]]
+id = "node-observation"
+intent = "Instance-bound membership and naming snapshots compose with coalesced streams, registration waits, cancellation and completed shutdown."
+source = "cases/node-observation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+exit = 0

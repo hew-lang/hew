@@ -3,14 +3,14 @@
 use super::*;
 
 /// A dead node is detected by a survivor via the now-driven SWIM detector:
-/// SUSPECT→DEAD escalation fires and `on_member_dead` fans out a partition
-/// signal — within a bounded number of protocol periods.
+/// SUSPECT→DEAD escalation records the terminal membership state within a
+/// bounded number of protocol periods.
 ///
-/// This is the C1 proof. SUSPECT→DEAD escalation and the `on_member_dead`
-/// fan-out happen ONLY inside `hew_cluster_tick`, which had zero production
+/// This is the C1 proof. SUSPECT→DEAD escalation happens inside
+/// `hew_cluster_tick`, which had zero production
 /// call sites before the driver. Without the driver, node B would stay
 /// SUSPECT forever (the connection-event path only reaches SUSPECT) and the
-/// partition recv below would block until the test's deadline.
+/// membership state would remain SUSPECT without the driver.
 ///
 /// Runs under simulated time (enabled by `SwimTimingEnv::fast()` before
 /// any node starts): the SWIM driver uses the sim clock, so the test is
@@ -22,9 +22,7 @@ use super::*;
 /// transition.  See the inline notes at the advance points.
 #[test]
 fn dead_node_is_detected_by_survivor_via_driven_swim() {
-    use crate::cluster::{hew_cluster_member_state, hew_cluster_set_partition_registry};
-    use crate::duplex::{HewDuplex, RecvError};
-    use std::sync::Arc;
+    use crate::cluster::hew_cluster_member_state;
     const NODE_A: u16 = 340;
     const NODE_B: u16 = 341;
     let _guard = crate::runtime_test_guard();
@@ -34,21 +32,6 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     crate::registry::hew_registry_clear();
 
     let (node_a, _node_a_port, node_b, node_b_port) = start_authorized_tcp_pair(NODE_A, NODE_B);
-
-    // Install a partition registry on A so on_member_dead is observable,
-    // and bind a duplex recv to NODE_B.
-    let registry = Arc::new(crate::cluster::PartitionRegistry::new());
-    // SAFETY: A's cluster is live after a successful start.
-    unsafe {
-        assert!(!(*node_a.as_ptr()).cluster.is_null());
-        hew_cluster_set_partition_registry((*node_a.as_ptr()).cluster, Arc::clone(&registry));
-    }
-    let (dx, peer) = HewDuplex::new_pair(8, 8);
-    dx.register_recv_with_partition_registry(&registry, NODE_B);
-    let recv_handle = {
-        let handle = dx.clone_handle();
-        thread::spawn(move || handle.recv())
-    };
 
     // Connect A → B and wait for the handshake so A knows B is ALIVE.
     let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
@@ -82,8 +65,7 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     // still ALIVE — is what hung this test on Linux under load: the single
     // tick spent itself on ALIVE→SUSPECT, then the frozen sim clock starved
     // the SUSPECT→DEAD tick (the driver waits in `sim_sleep_ms` without
-    // advancing time), so `on_member_dead` never fired and `recv` blocked
-    // until the harness deadline.
+    // advancing time), so SUSPECT→DEAD never ran before the harness deadline.
     crate::deterministic::hew_simtime_advance_ms((2 * SWIM_TEST_PERIOD_MS).cast_signed());
     // SAFETY: A's cluster is live (node still running).
     unsafe {
@@ -92,28 +74,21 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
 
     // Phase 2 — escalate SUSPECT→DEAD.  Advance past the suspect timeout so
     // the next tick observes elapsed (= now − last_seen) > suspect_timeout,
-    // declares B DEAD, and `on_member_dead` fans out PartitionDetected —
-    // unblocking the recv below.  No real-time deadline is needed: the
-    // driver fires as soon as it gets a scheduling turn after the advance.
+    // declares B DEAD. No real-time deadline is needed: the driver fires as
+    // soon as it gets a scheduling turn after the advance.
     crate::deterministic::hew_simtime_advance_ms(
         (SWIM_TEST_SUSPECT_TIMEOUT_MS + 2 * SWIM_TEST_PERIOD_MS).cast_signed(),
     );
-    let result = recv_handle.join().expect("recv thread panicked");
-    assert!(
-        matches!(result, Err(RecvError::PartitionDetected)),
-        "survivor must detect the dead node via on_member_dead, got: {result:?}"
-    );
-
     // And A's membership view must record B as DEAD.
     // SAFETY: A's cluster is still live.
+    unsafe { wait_for_member_state_at_least(node_a.as_ptr(), NODE_B, crate::cluster::MEMBER_DEAD) };
+    // SAFETY: node A still owns its live cluster until the stop below.
     let state = unsafe { hew_cluster_member_state((*node_a.as_ptr()).cluster, NODE_B) };
     assert_eq!(
         state,
         crate::cluster::MEMBER_DEAD,
         "A's membership view must record node B as DEAD"
     );
-
-    drop(peer);
     // SAFETY: nodes were allocated in this test and remain valid.
     unsafe { assert_eq!(hew_node_stop(node_a.as_ptr()), 0) };
     crate::registry::hew_registry_clear();

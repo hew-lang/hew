@@ -54,7 +54,7 @@ is identified directly; its runtime-status cell states the current behavior.
 |----|-----------------|------------------|---------------------|-------------------|----------------|
 | `basic-actors` | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Basic actors (`spawn`, `send`, `receive`, `ask/await`) | Pass | — | Implemented on the wasm32 process driver: the same actor core the native target runs, with the parked root draining the run queue in place of worker threads |
 | `exit-status-range` | Process exit statuses above 125 | Process exit statuses above 125 | Pass | — | WASI `proc_exit` refuses a status above 125, so `exit(n)` for n greater than 125 reaches the host as 1 rather than n. Every other status matches native, including the exit-1 rule an unrecovered fault follows (HEW-SPEC-2026 5.8), whose trap code is a diagnostic tag and never the status |
-| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | Unsupported (no dedicated diagnostic) | — | A handler panic is contained: the physical path delivers it as a typed fault on the ask's failure edge, so the caller sees `Err` and the run continues. An `#[on(start)]` panic is still module-fatal, because it runs on the spawning stack with no fault edge and the production artifact is panic=abort. Supervisor restart is the separate `supervision-trees` capability |
+| `actor-crash-containment` | Actor-local panic/trap containment and restart | Actor-local panic/trap containment and restart | Pass | — | Checked handler, init and start faults release owned state and return through failure edges; supervised faults use the shared restart and settlement policy |
 | `generators` | Generators (`gen fn`) | Generators (`gen fn`) | Pass | — | Scalar-parameter and `fn[clone]`-parameter `gen fn` forms execute through checked continuation frames on Tier 2; full consumption and early-break cleanup verified under wasmtime at O0 and O2 |
 | `patterns-adts-generics` | Pattern matching, ADTs, generics | Pattern matching, ADTs, generics | Pass | — | Implemented |
 | `collections-arithmetic` | Standard collections, arithmetic | Standard collections, arithmetic | Pass | — | Implemented |
@@ -62,8 +62,8 @@ is identified directly; its runtime-status cell states the current behavior.
 | `actor-ask-reply` | Actor ask/reply | Actor ask/reply | Pass | — | Implemented |
 | `wasi-sockets` | Raw host-provided WASI socket capability | Raw host-provided WASI socket capability | Unsupported (no dedicated diagnostic) | — | Host- and runtime-dependent; Hew's stdlib has no cross-target socket layer |
 | `select` | `select {}` (any arm kind, any timeout expression) | `select {}` operations | Pass | — | Checked readiness waitsets for tasks, actor calls, streams and timers on the cooperative driver |
-| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Reject (`SupervisionTrees`) | they require OS threads for restart strategies and child supervision | The browser sandbox implements deterministic restart trees; Tier 2 rejects this surface |
-| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Reject (`LinkMonitor`) | they rely on OS threads to watch linked actors and propagate exits | The browser sandbox implements deterministic graph state, exit signals, and monitor notifications; Tier 2 rejects this surface |
+| `supervision-trees` | Supervision trees (`supervisor`, `supervisor_child`, `supervisor_stop`) | Supervision tree operations | Pass | — | Checked child construction, restart strategies, stable roles and cooperative teardown use the shared actor runtime |
+| `link-monitor` | Actor `link` / `unlink` / `monitor` / `demonitor` | Link/monitor operations | Pass | — | Local actor and role observations share typed LINK/DOWN delivery and owned subscription cleanup |
 | `structured-concurrency` | Structured concurrency (`scope {}`, `fork`, `await`) | Structured concurrency scopes | Pass | — | Checked scope joins, cancellation and cleanup on the cooperative driver |
 | `tasks` | Scope-spawned `Task` handles | Task handles spawned from scopes | Pass | — | Checked task continuations, ordered batches and races on the cooperative driver |
 | `semaphore-non-blocking` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | `semaphore.new`, `Semaphore.clone/try_acquire/release/count/close` | Pass | — | Explicitly cloned affine handles share a permit count and close independently |
@@ -71,7 +71,8 @@ is identified directly; its runtime-status cell states the current behavior.
 | `timers-sleep` | `sleep_ms`, `sleep` | Timer operations | Warn (`Timers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative coroutine suspension, including within actor handlers |
 | `timers-every` | `#[every(duration)]` periodic handlers | Timer operations | Warn (`PeriodicTimers`) | timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker | Cooperative periodic dispatch on WASI and checked periodic handlers in the browser VM |
 | `streams` | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pipe operations (`stream.pipe`, `Stream<T>.*`, `Sink<T>.*`) | Pass | — | Implemented on the wasm32 process driver: the same suspending queue core the native target runs, with a parked producer or consumer resumed from the driver's run queue instead of a worker thread. The file and socket backings of the same handle types are separately classified |
-| `filesystem-streams` | `std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`, `std.fs.open_read_dir` and `std.fs.open_write_dir` | File-backed streams and resources | Reject (`FilesystemStreams`) | file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available | File-backed stream runtime is native-only; path-independent fs helpers remain separately classified |
+| `filesystem-streams` | `std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write` | Ambient files and file-backed streams | Reject (`FilesystemStreams`) | ambient file constructors and file-backed streams are unavailable on wasm32; WASI directory resources are separately classified | File-backed stream runtime is native-only; path-independent fs helpers remain separately classified |
+| `directory-resources` | Host-supplied directory resources | Host-supplied directory resources | Pass | the host must explicitly supply directory authority; no ambient directory is granted by default; browser cancellation drains or aborts pending file operations, while synchronous WASI host syscalls cannot be interrupted after entry | WASI preview1 uses explicitly preopened directories; the browser VM uses explicitly supplied OPFS descendant handles with existing directional directory/file owners and asynchronous host completion; external picker handles are refused |
 | `termination-signals` | `std.os.shutdown_signal` | Termination signal subscriptions | Reject (`TerminationSignals`) | termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events | Native-only signal dispatcher |
 | `descriptor-readiness` | `std.io.watch_readable` | Descriptor readiness watches | Reject (`DescriptorReadiness`) | a readiness watch waits on the native I/O reactor, which is not compiled for wasm32 | Native-only reactor watch |
 | `http-client` | `std.net.http.http_client.*`, `http_client.Response.*` | std.net.http.http_client operations | Reject (`HttpClient`) | the std.net.http.http_client wrappers are native-only and have no wasm32 networking bridge | Native-only wrapper module |
@@ -84,7 +85,7 @@ is identified directly; its runtime-status cell states the current behavior.
 | `quic` | `std.net.quic.*`, `quic.QUICEndpoint.*`, `quic.QUICConnection.*`, `quic.QUICStream.*`, `quic.QUICEvent.*` | std.net.quic operations | Reject (`Quic`) | the std.net.quic transport is backed by quinn over native sockets and has no wasm32 QUIC bridge | native QUIC is feature-gated and not compiled for wasm32 |
 | `dns` | `std.net.dns.resolve`, `dns.lookup_host` | std.net.dns resolver operations | Reject (`Dns`) | the std.net.dns resolver uses the native OS resolver and has no wasm32 implementation | Native OS resolver; not compiled for wasm32 |
 | `std-os` | `std.os.*` (args, env, cwd, home, hostname, pid, temp-dir) | std.os environment and path operations | Reject (`OsEnv`) | the std.os helpers rely on native POSIX APIs; the os runtime layer is not compiled for wasm32 | Hew OS/env helpers are native-only today even where WASI may offer host data |
-| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32 | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only |
+| `distributed` | `Node.*` (`start`, `shutdown`, `connect`, `set_transport`, `load_keys`, `identity_key`, `id`, `allow_peer`, `register`, `lookup`), `std.net.cluster` observation operations, remote actor calls, and remote monitor/link operations | Distributed node and remote-actor operations | Reject (`Distributed`) | the Node cluster API and remote actor calls route through the native mesh transport (hew_node_api_* / hew_remote_call_*), which is not compiled for wasm32 | Key-derived identity, durable sessions, authenticated mesh routing, registry/SWIM, and cross-node lifecycle are native-only |
 | `stdin-input` | Standard input reads | Standard input reads | Pass | — | Native and WASI standard input is host-provided |
 | `crypto-random` | `std.crypto.crypto.random_bytes` | std.crypto.crypto.random_bytes operations | Reject (`CryptoRandom`) | the std.crypto.random_bytes secure entropy source (ring::SystemRandom) is native-only and absent from the wasm32 link set; generating key material without a cryptographic entropy source would be unsafe | Secure entropy source is native-only; fail-closed rejection until wasm32 cryptographic entropy exists |
 | `crypto-encrypt` | `std.crypto.encrypt.*` | std.crypto.encrypt operations | Reject (`CryptoEncrypt`) | the std.crypto.encrypt module is backed by a native-only staticlib companion crate (std/crypto/encrypt) that is absent from the wasm32 link set | Native-only AES-256-GCM companion crate; not linked for wasm32 |
@@ -103,17 +104,19 @@ single-threaded cooperative WASM scheduler. `sleep`, `sleep_until`, and
 `#[every(duration)]` use the shared timer wheel. The process driver ticks that
 wheel against the WASI clock while the root waits.
 
+Local actors, supervision trees, links, monitors, structured task scopes,
+`select` and in-memory pipes share the cooperative runtime on Tier 2.
+Supervisor construction and restart retain the same configuration and stable
+roles, and terminal hooks complete before child state is released. Semaphore
+acquisition, timed acquisition and cancellation also share their owned permit
+operation with native execution.
+
 ### 🚫 Error (compile-time reject)
 
 An error means the compiler rejects the operation before code generation. The
 diagnostic reason in the table names the missing WASI runtime facility and,
 where available, a supported alternative. In particular:
 
-- Single-process actors and in-memory pipes run on Tier 2. Supervision trees,
-  links and monitors, structured task scopes, and `select` require runtime
-  modules excluded from wasm32.
-- Semaphore acquisition releases the worker while waiting. Timed acquisition
-  and cancellation use the same owned permit operation on native and WASI.
 - File and socket streams depend on the native I/O reactor. Networking,
   subprocess, and distributed-node APIs are native-only.
 - `crypto.random_bytes`, encryption, and signing require native cryptographic
@@ -190,7 +193,7 @@ form consumed by browser/playground tooling and the WASI e2e test suite.
 | `concurrency/actor_pipeline` | `runnable` | Verified by WASI end-to-end execution |
 | `concurrency/async_await` | `runnable` | Verified by WASI end-to-end execution |
 | `concurrency/counter_actor` | `runnable` | Verified by WASI end-to-end execution |
-| `concurrency/supervisor` | `unsupported` | Uses supervision trees, which Tier 2 rejects |
+| `concurrency/supervisor` | `runnable` | Verified by WASI end-to-end execution |
 | `language/arithmetic_operators` | `runnable` | Verified by WASI end-to-end execution |
 | `language/array_indexing` | `runnable` | Verified by WASI end-to-end execution |
 | `language/string_slicing` | `runnable` | Verified by WASI end-to-end execution |

@@ -73,6 +73,7 @@ mod loop_chunks;
 mod module_emitter;
 mod runtime_calls;
 mod text;
+mod timestamp;
 mod value_emitter;
 
 use c_abi::{get_or_declare_external, get_or_declare_external_widened, Widen};
@@ -756,7 +757,7 @@ fn primitive_repr(
         ]),
         location if location.is_builtin(hew_types::BuiltinType::Location) => {
             // Matches `HewLocation`: the NodeId words are
-            // flattened, and reserved remains an explicit zeroed u32.
+            // flattened; target identity, session and target kind follow.
             PhysicalRepr::Struct(vec![
                 integer_layout(ctx, target, 64)?,
                 integer_layout(ctx, target, 64)?,

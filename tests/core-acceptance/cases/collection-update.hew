@@ -1,0 +1,107 @@
+type StockKey {
+    aisle: string;
+    shelf: i64;
+}
+
+impl Hash for StockKey {
+    fn hash(self) -> i64 {
+        self.shelf
+    }
+}
+
+type StockValue {
+    label: string;
+    quantity: i64;
+}
+
+#[resource]
+type CallbackTicket {
+    label: string;
+}
+
+impl CallbackTicket {
+    fn close(consume self) {
+        println("closed " + self.label);
+    }
+}
+
+fn generic_update<K: Hash + Eq, V: Clone>(var values: HashMap<K, V>, consume key: K, transform: fn(V) -> V) -> Option<V> {
+    values.update(key, transform)
+}
+
+fn main() {
+    var counts: HashMap<string, i64> = HashMap.new();
+    let initial = 1;
+    let first = counts.get_or_insert_with("coffee", || {
+        println("factory coffee");
+        initial
+    });
+    let again = counts.get_or_insert_with("coffee", || {
+        panic("existing key evaluated factory");
+        99
+    });
+    let increment = 1;
+    let changed = counts.update("coffee", |n| {
+        println("update coffee");
+        n + increment
+    });
+    assert(first == 1);
+    assert(again == 1);
+    assert(changed == .Some(2));
+    assert(counts.update("absent", |n| {
+        panic("absent key evaluated update");
+        n
+    }).is_none());
+    assert(counts.len() == 1);
+    let failed_update = scope {
+        counts.update("coffee", |n| {
+            let ticket = CallbackTicket { label: "update" };
+            panic("update callback failed");
+            n + 100
+        })
+    } handle failure {
+        println("update recovered");
+        .None
+    };
+    assert(failed_update.is_none());
+    assert(counts.get("coffee") == .Some(2));
+    let failed_factory = scope {
+        counts.get_or_insert_with("tea", || {
+            let ticket = CallbackTicket { label: "factory" };
+            panic("factory callback failed");
+            100
+        })
+    } handle failure {
+        println("factory recovered");
+        -1
+    };
+    assert(failed_factory == -1);
+    assert(!counts.contains_key("tea"));
+    assert(counts.len() == 1);
+    var stock: HashMap<StockKey, StockValue> = HashMap.new();
+    let label = "beans".to_upper();
+    var snapshot = stock.get_or_insert_with(StockKey { aisle: "pantry", shelf: 2 }, || StockValue { label: label, quantity: 3 });
+    snapshot.quantity = 99;
+    assert(stock.get(StockKey { aisle: "pantry", shelf: 2 }).expect("stock").quantity == 3);
+    let replacement = stock.update(StockKey { aisle: "pantry", shelf: 2 }, |old| StockValue { label: old.label + "!", quantity: old.quantity + 2 }).expect("updated");
+    assert(replacement.label == "BEANS!");
+    assert(replacement.quantity == 5);
+    let failed_record = scope {
+        stock.update(StockKey { aisle: "pantry", shelf: 2 }, |old| {
+            var damaged = old;
+            damaged.label = "damaged";
+            let ticket = CallbackTicket { label: "record" };
+            panic("record callback failed");
+            damaged
+        })
+    } handle failure {
+        println("record recovered");
+        .None
+    };
+    assert(failed_record.is_none());
+    assert(stock.get(StockKey { aisle: "pantry", shelf: 2 }).expect("preserved stock").label == "BEANS!");
+    let generic = generic_update(stock, StockKey { aisle: "pantry", shelf: 2 }, |old| StockValue { label: old.label, quantity: old.quantity + 1 }).expect("generic update");
+    assert(generic.quantity == 6);
+    assert(stock.get(StockKey { aisle: "pantry", shelf: 2 }).expect("original stock").quantity == 5);
+    println("collection update ok");
+}

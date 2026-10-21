@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 
 use hew_compile::{FrontendDiagnosticKind, SourceSet};
 use hew_parser::ast::{
-    Block, CallArg, Expr, Item, Program, Span, Spanned, Stmt, TraitItem, TypeBodyItem, TypeExpr,
+    Block, CallArg, Expr, Item, Program, Span, Spanned, Stmt, TraitItem, TypeExpr,
 };
 use hew_types::check::scope::Resolution;
 use hew_types::check::TypeCheckOutput;
@@ -618,15 +618,6 @@ fn visit_callables(program: &Program, mut visit: impl FnMut(Callable<'_>)) {
                     if let TraitItem::Method(method) = trait_item {
                         if let Some(body) = &method.body {
                             callable(method.return_type.as_ref(), body, None);
-                        }
-                    }
-                }
-            }
-            Item::TypeDecl(declaration) => {
-                for body_item in &declaration.body {
-                    if let TypeBodyItem::Method(method) = body_item {
-                        if !method.is_generator {
-                            callable(method.return_type.as_ref(), &method.body, None);
                         }
                     }
                 }

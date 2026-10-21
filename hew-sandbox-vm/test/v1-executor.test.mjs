@@ -7,7 +7,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { runBytecode } from "../dist/interpreter/index.js";
 
-const PRINT_LN = { id: 0, family: "Print", detail: { kind: "Str", newline: true } };
+const PRINT_LN = {
+  id: 0,
+  family: "Print",
+  detail: { kind: "Str", newline: true },
+};
 
 function pkg(overrides) {
   return {
@@ -28,7 +32,7 @@ function pkg(overrides) {
     closures: [],
     vtables: [],
     functions: [],
-    ...overrides
+    ...overrides,
   };
 }
 
@@ -52,20 +56,20 @@ function printTerm(value, to) {
     result_shape: null,
     normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
-function run(bytecode, options = {}) {
-  return runBytecode(bytecode, {
+async function run(bytecode, options = {}) {
+  return await runBytecode(bytecode, {
     fixtureId: "v1-test",
     traceId: "trace:v1-test",
     replay: {
       seed: options.seed ?? 3,
       step_budget: options.stepBudget ?? 10_000,
       virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 },
-      inputs: options.inputs ?? []
-    }
+      inputs: options.inputs ?? [],
+    },
   });
 }
 
@@ -73,18 +77,26 @@ function stdout(trace) {
   return trace.final_state.stdout.join("");
 }
 
-test("v1: a package prints its string literal and exits 0", () => {
-  const trace = run(
+test("v1: a package prints its string literal and exits 0", async () => {
+  const trace = await run(
     pkg({
       strings: ["hello, sandbox"],
       runtime_families: [PRINT_LN],
       functions: [
         fn(0, "main", [
-          block(0, [{ op: "const.str", dst: 0, str: 0, span: null }], printTerm(0, 1)),
-          block(1, [{ op: "destroy_value", value: 0, span: null }], RETURN_UNIT)
-        ])
-      ]
-    })
+          block(
+            0,
+            [{ op: "const.str", dst: 0, str: 0, span: null }],
+            printTerm(0, 1),
+          ),
+          block(
+            1,
+            [{ op: "destroy_value", value: 0, span: null }],
+            RETURN_UNIT,
+          ),
+        ]),
+      ],
+    }),
   );
 
   assert.equal(trace.result, "ok");
@@ -92,36 +104,40 @@ test("v1: a package prints its string literal and exits 0", () => {
   assert.equal(trace.final_state.exit_code, 0);
 });
 
-test("v1: an entry that returns a status publishes it as the exit code", () => {
-  const trace = run(
+test("v1: an entry that returns a status publishes it as the exit code", async () => {
+  const trace = await run(
     pkg({
       entry: { function: 0, exit: "status" },
       functions: [
         fn(0, "main", [
-          block(0, [{ op: "const.int", dst: 0, value: "7", ty: "i64", span: null }], {
-            op: "return",
-            value: { value: 0, decision: "move" },
-            span: null
-          })
-        ])
-      ]
-    })
+          block(
+            0,
+            [{ op: "const.int", dst: 0, value: "7", ty: "i64", span: null }],
+            {
+              op: "return",
+              value: { value: 0, decision: "move" },
+              span: null,
+            },
+          ),
+        ]),
+      ],
+    }),
   );
 
   assert.equal(trace.result, "ok");
   assert.equal(trace.final_state.exit_code, 7);
 });
 
-test("v1: copy_value is a deep clone, so mutating the original leaves the copy alone", () => {
+test("v1: copy_value is a deep clone, so mutating the original leaves the copy alone", async () => {
   // let v = Vec::new(); let c = v.clone(); v.push(1); print(c.len()); print(v.len())
-  const trace = run(
+  const trace = await run(
     pkg({
       runtime_families: [
         PRINT_LN,
         { id: 1, family: "Vector", detail: "New" },
         { id: 2, family: "Vector", detail: "Push" },
         { id: 3, family: "Vector", detail: "Len" },
-        { id: 4, family: "I64ToString" }
+        { id: 4, family: "I64ToString" },
       ],
       functions: [
         fn(0, "main", [
@@ -133,28 +149,28 @@ test("v1: copy_value is a deep clone, so mutating the original leaves the copy a
             result_shape: null,
             normal: { to: 1, args: [0] },
             unwind: null,
-            span: null
+            span: null,
           }),
           block(
             1,
             [
               { op: "copy_value", dst: 2, source: 1, span: null },
-              { op: "const.int", dst: 3, value: "1", ty: "i64", span: null }
+              { op: "const.int", dst: 3, value: "1", ty: "i64", span: null },
             ],
             {
               op: "runtime.call",
               family: 2,
               args: [
                 { value: 1, decision: "move" },
-                { value: 3, decision: "move" }
+                { value: 3, decision: "move" },
               ],
               result: { value: 4, own: "owned" },
               result_shape: null,
               normal: { to: 2, args: [] },
               unwind: null,
-              span: null
+              span: null,
             },
-            [{ value: 1, own: "owned" }]
+            [{ value: 1, own: "owned" }],
           ),
           // The copy's length, then the mutated original's length.
           block(2, [], lenCall(2, 5, 3)),
@@ -163,10 +179,10 @@ test("v1: copy_value is a deep clone, so mutating the original leaves the copy a
           block(5, [], lenCall(4, 7, 6)),
           block(6, [], toStringCall(7, 8, 7)),
           block(7, [], printTerm(8, 8)),
-          block(8, [], RETURN_UNIT)
-        ])
-      ]
-    })
+          block(8, [], RETURN_UNIT),
+        ]),
+      ],
+    }),
   );
 
   assert.equal(trace.result, "ok");
@@ -182,7 +198,7 @@ function lenCall(vector, dst, to) {
     result_shape: null,
     normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
@@ -195,12 +211,12 @@ function toStringCall(value, dst, to) {
     result_shape: null,
     normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
-test("v1: a store through a place is visible through a live loan of it", () => {
-  const trace = run(
+test("v1: a store through a place is visible through a live loan of it", async () => {
+  const trace = await run(
     pkg({
       strings: ["before", "after"],
       runtime_families: [PRINT_LN],
@@ -218,23 +234,30 @@ test("v1: a store through a place is visible through a live loan of it", () => {
                 // The loan is taken before the assignment, and read after it.
                 { op: "load.borrow", dst: 1, place: 0, span: null },
                 { op: "const.str", dst: 2, str: 1, span: null },
-                { op: "store.assign", place: 0, value: 2, span: null }
+                { op: "store.assign", place: 0, value: 2, span: null },
               ],
-              printTerm(1, 1)
+              printTerm(1, 1),
             ),
-            block(1, [{ op: "end_borrow", borrow: 1, span: null }, { op: "end_lifetime", place: 0, span: null }], RETURN_UNIT)
+            block(
+              1,
+              [
+                { op: "end_borrow", borrow: 1, span: null },
+                { op: "end_lifetime", place: 0, span: null },
+              ],
+              RETURN_UNIT,
+            ),
           ],
-          { places: [{ id: 0, origin: "local" }] }
-        )
-      ]
-    })
+          { places: [{ id: 0, origin: "local" }] },
+        ),
+      ],
+    }),
   );
 
   assert.equal(trace.result, "ok");
   assert.equal(stdout(trace), "after\n");
 });
 
-test("v1: an out-of-bounds index takes the unwind edge before the program ends", () => {
+test("v1: an out-of-bounds index takes the unwind edge before the program ends", async () => {
   const indexPackage = (at) =>
     pkg({
       strings: ["cleanup ran"],
@@ -243,7 +266,7 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
         { id: 1, family: "Vector", detail: "New" },
         { id: 2, family: "Vector", detail: "Index" },
         { id: 3, family: "Vector", detail: "Push" },
-        { id: 4, family: "I64ToString" }
+        { id: 4, family: "I64ToString" },
       ],
       functions: [
         fn(0, "main", [
@@ -255,7 +278,7 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
             result_shape: null,
             normal: { to: 1, args: [0] },
             unwind: null,
-            span: null
+            span: null,
           }),
           block(
             1,
@@ -265,62 +288,81 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
               family: 3,
               args: [
                 { value: 1, decision: "move" },
-                { value: 2, decision: "move" }
+                { value: 2, decision: "move" },
               ],
               result: { value: 3, own: "owned" },
               result_shape: null,
               normal: { to: 2, args: [3] },
               unwind: null,
-              span: null
+              span: null,
             },
-            [{ value: 1, own: "owned" }]
+            [{ value: 1, own: "owned" }],
           ),
           block(
             2,
-            [{ op: "const.int", dst: 5, value: String(at), ty: "i64", span: null }],
+            [
+              {
+                op: "const.int",
+                dst: 5,
+                value: String(at),
+                ty: "i64",
+                span: null,
+              },
+            ],
             {
               op: "runtime.call",
               family: 2,
               args: [
                 { value: 4, decision: "borrow" },
-                { value: 5, decision: "borrow" }
+                { value: 5, decision: "borrow" },
               ],
               result: { value: 6, own: "owned" },
               result_shape: null,
               normal: { to: 3, args: [] },
               unwind: { to: 5, args: [] },
-              span: null
+              span: null,
             },
-            [{ value: 4, own: "owned" }]
+            [{ value: 4, own: "owned" }],
           ),
           block(3, [], toStringCall(6, 7, 4)),
           block(4, [], printTerm(7, 6)),
           // The unwind edge: run cleanup, then keep unwinding.
-          block(5, [{ op: "const.str", dst: 8, str: 0, span: null }], printTerm(8, 7)),
+          block(
+            5,
+            [{ op: "const.str", dst: 8, str: 0, span: null }],
+            printTerm(8, 7),
+          ),
           block(6, [], RETURN_UNIT),
-          block(7, [], { op: "resume_unwind", span: null })
-        ])
-      ]
+          block(7, [], { op: "resume_unwind", span: null }),
+        ]),
+      ],
     });
 
-  const trapped = run(indexPackage(9));
+  const trapped = await run(indexPackage(9));
   assert.equal(trapped.result, "trap");
-  assert.equal(stdout(trapped), "cleanup ran\n", "the cleanup the package names runs before the program ends");
+  assert.equal(
+    stdout(trapped),
+    "cleanup ran\n",
+    "the cleanup the package names runs before the program ends",
+  );
   // A failing run reports no exit code: the kind travels in runtime_failures,
   // and the page turns it into 205. Native exits 1 for every fault, so
   // publishing a status here would put the VM and native at odds in parity.
   assert.equal(trapped.final_state.exit_code, null);
-  assert.equal(trapped.final_state.runtime_failures[0].trap_kind, "vector_bounds");
+  assert.equal(
+    trapped.final_state.runtime_failures[0].trap_kind,
+    "vector_bounds",
+  );
 
   // Negative control: the same package with an index in range never reaches
   // the unwind edge.
-  const fine = run(indexPackage(0));
+  const fine = await run(indexPackage(0));
   assert.equal(fine.result, "ok");
   assert.equal(stdout(fine), "42\n");
   assert.equal(fine.final_state.exit_code, 0);
 });
 
-test("v1: checked.binary takes the failure edge the package names instead of trapping", () => {
+test("v1: checked.binary takes the failure edge the package names instead of trapping", async () => {
   const overflowing = (lhs) =>
     pkg({
       strings: ["overflowed"],
@@ -330,8 +372,14 @@ test("v1: checked.binary takes the failure edge the package names instead of tra
           block(
             0,
             [
-              { op: "const.int", dst: 0, value: String(lhs), ty: "i32", span: null },
-              { op: "const.int", dst: 1, value: "1", ty: "i32", span: null }
+              {
+                op: "const.int",
+                dst: 0,
+                value: String(lhs),
+                ty: "i32",
+                span: null,
+              },
+              { op: "const.int", dst: 1, value: "1", ty: "i32", span: null },
             ],
             {
               op: "checked.binary",
@@ -341,27 +389,33 @@ test("v1: checked.binary takes the failure edge the package names instead of tra
               ty: "i32",
               result: { value: 2, own: "owned" },
               normal: { to: 1, args: [] },
-              failures: [{ trap: "integer_overflow", edge: { to: 3, args: [] } }],
-              span: null
-            }
+              failures: [
+                { trap: "integer_overflow", edge: { to: 3, args: [] } },
+              ],
+              span: null,
+            },
           ),
           block(1, [], toStringCall2(2, 3, 2)),
           block(2, [], printTerm(3, 4)),
-          block(3, [{ op: "const.str", dst: 4, str: 0, span: null }], printTerm(4, 4)),
-          block(4, [], RETURN_UNIT)
-        ])
-      ]
+          block(
+            3,
+            [{ op: "const.str", dst: 4, str: 0, span: null }],
+            printTerm(4, 4),
+          ),
+          block(4, [], RETURN_UNIT),
+        ]),
+      ],
     });
 
   // i32's largest value plus one leaves on the named overflow edge, and the
   // program keeps running: the VM never trapped on its own.
-  const overflowed = run(overflowing(2147483647));
+  const overflowed = await run(overflowing(2147483647));
   assert.equal(overflowed.result, "ok");
   assert.equal(stdout(overflowed), "overflowed\n");
   assert.equal(overflowed.final_state.exit_code, 0);
 
   // Negative control: one below the bound stays on the normal edge.
-  const fine = run(overflowing(2147483646));
+  const fine = await run(overflowing(2147483646));
   assert.equal(fine.result, "ok");
   assert.equal(stdout(fine), "2147483647\n");
 });
@@ -375,15 +429,24 @@ function toStringCall2(value, dst, to) {
     result_shape: null,
     normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
-test("v1: switch.variant dispatches on the recorded tag", () => {
+test("v1: switch.variant dispatches on the recorded tag", async () => {
   const forTag = (tag) =>
     pkg({
       strings: ["none", "some"],
-      variants: [{ id: 0, name: "Option", cases: [{ name: "Some", fields: ["0"] }, { name: "None", fields: [] }] }],
+      variants: [
+        {
+          id: 0,
+          name: "Option",
+          cases: [
+            { name: "Some", fields: ["0"] },
+            { name: "None", fields: [] },
+          ],
+        },
+      ],
       runtime_families: [PRINT_LN],
       functions: [
         fn(0, "main", [
@@ -391,90 +454,132 @@ test("v1: switch.variant dispatches on the recorded tag", () => {
             0,
             [
               { op: "const.int", dst: 0, value: "5", ty: "i64", span: null },
-              { op: "variant.make", dst: 1, shape: 0, variant: tag, fields: tag === 0 ? [0] : [], span: null }
+              {
+                op: "variant.make",
+                dst: 1,
+                shape: 0,
+                variant: tag,
+                fields: tag === 0 ? [0] : [],
+                span: null,
+              },
             ],
             {
               op: "switch.variant",
               shape: 0,
               scrutinee: 1,
               arms: [
-                { variant: 0, fields: [{ value: 2, own: "none" }], edge: { to: 1, args: [] } },
-                { variant: 1, fields: [], edge: { to: 3, args: [] } }
+                {
+                  variant: 0,
+                  fields: [{ value: 2, own: "none" }],
+                  edge: { to: 1, args: [] },
+                },
+                { variant: 1, fields: [], edge: { to: 3, args: [] } },
               ],
-              span: null
-            }
+              span: null,
+            },
           ),
-          block(1, [{ op: "const.str", dst: 3, str: 1, span: null }], printTerm(3, 2)),
+          block(
+            1,
+            [{ op: "const.str", dst: 3, str: 1, span: null }],
+            printTerm(3, 2),
+          ),
           block(2, [], RETURN_UNIT),
-          block(3, [{ op: "const.str", dst: 4, str: 0, span: null }], printTerm(4, 2))
-        ])
-      ]
+          block(
+            3,
+            [{ op: "const.str", dst: 4, str: 0, span: null }],
+            printTerm(4, 2),
+          ),
+        ]),
+      ],
     });
 
-  assert.equal(stdout(run(forTag(0))), "some\n");
-  assert.equal(stdout(run(forTag(1))), "none\n");
+  assert.equal(stdout(await run(forTag(0))), "some\n");
+  assert.equal(stdout(await run(forTag(1))), "none\n");
 });
 
-test("v1: switch.variant does not join equal display names across shapes", () => {
-  const trace = run(pkg({
-    variants: [
-      { id: 0, name: "Choice", cases: [{ name: "Yes", fields: [] }] },
-      { id: 1, name: "Choice", cases: [{ name: "Yes", fields: [] }] }
-    ],
-    functions: [fn(0, "main", [
-      block(0, [
-        { op: "variant.make", dst: 0, shape: 0, variant: 0, fields: [], span: null }
-      ], {
-        op: "switch.variant", shape: 1, scrutinee: 0,
-        arms: [{ variant: 0, fields: [], edge: { to: 1, args: [] } }],
-        span: null
-      }),
-      block(1, [], RETURN_UNIT)
-    ])]
-  }));
+test("v1: switch.variant does not join equal display names across shapes", async () => {
+  const trace = await run(
+    pkg({
+      variants: [
+        { id: 0, name: "Choice", cases: [{ name: "Yes", fields: [] }] },
+        { id: 1, name: "Choice", cases: [{ name: "Yes", fields: [] }] },
+      ],
+      functions: [
+        fn(0, "main", [
+          block(
+            0,
+            [
+              {
+                op: "variant.make",
+                dst: 0,
+                shape: 0,
+                variant: 0,
+                fields: [],
+                span: null,
+              },
+            ],
+            {
+              op: "switch.variant",
+              shape: 1,
+              scrutinee: 0,
+              arms: [{ variant: 0, fields: [], edge: { to: 1, args: [] } }],
+              span: null,
+            },
+          ),
+          block(1, [], RETURN_UNIT),
+        ]),
+      ],
+    }),
+  );
   assert.equal(trace.result, "runtime_failure");
-  assert.match(trace.final_state.runtime_failures[0].message, /expected variant 1/);
+  assert.match(
+    trace.final_state.runtime_failures[0].message,
+    /expected variant 1/,
+  );
 });
 
-test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", () => {
-  const trace = run(
+test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", async () => {
+  const trace = await run(
     pkg({
       runtime_families: [PRINT_LN, { id: 1, family: "BytesDecodeUtf8Lossy" }],
       suspend_kinds: ["NativeIo"],
       functions: [
         fn(0, "main", [
           block(0, [], readLineTerm(0, 1)),
-          block(1, [], decodeTerm(0, 10, 2), [{ value: 0, own: "owned" }]),
-          block(2, [], printTerm(10, 3), [{ value: 10, own: "owned" }]),
+          block(1, [], decodeTerm(0, 10, 2)),
+          block(2, [], printTerm(10, 3)),
           block(3, [], readLineTerm(1, 4)),
-          block(4, [], decodeTerm(1, 11, 5), [{ value: 1, own: "owned" }]),
-          block(5, [], printTerm(11, 6), [{ value: 11, own: "owned" }]),
+          block(4, [], decodeTerm(1, 11, 5)),
+          block(5, [], printTerm(11, 6)),
           block(6, [], readLineTerm(2, 7)),
-          block(7, [], decodeTerm(2, 12, 8), [{ value: 2, own: "owned" }]),
-          block(8, [], printTerm(12, 9), [{ value: 12, own: "owned" }]),
-          block(9, [], RETURN_UNIT)
-        ])
-      ]
+          block(7, [], decodeTerm(2, 12, 8)),
+          block(8, [], printTerm(12, 9)),
+          block(9, [], RETURN_UNIT),
+        ]),
+      ],
     }),
-    { inputs: [{ kind: "stdin", data: "first\r\nsecond" }] }
+    { inputs: [{ kind: "stdin", data: "first\r\nsecond" }] },
   );
 
   assert.equal(trace.result, "ok");
   assert.equal(stdout(trace), "first\r\n\nsecond\n\n");
 });
 
-test("v1: a native I/O suspension other than a stdin line read is refused at load", () => {
+test("v1: a native I/O suspension other than a stdin line read is refused at load", async () => {
   const tcpRead = pkg({
     runtime_families: [PRINT_LN],
     suspend_kinds: ["NativeIo"],
     functions: [
       fn(0, "main", [
-        block(0, [], { ...readLineTerm(0, 1), detail: { operation: "TcpRead" } }),
-        block(1, [], RETURN_UNIT, [{ value: 0, own: "owned" }])
-      ])
-    ]
+        block(0, [], {
+          ...readLineTerm(0, 1),
+          detail: { operation: "TcpRead" },
+        }),
+        block(1, [], RETURN_UNIT),
+      ]),
+    ],
   });
-  assertRejected(run(tcpRead), "NativeIo::TcpRead");
+  assertRejected(await run(tcpRead), "NativeIo::TcpRead");
 });
 
 function decodeTerm(source, dst, to) {
@@ -485,9 +590,9 @@ function decodeTerm(source, dst, to) {
     callbacks: [],
     result: { value: dst, own: "owned" },
     result_shape: null,
-    normal: { to, args: [dst] },
+    normal: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
@@ -499,63 +604,67 @@ function readLineTerm(dst, to) {
     inputs: [],
     result: { value: dst, own: "owned" },
     result_shape: null,
-    resumes: [{ to, args: [dst] }],
+    resumes: [{ to, args: [] }],
     cancel: { to, args: [] },
     unwind: null,
-    span: null
+    span: null,
   };
 }
 
-test("v1: a seeded program prints the same numbers whatever the chaos seed is", () => {
+test("v1: a seeded program prints the same numbers whatever the chaos seed is", async () => {
   const randomPackage = pkg({
     runtime_families: [PRINT_LN, { id: 1, family: "I64ToString" }],
     externs: [
       { id: 0, symbol: "hew_random_seed" },
-      { id: 1, symbol: "hew_random_randint" }
+      { id: 1, symbol: "hew_random_randint" },
     ],
     functions: [
       fn(0, "main", [
-        block(0, [{ op: "const.int", dst: 0, value: "1", ty: "i64", span: null }], {
-          op: "extern.call",
-          extern: 0,
-          args: [{ value: 0, decision: "copy" }],
-          result: null,
-          result_shape: null,
-          normal: { to: 1, args: [] },
-          unwind: null,
-          span: null
-        }),
+        block(
+          0,
+          [{ op: "const.int", dst: 0, value: "1", ty: "i64", span: null }],
+          {
+            op: "extern.call",
+            extern: 0,
+            args: [{ value: 0, decision: "copy" }],
+            result: null,
+            result_shape: null,
+            normal: { to: 1, args: [] },
+            unwind: null,
+            span: null,
+          },
+        ),
         block(
           1,
           [
             { op: "const.int", dst: 1, value: "0", ty: "i64", span: null },
-            { op: "const.int", dst: 2, value: "99", ty: "i64", span: null }
+            { op: "const.int", dst: 2, value: "99", ty: "i64", span: null },
           ],
           {
             op: "extern.call",
             extern: 1,
             args: [
               { value: 1, decision: "copy" },
-              { value: 2, decision: "copy" }
+              { value: 2, decision: "copy" },
             ],
             result: { value: 3, own: "owned" },
             result_shape: null,
             normal: { to: 2, args: [] },
             unwind: null,
-            span: null
-          }
+            span: null,
+          },
         ),
         block(2, [], toStringCall2(3, 4, 3)),
         block(3, [], printTerm(4, 4)),
-        block(4, [], RETURN_UNIT)
-      ])
-    ]
+        block(4, [], RETURN_UNIT),
+      ]),
+    ],
   });
 
   // `random.seed(1); random.randint(0, 99)` is 17 on native Hew, and the VM
   // runs the same MT19937, so the draw does not depend on the VM's own seed.
-  assert.equal(stdout(run(randomPackage, { seed: 1 })), "17\n");
-  assert.equal(stdout(run(randomPackage, { seed: 9999 })), "17\n");
+  assert.equal(stdout(await run(randomPackage, { seed: 1 })), "17\n");
+  assert.equal(stdout(await run(randomPackage, { seed: 9999 })), "17\n");
 });
 
 // ── admission ───────────────────────────────────────────────────────────────
@@ -570,42 +679,73 @@ function wouldPrint(extra) {
     externs: extra.externs ?? [],
     functions: [
       fn(0, "main", [
-        block(0, [{ op: "const.str", dst: 0, str: 0, span: null }], printTerm(0, 1)),
-        block(1, [], RETURN_UNIT)
-      ])
-    ]
+        block(
+          0,
+          [{ op: "const.str", dst: 0, str: 0, span: null }],
+          printTerm(0, 1),
+        ),
+        block(1, [], RETURN_UNIT),
+      ]),
+    ],
   });
 }
 
 function assertRejected(trace, named) {
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(trace.final_state.status, "sandbox_rejected");
-  assert.deepEqual(trace.final_state.stdout, [], "no instruction runs before admission");
+  assert.deepEqual(
+    trace.final_state.stdout,
+    [],
+    "no instruction runs before admission",
+  );
   assert.equal(trace.final_state.step_count, 0);
   assert.equal(trace.final_state.sandbox_rejections.length, 1);
   assert.equal(trace.final_state.sandbox_rejections[0].capability, named);
   assert.ok(
-    trace.events.some((event) => event.type === "sandbox.rejected" && event.rejection.capability === named),
-    "the trace carries a sandbox.rejected event naming the capability"
+    trace.events.some(
+      (event) =>
+        event.type === "sandbox.rejected" &&
+        event.rejection.capability === named,
+    ),
+    "the trace carries a sandbox.rejected event naming the capability",
   );
 }
 
-test("v1: a native-only runtime family is refused at load", () => {
-  assertRejected(run(wouldPrint({ runtime_families: [{ id: 1, family: "FileRead", detail: "Open" }] })), "FileRead::Open");
+test("v1: a native-only runtime family is refused at load", async () => {
+  assertRejected(
+    await run(
+      wouldPrint({
+        runtime_families: [{ id: 1, family: "FileRead", detail: "Open" }],
+      }),
+    ),
+    "FileRead::Open",
+  );
 });
 
-test("v1: a runtime family the shim table does not know is refused at load", () => {
-  assertRejected(run(wouldPrint({ runtime_families: [{ id: 1, family: "NoSuchFamily" }] })), "NoSuchFamily");
+test("v1: an unknown runtime identity is rejected before any output", async () => {
+  const trace = await run(
+    wouldPrint({ runtime_families: [{ id: 1, family: "NoSuchFamily" }] }),
+  );
+  assert.equal(trace.result, "sandbox_rejected");
+  assert.equal(
+    trace.final_state.sandbox_rejections[0].category,
+    "invalid_package",
+  );
+  assert.deepEqual(trace.final_state.stdout, []);
+  assert.equal(trace.final_state.step_count, 0);
 });
 
-test("v1: an extern symbol with no shim is refused at load", () => {
-  assertRejected(run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })), "hew_open_socket");
+test("v1: an extern symbol with no shim is refused at load", async () => {
+  assertRejected(
+    await run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })),
+    "hew_open_socket",
+  );
 });
 
-test("v1: a package with no entry is refused rather than picking a function to run", () => {
+test("v1: a package with no entry is refused rather than picking a function to run", async () => {
   const headless = wouldPrint({});
   delete headless.entry;
-  const trace = run(headless);
+  const trace = await run(headless);
   assert.equal(trace.result, "sandbox_rejected");
   assert.deepEqual(trace.final_state.stdout, []);
 });

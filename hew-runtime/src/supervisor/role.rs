@@ -35,7 +35,6 @@ fn fire_role_ask_pinned_submit_hook() {
 /// Name a [`ChildSlotReason`] discriminant for the role-ask refusal
 /// diagnostic. Fail-closed: an out-of-range discriminant (ABI drift) names
 /// itself as such rather than borrowing a real reason's name.
-#[cfg(not(target_arch = "wasm32"))]
 const fn child_slot_reason_name(reason: u8) -> &'static str {
     match reason {
         r if r == ChildSlotReason::Ok as u8 => "Ok",
@@ -54,7 +53,6 @@ const fn child_slot_reason_name(reason: u8) -> &'static str {
 /// diagnostic surface (the tag semantics of the classified lookup ABIs —
 /// contrast the tag-unchecked handle extraction the retired token path
 /// performed, which collapsed every non-Live state into a token-0 send).
-#[cfg(not(target_arch = "wasm32"))]
 fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
     set_last_error(format!(
         "stable-role ask refused: child slot {key} is {}",
@@ -97,7 +95,6 @@ fn role_refuse(reason: u8, key: u32, record_ask_error: bool) -> i32 {
 /// reachable in production; the serial match is what keeps wrong-actor delivery
 /// unrepresentable at this seam regardless. Both scalars are copied out under
 /// `roster`; no pointer crosses the lock boundary.
-#[cfg(not(target_arch = "wasm32"))]
 fn role_resolve_current_child_id(
     token: crate::lifetime::local_handles::HewLocalPidId,
     key: u32,
@@ -115,7 +112,9 @@ fn role_resolve_current_child_id(
     // Fast-path shutdown check (atomics, no lock).
     // SAFETY: the stable-identity pin keeps `sup` live for these atomic reads.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
@@ -133,7 +132,9 @@ fn role_resolve_current_child_id(
     // SAFETY: the stable-identity pin keeps the allocation live through this
     // atomic re-check.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return Err(role_refuse(
             ChildSlotReason::SupervisorShutdown as u8,
@@ -178,7 +179,6 @@ fn role_resolve_current_child_id(
 
 /// Resolve a stable actor role to its current exact incarnation. The caller
 /// must still pin and compare the full spawn serial before acting on it.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn current_actor_role_identity(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> Option<(u64, u64)> {
@@ -187,6 +187,51 @@ pub(crate) fn current_actor_role_identity(
         return None;
     }
     role_resolve_current_child_id(owner, slot, false).ok()
+}
+
+/// Check the owning supervisor lifetime without selecting an actor incarnation.
+pub(crate) fn actor_role_authority_live(
+    root: crate::lifetime::local_handles::HewLocalPidId,
+) -> bool {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(root) else {
+        return false;
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the stable control pin retains these lifecycle atomics.
+    unsafe {
+        !(*sup).cancelled.load(Ordering::Acquire)
+            && ((*sup).running.load(Ordering::Acquire) != 0
+                || (*sup).constructing.load(Ordering::Acquire))
+    }
+}
+
+/// Obtain the declared interface even while the actor role has no occupant.
+/// Only copied metadata crosses the roster guard; no worker is selected here.
+pub(crate) fn actor_role_export_metadata(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> Option<(crate::lifetime::local_handles::HewLocalPidId, usize)> {
+    let root = crate::lifetime::local_handles::current_actor_role_root(token)?;
+    if !actor_role_authority_live(root) {
+        return None;
+    }
+    let (owner, slot, kind) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    if kind != crate::lifetime::local_handles::SupervisorRoleKind::Actor {
+        return None;
+    }
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(owner)?;
+    let sup = pin.supervisor();
+    // SAFETY: the control pin retains the supervisor and its roster.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the same pin retains these atomics throughout the roster lookup.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
+    } {
+        return None;
+    }
+    let dispatch = roster.child_specs.get(slot as usize)?.dispatch?;
+    Some((root, dispatch as usize))
 }
 
 /// The classified refusal for a resolution that succeeded but whose
@@ -235,112 +280,6 @@ pub unsafe extern "C" fn hew_supervisor_role_send(
         ));
         crate::internal::types::HewError::ErrActorStopped as i32
     })
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_send(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-) -> i32 {
-    crate::internal::types::HewError::ErrActorStopped as i32
-}
-
-/// Cooperatively submit a bounded `overflow block` tell through a stable
-/// supervisor role. Resolution and mailbox registration occur under one
-/// identity pin; on acceptance, `out_actor_id` receives the exact incarnation
-/// whose mailbox owns the waiter so cancellation can detach from that
-/// mailbox, and `out_registration_id` receives the
-/// [`crate::mailbox::BlockedSenderId`] minted for a parked waiter (`0` when
-/// admitted immediately). Detach must name the registration id rather than
-/// the read-slot address: slot allocations are recycled, so a detach keyed on
-/// the pointer could remove a different registration that reused the freed
-/// address (#3147).
-///
-/// # Safety
-///
-/// `data`, `sender`, and `slot` must satisfy
-/// [`crate::actor::actor_await_send_pinned`]. `out_actor_id` and
-/// `out_registration_id` must be writable.
-#[cfg(not(target_arch = "wasm32"))]
-#[no_mangle]
-pub unsafe extern "C" fn hew_supervisor_role_await_send(
-    token: crate::lifetime::local_handles::HewLocalPidId,
-    key: u32,
-    msg_type: i32,
-    data: *mut c_void,
-    size: usize,
-    sender: *mut HewActor,
-    slot: *mut crate::read_slot::HewReadSlot,
-    out_actor_id: *mut u64,
-    out_registration_id: *mut u64,
-) -> c_int {
-    if out_actor_id.is_null() || out_registration_id.is_null() {
-        set_last_error("stable-role cooperative tell received a null output".to_string());
-        return crate::internal::types::HewError::ErrActorStopped as i32;
-    }
-    // SAFETY: the null check above establishes the caller-provided outputs
-    // are writable. Initialize them even on refusal because codegen loads
-    // before branching on status and only uses the values on the suspend edge.
-    unsafe {
-        out_actor_id.write(0);
-        out_registration_id.write(0);
-    }
-    let (child_id, child_serial) = match role_resolve_current_child_id(token, key, false) {
-        Ok(ids) => ids,
-        Err(code) => return code,
-    };
-    let (rc, registration_id) = crate::lifetime::live_actors::with_actor_send_by_identity(
-        child_id,
-        child_serial,
-        |pin| {
-            // SAFETY: the identity pin keeps this incarnation live for the
-            // complete mailbox registration.
-            unsafe {
-                crate::actor::actor_await_send_pinned(
-                    pin.as_ptr(),
-                    msg_type,
-                    data,
-                    size,
-                    sender,
-                    slot,
-                )
-            }
-        },
-    )
-    .unwrap_or_else(|| {
-        set_last_error(format!(
-            "stable-role cooperative tell refused: child slot {key} incarnation retired during submission"
-        ));
-        (crate::internal::types::HewError::ErrActorStopped as i32, 0)
-    });
-    if rc >= 0 {
-        // SAFETY: non-null writable outputs are part of this ABI's contract.
-        unsafe {
-            out_actor_id.write(child_id);
-            out_registration_id.write(registration_id);
-        }
-    }
-    rc
-}
-
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_await_send(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _sender: *mut HewActor,
-    _slot: *mut crate::read_slot::HewReadSlot,
-    _out_actor_id: *mut u64,
-    _out_registration_id: *mut u64,
-) -> c_int {
-    crate::internal::types::HewError::ErrActorStopped as i32
 }
 
 /// Submit an ask with a caller-owned reply channel through a fungible
@@ -442,41 +381,6 @@ pub unsafe extern "C" fn hew_supervisor_role_ask(
     unsafe { crate::actor::hew_actor_ask_by_identity(child_id, child_serial, msg_type, data, size) }
 }
 
-/// Supervisors are unavailable on the wasm runtime; the owner-scoped role ask
-/// keeps symbol parity and fails closed exactly like the lookup twin above.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_ask_with_channel(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-    _ch: *mut c_void,
-) -> i32 {
-    // Same TLS classification contract as the native refusal paths: the
-    // with-channel caller binds its Err kind from the ask-error slot.
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
-    crate::internal::types::HewError::ErrActorStopped as i32
-}
-
-/// Supervisors are unavailable on the wasm runtime; the blocking role ask
-/// keeps symbol parity and fails closed to a null reply.
-#[cfg(target_arch = "wasm32")]
-#[no_mangle]
-pub extern "C" fn hew_supervisor_role_ask(
-    _token: crate::lifetime::local_handles::HewLocalPidId,
-    _key: u32,
-    _msg_type: i32,
-    _data: *mut c_void,
-    _size: usize,
-) -> *mut c_void {
-    // Null reply + classified error slot, matching the native blocking twin's
-    // `actor_ask_null_actor_stopped` refusal surface.
-    crate::actor::record_ask_error(crate::internal::types::AskError::ActorStopped);
-    ptr::null_mut()
-}
-
 /// Look up a nested child supervisor by its compile-time-assigned slot index.
 ///
 /// Used for traversing supervision trees one dot segment at a time:
@@ -512,7 +416,9 @@ pub unsafe extern "C" fn hew_supervisor_nested_get(
     }
     // SAFETY: caller keeps `sup` live for these atomic reads.
     if unsafe {
-        (*sup).cancelled.load(Ordering::Acquire) || (*sup).running.load(Ordering::Acquire) == 0
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
     } {
         return ChildLookupResult::dead(ChildSlotReason::SupervisorShutdown);
     }
@@ -711,11 +617,10 @@ fn role_holds_running_incarnation(sup: *mut HewSupervisor, key: u32, nested: boo
 }
 
 /// A native coroutine observes one stable role without blocking the driver.
-/// The root pin stays live until cancellation or completion; nested owners are
-/// resolved afresh because their allocations can be replaced while waiting.
-#[cfg(not(target_arch = "wasm32"))]
+/// Stable identities survive suspension; allocation pins cover only a readiness
+/// check so an idle observer cannot prevent supervisor teardown.
 pub struct HewNativeRestartWait {
-    root_pin: Option<crate::lifetime::local_handles::SupervisorPin>,
+    root: crate::lifetime::local_handles::HewLocalPidId,
     /// Stable supervisor-role tokens and their slots, from root to owner.
     owner_path: Vec<(crate::lifetime::local_handles::HewLocalPidId, u32)>,
     slot: u32,
@@ -723,11 +628,10 @@ pub struct HewNativeRestartWait {
     waker: Arc<crate::wake::OwnedWaker>,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl std::fmt::Debug for HewNativeRestartWait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HewNativeRestartWait")
-            .field("has_supervisor", &self.root_pin.is_some())
+            .field("root", &self.root)
             .field("owner_depth", &self.owner_path.len())
             .field("slot", &self.slot)
             .field("nested", &self.nested)
@@ -740,7 +644,6 @@ impl std::fmt::Debug for HewNativeRestartWait {
 ///
 /// # Safety
 /// `waker` obeys the retained native wake contract.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
     owner: crate::lifetime::local_handles::HewLocalPidId,
@@ -771,7 +674,7 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
         unsafe { &(*pin.supervisor()).native_restart_wakers }.register(&waker);
     }
     Box::into_raw(Box::new(HewNativeRestartWait {
-        root_pin,
+        root,
         owner_path,
         slot,
         nested: role_kind == ROLE_KIND_SUPERVISOR,
@@ -783,7 +686,6 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_new(
 /// Direct handles have no replacement and complete immediately.
 /// # Safety
 /// `waker` obeys the retained native wake contract.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_restart_wait_new(
     token: crate::lifetime::local_handles::HewLocalPidId,
@@ -817,14 +719,13 @@ pub unsafe extern "C" fn hew_actor_restart_wait_new(
 ///
 /// # Safety
 /// `wait` remains live and uniquely owned by the caller.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
     wait: *const HewNativeRestartWait,
 ) -> c_int {
     // SAFETY: the caller owns the wait until it is freed.
     let wait = unsafe { &*wait };
-    let Some(root_pin) = &wait.root_pin else {
+    let Some(root_pin) = crate::lifetime::local_handles::pin_current_supervisor(wait.root) else {
         return 1;
     };
     let mut sup = root_pin.supervisor();
@@ -889,7 +790,6 @@ pub unsafe extern "C" fn hew_supervisor_native_restart_wait_poll(
     )
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn restart_wait_owner_ending(sup: *mut HewSupervisor) -> bool {
     // SAFETY: the caller holds a supervisor pin through both atomic reads.
     unsafe {
@@ -897,7 +797,6 @@ fn restart_wait_owner_ending(sup: *mut HewSupervisor) -> bool {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn restart_wait_owner_is_current(
     role: Option<crate::lifetime::local_handles::HewLocalPidId>,
     sup: *mut HewSupervisor,
@@ -908,11 +807,10 @@ fn restart_wait_owner_is_current(
     })
 }
 
-/// Detach a native restart observer, releasing its supervisor pin and wake.
+/// Detach a native restart observer, releasing its retained wake.
 ///
 /// # Safety
 /// The caller transfers its unique wait owner.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_supervisor_native_restart_wait_free(wait: *mut HewNativeRestartWait) {
     // SAFETY: the caller relinquishes the unique owner.

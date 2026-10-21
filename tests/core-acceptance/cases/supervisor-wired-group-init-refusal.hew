@@ -1,0 +1,46 @@
+actor Probe {
+    var attempts: i64 = 0;
+    var dependents: i64 = 0;
+    receive fn admit() -> bool { attempts = attempts + 1; attempts == 1 }
+    receive fn started() { dependents = dependents + 1; }
+    receive fn attempt_count() -> i64 { attempts }
+    receive fn dependent_count() -> i64 { dependents }
+}
+actor Ledger {
+    let label: string;
+    init(authority: Probe, seed: string) {
+        self.label = seed;
+        if !authority.admit().expect("construction admission") { panic("ledger reconstruction refused"); }
+    }
+    receive fn fail() { panic("restart group ledger"); }
+    receive fn read() -> i64 { label.len() }
+}
+actor Checkout {
+    let ledger: Ledger;
+    let title: string;
+    init(backend: Ledger, authority: Probe, label: string) {
+        self.ledger = backend;
+        self.title = label;
+        authority.started().expect("dependent construction recorded");
+    }
+    receive fn read() -> i64 { ledger.read().expect("ledger") + title.len() }
+}
+supervisor Shop(authority: Probe, seed: string) {
+    strategy: one_for_all;
+    intensity: 3 within 60s;
+    child checkout: Checkout { authority: authority, label: seed } wired_to: { backend: ledger };
+    child ledger: Ledger { authority: authority, seed: seed };
+}
+fn main() {
+    let authority = spawn Probe;
+    let shop = spawn Shop { authority: authority, seed: "owned config".to_upper() };
+    let ledger = shop.ledger;
+    assert(shop.checkout.read().expect("initial checkout") == 24);
+    let _ = ledger.fail();
+    restarted(ledger);
+    assert(authority.attempt_count().expect("attempt count") == 2);
+    assert(authority.dependent_count().expect("dependent count") == 1);
+    stop(shop); stopped(shop);
+    stop(authority); stopped(authority);
+    println("group refused dependent reconstruction");
+}

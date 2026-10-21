@@ -761,6 +761,7 @@ fn classify_uncached(
             // §1.1 decision: marker becomes BitCopy at P1 so `marker()` and
             // this table agree by construction.
             | BuiltinType::Instant
+            | BuiltinType::Timestamp
             | BuiltinType::Unit
             | BuiltinType::Duration
             | BuiltinType::Range

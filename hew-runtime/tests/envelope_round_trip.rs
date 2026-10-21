@@ -109,7 +109,7 @@ fn node_id(seed: u8) -> NodeId {
 }
 
 fn location(node_seed: u8, slot: u64, session_incarnation: u32) -> Location {
-    Location::new(node_id(node_seed), slot, session_incarnation)
+    Location::direct(node_id(node_seed), slot, session_incarnation)
         .expect("test Location must have non-zero slot and session")
 }
 
@@ -129,15 +129,18 @@ fn raw_location_value(node: [u8; 16], slot: u64, session_incarnation: u64) -> Va
         (int(1u64), Value::Bytes(node.to_vec())),
         (int(2u64), int(slot)),
         (int(3u64), int(session_incarnation)),
+        (int(4u64), int(0u64)),
     ])
 }
 
 fn location_value(location: Location) -> Value {
-    raw_location_value(
-        location.node().to_bytes(),
-        location.slot(),
-        u64::from(location.incarnation()),
-    )
+    let raw = hew_runtime::node_identity::HewLocation::from(location);
+    Value::Map(vec![
+        (int(1u64), Value::Bytes(location.node().to_bytes().to_vec())),
+        (int(2u64), int(raw.target_id)),
+        (int(3u64), int(raw.incarnation)),
+        (int(4u64), int(raw.target_kind)),
+    ])
 }
 
 fn raw_node_session_value(node: [u8; 16], session_incarnation: u64) -> Value {
@@ -160,11 +163,18 @@ fn down_reason_value(reason: i32) -> Value {
 
 fn assert_location_value(value: &Value, expected: Location) {
     let entries = map_entries(value);
-    assert_eq!(entries.len(), 3);
-    assert_integer_keys_and_order(entries, &[1, 2, 3]);
+    assert_eq!(entries.len(), 4);
+    assert_integer_keys_and_order(entries, &[1, 2, 3, 4]);
     assert_bytes_value(find_field(entries, 1), &expected.node().to_bytes());
-    assert_integer_value(find_field(entries, 2), i128::from(expected.slot()));
+    assert_integer_value(
+        find_field(entries, 2),
+        i128::from(hew_runtime::node_identity::HewLocation::from(expected).target_id),
+    );
     assert_integer_value(find_field(entries, 3), i128::from(expected.incarnation()));
+    assert_integer_value(
+        find_field(entries, 4),
+        i128::from(hew_runtime::node_identity::HewLocation::from(expected).target_kind),
+    );
 }
 
 fn assert_optional_location_value(value: &Value, expected: Option<Location>) {
@@ -455,6 +465,38 @@ fn envelope_frame_granted_request_round_trips() {
     let bytes = to_cbor(&original);
     let decoded: EnvelopeFrame = from_cbor(&bytes);
     assert_eq!(original, decoded);
+}
+
+#[test]
+fn role_location_retains_full_token_and_discriminator_across_wire_frames() {
+    let role = Location::role(node_id(1), u64::MAX, 7).unwrap();
+    let direct = Location::direct(node_id(1), u64::MAX, 7).unwrap();
+    let request = envelope_frame(
+        Some(role),
+        Some(location(2, 7, 11)),
+        handler(),
+        vec![1, 2, 3],
+    );
+    let encoded = encode_envelope_frame(&request).unwrap();
+    assert_eq!(decode_envelope_frame(&encoded).unwrap(), request);
+    let gossip = registry_payload(REGISTRY_GOSSIP_OP_ADD, "stable-role", role);
+    let encoded = encode_registry_gossip_payload(&gossip).unwrap();
+    assert_eq!(decode_registry_gossip_payload(&encoded).unwrap(), gossip);
+    assert_ne!(role, direct);
+    let Value::Map(mut target) = location_value(role) else {
+        unreachable!()
+    };
+    target.retain(|(key, _)| *key != int(4u64));
+    let invalid = envelope_frame(Some(role), None, handler(), vec![]);
+    let Value::Map(mut frame) = decode_value(&encode_envelope_frame(&invalid).unwrap()) else {
+        unreachable!()
+    };
+    *frame.iter_mut().find(|(key, _)| *key == int(3u64)).unwrap() =
+        (int(3u64), Value::Map(target.clone()));
+    assert!(decode_envelope_frame(&value_to_cbor(&Value::Map(frame.clone()))).is_err());
+    target.push((int(4u64), int(2u64)));
+    *frame.iter_mut().find(|(key, _)| *key == int(3u64)).unwrap() = (int(3u64), Value::Map(target));
+    assert!(decode_envelope_frame(&value_to_cbor(&Value::Map(frame))).is_err());
 }
 
 #[test]
@@ -897,7 +939,7 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x08, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x09, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
@@ -906,11 +948,11 @@ fn same_envelope_produces_same_bytes() {
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa8, 0x01, 0x08, 0x02, 0x01, 0x03, 0xa3, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x09, 0x02, 0x01, 0x03, 0xa4, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
-            0x01, 0x04, 0xf6, 0x05, 0xa3, 0x01, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73, 0x2e, 0x41,
-            0x63, 0x74, 0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x02, 0x01, 0x03,
-            0x00, 0x06, 0x40, 0x07, 0x01, 0x08, 0xf6
+            0x01, 0x04, 0x00, 0x04, 0xf6, 0x05, 0xa3, 0x01, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73,
+            0x2e, 0x41, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x02,
+            0x01, 0x03, 0x00, 0x06, 0x40, 0x07, 0x01, 0x08, 0xf6
         ]
     );
 }
@@ -1159,6 +1201,7 @@ fn envelope_location_fields_reject_malformed_shapes() {
             (int(1u64), Value::Bytes(vec![66; 15])),
             (int(2u64), int(1u64)),
             (int(3u64), int(1u64)),
+            (int(4u64), int(0u64)),
         ]),
     ] {
         let malformed = Value::Map(vec![
@@ -1739,6 +1782,7 @@ fn monitor_req_payload_codec_rejects_malformed_payloads() {
             (int(1u64), Value::Bytes(vec![55; 15])),
             (int(2u64), int(1u64)),
             (int(3u64), int(1u64)),
+            (int(4u64), int(0u64)),
         ]),
     ] {
         let malformed = Value::Map(vec![

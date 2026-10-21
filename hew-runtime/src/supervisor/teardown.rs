@@ -11,15 +11,12 @@ pub(crate) fn claim_supervisor_teardown(sup: *mut HewSupervisor) -> bool {
     }
     // SAFETY: callers guarantee a live allocation; copy its stable authority
     // without creating a whole-supervisor reference.
-    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime.is_null() {
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    if handles.is_null() {
         return false;
     }
     // SAFETY: a live supervisor's runtime authority outlives its control.
-    let Some(control) = (unsafe { &*runtime })
-        .local_handles
-        .supervisor_control_for_raw(token, sup)
-    else {
+    let Some(control) = (unsafe { &*handles }).supervisor_control_for_raw(token, sup) else {
         return false;
     };
     control.claim_teardown()
@@ -31,15 +28,12 @@ pub(crate) fn release_supervisor_teardown(sup: *mut HewSupervisor) {
     }
     // SAFETY: only used to roll back a failed deferred-spawn attempt while the
     // supervisor is still live and owned by the caller.
-    let (runtime, token) = unsafe { ((*sup).runtime, (*sup).local_pid_id) };
-    if runtime.is_null() {
+    let (handles, token) = unsafe { ((*sup).handles, (*sup).local_pid_id) };
+    if handles.is_null() {
         return;
     }
     // SAFETY: the live allocation keeps its runtime authority installed.
-    if let Some(control) = (unsafe { &*runtime })
-        .local_handles
-        .supervisor_control_for_raw(token, sup)
-    {
+    if let Some(control) = (unsafe { &*handles }).supervisor_control_for_raw(token, sup) {
         control.release_teardown();
     }
 }
@@ -62,17 +56,31 @@ pub(crate) fn publish_supervisor_cancellation(sup: *mut HewSupervisor) {
         (*sup).cancelled.store(true, Ordering::Release);
         (*sup).restart_timers.cancel();
     }
+    // The completion owns only an independent cancellation registration; no
+    // external caller touches the suspended frame or its borrowed config.
+    if let Some(completion) =
+        // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+        crate::lifetime::local_handles::current_supervisor_completion(unsafe {
+                (*sup).local_pid_id
+            })
+    {
+        completion.cancel_construction(crate::fault::HEW_FAULT_CANCELLED);
+    }
     // A pending group restart will never run. Its stopped incarnations stay
     // with the roster until teardown frees them; its records settle now.
-    let records = {
+    let (records, construction_events) = {
         // SAFETY: callers keep `sup` live; no roster reference is held here.
         let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
-        roster
+        let records = roster
             .pending_group_restart
             .as_mut()
             .map(|group| std::mem::take(&mut group.failures))
-            .unwrap_or_default()
+            .unwrap_or_default();
+        (records, std::mem::take(&mut roster.construction_events))
     };
+    for event in construction_events {
+        crate::exit_status::settle_supervised_fault(event.record(), FaultRuling::Unrecovered);
+    }
     for (_, record) in records {
         crate::exit_status::settle_supervised_fault(record, FaultRuling::Unrecovered);
     }
@@ -108,7 +116,11 @@ pub(crate) fn mark_child_spec_spent(sup: *mut HewSupervisor, identity: u64) {
 
 #[inline]
 fn supervisor_quiescence_expired(deadline: Instant) -> bool {
-    scheduler::shutdown_requested() || Instant::now() >= deadline
+    #[cfg(not(target_arch = "wasm32"))]
+    if scheduler::shutdown_requested() {
+        return true;
+    }
+    Instant::now() >= deadline
 }
 
 fn actor_is_supervisor_quiescent(actor: *mut HewActor) -> bool {
@@ -245,7 +257,7 @@ fn wait_for_child_stop_deadline(
     completed
 }
 
-unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
+pub(super) unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
     // Top-level stops unregister before the deferred owner starts. If scheduler
     // shutdown prevents that owner from reaching a safe actor-quiescence point,
     // restore the root so canonical post-worker cleanup remains the sole
@@ -257,7 +269,7 @@ unsafe fn return_supervisor_to_runtime_cleanup(sup: *mut HewSupervisor) {
         // SAFETY: the deferred owner is returning the still-live allocation
         // without consuming it.
         // SAFETY: canonical cleanup still owns the live top-level allocation.
-        unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+        unsafe { roots::hew_shutdown_register_supervisor(sup) };
     }
 }
 
@@ -308,7 +320,7 @@ pub(crate) unsafe fn claim_nested_supervisor_for_detach(
     unsafe { (*sup).parent = ptr::null_mut() };
     // SAFETY: the claimed detached allocation remains live through stop or a
     // fail-closed handoff back to canonical cleanup.
-    unsafe { crate::shutdown::hew_shutdown_register_supervisor(sup) };
+    unsafe { roots::hew_shutdown_register_supervisor(sup) };
     drop(pin);
     true
 }
@@ -340,6 +352,42 @@ pub(crate) fn take_nested_supervisor_roster(
         .zip(specs)
         .map(|((supervisor, token), spec)| (supervisor, token, spec))
         .collect()
+}
+
+/// The self actor has quiesced, transferring its pending invocation to this
+/// unique teardown owner. Keep siblings/config live until typed cleanup ends.
+pub(super) unsafe fn drain_cancelled_native_group(
+    sup: *mut HewSupervisor,
+    deadline: Instant,
+) -> bool {
+    // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+    let Some(mut group) = unsafe { &(*sup).roster }
+        .lock_or_recover()
+        .pending_group_restart
+        .take()
+    else {
+        return true;
+    };
+    if let Some(construction) = group.construction.as_mut() {
+        loop {
+            group.readiness.clear();
+            // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+            if unsafe { construction.drain_cancelled(sup) } {
+                break;
+            }
+            if Instant::now() >= deadline {
+                // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+                unsafe { &(*sup).roster }
+                    .lock_or_recover()
+                    .pending_group_restart = Some(group);
+                return false;
+            }
+            group.readiness.wait(deadline);
+        }
+        group.construction.take();
+    }
+    group.abandon();
+    true
 }
 
 fn wait_for_retiring_children(
@@ -379,14 +427,28 @@ fn wait_for_retiring_children(
 pub(crate) unsafe fn stop_supervisor_owned(
     sup: *mut HewSupervisor,
     teardown: &crate::lifetime::local_handles::SupervisorTeardownLease,
-) {
-    // Cancel BEFORE closing access. A restart barrier blocked on a child slot
-    // holds a supervisor pin; cancellation makes every slot read Dead and wakes
-    // it, so it returns and drops that pin instead of stalling the pin drain
-    // below for its full timeout. Re-published by `request_supervisor_shutdown`
-    // after the close, which is idempotent.
-    // SAFETY: the caller transferred a live allocation to this owner.
-    publish_supervisor_cancellation(sup);
+) -> bool {
+    // Cancellation closes publication, then self-actor quiescence transfers
+    // the pending constructor to this unique teardown claim. Its typed cleanup
+    // may release restart-wait pins, so drain it before waiting for all pins.
+    request_supervisor_shutdown(sup);
+    let quiescence_deadline = Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT;
+    if !wait_for_supervisor_self_actor_quiescent(sup, quiescence_deadline) {
+        set_last_error("supervisor teardown timed out waiting for self actor quiescence");
+        // SAFETY: teardown ownership is still held and no allocation was
+        // consumed; canonical runtime cleanup takes ownership back.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
+        return false;
+    }
+
+    // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+    if !unsafe { drain_cancelled_native_group(sup, quiescence_deadline) } {
+        set_last_error("supervisor teardown retained an unfinished constructor");
+        // SAFETY: The unique teardown claim retains the parent and exclusively owns its constructor after self-actor quiescence.
+        unsafe { return_supervisor_to_runtime_cleanup(sup) };
+        return false;
+    }
+
     // ROSTER-EXCLUSIVE: access admission is closed and all stable pins drain
     // before the Box-owned teardown traversal below begins.
     // Every raw destructor path closes handle admission and drains outstanding
@@ -399,29 +461,20 @@ pub(crate) unsafe fn stop_supervisor_owned(
         // live allocation. Restore top-level ownership before its teardown
         // lease can release the runtime-cleanup barrier.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
-        return;
+        return false;
     };
     request_supervisor_shutdown(sup);
     // SAFETY: the supervisor retains its runtime and stable control until
     // this unique teardown owner publishes completion.
-    let runtime = unsafe { &*(*sup).runtime };
+    let handles = unsafe { &*(*sup).handles };
     // SAFETY: this unique teardown owner keeps the supervisor live.
     let token = unsafe { (*sup).local_pid_id };
-    let Some(control) = runtime.local_handles.supervisor_control_for_raw(token, sup) else {
+    let Some(control) = handles.supervisor_control_for_raw(token, sup) else {
         set_last_error("supervisor teardown lost its stable control");
         // SAFETY: no ownership was consumed and the root remains live.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
-        return;
+        return false;
     };
-    let quiescence_deadline = Instant::now() + SUPERVISOR_QUIESCENCE_TIMEOUT;
-    if !wait_for_supervisor_self_actor_quiescent(sup, quiescence_deadline) {
-        set_last_error("supervisor teardown timed out waiting for self actor quiescence");
-        // SAFETY: teardown ownership is still held and no allocation was
-        // consumed; canonical runtime cleanup takes ownership back.
-        unsafe { return_supervisor_to_runtime_cleanup(sup) };
-        return;
-    }
-
     // SAFETY: teardown ownership is held exclusively by this thread and the
     // supervisor memory remains live until `Box::from_raw` below.
     // SAFETY: teardown keeps the allocation and its Arc field live through the
@@ -431,7 +484,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
         // SAFETY: no ownership was consumed; a timer may still hold a raw
         // borrow, so canonical cleanup must retain the allocation.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
-        return;
+        return false;
     }
 
     // SAFETY: teardown ownership was claimed once for this supervisor, the
@@ -486,9 +539,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
         match entry {
             TeardownChild::Supervisor { pointer, token } => {
                 retain_nested_completion(&raw mut *s, token);
-                let nested_control = runtime
-                    .local_handles
-                    .supervisor_control_for_raw(token, pointer);
+                let nested_control = handles.supervisor_control_for_raw(token, pointer);
                 if control.terminating() {
                     if let Some(nested_control) = nested_control.as_ref() {
                         nested_control.request_terminate();
@@ -512,7 +563,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
                     let sup = Box::into_raw(s);
                     // SAFETY: the parent remains a runtime cleanup root.
                     unsafe { return_supervisor_to_runtime_cleanup(sup) };
-                    return;
+                    return false;
                 }
             }
             TeardownChild::Actor { index, stop_ns } => {
@@ -520,7 +571,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
                 if child.is_null() {
                     continue;
                 }
-                if !scheduler::actor_progress_available() {
+                if !actor_progress_available() {
                     // Canonical cleanup may own a worker-less runtime after
                     // shutdown. Preserve its synchronous terminal contract;
                     // no queued request could run there.
@@ -546,7 +597,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
                     let sup = Box::into_raw(s);
                     // SAFETY: ownership is transferred back without freeing.
                     unsafe { return_supervisor_to_runtime_cleanup(sup) };
-                    return;
+                    return false;
                 }
                 // SAFETY: the child's completion has finished all state release.
                 unsafe { actor::hew_actor_free(child) };
@@ -560,7 +611,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
         let sup = Box::into_raw(s);
         // SAFETY: the parent stays live until its detached children finish.
         unsafe { return_supervisor_to_runtime_cleanup(sup) };
-        return;
+        return false;
     }
     // Every incarnation a pending group restart stopped has finished above.
     let pending = s.roster.lock_or_recover().pending_group_restart.take();
@@ -627,6 +678,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
     }
     drop(s);
     finish_supervisor_reclamation(&access);
+    true
 }
 
 /// Restart a child from its spec, returning the new actor pointer.
@@ -652,7 +704,7 @@ fn restart_snapshot_is_current(
     })
 }
 
-fn fail_restart_snapshot(
+pub(super) fn fail_restart_snapshot(
     sup: *mut HewSupervisor,
     index: usize,
     spec_identity: u64,
@@ -682,7 +734,7 @@ fn fail_restart_snapshot(
     }
 }
 
-fn publish_restart_snapshot(
+pub(super) fn publish_restart_snapshot(
     sup: *mut HewSupervisor,
     index: usize,
     spec_identity: u64,
@@ -780,7 +832,6 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
         lifecycle_fn,
         init_fn,
         config,
-        native_spawn,
     ) = {
         // SAFETY: caller guarantees `sup` is live; the guard serializes roster access.
         let roster = unsafe { &(*sup).roster }.lock_or_recover();
@@ -797,6 +848,10 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
         let Some(spec) = child_specs.get(index) else {
             return ptr::null_mut();
         };
+        // Native declarations are driven by the pending resumable transaction.
+        if spec.native_spawn.is_some() {
+            return ptr::null_mut();
+        }
         let template = Arc::clone(&spec.state_template);
         let opts = HewActorOpts {
             init_state: template.allocation.state,
@@ -821,62 +876,10 @@ pub(crate) unsafe fn restart_child_from_spec_expected(
             spec.lifecycle_fn,
             spec.init_fn,
             spec.config,
-            spec.native_spawn,
         )
     };
     run_restart_spec_snapshot_hook_for_test();
 
-    // ── Native declared child ────────────────────────────────────────────
-    //
-    // The adapter is the whole incarnation: it re-runs the declared init
-    // arguments against the supervisor's config, runs `init()` / `#[on(start)]`
-    // and publishes the actor with its own state, drop and terminate
-    // callbacks. Nothing below may run for it — a second lifecycle firing or a
-    // second state registration would double what the spawn already did. This
-    // path only claims the slot: the supervisor back-edge that routes a crash
-    // here, and the exact-generation publish.
-    if let Some(spawn) = native_spawn {
-        // A restart has no caller to fault: the refusal is the null slot the
-        // budget already counted, so its diagnostic is released here.
-        let mut refusal: *mut crate::fault::HewFault = ptr::null_mut();
-        // SAFETY: the adapter is emitted with this exact ABI, `config` is the
-        // supervisor-owned buffer, and `refusal` is a writable null slot.
-        let token = unsafe { spawn(config.cast_const(), &raw mut refusal) };
-        if !refusal.is_null() {
-            // SAFETY: the adapter transferred this fault to us.
-            unsafe { crate::fault::hew_fault_drop(refusal) };
-        }
-        let child = if token == crate::lifetime::local_handles::HewLocalPidId::INVALID {
-            ptr::null_mut()
-        } else {
-            crate::lifetime::local_handles::resolve_current_actor(token)
-                .and_then(crate::lifetime::live_actors::get_actor_ptr_by_id)
-                .unwrap_or(ptr::null_mut())
-        };
-        if child.is_null() {
-            fail_restart_snapshot(sup, index, spec_identity, spec_revision, &template);
-            return ptr::null_mut();
-        }
-        // SAFETY: the adapter returned a live, published actor and this thread
-        // is the only writer of its supervision edge.
-        unsafe {
-            (*child).supervisor = sup.cast::<c_void>();
-            #[expect(
-                clippy::cast_possible_truncation,
-                clippy::cast_possible_wrap,
-                reason = "declared child index fits i32 for any declarable supervisor"
-            )]
-            {
-                (*child).supervisor_child_index = index as i32;
-            }
-        }
-        if !publish_restart_snapshot(sup, index, spec_identity, spec_revision, &template, child) {
-            // SAFETY: publication failed, so no supervisor slot owns this actor.
-            unsafe { discard_unpublished_restart(child) };
-            return ptr::null_mut();
-        }
-        return child;
-    }
     let state_clone_fn = template.clone_fn;
     let borrows_shallow_template = init_fn.is_none()
         && state_clone_fn.is_none()
@@ -1164,24 +1167,11 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
         )
     };
 
-    let (new_child, _new_child_pin) = match spawn {
+    let new_child = match spawn {
         // SAFETY: the constructor was registered alongside this child.
-        SupervisorChildSpawn::Legacy(init) => (unsafe { init() }, None),
-        SupervisorChildSpawn::Native { spawn, config } => {
-            let mut fault = ptr::null_mut();
-            // SAFETY: the parent owns the config throughout this restart.
-            let token = unsafe { spawn(config, &raw mut fault) };
-            if !fault.is_null() {
-                // SAFETY: the adapter transferred the diagnostic here.
-                unsafe { crate::fault::hew_fault_drop(fault) };
-            }
-            let pin = crate::lifetime::local_handles::pin_current_supervisor(token);
-            let child = pin.as_ref().map_or(
-                ptr::null_mut(),
-                crate::lifetime::local_handles::SupervisorPin::supervisor,
-            );
-            (child, pin)
-        }
+        SupervisorChildSpawn::Legacy(init) => unsafe { init() },
+        // Native constructors are driven by the pending group transaction.
+        SupervisorChildSpawn::Native { .. } => return ptr::null_mut(),
     };
     if new_child.is_null() {
         return ptr::null_mut();
@@ -1191,7 +1181,7 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
     unsafe {
         (*new_child).parent = sup;
         (*new_child).index_in_parent = index;
-        crate::shutdown::hew_shutdown_unregister_supervisor(new_child);
+        roots::hew_shutdown_unregister_supervisor(new_child);
     }
     // SAFETY: `new_child` is the live allocation returned by `init_fn`.
     let new_token = unsafe { (*new_child).local_pid_id };
@@ -1212,7 +1202,7 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
             // the still-live, otherwise-unpublished allocation.
             unsafe {
                 (*new_child).parent = ptr::null_mut();
-                crate::shutdown::hew_shutdown_register_supervisor(new_child);
+                roots::hew_shutdown_register_supervisor(new_child);
             }
             return ptr::null_mut();
         }
@@ -1235,4 +1225,15 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
     }
 
     new_child
+}
+
+fn actor_progress_available() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        scheduler::actor_progress_available()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        true
+    }
 }

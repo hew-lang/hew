@@ -11,6 +11,11 @@ use std::{fs::File, io::ErrorKind, os::fd::FromRawFd, thread};
 
 use support::{hew_binary, repo_root, require_codegen, strip_ansi};
 
+// `hew eval` compiles and links before applying its execution timeout. Give
+// outer process-tree watchdogs time for that work without changing runtime
+// timeout behaviour.
+const EVAL_COMMAND_TIMEOUT: Duration = Duration::from_mins(3);
+
 fn run_eval_with_stdin_in_dir(args: &[&str], input: &str, cwd: &Path) -> Output {
     let mut child = Command::new(hew_binary())
         .args(args)
@@ -120,6 +125,11 @@ fn surface_fixture(name: &str) -> PathBuf {
         .join("v05")
         .join("surfaces")
         .join(name)
+}
+
+fn run_bounded_eval(command: Command, label: impl Into<String>) -> Output {
+    support::try_run_bounded_command(command, label, EVAL_COMMAND_TIMEOUT)
+        .unwrap_or_else(|error| panic!("{error}"))
 }
 
 fn run_for_await_surface_fixture(name: &str) {
@@ -288,10 +298,6 @@ fn eval_std_observe_reads_runtime_metric() {
 
 #[test]
 fn eval_std_observe_scrape_and_series_include_actor_attribution() {
-    // The CLI timeout bounds compiled-program execution only. Building and
-    // linking the in-process eval pipeline happens before that deadline, so the
-    // outer process-tree watchdog needs separate compile headroom.
-    const COMMAND_TIMEOUT: Duration = Duration::from_mins(3);
     require_codegen();
 
     let dir = support::tempdir();
@@ -333,12 +339,7 @@ run_counter();
         .current_dir(repo_root())
         .env("HEW_OBSERVE", "hot");
 
-    let output = support::try_run_bounded_command(
-        command,
-        format!("hew eval {}", path.display()),
-        COMMAND_TIMEOUT,
-    )
-    .unwrap_or_else(|error| panic!("{error}"));
+    let output = run_bounded_eval(command, format!("hew eval {}", path.display()));
 
     assert!(
         output.status.success(),
@@ -407,7 +408,7 @@ crash_boom();
         .arg(&path)
         .current_dir(repo_root());
 
-    let output = support::run_bounded_command(command, format!("hew eval {}", path.display()));
+    let output = run_bounded_eval(command, format!("hew eval {}", path.display()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(
@@ -459,7 +460,7 @@ fn eval_file_in_repl_context_succeeds() {
         .arg("-f")
         .arg(&path)
         .current_dir(dir.path());
-    let output = support::run_bounded_command(command, format!("hew eval -f {}", path.display()));
+    let output = run_bounded_eval(command, format!("hew eval -f {}", path.display()));
 
     assert!(
         output.status.success(),
@@ -2123,8 +2124,7 @@ fn eval_json_runtime_failure_preserves_stdout() {
         .args(["eval", "--json", "-f"])
         .arg(&path)
         .current_dir(dir.path());
-    let output =
-        support::run_bounded_command(command, format!("hew eval --json -f {}", path.display()));
+    let output = run_bounded_eval(command, format!("hew eval --json -f {}", path.display()));
 
     assert_eq!(output.status.code(), Some(1));
 
@@ -2537,12 +2537,10 @@ fn eval_json_file_cross_chunk_failure_preserves_prior_chunk_stdout() {
 /// statement is written immediately; the flush invariant is proven by
 /// waiting for its output to arrive before the process exits.
 ///
-/// `--timeout 120` is passed to the child so the child's internal
-/// compile+codegen+link budget matches the harness's load-invariant
-/// expectation.  Without it the child defaults to 30 s, which on a
-/// cold or heavily loaded machine can expire before the first statement
-/// compiles — causing `hew eval` to self-abort before `FLUSH_BUDGET` expires,
-/// making the flake look like a flush-invariant failure.
+/// `--timeout 120` bounds execution of each compiled program. Compilation and
+/// linking happen before that deadline; the two-minute `FLUSH_BUDGET` is the
+/// separate outer compile-and-output allowance. Keep the runtime limit intact
+/// so this remains a meaningful flush and recovery check.
 #[test]
 fn eval_repl_piped_stdout_flushes_per_submission() {
     const FLUSH_BUDGET: Duration = Duration::from_mins(2);
@@ -3423,11 +3421,13 @@ fn eval_aot_timeout_stops_worker_and_allows_next_submission() {
         .current_dir(repo_root());
     // A trillion iterations keeps the worker busy beyond its deadline. The
     // outer runner bounds the test if the worker deadline stops being enforced.
-    let output = support::run_bounded_command_with_stdin(
-        command,
+    let output = hew_testutil::run_command_bounded_with_stdin(
+        &mut command,
         "eval worker timeout and recovery",
+        EVAL_COMMAND_TIMEOUT,
         b"for i in 0..1000000000000 { }\n6 * 7\n:quit\n",
-    );
+    )
+    .unwrap_or_else(|error| panic!("{error}"));
     let stderr = strip_ansi(&String::from_utf8_lossy(&output.stderr));
     assert!(output.status.success(), "REPL did not recover: {stderr}");
     assert_eq!(String::from_utf8_lossy(&output.stdout), "42\n");

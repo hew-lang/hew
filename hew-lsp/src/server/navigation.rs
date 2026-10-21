@@ -120,7 +120,7 @@ fn checked_resolution_at(
     hew_analysis::identity::resolution_at(output, 0, offset)
         .filter(|(span, resolution)| {
             !matches!(resolution, hew_types::check::scope::Resolution::Local(_))
-                || is_identifier_token(&doc.source, *span)
+                || hew_analysis::identity::is_identifier_span(&doc.source, *span)
         })
         .or_else(|| {
             hew_analysis::identity::field_declaration_at(
@@ -130,17 +130,6 @@ fn checked_resolution_at(
                 offset,
             )
         })
-}
-
-fn is_identifier_token(source: &str, span: hew_analysis::OffsetSpan) -> bool {
-    let Some(token) = source.get(span.start..span.end) else {
-        return false;
-    };
-    let mut chars = token.chars();
-    chars
-        .next()
-        .is_some_and(|ch| ch == '_' || ch.is_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_alphanumeric())
 }
 
 /// Resolve a checked source segment to its declaration. The checker carries
@@ -165,24 +154,36 @@ pub(super) fn identity_definition_location(
         });
     }
     let target = hew_analysis::identity::declaration_target(output, resolution)?;
+    declaration_location(uri, doc, &target, documents)
+}
+
+/// Map a checker-owned declaration through the current buffer or its source file.
+pub(super) fn declaration_location(
+    uri: &Url,
+    doc: &DocumentState,
+    target: &hew_analysis::identity::DeclarationTarget,
+    documents: &DashMap<Url, DocumentState>,
+) -> Option<Location> {
     let target_uri = target
         .source
         .as_deref()
         .and_then(Url::from_checked_file_path)
         .unwrap_or_else(|| uri.clone());
-    if target_uri == *uri {
+    if same_source_file(&target_uri, uri) {
         let span =
-            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, &target)?;
+            hew_analysis::identity::declaration_name_span(&doc.source, &doc.parse_result, target)?;
         return Some(Location {
             uri: target_uri,
             range: offset_range_to_lsp(&doc.source, &doc.line_offsets, span.start, span.end),
         });
     }
-    if let Some(target_doc) = documents.get(&target_uri) {
+    if let Some(target_doc) =
+        documents.get(&super::analysis::open_document_uri(&target_uri, documents))
+    {
         let span = hew_analysis::identity::declaration_name_span(
             &target_doc.source,
             &target_doc.parse_result,
-            &target,
+            target,
         )?;
         return Some(Location {
             uri: target_uri,
@@ -196,7 +197,7 @@ pub(super) fn identity_definition_location(
     }
     let source = std::fs::read_to_string(target.source.as_ref()?).ok()?;
     let parsed = hew_parser::parse(&source);
-    let span = hew_analysis::identity::declaration_name_span(&source, &parsed, &target)?;
+    let span = hew_analysis::identity::declaration_name_span(&source, &parsed, target)?;
     let offsets = hew_analysis::util::compute_line_offsets(&source);
     Some(Location {
         uri: target_uri,

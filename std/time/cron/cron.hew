@@ -1,198 +1,611 @@
-//! Cron expression parsing and scheduling.
+//! Cron expressions over precise wall-clock timestamps.
 //!
-//! Parse cron expressions and compute the next firing time relative to
-//! a given epoch timestamp.
+//! Accepts five fields (minute hour day month weekday), six fields (with
+//! seconds first), or seven fields (with a year last). Names, lists, ranges,
+//! steps and the standard @yearly/@monthly/@weekly/@daily/@hourly forms are
+//! supported. Day-of-month and weekday must both match. Weekdays use the
+//! established numbering Sunday=1 through Saturday=7.
 //!
-//! # Examples
-//!
-//! ```
-//! import std.time.cron;
-//! import std.time.datetime;
-//!
-//! fn main() {
-//!     let expr = cron.parse("0 */5 * * *");
-//!     let next_run = expr.next(datetime.now_secs());
-//!     println(next_run);
-//!     expr.close();
-//! }
-//! ```
+//! Expressions are ordinary immutable values; they need no close operation.
 
-/// A parsed cron expression.
-///
-/// Created by `cron.parse(expr)`. Expressions close automatically at scope
-/// exit; call `close()` to release one early.
-#[opaque]
-type ExprHandle {
-}
+import std.time.datetime;
+import std.string;
 
-#[resource]
-pub type Expr {
-    handle: ExprHandle;
-}
+const MIN_INTEGER: i64 = -9223372036854775807 - 1;
 
-/// Structured cron scheduling errors surfaced by the native ABI.
+const MAX_INTEGER: i64 = 9223372036854775807;
+
+/// Checked expression and scheduling failures.
 pub enum CronError {
     NoNextOccurrence(string);
     InvalidInput(string);
-    InvalidEpoch(string);
+    CalendarRange(string);
 }
 
-type CronNextResult {
-    status: i32;
-    timestamp: i64;
-}
-
-fn cron_last_error_message() -> string {
-    unsafe {
-        hew_cron_last_error()
-    }
-}
+impl Error for CronError {}
 
 impl Display for CronError {
     fn fmt(self) -> string {
         match self {
-            CronError.NoNextOccurrence(message) => message,
-            CronError.InvalidInput(message) => message,
-            CronError.InvalidEpoch(message) => message,
+            .NoNextOccurrence(message) => message,
+            .InvalidInput(message) => message,
+            .CalendarRange(message) => message,
         }
     }
 }
 
-fn cron_error_from_result(result: CronNextResult) -> CronError {
-    let message = cron_last_error_message();
-    match result.status {
-        1 => CronError.NoNextOccurrence(message),
-        2 => CronError.InvalidInput(message),
-        3 => CronError.InvalidEpoch(message),
-        _ => CronError.InvalidInput(message),
+// A progression stays compact even when its year interval is very large.
+// An absent upper bound distinguishes a recurring schedule from a finite one.
+type Span {
+    first: i64;
+    last: Option<i64>;
+    anchor: i64;
+    step: i64;
+}
+
+type Field {
+    spans: Vec<Span>;
+}
+
+/// A parsed schedule. Copying it preserves an independent value.
+pub type Expr {
+    source: string;
+    seconds: Field;
+    minutes: Field;
+    hours: Field;
+    days: Field;
+    months: Field;
+    weekdays: Field;
+    years: Field;
+}
+
+fn invalid(message: string) -> CronError {
+    CronError.InvalidInput(message)
+}
+
+type Token {
+    text: string;
+    kind: i64;
+    next: i64;
+}
+
+fn space(letter: string) -> bool {
+    letter == " " || letter == "\t" || letter == "\r" || letter == "\n"
+}
+
+fn skip_space(text: string, start: i64) -> i64 {
+    var at = start;
+    while at < text.len() && space(text[at .. at + 1]) {
+        at += 1;
+    }
+    at
+}
+
+fn digit(letter: string) -> bool {
+    letter >= "0" && letter <= "9"
+}
+
+fn alpha(letter: string) -> bool {
+    (letter >= "a" && letter <= "z") || (letter >= "A" && letter <= "Z")
+}
+
+// Numbers and names consume surrounding whitespace; wildcards do not. This
+// retains the existing parser's field boundaries, including adjacent stars.
+fn token(text: string, start: i64) -> Token fails CronError {
+    let begin = skip_space(text, start);
+    if begin == text.len() {
+        return error invalid("incomplete cron field");
+    }
+    let first = text[begin .. begin + 1];
+    if first == "*" || first == "?" {
+        if begin != start {
+            return error invalid("whitespace before a cron wildcard");
+        }
+        return Token { text: first, kind: 0, next: begin + 1 };
+    }
+    let kind = if digit(first) {
+        1
+    } else if alpha(first) {
+        2
+    } else {
+        return error invalid(f"invalid cron field character: {first}");
+    };
+    var end = begin + 1;
+    while end < text.len() {
+        let letter = text[end .. end + 1];
+        if (kind == 1 && !digit(letter)) || (kind == 2 && !alpha(letter)) {
+            break;
+        }
+        end += 1;
+    }
+    Token { text: text[begin..end], kind: kind, next: skip_space(text, end) }
+}
+
+fn specifier(text: string, start: i64) -> Token fails CronError {
+    let first = token(text, start)?;
+    var result = first.text;
+    var at = first.next;
+    var ranged = false;
+    if at < text.len() && text[at .. at + 1] == "-" && first.kind != 0 {
+        let last = token(text, at + 1)?;
+        if first.kind != last.kind {
+            return error invalid("cron range endpoints must both be numbers or names");
+        }
+        result = result + "-" + last.text;
+        at = last.next;
+        ranged = true;
+    }
+    if at < text.len() && text[at .. at + 1] == "/" {
+        if first.kind == 2 && !ranged {
+            return error invalid("a named cron point cannot have a step; use a named range");
+        }
+        let step = token(text, at + 1)?;
+        if step.kind != 1 {
+            return error invalid("cron step must be a number");
+        }
+        result = result + "/" + step.text;
+        at = step.next;
+    }
+    Token { text: result, kind: first.kind, next: at }
+}
+
+fn fields(text: string) -> Vec<string> fails CronError {
+    var result: Vec<string> = Vec.new();
+    var at = skip_space(text, 0);
+    while at < text.len() {
+        let first = specifier(text, at)?;
+        var field = first.text;
+        at = first.next;
+        while at < text.len() && text[at .. at + 1] == "," {
+            let next = specifier(text, at + 1)?;
+            field = field + "," + next.text;
+            at = next.next;
+        }
+        result.push(field);
+        if result.len() > 7 {
+            return error invalid("cron requires five, six or seven fields");
+        }
+        at = skip_space(text, at);
+    }
+    result
+}
+
+fn whitespace_fields(text: string) -> i64 {
+    var count = 0;
+    var inside = false;
+    for i in 0..text.len() {
+        if text.get(i).expect("character in bounds").is_whitespace() {
+            inside = false;
+        } else if !inside {
+            count += 1;
+            inside = true;
+        }
+    }
+    count
+}
+
+fn number(text: string) -> i64 fails CronError {
+    if text.is_empty() {
+        return error invalid("cron field contains an empty number");
+    }
+    for i in 0..text.len() {
+        let letter = text[i .. i + 1];
+        if letter < "0" || letter > "9" {
+            return error invalid(f"invalid cron number: {text}");
+        }
+    }
+    match string.to_int(text) {
+        .Ok(value) => value,
+        .Err(_) => {
+            return error invalid(f"cron number is too large: {text}");
+        }
     }
 }
 
-/// Methods available on a parsed `Expr`.
+fn named(text: string, field: i64) -> i64 fails CronError {
+    let name = text.to_lower();
+    if field == 4 {
+        match name {
+            "jan" | "january" => return 1,
+            "feb" | "february" => return 2,
+            "mar" | "march" => return 3,
+            "apr" | "april" => return 4,
+            "may" => return 5,
+            "jun" | "june" => return 6,
+            "jul" | "july" => return 7,
+            "aug" | "august" => return 8,
+            "sep" | "september" => return 9,
+            "oct" | "october" => return 10,
+            "nov" | "november" => return 11,
+            "dec" | "december" => return 12,
+            _ => {}
+        }
+    }
+    if field == 5 {
+        match name {
+            "sun" | "sunday" => return 1,
+            "mon" | "monday" => return 2,
+            "tue" | "tues" | "tuesday" => return 3,
+            "wed" | "wednesday" => return 4,
+            "thu" | "thurs" | "thursday" => return 5,
+            "fri" | "friday" => return 6,
+            "sat" | "saturday" => return 7,
+            _ => {}
+        }
+    }
+    return error invalid(f"invalid cron field name: {text}");
+}
+
+fn endpoint(text: string, field: i64, lower: i64, upper: i64) -> i64 fails CronError {
+    let initial = text.get(0).expect("nonempty endpoint");
+    let value = if initial >= '0' && initial <= '9' {
+        number(text)?
+    } else {
+        named(text, field)?
+    };
+    if value < lower || value > upper {
+        return error invalid(f"cron field is outside {lower}..{upper}: {text}");
+    }
+    value
+}
+
+fn parse_span(text: string, field: i64, lower: i64, upper: i64) -> Span fails CronError {
+    let parts = text.split("/");
+    if parts.len() > 2 || parts[0].is_empty() {
+        return error invalid(f"invalid cron step: {text}");
+    }
+    let stepped = parts.len() == 2;
+    let step = if stepped {
+        number(parts[1])?
+    } else {
+        1
+    };
+    if step == 0 || (field != 6 && step > upper) {
+        return error invalid(f"invalid cron step: {text}");
+    }
+    let base = parts[0];
+    if base == "*" || (base == "?" && (field == 3 || field == 5)) {
+        return Span {
+            first: if field == 6 {
+                MIN_INTEGER
+            } else {
+                lower
+            },
+            last: if field == 6 {
+                .None
+            } else {
+                .Some(upper)
+            },
+            // Preserve the established phase of wildcard year steps.
+            anchor: if field == 6 {
+                1970
+            } else {
+                lower
+            },
+            step: step,
+        };
+    }
+    let range = base.split("-");
+    if range.len() > 2 || range[0].is_empty() || (range.len() == 2 && range[1].is_empty()) {
+        return error invalid(f"invalid cron range: {text}");
+    }
+    let first = endpoint(range[0], field, lower, upper)?;
+    if range.len() == 2 {
+        let last = endpoint(range[1], field, lower, upper)?;
+        if first > last {
+            return error invalid(f"descending cron range: {text}");
+        }
+        return Span { first: first, last: .Some(last), anchor: first, step: step };
+    }
+    Span { first: first, last: if stepped {
+        if field == 6 {
+            .None
+        } else {
+            .Some(upper)
+        }
+    } else {
+        .Some(first)
+    }, anchor: first, step: step }
+}
+
+fn parse_field(text: string, field: i64, lower: i64, upper: i64) -> Field fails CronError {
+    var spans: Vec<Span> = Vec.new();
+    for item in text.split(",") {
+        spans.push(parse_span(item, field, lower, upper)?);
+    }
+    Field { spans: spans }
+}
+
+/// Parse a schedule without panicking on malformed input.
+pub fn try_parse(text: string) -> Expr fails CronError {
+    let trimmed = text.trim();
+    let expanded = match trimmed {
+        "@yearly" => "0 0 0 1 1 * *",
+        "@monthly" => "0 0 0 1 * * *",
+        "@weekly" => "0 0 0 * * 1 *",
+        "@daily" => "0 0 0 * * * *",
+        "@hourly" => "0 0 * * * * *",
+        _ => trimmed,
+    };
+    let five_fields = whitespace_fields(text) == 5;
+    let source = if five_fields {
+        "0 " + text + " *"
+    } else {
+        text
+    };
+    let normalized = if five_fields {
+        "0 " + expanded + " *"
+    } else {
+        expanded
+    };
+    var columns = fields(normalized)?;
+    if columns.len() == 6 {
+        columns.push("*");
+    }
+    if columns.len() != 7 {
+        return error invalid("cron requires five, six or seven fields");
+    }
+    Expr { source: source, seconds: parse_field(columns[0], 0, 0, 59)?, minutes: parse_field(columns[1], 1, 0, 59)?, hours: parse_field(columns[2], 2, 0, 23)?, days: parse_field(columns[3], 3, 1, 31)?, months: parse_field(columns[4], 4, 1, 12)?, weekdays: parse_field(columns[5], 5, 1, 7)?, years: parse_field(columns[6], 6, 0, MAX_INTEGER)? }
+}
+
+/// Parse a schedule, panicking on malformed input. Use try_parse for checked input.
+pub fn parse(text: string) -> Expr {
+    try_parse(text).expect(f"cron.parse: invalid expression `{text}`")
+}
+
+fn remainder(value: i64, modulus: i64) -> i64 {
+    let rest = value % modulus;
+    if rest < 0 {
+        rest + modulus
+    } else {
+        rest
+    }
+}
+
+fn first_in_span(span: Span, lower: i64) -> Option<i64> {
+    let first = if lower > span.first {
+        lower
+    } else {
+        span.first
+    };
+    let offset = remainder(remainder(span.anchor, span.step) - remainder(first, span.step), span.step);
+    if first > 0 && offset > MAX_INTEGER - first {
+        return .None;
+    }
+    let candidate = first + offset;
+    match span.last {
+        .Some(last) => {
+            if candidate > last {
+                return .None;
+            }
+        }
+        .None => {}
+    }
+    .Some(candidate)
+}
+
+fn next_value(field: Field, lower: i64) -> Option<i64> {
+    var result: Option<i64> = .None;
+    for span in field.spans {
+        match first_in_span(span, lower) {
+            .Some(value) => {
+                match result {
+                    .Some(current) => {
+                        if value < current {
+                            result = .Some(value);
+                        }
+                    }
+                    .None => {
+                        result = .Some(value);
+                    }
+                }
+            }
+            .None => {}
+        }
+    }
+    result
+}
+
+fn includes(field: Field, value: i64) -> bool {
+    match next_value(field, value) {
+        .Some(found) => found == value,
+        .None => false,
+    }
+}
+
+fn calendar_error(error: datetime.DateTimeError) -> CronError {
+    match error {
+        .Range(message) => CronError.CalendarRange(message),
+        .Format(message) => CronError.InvalidInput(message),
+        .Parse(message) => CronError.InvalidInput(message),
+    }
+}
+
+fn calendar(year: i64, month: i64, day: i64, hour: i64, minute: i64, second: i64) -> timestamp fails CronError {
+    match datetime.from_parts(year, month, day, hour, minute, second, 0) {
+        .Ok(value) => value,
+        .Err(error) => {
+            return error calendar_error(error);
+        }
+    }
+}
+
+fn components(value: timestamp) -> datetime.Components fails CronError {
+    match datetime.components(value) {
+        .Ok(fields) => fields,
+        .Err(error) => {
+            return error calendar_error(error);
+        }
+    }
+}
+
+// At most 400 residues are visited for a progression. A fully searched year
+// with no matching day never needs another search 400 years later.
+fn next_year(field: Field, lower: i64, excluded: Vec<bool>) -> Option<i64> fails CronError {
+    var result: Option<i64> = .None;
+    var out_of_range = false;
+    for span in field.spans {
+        var candidate = first_in_span(span, lower);
+        for attempt in 0..400 {
+            let year = match candidate {
+                .Some(value) => value,
+                .None => {
+                    if span.last.is_none() {
+                        out_of_range = true;
+                    }
+                    break;
+                }
+            };
+            if !excluded[remainder(year, 400)] {
+                match result {
+                    .Some(current) => {
+                        if year < current {
+                            result = .Some(year);
+                        }
+                    }
+                    .None => {
+                        result = .Some(year);
+                    }
+                }
+                break;
+            }
+            if year == MAX_INTEGER {
+                if span.last.is_none() {
+                    out_of_range = true;
+                }
+                break;
+            }
+            candidate = first_in_span(span, year + 1);
+        }
+    }
+    if result.is_none() && out_of_range {
+        return error CronError.CalendarRange("next cron year exceeds the calendar range");
+    }
+    result
+}
+
+fn time_on_day(expr: Expr, year: i64, month: i64, day: i64, after: datetime.Components) -> Option<timestamp> fails CronError {
+    let same_day = year == after.year && month == after.month && day == after.day;
+    var hour_start = if same_day {
+        after.hour
+    } else {
+        0
+    };
+    while hour_start <= 23 {
+        let hour = match next_value(expr.hours, hour_start) {
+            .Some(value) => value,
+            .None => return .None,
+        };
+        let same_hour = same_day && hour == after.hour;
+        var minute_start = if same_hour {
+            after.minute
+        } else {
+            0
+        };
+        while minute_start <= 59 {
+            let minute = match next_value(expr.minutes, minute_start) {
+                .Some(value) => value,
+                .None => break,
+            };
+            let second_start = if same_hour && minute == after.minute {
+                after.second + 1
+            } else {
+                0
+            };
+            match next_value(expr.seconds, second_start) {
+                .Some(second) => return .Some(calendar(year, month, day, hour, minute, second)?),
+                .None => {}
+            }
+            minute_start = minute + 1;
+        }
+        hour_start = hour + 1;
+    }
+    .None
+}
+
+fn in_year(expr: Expr, year: i64, after: datetime.Components) -> Option<timestamp> fails CronError {
+    var month_start = if year == after.year {
+        after.month
+    } else {
+        1
+    };
+    while month_start <= 12 {
+        let month = match next_value(expr.months, month_start) {
+            .Some(value) => value,
+            .None => return .None,
+        };
+        let first = components(calendar(year, month, 1, 0, 0, 0)?)?;
+        var day_start = if year == after.year && month == after.month {
+            after.day
+        } else {
+            1
+        };
+        while day_start <= first.days_in_month {
+            let day = match next_value(expr.days, day_start) {
+                .Some(value) => value,
+                .None => break,
+            };
+            if day > first.days_in_month {
+                break;
+            }
+            let weekday = (first.weekday + day) % 7 + 1;
+            if includes(expr.weekdays, weekday) {
+                match time_on_day(expr, year, month, day, after)? {
+                    .Some(value) => return .Some(value),
+                    .None => {}
+                }
+            }
+            day_start = day + 1;
+        }
+        month_start = month + 1;
+    }
+    .None
+}
+
+fn find_next(expr: Expr, after_value: timestamp) -> timestamp fails CronError {
+    let after = components(after_value)?;
+    var excluded: Vec<bool> = Vec.new();
+    for residue in 0..400 {
+        excluded.push(false);
+    }
+    var lower_year = after.year;
+    loop {
+        let year = match next_year(expr.years, lower_year, excluded)? {
+            .Some(value) => value,
+            .None => {
+                return error CronError.NoNextOccurrence("cron schedule has no future occurrence");
+            }
+        };
+        match in_year(expr, year, after)? {
+            .Some(value) => return value,
+            .None => {}
+        }
+        if year != after.year {
+            excluded[remainder(year, 400)] = true;
+        }
+        if year == MAX_INTEGER {
+            return error CronError.CalendarRange("next cron year exceeds the calendar range");
+        }
+        lower_year = year + 1;
+    }
+}
+
 trait ExprMethods {
-    /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(self, after_epoch_secs: i64) -> i64;
-
-    /// Compute the next firing time (epoch seconds) after the given timestamp.
-    ///
-    /// Returns `Err(CronError)` when the schedule has no future match or the
-    /// native ABI rejects the input.
-    fn try_next(self, after_epoch_secs: i64) -> Result<i64, CronError>;
-
-    /// Return the cron expression as a string.
+    fn next(self, after: timestamp) -> timestamp;
+    fn try_next(self, after: timestamp) -> Result<timestamp, CronError>;
     fn to_string(self) -> string;
 }
 
 impl ExprMethods for Expr {
-    /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn next(self, after_epoch_secs: i64) -> i64 {
-        match self.try_next(after_epoch_secs) {
-            .Ok(epoch_secs) => epoch_secs,
-            .Err(err) => {
-                panic(f"cron.next failed: {err}");
-                0
-            }
-        }
+    /// Find the next whole-second occurrence strictly after the given timestamp.
+    fn next(self, after: timestamp) -> timestamp {
+        self.try_next(after).expect("cron.next failed")
     }
-    /// Compute the next firing time (epoch seconds) after the given timestamp.
-    fn try_next(self, after_epoch_secs: i64) -> Result<i64, CronError> {
-        let result = unsafe {
-            hew_cron_next_hew(self.handle, after_epoch_secs as i64)
-        };
-        if result.status == 0 {
-            .Ok(result.timestamp as i64)
-        } else {
-            .Err(cron_error_from_result(result))
-        }
+    /// Distinguish exhausted finite schedules from a calendar range failure.
+    fn try_next(self, after: timestamp) -> Result<timestamp, CronError> {
+        find_next(self, after)
     }
-    /// Return the cron expression as a string.
     fn to_string(self) -> string {
-        unsafe {
-            hew_cron_to_string(self.handle)
-        }
+        self.source
     }
-}
-
-impl Expr {
-    /// Release this parsed expression early.
-    fn close(consume self) {
-        unsafe {
-            hew_cron_free(self.handle)
-        };
-    }
-}
-
-// ── Module-level functions ────────────────────────────────────────────
-/// Parse a cron expression string.
-///
-/// Panics if the expression syntax is invalid.
-///
-/// # Examples
-///
-/// ```
-/// import std.time.cron;
-///
-/// fn main() {
-///     let every_minute = cron.parse("* * * * *");
-///     let weekdays_9am = cron.parse("0 9 * * 1-5");
-/// }
-/// ```
-pub fn parse(expr: string) -> Expr {
-    unsafe {
-        let handle = hew_cron_parse(expr);
-        if !hew_cron_is_valid(handle) {
-            let detail = cron_last_error_message();
-            hew_cron_free(handle);
-            if detail.len() == 0 {
-                panic(f"cron.parse: invalid expression: {expr}");
-            } else {
-                panic(f"cron.parse: invalid expression `{expr}`: {detail}");
-            }
-        }
-        Expr { handle: handle }
-    }
-}
-
-// ── FFI bindings ──────────────────────────────────────────────────────
-extern "C" {
-    fn hew_cron_parse(expr: string) -> ExprHandle;
-    fn hew_cron_is_valid(expr: ExprHandle) -> bool;
-    fn hew_cron_next_hew(expr: ExprHandle, after_epoch_secs: i64) -> CronNextResult;
-    fn hew_cron_last_error() -> string;
-    fn hew_cron_to_string(expr: ExprHandle) -> string;
-    fn hew_cron_free(expr: ExprHandle);
-}
-
-// ── Status-code parity tests ──────────────────────────────────────────
-// The status literals below mirror `hew-std/src/time/cron.rs`'s
-// `HEW_CRON_STATUS_*` constants (pinned cross-side in that file's
-// `hew_binding_pins_cron_status_constants` test). These tests exercise
-// `cron_error_from_result`, which is module-private and therefore only
-// reachable from an inline test here, against a synthetic `CronNextResult`
-// for each non-success status so all three error arms are distinguished
-// (rather than only the one or two arms existing FFI-level tests reach).
-fn cron_error_tag(err: CronError) -> i64 {
-    match err {
-        CronError.NoNextOccurrence(_) => 1,
-        CronError.InvalidInput(_) => 2,
-        CronError.InvalidEpoch(_) => 3,
-    }
-}
-
-#[test]
-fn cron_error_from_result_maps_status_1_to_no_next_occurrence() {
-    let synthetic = CronNextResult { status: 1, timestamp: 0 };
-    assert(cron_error_tag(cron_error_from_result(synthetic)) == 1);
-}
-
-#[test]
-fn cron_error_from_result_maps_status_2_to_invalid_input() {
-    let synthetic = CronNextResult { status: 2, timestamp: 0 };
-    assert(cron_error_tag(cron_error_from_result(synthetic)) == 2);
-}
-
-#[test]
-fn cron_error_from_result_maps_status_3_to_invalid_epoch() {
-    let synthetic = CronNextResult { status: 3, timestamp: 0 };
-    assert(cron_error_tag(cron_error_from_result(synthetic)) == 3);
 }

@@ -1135,12 +1135,6 @@ impl Checker {
             return;
         }
         match func_name {
-            "link" | "unlink" | "monitor" | "demonitor" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::LinkMonitor);
-            }
-            "supervisor_child" | "supervisor_stop" => {
-                self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
-            }
             // sleep / sleep_until: the wasm32 scheduler parks the calling actor
             // at the message boundary and re-enqueues it once the deadline passes
             // (see hew-runtime/src/scheduler_wasm.rs :: park_actor_sleep).
@@ -1192,6 +1186,7 @@ impl Checker {
             return;
         }
         self.warnings.push(TypeError {
+            fixes: Vec::new(),
             severity: crate::error::Severity::Warning,
             kind: TypeErrorKind::BlockingCallInReceiveFn,
             span: span.clone(),
@@ -1356,10 +1351,13 @@ impl Checker {
         Some(applied_sig.return_type)
     }
 
-    /// Refuse compiler-internal memory operations before lowering source calls.
+    /// Credit a selected impl provider and refuse compiler-internal memory operations.
     pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
         use crate::stdlib_authority::Intrinsic;
 
+        if let CallTarget::User(declaration) | CallTarget::ImplMethod(declaration) = target {
+            self.note_impl_import_use(*declaration);
+        }
         let intrinsic = match target {
             CallTarget::Builtin { endpoint } => Intrinsic::from_key(endpoint),
             CallTarget::User(declaration) => self
@@ -1586,6 +1584,17 @@ impl Checker {
             .map(|declaration| self.source_call_target(declaration))
     }
 
+    /// Select a static runtime method through its checked declaration, including
+    /// the same canonical source provenance required by receiver methods.
+    fn associated_runtime_target_for_signature(
+        &self,
+        signature_key: &str,
+    ) -> Option<crate::RuntimeCallFamily> {
+        let sig = self.fn_sig(signature_key).filter(|sig| sig.associated)?;
+        let spec = sig.extern_symbol.as_ref()?;
+        self.canonical_std_io_runtime_method_family(signature_key, &spec.template.raw, sig)
+    }
+
     pub(super) fn call_target_for_signature(&self, signature_key: &str) -> CallTarget {
         // Extern declarations are source declarations too and may therefore
         // also have an fn_def_spans entry. Classify them first: their exact
@@ -1606,14 +1615,13 @@ impl Checker {
         if let Some(family) = self.intrinsic_runtime_target_for_signature(signature_key) {
             return CallTarget::Runtime(family);
         }
-        // An impl method with no source span of its own is still a declared
-        // implementation: publish its declaration identity.  The declaring
-        // module is not part of this decision — a `duration` constructor
-        // declared in `std/builtins.hew` is as much a direct call as a user
-        // impl method, and both emit a body.  What IS part of it is the typed
-        // builtin registry: a spelling registered there (`instant::now`) is
-        // metadata for a compiler-known endpoint, so it keeps the target that
-        // registry published rather than acquiring a body it does not have.
+        // Associated runtime methods use the same checked declaration and
+        // provenance contract as receiver methods. No synthetic callee spelling
+        // is needed merely because a method has no receiver.
+        if let Some(family) = self.associated_runtime_target_for_signature(signature_key) {
+            return CallTarget::Runtime(family);
+        }
+        // Ordinary associated methods retain their selected source identity.
         if !self.fn_def_spans.contains_key(signature_key)
             && !self.builtin_call_targets.contains_key(signature_key)
         {
@@ -1892,6 +1900,7 @@ impl Checker {
                             return self.check_method_call_with_type_args(
                                 object,
                                 field.0.name.as_str(),
+                                Some(&field.1),
                                 type_args,
                                 args,
                                 span,
@@ -1907,6 +1916,7 @@ impl Checker {
                         return self.check_method_call_with_type_args(
                             object,
                             field.0.name.as_str(),
+                            Some(&field.1),
                             type_args,
                             args,
                             span,
@@ -2710,7 +2720,7 @@ impl Checker {
                 matches!(binding, scope::Binding::Fn(_)).then_some(name.as_str())
             })
             .collect();
-        let mut similar = crate::error::find_similar(
+        let similar = crate::error::find_similar(
             &func_name,
             self.sigs()
                 .entries()
@@ -2719,12 +2729,14 @@ impl Checker {
                 .chain(scoped_functions)
                 .chain(local_names.iter().copied()),
         );
-        similar.extend(module_qualified_intrinsic_spellings(&func_name));
-        self.report_error_with_suggestions(
+        let help = module_qualified_intrinsic_spellings(&func_name);
+        self.report_error_with_spelling_suggestions(
             TypeErrorKind::UndefinedFunction,
             span,
+            Some(&func.1),
             format!("undefined function `{func_name}`"),
             similar,
+            help,
         );
         Ty::Error
     }

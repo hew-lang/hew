@@ -637,6 +637,9 @@ impl HirRecordDecl {
 /// treats `HirItem::Supervisor` as a no-op tier alongside `Record`/`Actor`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorDecl {
+    /// Owning supervisor handle supplied to each incarnation constructor.
+    pub owner: HirBinding,
+    pub startup_order: Vec<usize>,
     /// Stateless interceptor instantiated inside each declared child turn.
     pub interceptor: Option<HirFn>,
     pub id: ItemId,
@@ -666,12 +669,11 @@ pub struct HirSupervisorDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirSupervisorChild {
     pub name: String,
+    /// Checked wiring: init argument index and sibling declaration index.
+    pub wiring: Vec<(usize, usize)>,
     /// Complete checked child handle, including any supervisor type parameters.
     pub ty: ResolvedTy,
     pub restart_policy: Option<HirRestartPolicy>,
-    /// Declarative sibling wiring: init-param name → sibling child name.
-    /// `None` means no `wired_to:` clause. S-B validates key correctness.
-    pub wired_to: Option<std::collections::HashMap<String, String>>,
     /// `true` when declared with `pool name: Type`; `false` for `child name: Type`.
     pub is_pool: bool,
     /// Compile-time-assigned slot index within the child's own slot space.
@@ -792,9 +794,6 @@ pub struct HirTypeDecl {
     /// dereference. Construction emits `hew_alloc` + write + ptr-store;
     /// drop emits `hew_dealloc` after recursively freeing sub-trees.
     pub is_indirect: bool,
-    /// Names of methods declared with a `consume self` receiver in the
-    /// type body. Lifted verbatim from `TypeDecl.consuming_methods`.
-    pub consuming_methods: Vec<String>,
     /// Source-declared generic type-parameter names, in order. Empty for
     /// non-generic type decls. SIR substitutes exact instance arguments
     /// into these parameters when deriving semantic fields and variants.

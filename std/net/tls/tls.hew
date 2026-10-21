@@ -144,6 +144,9 @@ trait TlsStreamMethods {
     /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
     /// retryable/TLS/I-O failures. Use `last_error()` for the precise class.
     ///
+    /// Cancellation leaves the borrowed connection open, but an already-started
+    /// read may consume bytes whose result is abandoned.
+    ///
     /// Do not call after `attach()` — the runtime owns the read side.
     fn read(self, size: i64) -> Result<bytes, net.NetError>;
 

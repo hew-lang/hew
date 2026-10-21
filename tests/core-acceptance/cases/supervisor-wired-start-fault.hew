@@ -1,0 +1,23 @@
+actor Ledger {
+    let label: string;
+    #[on(start)]
+    fn started() { panic("ledger start failed"); }
+    receive fn ping() {}
+}
+actor Checkout {
+    let ledger: Ledger;
+    init(backend: Ledger) {
+        self.ledger = backend;
+        println("dependent must not construct");
+    }
+    receive fn ping() {}
+}
+supervisor Shop(seed: string) {
+    child checkout: Checkout wired_to: { backend: ledger };
+    child ledger: Ledger { label: seed };
+}
+fn main() {
+    let shop = spawn Shop { seed: "owned config".to_upper() };
+    println("construction must refuse");
+    stop(shop); stopped(shop);
+}

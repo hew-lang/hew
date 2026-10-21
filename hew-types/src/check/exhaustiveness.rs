@@ -32,6 +32,23 @@ static WILDCARD: Pattern = Pattern::Wildcard;
 /// One row of the pattern matrix: one pattern per live column.
 type Row<'pattern> = Vec<&'pattern Pattern>;
 
+/// One uncovered value shape, with prose and executable source spellings.
+/// Both are rendered from the same constructor witness in the coverage walk.
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct MatchWitness {
+    pub display: String,
+    pub pattern: String,
+}
+
+impl MatchWitness {
+    fn wildcard() -> Self {
+        Self {
+            display: "_".into(),
+            pattern: "_".into(),
+        }
+    }
+}
+
 /// A constructor of one column's value space.
 #[derive(Clone, PartialEq, Eq)]
 enum Ctor {
@@ -79,33 +96,60 @@ impl CtorInfo {
     }
 
     /// Spell this constructor as an arm pattern over its slot witnesses.
-    fn render(&self, slots: &[String]) -> String {
-        let record = |head: &str| {
-            let body = self.fields.as_ref().map_or_else(String::new, |fields| {
-                fields
-                    .iter()
-                    .zip(slots)
-                    .map(|(field, witness)| format!("{field}: {witness}"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            });
-            format!("{head} {{ {body} }}")
+    fn render(&self, slots: &[MatchWitness]) -> MatchWitness {
+        let render = |source: bool| {
+            let spellings = slots
+                .iter()
+                .map(|slot| {
+                    if source {
+                        slot.pattern.as_str()
+                    } else {
+                        slot.display.as_str()
+                    }
+                })
+                .collect::<Vec<_>>();
+            let record = |head: &str| {
+                let body = self.fields.as_ref().map_or_else(String::new, |fields| {
+                    fields
+                        .iter()
+                        .zip(&spellings)
+                        .map(|(field, witness)| format!("{field}: {witness}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                });
+                format!("{head} {{ {body} }}")
+            };
+            match &self.ctor {
+                Ctor::Bool(value) => value.to_string(),
+                Ctor::Variant(name) => {
+                    let head = if source {
+                        format!(".{name}")
+                    } else {
+                        name.clone()
+                    };
+                    if self.fields.is_some() {
+                        record(&head)
+                    } else if self.slots.is_empty() {
+                        head
+                    } else {
+                        format!("{head}({})", spellings.join(", "))
+                    }
+                }
+                Ctor::Product => match &self.head {
+                    Some(head) => record(head),
+                    None => format!("({})", spellings.join(", ")),
+                },
+            }
         };
-        match &self.ctor {
-            Ctor::Bool(value) => value.to_string(),
-            Ctor::Variant(name) if self.slots.is_empty() => name.clone(),
-            Ctor::Variant(name) if self.fields.is_some() => record(name),
-            Ctor::Variant(name) => format!("{name}({})", slots.join(", ")),
-            Ctor::Product => match &self.head {
-                Some(head) => record(head),
-                None => format!("({})", slots.join(", ")),
-            },
+        MatchWitness {
+            display: render(false),
+            pattern: render(true),
         }
     }
 
     /// This constructor with every slot left open.
-    fn open(&self) -> String {
-        self.render(&vec!["_".to_string(); self.slots.len()])
+    fn open(&self) -> MatchWitness {
+        self.render(&vec![MatchWitness::wildcard(); self.slots.len()])
     }
 }
 
@@ -116,7 +160,11 @@ fn short_name(name: &str) -> &str {
 impl Checker {
     /// The arm shapes `arms` leaves uncovered for `scrutinee_ty`, rendered as
     /// arm patterns. An empty result means the match is exhaustive.
-    pub(super) fn missing_match_shapes(&self, arms: &[MatchArm], scrutinee_ty: &Ty) -> Vec<String> {
+    pub(super) fn missing_match_shapes(
+        &self,
+        arms: &[MatchArm],
+        scrutinee_ty: &Ty,
+    ) -> Vec<MatchWitness> {
         let leaves = Self::unguarded_leaf_patterns(arms);
         let rows: Vec<Row<'_>> = leaves.iter().map(|pattern| vec![*pattern]).collect();
         let mut shapes = Vec::new();
@@ -124,7 +172,7 @@ impl Checker {
             let shape = witness
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| "_".to_string());
+                .unwrap_or_else(MatchWitness::wildcard);
             if !shapes.contains(&shape) {
                 shapes.push(shape);
             }
@@ -134,7 +182,7 @@ impl Checker {
 
     /// The witnesses `rows` leaves uncovered over the column types `tys`.
     /// Each witness carries one rendered pattern per column.
-    fn missing_rows(&self, rows: &[Row<'_>], tys: &[Ty]) -> Vec<Vec<String>> {
+    fn missing_rows(&self, rows: &[Row<'_>], tys: &[Ty]) -> Vec<Vec<MatchWitness>> {
         let Some((column_ty, rest_tys)) = tys.split_first() else {
             // No columns left: an empty matrix covers nothing, any row covers
             // everything.
@@ -164,8 +212,8 @@ impl Checker {
         }
         // The rows leave constructors unnamed, so coverage rests on the rows
         // that admit any value; the unnamed constructors are the witnesses.
-        let heads: Vec<String> = if space.is_empty() {
-            vec!["_".to_string()]
+        let heads: Vec<MatchWitness> = if space.is_empty() {
+            vec![MatchWitness::wildcard()]
         } else {
             space
                 .iter()
@@ -182,7 +230,7 @@ impl Checker {
         // With no row admitting this column, every later column is open too,
         // so one witness per unnamed constructor says all there is to say.
         let tails = if default_rows.is_empty() {
-            vec![vec!["_".to_string(); rest_tys.len()]]
+            vec![vec![MatchWitness::wildcard(); rest_tys.len()]]
         } else {
             self.missing_rows(&default_rows, rest_tys)
         };
@@ -205,7 +253,7 @@ impl Checker {
         space: &[CtorInfo],
         column_ty: &Ty,
         rest_tys: &[Ty],
-    ) -> Vec<Vec<String>> {
+    ) -> Vec<Vec<MatchWitness>> {
         let mut missing = Vec::new();
         for info in space {
             let mut next_rows = Vec::new();

@@ -45,14 +45,12 @@ impl NativeActorCompletion {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn crash_action(&self) -> Option<i32> {
         self.crash
             .filter(|_| self.phase.load(Ordering::Acquire) >= 2)
             .map(|_| self.crash_action.load(Ordering::Relaxed))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn is_finished(&self) -> bool {
         self.phase.load(Ordering::Acquire) == 2
     }
@@ -126,7 +124,6 @@ impl NativeActorCompletion {
     /// Wake `waker` when this incarnation's terminal cleanup finishes. The
     /// registration is weak, and one made after the finish never fires, so the
     /// caller keeps the waker and checks [`Self::is_finished`] afterwards.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn wake_on_finish(&self, waker: &Arc<OwnedWaker>) {
         self.ready.register(waker);
     }
@@ -216,6 +213,8 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             .store(record.as_raw(), Ordering::Release);
     }
     let actor_id = actor.id;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::hew_node::retire_current_actor_names(actor_id);
     let notice = completion.terminal_notice.lock_or_recover().take();
     // Cleanup is complete, including the crash hook's decision, but close
     // observers stay pending until all terminal notifications are published.
@@ -235,7 +234,6 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             ),
             completion.close_fault_payload().as_ref(),
         );
-        #[cfg(not(target_arch = "wasm32"))]
         if !actor.supervisor.is_null() {
             if let Ok(child_index) = u32::try_from(actor.supervisor_child_index) {
                 // SAFETY: the supervisor remains the child's parent through
@@ -279,7 +277,6 @@ pub extern "C" fn hew_actor_stop_native(token: local_handles::HewLocalPidId) {
         });
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
             live_actors::with_actor_send_by_identity(id, serial, |actor| {
@@ -300,7 +297,6 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
         });
         return;
     }
-    #[cfg(not(target_arch = "wasm32"))]
     {
         if let Some((id, serial)) = crate::supervisor::current_actor_role_identity(token) {
             live_actors::with_actor_send_by_identity(id, serial, |actor| {
@@ -315,7 +311,7 @@ pub extern "C" fn hew_actor_terminate_native(token: local_handles::HewLocalPidId
 pub struct HewNativeActorWait {
     completion: Option<Arc<NativeActorCompletion>>,
     #[cfg(not(target_arch = "wasm32"))]
-    imported: Option<Box<crate::hew_node::monitor_link::HewNativeActorObservation>>,
+    imported: Option<Box<crate::actor_observe::HewNativeActorObservation>>,
     pub(crate) target: live_actors::ActorIncarnation,
     _waker: Arc<OwnedWaker>,
 }
@@ -325,7 +321,6 @@ pub struct HewNativeActorWait {
 pub(crate) struct NativeWaitTarget {
     pub(crate) completion: Arc<NativeActorCompletion>,
     pub(crate) actor: live_actors::ActorIncarnation,
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) supervisor_token: Option<local_handles::HewLocalPidId>,
 }
 
@@ -376,7 +371,6 @@ pub unsafe extern "C" fn hew_actor_wait_new(
             _waker: owned,
         }));
     }
-    #[cfg(not(target_arch = "wasm32"))]
     if let Some((owner, slot, kind)) = local_handles::current_actor_role_owner_slot(token) {
         // SAFETY: the caller retains the descriptor during role resolution.
         return unsafe {
@@ -398,15 +392,13 @@ pub unsafe extern "C" fn hew_actor_wait_new(
                     completion,
                     // SAFETY: the send guard keeps this actor live during capture.
                     actor: unsafe { live_actors::ActorIncarnation::of(actor) },
-                    #[cfg(not(target_arch = "wasm32"))]
                     supervisor_token: None,
                 })
         })
         .flatten()
     });
-    // A supervised child's completion is reachable through the local-PID
-    // control table, which is native-only; wasm32 admits no supervisor.
-    #[cfg(not(target_arch = "wasm32"))]
+    // A supervisor completion is retained by the shared local-PID control
+    // table after its actor route has closed.
     let target = target.or_else(|| {
         local_handles::current_supervisor_completion(token).map(|completion| NativeWaitTarget {
             completion,
@@ -429,9 +421,7 @@ pub unsafe extern "C" fn hew_actor_wait_poll(wait: *const HewNativeActorWait) ->
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(operation) = &mut wait.imported {
         // SAFETY: the unique wait owner serializes polls of its setup operation.
-        unsafe {
-            crate::hew_node::monitor_link::hew_native_actor_observe_poll(&raw mut **operation)
-        };
+        unsafe { crate::actor_observe::hew_native_actor_observe_poll(&raw mut **operation) };
     }
     match &wait.completion {
         Some(completion) if completion.phase.load(Ordering::Acquire) != 2 => 0,
@@ -593,7 +583,7 @@ mod tests {
 
     #[test]
     fn supervisor_stop_request_observers_wait_through_config_cleanup() {
-        use crate::supervisor::{hew_supervisor_native_spawn, hew_supervisor_stop_native};
+        use crate::supervisor::{hew_supervisor_stop_native, native_spawn_for_test};
         use std::ffi::c_void;
 
         struct PausedConfigDrop {
@@ -624,7 +614,7 @@ mod tests {
                 drops: drops.clone(),
             });
             let mut fault = std::ptr::null_mut();
-            let token = hew_supervisor_native_spawn(
+            let token = native_spawn_for_test(
                 0,
                 3,
                 5,
@@ -684,7 +674,7 @@ mod tests {
             let completion = Arc::new(NativeActorCompletion::default());
             let payload = crate::envelope::MonitorDownPayload {
                 ref_id: 7,
-                target: crate::node_identity::Location::new(
+                target: crate::node_identity::Location::direct(
                     crate::node_identity::NodeId::from_bytes([1; 16]),
                     1,
                     1,
@@ -807,7 +797,7 @@ mod tests {
     )]
     fn parent_closed_waits_for_a_concurrent_nested_cleanup_owner() {
         use crate::supervisor::{
-            hew_local_pid_supervisor_stop, hew_supervisor_native_spawn, HewNativeChildSpec,
+            hew_local_pid_supervisor_stop, native_spawn_for_test, HewNativeChildSpec,
         };
         use std::ffi::c_void;
 
@@ -831,11 +821,22 @@ mod tests {
             config.drops.fetch_add(1, Ordering::SeqCst);
         }
         unsafe extern "C-unwind" fn adopt_child(
+            _owner: local_handles::HewLocalPidId,
             config: *const c_void,
+            result: *mut crate::lifetime::local_handles::HewLocalPidId,
             _fault: *mut *mut crate::fault::HewFault,
-        ) -> local_handles::HewLocalPidId {
-            // SAFETY: this initial-spawn adapter transfers the prepared child once.
-            unsafe { (*config.cast::<ParentConfig>()).child }
+            state: *mut crate::coro_state::HewCoroState,
+        ) -> *mut c_void {
+            let token = {
+                // SAFETY: this initial-spawn adapter transfers the prepared child once.
+                unsafe { (*config.cast::<ParentConfig>()).child }
+            };
+            // SAFETY: the invocation owns its output and completion slots.
+            unsafe {
+                *result = token;
+                crate::coro_state::hew_coro_state_finish(state, 0);
+            }
+            std::ptr::null_mut()
         }
 
         let _rt = crate::runtime_test_guard();
@@ -852,7 +853,7 @@ mod tests {
                 release: release.clone(),
             });
             let mut fault = std::ptr::null_mut();
-            let child = hew_supervisor_native_spawn(
+            let child = native_spawn_for_test(
                 0,
                 3,
                 5,
@@ -877,8 +878,10 @@ mod tests {
                 spawn: adopt_child,
                 name: std::ptr::null(),
                 stop_ns: -1,
+                startup_rank: 0,
+                dispatch: None,
             }];
-            let parent = hew_supervisor_native_spawn(
+            let parent = native_spawn_for_test(
                 0,
                 3,
                 5,

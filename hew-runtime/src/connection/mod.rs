@@ -60,6 +60,7 @@ mod manager;
 mod peer;
 mod reader;
 mod reconnect;
+pub(crate) use reconnect::start_seed;
 mod send;
 mod swim;
 
@@ -258,7 +259,7 @@ pub struct HewConnMgr {
     /// Transport used for I/O operations.
     pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
-    /// Signature: `fn(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize)`.
+    /// The callback receives the complete carried semantic destination.
     inbound_router: Option<InboundRouter>,
     /// Optional shared routing table for node-id -> connection routes.
     routing_table: *mut HewRoutingTable,
@@ -282,6 +283,10 @@ pub struct HewConnMgr {
     pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
+    /// Configured seed targets have one manager-lifetime supervisor each.
+    seed_targets: PoisonSafe<Vec<SeedTarget>>,
+    /// Identities supervised by configured seeds cannot also arm transient retries.
+    seed_identities: PoisonSafe<Vec<NodeId>>,
     /// Counts every spawned reader until its thread function fully returns.
     ///
     /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected
@@ -498,6 +503,12 @@ impl TransportClose {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SeedTarget {
+    pub(crate) target_addr: String,
+    pub(crate) expected_node_id: Option<u16>,
+}
+
 #[derive(Clone, Debug)]
 struct ReconnectSettings {
     target_addr: String,
@@ -509,7 +520,23 @@ struct ReconnectSettings {
 }
 
 #[derive(Clone, Debug)]
+struct ReconnectOwner {
+    node_id: NodeId,
+    session_incarnation: u32,
+    publication_token: u64,
+}
+
+impl ReconnectOwner {
+    fn matches(&self, claim: &LiveClaim) -> bool {
+        claim.state == crate::peer_binding::ClaimState::Retired
+            && claim.session_incarnation == self.session_incarnation
+            && claim.publication_token == self.publication_token
+    }
+}
+
+#[derive(Clone, Debug)]
 struct ReconnectPlan {
+    predecessor: ReconnectOwner,
     target_addr: String,
     max_retries: u32,
     expected_node_id: Option<u16>,
@@ -524,7 +551,7 @@ struct ReconnectPlan {
 /// use it to route replies so they go out on the correct connection regardless
 /// of which node is stored in the process-global `CURRENT_NODE`.
 type InboundRouter = unsafe extern "C" fn(
-    u64,
+    crate::node_identity::HewLocation,
     *const std::ffi::c_char,
     *mut u8,
     usize,

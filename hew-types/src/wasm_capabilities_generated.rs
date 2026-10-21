@@ -26,8 +26,6 @@ pub enum WasmFeatureDisposition { Warn, Reject }
 /// Exhaustive reject/warn feature carrier generated from the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WasmUnsupportedFeature {
-    SupervisionTrees,
-    LinkMonitor,
     Timers,
     PeriodicTimers,
     FilesystemStreams,
@@ -53,8 +51,6 @@ pub enum WasmUnsupportedFeature {
 impl WasmUnsupportedFeature {
     /// Every reject/warn variant, in manifest order.
     pub const ALL: &'static [Self] = &[
-        Self::SupervisionTrees,
-        Self::LinkMonitor,
         Self::Timers,
         Self::PeriodicTimers,
         Self::FilesystemStreams,
@@ -80,8 +76,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn capability_id(self) -> WasmCapabilityId {
         match self {
-            Self::SupervisionTrees => WasmCapabilityId("supervision-trees"),
-            Self::LinkMonitor => WasmCapabilityId("link-monitor"),
             Self::Timers => WasmCapabilityId("timers-sleep"),
             Self::PeriodicTimers => WasmCapabilityId("timers-every"),
             Self::FilesystemStreams => WasmCapabilityId("filesystem-streams"),
@@ -108,8 +102,6 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn disposition(self) -> WasmFeatureDisposition {
         match self {
-            Self::SupervisionTrees => WasmFeatureDisposition::Reject,
-            Self::LinkMonitor => WasmFeatureDisposition::Reject,
             Self::Timers => WasmFeatureDisposition::Warn,
             Self::PeriodicTimers => WasmFeatureDisposition::Warn,
             Self::FilesystemStreams => WasmFeatureDisposition::Reject,
@@ -136,11 +128,9 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::SupervisionTrees => "Supervision tree operations",
-            Self::LinkMonitor => "Link/monitor operations",
             Self::Timers => "Timer operations",
             Self::PeriodicTimers => "Timer operations",
-            Self::FilesystemStreams => "File-backed streams and resources",
+            Self::FilesystemStreams => "Ambient files and file-backed streams",
             Self::TerminationSignals => "Termination signal subscriptions",
             Self::DescriptorReadiness => "Descriptor readiness watches",
             Self::HttpClient => "std.net.http.http_client operations",
@@ -164,11 +154,9 @@ impl WasmUnsupportedFeature {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
-            Self::SupervisionTrees => "they require OS threads for restart strategies and child supervision",
-            Self::LinkMonitor => "they rely on OS threads to watch linked actors and propagate exits",
             Self::Timers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
             Self::PeriodicTimers => "timers are cooperative on wasm32: a sleep parks the coroutine and an #[every(duration)] handler fires when the process driver next ticks the shared timer wheel, so granularity follows the driver steps rather than a dedicated ticker",
-            Self::FilesystemStreams => "file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available",
+            Self::FilesystemStreams => "ambient file constructors and file-backed streams are unavailable on wasm32; WASI directory resources are separately classified",
             Self::TerminationSignals => "termination requests arrive through native signal handlers and a dispatcher thread; a wasm32 module receives no SIGTERM or console control events",
             Self::DescriptorReadiness => "a readiness watch waits on the native I/O reactor, which is not compiled for wasm32",
             Self::HttpClient => "the std.net.http.http_client wrappers are native-only and have no wasm32 networking bridge",
@@ -192,7 +180,6 @@ impl WasmUnsupportedFeature {
 /// Typed constants for every reject/warn feature and backlog identity.
 pub mod wasm_capability_ids {
     use super::WasmCapabilityId;
-    pub const ACTOR_CRASH_CONTAINMENT: WasmCapabilityId = WasmCapabilityId("actor-crash-containment");
     pub const ACTOR_DRAIN: WasmCapabilityId = WasmCapabilityId("actor-drain");
     pub const ACTOR_EXIT_STATUS: WasmCapabilityId = WasmCapabilityId("actor-exit-status");
     pub const ACTOR_HEAP_LIMITS: WasmCapabilityId = WasmCapabilityId("actor-heap-limits");
@@ -211,7 +198,6 @@ pub mod wasm_capability_ids {
     pub const HTTP_CLIENT: WasmCapabilityId = WasmCapabilityId("http-client");
     pub const HTTP_SERVER: WasmCapabilityId = WasmCapabilityId("http-server");
     pub const LAMBDA_ACTORS: WasmCapabilityId = WasmCapabilityId("lambda-actors");
-    pub const LINK_MONITOR: WasmCapabilityId = WasmCapabilityId("link-monitor");
     pub const OS: WasmCapabilityId = WasmCapabilityId("os");
     pub const PROCESS_EXECUTION: WasmCapabilityId = WasmCapabilityId("process-execution");
     pub const PROFILER: WasmCapabilityId = WasmCapabilityId("profiler");
@@ -221,8 +207,6 @@ pub mod wasm_capability_ids {
     pub const SMTP: WasmCapabilityId = WasmCapabilityId("smtp");
     pub const STD_OS: WasmCapabilityId = WasmCapabilityId("std-os");
     pub const STREAMS: WasmCapabilityId = WasmCapabilityId("streams");
-    pub const SUPERVISION: WasmCapabilityId = WasmCapabilityId("supervision");
-    pub const SUPERVISION_TREES: WasmCapabilityId = WasmCapabilityId("supervision-trees");
     pub const TCP_NETWORKING: WasmCapabilityId = WasmCapabilityId("tcp-networking");
     pub const TERMINATION_SIGNALS: WasmCapabilityId = WasmCapabilityId("termination-signals");
     pub const TIMERS_EVERY: WasmCapabilityId = WasmCapabilityId("timers-every");
@@ -270,8 +254,6 @@ pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.stream", function: "open", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.fs", function: "open_read", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.fs", function: "open_write", feature: WasmUnsupportedFeature::FilesystemStreams },
-    WasmFunctionRejection { module: "std.fs", function: "open_read_dir", feature: WasmUnsupportedFeature::FilesystemStreams },
-    WasmFunctionRejection { module: "std.fs", function: "open_write_dir", feature: WasmUnsupportedFeature::FilesystemStreams },
     WasmFunctionRejection { module: "std.os", function: "shutdown_signal", feature: WasmUnsupportedFeature::TerminationSignals },
     WasmFunctionRejection { module: "std.io", function: "watch_readable", feature: WasmUnsupportedFeature::DescriptorReadiness },
     WasmFunctionRejection { module: "std.net.http", function: "request", feature: WasmUnsupportedFeature::HttpClient },
@@ -282,6 +264,12 @@ pub const NATIVE_ONLY_WASM_FUNCTION_REJECTIONS: &[WasmFunctionRejection] = &[
     WasmFunctionRejection { module: "std.net.http", function: "post", feature: WasmUnsupportedFeature::HttpClient },
     WasmFunctionRejection { module: "std.net.http", function: "get_string", feature: WasmUnsupportedFeature::HttpClient },
     WasmFunctionRejection { module: "std.net.http", function: "post_string", feature: WasmUnsupportedFeature::HttpClient },
+    WasmFunctionRejection { module: "std.net.cluster", function: "snapshot", feature: WasmUnsupportedFeature::Distributed },
+    WasmFunctionRejection { module: "std.net.cluster", function: "watch", feature: WasmUnsupportedFeature::Distributed },
+    WasmFunctionRejection { module: "std.net.cluster", function: "wait_registered", feature: WasmUnsupportedFeature::Distributed },
+    WasmFunctionRejection { module: "std.net.cluster", function: "wait_departed", feature: WasmUnsupportedFeature::Distributed },
+    WasmFunctionRejection { module: "std.net.cluster.Subscription", function: "snapshot", feature: WasmUnsupportedFeature::Distributed },
+    WasmFunctionRejection { module: "std.net.cluster.Subscription", function: "wait_shutdown", feature: WasmUnsupportedFeature::Distributed },
 ];
 
 /// Generated native-only module short-names for sandbox and checker consumers.
@@ -322,6 +310,8 @@ pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.process.run", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.run_argv", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.start", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "std.process.start_with_options", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "std.process.Command.output_with_options", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.wait", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.try_wait", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.terminate", capability: WasmCapabilityId("process-execution") },
@@ -330,6 +320,12 @@ pub const DETERMINISTIC_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.net.dns.lookup_host", capability: WasmCapabilityId("dns") },
     HostOperation { identity: "std.net.dns.resolve_timed", capability: WasmCapabilityId("dns") },
     HostOperation { identity: "std.net.dns.lookup_host_timed", capability: WasmCapabilityId("dns") },
+    HostOperation { identity: "std.net.cluster.snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.watch", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.wait_registered", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.wait_departed", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.Subscription.snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.Subscription.wait_shutdown", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "std.io.read_line", capability: WasmCapabilityId("stdin-input") },
     HostOperation { identity: "std.io.read_all", capability: WasmCapabilityId("stdin-input") },
     HostOperation { identity: "std.io.scanner.from_stdin", capability: WasmCapabilityId("stdin-input") },
@@ -368,6 +364,7 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_tcp_broadcast_except", capability: WasmCapabilityId("tcp-networking") },
     HostOperation { identity: "hew_process_start_shell", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_start", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "hew_process_start_with_options", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_exit_stream", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_poll", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_signal", capability: WasmCapabilityId("process-execution") },
@@ -388,11 +385,23 @@ pub const DETERMINISTIC_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_quic_stream_recv_timeout_hew", capability: WasmCapabilityId("quic") },
     HostOperation { identity: "hew_dns_resolve", capability: WasmCapabilityId("dns") },
     HostOperation { identity: "hew_dns_lookup_host", capability: WasmCapabilityId("dns") },
+    HostOperation { identity: "hew_node_watch_open", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_status", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_changes", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_free", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_current", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_valid", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_local", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_count", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_member", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_registration", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_free", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_set_transport", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_api_register_handle_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_lookup_location_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_shutdown", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_peer_new", capability: WasmCapabilityId("distributed") },
@@ -409,8 +418,8 @@ pub const GENERATE_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.stream.open", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "std.fs.open_read", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "std.fs.open_write", capability: WasmCapabilityId("filesystem-streams") },
-    HostOperation { identity: "std.fs.open_read_dir", capability: WasmCapabilityId("filesystem-streams") },
-    HostOperation { identity: "std.fs.open_write_dir", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "std.fs.open_read_dir", capability: WasmCapabilityId("directory-resources") },
+    HostOperation { identity: "std.fs.open_write_dir", capability: WasmCapabilityId("directory-resources") },
     HostOperation { identity: "std.os.shutdown_signal", capability: WasmCapabilityId("termination-signals") },
     HostOperation { identity: "std.io.watch_readable", capability: WasmCapabilityId("descriptor-readiness") },
     HostOperation { identity: "std.net.listen", capability: WasmCapabilityId("tcp-networking") },
@@ -424,6 +433,8 @@ pub const GENERATE_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.process.run", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.run_argv", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.start", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "std.process.start_with_options", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "std.process.Command.output_with_options", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.wait", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.try_wait", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "std.process.Child.terminate", capability: WasmCapabilityId("process-execution") },
@@ -440,6 +451,12 @@ pub const GENERATE_FUNCTION_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "std.os.hostname", capability: WasmCapabilityId("std-os") },
     HostOperation { identity: "std.os.pid", capability: WasmCapabilityId("std-os") },
     HostOperation { identity: "std.os.temp_dir", capability: WasmCapabilityId("std-os") },
+    HostOperation { identity: "std.net.cluster.snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.watch", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.wait_registered", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.wait_departed", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.Subscription.snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "std.net.cluster.Subscription.wait_shutdown", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "std.io.read_line", capability: WasmCapabilityId("stdin-input") },
     HostOperation { identity: "std.io.read_all", capability: WasmCapabilityId("stdin-input") },
     HostOperation { identity: "std.io.scanner.from_stdin", capability: WasmCapabilityId("stdin-input") },
@@ -460,8 +477,8 @@ pub const GENERATE_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_file_read_stream_open", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "hew_file_open_read", capability: WasmCapabilityId("filesystem-streams") },
     HostOperation { identity: "hew_file_open_write", capability: WasmCapabilityId("filesystem-streams") },
-    HostOperation { identity: "hew_dir_open_read", capability: WasmCapabilityId("filesystem-streams") },
-    HostOperation { identity: "hew_dir_open_write", capability: WasmCapabilityId("filesystem-streams") },
+    HostOperation { identity: "hew_dir_open_read", capability: WasmCapabilityId("directory-resources") },
+    HostOperation { identity: "hew_dir_open_write", capability: WasmCapabilityId("directory-resources") },
     HostOperation { identity: "hew_shutdown_signal_stream", capability: WasmCapabilityId("termination-signals") },
     HostOperation { identity: "hew_io_watch_readable", capability: WasmCapabilityId("descriptor-readiness") },
     HostOperation { identity: "hew_http_request_hew", capability: WasmCapabilityId("http-client") },
@@ -493,6 +510,7 @@ pub const GENERATE_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_tcp_broadcast_except", capability: WasmCapabilityId("tcp-networking") },
     HostOperation { identity: "hew_process_start_shell", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_start", capability: WasmCapabilityId("process-execution") },
+    HostOperation { identity: "hew_process_start_with_options", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_exit_stream", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_poll", capability: WasmCapabilityId("process-execution") },
     HostOperation { identity: "hew_process_signal", capability: WasmCapabilityId("process-execution") },
@@ -521,11 +539,23 @@ pub const GENERATE_ENDPOINT_REJECTIONS: &[HostOperation] = &[
     HostOperation { identity: "hew_hostname", capability: WasmCapabilityId("std-os") },
     HostOperation { identity: "hew_pid", capability: WasmCapabilityId("std-os") },
     HostOperation { identity: "hew_temp_dir", capability: WasmCapabilityId("std-os") },
+    HostOperation { identity: "hew_node_watch_open", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_status", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_changes", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_snapshot", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_watch_free", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_current", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_valid", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_local", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_count", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_member", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_registration", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_snapshot_free", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_start_config", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_connect_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_set_transport", capability: WasmCapabilityId("distributed") },
-    HostOperation { identity: "hew_node_api_register_by_pid_string", capability: WasmCapabilityId("distributed") },
+    HostOperation { identity: "hew_node_api_register_handle_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_lookup_location_string", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_api_shutdown", capability: WasmCapabilityId("distributed") },
     HostOperation { identity: "hew_node_peer_new", capability: WasmCapabilityId("distributed") },

@@ -133,10 +133,10 @@ function pkg(ops, { fault = false, projected = false } = {}) {
     ],
   };
 }
-function run(ops, options) {
+async function run(ops, options) {
   const bytecode = pkg(ops, options);
   assert.equal(admitPackage(bytecode), null);
-  return runBytecode(bytecode, {
+  return await runBytecode(bytecode, {
     replay: {
       seed: 0,
       step_budget: 1000,
@@ -146,8 +146,8 @@ function run(ops, options) {
   });
 }
 for (const projected of [false, true]) {
-  test(`repeated assignment closes each ${projected ? "projected" : "local"} owner once`, () => {
-    const trace = run([...make(2, 1), store(2), ...make(4, 2), store(4), end], {
+  test(`repeated assignment closes each ${projected ? "projected" : "local"} owner once`, async () => {
+    const trace = await run([...make(2, 1), store(2), ...make(4, 2), store(4), end], {
       projected,
     });
     assert.equal(trace.result, "ok");
@@ -157,18 +157,18 @@ for (const projected of [false, true]) {
     );
   });
 }
-test("explicit consumption after reassignment leaves scope cleanup empty", () => {
-  const trace = run([...make(2, 1), store(2), take(4), destroy(4), end]);
+test("explicit consumption after reassignment leaves scope cleanup empty", async () => {
+  const trace = await run([...make(2, 1), store(2), take(4), destroy(4), end]);
   assert.equal(trace.result, "ok");
   assert.equal(trace.final_state.stdout.join(""), "closed 1\nclosed 2\n");
 });
-test("assignment reinitializes a consumed place without closing it again", () => {
-  const trace = run([take(4), destroy(4), ...make(2, 1), store(2), end]);
+test("assignment reinitializes a consumed place without closing it again", async () => {
+  const trace = await run([take(4), destroy(4), ...make(2, 1), store(2), end]);
   assert.equal(trace.result, "ok");
   assert.equal(trace.final_state.stdout.join(""), "closed 1\nclosed 2\n");
 });
-test("faulting close publishes the replacement for unwind cleanup exactly once", () => {
-  const trace = run([...make(2, 1), store(2)], { fault: true });
+test("faulting close publishes the replacement for unwind cleanup exactly once", async () => {
+  const trace = await run([...make(2, 1), store(2)], { fault: true });
   assert.equal(trace.result, "panic");
   assert.equal(trace.final_state.runtime_failures[0].message, "close failed");
   assert.equal(trace.final_state.stdout.join(""), "closed 1\nclosed 2\n");
@@ -204,7 +204,7 @@ for (const entry of cases) {
         !fs.existsSync(native) &&
         "native compiler unavailable (set HEW_NATIVE_BIN)",
     },
-    () => {
+    async () => {
       const directory = fs.mkdtempSync(
         path.join(os.tmpdir(), "hew-resource-assignment-"),
       );
@@ -225,7 +225,7 @@ fn main() { var fresh = Ticket { id: 1 }; ${entry.body} }
         });
         assert.ifError(result.error);
         assert.equal(result.status, 0, result.stderr);
-        const trace = run(entry.ops);
+        const trace = await run(entry.ops);
         assert.equal(trace.result, "ok");
         assert.equal(trace.final_state.stdout.join(""), result.stdout);
       } finally {
@@ -235,7 +235,7 @@ fn main() { var fresh = Ticket { id: 1 }; ${entry.body} }
   );
 }
 
-test("an explicit close call consumes the replacement before scope exit", () => {
+test("an explicit close call consumes the replacement before scope exit", async () => {
   const bytecode = pkg([...make(2, 1), store(2), take(4)]);
   bytecode.functions[0].blocks[0].term = {
     op: "call",
@@ -247,12 +247,12 @@ test("an explicit close call consumes the replacement before scope exit", () => 
     span: null,
   };
   bytecode.functions[0].blocks[1].ops = [end];
-  const trace = runBytecode(bytecode);
+  const trace = await runBytecode(bytecode);
   assert.equal(trace.result, "ok");
   assert.equal(trace.final_state.stdout.join(""), "closed 1\nclosed 2\n");
 });
 
-test("a fault after assignment drains only the current owner", () => {
+test("a fault after assignment drains only the current owner", async () => {
   const bytecode = pkg([...make(2, 1), store(2)]);
   bytecode.functions[0].blocks[0].term = {
     op: "checked_raise",
@@ -260,7 +260,7 @@ test("a fault after assignment drains only the current owner", () => {
     cleanup: edge(2),
     span: null,
   };
-  const trace = runBytecode(bytecode);
+  const trace = await runBytecode(bytecode);
   assert.equal(trace.result, "trap");
   assert.equal(
     trace.final_state.runtime_failures[0].trap_kind,

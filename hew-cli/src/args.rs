@@ -71,6 +71,8 @@ pub enum Command {
     Watch(WatchArgs),
     /// Wire schema compatibility tools.
     Wire(WireCommand),
+    /// Manage persistent node identities.
+    Node(NodeCommand),
     /// State machine tools.
     Machine(MachineCommand),
     /// Format Hew source files or project directories in-place, or read stdin.
@@ -439,7 +441,17 @@ impl DebugArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "clap maps these independent command-line switches directly"
+)]
 pub struct CheckArgs {
+    /// Apply unambiguous machine-applicable diagnostic fixes in selected sources.
+    #[arg(long)]
+    pub fix: bool,
+    /// Show files that would be fixed without writing them.
+    #[arg(long, requires = "fix")]
+    pub dry_run: bool,
     /// Input .hew file, or a package directory. Omit it to check the package
     /// enclosing the current directory.
     pub input: Option<PathBuf>,
@@ -1051,3 +1063,33 @@ pub struct GenerateArgs {
 // Command libraries own their options so help and execution share one schema.
 pub use hew_lsp::Options as LspArgs;
 pub use hew_observe::Options as ObserveArgs;
+
+// Node
+
+#[derive(Debug, Args)]
+pub struct NodeCommand {
+    #[command(subcommand)]
+    pub command: NodeSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NodeSubcommand {
+    /// Load or create an owner-only key file and print its public credential.
+    Identity(NodeIdentityArgs),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum NodeIdentityTransport {
+    Tcp,
+    QuicMesh,
+}
+
+#[derive(Debug, Args)]
+pub struct NodeIdentityArgs {
+    /// Persistent private identity file (created only when absent).
+    #[arg(long)]
+    pub key: PathBuf,
+    /// Transport whose public credential should be printed.
+    #[arg(long, value_enum, default_value = "tcp")]
+    pub transport: NodeIdentityTransport,
+}

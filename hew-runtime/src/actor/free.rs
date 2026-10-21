@@ -28,7 +28,6 @@ pub struct DrainOutcomeRepr {
 }
 
 #[inline]
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn actor_free_state_is_quiescent(state: i32) -> bool {
     state == HewActorState::Stopped as i32
         || state == HewActorState::Crashed as i32
@@ -76,10 +75,9 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
 /// `actor_free_wasm_impl`) so that the ordering invariant is identical
 /// regardless of how an actor is being torn down.
 ///
-/// On `wasm32` the link/monitor/named-node modules are not compiled in,
-/// so this collapses to a timer cancellation. The native and WASM call
-/// sites share the same surface, which keeps callers honest about
-/// ordering when the WASM build eventually grows the missing primitives.
+/// Both targets cancel actor timers here. Native processes also retire named
+/// node bindings; local link and monitor relationships are scrubbed after the
+/// actor's admitted pins drain.
 ///
 /// # Safety
 ///
@@ -89,21 +87,16 @@ fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
 /// Callers that run after the runtime has been shut down (such as
 /// `cleanup_all_actors`) may call this whether or not the actor is still
 /// tracked, because no concurrent dispatch is possible.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
+    // SAFETY: caller guarantees the actor is valid and quiescent.
+    let actor_id = unsafe { (*actor).id };
+    crate::timer_periodic::cancel_all_timers_for_actor(actor);
     #[cfg(not(target_arch = "wasm32"))]
-    {
-        // SAFETY: caller guarantees `actor` is valid and quiescent.
-        let actor_id = unsafe { (*actor).id };
-        crate::timer_periodic::cancel_all_timers_for_actor(actor);
-        // SAFETY: caller guarantees `actor` is valid; `unregister_actor_names`
-        // does not require LIVE_ACTORS membership, only the actor id.
-        unsafe { crate::hew_node::unregister_actor_names(actor_id) };
-        // Remove all parse-error slots for this actor across every parser kind.
-        // Prevents unbounded growth of the global map on long-running nodes that
-        // spawn and reap many actors.
-        crate::parse_error_slot::clear_all_for_actor(actor_id);
-    }
+    // SAFETY: name retirement requires only the actor identity.
+    unsafe {
+        crate::hew_node::unregister_actor_names(actor_id);
+    };
+    crate::parse_error_slot::clear_all_for_actor(actor_id);
 }
 
 /// Remove semantic relationships after actor retirement and pin drain.
@@ -119,9 +112,7 @@ pub(crate) unsafe fn prepare_quiescent_actor_for_cleanup(actor: *mut HewActor) {
 ///
 /// `actor` must remain allocated, must no longer be tracked in `LIVE_ACTORS`,
 /// and its `send_pin_count` must be zero.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewActor) {
-    #[cfg(not(target_arch = "wasm32"))]
     {
         // SAFETY: the caller guarantees the allocation remains valid.
         let actor_id = unsafe { (*actor).id };
@@ -184,7 +175,6 @@ pub(crate) unsafe fn scrub_actor_relationships_after_pin_drain(actor: *mut HewAc
 /// nothing.
 ///
 /// A no-op for the overwhelmingly common actor that never suspended.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn abandon_parked_activation(a: &HewActor) {
     if !a.checked_invocation.load(Ordering::Acquire).is_null() {
         // A checked turn owns scoped work that may still be cleaning up. Its
@@ -356,7 +346,6 @@ pub(crate) fn decide_finalize_by_latch(a: &HewActor) -> FinalizeDecision {
 /// # Safety
 ///
 /// `actor` must be valid, quiescent, and no longer tracked in `LIVE_ACTORS`.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn finalize_quiescent_actor_cleanup(actor: *mut HewActor, state: i32) {
     if state != HewActorState::Crashed as i32 {
         // SAFETY: caller guarantees the actor is quiescent and not dispatching.
@@ -868,14 +857,12 @@ pub(crate) unsafe fn call_terminate_fn(actor: *mut HewActor) {
 ///
 /// - `actor` must have been returned by a spawn function.
 /// - The actor must not be used after this call.
-#[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub unsafe extern "C" fn hew_actor_free(actor: *mut HewActor) -> c_int {
     // SAFETY: caller forwards the same invariants the inner requires.
     unsafe { hew_actor_free_inner(actor) }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
     if actor.is_null() {
         crate::set_last_error("hew_actor_free: null actor pointer");
@@ -997,7 +984,11 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
                 crate::set_last_error("actor still running after timeout");
                 return -2;
             }
-            std::thread::yield_now();
+            if crate::driver::active() {
+                crate::driver::step();
+            } else {
+                std::thread::yield_now();
+            }
         }
 
         // Test-only rendezvous: the actor just looked quiescent, but detach has
@@ -1072,7 +1063,11 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
             crate::set_last_error("actor still running after timeout");
             return -2;
         }
-        std::thread::yield_now();
+        if crate::driver::active() {
+            crate::driver::step();
+        } else {
+            std::thread::yield_now();
+        }
     };
 
     // Test-only rendezvous: the actor is latched out of `Idle` (Stopped/Crashed)
@@ -1124,7 +1119,11 @@ unsafe fn hew_actor_free_inner(actor: *mut HewActor) -> c_int {
             );
             return -2;
         }
-        std::thread::yield_now();
+        if crate::driver::active() {
+            crate::driver::step();
+        } else {
+            std::thread::yield_now();
+        }
     }
 
     // Actor retirement prevents new pins; the drain above waited out every
@@ -2307,7 +2306,6 @@ pub(crate) unsafe fn finish_mailbox_enqueue_inner(
 ///
 /// `actor` must be a non-null live actor pointer for the call. `data` must
 /// point to `size` readable bytes (or be null when `size == 0`).
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) unsafe fn send_system_message(
     actor: *mut HewActor,
     kind: crate::mailbox_header::HewSysMsg,
@@ -2868,11 +2866,7 @@ pub unsafe extern "C" fn hew_local_pid_ask_with_channel(
 
 // ── Trap / Error ────────────────────────────────────────────────────────
 
-/// Publish a DOWN notification for a dead actor.
-///
-/// `link` and `monitor` are a manifest reject on wasm32 (`link-monitor`), so no
-/// program this target admits can hold either: there is no watcher to notify
-/// and no graph entry to reclaim.
+/// Publish a DOWN notification after terminal cleanup.
 pub(crate) fn notify_monitors_on_death(
     actor_id: u64,
     state: i32,
@@ -2880,12 +2874,7 @@ pub(crate) fn notify_monitors_on_death(
     end: crate::internal::types::ActorEndReason,
     close_fault: Option<&(i32, String)>,
 ) {
-    #[cfg(not(target_arch = "wasm32"))]
     crate::monitor::notify_monitors_on_end(actor_id, state, reason, end, close_fault);
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = (actor_id, state, reason, end, close_fault);
-    }
 }
 
 /// Trap (panic) an actor: store an error code, close the mailbox, and
@@ -3041,8 +3030,6 @@ fn publish_crash_fault_record(
     supervisor: *mut c_void,
     supervisor_child_index: i32,
 ) -> crate::exit_status::FaultRecord {
-    #[cfg(target_arch = "wasm32")]
-    let _ = supervisor_child_index;
     if terminal != HewActorState::Crashed as i32 {
         return crate::exit_status::FaultRecord::NONE;
     }
@@ -3065,7 +3052,6 @@ fn publish_crash_fault_record(
     // every ancestor role above it, so an `await_restart` on any of them treats
     // the crash as pending until a ruling settles it. Attribution happens here,
     // with the record, and therefore also before the first wake.
-    #[cfg(not(target_arch = "wasm32"))]
     if let Ok(child_index) = u32::try_from(supervisor_child_index) {
         // SAFETY: the back-pointer was set by `hew_supervisor_add_child` and
         // the supervisor outlives the child that names it.
@@ -3103,8 +3089,6 @@ impl TerminalNotification {
             supervisor_child_index,
             fault_record,
         } = self;
-        #[cfg(target_arch = "wasm32")]
-        let _ = (supervisor, supervisor_child_index, fault_record);
         let lifecycle_event = if terminal == HewActorState::Crashed as i32 {
             crate::tracing::SPAN_CRASH
         } else {
@@ -3122,7 +3106,6 @@ impl TerminalNotification {
         // Propagate exit to linked actors and notify monitors.
         // Do this BEFORE notifying supervisor to ensure proper ordering.
         run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_BEFORE_EXIT_PROPAGATION);
-        #[cfg(not(target_arch = "wasm32"))]
         crate::link::propagate_exit_to_links(actor_id, error_code);
         run_crash_teardown_order_hook(HEW_ACTOR_CRASH_TEARDOWN_AFTER_EXIT_PROPAGATION);
         let crash_kind = if terminal == HewActorState::Crashed as i32 {
@@ -3140,7 +3123,6 @@ impl TerminalNotification {
         // there is nothing to notify — the `u32` parameter makes that case a
         // conversion failure here rather than a negative index the supervisor has
         // to reinterpret.
-        #[cfg(not(target_arch = "wasm32"))]
         if !supervisor.is_null() {
             if let Ok(child_index) = u32::try_from(supervisor_child_index) {
                 // Hand the record opened at the terminal CAS to the supervisor on
@@ -3435,37 +3417,12 @@ pub extern "C" fn hew_actor_self() -> *mut HewActor {
     unsafe { (*ctx).actor }
 }
 
-/// Crash the current actor in response to an unhandled link EXIT.
+/// Legacy native trap adapter for an unhandled link EXIT.
 ///
-/// A linked actor that does NOT trap exits (`#[on(exit)]`) must CRASH when its
-/// linked peer dies — the OTP fail-together semantic. The dispatch trampoline
-/// routes a `HewSysMsg::Exit` with no `#[on(exit)]` hook here instead of the
-/// exhaustiveness `llvm.trap` default (which is UB — it SIGILLs on Linux and
-/// only accidentally produced a terminal state on macOS). This drives the SAME
-/// controlled crash path a handler panic uses, with the carried reason stamped
-/// on the actor, and is target-symmetric: both backends export a
-/// `hew_trap_with_code(i32)` symbol with identical semantics but from different
-/// modules, because the crash seam itself differs per target.
-///
-/// * Native (`crate::supervisor::hew_trap_with_code`): unwinds through generated
-///   cleanup pads to the scheduler's recovery boundary — terminal `Crashed`, the carried reason
-///   stamped, link / monitor / supervisor fan-out.
-/// * wasm32 (`crate::trap_code::hew_trap_with_code`): stamps the carried reason
-///   on the actor and panics; under `panic = "abort"` (the wasm32-wasip1 runtime
-///   profile) the panic aborts the module — the fail-closed crash. On a host
-///   build with unwinding the cooperative scheduler's `catch_unwind` activation
-///   boundary observes the stamped code and transitions the actor to `Crashed`,
-///   the WASM counterpart of the native caught-unwind seam. wasm32 has no `supervisor`
-///   module (it is `#[cfg(not(target_arch = "wasm32"))]`), so the call must
-///   target `trap_code` there or the wasm runtime archive does not compile.
-///
-/// `reason` is the EXIT's carried terminal reason; a zero (clean) reason is
-/// coerced to the non-zero `Crashed` sentinel so an unhandled EXIT ALWAYS
-/// crashes the non-trapping linked actor (a cleanly-exited linked peer still
-/// takes it down, OTP-style). `hew_trap_with_code` does not return when called
-/// inside dispatch; outside an actor context there is no recovery seam, where
-/// the trampoline's `llvm.trap` is unreachable because a `HewSysMsg::Exit` only
-/// arrives at a scheduler-driven dispatch.
+/// The carried reason becomes the actor's crash code; a clean peer exit still
+/// crashes a linked actor without an exit handler. This raw adapter uses the
+/// native trap boundary. Checked actor dispatch instead carries the fault
+/// through its completion edge on both native and WASI targets.
 #[cfg(not(target_arch = "wasm32"))]
 #[no_mangle]
 pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
@@ -3476,10 +3433,8 @@ pub extern "C-unwind" fn hew_actor_exit_unhandled(reason: i32) {
     } else {
         reason
     };
-    // SAFETY: routes through the per-target language-trap seam. Native stamps
-    // the actor error and unwinds through the C-unwind ABI; wasm32 stamps the
-    // error and panics. Both are safe to call from generated dispatch code.
-    #[cfg(not(target_arch = "wasm32"))]
+    // SAFETY: the native trap bridge uses the installed dispatch context or
+    // its process-fatal fallback when no recovery owner exists.
     unsafe {
         crate::supervisor::hew_trap_with_code(crash_code);
     }
@@ -3688,3 +3643,9 @@ pub extern "C" fn hew_actor_self_stop() {
 // On WASM, spawn/send/ask/stop/close use the WASM mailbox and cooperative
 // scheduler. These provide the same C ABI surface as native so that
 // codegen-emitted calls resolve transparently.
+
+#[cfg(target_arch = "wasm32")]
+fn defer_actor_free_on_background_thread(actor: *mut HewActor) -> c_int {
+    crate::driver::publish_actor_free(vec![actor]);
+    0
+}

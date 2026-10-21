@@ -6,6 +6,13 @@
 //! values. `Command.output(CaptureLimits { timeout, max_output_bytes })`
 //! captures both output streams with a runtime limit and a shared byte budget.
 //!
+//! `start` and `Command.output` inherit the parent's environment and working
+//! directory. `start_with_options` and `Command.output_with_options` accept a
+//! `SpawnOptions` snapshot: `Environment.Inherit(bindings)` overlays inherited
+//! variables, while `Environment.Clear(bindings)` passes only explicit
+//! bindings, including none. Neither operation changes process-global state.
+//! Both spawn paths use the same owned `Child` and native lifecycle.
+//!
 //! A `Child` owns its process until it is reaped. `wait` suspends the calling
 //! task and holds no thread while the child runs: it parks on the I/O reactor
 //! (a pidfd on Linux, a kqueue process filter on FreeBSD and macOS) or, on
@@ -43,6 +50,23 @@
 //!     println(f"{child.wait():?}");
 //! }
 //! ```
+//!
+//! ```hew,no_run
+//! import std.process;
+//!
+//! fn main() {
+//!     let options = process.SpawnOptions {
+//!         environment: .Clear([process.EnvVar { name: "LANG", value: "C" }]),
+//!         cwd: .None,
+//!     };
+//!     let command = process.command("tool", ["--version"]);
+//!     let output = command.output_with_options(
+//!         process.CaptureLimits { timeout: 5s, max_output_bytes: 4096 },
+//!         options,
+//!     ).expect("tool runs with only the approved binding");
+//!     println(output.stdout);
+//! }
+//! ```
 
 import std.stream;
 
@@ -73,6 +97,30 @@ pub type Command {
     stderr: Stdio;
 }
 
+/// An explicit child environment binding. Empty values are allowed.
+pub type EnvVar {
+    name: string;
+    value: string;
+}
+
+/// The environment of a new child, without changing the parent's environment.
+pub enum Environment {
+    /// Inherit the parent's environment, then apply these bindings.
+    Inherit(Vec<EnvVar>);
+    /// Start with no inherited variables, then apply these bindings.
+    /// `Clear([])` requests an explicitly empty environment.
+    Clear(Vec<EnvVar>);
+}
+
+/// Optional per-child configuration for `start_with_options` and
+/// `Command.output_with_options`. Existing `Command` literals stay unchanged.
+pub type SpawnOptions {
+    environment: Environment;
+    /// `None` inherits the parent's working directory. A relative directory
+    /// resolves from the parent's working directory.
+    cwd: Option<string>;
+}
+
 /// Limits for `Command.output`.
 pub type CaptureLimits {
     /// A positive runtime limit, including draining output and waiting for exit.
@@ -97,6 +145,12 @@ impl Command {
     /// backend read buffers, the current chunk, allocation capacity and UTF-8
     /// conversion have separate memory costs.
     fn output(self, limits: CaptureLimits) -> CommandOutput fails ProcessError {
+        self.output_with_options(limits, inherited_options())?
+    }
+
+    /// Capture output with a per-child environment and working directory.
+    /// Limits, stdio, cancellation and cleanup follow `output`.
+    fn output_with_options(self, limits: CaptureLimits, options: SpawnOptions) -> CommandOutput fails ProcessError {
         if limits.timeout <= 0ns {
             return error ProcessError.InvalidArguments("process output: timeout must be positive");
         }
@@ -110,7 +164,7 @@ impl Command {
         specification.stdout = Stdio.Piped;
         specification.stderr = Stdio.Piped;
         scope within limits.timeout {
-            let child = start(specification)?;
+            let child = start_with_options(specification, options)?;
             drain_output(child, .Some(limits.max_output_bytes))?
         } handle failure {
             match failure {
@@ -425,6 +479,63 @@ pub fn command(program: string, args: Vec<string>) -> Command {
     Command { program: program, args: args, stdin: Stdio.Inherit, stdout: Stdio.Inherit, stderr: Stdio.Inherit }
 }
 
+/// Options matching the defaults of `start` and `Command.output`.
+pub fn inherited_options() -> SpawnOptions {
+    SpawnOptions { environment: Environment.Inherit([]), cwd: .None }
+}
+
+/// Launch with per-child environment bindings and an optional working directory.
+///
+/// Bindings are applied in order; the last binding for a name wins. Name
+/// comparison follows the host (case-insensitive on Windows). Empty names,
+/// names containing `=` or NUL, values containing NUL, and empty or NUL-containing
+/// working directories return `InvalidArguments` without launching a child.
+/// Other operating-system failures return `LaunchFailed`. Diagnostics never
+/// include environment values.
+///
+/// Use an absolute program path with `cwd`: resolving a relative program path
+/// against a changed working directory is platform-dependent. Program lookup
+/// and any environment variables added by the child follow the host's rules;
+/// clearing inheritance is not a sandbox.
+pub fn start_with_options(command: Command, options: SpawnOptions) -> Result<Child, ProcessError> {
+    let (inherit, bindings) = match options.environment {
+        Environment.Inherit(bindings) => (true, bindings),
+        Environment.Clear(bindings) => (false, bindings),
+    };
+    var names: Vec<string> = [];
+    var values: Vec<string> = [];
+    for binding in bindings {
+        if binding.name.is_empty() || binding.name.contains("=") || binding.name.contains("\0") {
+            return .Err(ProcessError.InvalidArguments("process: invalid environment variable name"));
+        }
+        if binding.value.contains("\0") {
+            return .Err(ProcessError.InvalidArguments("process: environment value contains NUL"));
+        }
+        names.push(binding.name);
+        values.push(binding.value);
+    }
+    let (has_cwd, cwd) = match options.cwd {
+        .Some(directory) => {
+            if directory.is_empty() || directory.contains("\0") {
+                return .Err(ProcessError.InvalidArguments("process: invalid working directory"));
+            }
+            (true, directory)
+        }
+        .None => (false, ""),
+    };
+    unsafe {
+        hew_clear_error();
+        let handle = hew_process_start_with_options(command.program, command.args, stdio_mode(command.stdin), stdio_mode(command.stdout), stdio_mode(command.stderr), inherit, names, values, has_cwd, cwd);
+        if hew_process_is_valid(handle) {
+            .Ok(Child { handle })
+        } else {
+            let error = last_process_error(f"process.start_with_options: could not launch {command.program}");
+            hew_process_drop(handle);
+            .Err(error)
+        }
+    }
+}
+
 /// Launch `command` without waiting. A program that cannot be launched is
 /// `Err(ProcessError.LaunchFailed)`.
 pub fn start(command: Command) -> Result<Child, ProcessError> {
@@ -445,6 +556,7 @@ pub fn start(command: Command) -> Result<Child, ProcessError> {
 extern "C" {
     fn hew_process_start_shell(command: string) -> ChildHandle;
     fn hew_process_start(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32) -> ChildHandle;
+    fn hew_process_start_with_options(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32, inherit: bool, names: Vec<string>, values: Vec<string>, has_cwd: bool, cwd: string) -> ChildHandle;
     fn hew_process_is_valid(child: ChildHandle) -> bool;
     fn hew_process_id(child: ChildHandle) -> i64;
     fn hew_process_take_pipe(child: ChildHandle, which: i32) -> stream.StreamPair;

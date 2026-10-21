@@ -515,20 +515,24 @@ fn a_policy_view_completes_and_carries_its_admission_policy() {
         "actor Worker {\n    receive fn total() -> i64 {\n        1\n    }\n}\n\nfn main() {\n    let w = policy(spawn Worker, on_full: .Reject);\n    match w.total() {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    assert!(output
+    let call_span = output
         .actor_method_dispatch
-        .values()
-        .any(|dispatch| matches!(
-            dispatch,
-            crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Reject
-        )));
-    // The call completes with the handler's own reply, not a delivery outcome.
+        .iter()
+        .find_map(|(span, dispatch)| {
+            matches!(
+                dispatch,
+                crate::ActorMethodKind::Ask { policy, .. } if *policy == SendPolicy::Reject
+            )
+            .then_some(span)
+        })
+        .expect("completion call with rejection policy");
+    // Inspect this call, independently of other Result expressions in the prelude.
     let completion = output
         .expr_types
-        .values()
-        .filter_map(|ty| ty.as_result())
-        .find(|(success, _)| **success == crate::Ty::I64)
+        .get(call_span)
+        .and_then(crate::Ty::as_result)
         .expect("completion call type");
+    assert_eq!(*completion.0, crate::Ty::I64);
     let crate::Ty::Named { args, .. } = completion.1 else {
         panic!("completion envelope")
     };

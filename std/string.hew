@@ -509,6 +509,11 @@ impl string {
     fn split(self, sep: string) -> Vec<string> {
         Vec.new()
     }
+    /// Split the string at each newline and return every resulting part.
+    ///
+    /// A trailing newline preserves a trailing empty string, and empty input
+    /// returns one empty string. A trailing carriage return is removed from
+    /// each part, including a final part not followed by a newline.
     #[extern_symbol(hew_string_lines)]
     fn lines(self) -> Vec<string> {
         Vec.new()

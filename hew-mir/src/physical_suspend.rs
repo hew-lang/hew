@@ -418,7 +418,8 @@ pub(super) fn semantic_callables(checked: &hew_sir::CheckedModule<'_>) -> BTreeS
                 | hew_sir::SemTerminator::Suspend { .. }
                 | hew_sir::SemTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::Submit { .. }
+                        hew_sir::ActorOperation::SupervisorSpawn(_)
+                        | hew_sir::ActorOperation::Submit { .. }
                         | hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::LocalObservation {
                             kind:
@@ -645,7 +646,8 @@ pub(super) fn verify_callables(module: &PhysicalModule) -> Result<(), PhysicalEr
                 | PhysicalTerminator::TaskScopeJoin { .. }
                 | PhysicalTerminator::ActorCall {
                     operation:
-                        hew_sir::ActorOperation::Submit { .. }
+                        hew_sir::ActorOperation::SupervisorSpawn(_)
+                        | hew_sir::ActorOperation::Submit { .. }
                         | hew_sir::ActorOperation::AwaitStopped(_)
                         | hew_sir::ActorOperation::LocalObservation {
                             kind:

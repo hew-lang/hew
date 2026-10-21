@@ -30,6 +30,11 @@ export type VmValue =
   | { kind: "reply"; id: string }
   | { kind: "channel"; id: string }
   | { kind: "task"; id: string }
+  | {
+      kind: "host_resource";
+      resource: number;
+      owner: import("./v1/browser-directory.js").BrowserFsOwner;
+    }
   | { kind: "timer"; resource: number; cancel(): void; closed: boolean }
   | { kind: "generator"; id: string }
   | { kind: "stream"; channelId: string }
@@ -101,6 +106,8 @@ export function cloneValue(value: VmValue): VmValue {
       if (value.closed) throw new Error("cannot copy a released Weak");
       value.cell.weak += 1;
       return { kind: "weak", cell: value.cell, closed: false };
+    case "host_resource":
+      throw new Error("a filesystem owner cannot be copied");
     case "timer":
       throw new Error("a timer cancellation handle cannot be copied");
     case "unit":
@@ -278,6 +285,8 @@ export function renderF64(value: number): string {
 
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
+    case "host_resource":
+      return "FilesystemOwner";
     case "timer":
       return "Timer";
     case "unit":
@@ -336,6 +345,8 @@ export function renderStdout(value: VmValue): string {
 
 export function toJsonValue(value: VmValue): JsonValue {
   switch (value.kind) {
+    case "host_resource":
+      return "FilesystemOwner";
     case "timer":
       return "Timer";
     case "unit":

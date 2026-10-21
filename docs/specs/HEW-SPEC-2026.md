@@ -432,8 +432,8 @@ language contracts:
   stream over a pipe, device or terminal, are not select sources yet
   (§6.4.5).
 - Native supervision supports declared children and pools of them, with a checked
-  runtime `count:` expression. Sibling wiring and parts of the shutdown-deadline
-  contract remain incomplete (§5).
+  runtime `count:` expression. Parts of the shutdown-deadline contract remain
+  incomplete (§5).
 - Captured WASI execution can still expose an internal trap tag as its exit
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
 - Resource-close checking covers inherent methods; trait-method checking has
@@ -609,7 +609,10 @@ Both unit-returning and value-returning lambda actors use completion calls.
 `handle(msg)` waits for the handler and yields the actor completion envelope
 from §2.1.1. A unit-returning lambda can also receive one-way submissions via
 `mailbox(handle, on_full: .Reject)(msg)`. `policy(handle, on_full: .Reject)(msg)`
-selects completion admission. There is no lambda-specific `.send()` operation.
+selects completion admission. A lambda handle call such as `worker(msg)` waits
+for completion and returns `Result<R, ActorError>`. `.send(msg)` is a secondary spelling for that same
+completion call; it does not make delivery one-way. Use `mailbox(worker)` for
+one-way admission when the lambda does not return a reply.
 
 A lambda actor lowers to an ordinary actor declaration: captures become state
 fields and its body becomes one receive handler. Its handle supports
@@ -3134,8 +3137,8 @@ impl Conn {
 }
    ```
 
-   Declaring `close` as an inline method inside the type body is rejected
-   with `ResourceCloseSourceUnsupported`.
+   Methods belong in `impl` blocks. Declaring `close` inside the type body
+   is a parse error that directs the programmer to `impl Conn { ... }`.
 
 2. **Unit return required.** The inherent-impl `close` body must return
    unit. A `close` declared to return `Result<(), E>` (or any non-unit
@@ -5745,9 +5748,15 @@ actor's construction and callbacks.
 Confinement is independent of suspension and deterministic execution. Existing
 `fn[suspends]` types retain their meaning; no public effect-row syntax is
 introduced. An in-memory implementation can satisfy the same ordinary domain
-trait as a native resource adapter. Native file resources remain native-only;
-directory resources are also native-only. The in-memory implementation is
-available to the shared browser VM. Hosted directory grants are not provided.
+trait as a native resource adapter. Ambient file constructors remain native-only.
+A WASI host can explicitly preopen real directories. A browser host can supply
+origin-private filesystem (OPFS) directory handles through its execution options;
+no directory authority is supplied by default. Both hosts use the ordinary
+`ReadDir`, `WriteDir` and child file APIs. Browser picker-backed directories are
+refused because their symlink confinement is not standardized. Browser file
+writes are visible before returning, and cancellation drains or aborts pending
+host operations before releasing their borrowed resources. WASI preview1 host
+syscalls are synchronous and cannot be interrupted after entry.
 
 Application source roots and the configured standard library remain trusted.
 This is a checked source boundary, not an operating-system sandbox or a
@@ -6345,6 +6354,23 @@ fn main() {
   - `wired_to: { <param>: <sibling>, ... }` (optional) — passes a sibling
     child's handle to this child's init param.
 - Child actor types must be declared before the supervisor.
+
+**Sibling wiring (normative).** A `wired_to` key names an actor init
+parameter; its value names a sibling declared in the same supervisor.
+Explicit keys, wired keys and defaults together bind the ordinary actor
+construction arguments. A key cannot be supplied twice, including once
+explicitly and once through wiring. The sibling's complete instantiated role
+type must match the parameter type. Unknown names, self-wiring and dependency
+cycles are compile-time errors.
+
+Children start after their wired prerequisites, with declaration order breaking
+ties. Forward sibling references are allowed. The argument is an ordinary
+stable role: retaining it follows the sibling's current incarnation after a
+restart. A dependent's own restart reruns init from its declaration and retained
+supervisor configuration. A group reconstruction applies the same startup order
+to its members. Restart-group membership and reverse-declaration shutdown order
+remain defined by the supervisor strategy. Wiring is a construction dependency;
+it adds no ongoing health cascade or cleanup-lifetime guarantee.
 
 **Pool arity is a clause, not an init field (normative).** `count:` sits
 beside `restart:` and `stop:` in the child's clause namespace, and the
@@ -7870,12 +7896,15 @@ in the type system:
   `NodeConfig.at(addr)` fills the defaults around a bind address. No field is
   inert: `Node.start` pins every `peers` entry — the slot a peer occupies is
   its one-based position in that vector, so slot `0` stays reserved for local
-  dispatch — dials every `seeds` entry once while skipping its
-  own bind address. `NodeTransport` is `Tcp | QuicMesh`; both require
+  dispatch — and supervises configured `seeds` while skipping its own bind
+  address and duplicate targets. Initial absence, refused handshakes and later
+  connection loss retry with capped exponential backoff until shutdown. Seed
+  availability is not a startup requirement. Rejoin never replays actor calls.
+  `NodeTransport` is `Tcp | QuicMesh`; both require
   authenticated, pinned peers. There is no trust-mode field. `NodeError.Config`
   reports invalid configuration, `Key` an invalid identity or peer key,
-  `Unreachable` a failed dial, and `Refused` denied admission or an unavailable
-  node or transport.
+  `Unreachable` a failed explicit dial, and `Refused` denied admission or an
+  unavailable node or transport.
 - `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` do not exist.
   Each carried one fact that is a field of `NodeConfig`, and a setup sequence
   whose steps can be reordered or skipped is a second configuration authority.
@@ -8194,7 +8223,8 @@ The methods `.try_to_i8()`, `.try_to_i16()`, `.try_to_i32()`, `.try_to_i64()`, `
 11. Logical AND: `&&`
 12. Logical OR: `||`
 13. Range: `..`, `..=` (lowered in `for` loop iterables, range indexing and the string `get(range)` form; standalone range values are not lowered). Open endpoints are admitted for range selectors. At the start of a literal item, `..expr` is the spread of §3.1
-14. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
+14. Coalescing: `??`
+15. Assignment: `=`, `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`. A compound assignment `x op= v` updates `x` with `op` and `v`. It applies to these targets: every operator to an integer; `+=`, `-=`, `*=`, `/=` and `%=` to a float, `duration` or `instant`; `&=`, `|=` and `^=` to a `bool`; and `+=` alone to a `string` or `bytes`. Any other target is refused at compile time
 
 > **Bool bitwise operators:** `&`, `^` and `|` take two integers of one type, or two `bool`s. On `bool` they are logical operators that always evaluate both operands and yield `bool`; `&&` and `||` are the short-circuiting forms. A `bool` mixed with an integer is refused.
 
@@ -8272,6 +8302,28 @@ prints as `5000000000ns`).
 `instant - duration` produce an `instant`, `instant - instant` produces a
 `duration`, and `.elapsed()` and `.duration_since(earlier)` return the
 `duration` since an earlier stamp.
+
+**`timestamp`:** a wall-clock value represented by signed `i64` Unix seconds
+and a normalized `u32` nanosecond fraction less than one billion. Read the host
+wall clock with `timestamp.now()`. Construct values with
+`timestamp.from_unix_parts(seconds, nanos)` (which can fail with
+`TimestampError.InvalidNanoseconds`), or with `from_unix_secs`,
+`from_unix_millis`, `from_unix_micros` and `from_unix_nanos` taking an explicit
+`i64` unit count. `unix_parts()` returns the normalized pair;
+`unix_secs_floor()` returns its seconds component. `unix_millis_floor()`,
+`unix_micros_floor()` and `unix_nanos()` fail with `TimestampError.OutOfRange`
+when the chosen `i64` count cannot represent the value. Negative unit
+conversions round down: minus one nanosecond has parts `(-1, 999999999)`.
+
+`timestamp + duration`, `duration + timestamp` and `timestamp - duration`
+produce a timestamp. Subtracting two timestamps produces a duration and fails
+with integer overflow when the difference exceeds the duration range. Timestamp
+arithmetic also checks the full seconds range. These failures follow ordinary
+structured failure and cleanup rules. Timestamps support equality, ordering,
+hashing and data codecs, whose representation is a two-element sequence of
+seconds and nanoseconds. Fields and record construction are sealed; timestamps
+never implicitly convert to integers, durations or monotonic instants. Use
+`instant` for elapsed-time measurements and scheduling deadlines.
 
 **Suspension:** `sleep(d)` waits a span and `sleep_until(t)` waits until a
 monotonic deadline; both suspend the calling task or actor handler instead of

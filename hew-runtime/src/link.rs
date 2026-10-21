@@ -48,7 +48,6 @@ struct LinkShard {
 /// The runtime's poison-recovery discipline is to continue operating with
 /// conservatively recovered state rather than cascading a poisoning failure,
 /// consistent with the rationale documented in `poison_safe.rs`.
-// native-only: LINK_TABLE state does not exist in the single-threaded WASM model
 static LINK_TABLE: LazyLock<[PoisonSafeRw<LinkShard>; LINK_SHARDS]> = LazyLock::new(|| {
     std::array::from_fn(|_| {
         PoisonSafeRw::new(LinkShard {
@@ -193,7 +192,6 @@ pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<
             }
             (0, inserted.then_some(target_id))
         }
-        #[cfg(not(target_arch = "wasm32"))]
         crate::lifetime::local_handles::ObservedActorTarget::Role { token, .. } => {
             for _ in 0..2 {
                 let Some((target_id, target_serial)) =
@@ -229,10 +227,6 @@ pub(crate) fn link_actor_for_observation(target: HewLocalPidId) -> (i32, Option<
             }
             (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None)
         }
-        #[cfg(target_arch = "wasm32")]
-        crate::lifetime::local_handles::ObservedActorTarget::Role { .. } => {
-            (-crate::internal::types::HEW_TRAP_ACTOR_SEND_FAILED, None)
-        }
     }
 }
 
@@ -243,6 +237,7 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
     if current.is_null() {
         return;
     }
+    #[cfg(not(target_arch = "wasm32"))]
     if let Some(imported) = crate::lifetime::local_handles::current_imported_actor(target) {
         // SAFETY: the current activation owns its actor allocation.
         let actor = unsafe { (*current).id };
@@ -265,7 +260,6 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
         Some(crate::lifetime::local_handles::ObservedActorTarget::Actor(target)) => {
             unlink_by_ids(current, target);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         Some(crate::lifetime::local_handles::ObservedActorTarget::Role {
             incarnation: Some((target_id, target_serial)),
             ..
@@ -276,14 +270,11 @@ pub extern "C" fn hew_native_actor_unlink(target: HewLocalPidId) {
                 |_| unlink_by_ids(current, target_id),
             );
         }
-        #[cfg(not(target_arch = "wasm32"))]
         Some(crate::lifetime::local_handles::ObservedActorTarget::Role {
             incarnation: None,
             ..
-        }) => {}
-        #[cfg(target_arch = "wasm32")]
-        Some(crate::lifetime::local_handles::ObservedActorTarget::Role { .. }) => {}
-        None => {}
+        })
+        | None => {}
     }
 }
 
@@ -528,6 +519,7 @@ pub(crate) fn propagate_exit_to_links(actor_id: u64, reason: i32) {
 /// `std/link_monitor.hew::PartitionPolicy` / `execution_context::PartitionPolicy`,
 /// where `CrashLinked == 3`). A cross-node link with this policy crashes the
 /// LOCAL linked actor when its remote peer dies; any other policy is non-fatal.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 
 /// Fire a cross-node link-down into a LOCAL linked actor.
@@ -548,6 +540,7 @@ pub(crate) const POLICY_TAG_CRASH_LINKED: u8 = 3;
 ///
 /// Returns true if a fatal EXIT was synthesized (`CrashLinked` + a live local
 /// actor); false if the policy was non-fatal or the local actor is already gone.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn deliver_cross_node_link_exit(
     local_actor_id: u64,
     target: crate::node_identity::Location,
@@ -689,6 +682,7 @@ pub struct ExitMessage {
 const LINK_PROBE_NOT_TERMINAL: i64 = -999;
 
 /// Whether the probe ledger is active (`HEW_LINK_PROBE` set). Read once.
+#[cfg(not(target_arch = "wasm32"))]
 static LINK_PROBE_ENABLED: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("HEW_LINK_PROBE").is_some());
 
@@ -702,6 +696,7 @@ static LINK_PROBE_LEDGER: LazyLock<std::sync::Mutex<HashMap<u64, i32>>> =
 /// with the terminal state — distinct from the link EXIT reason — so a fixture
 /// can assert the local linked actor reached `Crashed`, proving the mailbox-EXIT
 /// cascade drove a controlled crash (not the exhaustiveness `llvm.trap`).
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn record_link_probe_terminal(actor_id: u64, terminal_state: i32) {
     if !*LINK_PROBE_ENABLED {
         return;

@@ -205,7 +205,6 @@ impl Checker {
                         fields,
                     });
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
         self.refuse_key_collisions(td, &members);
@@ -270,6 +269,7 @@ impl Checker {
                     "fields"
                 };
                 self.errors.push(crate::error::TypeError {
+                    fixes: Vec::new(),
                     severity: crate::error::Severity::Error,
                     kind: TypeErrorKind::InvalidOperation,
                     span: self

@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ops::Range;
 use std::path::PathBuf;
 
-use hew_parser::ast::{Item, Program, TraitItem, TypeBodyItem};
+use hew_parser::ast::{Item, Program, TraitItem};
 use hew_types::check::dispatch::CallTarget;
 use hew_types::check::SpanKey;
 use hew_types::env::TypeBindingId;
@@ -1059,17 +1059,6 @@ fn body_span(item: &Item, site: DeclarationOccurrence) -> Option<Range<usize>> {
                 .nth(ordinal)?;
             method.body.as_ref()?;
             &method.span
-        }
-        (DeclarationKind::TypeMethod, Item::TypeDecl(decl)) => {
-            &decl
-                .body
-                .iter()
-                .filter_map(|part| match part {
-                    TypeBodyItem::Method(method) => Some(method),
-                    _ => None,
-                })
-                .nth(ordinal)?
-                .fn_span
         }
         (DeclarationKind::ActorMethod, Item::Actor(actor)) => &actor.methods.get(ordinal)?.fn_span,
         (DeclarationKind::ActorInit, Item::Actor(actor)) => &actor.init.as_ref()?.span,
@@ -2913,7 +2902,7 @@ mod tests {
     #[test]
     fn generator_admits_files_arguments_and_seeded_services() {
         check_source(
-            "import std.fs; import std.os; import std.random; import std.time.datetime;\nfn main() { let args = os.args(); println(args.len()); let text = fs.read(\"schema.json\").expect(\"read\"); let _ = fs.write(\"generated/model.hew\", text); println(random.random()); println(datetime.now_ms()); }",
+            "import std.fs; import std.os; import std.random;\nfn main() { let args = os.args(); println(args.len()); let text = fs.read(\"schema.json\").expect(\"read\"); let _ = fs.write(\"generated/model.hew\", text); println(random.random()); println(instant.now().elapsed().nanos()); }",
             HostAdmission::Generate,
         ).unwrap();
     }
@@ -3000,6 +2989,42 @@ mod tests {
             .find(|(item, _)| matches!(item, Item::Function(function) if function.name.name.as_str() == name))
             .expect("selected test declaration");
         DeclarationOccurrence::new(None, span, DeclarationKind::Function, 0)
+    }
+
+    #[test]
+    fn process_options_require_host_admission() {
+        let source = r#"
+import std.process as child;
+
+#[test]
+fn launch() {
+    let _ = child.start_with_options(
+        child.command("unused", []),
+        child.inherited_options(),
+    );
+}
+
+fn main() { launch(); }
+"#;
+        // Check the source is valid for native execution before testing the
+        // three restricted entry points. The test never executes a child.
+        check_source(source, HostAdmission::Off).unwrap();
+        let selection = selected_test(source, "launch");
+        for (admission, code) in [
+            (HostAdmission::Generate, "E_GENERATE_HOST_OPERATION"),
+            (
+                HostAdmission::ProcessEntry,
+                "E_DETERMINISTIC_HOST_OPERATION",
+            ),
+            (
+                HostAdmission::Tests(vec![selection]),
+                "E_DETERMINISTIC_HOST_OPERATION",
+            ),
+        ] {
+            let failure = check_source(source, admission).unwrap_err();
+            assert!(failure.contains(code), "{failure}");
+            assert!(failure.contains("process-execution"), "{failure}");
+        }
     }
 
     #[test]

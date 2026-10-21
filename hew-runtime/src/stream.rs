@@ -1399,6 +1399,20 @@ pub(crate) fn shutdown_signal_stream(
     stream_only(stream)
 }
 
+/// Give an externally owned channel producer its ordinary readable stream.
+/// The caller owns the producer end and must finish it to publish EOF.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn notification_stream(
+    core: Arc<crate::channel_core::ChannelCore>,
+) -> *mut HewStreamPair {
+    let stream = into_stream_ptr(ChannelStream {
+        core: Arc::clone(&core),
+    });
+    // SAFETY: the fresh stream owns this same channel's unique consumer.
+    unsafe { (*stream).channel = Some(core) };
+    stream_only(stream)
+}
+
 /// A stream that has already ended: the child was reaped before the wait.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn ended_stream() -> *mut HewStreamPair {

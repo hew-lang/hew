@@ -264,7 +264,7 @@ fn inbound_router_no_spawn_after_shutdown_started() {
     // SAFETY: conn_mgr is valid; null data with size 0 is the empty-payload contract.
     unsafe {
         node_inbound_router(
-            0,
+            test_location(1, 1).into(),
             c"tests.Counter.handle".as_ptr(),
             ptr::null_mut(),
             0,
@@ -389,7 +389,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
         // SAFETY: the manager and peer are live; the empty payload is intentional.
         unsafe {
             node_inbound_router(
-                actor_id,
+                test_location(1, crate::pid::hew_pid_serial(actor_id)).into(),
                 c"tests.Counter.handle".as_ptr(),
                 ptr::null_mut(),
                 0,
@@ -509,7 +509,7 @@ fn node_stop_drain_waits_for_router_wedged_after_counter_increment() {
         // SAFETY: conn_mgr stays live until this test frees it after join.
         unsafe {
             node_inbound_router(
-                0,
+                test_location(1, 1).into(),
                 c"tests.Counter.handle".as_ptr(),
                 ptr::null_mut(),
                 0,
@@ -672,7 +672,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     // up on. It parks at the capture hook before touching conn_mgr.
     let worker_handle = thread::spawn(move || {
         handle_inbound_ask(
-            actor_id,
+            test_location(1, crate::pid::hew_pid_serial(actor_id)),
             "tests.Counter.handle",
             &[],
             1,
@@ -740,20 +740,18 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
         };
         let publication = claim.publication_token;
         let location = connection::local_location_for_actor(manager, actor_id).unwrap();
-        // SAFETY: the test retains this actor throughout both publication checks.
-        let target = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
         let (_export, offer) = manager
             .service_exports
             .export(
+                manager.local_node_id,
                 claim.peer_session(),
                 42,
-                target,
                 location,
                 vec!["tests.Counter.handle".into()],
             )
             .unwrap();
         handle_inbound_ask(
-            actor_id,
+            location,
             "tests.Counter.handle",
             &[7],
             42,
@@ -776,12 +774,21 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
             (actor_id, previous_publication.unwrap_or(0), 42),
             (actor_id, publication, 43),
         ] {
-            manager.inbound_asks.withdraw(target, connection, request);
+            manager.inbound_asks.withdraw(
+                Location::direct(
+                    location.node(),
+                    crate::pid::hew_pid_serial(target),
+                    location.incarnation(),
+                )
+                .unwrap(),
+                connection,
+                request,
+            );
             assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 1);
         }
-        manager.inbound_asks.withdraw(actor_id, publication, 42);
+        manager.inbound_asks.withdraw(location, publication, 42);
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
-        manager.inbound_asks.withdraw(actor_id, publication, 42);
+        manager.inbound_asks.withdraw(location, publication, 42);
         assert_eq!(manager.inbound_ask_active.load(Ordering::Acquire), 0);
         previous_publication = Some(publication);
     }
@@ -822,6 +829,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(matches!(
         super::super::service::RemoteAdmission::new(
             manager,
+            location,
             incarnation,
             peer_id,
             claim.publication_token,
@@ -833,9 +841,9 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     let (export, offer) = manager
         .service_exports
         .export(
+            manager.local_node_id,
             claim.peer_session(),
             99,
-            incarnation,
             location,
             vec!["tests.Counter.handle".into()],
         )
@@ -843,6 +851,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(matches!(
         super::super::service::RemoteAdmission::new(
             manager,
+            location,
             incarnation,
             peer_id,
             claim.publication_token,
@@ -857,7 +866,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(manager
         .service_exports
         .claim_observation(
-            incarnation,
+            location,
             wrong_session,
             offer.grant_id,
             &publication_removed,
@@ -867,7 +876,12 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(manager
         .service_exports
         .claim_observation(
-            crate::lifetime::live_actors::ActorIncarnation::NONE,
+            Location::direct(
+                location.node(),
+                location.direct_serial().unwrap() + 1,
+                location.incarnation()
+            )
+            .unwrap(),
             claim.peer_session(),
             offer.grant_id,
             &publication_removed,
@@ -877,7 +891,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(manager
         .service_exports
         .claim_observation(
-            incarnation,
+            location,
             claim.peer_session(),
             0,
             &publication_removed,
@@ -887,7 +901,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(manager
         .service_exports
         .claim_observation(
-            incarnation,
+            location,
             claim.peer_session(),
             offer.grant_id,
             &AtomicBool::new(true),
@@ -897,7 +911,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     assert!(manager
         .service_exports
         .claim_observation(
-            incarnation,
+            location,
             claim.peer_session(),
             offer.grant_id,
             &publication_removed,
@@ -906,6 +920,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
         .is_ok());
     let admission = super::super::service::RemoteAdmission::new(
         manager,
+        location,
         incarnation,
         peer_id,
         claim.publication_token,
@@ -993,9 +1008,9 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
             let (export, offer) = manager
                 .service_exports
                 .export(
+                    manager.local_node_id,
                     claim.peer_session(),
                     99,
-                    incarnation,
                     location,
                     vec!["tests.Counter.handle".into()],
                 )
@@ -1003,6 +1018,7 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
             assert!(matches!(
                 super::super::service::RemoteAdmission::new(
                     manager,
+                    location,
                     incarnation,
                     peer_id,
                     claim.publication_token,
@@ -1014,6 +1030,7 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
             assert!(matches!(
                 super::super::service::RemoteAdmission::new(
                     manager,
+                    location,
                     incarnation,
                     peer_id,
                     claim.publication_token,
@@ -1024,6 +1041,7 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
             ));
             let admission = super::super::service::RemoteAdmission::new(
                 manager,
+                location,
                 incarnation,
                 peer_id,
                 claim.publication_token,
@@ -1109,10 +1127,10 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
     }
 }
 
-fn await_observation_setup(operation: *mut monitor_link::HewNativeActorObservation) {
+fn await_observation_setup(operation: *mut crate::actor_observe::HewNativeActorObservation) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     // SAFETY: each fixture retains its unique operation until this helper returns.
-    while unsafe { monitor_link::hew_native_actor_observe_poll(operation) } == -1 {
+    while unsafe { crate::actor_observe::hew_native_actor_observe_poll(operation) } == -1 {
         assert!(
             std::time::Instant::now() < deadline,
             "peer setup acknowledgement timed out"
@@ -1153,9 +1171,9 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
         let (export, offer) = server_manager
             .service_exports
             .export(
+                server_manager.local_node_id,
                 claim.peer_session(),
                 1,
-                crate::lifetime::live_actors::ActorIncarnation::of(target),
                 location,
                 vec!["tests.Counter.handle".into()],
             )
@@ -1174,8 +1192,12 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
         ))
         .unwrap();
         let mut other_offer = offer.clone();
-        other_offer.target =
-            Location::new(location.node(), location.slot() + 1, location.incarnation()).unwrap();
+        other_offer.target = Location::direct(
+            location.node(),
+            location.direct_serial().expect("direct actor fixture") + 1,
+            location.incarnation(),
+        )
+        .unwrap();
         let other = register_current_imported_actor(service_api::ImportedService::from_offer(
             Arc::downgrade(&client_manager.service_exports),
             other_offer,
@@ -1200,30 +1222,34 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
             ..Default::default()
         };
         let previous = crate::execution_context::set_current_context(&raw mut context);
-        let monitor = monitor_link::hew_native_actor_observe_new(token, 0, waker.descriptor());
+        let monitor =
+            crate::actor_observe::hew_native_actor_observe_new(token, 0, waker.descriptor());
         await_observation_setup(monitor);
         let mut monitor_id = 0;
         assert_eq!(
-            monitor_link::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
+            crate::actor_observe::hew_native_actor_observe_take(monitor, &raw mut monitor_id),
             0
         );
         assert_ne!(monitor_id, 0);
-        monitor_link::hew_native_actor_observe_free(monitor);
+        crate::actor_observe::hew_native_actor_observe_free(monitor);
 
         // A counterfeit grant cannot subscribe even though it has the exact Location.
-        let refused = monitor_link::hew_native_actor_observe_new(same, 0, waker.descriptor());
+        let refused =
+            crate::actor_observe::hew_native_actor_observe_new(same, 0, waker.descriptor());
         await_observation_setup(refused);
-        assert!(monitor_link::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0);
-        monitor_link::hew_native_actor_observe_free(refused);
+        assert!(
+            crate::actor_observe::hew_native_actor_observe_take(refused, &raw mut monitor_id) < 0
+        );
+        crate::actor_observe::hew_native_actor_observe_free(refused);
 
         // The reciprocal half completes before the original link is acknowledged.
-        let link = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        let link = crate::actor_observe::hew_native_actor_observe_new(token, 1, waker.descriptor());
         await_observation_setup(link);
         assert_eq!(
-            monitor_link::hew_native_actor_observe_take(link, &raw mut monitor_id),
+            crate::actor_observe::hew_native_actor_observe_take(link, &raw mut monitor_id),
             0
         );
-        monitor_link::hew_native_actor_observe_free(link);
+        crate::actor_observe::hew_native_actor_observe_free(link);
         crate::link::hew_native_actor_unlink(token);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while crate::runtime::rt_current()
@@ -1243,10 +1269,13 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
             1,
             "identity survives grant revocation"
         );
-        let revoked = monitor_link::hew_native_actor_observe_new(token, 1, waker.descriptor());
+        let revoked =
+            crate::actor_observe::hew_native_actor_observe_new(token, 1, waker.descriptor());
         await_observation_setup(revoked);
-        assert!(monitor_link::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0);
-        monitor_link::hew_native_actor_observe_free(revoked);
+        assert!(
+            crate::actor_observe::hew_native_actor_observe_take(revoked, &raw mut monitor_id) < 0
+        );
+        crate::actor_observe::hew_native_actor_observe_free(revoked);
         let _ = crate::execution_context::set_current_context(previous);
         assert_eq!(hew_actor_wait_poll(stopped), 0);
 

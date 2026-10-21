@@ -610,7 +610,7 @@ fn record_rendering(declaration: &TypeDecl) -> String {
         .iter()
         .filter_map(|item| match item {
             TypeBodyItem::Field { name, .. } => Some(format!("{name}: {{self.{name}:?}}")),
-            _ => None,
+            TypeBodyItem::Variant(_) => None,
         })
         .collect();
     if rendered.is_empty() {

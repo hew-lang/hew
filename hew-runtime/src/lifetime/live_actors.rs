@@ -48,7 +48,6 @@ struct LiveActor {
     actor: ActorPtr,
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
     // SAFETY: callers invoke this only after successful removal from the live
     // map and retain allocation ownership until finalization.
@@ -91,8 +90,8 @@ fn retire_actor_route(actor: *mut HewActor, actor_id: u64) {
 /// `RuntimeInner`. Dropping it drops the (normally empty after cleanup) map and
 /// any still-pending teardown join handles.
 ///
-/// Native only: the WASM runtime is single-threaded and has no `RuntimeInner`,
-/// so it backs the registry with a module-private static (`LIVE_ACTORS_WASM`)
+/// The threaded runtime owns this state in `RuntimeInner`. The single-thread
+/// WASI runtime backs the same registry with a module-private static (`LIVE_ACTORS_WASM`)
 /// instead — see the `with_live_actors` resolver below.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct LiveActors {
@@ -196,7 +195,6 @@ pub(crate) fn actor_count_for_test() -> usize {
 /// Returns `true` if the actor was present and removed, `false` if it
 /// was not found (e.g. already consumed by `drain_all_for_cleanup`).
 /// Only removes the entry if the stored pointer matches `actor`.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn untrack_actor(actor: *mut HewActor) -> bool {
     // SAFETY: caller guarantees `actor` is valid and not yet freed.
     let id = unsafe { (*actor).id };
@@ -379,7 +377,6 @@ pub(crate) fn with_live_actor_by_id<R>(
 ///
 /// **Do not use this for send/ask dispatch** — use [`with_actor_send_by_id`]
 /// instead so the actor cannot be freed between lookup and dereference.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn get_actor_ptr_by_id(actor_id: u64) -> Option<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
@@ -549,8 +546,6 @@ pub(crate) struct ActorIncarnation {
     spawn_serial: u64,
 }
 
-// The whole surface is the native wake edge: wasm32 has its own cooperative
-// scheduler, reply channel and mailbox, and never resolves an incarnation.
 impl ActorIncarnation {
     /// No wake target.
     ///
@@ -675,15 +670,33 @@ pub(crate) fn is_actor_live_with_id(actor_id: u64, expected: *mut HewActor) -> b
 /// cleanup sweep. Used by `actor::retire_parked_activations`, which must run
 /// before the sweep but must not take the actors from it.
 ///
-/// On native, safe to call only once worker threads are joined: the returned
-/// pointers are unpinned, so a concurrent free would dangle them. On WASM the
-/// caller must own the single cooperative thread with no activation in
-/// progress.
+/// Safe to call only once worker threads are joined: the returned pointers
+/// are unpinned, so a concurrent free would dangle them.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn snapshot_live_actor_ptrs() -> Vec<*mut HewActor> {
     with_live_actors_opt(|map| {
         map.as_ref()
             .map(|m| m.values().map(|entry| entry.actor.0).collect())
+            .unwrap_or_default()
+    })
+    .unwrap_or_default()
+}
+
+/// Copy exact incarnations before cooperative cleanup advances the driver.
+/// Each entry must be resolved again before touching its current allocation.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn snapshot_live_incarnations() -> Vec<ActorIncarnation> {
+    with_live_actors_opt(|map| {
+        map.as_ref()
+            .map(|actors| {
+                actors
+                    .values()
+                    .map(|entry| {
+                        // SAFETY: the registry lock retains this tracked allocation.
+                        unsafe { ActorIncarnation::of(entry.actor.0) }
+                    })
+                    .collect()
+            })
             .unwrap_or_default()
     })
     .unwrap_or_default()

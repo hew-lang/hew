@@ -4,7 +4,7 @@
 verified ownership SIR (`hew_sir::SemModule`, produced by
 `hew_compile::Session::lower_hir_module`), not a lowering of the AST.
 
-The compiler decides. The VM executes. Every fact in this package was proved by
+The compiler decides. The VM executes. For compiler-produced packages, every semantic fact was proved by
 SIR verification; the VM must never re-derive one from a type, a name or a
 symbol spelling.
 
@@ -264,6 +264,19 @@ accident.
 The `actors` table projects SIR state seats, lifecycle callables, receive
 members and mailbox policy. `supervisors` projects declared children and their
 spawn callables; a child role resolves its current incarnation on every use.
+The optional `startup_order` lists child declaration indices in the compiler's
+construction order. Each child's optional `dependencies` lists its prerequisite
+declarations; the loader checks that the supplied order places them first.
+Restart groups restrict this order to their existing members, while shutdown
+retains reverse declaration order.
+
+A current child constructor takes the owning supervisor role followed by the
+borrowed configuration parameters. Earlier v1 packages have config-only
+constructors and omit startup/dependency fields. They retain declaration-order
+construction. The VM distinguishes the two callable ABIs by their actual
+parameter counts against the supplied config; any other arity is invalid.
+A pending constructor remains owned by its supervisor until it completes or
+cancellation drains it, before child/configuration cleanup proceeds.
 
 An `actor_state` place reaches the `environment` value's field. A parked turn
 retains that state receiver and its activation stack; a reply queues its resume
@@ -299,3 +312,24 @@ that index with the record value's shape, never its display name. Built-in
 resource kinds use their VM lifecycle protocol.
 Close can run while a frame is suspended in cleanup, and its failure follows
 the original SIR fault edge after the remaining owners drain.
+
+## Instruction contract generation
+
+The concrete Rust package types in hew-wasm/src/sandbox/package.rs and
+instruction types in hew-wasm/src/sandbox/bytecode.rs own the wire representation.
+Make sandbox-bytecode generates the TypeScript discriminated unions, opcode
+admission identities, the complete JSON Schema and standalone loader
+validators. Codec shapes derive from hew-codec/src/property.rs while retaining
+their JSON-string wire representation. Make sandbox-bytecode-check verifies freshness and runs in lint and
+baseline checks. There is no separate handwritten envelope schema.
+
+The SIR projection and VM dispatches are exhaustive over their typed inputs.
+External packages are copied, structurally validated, and checked for table,
+callable, value, shape and control-flow references before capability admission
+and execution. Table IDs follow their module-local array indexes; edge argument
+counts match block parameters. Embedded codec graphs are checked at this same
+boundary. These checks establish representation and reference validity, not
+source typing, dominance or ownership of arbitrary imported bytecode. The
+compiler's ownership and cleanup proofs remain in SIR. Runtime-family and suspension-detail registration
+are separate contracts. Existing v1 optional fields, including the distinction
+between omitted and null fields, remain compatible.

@@ -87,6 +87,7 @@ pub enum AsyncIoLoan {
     EnumIter,
     Default,
 )]
+#[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum AsyncIoOp {
     #[default]
     TcpRead,

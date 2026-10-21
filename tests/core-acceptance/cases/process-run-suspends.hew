@@ -10,12 +10,21 @@ actor Probe {
     }
 }
 
+fn wait_for(path: string) {
+    scope within 10s {
+        while !fs.exists(path) {
+            sleep(1ms);
+        }
+    }
+}
+
 fn main() {
     let args = os.args();
     if args.len() > 1 {
         if args[1] == "capture" {
             assert(args[2] == "" && args[3] == "a b");
-            sleep(400ms);
+            fs.write(args[4], "ready").expect("capture ready");
+            wait_for(args[5]);
             let chunk = "é\0data".repeat(2048);
             for i in 0..32 {
                 io.write(chunk);
@@ -28,12 +37,16 @@ fn main() {
         return;
     }
     let probe = spawn Probe;
-    let started = instant.now();
-    let work = fork process.run_argv(args[0], ["capture", "", "a b"]);
-    sleep(20ms);
+    let ready = f"{os.temp_dir()}/hew-process-ready-{os.pid()}";
+    let release = f"{os.temp_dir()}/hew-process-release-{os.pid()}";
+    let work = fork process.run_argv(args[0], ["capture", "", "a b", ready, release]);
+    wait_for(ready);
+    // The child cannot finish until this worker has dispatched the actor call.
     assert(probe.ping().expect("progress"));
-    assert(started.elapsed() < 200ms);
+    fs.write(release, "continue").expect("release capture");
     let output = (await work).expect("capture");
+    fs.delete(ready).expect("remove readiness marker");
+    fs.delete(release).expect("remove release marker");
     assert(output.status == process.ExitStatus.Exited(7));
     let expected = "é\0data".repeat(2048 * 32);
     assert(output.stdout == expected && output.stderr == expected);

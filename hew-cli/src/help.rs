@@ -71,7 +71,15 @@ const COMMAND_GROUPS: &[(&str, &[&str])] = &[
     ),
     (
         "Tooling",
-        &["tool", "lsp", "observe", "completions", "version", "env"],
+        &[
+            "tool",
+            "lsp",
+            "observe",
+            "completions",
+            "version",
+            "env",
+            "node",
+        ],
     ),
 ];
 

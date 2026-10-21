@@ -18,6 +18,7 @@ pub(crate) trait CommandDispatcher {
     fn test(&mut self, args: &args::TestArgs);
     fn bench(&mut self, args: &args::BenchArgs);
     fn watch(&mut self, args: &args::WatchArgs);
+    fn node(&mut self, args: &args::NodeCommand);
     fn wire(&mut self, args: &args::WireCommand);
     fn machine(&mut self, args: &args::MachineCommand);
     fn fmt(&mut self, args: &args::FmtArgs);
@@ -82,6 +83,10 @@ impl CommandDispatcher for MainCommandDispatcher {
 
     fn watch(&mut self, args: &args::WatchArgs) {
         crate::watch::cmd_watch(args);
+    }
+
+    fn node(&mut self, args: &args::NodeCommand) {
+        crate::node::cmd_node(args);
     }
 
     fn wire(&mut self, args: &args::WireCommand) {
@@ -184,6 +189,7 @@ pub(crate) fn dispatch_command(command: Option<&Command>, dispatcher: &mut impl 
         Some(Command::Bench(args)) => dispatcher.bench(args),
         Some(Command::Watch(args)) => dispatcher.watch(args),
         Some(Command::Wire(args)) => dispatcher.wire(args),
+        Some(Command::Node(args)) => dispatcher.node(args),
         Some(Command::Machine(args)) => dispatcher.machine(args),
         Some(Command::Fmt(args)) => dispatcher.fmt(args),
         Some(Command::Init(args)) => dispatcher.init(args),
@@ -566,6 +572,10 @@ mod tests {
 
         fn watch(&mut self, _args: &crate::args::WatchArgs) {
             self.calls.push("watch".to_string());
+        }
+
+        fn node(&mut self, _args: &crate::args::NodeCommand) {
+            self.calls.push("node".to_string());
         }
 
         fn wire(&mut self, _args: &WireCommand) {

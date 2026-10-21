@@ -30,6 +30,7 @@ mod dist_probes;
 mod inbound;
 mod inbound_call;
 pub(crate) mod monitor_link;
+pub(crate) mod observation;
 mod remote_call;
 pub(crate) mod service;
 pub(crate) mod service_api;
@@ -41,8 +42,7 @@ pub use self::dist_probes::*;
 #[cfg(test)]
 use self::inbound::NODE_STOP_BEFORE_CONNMGR_FREE_HOOK;
 use self::inbound::{
-    accept_loop, actor_id_to_registry_ptr, drain_inbound_requests, node_inbound_router,
-    stop_node_accept_thread,
+    accept_loop, drain_inbound_requests, node_inbound_router, stop_node_accept_thread,
 };
 pub(crate) use self::inbound_call::InboundAsks;
 pub use self::monitor_link::*;
@@ -213,7 +213,7 @@ pub(crate) struct NodeSlot {
     /// peer rejoins at a strictly higher incarnation, which evicts the entry. Per
     /// runtime, isolated like `reply_table`; written from the SWIM-DEAD verdict and
     /// the readmission dispatch, read on the send/ask path.
-    quarantine: PoisonSafe<HashMap<u16, u64>>,
+    quarantine: PoisonSafe<HashMap<u16, QuarantineEntry>>,
     /// Process-local route slot embedded in local actor IDs. Route slot zero
     /// remains the local-dispatch sentinel.
     local_route_slot: AtomicU16,
@@ -398,12 +398,31 @@ fn reply_table_opt() -> Option<&'static ReplyRoutingTable> {
 /// Fail-closed on no installed runtime (the SWIM-DEAD verdict runs from the
 /// connection-reader / SWIM-driver threads, where a runtime may not be installed)
 /// — there is no quarantine set to write, so the call is a no-op.
-fn quarantine_insert(node_id: u16, incarnation: u64) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct QuarantineEntry {
+    session: Option<u32>,
+    incarnation: u64,
+}
+
+fn quarantine_insert(node_id: u16, session: Option<u32>, incarnation: u64) {
     if let Some(rt) = crate::runtime::rt_current_opt() {
         rt.node.quarantine.access(|set| {
-            let entry = set.entry(node_id).or_insert(incarnation);
-            if incarnation > *entry {
-                *entry = incarnation;
+            let candidate = QuarantineEntry {
+                session,
+                incarnation,
+            };
+            match set.get_mut(&node_id) {
+                Some(entry) if entry.session > candidate.session => {}
+                Some(entry) if entry.session == candidate.session => {
+                    if candidate.incarnation > entry.incarnation {
+                        *entry = candidate;
+                    }
+                }
+                Some(entry) if entry.session < candidate.session => *entry = candidate,
+                Some(_) => {}
+                None => {
+                    set.insert(node_id, candidate);
+                }
             }
         });
     }
@@ -418,21 +437,28 @@ fn quarantine_insert(node_id: u16, incarnation: u64) {
 /// — though in practice the readmission dispatch evicts the entry first, so the
 /// incarnation compare is the belt to eviction's suspenders. Returns `false` when
 /// no runtime is installed (nothing to consult).
-fn quarantine_is_blocked(node_id: u16, live_incarnation: u64) -> bool {
+fn quarantine_is_blocked(node_id: u16, session: Option<u32>, live_incarnation: u64) -> bool {
     crate::runtime::rt_current_opt().is_some_and(|rt| {
-        rt.node
-            .quarantine
-            .access(|set| set.get(&node_id).is_some_and(|&q| live_incarnation <= q))
+        rt.node.quarantine.access(|set| {
+            set.get(&node_id).is_some_and(|entry| {
+                entry.session == session && live_incarnation <= entry.incarnation
+            })
+        })
     })
 }
 
 /// Evict a peer from the quarantine set on its strictly-higher-incarnation
 /// readmission, so it is sendable again. A no-op if the peer is not quarantined.
 /// Fail-closed on no runtime.
-fn quarantine_evict(node_id: u16) {
+fn quarantine_evict(node_id: u16, session: Option<u32>, incarnation: u64) {
     if let Some(rt) = crate::runtime::rt_current_opt() {
         rt.node.quarantine.access(|set| {
-            set.remove(&node_id);
+            if set.get(&node_id).is_some_and(|entry| {
+                entry.session < session
+                    || (entry.session == session && entry.incarnation < incarnation)
+            }) {
+                set.remove(&node_id);
+            }
         });
     }
 }
@@ -457,12 +483,18 @@ fn quarantine_blocks_send(node: &HewNode, target_node_id: u16) -> bool {
         // No cluster to resolve a live incarnation: if the set holds the peer at
         // any incarnation, block (fail-closed). Passing 0 as the live incarnation
         // ensures no quarantined entry can ever be considered cleared.
-        return quarantine_is_blocked(target_node_id, 0);
+        return crate::runtime::rt_current_opt().is_some_and(|rt| {
+            rt.node
+                .quarantine
+                .access(|set| set.contains_key(&target_node_id))
+        });
     }
     // SAFETY: node.cluster is valid while the node is installed.
     let cluster = unsafe { &*node.cluster };
-    let live_incarnation = cluster.member_incarnation(target_node_id).unwrap_or(0);
-    quarantine_is_blocked(target_node_id, live_incarnation)
+    let live_session = cluster.member_session(target_node_id);
+    let incarnation = cluster.member_incarnation(target_node_id);
+    let live_incarnation = incarnation.unwrap_or(0);
+    quarantine_is_blocked(target_node_id, live_session, live_incarnation)
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +559,7 @@ enum PendingReplyKind {
     Setup(RemoteSetupKind, u64),
 }
 
-struct PendingReply {
+pub(crate) struct PendingReply {
     connection: ConnectionKey,
     request_id: u64,
     kind: PendingReplyKind,
@@ -687,6 +719,40 @@ impl ReplyRoutingTable {
                 .iter()
                 .filter_map(|(&request_id, pending)| {
                     (pending.connection == connection).then_some(request_id)
+                })
+                .collect::<Vec<_>>();
+            request_ids
+                .into_iter()
+                .filter_map(|request_id| map.remove(&request_id))
+                .collect::<Vec<_>>()
+        };
+        for pending in pending {
+            Self::fail_pending_with_reason(&pending, ask_error);
+        }
+    }
+
+    /// Fail asks owned by one authenticated connection-manager publication.
+    /// Publication tokens are unique within a manager and remain attached to
+    /// pending entries after their route is replaced, so both values identify
+    /// the owner even when another manager has issued the same token.
+    fn fail_asks_for_publication(
+        &self,
+        conn_mgr: *const HewConnMgr,
+        publication: u64,
+        ask_error: AskError,
+    ) {
+        let conn_mgr = conn_mgr.cast::<()>() as usize;
+        let pending = {
+            let mut map = self
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let request_ids = map
+                .iter()
+                .filter_map(|(&request_id, pending)| {
+                    (pending.connection.conn_mgr == conn_mgr
+                        && pending.kind == PendingReplyKind::Ask(publication))
+                    .then_some(request_id)
                 })
                 .collect::<Vec<_>>();
             request_ids
@@ -1146,6 +1212,13 @@ fn remote_reply_data_to_ptr(reply_data: &[u8], reply_size: usize) -> *mut c_void
 #[derive(Debug, Default)]
 pub struct HewRegistry {
     remote_names: Mutex<HashMap<String, Location>>,
+    observation: Mutex<Arc<observation::NodeObservation>>,
+}
+
+impl HewRegistry {
+    fn observer(&self) -> Arc<observation::NodeObservation> {
+        Arc::clone(&self.observation.lock_or_recover())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1218,7 +1291,11 @@ fn forget_node(node: *mut HewNode) {
     });
 }
 
-fn take_registry_names_if<F>(registry: &HewRegistry, mut predicate: F) -> Vec<(String, Location)>
+fn take_registry_names_if<F>(
+    registry: &HewRegistry,
+    mut predicate: F,
+    retire: impl FnOnce(&[(String, Location)]),
+) -> Vec<(String, Location)>
 where
     F: FnMut(Location) -> bool,
 {
@@ -1231,31 +1308,25 @@ where
     for (name, _) in &names {
         map.remove(name);
     }
+    // Keep canonical name removal and bounded gossip enqueue in the same
+    // transaction as the exact-location comparison, excluding a racing repoint.
+    // This callback must not notify subscribers or perform network I/O.
+    retire(&names);
     names
 }
 
-unsafe fn unregister_names_from_node(
-    node: &HewNode,
-    names: Vec<(String, Location)>,
-    emit_gossip_remove: bool,
-) {
+unsafe fn enqueue_registry_removals(node: &HewNode, names: &[(String, Location)]) {
+    if node.cluster.is_null() {
+        return;
+    }
     for (name, location) in names {
-        let Ok(c_name) = CString::new(name) else {
+        let Ok(name) = CString::new(name.as_str()) else {
             continue;
         };
-        // SAFETY: `c_name` is a valid NUL-terminated string for the call.
-        unsafe { crate::registry::hew_registry_unregister(c_name.as_ptr()) };
-        if emit_gossip_remove && !node.cluster.is_null() {
-            let location = HewLocation::from(location);
-            // SAFETY: node teardown is serialized against actor-free cleanup by
-            // KNOWN_NODES, so the cluster pointer stays valid for this call.
-            unsafe {
-                cluster::hew_cluster_registry_remove(
-                    node.cluster,
-                    c_name.as_ptr(),
-                    &raw const location,
-                );
-            };
+        let location = HewLocation::from(*location);
+        // SAFETY: the caller pins the node and its bounded gossip queue.
+        unsafe {
+            cluster::hew_cluster_registry_remove(node.cluster, name.as_ptr(), &raw const location);
         }
     }
 }
@@ -1266,16 +1337,80 @@ unsafe fn unregister_local_names_for_node(node: &HewNode) {
     }
     // SAFETY: registry belongs to `node` for the node lifetime.
     let registry = unsafe { &*node.registry };
-    let names = take_registry_names_if(registry, |location| {
-        Some(location.node()) == node.auth.node_identity()
-    });
-    // Node shutdown is the decommission path; remote peers prune their cached
-    // names when they observe the corresponding left/dead membership event.
-    // SAFETY: `node` and its cluster/registry pointers remain valid for the
-    // duration of hew_node_stop.
-    unsafe { unregister_names_from_node(node, names, false) };
+    take_registry_names_if(
+        registry,
+        |location| Some(location.node()) == node.auth.node_identity(),
+        |_| {},
+    );
 
     registry.remote_names.lock_or_recover().clear();
+    registry.observer().notify();
+}
+
+/// Retire the current node's exact actor location before terminal completion.
+/// This path never takes `KNOWN_NODES`, whose teardown owner may be draining the
+/// same actor. Shutdown's `CURRENT_NODE` barrier owns any remaining local names.
+pub(crate) fn retire_current_actor_names(actor_id: u64) {
+    retire_current_names(|node, registered| {
+        local_actor_location(node, actor_id) == Some(registered)
+    });
+}
+
+/// Retire only names belonging to this exact stable root, never its workers.
+pub(crate) fn retire_current_role_names(root: crate::lifetime::local_handles::HewLocalPidId) {
+    retire_current_names(|node, registered| {
+        if Some(registered.node()) != node.auth.node_identity()
+            || Some(registered.incarnation()) != node.auth.session_incarnation()
+        {
+            return false;
+        }
+        match registered.target() {
+            crate::node_identity::Target::Role(token) => {
+                crate::lifetime::local_handles::carried_role(token.get())
+                    .and_then(crate::lifetime::local_handles::current_actor_role_root)
+                    == Some(root)
+            }
+            crate::node_identity::Target::Direct(_) => false,
+        }
+    });
+}
+
+fn retire_current_names(matches: impl Fn(&HewNode, Location) -> bool) {
+    let observer = with_current_node_read(|current| {
+        let node = *current as *const HewNode;
+        if node.is_null() {
+            return None;
+        }
+        // SAFETY: the read guard pins the current node and its registry/cluster.
+        let node = unsafe { &*node };
+        if node.registry.is_null() {
+            return None;
+        }
+        // SAFETY: the read guard pins this registry.
+        let registry = unsafe { &*node.registry };
+        let names = take_registry_names_if(
+            registry,
+            |registered| matches(node, registered),
+            |names| {
+                // SAFETY: CURRENT_NODE pins the local registry and bounded
+                // gossip queue; these mutations invoke no callback or wakeup.
+                unsafe {
+                    if node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING {
+                        enqueue_registry_removals(node, names);
+                    }
+                }
+            },
+        );
+        if names.is_empty() {
+            return None;
+        }
+        Some(registry.observer())
+    });
+    // No node pointer escapes the read guard, and subscriber wakeup occurs only
+    // after releasing that guard and all registry/gossip locks.
+    if let Some(observer) = observer {
+        observer.notify();
+    }
 }
 
 /// Remove all registered names that still point at `actor_id`.
@@ -1297,18 +1432,25 @@ pub(crate) unsafe fn unregister_actor_names(actor_id: u64) {
 
             // SAFETY: registry belongs to `node` for the node lifetime.
             let registry = unsafe { &*node.registry };
-            let names = take_registry_names_if(registry, |location| {
-                Some(location.node()) == node.auth.node_identity() && location.slot() == actor_slot
-            });
+            let names = take_registry_names_if(
+                registry,
+                |location| {
+                    Some(location.node()) == node.auth.node_identity()
+                        && location.direct_serial() == Some(actor_slot)
+                },
+                |names| {
+                    let emit = node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING
+                        && !node.cluster.is_null();
+                    if emit {
+                        // SAFETY: KNOWN_NODES pins the node during bounded mutation.
+                        unsafe { enqueue_registry_removals(node, names) };
+                    }
+                },
+            );
             if names.is_empty() {
                 continue;
             }
-
-            let emit_gossip_remove =
-                node.state.load(Ordering::Acquire) == NODE_STATE_RUNNING && !node.cluster.is_null();
-            // SAFETY: KNOWN_NODES keeps `node` alive for the duration of this loop,
-            // and the node state check above excludes teardown in progress.
-            unsafe { unregister_names_from_node(node, names, emit_gossip_remove) };
+            registry.observer().notify();
         }
     });
 }
@@ -1347,6 +1489,8 @@ extern "C" fn node_registry_gossip_callback(
     } else if map.get(&key) == Some(&location) {
         map.remove(&key);
     }
+    drop(map);
+    registry.observer().notify();
 }
 
 unsafe fn free_transport(transport: *mut HewTransport) {
@@ -1427,7 +1571,15 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
     }
     // SAFETY: registry belongs to the live callback-owning node.
     let registry = unsafe { &*node.registry };
-    let _ = take_registry_names_if(registry, |location| location.node() == dead_identity);
+    if !take_registry_names_if(
+        registry,
+        |location| location.node() == dead_identity,
+        |_| {},
+    )
+    .is_empty()
+    {
+        registry.observer().notify();
+    }
 }
 
 /// Create a new unified distributed node runtime.
@@ -1680,6 +1832,17 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
     let _ = unsafe { cluster::hew_cluster_join(node.cluster, node.route_slot, node.bind_addr) };
     joined_cluster = true;
 
+    // A restarted low-level node receives a fresh observation instance. Old
+    // subscriptions retain only the closed predecessor hub.
+    if !node.registry.is_null() {
+        // SAFETY: this node owns its registry throughout startup.
+        let registry = unsafe { &*node.registry };
+        let observer = Arc::new(observation::NodeObservation::default());
+        *registry.observation.lock_or_recover() = Arc::clone(&observer);
+        // SAFETY: cluster was created above and belongs to the starting node.
+        unsafe { &*node.cluster }.set_observer(Arc::downgrade(&observer));
+    }
+
     // Wire the registry gossip callback so remote name events update our
     // remote_names map.
     if !node.registry.is_null() {
@@ -1859,6 +2022,10 @@ pub unsafe extern "C" fn hew_node_stop(node: *mut HewNode) -> c_int {
         }
 
         node.state.store(NODE_STATE_STOPPED, Ordering::Release);
+        if !node.registry.is_null() {
+            // SAFETY: registry outlives stop, including its final EOF publication.
+            unsafe { &*node.registry }.observer().finish();
+        }
         0
     }) // KNOWN_NODES.access
 }
@@ -1911,32 +2078,57 @@ pub unsafe extern "C" fn hew_node_register(
         return -1;
     }
 
-    // SAFETY: name was checked non-null and is a valid C string by caller contract.
-    let key = unsafe { CStr::from_ptr(name) }
-        .to_string_lossy()
-        .into_owned();
     let Some(location) = local_actor_location(node, actor) else {
         set_last_error("hew_node_register: node has no authenticated Location authority");
         return -1;
     };
-    // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
+    // SAFETY: the caller pins the node and its canonical registry.
+    let (status, observer) = unsafe { register_location(node, name, location) };
+    if let Some(observer) = observer {
+        observer.notify();
+    }
+    status
+}
+
+unsafe fn register_location(
+    node: &HewNode,
+    name: *const c_char,
+    location: Location,
+) -> (c_int, Option<Arc<observation::NodeObservation>>) {
+    if node.registry.is_null() {
+        return (-1, None);
+    }
+    // SAFETY: the caller lends a valid C name and pins this node.
+    let key = unsafe { CStr::from_ptr(name) }
+        .to_string_lossy()
+        .into_owned();
+    // SAFETY: the node owns its canonical registry.
     let reg = unsafe { &*node.registry };
-    let previous = reg.remote_names.lock_or_recover().get(&key).copied();
-    if previous == Some(location) {
-        return 0;
+    let mut names = reg.remote_names.lock_or_recover();
+    // Terminal cleanup takes this same map after publishing terminal state.
+    // Checking liveness under it prevents a completed actor/control from
+    // acquiring a name after its exact retirement pass.
+    let live = match location.target() {
+        crate::node_identity::Target::Direct(_) => crate::lifetime::local_handles::with_current_target_actor(location.target(), node.route_slot, |actor| {
+            // SAFETY: the target helper pins the exact actor allocation.
+            let state = unsafe { (*actor).actor_state.load(Ordering::Acquire) };
+            !matches!(state, value if value == crate::internal::types::HewActorState::Stopping as i32
+                || value == crate::internal::types::HewActorState::Stopped as i32
+                || value == crate::internal::types::HewActorState::Crashing as i32
+                || value == crate::internal::types::HewActorState::Crashed as i32)
+        }).unwrap_or(false),
+        crate::node_identity::Target::Role(token) => crate::lifetime::local_handles::carried_role(token.get())
+            .and_then(crate::lifetime::local_handles::current_actor_role_root)
+            .is_some_and(crate::supervisor::actor_role_authority_live),
+    };
+    if !live {
+        return (-1, None);
     }
-    if previous.is_some() {
-        // SAFETY: name is a valid C string by contract.
-        unsafe { crate::registry::hew_registry_unregister(name) };
+
+    if names.get(&key) == Some(&location) {
+        return (0, None);
     }
-    // SAFETY: registry API expects a stable C string pointer.
-    if unsafe { crate::registry::hew_registry_register(name, actor_id_to_registry_ptr(actor)) } != 0
-    {
-        return -1;
-    }
-    reg.remote_names
-        .lock_or_recover()
-        .insert(key.clone(), location);
+    names.insert(key.clone(), location);
 
     // Propagate to cluster gossip so remote nodes learn about this actor.
     if !node.cluster.is_null() {
@@ -1944,6 +2136,7 @@ pub unsafe extern "C" fn hew_node_register(
         // SAFETY: cluster pointer is valid while the node is alive.
         unsafe { cluster::hew_cluster_registry_add(node.cluster, name, &raw const abi_location) };
     }
+    drop(names);
     if !node.conn_mgr.is_null() {
         // SAFETY: connection manager pointer is valid while the node is alive.
         unsafe {
@@ -1951,7 +2144,7 @@ pub unsafe extern "C" fn hew_node_register(
         }
     }
 
-    0
+    (0, Some(reg.observer()))
 }
 
 /// Unregister a named actor from this node.
@@ -1971,24 +2164,19 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
         return -1;
     }
 
-    // Also unregister from the global local registry.
-    // SAFETY: name was validated non-null by caller contract.
-    unsafe { crate::registry::hew_registry_unregister(name) };
-
     // SAFETY: name was checked non-null and is a valid C string by caller contract.
     let key = unsafe { CStr::from_ptr(name) }
         .to_string_lossy()
         .into_owned();
     // SAFETY: registry pointer was allocated in hew_node_new and freed in hew_node_free.
     let reg = unsafe { &*node.registry };
-    let removed_location = {
-        let mut map = reg.remote_names.lock_or_recover();
-        map.remove(&key)
-    };
+    let mut names = reg.remote_names.lock_or_recover();
+    // SAFETY: name was validated non-null by caller contract. Serialize this
+    // local removal with the canonical name map and any racing repoint.
+    let removed_location = names.remove(&key);
     let Some(removed_location) = removed_location else {
         return 0;
     };
-
     // Propagate removal to cluster gossip.
     if !node.cluster.is_null() {
         let abi_location = HewLocation::from(removed_location);
@@ -1997,6 +2185,8 @@ pub unsafe extern "C" fn hew_node_unregister(node: *mut HewNode, name: *const c_
             cluster::hew_cluster_registry_remove(node.cluster, name, &raw const abi_location);
         };
     }
+    drop(names);
+    reg.observer().notify();
     if !node.conn_mgr.is_null() {
         // SAFETY: connection manager pointer is valid while the node is alive.
         unsafe {

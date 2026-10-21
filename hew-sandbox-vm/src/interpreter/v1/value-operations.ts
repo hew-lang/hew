@@ -1,3 +1,4 @@
+import type { RuntimeContinuation } from "./shims.js";
 import {
   UNIT,
   cloneValue,
@@ -124,7 +125,7 @@ export function* selectedValue(
 ): ValueProgram {
   const plan = pkg.value_capabilities[id];
   if (!plan) throw new Error(`selected value plan ${id} is missing`);
-  if (plan.callable !== undefined)
+  if (plan.callable != null)
     return yield { kind: "call", callee: plan.callable, args };
   const [left, right] = args;
   if (!left) throw new Error("selected value operation has no receiver");
@@ -311,7 +312,7 @@ function option(
 }
 
 export function* sharedOperation(
-  operation: string,
+  operation: Extract<RuntimeContinuation, { handler: "shared" }>["operation"],
   args: VmValue[],
   owner: RcOwner | null,
   typeName: string,
@@ -366,8 +367,10 @@ export function* sharedOperation(
       yield { kind: "release", value: old };
       return UNIT;
     }
-    default:
-      throw new Error(`shared operation ${operation} has no executor`);
+    default: {
+      const exhaustive: never = operation;
+      throw new Error(`shared operation ${String(exhaustive)} has no executor`);
+    }
   }
 }
 
@@ -376,12 +379,12 @@ export function* sharedOperation(
  * borrow their owners until every fallible callback has completed. */
 export function* collectionOperation(
   pkg: PackageV1,
-  family: string,
-  operation: string,
+  request: Extract<RuntimeContinuation, { handler: "collection" }>,
   args: VmValue[],
   callbacks: number[],
   shape: number | null | undefined,
 ): ValueProgram {
+  const { family, operation } = request;
   if (family === "Vector") {
     const receiver = args[0];
     if (receiver?.kind !== "vector")
@@ -439,7 +442,12 @@ export function* collectionOperation(
     };
     return receiver;
   }
-  if (["Keys", "Values", "Elements", "Entries"].includes(operation)) {
+  if (
+    operation === "Keys" ||
+    operation === "Values" ||
+    operation === "Elements" ||
+    operation === "Entries"
+  ) {
     return {
       kind: "vector",
       elementType: "",
@@ -525,5 +533,6 @@ export function* collectionOperation(
         : option(pkg, shape, entry?.value),
     );
   }
-  throw new Error(`collection operation ${operation} has no executor`);
+  const exhaustive: never = operation;
+  throw new Error(`collection operation ${String(exhaustive)} has no executor`);
 }

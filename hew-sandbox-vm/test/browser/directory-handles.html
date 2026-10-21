@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Hew browser directory checks</title>
+<pre id="result">Running real browser directory checks</pre>
+<script type="module">
+  import * as vm from "../../dist/interpreter/index.js";
+  import { runDirectoryHandleCases } from "./directory-handles.mjs";
+
+  globalThis.directoryHandleResult = (async () => {
+    try {
+      const compilerUrl =
+        new URLSearchParams(location.search).get("compiler") ??
+        "../../../hew-wasm/pkg/hew_wasm.js";
+      const compiler = await import(compilerUrl);
+      await compiler.default();
+      const source = await (
+        await fetch(
+          "../../../tests/vertical-slice/accept/browser_directory_handles.hew",
+        )
+      ).text();
+      const result = await runDirectoryHandleCases(compiler, vm, source);
+      document.querySelector("#result").textContent = JSON.stringify(
+        result,
+        null,
+        2,
+      );
+      return result;
+    } catch (error) {
+      document.querySelector("#result").textContent = String(error);
+      throw error;
+    }
+  })();
+</script>

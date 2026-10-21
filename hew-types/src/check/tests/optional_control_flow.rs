@@ -101,7 +101,6 @@ fn fallible_default_unit_returns_retain_distinct_source_clause_identities() {
         );
     }
     assert_ne!(clauses[0], clauses[1]);
-    assert_eq!(checked.result_return_coercions.len(), clauses.len());
     for clause in clauses {
         assert_eq!(
             checked

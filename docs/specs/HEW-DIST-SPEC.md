@@ -91,19 +91,25 @@ incarnation. A carried location from an earlier session is stale.
 
 ### 2.4 `Location`
 
-A remote actor is identified by:
+A carried destination identifies a direct actor allocation or a stable supervised role:
 
 ```text
 Location {
     node: NodeId,          // 16 bytes
-    slot: u64,             // non-zero actor slot
+    target_id: u64,        // non-zero exact actor serial or canonical role token
     incarnation: u32,      // non-zero durable node session
-    reserved: u32 = 0
+    target_kind: u32       // 0 = direct actor, 1 = stable role
 }
 ```
 
-The native C ABI representation is 32 bytes. The reserved field MUST be zero.
-Actor slot `0` and session incarnation `0` are invalid.
+The native C ABI representation is 32 bytes. Target identity `0`, session
+incarnation `0` and unknown target kinds are invalid. Direct and role targets
+remain distinct even when their scalar identities coincide. Role tokens retain
+all 64 bits; receiver-local actor packing never interprets them as actor slots.
+
+Source code compares complete `Location` values and may read `node_id()` and
+`incarnation()`. Display includes `actor:<serial>` or `role:<token>`; there is no
+public slot projection.
 
 `Location` is discovery metadata. Moving, storing or duplicating it does not
 grant authority and does not affect actor lifetime. `Node.lookup(name)` obtains
@@ -150,21 +156,71 @@ NodeConfig {
     transport: NodeTransport, // Tcp | QuicMesh
     key: string,           // path to the stable credential
     peers: Vec<string>,    // pinned peer credentials, slot = position
-    seeds: Vec<string>     // addresses dialled once at start
+    seeds: Vec<string>     // addresses discovered and rejoined while the node lives
 }
 ```
 
 `NodeConfig.at(addr)` fills the defaults around a bind address.
-`NodeConfig.load() -> Result<NodeConfig, NodeError>` reads `[cluster]` plus
-`HEW_NODE_*` overrides and is deferred to v0.8.0.
+Import `std.net` to use `NodeConfig.load() -> Result<NodeConfig, ConfigError>`.
+The loader reads `[cluster]` from `hew.toml` in the working directory, or the
+file selected by `HEW_NODE_CONFIG`, then applies `HEW_NODE_BIND`,
+`HEW_NODE_TRANSPORT`, `HEW_NODE_KEY`, `HEW_NODE_PEERS` and `HEW_NODE_SEEDS`.
+`bind` and `key` are required non-empty strings; `transport` defaults to `tcp`
+and also accepts `quic-mesh`. Peer and seed lists default to empty. Environment
+lists use TOML array syntax, so `HEW_NODE_SEEDS='[]'` clears the configured list.
+An absent default file permits environment-only configuration; an explicitly
+selected file must exist. Malformed TOML, unknown cluster fields and wrong
+field types are errors even when an environment override replaces that field.
+File key paths are relative to the configuration file's directory; an
+environment key path is relative to the process working directory.
+
+Configuration errors carry ordinary Hew values:
+
+```hew
+pub type ConfigError {
+    source: string;
+    field: string;
+    message: string;
+}
+```
+
+`ConfigError` implements `Display` and `Error`; for example,
+`hew.toml: cluster.seeds: expected an array of strings`. Loading configuration
+does not start a node, create keys or advance a session. Runtime admission
+continues to report `NodeError` through `Node.start` and `Node.connect`.
+
+```toml
+[cluster]
+bind = "127.0.0.1:9000"
+transport = "tcp"
+key = "node.key"
+peers = []
+seeds = ["127.0.0.1:9001"]
+```
+
+Use `hew node identity --key node.key --transport tcp` to load or create a
+persistent identity and print its public credential alone. `tcp` is the default;
+`quic-mesh` prints the TLS SPKI credential. The command reuses the node's secure
+identity storage without starting a node or changing session state. Paste this
+credential into the peer's `peers` list. Routing slots remain the one-based
+positions in that list; the credential does not choose a routing slot.
 
 No field is inert. `Node.start` loads or creates the stable credential named by
 `key` for the transport named by `transport`, pins every `peers` entry to the
-route slot that is its one-based position in that vector, dials every `seeds`
-entry once while skipping its own `bind` address. Both transports authenticate
-pinned peers. `NodeError.Config` reports invalid configuration, `Key` invalid
-identity or peer credentials, `Unreachable` a failed dial, and `Refused` denied
-admission or an unavailable node or transport. Re-dial with backoff is v0.8.0.
+route slot that is its one-based position in that vector, and supervises each
+configured seed while skipping its own `bind` address and duplicate targets.
+Seed discovery retries initial absence, refused authentication and later
+connection loss with capped exponential backoff and jitter until shutdown.
+`Node.start` succeeds once the local node and seed supervision are running;
+seed availability is not a startup requirement. Both transports authenticate
+pinned peers before publishing routes. Rejoin preserves identity pins and
+session fences and never replays an admitted actor request. Shutdown cancels
+retry waits and joins discovery workers. Numeric-address dial and authenticated
+admission share a bounded attempt budget; QUIC hostname resolution still uses
+the platform resolver, whose completion can delay shutdown.
+`NodeError.Config` reports invalid configuration and `Key` invalid identity or
+peer credentials. Explicit `Node.connect` still reports `Unreachable` for a
+failed dial and `Refused` for denied admission or an unavailable transport.
 
 `Node.identity_key()` returns the local public credential as lowercase
 hexadecimal for out-of-band exchange. There is no separate `Node.load_keys`,
@@ -205,19 +261,20 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 5 handshake
+## 4. Protocol-version 9 handshake
 
-Version 5 adds authenticated service offers and grant-bearing requests. Upgrade
-communicating nodes together: version 4 peers fail the handshake before route
-publication, and version 5 never downgrades a grant-bearing request to a raw ask.
+Version 9 carries disjoint direct-actor and stable-role destinations throughout
+requests, grants, registry gossip and observations. Upgrade communicating nodes
+together: earlier peers fail the handshake before route publication. There is
+no downgrade or legacy location codec.
 
 Every connection exchanges exactly 72 bytes before actor traffic. The layout
-magic remains `HEW\x02`; the independently checked protocol version is `5`:
+magic remains `HEW\x02`; the independently checked protocol version is `9`:
 
 | Offset | Size | Field |
 |---:|---:|---|
 | `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `5` |
+| `4` | 2 | protocol version, big-endian, value `9` |
 | `6` | 2 | reserved, zero |
 | `8` | 4 | schema hash, big-endian |
 | `12` | 4 | feature flags, big-endian |
@@ -229,7 +286,7 @@ magic remains `HEW\x02`; the independently checked protocol version is `5`:
 The receiver MUST reject:
 
 - any length other than 72 bytes;
-- magic other than `HEW\x02` or protocol version other than `5`;
+- magic other than `HEW\x02` or protocol version other than `9`;
 - non-zero reserved bytes;
 - an all-zero `NodeId`;
 - session incarnation `0`;
@@ -246,7 +303,7 @@ buried member.
 ## 5. Wire framing and schema
 
 Transport framing carries CBOR wire frames defined by
-`hew-runtime/schemas/envelope.cddl`. The wire schema version is `4`.
+`hew-runtime/schemas/envelope.cddl`. The wire schema version is `9`.
 
 Envelope key `5` names the canonical dotted handler declaration for a request,
 or carries reply status `0` (success) / `1` (rejection), or withdrawal tag `2`. Local dispatch indices
@@ -264,13 +321,14 @@ A wire `location` is a CBOR map containing:
 ```text
 {
     1: node-id bstr of exactly 16 bytes,
-    2: non-zero actor slot,
-    3: non-zero session incarnation no greater than u32::MAX
+    2: non-zero exact actor serial or canonical role token,
+    3: non-zero session incarnation no greater than u32::MAX,
+    4: target kind (0 = direct actor, 1 = stable role)
 }
 ```
 
 Unknown versions, duplicate or unknown map keys, malformed lengths, zero fields,
-non-zero reserved fields, invalid reason tags, and truncated CBOR MUST be
+unknown target kinds, invalid reason tags, and truncated CBOR MUST be
 rejected without state mutation.
 
 Actor-message bodies use the per-type `#[wire]` CBOR schema. Message and reply
@@ -285,10 +343,14 @@ transport authentication and handshake admission complete.
 
 Every send, ask, monitor, or link operation resolves the carried `NodeId` to the
 current published route, compares the carried session incarnation, and validates
-the exact actor slot. It MUST fail closed if any component differs.
+the semantic target. Direct actors resolve by exact allocation serial. Roles
+resolve through the canonical owning supervisor and select one exact worker
+incarnation. Every admitted call freezes that worker and its codecs; dispatch
+rechecks the grant without resolving a replacement or replaying the request.
+It MUST fail closed if identity, session or authority differs.
 
 A same-key restart with a higher session fences every earlier location, even if
-the replacement process deliberately reuses the same actor slot. The exact
+the replacement process deliberately reuses the same scalar target identity. The exact
 public error is `StaleRef`.
 
 When a connection is superseded, the previous connection loses data-plane and
@@ -297,32 +359,62 @@ that authority.
 
 ## 7. Registry and names
 
-`Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
-the actor's exact `Location` and records `A`'s declaration identity beside it.
+`Node.register(name, actor: A) -> i32` publishes
+the actor's direct or stable-role `Location`; zero indicates success.
 `Node.lookup(name) -> Result<Location, LookupError>` returns discovery metadata
 from the authenticated registry. A location cannot authorize actor operations.
 Obtain an imported actor value from an authenticated export offer (§7.1).
 
-`Node.register` is the one registration verb. It registers locally whether or
-not a node has started, and publishes cluster-wide once one has.
-`Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
-Result<A, LookupError>` is the local view of the same registry and
-performs the same comparison.
-
-The current registry records and compares declaration identity on the
-registering node. Cluster-wide lookup type comparison remains deferred.
-Wire version 5 resolves handler declarations when a message is dispatched.
+`Node.register` requires a running node and publishes through its registry.
+Completed direct actor shutdown withdraws its names even while handles remain.
+A role name survives worker replacement and is withdrawn when its stable owning
+supervisor completes shutdown. Explicit unregister is currently a native runtime
+operation; a `Node.unregister` Hew spelling is not implemented. Lookup returns
+metadata; it does not reconstruct an actor handle or compare actor interfaces.
+Authenticated grants validate portable handler declarations.
 
 Names are discovery aliases, not identity:
 
 - registering the same name for the same live actor is idempotent;
 - repointing a name changes future lookup results only;
 - unregistering a name does not revoke an already issued location;
-- actor death makes every location for that actor slot stale;
+- direct actor death makes its direct location stale;
+- role worker replacement preserves the role location and existing live grants;
 - registry add and remove operations carry the exact `Location`.
 
 Registry gossip from an unauthenticated, unverified, stale, or superseded
 connection MUST be rejected.
+
+### Membership and naming observation
+
+`std.net.cluster.snapshot()` returns a copied `Snapshot` containing the local
+`Member`, known `members` and all known `registrations`. A `Member` carries the
+canonical `NodeId`, durable `session` and `State` (`Alive`, `Suspect`, `Dead` or
+`Left`). A `Registration` carries a name and exact discovery `Location`.
+`Snapshot.local_registrations()` selects registrations of the local identity.
+These are current local observations, not quorum or liveness guarantees. The
+membership and name collections do not form a cross-collection transaction.
+
+`cluster.watch()` returns an instance-bound `Subscription` with `initial`,
+`changes: Stream<()>` and `snapshot()`. Subscription precedes the initial read:
+a concurrent change is visible in that read or leaves readiness queued,
+possibly both. Readiness coalesces and consumers re-read snapshots; this is not
+a lossless departure/join event log. Each node admits at most 64 live
+subscriptions and reports `ObserveError.Limit` beyond that bound.
+
+`cluster.wait_registered(name)` waits cancellably for a current discovery
+location. `cluster.wait_departed(member)` waits until that exact identity and
+durable session is absent, dead or left; a higher-session rejoin does not hide
+the predecessor's departure. Neither operation mints actor authority. Both
+subscribe before checking, use ordinary stream waits and release their
+subscriptions on completion or scope cancellation.
+
+A subscription never adopts a replacement node instance. Snapshot reads report
+`ObserveError.NotRunning` when admission closes. The changes stream reaches EOF
+after owned network workers and teardown finish, with any queued readiness
+consumed first. `subscription.wait_shutdown()` drains that stream to completion
+and remains cancellable by its enclosing scope. It does not request shutdown.
+Global snapshot and watch creation require a running node.
 
 ## 7.1 Supplied service grants
 
@@ -333,8 +425,11 @@ The peer handle binds the local and remote `NodeId` and session incarnations.
 
 `peer.export(actor)` suspends until the recipient acknowledges admission of an
 offer, then returns a resource `net.Export<A>`. The issuer owns a bounded grant
-record naming the recipient, both sessions, exact actor incarnation and portable
-handler wire identities, including canonical generic arguments. Keep the returned export resource alive while the
+record naming the recipient, both sessions, semantic target and portable
+handler wire identities, including canonical generic arguments. A direct export
+binds its exact actor incarnation; a role export binds the canonical role and
+its owning lifetime. Role interface checks use the declared actor specification,
+so an empty worker slot does not require a substitute worker. Keep the returned export resource alive while the
 recipient needs admission: discarding it or leaving its scope revokes the grant
 through ordinary affine cleanup. For example:
 
@@ -366,8 +461,14 @@ completion-call results as local actor methods. Every
 request and reply uses the actor's checked wire codec. Native handles cannot be
 transferred as payloads or forwarded as service descriptors.
 
+A new export through a nested supervisor requires its containing supervisor's
+declared interface metadata to be available. While that owner is absent during
+replacement, export returns `StaleRef`; stable role identity and existing grants
+remain valid. New export can succeed again after owner restart. Making descendant
+interface metadata available throughout that gap remains follow-up work.
+
 The receiver MUST validate the current authenticated publication, recipient and
-sessions, active grant, live actor incarnation and exact handler before decoding
+sessions, active grant, selected live actor incarnation and exact handler before decoding
 or mailbox admission. Queued dispatch MUST recheck the same authority when it
 claims the request. Closing `Export` revokes future claims; an already claimed
 request may finish. An actor becomes capability-only at its first export and

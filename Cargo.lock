@@ -977,18 +977,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
-name = "cron"
-version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5dcd6f69605c2956916ce24e8af637b754964c9a83f4662d3a2361654cdba09"
-dependencies = [
- "chrono",
- "once_cell",
- "phf",
- "winnow 0.7.15",
-]
-
-[[package]]
 name = "crossbeam-deque"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,6 +1329,12 @@ name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
+
+[[package]]
+name = "dyn-clone"
+version = "1.0.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ed25519"
@@ -1843,6 +1837,7 @@ dependencies = [
  "hew-parser",
  "hew-types",
  "serde",
+ "sha2 0.11.0",
  "tracing",
 ]
 
@@ -1851,6 +1846,13 @@ name = "hew-cabi"
 version = "0.6.3"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "hew-calendar"
+version = "0.6.3"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]
@@ -1884,6 +1886,7 @@ dependencies = [
  "hew-observe",
  "hew-parser",
  "hew-pkg",
+ "hew-runtime",
  "hew-sir",
  "hew-testutil",
  "hew-types",
@@ -1910,10 +1913,12 @@ dependencies = [
  "base64 0.22.1",
  "ciborium",
  "rmp-serde",
+ "schemars",
  "serde",
  "serde_json",
  "serde_yaml",
  "toml",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2156,11 +2161,10 @@ version = "0.6.3"
 dependencies = [
  "argon2",
  "base64 0.22.1",
- "chrono",
- "cron",
  "ed25519-dalek",
  "flate2",
  "hew-cabi",
+ "hew-calendar",
  "hew-runtime",
  "ipnet",
  "jsonwebtoken",
@@ -2213,10 +2217,12 @@ dependencies = [
  "hew-runtime",
  "hew-types",
  "regex",
+ "schemars",
  "serde",
  "serde_json",
  "stacker",
  "strum",
+ "ts-rs",
 ]
 
 [[package]]
@@ -2225,6 +2231,7 @@ version = "0.6.3"
 dependencies = [
  "assert_cmd",
  "hew-analysis",
+ "hew-calendar",
  "hew-codec",
  "hew-compile",
  "hew-hir",
@@ -2235,10 +2242,12 @@ dependencies = [
  "hew-testutil",
  "hew-types",
  "js-sys",
+ "schemars",
  "serde",
  "serde_json",
  "tempfile",
  "toml",
+ "ts-rs",
  "walkdir",
  "wasm-bindgen",
 ]
@@ -4396,6 +4405,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "schemars"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
+dependencies = [
+ "dyn-clone",
+ "ref-cast",
+ "schemars_derive",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "schemars_derive"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3a92094fa7d61aa124645844facb6b554dfc797136d0f5fd1f890e2bffc69"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "serde_derive_internals",
+ "syn 3.0.6",
+]
+
+[[package]]
 name = "scoped-tls"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4471,6 +4505,17 @@ name = "serde_derive"
 version = "1.0.229"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.6",
+]
+
+[[package]]
+name = "serde_derive_internals"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f852137cce035d6a4df67ccce505ff6b3e9fd3a10e3e52b24dc71e650bb1a9bd"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5137,7 +5182,7 @@ dependencies = [
  "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
@@ -5155,7 +5200,7 @@ version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d38ac1cf9b95face32296c0a3ede1fdc270627c9d9c02a7274dd6d960dc4d56"
 dependencies = [
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
@@ -5296,6 +5341,29 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ts-rs"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "756050066659291d47a554a9f558125db17428b073c5ffce1daf5dcb0f7231d8"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+ "ts-rs-macros",
+]
+
+[[package]]
+name = "ts-rs-macros"
+version = "12.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38d90eea51bc7988ef9e674bf80a85ba6804739e535e9cab48e4bb34a8b652aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "termcolor",
+]
 
 [[package]]
 name = "tungstenite"
@@ -6030,15 +6098,6 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
-
-[[package]]
-name = "winnow"
-version = "0.7.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
-dependencies = [
- "memchr",
-]
 
 [[package]]
 name = "winnow"

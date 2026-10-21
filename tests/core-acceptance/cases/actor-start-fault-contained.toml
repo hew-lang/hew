@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-start-fault-contained"
+intent = "A child start fault after suspension releases unpublished owned state and reaches the caller's checked error edge without trapping the module."
+source = "cases/actor-start-fault-contained.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "startup fault contained\ncaller survived startup rollback\n"
+stderr = "hew: failure: UserPanic (212): start failed after suspension\nhew: actor crash in Builder.construct (actor 1): UserPanic\n"
+exit = 1

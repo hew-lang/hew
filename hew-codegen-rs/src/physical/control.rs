@@ -320,6 +320,17 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
         normal: &PhysicalEdge,
         failures: &[PhysicalCheckedFailure],
     ) -> CodegenResult<()> {
+        if self
+            .storage(lhs)?
+            .ty
+            .is_builtin(hew_types::BuiltinType::Timestamp)
+            || self
+                .storage(rhs)?
+                .ty
+                .is_builtin(hew_types::BuiltinType::Timestamp)
+        {
+            return self.emit_checked_timestamp(op, lhs, rhs, result, normal, failures);
+        }
         let left = self.load(lhs, "checked.left")?.into_int_value();
         let right = self.load(rhs, "checked.right")?.into_int_value();
         let signed = is_signed(&self.storage(lhs)?.ty);
@@ -447,7 +458,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
     pub(super) fn emit_checked_choice(
         &self,
         failed: IntValue<'ctx>,
-        value: IntValue<'ctx>,
+        value: impl Into<BasicValueEnum<'ctx>>,
         result: StorageId,
         normal: &PhysicalEdge,
         failure: &PhysicalEdge,

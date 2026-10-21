@@ -321,7 +321,6 @@ impl Checker {
                     self.register_trait_lang_items(td, span.clone());
                 }
                 Item::Supervisor(sd) => {
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     if !self.register_type_namespace_name(None, sd.name, span) {
                         continue;
                     }
@@ -531,7 +530,6 @@ impl Checker {
                     };
                     members.extend(payload);
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
         self.validate_wire_type_encoding(identity.as_str(), members);
@@ -712,7 +710,6 @@ impl Checker {
                             .insert(variant.name.to_string(), VariantDef::Struct(variant_fields));
                     }
                 },
-                TypeBodyItem::Method(_) => {}
             }
         }
 
@@ -1164,7 +1161,6 @@ impl Checker {
                         }
                     }
                 }
-                TypeBodyItem::Method(_) => {}
             }
         }
 
@@ -1488,9 +1484,6 @@ impl Checker {
                         }
                     }
                 }
-                TypeBodyItem::Method(_) => {
-                    // Methods are handled in pass 2
-                }
             }
         }
 
@@ -1727,6 +1720,7 @@ impl Checker {
         if let (Some(min_v), Some(v)) = (min_version, version) {
             if min_v > v {
                 self.errors.push(TypeError {
+                    fixes: Vec::new(),
                     severity: Severity::Error,
                     kind: TypeErrorKind::InvalidOperation,
                     span: decl_span.clone(),
@@ -1746,6 +1740,7 @@ impl Checker {
                 if version.is_none() {
                     // since has no effect without a schema version
                     self.warnings.push(TypeError {
+                        fixes: Vec::new(),
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
                         span: decl_span.clone(),
@@ -1764,6 +1759,7 @@ impl Checker {
                 if let Some(v) = version {
                     if since > v {
                         self.errors.push(TypeError {
+                            fixes: Vec::new(),
                             severity: Severity::Error,
                             kind: TypeErrorKind::InvalidOperation,
                             span: decl_span.clone(),
@@ -1784,6 +1780,7 @@ impl Checker {
             if let Some(v) = version {
                 if v > 1 && fm.since.is_none() && !fm.is_optional {
                     self.warnings.push(TypeError {
+                        fixes: Vec::new(),
                         severity: Severity::Warning,
                         kind: TypeErrorKind::StyleSuggestion,
                         span: decl_span.clone(),

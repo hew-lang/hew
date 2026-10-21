@@ -16,8 +16,12 @@ workspace = true
 # Exposes fixture-only identities to direct dev-dependencies. Production builds
 # leave this disabled, so fixture constructors are absent from the public API.
 test = []
+# Wire schema generation uses the existing runtime identities.
+sandbox-schema = ["dep:schemars", "dep:ts-rs"]
 
 [dependencies]
+schemars = { version = "1.2", optional = true }
+ts-rs = { version = "12", features = ["no-serde-warnings"], optional = true }
 heck = "0.5"
 # Member flag bits of serialization tables, and the decoder `embed!` shares.
 hew-codec = { path = "../hew-codec" }

@@ -91,6 +91,17 @@ pub fn resolution_at(
         .map(|(key, resolution)| (span_of(key), *resolution))
 }
 
+/// Whether a checked source segment is exactly one authored identifier token.
+/// Some expression resolutions include trailing punctuation or whitespace.
+#[must_use]
+pub fn is_identifier_span(source: &str, span: OffsetSpan) -> bool {
+    let Some(text) = source.get(span.start..span.end) else {
+        return false;
+    };
+    matches!(hew_lexer::lex(text).as_slice(), [(hew_lexer::Token::Identifier(_), token)]
+        if token.start == 0 && token.end == text.len())
+}
+
 /// Every resolved source segment in one file that names the same declaration.
 ///
 /// This includes the queried segment if it is present in the checker table.
@@ -220,7 +231,6 @@ pub fn declaration_at(
                 output.defs.kind(id),
                 DeclarationKind::ActorReceive
                     | DeclarationKind::ActorMethod
-                    | DeclarationKind::TypeMethod
                     | DeclarationKind::ImplMethod
                     | DeclarationKind::TraitMethod
             ) =>
@@ -326,7 +336,7 @@ pub fn declaration_name_span(
                     .iter()
                     .filter_map(|part| match part {
                         TypeBodyItem::Field { name, ty, .. } => Some((name, ty)),
-                        _ => None,
+                        TypeBodyItem::Variant(_) => None,
                     })
                     .nth(index as usize)?;
                 enclosing_span.start..ty.1.start
@@ -355,23 +365,6 @@ pub fn declaration_name_span(
             .or_else(|| decl.methods.get(ordinal))?
             .decl_span
             .clone(),
-        (DeclarationKind::TypeMethod, Item::TypeDecl(decl)) => {
-            let methods: Vec<_> = decl
-                .body
-                .iter()
-                .filter_map(|part| match part {
-                    TypeBodyItem::Method(method) => Some(method),
-                    _ => None,
-                })
-                .collect();
-            methods
-                .iter()
-                .find(|method| method.fn_span == item_span)
-                .copied()
-                .or_else(|| methods.get(ordinal).copied())?
-                .decl_span
-                .clone()
-        }
         (DeclarationKind::ActorMethod, Item::Actor(decl)) => decl
             .methods
             .iter()
@@ -397,7 +390,7 @@ pub fn declaration_name_span(
             .iter()
             .filter_map(|part| match part {
                 TypeBodyItem::Variant(variant) => Some(variant),
-                _ => None,
+                TypeBodyItem::Field { .. } => None,
             })
             .nth(ordinal)?
             .span

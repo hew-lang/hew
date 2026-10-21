@@ -704,7 +704,8 @@ impl Parser<'_> {
         if let Some(fragment) = self.take_expression_fragment().ok()? {
             return Some(fragment);
         }
-        let start = self.peek_span().start;
+        let token_span = self.peek_span();
+        let start = token_span.start;
 
         let expr = match self.peek()? {
             Token::DotDot | Token::DotDotEqual => {
@@ -776,6 +777,7 @@ impl Parser<'_> {
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 1 + off;
                     self.errors.push(ParseError {
+                        fixes: Vec::new(),
                         message: msg.to_string(),
                         span: err_start..err_start + 2,
                         hint: None,
@@ -814,6 +816,7 @@ impl Parser<'_> {
                 for (off, msg) in unescape_errs {
                     let err_start = tok_start + 2 + off;
                     self.errors.push(ParseError {
+                        fixes: Vec::new(),
                         message: msg.to_string(),
                         span: err_start..err_start + 2,
                         hint: None,
@@ -1709,7 +1712,15 @@ impl Parser<'_> {
             }
         };
 
-        let end = self.peek_span().start;
+        // An identifier is one token even when comments separate it from a
+        // generic application or call. Downstream diagnostics use this fact.
+        let end = if matches!(expr, Expr::Ident(_)) {
+            token_span.end
+        } else if matches!(expr, Expr::Match { .. }) {
+            self.last_token_end
+        } else {
+            self.peek_span().start
+        };
         Some((expr, start..end))
     }
 
@@ -2009,7 +2020,7 @@ impl Parser<'_> {
                 start..end,
             ))
         } else {
-            let end = self.peek_span().start;
+            let end = method.1.end;
             Some((
                 Expr::FieldAccess {
                     object: Box::new(lhs),

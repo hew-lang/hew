@@ -114,9 +114,6 @@ pub fn dump_hir(module: &HirModule) -> String {
                     writeln!(out, "  field {}: {}", field.name, field.ty.user_facing())
                         .expect("write to string");
                 }
-                for method in &decl.consuming_methods {
-                    writeln!(out, "  consuming-method {method}").expect("write to string");
-                }
             }
             HirItem::Record(record) => {
                 writeln!(out, "record {} {}", record.id, record.name).expect("write to string");

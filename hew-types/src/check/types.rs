@@ -460,7 +460,16 @@ pub struct TypeCheckOutput {
     /// fields that `init` does not initialize, then its `init` parameters; a
     /// supervisor's header parameters.
     pub spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
+    /// Wiring arguments appended to written init values, in checked argument order.
+    pub supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    /// Dependency-first declaration indices, with declaration-order ties.
+    pub supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     pub expr_types: HashMap<SpanKey, Ty>,
+    /// Final checked types of authored lexical bindings, including unused
+    /// declarations and destructured components. Keys are the same identities
+    /// carried by `Resolution::Local`; readers never infer a declaration's
+    /// type from whichever use happens to be available.
+    pub resolved_binding_types: HashMap<TypeBindingId, ResolvedTy>,
     /// Interpolation operands checked for `Display` rendering. The value
     /// preserves alias identity for HIR dispatch, and the sites carry implicit
     /// trait-slot demand into callable planning.
@@ -749,6 +758,10 @@ pub struct TypeCheckOutput {
     /// expression. HIR carries this fact on `HirExprKind::Call` verbatim.
     pub suspension_effects: super::effects::SuspensionEffects,
     pub direct_call_targets: HashMap<SpanKey, crate::check::dispatch::CallTarget>,
+    /// Execution selected for each source free-function declaration. This
+    /// distinguishes ordinary bodies from compiler-owned documentation stubs
+    /// even when the declaration is used as a value rather than called.
+    pub source_function_targets: HashMap<crate::DefId, crate::check::dispatch::CallTarget>,
     /// Checked impl bodies keyed by their declaration. Each signature is
     /// finalised by the checker, and callees retain selected declaration IDs.
     /// Imported-body lowering consumes this fact instead of scanning names.
@@ -1729,6 +1742,8 @@ pub(super) struct ActorFieldInfo {
     pub is_mutable: bool,
     /// Span of the field's type annotation (the declaration line).
     pub decl_span: Span,
+    /// Exact authored spelling that would make the field mutable.
+    pub mutable_fix: Option<hew_parser::diagnostic::DiagnosticFix>,
     /// `init` owns the field's first store (D447): no default, assigned in
     /// the init body. A spawn cannot name it.
     pub deferred: bool,
@@ -3242,6 +3257,7 @@ pub struct Checker {
     /// Checker-side accumulator for [`TypeCheckOutput::user_clone_record_seeds`].
     pub(super) user_clone_record_seeds: Vec<String>,
     pub(super) expr_types: HashMap<SpanKey, Ty>,
+    pub(super) binding_types: HashMap<TypeBindingId, (Ty, Option<String>)>,
     pub(super) annotation_types: HashMap<SpanKey, (Ty, Option<String>)>,
     pub(super) interpolation_display_types: HashMap<SpanKey, Ty>,
     pub(super) unrendered_assertion_operands: HashSet<SpanKey>,
@@ -3471,6 +3487,8 @@ pub struct Checker {
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
     pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
+    pub(super) supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
+    pub(super) supervisor_startup_order: HashMap<SpanKey, Vec<usize>>,
     /// Calls whose named arguments a callee rule has bound or refused. A
     /// call with named arguments outside this set reached a callee that
     /// takes positional arguments only.
@@ -3866,7 +3884,7 @@ pub struct Checker {
     /// program-wide `declared_type_param_names` fallback. Set (via
     /// `enter_primary_sig_scope` / `exit_primary_sig_scope`) around the PRIMARY
     /// resolution of EVERY item signature — free functions, actor methods and
-    /// receive fns, inline type-body methods, impl methods, and trait method
+    /// receive fns, impl methods, and trait method
     /// signatures — where the item's own type-param scope is reliably
     /// reconstructed (its bounds frame is pushed before the annotations resolve,
     /// and the enclosing container's generics are pushed by the enter helper).
@@ -4401,6 +4419,7 @@ impl Checker {
             warnings: Vec::new(),
             user_clone_record_seeds: Vec::new(),
             expr_types: HashMap::new(),
+            binding_types: HashMap::new(),
             annotation_types: HashMap::new(),
             interpolation_display_types: HashMap::new(),
             unrendered_assertion_operands: HashSet::new(),
@@ -4483,6 +4502,8 @@ impl Checker {
             chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
             spawn_argument_slots: HashMap::new(),
+            supervisor_wiring: HashMap::new(),
+            supervisor_startup_order: HashMap::new(),
             named_argument_calls: HashSet::new(),
             effect_graph: super::effects::EffectGraph::default(),
             direct_call_targets: HashMap::new(),

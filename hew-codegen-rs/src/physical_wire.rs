@@ -544,17 +544,18 @@ impl<'ctx> EncodeEmitter<'_, 'ctx> {
                 })?;
                 self.void("hew_ser_seq_end", &[])
             }
-            SemWireKind::Record { table, fields, .. } => {
+            SemWireKind::Record { fields, .. } | SemWireKind::Timestamp { fields, .. } => {
                 let slots = fields
                     .iter()
                     .enumerate()
                     .map(|(position, ty)| Ok((self.field(slot, &plan.ty, index(position)?)?, ty)))
                     .collect::<CodegenResult<Vec<_>>>()?;
-                match table {
-                    Some(members) => {
-                        self.record(self.table(&plan.ty, None, members), members, &slots)
-                    }
-                    None => self.sequence(&slots),
+                match &plan.kind {
+                    SemWireKind::Record {
+                        table: Some(members),
+                        ..
+                    } => self.record(self.table(&plan.ty, None, members), members, &slots),
+                    _ => self.sequence(&slots),
                 }
             }
             SemWireKind::Option {
@@ -1228,11 +1229,50 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
         &mut self,
         types: &'t [ResolvedTy],
     ) -> CodegenResult<Vec<(DecodeTemporary<'ctx>, &'t ResolvedTy)>> {
+        self.sequence_with_unsigned_bound(types, None)
+    }
+
+    /// Read a refined field while the source still owns its exact sequence path.
+    /// Both native and portable decoding apply the checked bound in Source::read_u64.
+    fn sequence_with_unsigned_bound<'t>(
+        &mut self,
+        types: &'t [ResolvedTy],
+        bound: Option<(usize, u64)>,
+    ) -> CodegenResult<Vec<(DecodeTemporary<'ctx>, &'t ResolvedTy)>> {
         self.void("hew_de_tuple_begin", &[self.i32(types.len() as u64)])?;
         let mut decoded = Vec::with_capacity(types.len());
-        for ty in types {
+        for (index, ty) in types.iter().enumerate() {
             self.read("hew_de_seq_next", self.values.ctx.i32_type().into(), &[])?;
-            decoded.push((self.child(ty)?, ty));
+            let value = if let Some((_, maximum)) = bound.filter(|(field, _)| *field == index) {
+                let value = self.temporary(ty)?;
+                let integer = self.read(
+                    "hew_de_u64",
+                    self.values.ctx.i64_type().into(),
+                    &[self.values.ctx.i64_type().const_int(maximum, false).into()],
+                )?;
+                self.check_cursor()?;
+                let layout = self.values.module.target.layout(ty).ok_or_else(|| {
+                    CodegenError::FailClosed("refined codec field has no physical layout".into())
+                })?;
+                let narrowed = self
+                    .values
+                    .builder
+                    .build_int_cast(
+                        integer.into_int_value(),
+                        llvm_type(self.values.ctx, &layout.repr)?.into_int_type(),
+                        "wire.refined.unsigned",
+                    )
+                    .llvm_ctx("store refined unsigned codec field")?;
+                self.values
+                    .builder
+                    .build_store(value.slot, narrowed)
+                    .llvm_ctx("stage refined unsigned codec field")?;
+                self.mark(value, true)?;
+                value
+            } else {
+                self.child(ty)?
+            };
+            decoded.push((value, ty));
         }
         self.read("hew_de_seq_next", self.values.ctx.i32_type().into(), &[])?;
         self.check_cursor()?;
@@ -1400,6 +1440,15 @@ impl<'ctx> DecodeEmitter<'_, 'ctx> {
                     self.mark(value, false)?;
                 }
                 Ok(())
+            }
+            SemWireKind::Timestamp {
+                fields,
+                nanoseconds_max,
+                ..
+            } => {
+                let decoded =
+                    self.sequence_with_unsigned_bound(fields, Some((1, *nanoseconds_max)))?;
+                self.aggregate(plan, decoded, output)
             }
             SemWireKind::Record { table, fields, .. } => {
                 let decoded = match table {

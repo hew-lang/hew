@@ -1,3 +1,8 @@
+import {
+  BrowserDirectories,
+  type BrowserIoError,
+  type DirectoryOperation,
+} from "./browser-directory.js";
 /// The `hew.sandbox.bytecode.v1` executor.
 ///
 /// The package is a projection of verified ownership SIR, so this executor
@@ -48,6 +53,7 @@ import type {
 } from "./package.js";
 import { runtimeTag } from "./package.js";
 import { StructuralRenderer } from "./structural.js";
+import { timestampBinary } from "./timestamp.js";
 import {
   selectedValue,
   collectionOperation,
@@ -60,12 +66,17 @@ import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
 import {
   ShimFault,
+  CODEC_REGISTRATION,
   decodeUtf8Checked,
-  resolveExternShim,
-  resolveRuntimeShim,
+  resolveExtern,
+  resolveRuntime,
+  resolveSuspension,
   type ShimHost,
+  type RuntimeShim,
+  type RuntimeContinuation,
 } from "./shims.js";
-import { admitPackage } from "./validate.js";
+import { AdmittedPackage } from "./validate.js";
+import type { CheckedPackage } from "../schema-validator.js";
 
 const DEFAULT_STEP_BUDGET = 1_000_000;
 
@@ -105,6 +116,7 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
+  fileError?: BrowserIoError | null;
   parked?: boolean;
   rcOwner?: RcOwner | null;
   pollBudget?: { remaining: number };
@@ -221,6 +233,7 @@ interface SupervisorInstance {
   offsets: number[];
   recovering: Set<number>;
   restartBusy: boolean;
+  constructor: FrameContext | null;
   pendingRestarts: Array<{ child: number; debts: number[] }>;
   spent: Set<number>;
   completed: boolean;
@@ -328,10 +341,10 @@ class StdinReader {
   }
 }
 
-export function runPackageV1(
-  pkg: PackageV1,
+export async function runPackageV1(
+  pkg: CheckedPackage,
   options: RunOptions = {},
-): SandboxTrace {
+): Promise<SandboxTrace> {
   const fixtureId = options.fixtureId ?? "package";
   const replay: ReplayConfig = {
     seed: options.replay?.seed ?? 0,
@@ -352,21 +365,35 @@ export function runPackageV1(
 
   // Admission is a load-time decision: nothing runs when the package names a
   // capability the VM has no shim for.
-  const rejection = admitPackage(pkg);
-  if (rejection) {
-    trace.reject(rejection);
+  const admission = AdmittedPackage.load(pkg, options);
+  if (!(admission instanceof AdmittedPackage)) {
+    trace.reject(admission);
+    return trace.finish();
+  }
+
+  const directoryRefusal = await BrowserDirectories.admission(
+    options.directoryRoots,
+  );
+  if (directoryRefusal) {
+    trace.reject({
+      category: "not_implemented",
+      code: "sandbox.host.directory",
+      capability: "directoryRoots",
+      message: directoryRefusal,
+      span: null,
+    });
     return trace.finish();
   }
 
   const vm = new ExecutorV1(
-    pkg,
+    admission,
     trace,
     StdinReader.fromReplay(replay.inputs),
     options.schedulerPolicy ?? "round_robin",
     options,
   );
   try {
-    vm.run();
+    await vm.run();
   } catch (error) {
     if (!(error instanceof Halt)) {
       const message = error instanceof Error ? error.message : String(error);
@@ -407,19 +434,43 @@ class ExecutorV1 {
   private readonly consumedResources = new WeakSet<object>();
   private running = false;
   private rootComplete = false;
+  private terminating = false;
   private rootFault: Fault | null = null;
 
+  private readonly pkg: PackageV1;
+  private readonly directories: BrowserDirectories;
+
   constructor(
-    private readonly pkg: PackageV1,
+    admission: AdmittedPackage,
     private readonly trace: TraceBuilder,
     private readonly stdin: StdinReader,
     policy: "round_robin" | "chaos",
     private readonly options: RunOptions,
   ) {
+    const pkg = admission.bytecode;
+    this.pkg = pkg;
+    this.directories = new BrowserDirectories(options.directoryRoots);
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
+      unixTimeMillis: () => this.trace.virtualTimeMs,
+      calendarBridge: options.calendarBridge,
+      fileError: (operation) => {
+        const error = this.current.context.fileError;
+        switch (operation) {
+          case "HasError":
+            return { kind: "bool", value: error != null };
+          case "LastErrorKind":
+            return { kind: "i64", value: BigInt(error?.kind ?? 0) };
+          case "LastErrno":
+            if (error) error.kind = 0;
+            return { kind: "i64", value: 0n };
+          case "LastError":
+            this.current.context.fileError = null;
+            return stringValue(error?.message ?? "");
+        }
+      },
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();
@@ -454,8 +505,6 @@ class ExecutorV1 {
           : this.pipes.cloneSink(value);
       },
       newPipe: (capacity) => this.newPipe(capacity),
-      closePipe: (value) =>
-        this.pipes.close(value, this.pipeFault(this.current)),
       releaseValue: (value) =>
         this.closeValue(value, this.pipeFault(this.current)),
       writeStdout: (text) => this.trace.writeStdout(text, null),
@@ -498,21 +547,40 @@ class ExecutorV1 {
 
   /// One instruction or terminator executed is one step, ownership ops
   /// included: the package's ops are what the program does.
-  run(): void {
-    this.runFrame(this.current);
-    this.scheduler.run();
-    if (!this.rootComplete) {
-      throw new Error("the root frame is waiting with no runnable work");
+  async run(): Promise<void> {
+    const root = this.current.context;
+    const cancel = () => {
+      const fault: Fault = {
+        kind: "panic",
+        message: "execution cancelled",
+        cancelled: true,
+      };
+      if (root.cancel) root.cancel(fault);
+      else root.pendingCancellation ??= fault;
+    };
+    this.options.signal?.addEventListener("abort", cancel, { once: true });
+    if (this.options.signal?.aborted) cancel();
+    try {
+      this.runFrame(this.current);
+      await this.scheduler.run();
+      if (!this.rootComplete) {
+        throw new Error("the root frame is waiting with no runnable work");
+      }
+      // Native main return drains accepted work before closing idle actors.
+      for (const owner of this.supervisors.values())
+        if (!owner.supervisor) this.stopSupervisor(owner);
+      for (const actor of this.actors.values())
+        if (!actor.supervisor && actor.alive) this.requestActorStop(actor);
+      await this.scheduler.run();
+      if (this.rootFault) this.haltWithFault(this.rootFault);
+      if (this.trace.exitCode === 0 && this.faultDebts.size)
+        this.trace.exitCode = 1;
+    } finally {
+      this.terminating = true;
+      await this.scheduler.retireHost();
+      this.directories.retire((value) => this.closeHostResource(value));
+      this.options.signal?.removeEventListener("abort", cancel);
     }
-    // Native main return drains accepted work before closing idle actors.
-    for (const owner of this.supervisors.values())
-      if (!owner.supervisor) this.stopSupervisor(owner);
-    for (const actor of this.actors.values())
-      if (!actor.supervisor && actor.alive) this.requestActorStop(actor);
-    this.scheduler.run();
-    if (this.rootFault) this.haltWithFault(this.rootFault);
-    if (this.trace.exitCode === 0 && this.faultDebts.size)
-      this.trace.exitCode = 1;
   }
 
   private runFrame(frame: Activation): void {
@@ -559,12 +627,12 @@ class ExecutorV1 {
     args: VmValue[],
     caller: Activation | null,
     result: CallResult,
-    normal: Edge | undefined,
+    normal: Edge | null | undefined,
     unwind: Edge | null,
     context?: FrameContext,
   ): Activation {
     const mandatoryClose = (this.pkg.resources ?? []).some(
-      (resource) => resource.close === fn.id,
+      (resource) => "close" in resource && resource.close === fn.id,
     );
     const parentContext = caller?.context ?? context!;
     parentContext.pollBudget ??= { remaining: 0 };
@@ -590,7 +658,8 @@ class ExecutorV1 {
     for (const block of fn.blocks) {
       block.params.forEach(record);
       for (const op of block.ops) {
-        if (op.dst != null && op.own === "none") trivial.add(op.dst);
+        if ("dst" in op && op.dst != null && op.own === "none")
+          trivial.add(op.dst);
       }
       const term = block.term;
       if ("result" in term && term.result && term.result !== "never")
@@ -617,7 +686,7 @@ class ExecutorV1 {
       parked: [],
       caller,
       result,
-      normal,
+      normal: normal ?? undefined,
       unwind,
     };
   }
@@ -876,7 +945,7 @@ class ExecutorV1 {
       case "aggregate.make":
         this.define(act, op.dst, {
           kind: "record",
-          typeId: this.aggregateName(op.shape),
+          typeId: op.shape === null ? "" : this.aggregateName(op.shape),
           shape: op.shape ?? undefined,
           fields: op.fields.map((id) => this.read(act, id)),
         });
@@ -1471,8 +1540,12 @@ class ExecutorV1 {
         this.define(act, op.dst, { kind: "task", id: task.id });
         return;
       }
-      default:
-        throw new Error(`opcode ${op.op} has no sequential executor`);
+      case "actor.ingress_adapter":
+        throw new Error("actor ingress adapters are not admitted in the VM");
+      default: {
+        const exhaustive: never = op;
+        throw new Error("unhandled instruction: " + String(exhaustive));
+      }
     }
   }
 
@@ -1546,6 +1619,26 @@ class ExecutorV1 {
           term.value ? this.boundary(act, term.value) : UNIT,
         );
         return;
+      case "timestamp.binary": {
+        const outcome = timestampBinary(
+          this.pkg,
+          term,
+          this.read(act, term.lhs),
+          this.read(act, term.rhs),
+        );
+        if (outcome === null) {
+          const failure = term.failures.find(
+            (edge) => edge.trap === "integer_overflow",
+          );
+          if (!failure)
+            throw new Error("timestamp arithmetic lacks its overflow edge");
+          this.takeEdge(act, failure.edge);
+        } else {
+          this.define(act, term.result.value, outcome);
+          this.takeEdge(act, term.normal);
+        }
+        return;
+      }
       case "checked.binary": {
         const failure = checkedFailure(
           term.binary_op,
@@ -1642,179 +1735,176 @@ class ExecutorV1 {
         return;
       case "runtime.call": {
         const entry = this.pkg.runtime_families[term.family];
-        if (entry?.family === "ActorCaller") {
-          const caller = act.context.caller ?? { kind: "Task" };
-          const payload: VmValue[] = [];
-          if (caller.kind === "Actor") {
-            const shape = this.pkg.variants[term.result_shape!];
-            const tag = runtimeTag(shape!, "CallerActor");
-            payload.push({
-              kind: "record",
-              typeId: shape!.cases[tag]!.fields[0]!,
-              fields: [{ kind: "i64", value: caller.identity }],
-            });
-          }
-          this.completeShim(
-            act,
-            term,
-            this.variant(
-              term.result_shape,
-              caller.kind === "Actor"
-                ? "CallerActor"
-                : caller.kind === "Timer"
-                  ? "CallerTimer"
-                  : "CallerTask",
-              payload,
-            ),
-          );
+        if (!entry) throw new Error("runtime family is absent after admission");
+        const registration = resolveRuntime(entry);
+        if (registration.kind === "ordinary") {
+          this.callShim(act, term, registration.shim);
           return;
         }
-        if (entry?.family === "ActorRefusalLog") {
-          const [message, handler, reason] = term.args.map((argument) =>
-            this.boundary(act, argument),
-          );
-          this.trace.snapshot("actor.delivery_refused", {
-            actor_id: act.context.actor?.id ?? null,
-            handler: toJsonValue(handler!),
-            message: toJsonValue(message!),
-            reason: toJsonValue(reason!),
-          });
-          if (!act.context.reply)
-            this.trace.writeStderr(
-              `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)} reason=${JSON.stringify(asString(reason!))}\n`,
-              null,
-            );
-          this.completeShim(act, term, UNIT);
-          return;
-        }
-        if (
-          entry &&
-          (entry.family === "Map" ||
-            entry.family === "Set" ||
-            (entry.family === "Array" && entry.detail === "Set") ||
-            (entry.family === "Vector" &&
-              ["Contains", "Clear", "Set"].includes(String(entry.detail))))
-        ) {
-          const args = term.args.map((operand) => this.boundary(act, operand));
-          const iterator = collectionOperation(
-            this.pkg,
-            entry.family === "Array" ? "Vector" : entry.family,
-            String(entry.detail),
-            args,
-            term.callbacks ?? [],
-            term.result_member_shapes?.[1] ?? term.result_shape,
-          );
-          this.runValueProgram(act, term, args, iterator);
-          return;
-        }
-        if (
-          entry &&
-          [
-            "RcNew",
-            "RcClone",
-            "RcDowngrade",
-            "WeakCloneRc",
-            "WeakUpgradeRc",
-            "RcGet",
-            "RcIsUnique",
-            "RcSet",
-            "RcStrongCount",
-            "RcWeakCount",
-          ].includes(entry.family)
-        ) {
-          const args = term.args.map((operand) => this.boundary(act, operand));
-          this.runValueProgram(
-            act,
-            term,
-            args,
-            sharedOperation(
-              entry.family,
-              args,
-              act.rcOwner,
-              term.shared_payload_type ?? "",
-              (value) =>
-                this.variant(
-                  term.result_shape,
-                  value ? "OptionSome" : "OptionNone",
-                  value ? [value] : [],
-                ),
-            ),
-          );
-          return;
-        }
-        if (entry?.family === "SupervisorPool") {
-          this.supervisorPool(act, term, String(entry.detail));
-          return;
-        }
-        if (entry && ["SinkClose", "StreamClose"].includes(entry.family)) {
-          const value = this.boundary(act, term.args[0]!);
-          this.running = false;
-          this.closeValueAsync(
-            value,
-            this.pipeFault(act),
-            (fault) => {
-              if (fault) this.raiseFault(act, fault, term.unwind);
-              else this.completeShim(act, term, UNIT);
-              this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
-            },
-            act.context.actor,
-            act.rcOwner,
-          );
-          return;
-        }
-        if (entry?.family === "StructuralFormat") {
-          this.structuralFormat(act, term);
-          return;
-        }
-        if (entry?.family === "BytesDecodeUtf8") {
-          const value = decodeUtf8Checked(this.boundary(act, term.args[0]!));
-          let result: VmValue;
-          if ("value" in value)
-            result = this.variant(term.result_shape, "ResultOk", [
-              stringValue(value.value),
-            ]);
-          else {
-            const shapes = term.variant_result_shapes!;
-            const error = this.pkg.aggregates[shapes.error]!;
-            result = this.variant(term.result_shape, "ResultErr", [
-              {
-                kind: "record",
-                typeId: error.name,
-                shape: error.id,
-                fields: [
-                  { kind: "i64", value: BigInt(value.validUpTo) },
-                  this.variant(
-                    shapes.error_len,
-                    value.errorLen === null ? "OptionNone" : "OptionSome",
-                    value.errorLen === null
-                      ? []
-                      : [{ kind: "i64", value: BigInt(value.errorLen) }],
-                  ),
-                ],
-              },
-            ]);
-          }
-          this.completeShim(act, term, result);
-          return;
-        }
-        const shim = entry ? resolveRuntimeShim(entry) : undefined;
-        if (!entry || !shim) {
+        if (registration.kind === "refused")
           throw new Error(
-            `runtime family ${term.family} resolved no shim after admission`,
+            `runtime family ${registration.capability} was refused after admission`,
           );
+        switch (registration.handler) {
+          case "actor_caller": {
+            const caller = act.context.caller ?? { kind: "Task" };
+            const payload: VmValue[] = [];
+            if (caller.kind === "Actor") {
+              const shape = this.pkg.variants[term.result_shape!];
+              const tag = runtimeTag(shape!, "CallerActor");
+              payload.push({
+                kind: "record",
+                typeId: shape!.cases[tag]!.fields[0]!,
+                fields: [{ kind: "i64", value: caller.identity }],
+              });
+            }
+            this.completeShim(
+              act,
+              term,
+              this.variant(
+                term.result_shape,
+                caller.kind === "Actor"
+                  ? "CallerActor"
+                  : caller.kind === "Timer"
+                    ? "CallerTimer"
+                    : "CallerTask",
+                payload,
+              ),
+            );
+            return;
+          }
+          case "actor_refusal_log": {
+            const [message, handler, reason] = term.args.map((argument) =>
+              this.boundary(act, argument),
+            );
+            this.trace.snapshot("actor.delivery_refused", {
+              actor_id: act.context.actor?.id ?? null,
+              handler: toJsonValue(handler!),
+              message: toJsonValue(message!),
+              reason: toJsonValue(reason!),
+            });
+            if (!act.context.reply)
+              this.trace.writeStderr(
+                `WARN actor.delivery_refused actor=${act.context.actor?.identity ?? 0n} handler=${asString(handler!)} reason=${JSON.stringify(asString(reason!))}\n`,
+                null,
+              );
+            this.completeShim(act, term, UNIT);
+            return;
+          }
+          case "collection": {
+            const args = term.args.map((operand) =>
+              this.boundary(act, operand),
+            );
+            const iterator = collectionOperation(
+              this.pkg,
+              registration,
+              args,
+              term.callbacks ?? [],
+              term.result_member_shapes?.[1] ?? term.result_shape,
+            );
+            this.runValueProgram(act, term, args, iterator);
+            return;
+          }
+          case "shared": {
+            const args = term.args.map((operand) =>
+              this.boundary(act, operand),
+            );
+            this.runValueProgram(
+              act,
+              term,
+              args,
+              sharedOperation(
+                registration.operation,
+                args,
+                act.rcOwner,
+                term.shared_payload_type ?? "",
+                (value) =>
+                  this.variant(
+                    term.result_shape,
+                    value ? "OptionSome" : "OptionNone",
+                    value ? [value] : [],
+                  ),
+              ),
+            );
+            return;
+          }
+          case "supervisor_pool": {
+            this.supervisorPool(act, term, registration.operation);
+            return;
+          }
+          case "close": {
+            const value = this.boundary(act, term.args[0]!);
+            this.running = false;
+            this.closeValueAsync(
+              value,
+              this.pipeFault(act),
+              (fault) => {
+                if (fault) this.raiseFault(act, fault, term.unwind);
+                else this.completeShim(act, term, UNIT);
+                this.scheduler.enqueue(act.context.id, () =>
+                  this.runFrame(act),
+                );
+              },
+              act.context.actor,
+              act.rcOwner,
+            );
+            return;
+          }
+          case "structural_format": {
+            this.structuralFormat(act, term);
+            return;
+          }
+          case "utf8_decode": {
+            const value = decodeUtf8Checked(this.boundary(act, term.args[0]!));
+            let result: VmValue;
+            if ("value" in value)
+              result = this.variant(term.result_shape, "ResultOk", [
+                stringValue(value.value),
+              ]);
+            else {
+              const shapes = term.variant_result_shapes!;
+              const error = this.pkg.aggregates[shapes.error]!;
+              result = this.variant(term.result_shape, "ResultErr", [
+                {
+                  kind: "record",
+                  typeId: error.name,
+                  shape: error.id,
+                  fields: [
+                    { kind: "i64", value: BigInt(value.validUpTo) },
+                    this.variant(
+                      shapes.error_len,
+                      value.errorLen === null ? "OptionNone" : "OptionSome",
+                      value.errorLen === null
+                        ? []
+                        : [{ kind: "i64", value: BigInt(value.errorLen) }],
+                    ),
+                  ],
+                },
+              ]);
+            }
+            this.completeShim(act, term, result);
+            return;
+          }
+          default: {
+            const exhaustive: never = registration;
+            throw new Error(
+              `unknown runtime continuation ${String(exhaustive)}`,
+            );
+          }
         }
-        this.callShim(act, term, shim);
-        return;
       }
       case "extern.call": {
         const entry = this.pkg.externs[term.extern];
-        const shim = entry ? resolveExternShim(entry.symbol) : undefined;
-        if (!entry || !shim) {
+        if (!entry)
+          throw new Error("external operation is absent after admission");
+        const registration = resolveExtern(entry);
+        if (registration.kind === "refused")
           throw new Error(
-            `extern ${term.extern} resolved no shim after admission`,
+            `external operation ${registration.capability} was refused after admission`,
           );
-        }
-        this.callShim(act, term, shim);
+        if (registration.kind === "directory")
+          this.callDirectory(act, term, registration.operation);
+        else this.callShim(act, term, registration.shim);
         return;
       }
       case "wire.codec": {
@@ -1827,7 +1917,7 @@ class ExecutorV1 {
             this.pkg,
             term,
             args[0]!,
-            this.options.codecBridge,
+            this.options[CODEC_REGISTRATION.bridge],
             this.options.propertyInput ?? [],
           ),
         );
@@ -1950,16 +2040,47 @@ class ExecutorV1 {
     act.opIndex = 0;
   }
 
+  private callDirectory(
+    act: Activation,
+    term: Extract<TermV1, { op: "extern.call" }>,
+    operation: DirectoryOperation,
+  ): void {
+    const args = term.args.map((operand) => this.boundary(act, operand));
+    const result = this.directories.call(operation, args, term.result_resource);
+    if (!(result instanceof Promise)) {
+      this.completeShim(act, term, result);
+      return;
+    }
+    // Acquisitions are synchronous in the language. Retain borrowed inputs and
+    // publish the new owner before the next authored cancellation safepoint.
+    this.running = false;
+    act.context.parked = true;
+    act.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      act.context.pendingCancellation ??= fault;
+    };
+    this.scheduler.submitHost(
+      act.context.id,
+      result,
+      (outcome) => {
+        act.context.parked = false;
+        act.context.fileError = outcome.error;
+        this.completeShim(act, term, outcome.value);
+        this.runFrame(act);
+      },
+      (error) => {
+        throw error;
+      },
+    );
+  }
+
   /// Run a runtime or extern shim. A fault it raises takes the call's `unwind`
   /// edge so the cleanup the package names runs before the program ends.
   private callShim(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" | "extern.call" }>,
-    shim: (
-      host: ShimHost,
-      args: VmValue[],
-      shape: VariantShape | null,
-    ) => VmValue,
+    shim: RuntimeShim,
   ): void {
     const args = term.args.map((operand) => this.boundary(act, operand));
     // A call that hands back its updated receiver names its value's shape as
@@ -1973,7 +2094,10 @@ class ExecutorV1 {
         : (this.pkg.variants[shapeId] ?? null);
     let value: VmValue;
     try {
-      value = shim(this.host, args, shape);
+      const aggregateId = term.aggregate_result_shape;
+      const aggregate =
+        aggregateId == null ? null : (this.pkg.aggregates[aggregateId] ?? null);
+      value = shim(this.host, args, shape, aggregate);
     } catch (error) {
       if (error instanceof ShimFault) {
         this.keepInputs(act, term, args);
@@ -2106,7 +2230,10 @@ class ExecutorV1 {
   private supervisorPool(
     act: Activation,
     term: Extract<TermV1, { op: "runtime.call" }>,
-    operation: string,
+    operation: Extract<
+      RuntimeContinuation,
+      { handler: "supervisor_pool" }
+    >["operation"],
   ): void {
     const [view, index] = term.args.map((arg) => this.boundary(act, arg));
     if (view?.kind !== "vector") throw new Error("pool operation has no view");
@@ -2131,15 +2258,25 @@ class ExecutorV1 {
       );
       return;
     }
-    if (!value) {
-      this.raiseFault(
-        act,
-        { kind: "trap", trap: "vector_bounds" },
-        term.unwind,
-      );
-      return;
+    switch (operation) {
+      case "Member":
+        if (!value) {
+          this.raiseFault(
+            act,
+            { kind: "trap", trap: "vector_bounds" },
+            term.unwind,
+          );
+          return;
+        }
+        this.completeShim(act, term, value);
+        return;
+      default: {
+        const exhaustive: never = operation;
+        throw new Error(
+          `unknown supervisor pool operation ${String(exhaustive)}`,
+        );
+      }
     }
-    this.completeShim(act, term, value);
   }
 
   private structuralFormat(
@@ -2182,7 +2319,7 @@ class ExecutorV1 {
   /// A shim returned: bind the call's result on its normal edge and continue.
   private completeShim(
     act: Activation,
-    term: TermV1 & { result: CallResult; normal?: Edge },
+    term: TermV1 & Pick<Extract<TermV1, { op: "call" }>, "result" | "normal">,
     value: VmValue,
   ): void {
     if (!term.normal) {
@@ -2404,8 +2541,14 @@ class ExecutorV1 {
 
   private suspend(
     act: Activation,
-    term: Extract<TermV1, { op: "suspend" }>,
+    input: Extract<TermV1, { op: "suspend" }>,
   ): void {
+    const registration = resolveSuspension(input);
+    if (registration.kind === "refused")
+      throw new Error(
+        `suspension ${registration.capability} was refused after admission`,
+      );
+    const term = registration.term;
     switch (term.kind) {
       case "Yield": {
         const generator = act.context.generator;
@@ -2677,6 +2820,49 @@ class ExecutorV1 {
         return;
       }
       case "NativeIo": {
+        if (
+          term.detail.operation === "FileRead" ||
+          term.detail.operation === "FileWrite"
+        ) {
+          const args = term.inputs.map((operand) =>
+            this.boundary(act, operand),
+          );
+          const wake = this.park(act, term);
+          const cancel = act.context.cancel!;
+          let stopped: Fault | null =
+            act.context.pendingCancellation ?? this.scopeDeadline(act) ?? null;
+          act.context.cancel = (
+            fault = {
+              kind: "panic",
+              message: "task cancelled",
+              cancelled: true,
+            },
+          ) => {
+            stopped ??= fault;
+          };
+          this.scheduler.submitHost(
+            act.context.id,
+            this.directories.io(
+              term.detail.operation,
+              args,
+              () => stopped !== null || this.terminating,
+            ),
+            (outcome) => {
+              // The producer is quiescent. Restore park's latch so cancellation
+              // between readiness and frame resumption still retires the result.
+              act.context.cancel = cancel;
+              act.context.fileError = outcome.error;
+              if (stopped) {
+                this.closeValue(outcome.value, null);
+                cancel(stopped);
+              } else wake(outcome.value);
+            },
+            (error) => {
+              throw error;
+            },
+          );
+          return;
+        }
         if (term.detail?.operation === "SinkFinish") {
           const wake = this.park(act, term);
           const cancel = act.context.cancel!;
@@ -2696,7 +2882,11 @@ class ExecutorV1 {
           });
           return;
         }
-        // Admission passed `StdinReadLine`. The record is the raw line,
+        if (term.detail.operation !== "StdinReadLine") {
+          const exhaustive: never = term.detail.operation;
+          throw new Error(`unknown native I/O handler ${String(exhaustive)}`);
+        }
+        // The record is the raw line,
         // so the records concatenate to the stdin the program consumed.
         const line = this.stdin.readLine() ?? new Uint8Array();
         this.trace.recordReplayInput(
@@ -2751,10 +2941,10 @@ class ExecutorV1 {
         cancelTimer = this.scheduler.after(nanos, () => wake(UNIT));
         return;
       }
-      default:
-        throw new Error(
-          `suspension kind ${term.kind} resolved no handler after admission`,
-        );
+      default: {
+        const exhaustive: never = term;
+        throw new Error(`unknown suspension handler ${String(exhaustive)}`);
+      }
     }
   }
 
@@ -3031,7 +3221,7 @@ class ExecutorV1 {
 
   private receiveGeneratorStream(
     act: Activation,
-    term: Extract<TermV1, { op: "suspend" }>,
+    term: Extract<TermV1, { op: "suspend"; kind: "StreamNext" }>,
     adapter: GeneratorStream,
   ): void {
     const wake = this.park(act, term);
@@ -3224,11 +3414,16 @@ class ExecutorV1 {
               value.cell.weak -= 1;
             }
             break;
+          case "host_resource": {
+            if (value.owner.closed) break;
+            this.closeHostResource(value);
+            break;
+          }
           case "timer": {
             if (value.closed) break;
             const resource = this.pkg.resources?.[value.resource];
-            if (resource?.close === undefined)
-              throw new Error("timer lost its selected close");
+            if (resource?.kind !== "opaque")
+              throw new Error("opaque owner lost its selected close");
             this.invokeFrame(
               actor,
               resource.close,
@@ -3279,7 +3474,7 @@ class ExecutorV1 {
               (resource) =>
                 resource.kind === "record" && resource.shape === value.shape,
             );
-            if (resource?.close !== undefined) {
+            if (resource?.kind === "record") {
               if (this.consumedResources.has(value)) break;
               if (!this.closingResources.has(value)) {
                 this.invokeFrame(
@@ -3338,7 +3533,22 @@ class ExecutorV1 {
     next();
   }
 
+  private closeHostResource(
+    value: Extract<VmValue, { kind: "host_resource" }>,
+  ): void {
+    if (value.owner.closed) return;
+    const resource = this.pkg.resources?.[value.resource];
+    const release =
+      resource?.kind === "nominal"
+        ? resolveExtern({ symbol: resource.release })
+        : null;
+    if (release?.kind !== "directory" || release.operation.action !== "close")
+      throw new Error("filesystem owner lost its selected release");
+    this.directories.call(release.operation, [value]);
+  }
+
   private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "host_resource") this.closeHostResource(value);
     if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);
     else if (value.kind === "sink" || value.kind === "stream")
@@ -3554,7 +3764,21 @@ class ExecutorV1 {
         this.trace.allocateId("actor", actor.id, act.context.id);
         this.trace.snapshot("actor.spawn", { actor_id: actor.id });
         const handle: VmValue = { kind: "actor", id: actor.id };
+        act.context.cancel = (
+          fault = {
+            kind: "panic",
+            message: "actor construction cancelled",
+            cancelled: true,
+          },
+        ) => {
+          actor.closing = true;
+          if (actor.active) {
+            actor.active.pendingCancellation ??= fault;
+            actor.active.cancel?.(actor.active.pendingCancellation);
+          }
+        };
         const failed = (fault: Fault) => {
+          act.context.cancel = undefined;
           actor.active = null;
           actor.alive = false;
           actor.constructing = false;
@@ -3598,6 +3822,7 @@ class ExecutorV1 {
           }
           actor.constructing = false;
           actor.active = null;
+          act.context.cancel = undefined;
           act.rcOwner = null;
           actor.busy = false;
           this.startPeriodicTimers(actor);
@@ -3609,7 +3834,7 @@ class ExecutorV1 {
         // Construction enters the same interpreter loop as its caller. Only
         // a real suspension queues work and advances deterministic scheduling.
         const start = () => {
-          if (layout.start !== undefined)
+          if (layout.start != null)
             actor.active = this.invokeFrame(
               actor,
               layout.start,
@@ -3621,7 +3846,7 @@ class ExecutorV1 {
             );
           else started();
         };
-        if (layout.init !== undefined)
+        if (layout.init != null)
           actor.active = this.invokeFrame(
             actor,
             layout.init,
@@ -3777,7 +4002,7 @@ class ExecutorV1 {
             );
           } else {
             if (
-              actor.layout.mailbox_capacity !== undefined &&
+              actor.layout.mailbox_capacity != null &&
               actor.mailbox.length >= actor.layout.mailbox_capacity
             ) {
               actor.admission.push(admit);
@@ -3994,7 +4219,8 @@ class ExecutorV1 {
           ),
           offsets: layout.children.map((_child, index) => index),
           recovering: new Set(),
-          restartBusy: false,
+          restartBusy: true,
+          constructor: null,
           pendingRestarts: [],
           spent: new Set(),
           completed: false,
@@ -4009,21 +4235,38 @@ class ExecutorV1 {
         this.trace.allocateId("supervisor", owner.id, act.context.id);
         this.trace.snapshot("supervisor.spawn", { supervisor_id: owner.id });
         this.running = false;
-        let child = 0;
+        const order = this.supervisorStartupOrder(owner);
+        let fault: Fault | null = null;
+        const fail = (cause: Fault) => {
+          if (fault) return;
+          fault = cause;
+          owner.closed.push(() => {
+            act.context.cancel = undefined;
+            this.raiseFault(act, fault!, term.unwind);
+            this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+          });
+          if (owner.constructor)
+            owner.constructor.pendingCancellation ??= cause;
+          this.stopSupervisor(owner);
+        };
+        act.context.cancel = (
+          cause = {
+            kind: "panic",
+            message: "construction cancelled",
+            cancelled: true,
+          },
+        ) => fail(cause);
         const next = () => {
-          if (child < owner.children.length) {
-            this.startChild(owner, child++, next, (fault) => {
-              owner.closed.push(() => {
-                this.raiseFault(act, fault, term.unwind);
-                this.scheduler.enqueue(act.context.id, () =>
-                  this.runFrame(act),
-                );
-              });
-              this.stopSupervisor(owner);
-            });
+          const child = order.shift();
+          if (child !== undefined) {
+            this.startChild(owner, child, next, fail);
           } else {
+            act.context.cancel = undefined;
+            owner.restartBusy = false;
             this.completeShim(act, term, { kind: "supervisor", id: owner.id });
             this.scheduler.enqueue(act.context.id, () => this.runFrame(act));
+            const pending = owner.pendingRestarts.shift();
+            if (pending) this.restartChild(owner, pending.child, pending.debts);
           }
         };
         next();
@@ -4148,8 +4391,12 @@ class ExecutorV1 {
           id: act.context.actor.id,
         });
         return;
-      default:
-        throw new Error(`actor operation ${operation.op} has no executor`);
+      case "local_observation":
+        throw new Error("actor observations are not admitted in the VM");
+      default: {
+        const exhaustive: never = operation;
+        throw new Error("unhandled actor operation: " + String(exhaustive));
+      }
     }
   }
 
@@ -4185,7 +4432,7 @@ class ExecutorV1 {
       error: string | null,
       closeFault?: Fault | null,
     ) => boolean,
-    shapes?: RequestShapes,
+    shapes?: RequestShapes | null,
     selectedTarget?: (actor: ActorInstance) => void,
   ): (done: (fault: Fault | null) => void) => void {
     let settled = false;
@@ -4278,7 +4525,7 @@ class ExecutorV1 {
       selectedTarget?.(actor);
       if (settled || closing) return;
       const full =
-        actor.layout.mailbox_capacity !== undefined &&
+        actor.layout.mailbox_capacity != null &&
         actor.mailbox.length >= actor.layout.mailbox_capacity;
       if (full) {
         if (protocol.policy === "reject") {
@@ -4378,7 +4625,7 @@ class ExecutorV1 {
   ): "accepted" | "discarded" | "full" | "closed" {
     if (!actor.alive || actor.closing) return "closed";
     const full =
-      actor.layout.mailbox_capacity !== undefined &&
+      actor.layout.mailbox_capacity != null &&
       actor.mailbox.length >= actor.layout.mailbox_capacity;
     let declared = full ? actor.layout.overflow : null;
     const discard = (lost: ActorMessage) => {
@@ -4714,7 +4961,7 @@ class ExecutorV1 {
       );
     };
     const runHook = () => {
-      if (actor.layout.crash !== undefined) {
+      if (actor.layout.crash != null) {
         const [code, message] = faultInfo(fault);
         const info: VmValue = {
           kind: "record",
@@ -4801,6 +5048,20 @@ class ExecutorV1 {
     return owner;
   }
 
+  private supervisorStartupOrder(owner: SupervisorInstance): number[] {
+    const declarations =
+      owner.layout.startup_order ??
+      owner.layout.children.map((_child, index) => index);
+    return declarations.flatMap((declaration) => {
+      const offset = owner.offsets[declaration]!;
+      const end = owner.offsets[declaration + 1] ?? owner.children.length;
+      return Array.from(
+        { length: end - offset },
+        (_value, index) => offset + index,
+      );
+    });
+  }
+
   private startChild(
     owner: SupervisorInstance,
     child: number,
@@ -4808,11 +5069,40 @@ class ExecutorV1 {
     failed: (fault: Fault) => void,
   ): void {
     const spec = owner.specs[child]!;
-    this.invokeFrame(
+    const arity = this.functionAt(spec.spawn).params.length;
+    // Packages predating sibling wiring have config-only constructors. Their
+    // actual callable signature, rather than a source name, selects that ABI.
+    const args =
+      arity === owner.config.length + 1
+        ? [{ kind: "supervisor" as const, id: owner.id }, ...owner.config]
+        : arity === owner.config.length
+          ? owner.config
+          : null;
+    if (!args)
+      throw new Error(
+        "supervisor constructor signature does not match its config",
+      );
+    owner.constructor = this.invokeFrame(
       null,
       spec.spawn,
-      owner.config,
+      args,
       (value) => {
+        const cancellation = owner.constructor?.pendingCancellation;
+        owner.constructor = null;
+        if (!owner.alive) {
+          // The result is still owned here. Its declaration slot hands it to
+          // canonical reverse-order teardown, including the configured budget.
+          owner.children[child] = value;
+          failed(
+            cancellation ?? {
+              kind: "panic",
+              message: "supervisor construction cancelled",
+              cancelled: true,
+            },
+          );
+          this.finishSupervisorStop(owner);
+          return;
+        }
         owner.children[child] = value;
         if (value.kind === "actor")
           this.actorFor(value).supervisor = { owner, child };
@@ -4826,7 +5116,14 @@ class ExecutorV1 {
         });
         done();
       },
-      failed,
+      (fault) => {
+        const stopped = !owner.alive;
+        owner.constructor = null;
+        // The initial caller still needs one terminal notification if the
+        // supervisor was stopped directly rather than through caller cancel.
+        failed(fault);
+        if (stopped) this.finishSupervisorStop(owner);
+      },
     );
   }
 
@@ -4935,7 +5232,9 @@ class ExecutorV1 {
         stop();
       });
     };
-    const starting = [...affected];
+    const starting = this.supervisorStartupOrder(owner).filter((index) =>
+      affected.includes(index),
+    );
     const start = () => {
       if (!owner.alive) {
         owner.restartBusy = false;
@@ -5019,7 +5318,7 @@ class ExecutorV1 {
     child: number,
   ): number | null {
     const spec = owner.specs[child]!;
-    if (spec.stop_config !== undefined) {
+    if (spec.stop_config != null) {
       const duration = owner.config[spec.stop_config];
       if (duration?.kind !== "i64" || duration.value < 0n)
         throw new Error("child stop budget is not a non-negative duration");
@@ -5039,6 +5338,19 @@ class ExecutorV1 {
     }
     if (!owner.alive) return;
     owner.alive = false;
+    if (owner.constructor) {
+      owner.constructor.pendingCancellation ??= {
+        kind: "panic",
+        message: "supervisor construction cancelled",
+        cancelled: true,
+      };
+      owner.constructor.cancel?.(owner.constructor.pendingCancellation);
+      return;
+    }
+    this.finishSupervisorStop(owner);
+  }
+
+  private finishSupervisorStop(owner: SupervisorInstance): void {
     let childIndex = owner.children.length - 1;
     const next = () => {
       owner.teardownCancelTimer?.();

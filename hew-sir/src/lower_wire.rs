@@ -141,6 +141,20 @@ impl InstanceService<'_> {
                 some,
                 value,
             },
+            DataKind::Timestamp {
+                fields,
+                nanoseconds_max,
+                ..
+            } => {
+                let AggregateShapeRef::Record(shape) = self.require_aggregate_shape(ty)? else {
+                    return Err("timestamp data has no aggregate storage".into());
+                };
+                SemWireKind::Timestamp {
+                    shape,
+                    fields,
+                    nanoseconds_max,
+                }
+            }
             DataKind::Record { table, fields, .. } => {
                 let AggregateShapeRef::Record(shape) = self.require_aggregate_shape(ty)? else {
                     return Err("checked data record has no record storage".into());

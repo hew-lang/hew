@@ -361,7 +361,6 @@ impl TemplateNames<'_> {
                 )?;
                 for member in &mut declaration.body {
                     match member {
-                        TypeBodyItem::Method(function) => self.function(function)?,
                         TypeBodyItem::Field { ty, .. } => self.ty(ty)?,
                         TypeBodyItem::Variant(variant) => match &variant.kind {
                             VariantKind::Unit => {}
@@ -674,6 +673,7 @@ impl TemplateNames<'_> {
                 label: _,
                 condition,
                 body,
+                ..
             } => {
                 self.expr(condition)?;
                 self.block(body)?;

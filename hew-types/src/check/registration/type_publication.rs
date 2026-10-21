@@ -1940,7 +1940,6 @@ impl Checker {
                     // actor does. Without this the declaration reached no
                     // checker table at all and `spawn Inner` fell through to a
                     // bare echo that SIR could not match to its declaration.
-                    self.reject_wasm_feature(span, WasmUnsupportedFeature::SupervisionTrees);
                     let qualified = format!("{module_full_path}.{}", sd.name);
                     self.type_visibility
                         .entry(qualified.clone())

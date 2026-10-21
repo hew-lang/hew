@@ -3383,7 +3383,90 @@ fn run_client(scenario: string) -> i64 {
     status
 }
 
+#[wire]
+machine TransitHistory<T> {
+    events { Resume { seed: T; } Advance; Leave; }
+    emits { Changed { value: T; } Counted { value: i64; } }
+    state Off;
+    parallel state On {
+        seed: T;
+        region left {
+            state L0 { value: T; }
+            state L1 { value: T; }
+            initial L0 { value: state.seed };
+        }
+        region right {
+            state InnerRight {
+                count: i64;
+                state R0 { child: i64; }
+                state R1 { child: i64; }
+                initial R0 { child: 4 };
+            }
+            initial InnerRight { count: 7 };
+        }
+    }
+    on Resume: Off => On history { seed: event.seed }
+    on Advance: L0 => L1 {
+        emit Changed { value: state.value };
+        L1 { value: state.value }
+    }
+    on Advance: R0 => R1 {
+        emit Counted { value: state.count + 1 };
+        R1 { count: state.count + 1, child: 99 }
+    }
+    on Leave: On => Off;
+    default { state }
+}
+
+#[wire]
+type TransitMachineReply {
+    state: TransitHistory<string> @1;
+    report: TransitHistoryStep<string> @2;
+    retained: TransitHistoryStep<string> @3;
+}
+
+fn check_transit_machine(service: TransitCounter) {
+    var current_machine: TransitHistory<string> = .Off;
+    let _initial = current_machine.step(.Resume { seed: "saved".to_upper() });
+    let advanced = current_machine.step(.Advance);
+    assert(advanced.rules == [1, 2]);
+    assert(advanced.outputs == [.Changed { value: "SAVED" }, .Counted { value: 8 }]);
+    let _leave = current_machine.step(.Leave);
+    let paused = current_machine;
+    let reply = service.machine_step(paused, .Resume { seed: "fresh" }, advanced).expect("relayed history resume");
+    assert(reply.retained == advanced);
+    assert(reply.report.rules == [0] && reply.report.outputs.is_empty());
+    assert(reply.report.input == "Resume" && reply.report.disposition == .Taken);
+    match reply.state {
+        .On { seed, left: .L1 { value }, right: .R0 { count, child } } => {
+            assert(seed == "fresh" && value == "SAVED" && count == 8 && child == 4);
+        }
+        _ => panic("relayed shallow parallel history"),
+    }
+    let next = service.machine_step(reply.state, .Advance, reply.report).expect("relayed parallel continuation");
+    assert(next.report.rules == [2]);
+    assert(next.report.outputs == [.Counted { value: 9 }]);
+    assert(next.retained == reply.report);
+    match next.state {
+        .On { seed, left: .L1 { value }, right: .R1 { count, child } } => {
+            assert(seed == "fresh" && value == "SAVED" && count == 9 && child == 99);
+        }
+        _ => panic("relayed next exact machine state"),
+    }
+    assert(current_machine == paused && advanced.outputs == [.Changed { value: "SAVED" }, .Counted { value: 8 }]);
+}
+
 actor TransitCounter {
+    var machine_calls: i64 = 0;
+    #[wire]
+    receive fn machine_step(value: TransitHistory<string>, event: TransitHistory.Event<string>, retained: TransitHistoryStep<string>) -> TransitMachineReply {
+        machine_calls += 1;
+        var current = value;
+        let report = current.step(event);
+        TransitMachineReply { state: current, report, retained }
+    }
+    #[wire]
+    receive fn machine_count() -> i64 { machine_calls }
     var total: i64 = 0;
     var stalled: i64 = 0;
     #[wire]
@@ -3430,6 +3513,7 @@ fn run_transitive(role: string) -> i64 {
         let replacement = peer.export(counter).expect("fresh grant");
         let _ = wait_for_file(f"{kx}/transit.done");
         assert(counter.read().expect("one accepted mutation") == 42);
+        assert(counter.machine_count().expect("two accepted machine steps") == 2);
         replacement.close();
     } else if role == "relay" {
         let port = os.env("HEW_DIST_ORIGIN_PORT").expect("origin address");
@@ -3448,6 +3532,7 @@ fn run_transitive(role: string) -> i64 {
         let service: TransitCounter = peer.receive_service<TransitCounter>().expect("origin grant");
         assert(service.location().expect("authenticated origin location") == f"{origin}");
         assert(service.add(42).expect("transitive actor call") == 42);
+        check_transit_machine(service);
         if os.env("HEW_DIST_TRANSPORT") == .Some("quic-mesh") {
             let large = "relay".repeat(32768);
             assert(service.echo(large).expect("large relayed TLS request and reply") == large);
@@ -3460,8 +3545,17 @@ fn run_transitive(role: string) -> i64 {
             .Err(error) => panic(f"unexpected revoked grant failure: {error}"),
             .Ok(_) => panic("revoked origin grant retained authority"),
         }
+        var refused: TransitHistory<string> = .Off;
+        let retained = refused.step(.Resume { seed: "refused" });
+        match service.machine_step(refused, .Advance, retained) {
+            .Err(ActorError.RoutingFailed) => {}
+            .Err(error) => panic(f"unexpected revoked machine grant failure: {error}"),
+            .Ok(_) => panic("revoked machine call executed"),
+        }
         let fresh: TransitCounter = peer.receive_service<TransitCounter>().expect("fresh origin grant");
         assert(fresh.read().expect("refused request did not execute") == 42);
+        assert(fresh.machine_count().expect("refused machine call did not execute") == 2);
+        println("PASS relayed machine history state fresh/SAVED/8/4 next fresh/SAVED/9/99 rules 1,2/0/2 retained output SAVED no-replay");
         publish_atomic(kx, "transit.done", "1");
         println("PASS transitive origin-session discovery grant call revoke no-replay");
     }

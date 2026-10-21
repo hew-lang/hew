@@ -1417,6 +1417,10 @@ fn run_transitive_scenario(mesh: bool) {
         stdout.contains("PASS transitive origin-session discovery grant call revoke no-replay"),
         "{stdout}"
     );
+    assert!(
+        stdout.contains("PASS relayed machine history state fresh/SAVED/8/4 next fresh/SAVED/9/99 rules 1,2/0/2 retained output SAVED no-replay"),
+        "{stdout}"
+    );
     assert!(!stdout.contains("FAIL "), "{stdout}");
     let _ = run_client_to_completion(origin, 0, StderrExpectation::Ignore);
     let _ = run_client_to_completion(relay, 0, StderrExpectation::Ignore);

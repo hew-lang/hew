@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-shallow-history"
+intent = "Shallow history restores immediate child payload after exits, enters normally, and survives independent copies and ordinary JSON/CBOR round trips."
+source = "cases/machine-shallow-history.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "shallow history values and codecs passed\n"
+stderr = ""
+exit = 0

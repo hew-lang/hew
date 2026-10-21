@@ -569,6 +569,50 @@ fn lower_source(source: &str) -> SemModule {
 }
 
 #[test]
+fn deferred_value_comparison_proves_its_selected_physical_callees() {
+    let semantic = lower_source(
+        r"type Key { id: i64; }
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool { self.id == other.id }
+}
+type Outer { key: Key; }
+fn main() -> i64 {
+    let left = Outer { key: Key { id: 7 } };
+    let right = left;
+    defer { let _ = left == right; }
+    0
+}",
+    );
+    let mut physical = lower_physical_module(&semantic, target_for_inventory(&semantic))
+        .unwrap()
+        .into_unverified();
+    let selected = physical
+        .value_capabilities
+        .values()
+        .find_map(|plan| plan.selection.callable)
+        .expect("nested equality has a selected user body");
+    physical.functions.retain(|body| body.callable != selected);
+    let main_id = physical
+        .callables
+        .iter()
+        .find(|callable| physical.defs.path(callable.declaration) == "main")
+        .unwrap()
+        .id;
+    let main = physical
+        .functions
+        .iter()
+        .find(|body| body.callable == main_id)
+        .unwrap();
+    let plan = defer::verify_regions(&physical, main).unwrap();
+    assert_eq!(
+        defer::verify_calls(&physical, main, &plan)
+            .unwrap_err()
+            .message,
+        "physical defer call has no proven non-suspending body"
+    );
+}
+
+#[test]
 fn finite_calls_use_direct_abi_without_losing_recursive_or_cleanup_polls() {
     let semantic = lower_source(
         r"

@@ -933,6 +933,45 @@ fn machine_initial_constructors_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn machine_shallow_history_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-history-nested-regions",
+            source_rel: "tests/core-acceptance/cases/machine-history-nested-regions.hew",
+        },
+        ParityCase {
+            test_name: "machine-history-capture-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-history-capture-rollback.hew",
+        },
+        ParityCase {
+            test_name: "machine-history-entry-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-history-entry-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_shallow_history_codecs_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "machine-shallow-history",
+            source_rel: "tests/core-acceptance/cases/machine-shallow-history.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn lexical_path_helpers_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

@@ -750,6 +750,7 @@ impl Checker {
                 fields: std::collections::HashMap::new(),
                 field_order: Vec::new(),
                 variants: std::collections::HashMap::new(),
+                implicit_variant_fields: std::collections::HashMap::default(),
                 methods: std::collections::HashMap::new(),
                 doc_comment: None,
                 is_indirect: false,

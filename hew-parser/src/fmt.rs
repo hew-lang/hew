@@ -2370,6 +2370,9 @@ impl<'a> Formatter<'a> {
             self.write(".");
         }
         self.format_machine_state_path(&transition.target_path, transition.target_state);
+        if transition.history {
+            self.write(" history");
+        }
         if transition.reenter {
             self.write(" reenter");
         }

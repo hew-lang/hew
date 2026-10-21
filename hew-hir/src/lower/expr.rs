@@ -104,6 +104,13 @@ impl LowerCtx {
         if let Some(input) = self.fork_input(&span, intent) {
             return input;
         }
+        if let Some(plan) = self
+            .variant_constructor_plans
+            .get(&self.mk_key(&span))
+            .cloned()
+        {
+            return self.lower_planned_variant_constructor(expr, intent, plan);
+        }
         // `self.count` inside an actor body names the state binding `count`.
         // The checker resolved the projection to that binding and published the
         // span, so rewrite the receiver spelling to the bare name and lower it

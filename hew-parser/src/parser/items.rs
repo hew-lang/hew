@@ -1211,6 +1211,7 @@ impl Parser<'_> {
                 // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Variant(VariantDecl {
+                    implicit_fields: Vec::new(),
                     name,
                     kind,
                     tag,

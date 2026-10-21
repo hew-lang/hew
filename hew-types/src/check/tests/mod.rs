@@ -412,6 +412,7 @@ pub(super) fn make_test_type_def(
         bounds: crate::check::ParamBounds::default(),
         fields: HashMap::new(),
         variants: HashMap::new(),
+        implicit_variant_fields: HashMap::default(),
         methods,
         doc_comment: None,
         field_order: vec![],

@@ -68,10 +68,12 @@ struct CtorInfo {
     fields: Option<Vec<String>>,
     /// Surface head of a record product (`Point`); a tuple product has none.
     head: Option<String>,
+    /// Bare source patterns ignore internal fields without erasing physical slots.
+    source_unit: bool,
 }
 
 impl CtorInfo {
-    fn variant(name: String, shape: &VariantPayloadShape) -> Self {
+    fn variant(name: String, shape: &VariantPayloadShape, source_unit: bool) -> Self {
         let ctor = Ctor::Variant(name);
         match shape {
             VariantPayloadShape::Unit => Self {
@@ -79,18 +81,21 @@ impl CtorInfo {
                 slots: Vec::new(),
                 fields: None,
                 head: None,
+                source_unit,
             },
             VariantPayloadShape::Tuple(types) => Self {
                 ctor,
                 slots: types.clone(),
                 fields: None,
                 head: None,
+                source_unit,
             },
             VariantPayloadShape::Struct(fields) => Self {
                 ctor,
                 slots: fields.iter().map(|(_, ty)| ty.clone()).collect(),
                 fields: Some(fields.iter().map(|(name, _)| name.clone()).collect()),
                 head: None,
+                source_unit,
             },
         }
     }
@@ -127,7 +132,9 @@ impl CtorInfo {
                     } else {
                         name.clone()
                     };
-                    if self.fields.is_some() {
+                    if self.source_unit {
+                        head
+                    } else if self.fields.is_some() {
                         record(&head)
                     } else if self.slots.is_empty() {
                         head
@@ -289,6 +296,7 @@ impl Checker {
                     slots: Vec::new(),
                     fields: None,
                     head: None,
+                    source_unit: false,
                 }])
             }
             Ty::Bool => {
@@ -300,6 +308,7 @@ impl Checker {
                             slots: Vec::new(),
                             fields: None,
                             head: None,
+                            source_unit: false,
                         })
                         .collect(),
                 )
@@ -310,6 +319,7 @@ impl Checker {
                     slots: items.clone(),
                     fields: None,
                     head: None,
+                    source_unit: false,
                 }])
             }
             _ => {}
@@ -326,7 +336,12 @@ impl Checker {
                 variants
                     .into_iter()
                     .filter(|(_, shape)| !self.variant_is_unconstructable(shape))
-                    .map(|(name, shape)| CtorInfo::variant(name, &shape))
+                    .map(|(name, shape)| {
+                        let source_unit = self
+                            .ty_type_def(&ty)
+                            .is_some_and(|td| Self::variant_is_source_unit(td, &name));
+                        CtorInfo::variant(name, &shape, source_unit)
+                    })
                     .collect(),
             );
         }
@@ -353,6 +368,7 @@ impl Checker {
                     slots,
                     fields: Some(td.field_order.clone()),
                     head: Some(td.name.clone()),
+                    source_unit: false,
                 }])
             }
             _ => None,
@@ -395,10 +411,10 @@ impl Checker {
                     return open();
                 }
                 let matched = variant_name == Some(short_name(name.name.as_str()))
-                    && info.slots.is_empty()
+                    && (info.slots.is_empty() || info.source_unit)
                     && self.variant_surface_owner_matches(name.name.as_str(), ty);
                 if matched {
-                    vec![Vec::new()]
+                    open()
                 } else {
                     Vec::new()
                 }
@@ -463,7 +479,9 @@ impl Checker {
         info: &CtorInfo,
     ) -> Vec<Row<'pattern>> {
         match payload {
-            None if info.slots.is_empty() => vec![Vec::new()],
+            None if info.slots.is_empty() || info.source_unit => {
+                vec![vec![&WILDCARD; info.slots.len()]]
+            }
             None => Vec::new(),
             Some(NominalPatternPayload::Tuple(patterns)) => Self::positional_row(patterns, info),
             Some(NominalPatternPayload::Record { fields, .. }) => Self::named_row(fields, info),

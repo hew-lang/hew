@@ -35,6 +35,59 @@ fn machine_fixture() -> &'static str {
     "machine Light {\n    events {\n        Toggle;\n    }\n    state Off;\n    state On;\n    on Toggle: Off => On;\n    on Toggle: On => Off;\n}\n"
 }
 
+#[test]
+fn machine_diagram_preserves_parallel_regions_history_and_source_logic() {
+    let input = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../tests/core-acceptance/cases/machine-history-nested-regions.hew");
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .args(["--machine", "Pair", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagram: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let regions = diagram["regions"].as_array().unwrap();
+    assert_eq!(regions.len(), 2);
+    assert_eq!(regions[0]["name"], "left");
+    assert_eq!(regions[1]["name"], "right");
+    assert_ne!(regions[0]["id"], regions[1]["id"]);
+    assert_eq!(regions[0]["parentId"], regions[1]["parentId"]);
+    assert_eq!(regions[0]["initial"], "L0");
+    assert!(regions[0]["initialValue"]
+        .as_str()
+        .unwrap()
+        .contains("to_upper"));
+    let rules = diagram["transitions"].as_array().unwrap();
+    assert_eq!(rules.len(), 4);
+    assert_eq!(rules[0]["history"], true);
+    assert!(rules[1]["action"].as_str().unwrap().contains("advanced"));
+
+    let output = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .args(["--machine", "Nested", "--format", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let diagram: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(diagram["composites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|node| node["entry"]
+            .as_str()
+            .is_some_and(|entry| entry.contains("emit Trace"))));
+}
+
 fn missing_import_fixture() -> &'static str {
     "machine TrafficLight {\n    events {\n        Tick;\n    }\n    state Red;\n    state Green;\n    state Yellow;\n    on Tick: Red => Green;\n    on Tick: Green => Yellow;\n    on Tick: Yellow => Red;\n}\n\nfn main() {\n    let _ = fs.read(\"test.txt\");\n}\n"
 }
@@ -57,9 +110,18 @@ fn machine_diagram_emits_mermaid_on_stdout() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stateDiagram-v2"), "stdout: {stdout}");
-    assert!(stdout.contains("[*] --> Off"), "stdout: {stdout}");
-    assert!(stdout.contains("Off --> On : Toggle"), "stdout: {stdout}");
-    assert!(stdout.contains("On --> Off : Toggle"), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("[*] -->"),
+        "callers choose the root state: {stdout}"
+    );
+    assert!(
+        stdout.contains("state_0 --> state_1 : Toggle"),
+        "stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("state_1 --> state_0 : Toggle"),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]
@@ -80,14 +142,17 @@ fn machine_diagram_dot_emits_graphviz_on_stdout() {
     assert!(output.stderr.is_empty());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("digraph Light {"), "stdout: {stdout}");
-    assert!(stdout.contains("__start -> Off;"), "stdout: {stdout}");
+    assert!(stdout.contains("digraph \"Light\" {"), "stdout: {stdout}");
     assert!(
-        stdout.contains("Off -> On [label=\"Toggle\"]"),
+        !stdout.contains("initial_root"),
+        "callers choose the root state: {stdout}"
+    );
+    assert!(
+        stdout.contains("state_0 -> state_1 [label=\"Toggle\""),
         "stdout: {stdout}"
     );
     assert!(
-        stdout.contains("On -> Off [label=\"Toggle\"]"),
+        stdout.contains("state_1 -> state_0 [label=\"Toggle\""),
         "stdout: {stdout}"
     );
 }
@@ -117,17 +182,20 @@ fn machine_diagram_renders_composite_nesting_in_mermaid() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("state Connected {"),
+        stdout.contains("state \"Connected\" as compound_1 {"),
         "mermaid must nest the composite block; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("[*] --> Authenticating"),
+        stdout.contains("[*] --> state_1"),
         "nested block must mark the initial substate; stdout:\n{stdout}"
     );
-    assert!(stdout.contains("state Handshake {"), "{stdout}");
+    assert!(
+        stdout.contains("state \"Handshake\" as compound_0 {"),
+        "{stdout}"
+    );
     // Parent rules remain attached to the authored compound.
     assert!(
-        stdout.contains("Connected --> Disconnected : Disconnect"),
+        stdout.contains("compound_1 --> state_0 : Disconnect"),
         "stdout:\n{stdout}"
     );
     assert!(
@@ -147,10 +215,10 @@ fn machine_diagram_renders_composite_nesting_in_mermaid() {
         String::from_utf8_lossy(&dot.stderr)
     );
     let dot = String::from_utf8_lossy(&dot.stdout);
-    assert!(dot.contains("subgraph cluster_Connected {"), "{dot}");
-    assert!(dot.contains("__start_Connected -> Handshake;"), "{dot}");
+    assert!(dot.contains("subgraph cluster_compound_1 {"), "{dot}");
+    assert!(dot.contains("initial_compound_1 -> compound_0"), "{dot}");
     assert!(
-        dot.contains("Connected -> Disconnected [label=\"Disconnect\"]"),
+        dot.contains("compound_1 -> state_0 [label=\"Disconnect\""),
         "{dot}"
     );
 }
@@ -176,16 +244,19 @@ fn machine_diagram_composite_json_carries_composites_array() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let diagram: serde_json::Value = serde_json::from_str(&stdout).expect("diagram JSON");
+    let groups = diagram["composites"].as_array().expect("composites");
+    assert_eq!(groups.len(), 2);
+    assert_eq!(groups[0]["name"], "Handshake");
     assert_eq!(
-        diagram["composites"],
-        serde_json::json!([{
-            "name": "Handshake", "path": ["Connected", "Handshake"], "parent": "Connected",
-            "initial": "Authenticating", "members": ["Authenticating", "Active"],
-        }, {
-            "name": "Connected", "path": ["Connected"], "parent": null,
-            "initial": "Handshake", "members": ["Handshake"],
-        }]),
-        "json must carry the composite group with its initial substate; stdout:\n{stdout}"
+        groups[0]["path"],
+        serde_json::json!(["Connected", "Handshake"])
+    );
+    assert_eq!(groups[0]["parentId"], groups[1]["id"]);
+    assert_eq!(groups[0]["initial"], "Authenticating");
+    assert_eq!(groups[1]["initialId"], groups[0]["id"]);
+    assert_eq!(
+        groups[0]["members"],
+        serde_json::json!(["Authenticating", "Active"])
     );
 }
 
@@ -517,7 +588,9 @@ fn machine_diagram_reenter_mermaid_labels_edge() {
     );
     // A non-reenter transition must NOT carry the suffix.
     assert!(
-        stdout.contains("Zero --> NonZero : Inc\n") || stdout.contains("Zero --> NonZero : Inc\r"),
+        stdout
+            .lines()
+            .any(|line| line.contains("state_0 --> state_1 : Inc") && !line.contains("[reenter]")),
         "non-reenter transition must not have [reenter]; stdout:\n{stdout}"
     );
 }
@@ -538,7 +611,7 @@ fn machine_diagram_reenter_dot_labels_edge() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("\"Inc [reenter]\""),
+        stdout.contains("\"Inc [reenter]"),
         "DOT must include [reenter] in edge label; stdout:\n{stdout}"
     );
 }
@@ -740,16 +813,8 @@ fn machine_diagram_generic_json_carries_type_params() {
     );
 }
 
-// ── fix 5: JSON wildcard rows expanded, not raw `_` ──────────────────────────
-
 #[test]
-fn machine_diagram_json_no_wildcard_rows() {
-    // A wildcard source must reach the JSON as concrete states, never a raw
-    // "_". The wildcard-derived `A => A` row is NOT suppressed: it is emitted
-    // flagged `selfTransition: true, external: false`, matching the mermaid
-    // renderer's `A --> A : Reset` edge. Whether a vacuous self-loop belongs in
-    // a diagram at all is an open question; this pins what both renderers
-    // actually agree on today so a change to either is deliberate.
+fn machine_diagram_wildcard_rules_retain_their_authored_scope() {
     let dir = support::tempdir();
     // Minimal wildcard machine: one wildcard source, one named target.
     // `default { state }` satisfies exhaustiveness so the HIR path works.
@@ -771,26 +836,12 @@ fn machine_diagram_json_no_wildcard_rows() {
         .as_array()
         .expect("transitions array")
         .clone();
-    assert!(
-        transitions
-            .iter()
-            .all(|row| row["from"] != "_" && row["to"] != "_"),
-        "JSON must not carry a raw wildcard state; stdout:\n{stdout}"
-    );
-    assert_eq!(
-        transitions,
-        vec![
-            serde_json::json!({"event": "Flip", "from": "A", "to": "B", "fromPath": [], "toPath": [],
-                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
-            serde_json::json!({"event": "Reset", "from": "A", "to": "A", "fromPath": [], "toPath": [],
-                "selfTransition": true, "guarded": false, "reenter": false, "external": false}),
-            serde_json::json!({"event": "Reset", "from": "B", "to": "A", "fromPath": [], "toPath": [],
-                "selfTransition": false, "guarded": false, "reenter": false, "external": true}),
-        ],
-        "wildcard Reset must expand to both concrete sources; stdout:\n{stdout}"
-    );
+    assert_eq!(transitions.len(), 2, "authored rules appear once");
+    assert_eq!(transitions[1]["from"], "_");
+    assert_eq!(transitions[1]["fromId"], "any_state");
+    assert_eq!(transitions[1]["to"], "A");
+    assert!(transitions[1]["scope"].is_null());
 
-    // The mermaid renderer draws the same self-loop, so the two agree.
     let mermaid = Command::new(hew_binary())
         .args(["machine", "diagram"])
         .arg(&input)
@@ -799,8 +850,8 @@ fn machine_diagram_json_no_wildcard_rows() {
     assert!(mermaid.status.success());
     let mermaid = String::from_utf8_lossy(&mermaid.stdout).into_owned();
     assert!(
-        mermaid.contains("A --> A : Reset"),
-        "mermaid must draw the same wildcard-derived self-loop; stdout:\n{mermaid}"
+        mermaid.contains("any_state --> state_0 : Reset"),
+        "mermaid must retain the same authored fallback; stdout:\n{mermaid}"
     );
 }
 
@@ -869,9 +920,18 @@ fn machine_diagram_renders_a_machine_reached_only_through_an_import() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("stateDiagram-v2"), "stdout:\n{stdout}");
-    assert!(stdout.contains("[*] --> Off"), "stdout:\n{stdout}");
-    assert!(stdout.contains("Off --> On : Flip"), "stdout:\n{stdout}");
-    assert!(stdout.contains("On --> Off : Flip"), "stdout:\n{stdout}");
+    assert!(
+        !stdout.contains("[*] -->"),
+        "callers choose the root state: {stdout}"
+    );
+    assert!(
+        stdout.contains("state_0 --> state_1 : Flip"),
+        "stdout:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("state_1 --> state_0 : Flip"),
+        "stdout:\n{stdout}"
+    );
 }
 
 #[test]
@@ -892,7 +952,10 @@ fn machine_list_renders_a_machine_reached_only_through_an_import() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("machine Toggle {"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("machine std.machines.toggle.Toggle {"),
+        "stdout:\n{stdout}"
+    );
     assert!(stdout.contains("    Off"), "stdout:\n{stdout}");
     assert!(stdout.contains("    On"), "stdout:\n{stdout}");
     assert!(stdout.contains("    Flip"), "stdout:\n{stdout}");
@@ -925,10 +988,13 @@ fn machine_diagram_renders_the_local_and_the_imported_machine() {
         "one diagram for the local machine and one for the imported; stdout:\n{stdout}"
     );
     assert!(
-        stdout.contains("Closed --> Open : Push"),
+        stdout.contains("state_0 --> state_1 : Push"),
         "stdout:\n{stdout}"
     );
-    assert!(stdout.contains("Off --> On : Flip"), "stdout:\n{stdout}");
+    assert!(
+        stdout.contains("state_0 --> state_1 : Flip"),
+        "stdout:\n{stdout}"
+    );
 
     let selected = Command::new(hew_binary())
         .args(["machine", "diagram"])
@@ -944,9 +1010,29 @@ fn machine_diagram_renders_the_local_and_the_imported_machine() {
         "--machine must select one; stdout:\n{selected}"
     );
     assert!(
-        !selected.contains("Closed --> Open : Push"),
+        !selected.contains("state_0 --> state_1 : Push"),
         "--machine Toggle must not render Door; stdout:\n{selected}"
     );
+
+    let selected = Command::new(hew_binary())
+        .args(["machine", "diagram"])
+        .arg(&input)
+        .args([
+            "--machine",
+            "std.machines.toggle.Toggle",
+            "--format",
+            "json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    let selected: serde_json::Value = serde_json::from_slice(&selected.stdout).unwrap();
+    assert_eq!(selected["qualifiedName"], "std.machines.toggle.Toggle");
+    assert_eq!(selected["name"], "Toggle");
 }
 
 #[test]

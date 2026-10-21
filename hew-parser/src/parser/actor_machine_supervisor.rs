@@ -561,6 +561,10 @@ impl Parser<'_> {
     /// Parse a single `on …` machine transition (the new `=>` / `reenter`
     /// surface, with optional `on E { bindings }:` head binding). Used both at the
     /// top level of a machine body and inside composite blocks.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one transition owns its authored head, modifiers and body spans"
+    )]
     pub(crate) fn parse_machine_transition(&mut self) -> Option<MachineTransition> {
         let rule_start = self.peek_span().start;
         self.expect(&Token::On)?;
@@ -591,7 +595,23 @@ impl Parser<'_> {
 
         // Optional `reenter` contextual keyword (self-transition Mealy
         // re-entry). Grammar slot: `on E { b }: Src => Tgt reenter [when g] [body]`.
-        let reenter = self.eat_machine_kw("reenter");
+        let mut reenter = false;
+        let mut history = false;
+        loop {
+            let flag = if self.eat_machine_kw("reenter") {
+                &mut reenter
+            } else if self.eat_machine_kw("history") {
+                &mut history
+            } else {
+                break;
+            };
+            if std::mem::replace(flag, true) {
+                self.error_at(
+                    "transition modifier is repeated".to_string(),
+                    self.peek_span(),
+                );
+            }
+        }
 
         // Optional guard: `when <expr>`. A guard shares the `if`/`while`
         // condition's no-struct-literal context: a bare identifier directly
@@ -682,6 +702,7 @@ impl Parser<'_> {
             body: (body, body_start..body_end),
             body_form,
             reenter,
+            history,
             span: rule_start..self.last_token_end,
         })
     }

@@ -447,6 +447,7 @@ pub fn builtin_type_def(kind: BuiltinNamedType) -> &'static TypeDef {
                         bounds: crate::check::ParamBounds::default(),
                         fields: HashMap::new(),
                         variants: HashMap::new(),
+                        implicit_variant_fields: HashMap::default(),
                         methods: builtin_method_sigs(info.kind).clone(),
                         doc_comment: None,
                         field_order: vec![],

@@ -289,6 +289,11 @@ pub(super) fn verify_calls(
     ) -> Result<(), PhysicalError> {
         match term {
             PhysicalTerminator::Call { callee, .. } => callee_body(module, *callee, seen)?,
+            PhysicalTerminator::ValueCall { ty, capability, .. } => {
+                for callee in super::capability::callees(module, ty, *capability)? {
+                    callee_body(module, callee, seen)?;
+                }
+            }
             // The module's tables are the closed set of erasures, so a
             // dispatch is proven by every body that fills its slot.
             PhysicalTerminator::DynCall { method, .. } => {
@@ -313,8 +318,7 @@ pub(super) fn verify_calls(
             | PhysicalTerminator::TaskAwait { .. }
             | PhysicalTerminator::ActorAsk { .. }
             | PhysicalTerminator::TaskScopeJoin { .. }
-            | PhysicalTerminator::IndirectCall { .. }
-            | PhysicalTerminator::ValueCall { .. } => {
+            | PhysicalTerminator::IndirectCall { .. } => {
                 return Err(PhysicalError::new(
                     "physical defer call has unproven effects",
                 ));

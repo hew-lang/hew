@@ -470,3 +470,18 @@ fn main() {{}}
         );
     }
 }
+
+#[test]
+fn history_destinations_require_a_compound() {
+    for target in ["Leaf", "_"] {
+        let source = format!("machine M {{ events {{ Tick; }} state Leaf; on Tick: Leaf => {target} history; default {{ state }} }} fn main() {{}}");
+        let output = check_source(&source);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("history destination must name a compound")),
+            "{target}: {:?}",
+            output.errors
+        );
+    }
+}

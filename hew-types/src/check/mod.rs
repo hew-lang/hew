@@ -73,6 +73,7 @@ mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;
 use self::nominal_identity::NominalOrigin;
+mod implicit_variant_fields;
 mod patterns;
 mod registration;
 pub use registration::intrinsic_floor_modules;
@@ -115,7 +116,8 @@ pub use self::types::{
     ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot,
     StackHint, StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
     TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch,
-    VariantDef, VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
+    VariantConstructorField, VariantConstructorPlan, VariantConstructorValue, VariantDef,
+    VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
 };
 use self::util::{
     collect_unresolved_inference_vars, extract_float_literal_value, extract_integer_literal_value,
@@ -2570,6 +2572,69 @@ impl Checker {
         item: &Item,
         span: &Span,
     ) {
+        // A normalized declaration can keep its authored occurrence
+        // while gaining physical fields with fresh annotation spans.
+        // Those annotations still belong to this declaration's
+        // binders, including independently spanned nested arguments.
+        fn annotation_regions(ty: &Spanned<TypeExpr>, visit: &mut impl FnMut(&Span)) {
+            visit(&ty.1);
+            match &ty.0 {
+                TypeExpr::Named { path, type_args } => {
+                    for (_, span) in &path.segments {
+                        visit(span);
+                    }
+                    for arg in type_args.iter().flatten() {
+                        annotation_regions(arg, visit);
+                    }
+                }
+                TypeExpr::Option(inner)
+                | TypeExpr::Slice(inner)
+                | TypeExpr::Borrow(inner)
+                | TypeExpr::Array { element: inner, .. }
+                | TypeExpr::Pointer { pointee: inner, .. } => {
+                    annotation_regions(inner, visit);
+                }
+                TypeExpr::Result { ok, err }
+                | TypeExpr::Fallible {
+                    success: ok,
+                    error: err,
+                } => {
+                    annotation_regions(ok, visit);
+                    annotation_regions(err, visit);
+                }
+                TypeExpr::Tuple(types) => {
+                    for ty in types {
+                        annotation_regions(ty, visit);
+                    }
+                }
+                TypeExpr::Function {
+                    params,
+                    return_type,
+                    ..
+                }
+                | TypeExpr::ActorFn {
+                    params,
+                    return_type,
+                } => {
+                    for ty in params {
+                        annotation_regions(ty, visit);
+                    }
+                    annotation_regions(return_type, visit);
+                }
+                TypeExpr::QualifiedAssocPath(path) => annotation_regions(&path.base, visit),
+                TypeExpr::TraitObject(bounds) => {
+                    for bound in bounds {
+                        for arg in bound.type_args.iter().flatten() {
+                            annotation_regions(arg, visit);
+                        }
+                        for binding in &bound.assoc_type_bindings {
+                            annotation_regions(&binding.ty, visit);
+                        }
+                    }
+                }
+                TypeExpr::Infer => {}
+            }
+        }
         use crate::{DeclarationKind as Kind, DeclarationOccurrence};
         let Some(module) = module else {
             return;
@@ -2624,6 +2689,35 @@ impl Checker {
                     span,
                     decl.type_params.as_deref().unwrap_or_default(),
                 );
+                if let Some(parameters) = decl
+                    .type_params
+                    .as_deref()
+                    .filter(|params| !params.is_empty())
+                {
+                    let mut publish = |region: &Span| {
+                        if region.start < span.start || region.end > span.end {
+                            declare(kind, 0, region, parameters);
+                        }
+                    };
+                    for member in &decl.body {
+                        match member {
+                            TypeBodyItem::Field { ty, .. } => annotation_regions(ty, &mut publish),
+                            TypeBodyItem::Variant(variant) => match &variant.kind {
+                                VariantKind::Unit => {}
+                                VariantKind::Tuple(types) => {
+                                    for ty in types {
+                                        annotation_regions(ty, &mut publish);
+                                    }
+                                }
+                                VariantKind::Struct(fields) => {
+                                    for (_, ty) in fields {
+                                        annotation_regions(ty, &mut publish);
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
             }
             Item::Record(decl) => declare(
                 Kind::Record,
@@ -3155,6 +3249,7 @@ impl Checker {
             literal_binding_value_spans: self.literal_binding_value_spans.clone(),
             intrinsic_declarations: self.intrinsic_declarations.clone(),
             pending_pattern_resolutions: self.pending_pattern_resolutions.clone(),
+            variant_constructor_plans: self.variant_constructor_plans.clone(),
             lang_items: self.lang_items.clone(),
             lang_item_spans: self.lang_item_spans.clone(),
             pending_let_closure_name: self.pending_let_closure_name.clone(),
@@ -4162,6 +4257,15 @@ impl Checker {
             actor_protocol_descriptors,
             lambda_actor_declarations: std::mem::take(&mut self.lambda_actor_declarations),
             intrinsic_declarations: std::mem::take(&mut self.intrinsic_declarations),
+            variant_constructor_plans: std::mem::take(&mut self.variant_constructor_plans)
+                .into_iter()
+                .map(|(key, mut plan)| {
+                    for field in &mut plan.fields {
+                        field.ty = self.finalize_type_for_handoff(&field.ty);
+                    }
+                    (key, plan)
+                })
+                .collect(),
             pattern_resolutions: std::mem::take(&mut self.pending_pattern_resolutions)
                 .into_iter()
                 .map(|(k, mut arm)| {

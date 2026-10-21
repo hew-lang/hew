@@ -828,3 +828,70 @@ fn place_plan_of(
     )
     .unwrap()
 }
+
+#[test]
+fn deferred_structural_comparison_checks_selected_component_effects() {
+    let module = lower_source(
+        r"type Key { id: i64; }
+impl Eq for Key {
+    fn eq(self, other: Key) -> bool { self.id == other.id }
+}
+type Outer { key: Key; }
+fn main() -> i64 {
+    let left = Outer { key: Key { id: 7 } };
+    let right = left;
+    defer { let _ = left == right; }
+    0
+}",
+    );
+    let selected = module
+        .value_capabilities
+        .iter()
+        .find_map(|((_, capability), plan)| {
+            (*capability == hew_types::ValueCapability::Eq)
+                .then_some(plan.callable)
+                .flatten()
+        })
+        .expect("structural comparison selects the nested user equality body");
+    for suspend in [false, true] {
+        let mut altered = module.clone();
+        if suspend {
+            let body = altered
+                .functions
+                .iter_mut()
+                .find(|body| body.callable == selected)
+                .unwrap();
+            let edge = hew_sir::Edge {
+                target: body.entry,
+                args: vec![],
+            };
+            body.blocks
+                .iter_mut()
+                .find(|block| block.id == body.entry)
+                .unwrap()
+                .terminator = SemTerminator::Suspend {
+                kind: hew_sir::SuspendKind::Yield,
+                inputs: vec![],
+                result: hew_sir::CallResult::Unit,
+                resumes: vec![edge.clone()],
+                cancel: edge.clone(),
+                unwind: edge,
+            };
+        } else {
+            altered.functions.retain(|body| body.callable != selected);
+        }
+        let expected = if suspend {
+            "defer call has unproven or suspending effects"
+        } else {
+            "defer call has no proven non-suspending body"
+        };
+        assert!(
+            verify_module(&altered).iter().any(|diagnostic| matches!(
+                &diagnostic.kind,
+                hew_sir::SirDiagnosticKind::InvalidTerminator { reason }
+                    if reason == expected
+            )),
+            "deferred comparison must prove its selected component body: {expected}"
+        );
+    }
+}

@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-history-entry-rollback"
+intent = "A restored child's entry fault preserves the previous machine and saved history, discarding staged owning output."
+source = "cases/machine-history-entry-rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\nentry rollback retained history\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

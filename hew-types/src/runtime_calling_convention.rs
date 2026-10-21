@@ -503,6 +503,7 @@ mod tests {
                 fields: std::collections::HashMap::new(),
                 field_order: vec![],
                 variants: std::collections::HashMap::new(),
+                implicit_variant_fields: std::collections::HashMap::default(),
                 methods: std::collections::HashMap::new(),
                 doc_comment: None,
                 is_indirect,

@@ -2931,10 +2931,19 @@ leaves the whole active branch and re-enters the result, so `on Stay: Active =>
 _ { Active }` runs `Live.exit` and `Live.entry`. Name the target when the group's
 hooks must not run.
 
-The composite is a grouping, not a live state: `state_name()` always reports a
-substate, and the machine flattens before it is checked. `hew machine diagram`
-draws the flat machine; its `--format json` output keeps the grouping in a
-`composites` array.
+`hew machine diagram file.hew` shows the authored hierarchy, parallel regions,
+initial child descent and scoped transition rules in Mermaid. Use
+`--format dot` for Graphviz, or `--format json` for structured states, regions,
+guards, actions and hooks. Parent and wildcard rules appear once at their
+declared scope. The caller chooses the root state; arrows into initial children
+represent the explicit `initial` declarations.
+
+To export an SVG:
+
+```sh
+hew machine diagram file.hew --format dot > machine.dot
+dot -Tsvg machine.dot -o machine.svg
+```
 
 ### Fixed numbers in a machine: const parameters
 

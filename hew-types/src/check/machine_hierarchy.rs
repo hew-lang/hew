@@ -189,6 +189,10 @@ impl Hierarchy {
 
     /// Resolve inherited fields and scoped rules once, retaining their node
     /// identities alongside the ordinary declarations they will generate.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "resolve each authored rule and its configuration write domain together"
+    )]
     pub(super) fn resolve_relation(
         &mut self,
         machine: &MachineDecl,
@@ -252,6 +256,16 @@ impl Hierarchy {
                     rule.span.clone(),
                 )?)
             };
+            if rule.history
+                && target.is_none_or(|node| {
+                    !matches!(self.nodes[node.0].declaration, Declaration::Compound(_))
+                })
+            {
+                return Err(refusal(
+                    rule.span.clone(),
+                    "a history destination must name a compound state".to_string(),
+                ));
+            }
             let selected_scope = source.or(scope);
             let container = selected_scope.and_then(|node| {
                 if matches!(self.nodes[node.0].declaration, Declaration::Region { .. }) {
@@ -269,7 +283,10 @@ impl Hierarchy {
                 expanded.source_state = self.name(machine, leaf);
                 if let Some(target) = target {
                     let initial = self.leaf(target);
-                    if target != initial && !self.has_initial_value(machine, target) {
+                    if target != initial
+                        && !rule.history
+                        && !self.has_initial_value(machine, target)
+                    {
                         expanded.target_state = self.name(machine, initial);
                         rewrite_target(
                             &mut expanded.body.0,
@@ -654,6 +671,18 @@ impl Hierarchy {
 
     pub(super) fn initial_child(&self, node: NodeId) -> Option<NodeId> {
         self.nodes[node.0].initial
+    }
+
+    pub(super) fn children(&self, parent: NodeId) -> Vec<NodeId> {
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, node)| (node.parent == Some(parent)).then_some(NodeId(index)))
+            .collect()
+    }
+
+    pub(super) fn own_fields(&self, node: NodeId) -> &[(Ident, Spanned<TypeExpr>)] {
+        &self.nodes[node.0].fields
     }
 
     pub(super) fn leaf(&self, mut node: NodeId) -> NodeId {

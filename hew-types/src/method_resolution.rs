@@ -476,6 +476,7 @@ mod tests {
                 bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: HashMap::new(),
                 doc_comment: None,
                 field_order: vec![],
@@ -519,6 +520,7 @@ mod tests {
                 bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: HashMap::new(),
                 doc_comment: None,
                 field_order: vec![],
@@ -564,6 +566,7 @@ mod tests {
                 bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: {
                     let mut methods = HashMap::new();
                     methods.insert(
@@ -617,6 +620,7 @@ mod tests {
                 bounds: crate::check::ParamBounds::default(),
                 fields: HashMap::new(),
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: {
                     let mut methods = HashMap::new();
                     methods.insert(

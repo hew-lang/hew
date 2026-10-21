@@ -64,11 +64,14 @@ impl crate::TypeFactService {
         {
             return Err("data enum has no exact instantiated enum declaration".into());
         }
+        let member_kind =
+            if defs.kind(instance.nominal.declaration()) == crate::DeclarationKind::Machine {
+                crate::DeclarationKind::MachineState
+            } else {
+                crate::DeclarationKind::Variant
+            };
         let mut variants = defs
-            .members_of_kind(
-                instance.nominal.declaration(),
-                crate::DeclarationKind::Variant,
-            )
+            .members_of_kind(instance.nominal.declaration(), member_kind)
             .collect::<Vec<_>>();
         variants.sort_by_key(|variant| defs.site(*variant).map(DeclarationOccurrence::ordinal));
         if variants.len() != definition.variants.len() {

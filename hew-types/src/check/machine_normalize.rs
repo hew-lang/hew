@@ -25,6 +25,7 @@ use hew_parser::ast::{
 use super::machine_hierarchy::{Hierarchy, NodeId};
 
 mod configuration;
+mod history;
 use crate::error::{TypeError, TypeErrorKind};
 
 /// The program the checker checks and HIR lowers when the compiler writes
@@ -185,6 +186,9 @@ pub(super) fn normalize(
         configuration_hierarchy: None,
         configuration_root: None,
         initializing: false,
+        history_slots: Vec::new(),
+        history_target: None,
+        history_sites: Vec::new(),
     };
     let mut normalized = program.clone();
     let root_sources = program
@@ -192,7 +196,9 @@ pub(super) fn normalize(
         .as_ref()
         .map(|graph| item_sources(graph, &graph.root))
         .unwrap_or_default();
-    normalized.items = builder.items(&program.items, &root_sources, "(root)", None)?;
+    let (root_items, root_origins) =
+        builder.items(&program.items, &root_sources, "(root)", None)?;
+    normalized.items = root_items;
     if let Some(graph) = &mut normalized.module_graph {
         for (id, module) in &mut graph.modules {
             let old_items = &program
@@ -213,34 +219,25 @@ pub(super) fn normalize(
                         .filter_map(|_| module.source_paths.first().cloned())
                         .collect()
                 });
-            module.items = if *id == graph.root && same_item_list(old_items, &program.items) {
-                normalized.items.clone()
+            let (items, origins) = if *id == graph.root && same_item_list(old_items, &program.items)
+            {
+                (normalized.items.clone(), root_origins.clone())
             } else {
                 let source_module = (*id != graph.root).then(|| id.dotted());
                 builder.items(old_items, &sources, &id.dotted(), source_module.as_deref())?
             };
+            module.items = items;
             if let Some(sources) = graph.item_sources.get_mut(&id.dotted()) {
-                // Each expansion appends its companions after all authored
-                // items, in authored machine order.
                 let old_sources = sources.clone();
-                for (ordinal, (item, _)) in old_items.iter().enumerate() {
-                    if let Item::Machine(machine) = item {
-                        if !crate::ty::is_reserved_type_name(machine.name.name.as_str()) {
-                            let source = old_sources
-                                .get(ordinal)
-                                .or_else(|| module.source_paths.first());
-                            if let Some(source) = source {
-                                let region_types = machine
-                                    .composite_groups
-                                    .iter()
-                                    .map(|group| group.regions.len())
-                                    .sum::<usize>();
-                                sources
-                                    .extend(std::iter::repeat_n(source.clone(), 6 + region_types));
-                            }
-                        }
-                    }
-                }
+                *sources = origins
+                    .into_iter()
+                    .filter_map(|ordinal| {
+                        old_sources
+                            .get(ordinal)
+                            .or_else(|| module.source_paths.first())
+                            .cloned()
+                    })
+                    .collect();
                 debug_assert_eq!(
                     sources.len(),
                     module.items.len(),
@@ -403,6 +400,7 @@ impl FreshSpans for Builder {
 
 type ExpansionKey = (Option<PathBuf>, String, Span, usize);
 type VariantFields = (Ident, Vec<(Ident, Spanned<TypeExpr>)>);
+type ExpandedItems = (Vec<Spanned<Item>>, Vec<usize>);
 
 struct Builder {
     next_span: usize,
@@ -424,6 +422,9 @@ struct Builder {
     configuration_hierarchy: Option<Arc<Hierarchy>>,
     configuration_root: Option<Spanned<Expr>>,
     initializing: bool,
+    history_slots: Vec<history::HistorySlot>,
+    history_target: Option<NodeId>,
+    history_sites: Vec<Span>,
 }
 
 fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
@@ -574,7 +575,7 @@ impl Builder {
             .configuration_types
             .get(&state.name)
             .map(|(_, fields)| fields.clone());
-        let fields: Vec<_> = state
+        let mut fields: Vec<_> = state
             .fields
             .iter()
             .filter(|(field, _)| {
@@ -584,6 +585,7 @@ impl Builder {
             })
             .map(|(name, _)| (*name, self.ident(format!("_$machine_state_{name}"))))
             .collect();
+        self.carry_history(machine, state.name, &mut fields);
         self.qualified_variant(machine, state.name, fields)
     }
 
@@ -597,6 +599,15 @@ impl Builder {
             .configuration_types
             .get(&name)
             .map_or(machine.name, |(owner, _)| *owner);
+        self.enum_value(owner, name, fields)
+    }
+
+    fn enum_value(
+        &mut self,
+        owner: Ident,
+        name: Ident,
+        fields: Vec<(Ident, Spanned<Expr>)>,
+    ) -> Spanned<Expr> {
         if fields.is_empty() {
             let object = self.ident(owner);
             let field = (name, self.span());
@@ -687,8 +698,9 @@ impl Builder {
         sources: &[PathBuf],
         module: &str,
         source_module: Option<&str>,
-    ) -> Result<Vec<Spanned<Item>>, Vec<TypeError>> {
+    ) -> Result<ExpandedItems, Vec<TypeError>> {
         let mut result = items.to_vec();
+        let mut origins: Vec<_> = (0..items.len()).collect();
         let mut companions = Vec::new();
         let mut errors = Vec::new();
         for (ordinal, (item, span)) in items.iter().enumerate() {
@@ -733,6 +745,7 @@ impl Builder {
                     // Replacing in place preserves every authored root's
                     // source occurrence, including the machine itself.
                     result[ordinal] = (generated.remove(0).0, span.clone());
+                    origins.extend(std::iter::repeat_n(ordinal, generated.len()));
                     companions.extend(generated);
                 }
                 // A refusal in an imported module reports against that
@@ -745,7 +758,7 @@ impl Builder {
         }
         result.extend(companions);
         if errors.is_empty() {
-            Ok(result)
+            Ok((result, origins))
         } else {
             Err(errors)
         }
@@ -787,6 +800,7 @@ impl Builder {
         };
         self.configuration_types.clear();
         self.configuration_hierarchy = Some(Arc::new(hierarchy.clone()));
+        self.history_slots = history::slots(machine, &hierarchy);
         for node in hierarchy.hook_nodes() {
             if !hierarchy
                 .configurations(hierarchy.container(node))
@@ -832,7 +846,7 @@ impl Builder {
                 region_enums.push(declaration);
             }
         }
-        let state_variants = hierarchy
+        let mut state_variants = hierarchy
             .configurations(None)
             .into_iter()
             .map(|node| {
@@ -840,7 +854,11 @@ impl Builder {
                     .map(|state| (state.name, state.fields))
             })
             .collect::<Result<Vec<_>, _>>()?;
+        for (_, fields) in &mut state_variants {
+            fields.extend(self.history_fields(machine));
+        }
         let mut state_enum = self.enum_decl(machine.name, &state_variants, machine.visibility);
+        self.mark_history_fields(&mut state_enum);
         state_enum.origin = DeclarationOrigin::MachineState;
         state_enum.type_params.clone_from(&params);
         state_enum.where_clause.clone_from(&machine.where_clause);
@@ -1065,6 +1083,17 @@ impl Builder {
             generated.push(Item::TypeDecl(declaration));
             spans.push(span);
         }
+        for mut declaration in self.history_declarations(machine, &hierarchy) {
+            let start = self.next_span;
+            self.refresh_generics(
+                declaration.type_params.as_mut(),
+                declaration.where_clause.as_mut(),
+            );
+            self.refresh_type_decl(&mut declaration);
+            self.span();
+            generated.push(Item::TypeDecl(declaration));
+            spans.push(start..self.next_span);
+        }
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());
         }
@@ -1129,6 +1158,7 @@ impl Builder {
                 .map(|(name, fields)| {
                     TypeBodyItem::Variant(VariantDecl {
                         name: *name,
+                        implicit_fields: Vec::new(),
                         tag: None,
                         doc_comment: None,
                         span: self.span(),
@@ -1600,6 +1630,23 @@ impl Builder {
                 }
                 *expr = Expr::Ident(Ident::new(&format!("_$machine_event_{field}")));
             }
+            Expr::FieldAccess { object, field }
+                if matches!(&object.0, Expr::Ident(name) if *name == machine.name)
+                    && (self.configuration_types.contains_key(&field.0)
+                        || machine
+                            .composite_groups
+                            .iter()
+                            .any(|group| group.name == field.0)) =>
+            {
+                let name = field.0;
+                *expr = if let Some(value) =
+                    self.complete_compound_constructor(machine, name, Vec::new())?
+                {
+                    value.0
+                } else {
+                    self.qualified_variant(machine, name, Vec::new()).0
+                };
+            }
             Expr::MachineEmit {
                 event_name,
                 fields,
@@ -1720,9 +1767,11 @@ impl Builder {
                     .as_ref()
                     .map_or_else(Vec::new, |record| record.fields.clone());
                 if let Some(completed) =
-                    self.complete_compound_constructor(machine, name, fields)?
+                    self.complete_compound_constructor(machine, name, fields.clone())?
                 {
                     *expr = completed.0;
+                } else if self.configuration_types.contains_key(&name) {
+                    *expr = self.qualified_variant(machine, name, fields).0;
                 }
             }
             Expr::StructInit {

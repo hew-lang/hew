@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-history-capture-rollback"
+intent = "A body fault rolls back captured history, exit-mutated payload and emitted owning output together."
+source = "cases/machine-history-capture-rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\ncapture rollback:ORIGINAL\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

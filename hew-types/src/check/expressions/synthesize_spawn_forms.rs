@@ -1697,6 +1697,16 @@ impl Checker {
                 }
             }
 
+            // Instantiate this constructor's binders before checking nested
+            // payload types, just as ordinary record construction does above.
+            // A caller's `T` must constrain a fresh argument, not be compared
+            // with the enum declaration's independently owned parameter.
+            for parameter in &enum_type_params {
+                type_arg_map
+                    .entry(*parameter)
+                    .or_insert_with(|| Ty::Var(TypeVar::fresh()));
+            }
+
             for (field_index, (field_name, (expr, es))) in fields.iter().enumerate() {
                 if let Some((_, declared_ty)) = variant_fields
                     .iter()
@@ -1738,8 +1748,11 @@ impl Checker {
                 }
             }
             let provided: HashSet<&str> = fields.iter().map(|(n, _)| n.name.as_str()).collect();
-            for (declared, _) in &variant_fields {
-                if !provided.contains(declared.as_str()) {
+            let variant_name = name.rsplit("::").next().unwrap_or(name);
+            for (index, (declared, _)) in variant_fields.iter().enumerate() {
+                if !provided.contains(declared.as_str())
+                    && !self.is_implicit_variant_field(&enum_name, variant_name, index)
+                {
                     self.report_error(
                         TypeErrorKind::UndefinedField,
                         span,
@@ -1765,7 +1778,9 @@ impl Checker {
             // struct-variant brace init on the same TypeDef-bound authority as
             // annotations, tuple variants, and plain struct/record init.
             self.enforce_type_def_instantiation_bounds(&enum_name, &type_args, span);
-            self.named_ty_for_key(&enum_name, type_args)
+            let result = self.named_ty_for_key(&enum_name, type_args);
+            self.record_variant_constructor_plan(&enum_name, variant_name, &result, fields, span);
+            result
         } else {
             let similar = crate::error::find_similar(
                 name,

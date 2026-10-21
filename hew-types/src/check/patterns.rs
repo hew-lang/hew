@@ -2793,6 +2793,9 @@ impl Checker {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
                         VariantDef::Tuple(fields) => Some(subst_fields(fields)),
+                        VariantDef::Struct(_) if Self::variant_is_source_unit(&td, short_name) => {
+                            Some(vec![])
+                        }
                         VariantDef::Struct(_) => None,
                     };
                 }
@@ -2800,6 +2803,11 @@ impl Checker {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
                         VariantDef::Tuple(fields) => Some(subst_fields(fields)),
+                        VariantDef::Struct(_)
+                            if Self::variant_is_source_unit(&td, variant_name) =>
+                        {
+                            Some(vec![])
+                        }
                         VariantDef::Struct(_) => None,
                     };
                 }

@@ -1575,6 +1575,9 @@ pub enum TypeBodyItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantDecl {
+    /// Internal fields initialized by compiler-authored constructor plans.
+    #[serde(skip)]
+    pub implicit_fields: Vec<ImplicitVariantField>,
     pub name: Ident,
     pub kind: VariantKind,
     /// The stable `@N` tag of a `#[wire]` enum variant.
@@ -1587,6 +1590,18 @@ pub struct VariantDecl {
     /// Set to `0..0` for synthetically constructed variants.
     #[serde(skip)]
     pub span: Span,
+}
+
+/// An internal physical payload slot whose omitted value is checker-authored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplicitVariantField {
+    pub field_index: usize,
+    pub initialization: ImplicitVariantFieldInitialization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplicitVariantFieldInitialization {
+    EmptyOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2268,6 +2283,9 @@ pub struct MachineTransition {
     /// Moore-style rule that self-loops must be annotated or empty).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reenter: bool,
+    /// Restore the target compound's saved immediate child configuration.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
     /// Byte span from `on` through the rule's end; shared by the per-member
     /// rules a composite's parent rule expands to.
     #[serde(default)]

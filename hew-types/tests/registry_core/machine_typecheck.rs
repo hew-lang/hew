@@ -109,6 +109,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         ),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
+        history: false,
         span: 0..0,
     }
 }
@@ -163,6 +164,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         body: (Expr::Ident(Ident::new("state")), 0..0),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
+        history: false,
         span: 0..0,
     }
 }

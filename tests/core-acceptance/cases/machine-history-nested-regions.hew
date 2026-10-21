@@ -1,0 +1,106 @@
+machine Nested {
+    events { Enter; Descend; Advance; Leave; Resume; }
+    emits { Trace { value: i64; } }
+    state Outside;
+    state Active {
+        entry { emit Trace { value: 1 }; }
+        initial state Plain;
+        state Inner {
+            text: string;
+            entry { emit Trace { value: 2 }; }
+            state First {
+                count: i64;
+                entry { emit Trace { value: 3 }; }
+            }
+            state Second { count: i64; }
+            initial First { count: 10 };
+        }
+    }
+    on Enter: Outside => Active;
+    on Descend: Plain => Inner { text: "kept".to_upper() }
+    on Advance: First => Second { text: state.text, count: 99 }
+    on Leave: Active => Outside;
+    on Resume: Outside => Active history;
+    default { state }
+}
+
+machine Pair {
+    events { Resume; Advance; Leave; }
+    state Off;
+    parallel state On {
+        region left {
+            state L0 { value: string; }
+            state L1 { value: string; }
+            initial L0 { value: "left".to_upper() };
+        }
+        region right {
+            state InnerRight {
+                count: i64;
+                state R0 { child: i64; }
+                state R1 { child: i64; }
+                initial R0 { child: 4 };
+            }
+            initial InnerRight { count: 7 };
+        }
+    }
+    on Resume: Off => On history;
+    on Advance: L0 => L1 { value: state.value + ":advanced" }
+    on Advance: R0 => R1 { count: state.count + 1, child: 99 }
+    on Leave: On => Off;
+    default { state }
+}
+
+machine GenericPair<T> {
+    events { Resume { seed: T; } Advance; Leave; }
+    state Off;
+    parallel state On {
+        seed: T;
+        region left {
+            state L0 { value: T; }
+            state L1 { value: T; }
+            initial L0 { value: state.seed };
+        }
+        region right {
+            state R0 { value: T; }
+            initial R0 { value: state.seed };
+        }
+    }
+    on Resume: Off => On history { seed: event.seed }
+    on Advance: L0 => L1 { value: state.value }
+    on Leave: On => Off;
+    default { state }
+}
+
+fn main() {
+    var nested: Nested = .Outside;
+    let _enter = nested.step(.Enter);
+    let _descend = nested.step(.Descend);
+    let _advance = nested.step(.Advance);
+    let _leave = nested.step(.Leave);
+    let resumed = nested.step(.Resume);
+    assert(resumed.outputs == [.Trace { value: 1 }, .Trace { value: 2 }, .Trace { value: 3 }]);
+    match nested {
+        .First { text, count } => assert(text == "KEPT" && count == 10),
+        _ => panic("shallow history initializes deeper children"),
+    }
+    var pair: Pair = .Off;
+    let _first = pair.step(.Resume);
+    let advanced = pair.step(.Advance);
+    assert(advanced.rules == [1, 2]);
+    let _pause = pair.step(.Leave);
+    let _resume = pair.step(.Resume);
+    match pair {
+        .On { left: .L1 { value }, right: .R0 { count, child } } => assert(value == "LEFT:advanced" && count == 8 && child == 4),
+        _ => panic("parallel immediate children resume together"),
+    }
+    var generic: GenericPair<string> = .Off;
+    let _initial = generic.step(.Resume { seed: "saved".to_upper() });
+    let _advance = generic.step(.Advance);
+    let _leave = generic.step(.Leave);
+    let _resume = generic.step(.Resume { seed: "fresh" });
+    match generic {
+        .On { seed, left: .L1 { value: left }, right: .R0 { value: right } } => assert(seed == "fresh" && left == "SAVED" && right == "SAVED"),
+        _ => panic("generic parallel payloads and shared parent fields"),
+    }
+    println("nested and parallel shallow history passed");
+}

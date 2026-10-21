@@ -154,6 +154,7 @@ impl LowerCtx {
             type_member_tys: HashMap::new(),
             pattern_resolutions: tc_output.pattern_resolutions.clone(),
             pattern_plans: tc_output.pattern_plans.clone(),
+            variant_constructor_plans: tc_output.variant_constructor_plans.clone(),
             lang_items: tc_output.lang_items.clone(),
             target_arch,
             current_impl_self_ty: None,

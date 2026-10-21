@@ -590,6 +590,10 @@ fn main() {
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one eligibility matrix exercises the distinct element layouts"
+)]
 fn vec_contains_eq_eligibility_classifies_layout_elements() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     let __id = checker.test_declaration("Point");
@@ -602,6 +606,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("x".to_string(), Ty::I64), ("y".to_string(), Ty::I64)]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec![],
@@ -618,6 +623,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("x".to_string(), Ty::F32)]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec![],
@@ -634,6 +640,7 @@ fn vec_contains_eq_eligibility_classifies_layout_elements() {
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec![],
@@ -719,6 +726,7 @@ fn generic_record_clone_concrete_instantiation_is_admissible() {
                 ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
             ]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec!["a".to_string(), "b".to_string()],
@@ -995,6 +1003,7 @@ fn record_type_def_with_field(name: &str, field_name: &str, field_ty: Ty) -> Typ
         bounds: crate::check::ParamBounds::default(),
         fields: HashMap::from([(field_name.to_string(), field_ty)]),
         variants: HashMap::new(),
+        implicit_variant_fields: HashMap::default(),
         methods: HashMap::new(),
         doc_comment: None,
         field_order: vec![field_name.to_string()],
@@ -1121,6 +1130,7 @@ fn record_clone_affine_veto_descends_enum_tuple_and_array_storage() {
             type_params: vec![],
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             variants: HashMap::from([(
                 "Full".to_string(),
                 VariantDef::Tuple(vec![checker.test_named("ResourceToken", vec![])]),
@@ -1197,6 +1207,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
                 ),
             ]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec![
@@ -1219,6 +1230,7 @@ fn record_clone_affine_veto_preserves_semantic_handle_clones_and_phantom_tags() 
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::from([("id".to_string(), Ty::I64)]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec!["id".to_string()],
@@ -1300,6 +1312,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
             bounds: crate::check::ParamBounds::default(),
             fields: HashMap::new(),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec![],
@@ -1319,6 +1332,7 @@ fn generic_record_clone_opaque_instantiation_fails_closed() {
                 Ty::param(crate::ParamHead::for_test("T")),
             )]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec!["item".to_string()],
@@ -1359,6 +1373,7 @@ fn generic_record_clone_unresolved_var_is_nyi() {
                 ("b".to_string(), Ty::param(crate::ParamHead::for_test("B"))),
             ]),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             field_order: vec!["a".to_string(), "b".to_string()],
@@ -1877,6 +1892,7 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
             )]),
             field_order: vec!["next".to_string()],
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             is_indirect: false,

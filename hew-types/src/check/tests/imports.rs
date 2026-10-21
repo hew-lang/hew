@@ -2923,6 +2923,7 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            implicit_fields: Vec::new(),
             name: Ident::new("Has"),
             tag: None,
             kind: VariantKind::Tuple(vec![(
@@ -2985,6 +2986,7 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            implicit_fields: Vec::new(),
             name: Ident::new("Message"),
             tag: None,
             kind: VariantKind::Tuple(vec![(

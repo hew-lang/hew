@@ -651,6 +651,7 @@ fn probe(mat: Matcher, s: string) {
                 fields: HashMap::new(),
                 field_order: vec![],
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: HashMap::from([(
                     "pipe".to_string(),
                     FnSig {
@@ -713,6 +714,7 @@ fn probe(mat: Matcher, s: string) {
                 fields: HashMap::new(),
                 field_order: vec![],
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: HashMap::new(),
                 doc_comment: None,
                 is_indirect: false,

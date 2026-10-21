@@ -122,28 +122,8 @@ fn semantic_value_callees(
     ty: &hew_types::ResolvedTy,
     capability: hew_types::ValueCapability,
 ) -> BTreeSet<CallableId> {
-    let mut pending = vec![ty.clone()];
-    let mut seen = BTreeSet::new();
-    let mut callees = BTreeSet::new();
-    while let Some(ty) = pending.pop() {
-        if !seen.insert(ty.clone()) {
-            continue;
-        }
-        let selected = &module.value_capabilities[&(ty.clone(), capability)];
-        if let Some(callee) = selected.callable {
-            callees.insert(callee);
-        } else {
-            pending.extend(
-                hew_sir::derived_capability_components(
-                    &ty,
-                    &module.aggregate_shapes,
-                    &module.variant_shapes,
-                )
-                .expect("verified derived value capability"),
-            );
-        }
-    }
-    callees
+    hew_sir::value_capability_callees(module, ty, capability)
+        .expect("verified selected value capability")
 }
 
 /// Release reaches the selected consuming close, or the concrete fields of a

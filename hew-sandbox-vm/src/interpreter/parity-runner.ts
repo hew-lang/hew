@@ -1,5 +1,7 @@
 import fs from "node:fs";
 import process from "node:process";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runBytecode } from "./index.js";
 
 interface CliArgs {
@@ -62,7 +64,41 @@ try {
   const bytecode = JSON.parse(
     fs.readFileSync(args.bytecodePath, "utf8"),
   ) as unknown;
+  let codecBridge: ((request: string) => string) | undefined;
+  if (
+    typeof bytecode === "object" &&
+    bytecode !== null &&
+    "codecs" in bytecode &&
+    Array.isArray(bytecode.codecs) &&
+    bytecode.codecs.length
+  ) {
+    const local = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "../../../hew-wasm/pkg/hew_wasm.js",
+    );
+    const location =
+      process.env.HEW_WASM_MODULE ??
+      (fs.existsSync(local) ? pathToFileURL(local).href : "@hew-lang/wasm");
+    const wasm = await import(location);
+    if (typeof wasm.default === "function") {
+      const resolved = location.startsWith("file:")
+        ? location
+        : import.meta.resolve(location);
+      await wasm.default({
+        module_or_path: fs.readFileSync(
+          new URL(resolved.replace(/\.js$/, "_bg.wasm")),
+        ),
+      });
+    }
+    codecBridge = wasm.executeCodec ?? wasm.default?.executeCodec;
+    if (typeof codecBridge !== "function") {
+      throw new Error(
+        "hew-wasm executeCodec export is missing; supply a compatible HEW_WASM_MODULE",
+      );
+    }
+  }
   const trace = await runBytecode(bytecode, {
+    codecBridge,
     replay: {
       seed: args.seed,
       step_budget: DEFAULT_STEP_BUDGET,

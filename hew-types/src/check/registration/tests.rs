@@ -21,6 +21,7 @@ mod canonical_type_publication_tests {
             fields: HashMap::new(),
             field_order: Vec::new(),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods,
             doc_comment: None,
             is_indirect: false,

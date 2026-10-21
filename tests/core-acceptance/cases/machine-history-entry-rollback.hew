@@ -1,0 +1,34 @@
+machine Session {
+    events { Pause; Resume { divisor: i64; } }
+    emits { Pending { label: string; } }
+    state Closed;
+    state Active {
+        state Reviewing {
+            label: string;
+            entry {
+                emit Pending { label: state.label + ":output" };
+                let value = 10 / event.divisor;
+                state.label += f":{value}";
+            }
+        }
+        initial Reviewing { label: "fresh" };
+    }
+    on Pause: Active => Closed;
+    on Resume: Closed => Active history;
+    default { state }
+}
+
+fn main() {
+    var session: Session = .Reviewing { label: "original".to_upper() };
+    let _paused = session.step(.Pause);
+    let before = session;
+    defer {
+        // The acceptance harness requires this complete value comparison to print true.
+        println(session == before);
+        match session {
+            .Closed => println("entry rollback retained history"),
+            _ => panic("history restore committed on failure"),
+        }
+    }
+    let _report = session.step(.Resume { divisor: 0 });
+}

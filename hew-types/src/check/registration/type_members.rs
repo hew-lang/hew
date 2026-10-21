@@ -720,7 +720,11 @@ impl Checker {
         let Some(stored) = self.type_def_at(&stored_key) else {
             return;
         };
-        if stored.fields == fields && stored.variants == variants {
+        let implicit_variant_fields = Self::implicit_variant_fields(td);
+        if stored.fields == fields
+            && stored.variants == variants
+            && stored.implicit_variant_fields == implicit_variant_fields
+        {
             return;
         }
 
@@ -732,6 +736,7 @@ impl Checker {
             fields,
             field_order,
             variants,
+            implicit_variant_fields,
             methods: stored.methods.clone(),
             doc_comment: td.doc_comment.clone(),
             is_indirect: td.is_indirect,
@@ -814,6 +819,7 @@ impl Checker {
                     fields,
                     field_order,
                     variants: HashMap::new(),
+                    implicit_variant_fields: HashMap::default(),
                     methods: stored.methods.clone(),
                     doc_comment: rd.doc_comment.clone(),
                     is_indirect: false,
@@ -908,6 +914,7 @@ impl Checker {
                     fields: HashMap::new(),
                     field_order: vec![],
                     variants,
+                    implicit_variant_fields: HashMap::default(),
                     methods: stored.methods.clone(),
                     doc_comment: stored.doc_comment.clone(),
                     is_indirect: stored.is_indirect,
@@ -955,6 +962,7 @@ impl Checker {
                     fields: HashMap::new(),
                     field_order: vec![],
                     variants: event_variants,
+                    implicit_variant_fields: HashMap::default(),
                     methods: stored.methods.clone(),
                     doc_comment: stored.doc_comment.clone(),
                     is_indirect: stored.is_indirect,
@@ -1172,6 +1180,7 @@ impl Checker {
             fields,
             field_order,
             variants,
+            implicit_variant_fields: Self::implicit_variant_fields(td),
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
             is_indirect: td.is_indirect,
@@ -1495,6 +1504,7 @@ impl Checker {
             fields,
             field_order,
             variants,
+            implicit_variant_fields: Self::implicit_variant_fields(td),
             methods: HashMap::new(),
             doc_comment: td.doc_comment.clone(),
             is_indirect: td.is_indirect,
@@ -1646,6 +1656,7 @@ impl Checker {
             fields,
             field_order,
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: rd.doc_comment.clone(),
             is_indirect: false,
@@ -1930,6 +1941,7 @@ impl Checker {
             fields: HashMap::new(),
             field_order: vec![],
             variants,
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             is_indirect: false,
@@ -1993,6 +2005,7 @@ impl Checker {
             fields: HashMap::new(),
             field_order: vec![],
             variants: event_variants,
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: None,
             is_indirect: false,

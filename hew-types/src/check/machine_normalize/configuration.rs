@@ -5,10 +5,10 @@ use super::{
     MatchArm, NodeId, Pattern, Spanned, Stmt, TypeError, DISPOSITION, INPUT,
 };
 
-const WORK: &str = "_$machine_work";
+pub(super) const WORK: &str = "_$machine_work";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Focus {
+pub(super) enum Focus {
     Predicate,
     Configuration(Option<NodeId>),
 }
@@ -42,7 +42,7 @@ impl Builder {
         })
     }
 
-    fn source_configuration(
+    pub(super) fn source_configuration(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
@@ -75,11 +75,15 @@ impl Builder {
         })
     }
 
-    fn boolean(&mut self, value: bool) -> Spanned<Expr> {
+    pub(super) fn boolean(&mut self, value: bool) -> Spanned<Expr> {
         self.expr(Expr::Literal(Literal::Bool(value)))
     }
 
-    fn if_do(&mut self, condition: Spanned<Expr>, stmts: Vec<Spanned<Stmt>>) -> Spanned<Stmt> {
+    pub(super) fn if_do(
+        &mut self,
+        condition: Spanned<Expr>,
+        stmts: Vec<Spanned<Stmt>>,
+    ) -> Spanned<Stmt> {
         self.stmt(Stmt::If {
             condition,
             then_block: Block {
@@ -110,7 +114,7 @@ impl Builder {
             .unwrap_or_else(|| self.boolean(true))
     }
 
-    fn disjunction(&mut self, values: Vec<Spanned<Expr>>) -> Spanned<Expr> {
+    pub(super) fn disjunction(&mut self, values: Vec<Spanned<Expr>>) -> Spanned<Expr> {
         values
             .into_iter()
             .reduce(|left, right| {
@@ -125,7 +129,7 @@ impl Builder {
 
     /// Match one configuration path. Sibling regions remain ordinary fields;
     /// no branch enumerates combinations of regional states.
-    fn focus(
+    pub(super) fn focus(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
@@ -228,6 +232,7 @@ impl Builder {
         // Reuse the ordinary report/commit shell. Only its dispatch expression
         // differs: all selected configuration writes share this staging value.
         let mut shell = self.step_body_shell(machine);
+        shell.stmts.extend(self.history_prelude(machine, hierarchy));
         let mut arms = Vec::new();
         for event in &machine.events {
             let pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
@@ -280,6 +285,7 @@ impl Builder {
                 stmts.push(self.if_do(eligible, vec![select]));
             }
             self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
+            self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
             let mut bodies = ordered.clone();
             bodies.sort_by_key(|index| machine.transitions[*index].span.start);
             for index in bodies {
@@ -289,7 +295,17 @@ impl Builder {
                 if hierarchy.target(index).is_none() {
                     self.configuration_root = Some(self.current_root(machine, hierarchy, source)?);
                 }
+                self.history_target = rule
+                    .history
+                    .then(|| hierarchy.target(index).expect("checked history target"));
+                self.history_sites = if rule.history {
+                    super::history::destination_sites(&rule.body)
+                } else {
+                    Vec::new()
+                };
                 let body = self.rewrite_rule_part(&rule.body, index, machine, &state, event);
+                self.history_target = None;
+                self.history_sites.clear();
                 self.configuration_root = None;
                 let body = body?;
                 let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
@@ -307,6 +323,7 @@ impl Builder {
                     Focus::Configuration(region),
                     hierarchy.regional_owner(index),
                 )?;
+                let body = self.retain_history(machine, hierarchy, body)?;
                 let update = self.assign(WORK, body);
                 let selected = self.ident(format!("_$machine_selected_{index}"));
                 let record = self.record_rule(hierarchy.ordinal(index));
@@ -361,9 +378,13 @@ impl Builder {
                         && hierarchy.configurations_compatible(
                             node,
                             if entry {
-                                hierarchy
-                                    .target(**index)
-                                    .map_or(node, |target| hierarchy.leaf(target))
+                                hierarchy.target(**index).map_or(node, |target| {
+                                    if machine.transitions[**index].history {
+                                        target
+                                    } else {
+                                        hierarchy.leaf(target)
+                                    }
+                                })
                             } else {
                                 hierarchy.boundary(**index).0
                             },
@@ -456,7 +477,7 @@ impl Builder {
                 .container(pair[1])
                 .expect("regional configuration");
             let name = hierarchy.name(machine, region);
-            let fields = parent
+            let mut fields = parent
                 .fields
                 .iter()
                 .map(|(field, _)| {
@@ -470,12 +491,13 @@ impl Builder {
                     )
                 })
                 .collect();
+            self.carry_history(machine, parent.name, &mut fields);
             value = self.qualified_variant(machine, parent.name, fields);
         }
         Ok(value)
     }
 
-    fn initial_region(
+    pub(super) fn initial_region(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
@@ -544,7 +566,9 @@ impl Builder {
             .clone()
             .expect("machine hierarchy");
         let node = hierarchy.resolve(name, self.origin.clone())?;
-        if group.regions.is_empty() && !hierarchy.has_initial_value(machine, node) {
+        let restore =
+            self.history_target == Some(node) && self.history_sites.contains(&self.origin);
+        if group.regions.is_empty() && !restore && !hierarchy.has_initial_value(machine, node) {
             return Ok(None);
         }
         let config = self.configuration(machine, &hierarchy, node)?;
@@ -569,13 +593,22 @@ impl Builder {
                     )));
                 }
             }
-            let value = self.exclusive_initial(machine, &hierarchy, node, fields)?;
+            let value = if restore {
+                self.restore_history(machine, &hierarchy, node, fields)?
+            } else {
+                self.exclusive_initial(machine, &hierarchy, node, fields)?
+            };
             return Ok(Some(self.block(stmts, value)));
         }
         for region in hierarchy.group_regions(machine, node) {
             let name = hierarchy.name(machine, region);
             if !fields.iter().any(|(field, _)| *field == name) {
-                fields.push((name, self.initial_region(machine, &hierarchy, region)?));
+                let value = if restore {
+                    self.restore_history(machine, &hierarchy, region, Vec::new())?
+                } else {
+                    self.initial_region(machine, &hierarchy, region)?
+                };
+                fields.push((name, value));
             }
         }
         // Ordinary record checking diagnoses any missing explicit parent payload.
@@ -583,7 +616,7 @@ impl Builder {
         Ok(Some(self.block(stmts, value)))
     }
 
-    fn exclusive_initial(
+    pub(super) fn exclusive_initial(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,

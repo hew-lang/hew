@@ -290,7 +290,49 @@ region values bypass initial construction for those fields. `initial state Name`
 remains the shorthand for an initial child. Separate initial constructor clauses
 work in regions and exclusive compounds, including compounds nested in regions.
 
-History and internal completion reactions are not part of this surface.
+## Shallow history
+
+A `history` target restores a compound's last active immediate child and that
+child's own payload. The history is saved after exit hooks, before the transition
+body. A compound child resumes through its initial descendants: shallow history
+does not remember the child's deeper active branch. A parallel target restores
+one immediate child per region. Normal entry hooks run on every restored branch.
+
+```hew
+machine Editor {
+    events { Open; Review; Pause; Resume; }
+    state Closed;
+    state Editing {
+        initial state Draft;
+        state Reviewing;
+    }
+    on Open: Closed => Editing;
+    on Review: Draft => Reviewing;
+    on Pause: Editing => Closed;
+    on Resume: Closed => Editing history;
+    default { state }
+}
+
+fn main() {
+    var editor: Editor = .Closed;
+    let _opened = editor.step(.Open);
+    let _reviewing = editor.step(.Review);
+    let _paused = editor.step(.Pause);
+    let _resumed = editor.step(.Resume);
+    assert(editor.state_name() == "Reviewing");
+}
+```
+
+The target must name a compound. When no history has been saved, its ordinary
+initial constructors run. Parent payload comes from the transition's constructor;
+history supplies the immediate child's payload. Explicit region values override
+history for those regions. `history reenter` also exits and re-enters an already
+active target compound, saving its current child before restoring it.
+
+Saved history belongs to the machine value. Ordinary copies retain independent
+history; equality and supported JSON/CBOR codecs include it. Constructing a new
+state value starts with empty history. A failed exit, initializer, body or entry
+commits neither the candidate configuration nor its saved history or outputs.
 
 ## Observed ownership
 

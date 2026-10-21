@@ -4927,6 +4927,13 @@ declaration as a Mermaid state diagram, Graphviz DOT, or JSON schema. The
 command runs the static checks before rendering, so it doubles as a structural
 validator.
 
+The diagram preserves authored compound and parallel-region boundaries, child
+initializers, guards, actions and entry/exit hooks. Rules stay at their authored
+scope rather than expanding into every possible active configuration. There is
+no root entry arrow: callers construct the initial machine value explicitly.
+JSON includes declaration IDs, parent IDs and formatted source logic;
+`--machine` accepts a qualified imported name when simple names are ambiguous.
+
 ```
 hew machine diagram traffic_light.hew                   # Mermaid (default)
 hew machine diagram traffic_light.hew --format graphviz # Graphviz DOT
@@ -5386,8 +5393,8 @@ machine Session {
 
 `hew machine diagram` draws nested groups. Its JSON form retains each state's
 qualified `path` and `parent`, and a `composites` array naming each compound,
-its direct members and its initial child. Parallel regions and history states
-are not admitted.
+its direct members and its initial child. Parallel regions have distinct scoped
+IDs, and history/reentry intent appears on the authored transition edges.
 
 ---
 

@@ -63,11 +63,11 @@ pub(super) fn callees(
     ty: &ResolvedTy,
     capability: ValueCapability,
 ) -> Result<std::collections::BTreeSet<hew_sir::CallableId>, PhysicalError> {
-    let mut pending = vec![ty];
+    let mut pending = vec![(ty, capability)];
     let mut seen = std::collections::BTreeSet::new();
     let mut callees = std::collections::BTreeSet::new();
-    while let Some(ty) = pending.pop() {
-        if !seen.insert(ty) {
+    while let Some((ty, capability)) = pending.pop() {
+        if !seen.insert((ty, capability)) {
             continue;
         }
         let selected = module
@@ -79,7 +79,11 @@ pub(super) fn callees(
         if let PhysicalValueMethod::User(id) = selected.method {
             callees.insert(id);
         } else {
-            pending.extend(derived_components(module, ty, selected.method)?);
+            for component in derived_components(module, ty, selected.method)? {
+                for capability in capability.component_capabilities() {
+                    pending.push((component, *capability));
+                }
+            }
         }
     }
     Ok(callees)

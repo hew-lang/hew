@@ -2102,6 +2102,7 @@ dependencies = [
  "criterion",
  "crossbeam-deque",
  "crossbeam-utils",
+ "ed25519-dalek",
  "finl_unicode",
  "flate2",
  "glob",

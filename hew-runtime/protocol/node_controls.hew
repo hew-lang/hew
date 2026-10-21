@@ -67,3 +67,17 @@ pub type SwimControl {
     target: Option<WireSession> @4;
     gossip: Vec<SwimGossip> @5;
 }
+
+// Admission binds an existing transport credential to the installed cluster root.
+#[wire]
+pub type ClusterMember {
+    transport: u8 @1;
+    credential: bytes @2;
+}
+
+#[wire]
+pub type ClusterEnrollment {
+    authority: bytes @1;
+    member: bytes @2;
+    signature: bytes @3;
+}

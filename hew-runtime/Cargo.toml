@@ -100,6 +100,7 @@ crossbeam-deque = "0.8"
 crossbeam-utils = "0.8"
 socket2 = "0.6.4"
 snow = "0.10"
+ed25519-dalek = "3"
 tempfile.workspace = true
 
 # Optional ecosystem dependencies

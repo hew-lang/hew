@@ -613,3 +613,116 @@ impl SwimControl {
         })
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClusterMember {
+    pub(crate) transport: u8,
+    pub(crate) credential: Vec<u8>,
+}
+impl ClusterMember {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("transport", 1, 0),
+        Member::new("credential", 2, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.transport;
+        sink.u64(u64::from(*value));
+        sink.field(1);
+        let value = &self.credential;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut transport = None;
+        let mut credential = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    transport = Some(
+                        u8::try_from(source.read_u64(u64::from(u8::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    credential = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            transport: transport.expect("checked required field"),
+            credential: credential.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClusterEnrollment {
+    pub(crate) authority: Vec<u8>,
+    pub(crate) member: Vec<u8>,
+    pub(crate) signature: Vec<u8>,
+}
+impl ClusterEnrollment {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("authority", 1, 0),
+        Member::new("member", 2, 0),
+        Member::new("signature", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.authority;
+        sink.bytes(value);
+        sink.field(1);
+        let value = &self.member;
+        sink.bytes(value);
+        sink.field(2);
+        let value = &self.signature;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut authority = None;
+        let mut member = None;
+        let mut signature = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    authority = Some(source.read_bytes()?);
+                }
+                1 => {
+                    member = Some(source.read_bytes()?);
+                }
+                2 => {
+                    signature = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            authority: authority.expect("checked required field"),
+            member: member.expect("checked required field"),
+            signature: signature.expect("checked required field"),
+        })
+    }
+}

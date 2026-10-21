@@ -716,6 +716,9 @@ pub mod sim_transport;
 pub mod channel_core;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod cluster;
+/// Cluster-root enrollment of existing node transport identities.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod cluster_admission;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod connection;
 pub mod deterministic;

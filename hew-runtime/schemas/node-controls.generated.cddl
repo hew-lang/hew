@@ -59,3 +59,14 @@ swim-control = {
     5 => [* swim-gossip], ; gossip
 }
 
+cluster-member = {
+    1 => 0..255, ; transport
+    2 => bstr, ; credential
+}
+
+cluster-enrollment = {
+    1 => bstr, ; authority
+    2 => bstr, ; member
+    3 => bstr, ; signature
+}
+

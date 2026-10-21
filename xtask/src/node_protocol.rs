@@ -13,6 +13,8 @@ const ROOTS: &[&str] = &[
     "MonitorDown",
     "RegistryGossip",
     "SwimControl",
+    "ClusterEnrollment",
+    "ClusterMember",
 ];
 
 pub fn run(args: &[String]) -> crate::Result<()> {

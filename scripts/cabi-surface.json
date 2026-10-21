@@ -12542,6 +12542,19 @@
       "availability": [
         "native"
       ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_path_separator() -> *mut HewString"
+      },
+      "symbol": "hew_path_separator"
+    },
+    {
+      "availability": [
+        "native"
+      ],
       "classification": "non-declarable-stdlib",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",

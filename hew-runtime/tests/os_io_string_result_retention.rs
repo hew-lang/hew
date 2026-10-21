@@ -16,7 +16,7 @@ use hew_runtime::env::{
 use hew_runtime::file_io::hew_file_read;
 use hew_runtime::path::{
     hew_glob, hew_glob_count, hew_glob_error, hew_glob_free, hew_glob_get, hew_glob_is_valid,
-    hew_path_absolute,
+    hew_path_absolute, hew_path_separator,
 };
 use hew_runtime::stream::{
     hew_file_read_stream_collect_string, hew_stream_collect_string, hew_stream_from_bytes,
@@ -126,6 +126,11 @@ fn file_read_result_is_transferred() {
     });
     // SAFETY: the fixture owns this path reference.
     unsafe { string_release(path) };
+}
+
+#[test]
+fn path_separator_result_is_transferred() {
+    assert_managed_result_is_transferred("hew_path_separator", || hew_path_separator());
 }
 
 #[test]

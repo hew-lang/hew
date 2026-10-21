@@ -1,0 +1,10 @@
+[[case]]
+id = "path-value-copies"
+intent = "Lexical path helpers preserve independent string values, native root and separator interpretation, and portable sandbox paths."
+source = "cases/path-value-copies.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+exit = 0

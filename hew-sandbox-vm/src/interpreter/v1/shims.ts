@@ -1286,6 +1286,7 @@ function bigMax(left: bigint, right: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_path_separator: () => str("/"),
   hew_calendar_format: {
     kind: "ordinary",
     bridge: "calendarBridge",

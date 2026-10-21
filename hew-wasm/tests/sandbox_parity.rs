@@ -881,6 +881,21 @@ fn supervisor_wiring_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn lexical_path_helpers_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "path_value_copies",
+            source_rel: "tests/core-acceptance/cases/path-value-copies.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn playground_sources_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

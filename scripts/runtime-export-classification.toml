@@ -478,6 +478,7 @@ stable = [
   "hew_path_exists",
   "hew_path_is_dir",
   "hew_path_is_file",
+  "hew_path_separator",
   "hew_pid",
   "hew_pid_is_local",
   "hew_pid_local_node",
@@ -4115,6 +4116,14 @@ discharge-depth = "none"
 symbol = "hew_path_absolute"
 result = "fresh"
 params = ["borrow"]
+release-symbol = "hew_string_drop"
+discharge-depth = "shallow"
+result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_path_separator"
+result = "fresh"
+params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"

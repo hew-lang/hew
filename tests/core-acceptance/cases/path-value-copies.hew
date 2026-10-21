@@ -1,0 +1,44 @@
+import std.path;
+import std.os;
+
+fn main() -> i64 {
+    let text = f"identity-{os.args().len()}.key";
+    let copy = path.combine("", text);
+    let name = path.basename(text);
+    let ext = path.extension(text);
+    if !text.starts_with("identity-") || copy != text || name != text || ext != "key" {
+        return 1;
+    }
+    let rooted = "/" + text;
+    let result = path.combine("discarded", rooted);
+    if result != rooted || rooted != "/" + text {
+        return 2;
+    }
+    if path.dirname("/node.key") != "/" || path.basename("/") != "" || path.dirname("leaf") != "" {
+        return 3;
+    }
+    let windows = path.combine("a", "b") == "a\\b";
+    if windows {
+        let drive = "C:" + "\\folder\\node.key";
+        if path.dirname(drive) != "C:\\folder" || path.basename(drive) != "node.key" || path.extension(drive) != "key" {
+            return 4;
+        }
+        if path.dirname("C:\\node.key") != "C:\\" || path.combine("C:\\folder", "\\node.key") != "C:\\node.key" {
+            return 5;
+        }
+        if path.combine("C:\\folder", "D:\\node.key") != "D:\\node.key" {
+            return 6;
+        }
+        if path.dirname("\\\\server\\share\\node.key") != "\\\\server\\share\\" {
+            return 7;
+        }
+    } else {
+        if path.basename("a\\b.key") != "a\\b.key" || path.dirname("a\\b.key") != "" {
+            return 8;
+        }
+    }
+    if path.basename("a///") != "a" || path.dirname("/a///") != "/" {
+        return 9;
+    }
+    0
+}

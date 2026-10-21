@@ -2,10 +2,8 @@ import std.fs;
 
 import std.os;
 
-// The node writes `<key>.hew-state` beside its key and refuses a key path that
-// is already in use, so the path must be unique to this process: the acceptance
-// runner runs the same program at O0 and O2, and a shared path would make the
-// second run fail on the first run's leftover.
+// Each acceptance process owns its key and durable session state. Restarting
+// within the process reuses that key and advances the session.
 fn key_path() -> string {
     f"{os.temp_dir()}/hew-node-config-atomic-lifecycle-{os.pid()}.key"
 }
@@ -45,11 +43,18 @@ fn main() -> i64 {
         .Err(.Config) => {}
         _ => return 7,
     }
-    let failed_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key_path(), peers: Vec.new(), seeds: ["127.0.0.1:1"] };
-    match Node.start(failed_seed) {
-        .Err(.Unreachable) => {}
+    var malformed_seed = configured_at("127.0.0.1:0");
+    malformed_seed.seeds = ["1@missing-port"];
+    match Node.start(malformed_seed) {
+        .Err(.Config) => {}
+        _ => return 9,
+    }
+    let absent_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key_path(), peers: Vec.new(), seeds: ["127.0.0.1:1"] };
+    match Node.start(absent_seed) {
+        .Ok(_) => {}
         _ => return 3,
     }
+    Node.shutdown();
     let retry = configured_at("127.0.0.1:0");
     if !starts(retry) {
         return 4;

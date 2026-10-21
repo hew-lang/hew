@@ -1961,27 +1961,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_async_file_read( *const HewReadFile, *const HewWaker, ) -> *const HewAsyncIo"
+        "native": "fn hew_async_file_read( *const HewReadFile, *const HewWaker, ) -> *const HewAsyncIo",
+        "wasm32-wasip1": "fn hew_async_file_read( *const HewReadFile, *const HewWaker, ) -> *const HewAsyncIo"
       },
       "symbol": "hew_async_file_read"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "non-declarable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_async_file_write( *const HewWriteFile, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
+        "native": "fn hew_async_file_write( *const HewWriteFile, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo",
+        "wasm32-wasip1": "fn hew_async_file_write( *const HewWriteFile, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
       },
       "symbol": "hew_async_file_write"
     },
@@ -5969,131 +5973,151 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_open_read( *const HewString) -> *mut HewReadDir"
+        "native": "fn hew_dir_open_read( *const HewString) -> *mut HewReadDir",
+        "wasm32-wasip1": "fn hew_dir_open_read( *const HewString) -> *mut HewReadDir"
       },
       "symbol": "hew_dir_open_read"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_open_write( *const HewString) -> *mut HewWriteDir"
+        "native": "fn hew_dir_open_write( *const HewString) -> *mut HewWriteDir",
+        "wasm32-wasip1": "fn hew_dir_open_write( *const HewString) -> *mut HewWriteDir"
       },
       "symbol": "hew_dir_open_write"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_read_close( *mut HewReadDir)"
+        "native": "fn hew_dir_read_close( *mut HewReadDir)",
+        "wasm32-wasip1": "fn hew_dir_read_close( *mut HewReadDir)"
       },
       "symbol": "hew_dir_read_close"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_read_is_valid( *const HewReadDir) -> bool"
+        "native": "fn hew_dir_read_is_valid( *const HewReadDir) -> bool",
+        "wasm32-wasip1": "fn hew_dir_read_is_valid( *const HewReadDir) -> bool"
       },
       "symbol": "hew_dir_read_is_valid"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_read_open_file( *const HewReadDir, *const HewString, ) -> *mut HewReadFile"
+        "native": "fn hew_dir_read_open_file( *const HewReadDir, *const HewString, ) -> *mut HewReadFile",
+        "wasm32-wasip1": "fn hew_dir_read_open_file( *const HewReadDir, *const HewString, ) -> *mut HewReadFile"
       },
       "symbol": "hew_dir_read_open_file"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_read_subdir( *const HewReadDir, *const HewString, ) -> *mut HewReadDir"
+        "native": "fn hew_dir_read_subdir( *const HewReadDir, *const HewString, ) -> *mut HewReadDir",
+        "wasm32-wasip1": "fn hew_dir_read_subdir( *const HewReadDir, *const HewString, ) -> *mut HewReadDir"
       },
       "symbol": "hew_dir_read_subdir"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_write_close( *mut HewWriteDir)"
+        "native": "fn hew_dir_write_close( *mut HewWriteDir)",
+        "wasm32-wasip1": "fn hew_dir_write_close( *mut HewWriteDir)"
       },
       "symbol": "hew_dir_write_close"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_write_is_valid( *const HewWriteDir) -> bool"
+        "native": "fn hew_dir_write_is_valid( *const HewWriteDir) -> bool",
+        "wasm32-wasip1": "fn hew_dir_write_is_valid( *const HewWriteDir) -> bool"
       },
       "symbol": "hew_dir_write_is_valid"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_write_open_file( *const HewWriteDir, *const HewString, ) -> *mut HewWriteFile"
+        "native": "fn hew_dir_write_open_file( *const HewWriteDir, *const HewString, ) -> *mut HewWriteFile",
+        "wasm32-wasip1": "fn hew_dir_write_open_file( *const HewWriteDir, *const HewString, ) -> *mut HewWriteFile"
       },
       "symbol": "hew_dir_write_open_file"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_dir_write_subdir( *const HewWriteDir, *const HewString, ) -> *mut HewWriteDir"
+        "native": "fn hew_dir_write_subdir( *const HewWriteDir, *const HewString, ) -> *mut HewWriteDir",
+        "wasm32-wasip1": "fn hew_dir_write_subdir( *const HewWriteDir, *const HewString, ) -> *mut HewWriteDir"
       },
       "symbol": "hew_dir_write_subdir"
     },
@@ -7109,131 +7133,151 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_append( *const HewString, *const HewString) -> i32"
+        "native": "fn hew_file_append( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_file_append( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_file_append"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_delete( *const HewString) -> i32"
+        "native": "fn hew_file_delete( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_file_delete( *const HewString) -> i32"
       },
       "symbol": "hew_file_delete"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_exists( *const HewString) -> i32"
+        "native": "fn hew_file_exists( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_file_exists( *const HewString) -> i32"
       },
       "symbol": "hew_file_exists"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_open_read( *const HewString) -> *mut HewReadFile"
+        "native": "fn hew_file_open_read( *const HewString) -> *mut HewReadFile",
+        "wasm32-wasip1": "fn hew_file_open_read( *const HewString) -> *mut HewReadFile"
       },
       "symbol": "hew_file_open_read"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_open_write( *const HewString) -> *mut HewWriteFile"
+        "native": "fn hew_file_open_write( *const HewString) -> *mut HewWriteFile",
+        "wasm32-wasip1": "fn hew_file_open_write( *const HewString) -> *mut HewWriteFile"
       },
       "symbol": "hew_file_open_write"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read( *const HewString) -> *mut HewString"
+        "native": "fn hew_file_read( *const HewString) -> *mut HewString",
+        "wasm32-wasip1": "fn hew_file_read( *const HewString) -> *mut HewString"
       },
       "symbol": "hew_file_read"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read_bytes( *const HewString) -> BytesTriple"
+        "native": "fn hew_file_read_bytes( *const HewString) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_file_read_bytes( *const HewString) -> BytesTriple"
       },
       "symbol": "hew_file_read_bytes"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read_close( *mut HewReadFile)"
+        "native": "fn hew_file_read_close( *mut HewReadFile)",
+        "wasm32-wasip1": "fn hew_file_read_close( *mut HewReadFile)"
       },
       "symbol": "hew_file_read_close"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read_is_valid( *const HewReadFile) -> bool"
+        "native": "fn hew_file_read_is_valid( *const HewReadFile) -> bool",
+        "wasm32-wasip1": "fn hew_file_read_is_valid( *const HewReadFile) -> bool"
       },
       "symbol": "hew_file_read_is_valid"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_read_remaining( *const HewReadFile) -> BytesTriple"
+        "native": "fn hew_file_read_remaining( *const HewReadFile) -> BytesTriple",
+        "wasm32-wasip1": "fn hew_file_read_remaining( *const HewReadFile) -> BytesTriple"
       },
       "symbol": "hew_file_read_remaining"
     },
@@ -7299,92 +7343,106 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_size( *const HewString) -> i64"
+        "native": "fn hew_file_size( *const HewString) -> i64",
+        "wasm32-wasip1": "fn hew_file_size( *const HewString) -> i64"
       },
       "symbol": "hew_file_size"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write( *const HewString, *const HewString) -> i32"
+        "native": "fn hew_file_write( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_file_write( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_file_write"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_atomic( *const HewString, *const BytesTriple, ) -> i32"
+        "native": "fn hew_file_write_atomic( *const HewString, *const BytesTriple, ) -> i32",
+        "wasm32-wasip1": "fn hew_file_write_atomic( *const HewString, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_atomic"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32"
+        "native": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32",
+        "wasm32-wasip1": "fn hew_file_write_bytes( *const HewString, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_bytes"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_close( *mut HewWriteFile)"
+        "native": "fn hew_file_write_close( *mut HewWriteFile)",
+        "wasm32-wasip1": "fn hew_file_write_close( *mut HewWriteFile)"
       },
       "symbol": "hew_file_write_close"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_handle( *const HewWriteFile, *const BytesTriple, ) -> i32"
+        "native": "fn hew_file_write_handle( *const HewWriteFile, *const BytesTriple, ) -> i32",
+        "wasm32-wasip1": "fn hew_file_write_handle( *const HewWriteFile, *const BytesTriple, ) -> i32"
       },
       "symbol": "hew_file_write_handle"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_file_write_is_valid( *const HewWriteFile) -> bool"
+        "native": "fn hew_file_write_is_valid( *const HewWriteFile) -> bool",
+        "wasm32-wasip1": "fn hew_file_write_is_valid( *const HewWriteFile) -> bool"
       },
       "symbol": "hew_file_write_is_valid"
     },
@@ -7405,14 +7463,16 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_copy( *const HewString, *const HewString) -> i32"
+        "native": "fn hew_fs_copy( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_fs_copy( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_fs_copy"
     },
@@ -7444,27 +7504,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_is_dir( *const HewString) -> i32"
+        "native": "fn hew_fs_is_dir( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_fs_is_dir( *const HewString) -> i32"
       },
       "symbol": "hew_fs_is_dir"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_list_dir( *const HewString) -> *mut HewVec"
+        "native": "fn hew_fs_list_dir( *const HewString) -> *mut HewVec",
+        "wasm32-wasip1": "fn hew_fs_list_dir( *const HewString) -> *mut HewVec"
       },
       "symbol": "hew_fs_list_dir"
     },
@@ -7496,27 +7560,31 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_mkdir( *const HewString) -> i32"
+        "native": "fn hew_fs_mkdir( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_fs_mkdir( *const HewString) -> i32"
       },
       "symbol": "hew_fs_mkdir"
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_mkdir_all( *const HewString) -> i32"
+        "native": "fn hew_fs_mkdir_all( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_fs_mkdir_all( *const HewString) -> i32"
       },
       "symbol": "hew_fs_mkdir_all"
     },
@@ -7561,14 +7629,16 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_fs_rename( *const HewString, *const HewString) -> i32"
+        "native": "fn hew_fs_rename( *const HewString, *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_fs_rename( *const HewString, *const HewString) -> i32"
       },
       "symbol": "hew_fs_rename"
     },
@@ -12657,14 +12727,16 @@
     },
     {
       "availability": [
-        "native"
+        "native",
+        "wasm32-wasip1"
       ],
       "classification": "stable",
       "extent": "no-in-signature-extent",
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_path_exists( *const HewString) -> i32"
+        "native": "fn hew_path_exists( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_path_exists( *const HewString) -> i32"
       },
       "symbol": "hew_path_exists"
     },

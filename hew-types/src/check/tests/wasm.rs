@@ -479,7 +479,7 @@ mod wasm_rejects {
         checker.enable_wasm_target();
         let output = checker.check_program(&result.program);
         assert!(
-            platform_error_contains(&output, "File-backed streams and resources"),
+            platform_error_contains(&output, "Ambient files and file-backed streams"),
             "stream.open reads through the native I/O reactor and must stay rejected; got: {:?}",
             output.errors
         );
@@ -578,7 +578,9 @@ mod wasm_rejects {
             .iter()
             .filter(|error| {
                 error.kind == TypeErrorKind::PlatformLimitation
-                    && error.message.contains("File-backed streams and resources")
+                    && error
+                        .message
+                        .contains("Ambient files and file-backed streams")
             })
             .count();
         assert_eq!(
@@ -619,7 +621,9 @@ mod wasm_rejects {
                 .iter()
                 .filter(|error| {
                     error.kind == TypeErrorKind::PlatformLimitation
-                        && error.message.contains("File-backed streams and resources")
+                        && error
+                            .message
+                            .contains("Ambient files and file-backed streams")
                 })
                 .count();
             assert_eq!(

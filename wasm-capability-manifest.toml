@@ -258,21 +258,17 @@ generate_functions = [
   "std.stream.open",
   "std.fs.open_read",
   "std.fs.open_write",
-  "std.fs.open_read_dir",
-  "std.fs.open_write_dir",
 ]
 generate_endpoints = [
   "hew_stream_from_file_read",
   "hew_file_read_stream_open",
   "hew_file_open_read",
   "hew_file_open_write",
-  "hew_dir_open_read",
-  "hew_dir_open_write",
 ]
 enum_variant = "FilesystemStreams"
-label = "File-backed streams and resources"
-prose_label = "`std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`, `std.fs.open_read_dir` and `std.fs.open_write_dir`"
-reason = "file-backed streams and directional file/directory resources use native I/O facilities, which are not compiled for wasm32; in-memory services remain available"
+label = "Ambient files and file-backed streams"
+prose_label = "`std.fs.read`, `std.stream.open`, `std.fs.open_read`, `std.fs.open_write`"
+reason = "ambient file constructors and file-backed streams are unavailable on wasm32; WASI directory resources are separately classified"
 checker = "reject"
 runtime = "unavailable"
 runtime_status = "File-backed stream runtime is native-only; path-independent fs helpers remain separately classified"
@@ -284,9 +280,19 @@ native_only_functions = [
   "std.stream.open",
   "std.fs.open_read",
   "std.fs.open_write",
-  "std.fs.open_read_dir",
-  "std.fs.open_write_dir",
 ]
+
+[[feature]]
+id = "directory-resources"
+label = "Host-supplied directory resources"
+checker = "pass"
+runtime = "host-dependent"
+runtime_status = "WASI preview1 uses explicitly preopened host directories with existing directional owners and synchronous regular-file operations; the browser VM has no real directory adapter yet"
+reason = "the host must explicitly supply a directory preopen; no ambient directory is granted by default, and a synchronous host syscall cannot be interrupted after entry"
+generate = "refuse"
+generate_functions = ["std.fs.open_read_dir", "std.fs.open_write_dir"]
+generate_endpoints = ["hew_dir_open_read", "hew_dir_open_write"]
+categories = ["stdlib", "filesystem"]
 
 [[feature]]
 id = "termination-signals"

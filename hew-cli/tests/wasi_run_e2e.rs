@@ -483,6 +483,89 @@ fn supervised_actor_lifecycle_runs_under_wasi() {
     ]);
 }
 
+/// Actual host files are visible only through an explicit WASI preopen. Unix
+/// supplies the escape symlinks; the same WASI module also runs without grants.
+#[test]
+#[cfg(unix)]
+fn supplied_directory_preopens_preserve_rooted_owners_under_wasi() {
+    require_codegen();
+    require_wasi_runner();
+    let temporary = tempdir();
+    let root = temporary.path().join("root");
+    let outside = temporary.path().join("outside");
+    fs::create_dir_all(root.join("child/nest")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    let payload = vec![b'x'; 65536];
+    fs::write(root.join("payload"), &payload).unwrap();
+    fs::write(root.join("empty"), []).unwrap();
+    fs::write(root.join("child/value"), b"inside").unwrap();
+    fs::write(outside.join("value"), b"outside").unwrap();
+    for (target, name) in [
+        ("child/value", "contained"),
+        ("contained", "safe-chain"),
+        ("escape", "escape-chain"),
+        ("../payload", "child/back"),
+        ("../outside/value", "escape"),
+        ("/outside/value", "absolute"),
+        ("../outside", "escape-dir"),
+    ] {
+        std::os::unix::fs::symlink(target, root.join(name)).unwrap();
+    }
+    std::os::unix::fs::symlink(outside.join("value"), root.join("host-absolute")).unwrap();
+    let source = repo_root().join("tests/vertical-slice/accept/wasi_directory_preopen.hew");
+    for level in ["0", "2"] {
+        for target in ["native", "wasm32-wasi"] {
+            let extension = if target == "native" { "" } else { ".wasm" };
+            let binary = temporary
+                .path()
+                .join(format!("directory-{target}-{level}{extension}"));
+            let mut build = support::hew_command();
+            build
+                .current_dir(repo_root())
+                .arg("build")
+                .arg(&source)
+                .args(["--opt-level", level, "-o"])
+                .arg(&binary);
+            if target != "native" {
+                build.args(["--target", target]);
+            }
+            let compiled =
+                support::run_bounded_command(build, format!("directory {target} O{level}"));
+            support::assert_success(&compiled, "compile directory capability");
+            let mut run = if target == "native" {
+                Command::new(&binary)
+            } else {
+                let mut denied = Command::new(support::find_wasmtime().unwrap());
+                denied.arg("run").arg(&binary);
+                let denied = support::run_bounded_command(denied, "directory without preopens");
+                assert!(
+                    !denied.status.success(),
+                    "missing grant must not acquire a directory"
+                );
+                assert!(denied.stdout.is_empty());
+                let mut run = Command::new(support::find_wasmtime().unwrap());
+                run.arg("run")
+                    .arg("--dir")
+                    .arg(format!("{}::root", root.display()))
+                    .arg("--dir")
+                    .arg(format!("{}::outside", outside.display()))
+                    .arg(&binary);
+                run
+            };
+            run.current_dir(temporary.path());
+            let output =
+                support::run_bounded_command(run, format!("supplied directory {target} O{level}"));
+            support::assert_success(&output, "execute supplied directory capability");
+            assert_eq!(
+                output.stdout,
+                b"closed cancelled root\nsupplied directory remains rooted\n"
+            );
+            assert_eq!(fs::read(root.join("copied")).unwrap(), payload);
+            assert_eq!(fs::read(outside.join("value")).unwrap(), b"outside");
+        }
+    }
+}
+
 fn assert_native_wasi_cases(names: &[&str]) {
     require_codegen();
     require_wasi_runner();

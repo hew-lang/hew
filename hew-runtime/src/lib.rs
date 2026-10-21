@@ -585,13 +585,13 @@ mod trap_code;
 // These require threads, signals and networking. wasm32 has none of them: the
 // process runs on `driver`, the single-thread driver of the same core.
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub mod file_io;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub mod file_resources;
 
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
 pub mod directory_resources;
 
 #[cfg(not(target_arch = "wasm32"))]

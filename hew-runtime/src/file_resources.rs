@@ -32,6 +32,13 @@ impl HewReadFile {
             .0
             .lock()
             .map_err(|_| io::Error::other("file resource lock poisoned"))?;
+        #[cfg(target_os = "wasi")]
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "WASI file resources require a regular file",
+            ));
+        }
         let mut data = Vec::new();
         file.read_to_end(&mut data)?;
         Ok(data)
@@ -44,10 +51,18 @@ impl HewWriteFile {
     }
 
     pub(crate) fn write(&self, bytes: &[u8]) -> io::Result<()> {
-        self.0
+        let mut file = self
+            .0
             .lock()
-            .map_err(|_| io::Error::other("file resource lock poisoned"))?
-            .write_all(bytes)
+            .map_err(|_| io::Error::other("file resource lock poisoned"))?;
+        #[cfg(target_os = "wasi")]
+        if !file.metadata()?.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "WASI file resources require a regular file",
+            ));
+        }
+        file.write_all(bytes)
     }
 }
 

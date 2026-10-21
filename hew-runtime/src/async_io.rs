@@ -1,7 +1,8 @@
 //! Owned native I/O operations for suspendable Hew code.
 //!
 //! On wasm32 standard input and in-memory sink finish complete at submission.
-//! Files, sockets and deadlines need native I/O facilities.
+//! WASI regular files also complete at submission through host preopens.
+//! Sockets and deadlines need native I/O facilities.
 //!
 //! A coroutine owns the returned reference and takes a result only on its
 //! resume edge. Pool producers own their inputs and one `Arc` until they
@@ -29,6 +30,8 @@ mod connect;
 mod deadline;
 #[cfg(not(target_arch = "wasm32"))]
 mod file;
+#[cfg(target_os = "wasi")]
+mod file_wasi;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod library;
 #[cfg(not(target_arch = "wasm32"))]
@@ -109,7 +112,7 @@ impl IoFailure {
         }
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
+    #[cfg(any(not(target_arch = "wasm32"), target_os = "wasi"))]
     pub(crate) fn invalid(message: &str) -> Self {
         Self {
             kind: crate::stream_error::IO_ERROR_KIND_UNCLASSIFIED,
@@ -135,11 +138,8 @@ impl Drop for AcceptedConnection {
 
 pub(crate) enum IoValue {
     #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            dead_code,
-            reason = "wasm32 produces StdinLine and Count; native producers build this and the shared take entries name it"
-        )
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        expect(dead_code, reason = "non-WASI wasm32 hosts have no file byte producer")
     )]
     Bytes(Vec<u8>),
     #[cfg_attr(

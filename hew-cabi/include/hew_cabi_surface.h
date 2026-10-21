@@ -817,14 +817,18 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_file_read",
      "{\"native\": \"fn hew_async_file_read( *const HewReadFile, *const "
-     "HewWaker, ) -> *const HewAsyncIo\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewWaker, ) -> *const HewAsyncIo\", \"wasm32-wasip1\": \"fn "
+     "hew_async_file_read( *const HewReadFile, *const HewWaker, ) -> *const "
+     "HewAsyncIo\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_file_write",
      "{\"native\": \"fn hew_async_file_write( *const HewWriteFile, *const "
-     "BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\"}",
-     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\", "
+     "\"wasm32-wasip1\": \"fn hew_async_file_write( *const HewWriteFile, "
+     "*const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo\"}",
+     "native,wasm32-wasip1", "non-declarable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_async_io_cancel",
      "{\"native\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> i32\", "
      "\"wasm32-wasip1\": \"fn hew_async_io_cancel( *const HewAsyncIo) -> "
@@ -2341,50 +2345,66 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_open_read",
      "{\"native\": \"fn hew_dir_open_read( *const HewString) -> *mut "
-     "HewReadDir\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewReadDir\", \"wasm32-wasip1\": \"fn hew_dir_open_read( *const "
+     "HewString) -> *mut HewReadDir\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_open_write",
      "{\"native\": \"fn hew_dir_open_write( *const HewString) -> *mut "
-     "HewWriteDir\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewWriteDir\", \"wasm32-wasip1\": \"fn hew_dir_open_write( *const "
+     "HewString) -> *mut HewWriteDir\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_read_close",
-     "{\"native\": \"fn hew_dir_read_close( *mut HewReadDir)\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_dir_read_close( *mut HewReadDir)\", "
+     "\"wasm32-wasip1\": \"fn hew_dir_read_close( *mut HewReadDir)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_read_is_valid",
-     "{\"native\": \"fn hew_dir_read_is_valid( *const HewReadDir) -> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_dir_read_is_valid( *const HewReadDir) -> bool\", "
+     "\"wasm32-wasip1\": \"fn hew_dir_read_is_valid( *const HewReadDir) -> "
+     "bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_read_open_file",
      "{\"native\": \"fn hew_dir_read_open_file( *const HewReadDir, *const "
-     "HewString, ) -> *mut HewReadFile\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewString, ) -> *mut HewReadFile\", \"wasm32-wasip1\": \"fn "
+     "hew_dir_read_open_file( *const HewReadDir, *const HewString, ) -> *mut "
+     "HewReadFile\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_read_subdir",
      "{\"native\": \"fn hew_dir_read_subdir( *const HewReadDir, *const "
-     "HewString, ) -> *mut HewReadDir\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewString, ) -> *mut HewReadDir\", \"wasm32-wasip1\": \"fn "
+     "hew_dir_read_subdir( *const HewReadDir, *const HewString, ) -> *mut "
+     "HewReadDir\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_write_close",
-     "{\"native\": \"fn hew_dir_write_close( *mut HewWriteDir)\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_dir_write_close( *mut HewWriteDir)\", "
+     "\"wasm32-wasip1\": \"fn hew_dir_write_close( *mut HewWriteDir)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_write_is_valid",
-     "{\"native\": \"fn hew_dir_write_is_valid( *const HewWriteDir) -> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_dir_write_is_valid( *const HewWriteDir) -> bool\", "
+     "\"wasm32-wasip1\": \"fn hew_dir_write_is_valid( *const HewWriteDir) -> "
+     "bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_write_open_file",
      "{\"native\": \"fn hew_dir_write_open_file( *const HewWriteDir, *const "
-     "HewString, ) -> *mut HewWriteFile\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewString, ) -> *mut HewWriteFile\", \"wasm32-wasip1\": \"fn "
+     "hew_dir_write_open_file( *const HewWriteDir, *const HewString, ) -> *mut "
+     "HewWriteFile\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dir_write_subdir",
      "{\"native\": \"fn hew_dir_write_subdir( *const HewWriteDir, *const "
-     "HewString, ) -> *mut HewWriteDir\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewString, ) -> *mut HewWriteDir\", \"wasm32-wasip1\": \"fn "
+     "hew_dir_write_subdir( *const HewWriteDir, *const HewString, ) -> *mut "
+     "HewWriteDir\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_dispatch_state_cleanup_abort_invariant",
      "{\"native\": \"fn hew_dispatch_state_cleanup_abort_invariant() -> !\", "
      "\"wasm32-wasip1\": \"fn hew_dispatch_state_cleanup_abort_invariant() -> "
@@ -2749,49 +2769,61 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_append",
      "{\"native\": \"fn hew_file_append( *const HewString, *const HewString) "
-     "-> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "-> i32\", \"wasm32-wasip1\": \"fn hew_file_append( *const HewString, "
+     "*const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_delete",
-     "{\"native\": \"fn hew_file_delete( *const HewString) -> i32\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_delete( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_file_delete( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_exists",
-     "{\"native\": \"fn hew_file_exists( *const HewString) -> i32\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_exists( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_file_exists( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_open_read",
      "{\"native\": \"fn hew_file_open_read( *const HewString) -> *mut "
-     "HewReadFile\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewReadFile\", \"wasm32-wasip1\": \"fn hew_file_open_read( *const "
+     "HewString) -> *mut HewReadFile\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_open_write",
      "{\"native\": \"fn hew_file_open_write( *const HewString) -> *mut "
-     "HewWriteFile\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "HewWriteFile\", \"wasm32-wasip1\": \"fn hew_file_open_write( *const "
+     "HewString) -> *mut HewWriteFile\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read",
-     "{\"native\": \"fn hew_file_read( *const HewString) -> *mut HewString\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_read( *const HewString) -> *mut HewString\", "
+     "\"wasm32-wasip1\": \"fn hew_file_read( *const HewString) -> *mut "
+     "HewString\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_bytes",
      "{\"native\": \"fn hew_file_read_bytes( *const HewString) -> "
-     "BytesTriple\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple\", \"wasm32-wasip1\": \"fn hew_file_read_bytes( *const "
+     "HewString) -> BytesTriple\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_close",
-     "{\"native\": \"fn hew_file_read_close( *mut HewReadFile)\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_read_close( *mut HewReadFile)\", "
+     "\"wasm32-wasip1\": \"fn hew_file_read_close( *mut HewReadFile)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_is_valid",
-     "{\"native\": \"fn hew_file_read_is_valid( *const HewReadFile) -> bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_read_is_valid( *const HewReadFile) -> bool\", "
+     "\"wasm32-wasip1\": \"fn hew_file_read_is_valid( *const HewReadFile) -> "
+     "bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_remaining",
      "{\"native\": \"fn hew_file_read_remaining( *const HewReadFile) -> "
-     "BytesTriple\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple\", \"wasm32-wasip1\": \"fn hew_file_read_remaining( *const "
+     "HewReadFile) -> BytesTriple\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_read_stream_close",
      "{\"native\": \"fn hew_file_read_stream_close( *mut HewStream)\", "
      "\"wasm32-wasip1\": \"fn hew_file_read_stream_close( *mut HewStream)\"}",
@@ -2817,38 +2849,45 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_size",
-     "{\"native\": \"fn hew_file_size( *const HewString) -> i64\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_size( *const HewString) -> i64\", "
+     "\"wasm32-wasip1\": \"fn hew_file_size( *const HewString) -> i64\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write",
      "{\"native\": \"fn hew_file_write( *const HewString, *const HewString) -> "
-     "i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "i32\", \"wasm32-wasip1\": \"fn hew_file_write( *const HewString, *const "
+     "HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_atomic",
      "{\"native\": \"fn hew_file_write_atomic( *const HewString, *const "
-     "BytesTriple, ) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple, ) -> i32\", \"wasm32-wasip1\": \"fn hew_file_write_atomic( "
+     "*const HewString, *const BytesTriple, ) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_bytes",
      "{\"native\": \"fn hew_file_write_bytes( *const HewString, *const "
-     "BytesTriple, ) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple, ) -> i32\", \"wasm32-wasip1\": \"fn hew_file_write_bytes( "
+     "*const HewString, *const BytesTriple, ) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_close",
-     "{\"native\": \"fn hew_file_write_close( *mut HewWriteFile)\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_file_write_close( *mut HewWriteFile)\", "
+     "\"wasm32-wasip1\": \"fn hew_file_write_close( *mut HewWriteFile)\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_handle",
      "{\"native\": \"fn hew_file_write_handle( *const HewWriteFile, *const "
-     "BytesTriple, ) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "BytesTriple, ) -> i32\", \"wasm32-wasip1\": \"fn hew_file_write_handle( "
+     "*const HewWriteFile, *const BytesTriple, ) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_file_write_is_valid",
      "{\"native\": \"fn hew_file_write_is_valid( *const HewWriteFile) -> "
-     "bool\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "bool\", \"wasm32-wasip1\": \"fn hew_file_write_is_valid( *const "
+     "HewWriteFile) -> bool\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_float_to_string",
      "{\"native\": \"fn hew_float_to_string( f64) -> *mut HewString\", "
      "\"wasm32-wasip1\": \"fn hew_float_to_string( f64) -> *mut HewString\"}",
@@ -2856,9 +2895,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_copy",
      "{\"native\": \"fn hew_fs_copy( *const HewString, *const HewString) -> "
-     "i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "i32\", \"wasm32-wasip1\": \"fn hew_fs_copy( *const HewString, *const "
+     "HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_create_new",
      "{\"native\": \"fn hew_fs_create_new( *const HewString, *const "
      "BytesTriple, i64, ) -> i32\"}",
@@ -2868,13 +2908,16 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "{\"native\": \"fn hew_fs_current_owner() -> i64\"}", "native", "stable",
      "not-applicable", "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_is_dir",
-     "{\"native\": \"fn hew_fs_is_dir( *const HewString) -> i32\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_fs_is_dir( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_fs_is_dir( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_list_dir",
-     "{\"native\": \"fn hew_fs_list_dir( *const HewString) -> *mut HewVec\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_fs_list_dir( *const HewString) -> *mut HewVec\", "
+     "\"wasm32-wasip1\": \"fn hew_fs_list_dir( *const HewString) -> *mut "
+     "HewVec\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_lock_is_valid",
      "{\"native\": \"fn hew_fs_lock_is_valid( *const HewFileLock) -> bool\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -2884,13 +2927,15 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_mkdir",
-     "{\"native\": \"fn hew_fs_mkdir( *const HewString) -> i32\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_fs_mkdir( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_fs_mkdir( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_mkdir_all",
-     "{\"native\": \"fn hew_fs_mkdir_all( *const HewString) -> i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_fs_mkdir_all( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_fs_mkdir_all( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_mkdir_mode",
      "{\"native\": \"fn hew_fs_mkdir_mode( *const HewString, i64) -> i32\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -2907,9 +2952,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_rename",
      "{\"native\": \"fn hew_fs_rename( *const HewString, *const HewString) -> "
-     "i32\"}",
-     "native", "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "i32\", \"wasm32-wasip1\": \"fn hew_fs_rename( *const HewString, *const "
+     "HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_fs_space",
      "{\"native\": \"fn hew_fs_space( *const HewString) -> HewFsSpace\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
@@ -4854,9 +4900,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_path_exists",
-     "{\"native\": \"fn hew_path_exists( *const HewString) -> i32\"}", "native",
-     "stable", "not-applicable", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
+     "{\"native\": \"fn hew_path_exists( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_path_exists( *const HewString) -> i32\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_path_is_dir",
      "{\"native\": \"fn hew_path_is_dir( *const HewString) -> i32\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",

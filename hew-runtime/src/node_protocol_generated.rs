@@ -393,3 +393,223 @@ impl MonitorDown {
         })
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RegistryGossip {
+    pub(crate) op: u8,
+    pub(crate) name: String,
+    pub(crate) location: WireLocation,
+}
+impl RegistryGossip {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("op", 1, 0),
+        Member::new("name", 2, 0),
+        Member::new("location", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.op;
+        sink.u64(u64::from(*value));
+        sink.field(1);
+        let value = &self.name;
+        sink.str(value);
+        sink.field(2);
+        let value = &self.location;
+        (value).write(sink);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut op = None;
+        let mut name = None;
+        let mut location = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    op = Some(
+                        u8::try_from(source.read_u64(u64::from(u8::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    name = Some(source.read_str()?);
+                }
+                2 => {
+                    location = Some(WireLocation::read(source)?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            op: op.expect("checked required field"),
+            name: name.expect("checked required field"),
+            location: location.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwimGossip {
+    pub(crate) member: WireSession,
+    pub(crate) state: i32,
+    pub(crate) incarnation: u64,
+}
+impl SwimGossip {
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("member", 1, 0),
+        Member::new("state", 2, 0),
+        Member::new("incarnation", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.member;
+        (value).write(sink);
+        sink.field(1);
+        let value = &self.state;
+        sink.i64(i64::from(*value));
+        sink.field(2);
+        let value = &self.incarnation;
+        sink.u64(*value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut member = None;
+        let mut state = None;
+        let mut incarnation = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    member = Some(WireSession::read(source)?);
+                }
+                1 => {
+                    state = Some(
+                        i32::try_from(source.read_i64(i64::from(i32::MIN), i64::from(i32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                2 => {
+                    incarnation = Some(source.read_u64(u64::MAX)?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            member: member.expect("checked required field"),
+            state: state.expect("checked required field"),
+            incarnation: incarnation.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SwimControl {
+    pub(crate) msg_type: i32,
+    pub(crate) from: WireSession,
+    pub(crate) incarnation: u64,
+    pub(crate) target: Option<WireSession>,
+    pub(crate) gossip: Vec<SwimGossip>,
+}
+impl SwimControl {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("msg_type", 1, 0),
+        Member::new("from", 2, 0),
+        Member::new("incarnation", 3, 0),
+        Member::new("target", 4, 0),
+        Member::new("gossip", 5, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.msg_type;
+        sink.i64(i64::from(*value));
+        sink.field(1);
+        let value = &self.from;
+        (value).write(sink);
+        sink.field(2);
+        let value = &self.incarnation;
+        sink.u64(*value);
+        sink.field(3);
+        let value = &self.target;
+        match value {
+            Some(value) => {
+                (value).write(sink);
+            }
+            None => sink.null(),
+        }
+        sink.field(4);
+        let value = &self.gossip;
+        sink.seq_begin((value).len());
+        for value in value {
+            (value).write(sink);
+        }
+        sink.seq_end();
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut msg_type = None;
+        let mut from = None;
+        let mut incarnation = None;
+        let mut target = None;
+        let mut gossip = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    msg_type = Some(
+                        i32::try_from(source.read_i64(i64::from(i32::MIN), i64::from(i32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    from = Some(WireSession::read(source)?);
+                }
+                2 => {
+                    incarnation = Some(source.read_u64(u64::MAX)?);
+                }
+                3 => {
+                    target = Some(if source.is_null()? {
+                        None
+                    } else {
+                        Some(WireSession::read(source)?)
+                    });
+                }
+                4 => {
+                    gossip = Some({
+                        let len = source.seq_begin()?;
+                        let mut values = Vec::with_capacity(len);
+                        while source.seq_next()? {
+                            values.push(SwimGossip::read(source)?);
+                        }
+                        values
+                    });
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            msg_type: msg_type.expect("checked required field"),
+            from: from.expect("checked required field"),
+            incarnation: incarnation.expect("checked required field"),
+            target: target.expect("checked required field"),
+            gossip: gossip.expect("checked required field"),
+        })
+    }
+}

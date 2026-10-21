@@ -39,3 +39,23 @@ monitor-down = {
     6 => (cleanup-fault) / nil, ; close_fault
 }
 
+registry-gossip = {
+    1 => 0..255, ; op
+    2 => tstr, ; name
+    3 => wire-location, ; location
+}
+
+swim-gossip = {
+    1 => wire-session, ; member
+    2 => -2147483648..2147483647, ; state
+    3 => uint, ; incarnation
+}
+
+swim-control = {
+    1 => -2147483648..2147483647, ; msg_type
+    2 => wire-session, ; from
+    3 => uint, ; incarnation
+    4 => (wire-session) / nil, ; target
+    5 => [* swim-gossip], ; gossip
+}
+

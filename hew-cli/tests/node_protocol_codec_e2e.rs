@@ -5,7 +5,10 @@ mod support;
 mod protocol;
 
 use hew_codec::Format;
-use protocol::{CleanupFault, DownReason, MonitorDown, ServiceOffer, WireLocation, WireSession};
+use protocol::{
+    CleanupFault, DownReason, MonitorDown, RegistryGossip, ServiceOffer, SwimControl, SwimGossip,
+    WireLocation, WireSession,
+};
 
 fn offer() -> ServiceOffer {
     ServiceOffer {
@@ -39,6 +42,31 @@ fn down() -> MonitorDown {
     }
 }
 
+fn registry() -> RegistryGossip {
+    RegistryGossip {
+        op: 5,
+        name: "worker café".into(),
+        location: offer().target,
+    }
+}
+
+fn swim() -> SwimControl {
+    SwimControl {
+        msg_type: 3,
+        from: offer().recipient,
+        incarnation: 4_294_967_297,
+        target: Some(WireSession {
+            node: b"0123456789abcdef".to_vec(),
+            incarnation: 4,
+        }),
+        gossip: vec![SwimGossip {
+            member: offer().recipient,
+            state: 2,
+            incarnation: 19,
+        }],
+    }
+}
+
 #[test]
 fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
     support::require_codegen();
@@ -52,6 +80,16 @@ fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
         .unwrap();
     }
     for (format, extension) in [(Format::Cbor, "cbor"), (Format::Msgpack, "msgpack")] {
+        std::fs::write(
+            dir.path().join(format!("rust-registry.{extension}")),
+            registry().encode(format),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(format!("rust-swim.{extension}")),
+            swim().encode(format),
+        )
+        .unwrap();
         std::fs::write(
             dir.path().join(format!("rust-offer.{extension}")),
             offer().encode(format),
@@ -81,6 +119,24 @@ fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
     let output = support::run_bounded_command(run, "run checked node codec probe");
     support::assert_success(&output, "run checked node codec probe");
     for (format, extension) in [(Format::Cbor, "cbor"), (Format::Msgpack, "msgpack")] {
+        let registry_bytes =
+            std::fs::read(dir.path().join(format!("hew-registry.{extension}"))).unwrap();
+        let swim_bytes = std::fs::read(dir.path().join(format!("hew-swim.{extension}"))).unwrap();
+        assert_eq!(
+            RegistryGossip::decode(format, &registry_bytes).unwrap(),
+            registry()
+        );
+        assert_eq!(SwimControl::decode(format, &swim_bytes).unwrap(), swim());
+        assert_eq!(
+            registry_bytes,
+            registry().encode(format),
+            "same accepted registry bytes"
+        );
+        assert_eq!(
+            swim_bytes,
+            swim().encode(format),
+            "same accepted SWIM bytes"
+        );
         let offer_bytes = std::fs::read(dir.path().join(format!("hew-offer.{extension}"))).unwrap();
         let down_bytes = std::fs::read(dir.path().join(format!("hew-down.{extension}"))).unwrap();
         assert_eq!(ServiceOffer::decode(format, &offer_bytes).unwrap(), offer());

@@ -8,7 +8,12 @@ use hew_types::{module_registry::ModuleRegistry, Checker, ResolvedTy, TypeFactSe
 const SOURCE: &str = "hew-runtime/protocol/node_controls.hew";
 const RUST: &str = "hew-runtime/src/node_protocol_generated.rs";
 const CDDL: &str = "hew-runtime/schemas/node-controls.generated.cddl";
-const ROOTS: &[&str] = &["ServiceOffer", "MonitorDown"];
+const ROOTS: &[&str] = &[
+    "ServiceOffer",
+    "MonitorDown",
+    "RegistryGossip",
+    "SwimControl",
+];
 
 pub fn run(args: &[String]) -> crate::Result<()> {
     let [mode] = args else {

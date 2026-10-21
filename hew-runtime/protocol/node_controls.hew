@@ -44,3 +44,26 @@ pub type MonitorDown {
     end_reason: u8 @5;
     close_fault: Option<CleanupFault> @6;
 }
+
+#[wire]
+pub type RegistryGossip {
+    op: u8 @1;
+    name: string @2;
+    location: WireLocation @3;
+}
+
+#[wire]
+pub type SwimGossip {
+    member: WireSession @1;
+    state: i32 @2;
+    incarnation: u64 @3;
+}
+
+#[wire]
+pub type SwimControl {
+    msg_type: i32 @1;
+    from: WireSession @2;
+    incarnation: u64 @3;
+    target: Option<WireSession> @4;
+    gossip: Vec<SwimGossip> @5;
+}

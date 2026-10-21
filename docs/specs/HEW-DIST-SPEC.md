@@ -307,15 +307,15 @@ Transport framing carries CBOR wire frames defined by
 `hew-runtime/schemas/node-controls.generated.cddl`. The wire schema version
 is `10`.
 
-Service offers and monitor/link DOWN payloads use checked internal Hew data
-declarations in `hew-runtime/protocol/node_controls.hew`. The frontend's closed
+Service offers, registry gossip, SWIM and monitor/link DOWN payloads use checked
+internal Hew data declarations in `hew-runtime/protocol/node_controls.hew`. The frontend's closed
 data plans generate concrete Rust value walks and CDDL through
 `make node-protocol`. These walks use the same format-neutral `hew_codec`
 Sink/Source implementation as developer wire types. Internal controls opt into
 recursive unknown-field refusal; ordinary evolving user data retains its
 existing policy. Runtime adapters continue to enforce grants, identity, terminal
-reasons and size limits. This changes neither accepted CBOR bytes nor format
-negotiation. Other frame, membership and handshake structures remain separate
+reasons and size limits. Valid CBOR bytes remain stable; shared readers reject
+malformed or trailing input. Other frame and handshake structures remain separate
 pending the next protocol cutover.
 
 Envelope key `5` names the canonical dotted handler declaration for a request,

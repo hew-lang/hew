@@ -32,7 +32,7 @@ markers per the project's `Shims, Stubs, and Seams` rule.
 The Hew runtime's actor-to-actor wire format is **CBOR** (RFC 8949), with
 structural schemas described in **CDDL** (RFC 8610).
 [`hew-runtime/schemas/envelope.cddl`][cddl] combines with
-`hew-runtime/schemas/node-controls.generated.cddl`. Service-offer and terminal
+`hew-runtime/schemas/node-controls.generated.cddl`. Service-offer, registry-gossip, SWIM and terminal
 observation structures are checked Hew declarations in
 `hew-runtime/protocol/node_controls.hew`; their generated Rust walks use the
 ordinary format-neutral codec Sink/Source. Runtime adapters retain semantic

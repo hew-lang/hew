@@ -53,11 +53,8 @@ control-frame = {
     4 => bstr, ; payload: 0..* bytes; empty bstr for bare signals
 }
 
-registry-gossip-payload = {
-    1 => registry-gossip-op, ; op
-    2 => text, ; name: bounded by runtime to 1024 UTF-8 bytes
-    3 => location, ; location: exact identity for both add and remove
-}
+registry-gossip-payload = registry-gossip
+; Runtime policy: add/remove operation, bounded NUL-free name, valid location.
 
 registry-gossip-op = 5 / 6         ; add / remove
 
@@ -163,16 +160,7 @@ node-session = wire-session
 ; Runtime identity policy: nonzero 16-byte node id, nonzero u32 session,
 ; nonzero target id and known target kind (direct actor / stable role).
 
-swim-gossip-entry = {
-    1 => node-session, ; member
-    2 => int, ; state
-    3 => uint, ; incarnation
-}
-
-swim-control-payload = {
-    1 => int, ; msg_type
-    2 => node-session, ; from
-    3 => uint, ; incarnation
-    4 => node-session / nil, ; target
-    5 => [* swim-gossip-entry], ; gossip
-}
+swim-gossip-entry = swim-gossip
+swim-control-payload = swim-control
+; Runtime policy: bounded batch/payload, nonzero member sessions and node ids.
+; Authenticated sender attribution and membership transitions belong to SWIM.

@@ -284,7 +284,7 @@ The Hew runtime encodes inter-node actor messages as CBOR (RFC 8949) frames.
 The structural schemas are `hew-runtime/schemas/envelope.cddl` together with
 `node-controls.generated.cddl` (frame container), and
 `hew-runtime/schemas/wire-body.cddl` (per-type message body). Checked internal
-Hew declarations generate the service-offer and terminal-observation structures;
+Hew declarations generate the service-offer, registry-gossip, SWIM and terminal-observation structures;
 `hew-runtime/src/envelope.rs` retains domain validation and other frame codecs.
 
 ### 6.1 Frame structure

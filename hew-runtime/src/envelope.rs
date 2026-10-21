@@ -348,7 +348,7 @@ pub struct NodeSessionIdentity {
 
 /// A single piggybacked membership-gossip entry carried on a SWIM frame.
 ///
-/// Encoded as a definite CBOR map `{1: node_id, 2: state, 3: incarnation}`.
+/// Encoded as a definite CBOR map `{1: member_session, 2: state, 3: incarnation}`.
 /// This is the SWIM infection-style dissemination vehicle (C6): every PING /
 /// ACK carries a bounded batch of recent membership transitions so that nodes
 /// not directly connected to a failing peer still learn of its state change.
@@ -368,13 +368,13 @@ pub struct SwimGossipEntry {
 /// `{1: msg_type, 2: from_node, 3: incarnation, 4: target_node, 5: [gossip]}`.
 ///
 /// - `msg_type` is one of the `SWIM_MSG_*` constants (PING / ACK / `PING_REQ`).
-/// - `from_node` is the sender's node ID. The receiver cross-checks this
+/// - `from` is the sender's node identity and durable session. The receiver cross-checks this
 ///   against the authenticated handshake identity of the connection the frame
 ///   arrived on and rejects mismatches (cross-attribution defence).
 /// - `incarnation` is the sender's current incarnation (used for ACKs and
 ///   self-refutation).
-/// - `target_node` is the probe subject for `PING_REQ` indirect probing (C4);
-///   `0` for direct PING / ACK.
+/// - `target` is the probe subject and durable session for indirect probing;
+///   absent for direct PING / ACK.
 /// - `gossip` is the bounded piggybacked membership batch (C6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwimControlPayload {
@@ -612,6 +612,8 @@ impl From<ciborium::ser::Error<std::io::Error>> for EncodeError {
 /// Errors returned by the bounded registry-gossip payload codec.
 #[derive(Debug)]
 pub enum RegistryGossipPayloadError {
+    /// The shared checked data reader refused this control payload.
+    Data(hew_codec::DecodeError),
     /// Payload exceeded [`MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES`].
     PayloadTooLarge { len: usize, max: usize },
     /// Payload CBOR was malformed or truncated.
@@ -637,6 +639,7 @@ pub enum RegistryGossipPayloadError {
 impl std::fmt::Display for RegistryGossipPayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "registry gossip payload is too large ({len} > {max})")
             }
@@ -669,6 +672,7 @@ impl std::fmt::Display for RegistryGossipPayloadError {
 impl std::error::Error for RegistryGossipPayloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::CborDecode(e) => Some(e),
             Self::CborEncode(e) => Some(e),
             Self::PayloadTooLarge { .. }
@@ -686,9 +690,7 @@ impl std::error::Error for RegistryGossipPayloadError {
 impl From<DecodeError> for RegistryGossipPayloadError {
     fn from(err: DecodeError) -> Self {
         match err {
-            DecodeError::Data(_) => Self::MalformedPayload {
-                reason: "invalid checked control data",
-            },
+            DecodeError::Data(error) => Self::Data(error),
             DecodeError::Cbor(e) => Self::CborDecode(e),
             DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
             DecodeError::MalformedKey => Self::MalformedKey,
@@ -709,6 +711,8 @@ impl From<DecodeError> for RegistryGossipPayloadError {
 /// Errors returned by the bounded SWIM control payload codec.
 #[derive(Debug)]
 pub enum SwimPayloadError {
+    /// The shared checked data reader refused this control payload.
+    Data(hew_codec::DecodeError),
     /// Encoded payload exceeded [`MAX_SWIM_PAYLOAD_BYTES`].
     PayloadTooLarge { len: usize, max: usize },
     /// Gossip batch exceeded [`MAX_SWIM_GOSSIP_ENTRIES`].
@@ -734,6 +738,7 @@ pub enum SwimPayloadError {
 impl std::fmt::Display for SwimPayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "SWIM payload is too large ({len} > {max})")
             }
@@ -768,6 +773,7 @@ impl std::fmt::Display for SwimPayloadError {
 impl std::error::Error for SwimPayloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::CborDecode(e) => Some(e),
             Self::CborEncode(e) => Some(e),
             Self::PayloadTooLarge { .. }
@@ -785,9 +791,7 @@ impl std::error::Error for SwimPayloadError {
 impl From<DecodeError> for SwimPayloadError {
     fn from(err: DecodeError) -> Self {
         match err {
-            DecodeError::Data(_) => Self::MalformedPayload {
-                reason: "invalid checked control data",
-            },
+            DecodeError::Data(error) => Self::Data(error),
             DecodeError::Cbor(e) => Self::CborDecode(e),
             DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
             DecodeError::MalformedKey => Self::MalformedKey,
@@ -1036,10 +1040,7 @@ pub fn encode_service_offer_payload(offer: &ServiceOfferPayload) -> Result<Vec<u
         request_id: offer.request_id,
         grant_id: offer.grant_id,
         target: wire_location(offer.target),
-        recipient: protocol::WireSession {
-            node: offer.recipient.node_id.to_bytes().to_vec(),
-            incarnation: offer.recipient.session_incarnation,
-        },
+        recipient: wire_session(offer.recipient),
         handlers: offer.handlers.clone(),
     }
     .encode(hew_codec::Format::Cbor);
@@ -1067,10 +1068,7 @@ pub fn decode_service_offer_payload(bytes: &[u8]) -> Result<ServiceOfferPayload,
         request_id: wire.request_id,
         grant_id: wire.grant_id,
         target: checked_location(&wire.target, 2)?,
-        recipient: NodeSessionIdentity {
-            node_id: checked_node_id(&wire.recipient.node, 3)?,
-            session_incarnation: wire.recipient.incarnation,
-        },
+        recipient: checked_session(&wire.recipient, 3)?,
         handlers: wire.handlers,
     };
     if !valid_service_offer(&offer) {
@@ -1092,23 +1090,12 @@ pub fn encode_registry_gossip_payload(
 ) -> Result<Vec<u8>, RegistryGossipPayloadError> {
     validate_registry_gossip_payload(payload)?;
 
-    let value = Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.op)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            Value::Text(payload.name.clone()),
-        ),
-        (
-            Value::Integer(Integer::from(3u64)),
-            location_to_value(payload.location),
-        ),
-    ]);
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes)
-        .map_err(RegistryGossipPayloadError::CborEncode)?;
+    let bytes = protocol::RegistryGossip {
+        op: payload.op,
+        name: payload.name.clone(),
+        location: wire_location(payload.location),
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES {
         return Err(RegistryGossipPayloadError::PayloadTooLarge {
             len: bytes.len(),
@@ -1281,26 +1268,12 @@ pub fn decode_registry_gossip_payload(
         });
     }
 
-    let value: Value =
-        ciborium::de::from_reader(bytes).map_err(RegistryGossipPayloadError::CborDecode)?;
-    let map = collect_map(&value).map_err(RegistryGossipPayloadError::from)?;
-    ensure_exact_keys(&map, &[1, 2, 3]).map_err(RegistryGossipPayloadError::from)?;
+    let wire = protocol::RegistryGossip::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(RegistryGossipPayloadError::Data)?;
     let payload = RegistryGossipPayload {
-        op: value_to_u8(
-            required(&map, 1).map_err(RegistryGossipPayloadError::from)?,
-            1,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
-        name: value_to_text(
-            required(&map, 2).map_err(RegistryGossipPayloadError::from)?,
-            2,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
-        location: value_to_location(
-            required(&map, 3).map_err(RegistryGossipPayloadError::from)?,
-            3,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
+        op: wire.op,
+        name: wire.name,
+        location: checked_location(&wire.location, 3)?,
     };
     validate_registry_gossip_payload(&payload)?;
     Ok(payload)
@@ -1321,51 +1294,22 @@ pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, Swim
         });
     }
 
-    let gossip = Value::Array(
-        payload
+    let bytes = protocol::SwimControl {
+        msg_type: payload.msg_type,
+        from: wire_session(payload.from),
+        incarnation: payload.incarnation,
+        target: payload.target.map(wire_session),
+        gossip: payload
             .gossip
             .iter()
-            .map(|entry| {
-                Value::Map(vec![
-                    (
-                        Value::Integer(Integer::from(1u64)),
-                        node_session_to_value(entry.member),
-                    ),
-                    (
-                        Value::Integer(Integer::from(2u64)),
-                        Value::Integer(Integer::from(entry.state)),
-                    ),
-                    (
-                        Value::Integer(Integer::from(3u64)),
-                        Value::Integer(Integer::from(entry.incarnation)),
-                    ),
-                ])
+            .map(|entry| protocol::SwimGossip {
+                member: wire_session(entry.member),
+                state: entry.state,
+                incarnation: entry.incarnation,
             })
             .collect(),
-    );
-
-    let value = Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.msg_type)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            node_session_to_value(payload.from),
-        ),
-        (
-            Value::Integer(Integer::from(3u64)),
-            Value::Integer(Integer::from(payload.incarnation)),
-        ),
-        (
-            Value::Integer(Integer::from(4u64)),
-            node_session_option_to_value(payload.target),
-        ),
-        (Value::Integer(Integer::from(5u64)), gossip),
-    ]);
-
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes).map_err(SwimPayloadError::CborEncode)?;
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_SWIM_PAYLOAD_BYTES {
         return Err(SwimPayloadError::PayloadTooLarge {
             len: bytes.len(),
@@ -1390,40 +1334,34 @@ pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPaylo
         });
     }
 
-    let value: Value = ciborium::de::from_reader(bytes).map_err(SwimPayloadError::CborDecode)?;
-    let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
-
-    let gossip_value = required(&map, 5)?;
-    let Value::Array(entries) = gossip_value else {
-        return Err(SwimPayloadError::MalformedField {
-            key: 5,
-            expected: "array",
-        });
-    };
-    if entries.len() > MAX_SWIM_GOSSIP_ENTRIES {
+    let wire = protocol::SwimControl::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(SwimPayloadError::Data)?;
+    if wire.gossip.len() > MAX_SWIM_GOSSIP_ENTRIES {
         return Err(SwimPayloadError::TooManyGossipEntries {
-            len: entries.len(),
+            len: wire.gossip.len(),
             max: MAX_SWIM_GOSSIP_ENTRIES,
         });
     }
-    let mut gossip = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let entry_map = collect_map(entry)?;
-        ensure_exact_keys(&entry_map, &[1, 2, 3])?;
-        gossip.push(SwimGossipEntry {
-            member: value_to_node_session(required(&entry_map, 1)?, 1)?,
-            state: value_to_i32(required(&entry_map, 2)?, 2)?,
-            incarnation: value_to_u64(required(&entry_map, 3)?, 3)?,
-        });
-    }
-
     Ok(SwimControlPayload {
-        msg_type: value_to_i32(required(&map, 1)?, 1)?,
-        from: value_to_node_session(required(&map, 2)?, 2)?,
-        incarnation: value_to_u64(required(&map, 3)?, 3)?,
-        target: value_to_node_session_option(required(&map, 4)?, 4)?,
-        gossip,
+        msg_type: wire.msg_type,
+        from: checked_session(&wire.from, 2)?,
+        incarnation: wire.incarnation,
+        target: wire
+            .target
+            .as_ref()
+            .map(|target| checked_session(target, 4))
+            .transpose()?,
+        gossip: wire
+            .gossip
+            .iter()
+            .map(|entry| {
+                Ok(SwimGossipEntry {
+                    member: checked_session(&entry.member, 1)?,
+                    state: entry.state,
+                    incarnation: entry.incarnation,
+                })
+            })
+            .collect::<Result<_, DecodeError>>()?,
     })
 }
 
@@ -1879,14 +1817,6 @@ fn value_to_u64(value: &Value, key: u64) -> Result<u64, DecodeError> {
     })
 }
 
-fn value_to_i32(value: &Value, key: u64) -> Result<i32, DecodeError> {
-    let integer = value_to_integer(value, key, "an i32 integer")?;
-    i32::try_from(integer).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "an i32 integer",
-    })
-}
-
 fn value_to_integer(value: &Value, key: u64, expected: &'static str) -> Result<i128, DecodeError> {
     match value {
         Value::Integer(integer) => Ok(integer_to_i128(*integer)),
@@ -2043,56 +1973,27 @@ fn value_to_location_option(value: &Value, key: u64) -> Result<Option<Location>,
     }
 }
 
-fn node_session_to_value(identity: NodeSessionIdentity) -> Value {
-    Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            node_id_to_value(identity.node_id),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(identity.session_incarnation)),
-        ),
-    ])
+fn wire_session(identity: NodeSessionIdentity) -> protocol::WireSession {
+    protocol::WireSession {
+        node: identity.node_id.to_bytes().to_vec(),
+        incarnation: identity.session_incarnation,
+    }
 }
 
-fn node_session_option_to_value(identity: Option<NodeSessionIdentity>) -> Value {
-    identity.map_or(Value::Null, node_session_to_value)
-}
-
-fn value_to_node_session(value: &Value, key: u64) -> Result<NodeSessionIdentity, DecodeError> {
-    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "a node-session map",
-    })?;
-    ensure_exact_keys(&map, &[1, 2])?;
-    let session_raw = value_to_u64(required(&map, 2)?, key)?;
-    let session_incarnation =
-        u32::try_from(session_raw).map_err(|_| DecodeError::MalformedField {
-            key,
-            expected: "a node session with a u32 incarnation",
-        })?;
-    if session_incarnation == 0 {
+fn checked_session(
+    wire: &protocol::WireSession,
+    key: u64,
+) -> Result<NodeSessionIdentity, DecodeError> {
+    if wire.incarnation == 0 {
         return Err(DecodeError::MalformedField {
             key,
             expected: "a node session with non-zero incarnation",
         });
     }
     Ok(NodeSessionIdentity {
-        node_id: value_to_node_id(required(&map, 1)?, key)?,
-        session_incarnation,
+        node_id: checked_node_id(&wire.node, key)?,
+        session_incarnation: wire.incarnation,
     })
-}
-
-fn value_to_node_session_option(
-    value: &Value,
-    key: u64,
-) -> Result<Option<NodeSessionIdentity>, DecodeError> {
-    if matches!(value, Value::Null) {
-        Ok(None)
-    } else {
-        value_to_node_session(value, key).map(Some)
-    }
 }
 
 const DOWN_REASON_ACTOR_STATE: u8 = 1;

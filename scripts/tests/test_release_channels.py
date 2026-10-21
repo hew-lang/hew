@@ -52,6 +52,11 @@ class Registry(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
+        if self.server.writes and "wasm" in self.path:
+            self.server.published_reads += 1
+            if self.server.delayed_metadata:
+                self.send_error(503)
+                return
         if self.server.mode == "unreadable":
             self.send_error(503)
             return
@@ -88,6 +93,9 @@ class Registry(BaseHTTPRequestHandler):
         attachment = next(iter(payload["_attachments"].values()))
         self.server.packages["wasm"] = base64.b64decode(attachment["data"])
         self.server.mode = "exists"
+        if self.server.uncertain_publish:
+            self.close_connection = True
+            return
         self.send_response(201)
         self.end_headers()
         self.wfile.write(b'{"ok":true}')
@@ -108,6 +116,9 @@ class NpmDelivery(unittest.TestCase):
         self.server.mode = "exists"
         self.server.packages = self.packages.copy()
         self.server.writes = 0
+        self.server.published_reads = 0
+        self.server.delayed_metadata = False
+        self.server.uncertain_publish = False
         self.server.url = f"http://127.0.0.1:{self.server.server_port}"
         (self.root / "user.npmrc").write_text(
             f"//127.0.0.1:{self.server.server_port}/:_authToken={secrets.token_urlsafe(24)}\n@hew-lang:registry=http://127.0.0.1:9\n"
@@ -149,13 +160,16 @@ class NpmDelivery(unittest.TestCase):
         self.assertEqual(result.stdout.count("Verified identical tarball"), 2)
         self.assertEqual(self.server.writes, 0)
 
-    def test_absent_publish_checks_remote_bytes_after_local_put(self):
+    def test_successful_publish_is_terminal_while_metadata_propagates(self):
         self.server.mode = "absent"
+        self.server.delayed_metadata = True
         result = self.run_adapter()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.server.writes, 1)
         self.assertEqual(self.server.packages["wasm"], self.packages["wasm"])
-        self.assertEqual(result.stdout.count("Verified identical tarball"), 2)
+        self.assertEqual(result.stdout.count("Verified identical tarball"), 1)
+        self.assertIn(f"Published: @hew-lang/wasm@{VERSION}", result.stdout)
+        self.assertEqual(self.server.published_reads, 0)
 
     def test_different_tarball_fails_without_overwrite(self):
         self.server.packages["wasm"] = package("wasm", payload=b"other")
@@ -163,6 +177,17 @@ class NpmDelivery(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Published bytes differ", result.stderr)
         self.assertEqual(self.server.writes, 0)
+
+    def test_lost_publish_response_resumes_by_exact_bytes_without_another_write(self):
+        self.server.mode = "absent"
+        self.server.uncertain_publish = True
+        first = self.run_adapter()
+        self.assertNotEqual(first.returncode, 0)
+        self.assertEqual(self.server.writes, 1)
+        resumed = self.run_adapter()
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertEqual(resumed.stdout.count("Verified identical tarball"), 2)
+        self.assertEqual(self.server.writes, 1)
 
     def test_unreadable_registry_fails_without_blind_publish(self):
         self.server.mode = "unreadable"
@@ -296,8 +321,14 @@ class HomebrewDelivery(unittest.TestCase):
         self.active = False
         self.return_url = True
         self.unreadable = False
+        self.ancient = False
+        self.ambiguous = False
         self.calls = []
-        self.terminal = {"status": "completed", "conclusion": "success"}
+        self.terminal = {
+            "status": "completed",
+            "conclusion": "success",
+            "displayTitle": f"Update Hew {VERSION}",
+        }
 
     def test_unavailable_macos_keeps_homebrew_unpublished_without_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -348,17 +379,34 @@ class HomebrewDelivery(unittest.TestCase):
                         "url": "https://github.com/hew-lang/homebrew-hew/actions/runs/42",
                         "status": "in_progress" if self.active else "completed",
                         "conclusion": None if self.active else "success",
+                        "displayTitle": "Update Formula"
+                        if self.ambiguous
+                        else f"Update Hew {VERSION}",
                     }
                 ]
             )
+            if self.ancient and "--created" not in args:
+                result.append(
+                    {
+                        "databaseId": 1,
+                        "status": "completed",
+                        "conclusion": "success",
+                        "displayTitle": "Update Formula",
+                        "url": "https://example.invalid/expired",
+                    }
+                )
+            if "--created" in args:
+                self.assertEqual(
+                    args[args.index("--created") + 1], ">=2026-10-21T00:00:00Z"
+                )
         elif args[1:3] == ("run", "view"):
             if "--log" in args:
-                if self.unreadable:
-                    raise RuntimeError("Cannot read downstream log")
-                return subprocess.CompletedProcess(
-                    args, 0, f"  VERSION: {VERSION}\n", ""
-                )
+                raise RuntimeError("Expired downstream log")
+            if self.unreadable:
+                raise RuntimeError("Cannot read downstream outcome")
             result = self.terminal
+        elif args[1:3] == ("release", "view"):
+            result = {"publishedAt": "2026-10-21T00:00:00Z"}
         elif args[1:3] == ("workflow", "run"):
             return subprocess.CompletedProcess(
                 args,
@@ -423,6 +471,23 @@ class HomebrewDelivery(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Cannot read"):
             self.execute()
         self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
+
+    def test_expired_ancient_logs_are_not_consulted_before_dispatch(self):
+        self.ancient = True
+        self.execute()
+        self.assertTrue(any(args[1:3] == ("workflow", "run") for args in self.calls))
+        self.assertFalse(any("--log" in args for args in self.calls))
+
+    def test_recent_legacy_run_is_ambiguous_and_blocks_dispatch(self):
+        self.existing = self.ambiguous = True
+        with self.assertRaisesRegex(RuntimeError, "reconcile before redispatch"):
+            self.execute()
+        self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
+
+    def test_terminal_run_for_another_version_is_not_completion(self):
+        self.terminal["displayTitle"] = "Update Hew 1.2.2"
+        with self.assertRaisesRegex(RuntimeError, "version differs"):
+            self.execute()
 
     def test_direct_dispatch_url_preserves_exact_run_without_discovery(self):
         self.execute()

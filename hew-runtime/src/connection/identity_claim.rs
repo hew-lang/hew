@@ -67,6 +67,12 @@ pub(super) fn reserve_identity_claim(
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
     loop {
+        if mgr.reconnect_shutdown.load(Ordering::Acquire)
+            || crate::transport::connection_attempt_remaining()
+                .is_some_and(|remaining| remaining.is_zero())
+        {
+            return ClaimReservation::Rejected("connection attempt cancelled or expired".into());
+        }
         // A provisional admission may abort and restore the exact retired
         // predecessor. Let it use the bounded wait below before deciding
         // whether this retry lost its publication authority.
@@ -130,7 +136,12 @@ pub(super) fn reserve_identity_claim(
                 // publish or abort, then re-evaluate. Bounded to avoid wedging.
                 let (guard, timeout) = condvar.wait_timeout_or_recover(
                     map,
-                    std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                    crate::transport::connection_attempt_remaining().map_or(
+                        std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS),
+                        |remaining| {
+                            remaining.min(std::time::Duration::from_millis(CLAIM_RESERVE_WAIT_MS))
+                        },
+                    ),
                 );
                 map = guard;
                 if timeout.timed_out() {

@@ -150,7 +150,7 @@ NodeConfig {
     transport: NodeTransport, // Tcp | QuicMesh
     key: string,           // path to the stable credential
     peers: Vec<string>,    // pinned peer credentials, slot = position
-    seeds: Vec<string>     // addresses dialled once at start
+    seeds: Vec<string>     // addresses discovered and rejoined while the node lives
 }
 ```
 
@@ -160,11 +160,20 @@ NodeConfig {
 
 No field is inert. `Node.start` loads or creates the stable credential named by
 `key` for the transport named by `transport`, pins every `peers` entry to the
-route slot that is its one-based position in that vector, dials every `seeds`
-entry once while skipping its own `bind` address. Both transports authenticate
-pinned peers. `NodeError.Config` reports invalid configuration, `Key` invalid
-identity or peer credentials, `Unreachable` a failed dial, and `Refused` denied
-admission or an unavailable node or transport. Re-dial with backoff is v0.8.0.
+route slot that is its one-based position in that vector, and supervises each
+configured seed while skipping its own `bind` address and duplicate targets.
+Seed discovery retries initial absence, refused authentication and later
+connection loss with capped exponential backoff and jitter until shutdown.
+`Node.start` succeeds once the local node and seed supervision are running;
+seed availability is not a startup requirement. Both transports authenticate
+pinned peers before publishing routes. Rejoin preserves identity pins and
+session fences and never replays an admitted actor request. Shutdown cancels
+retry waits and joins discovery workers. Numeric-address dial and authenticated
+admission share a bounded attempt budget; QUIC hostname resolution still uses
+the platform resolver, whose completion can delay shutdown.
+`NodeError.Config` reports invalid configuration and `Key` invalid identity or
+peer credentials. Explicit `Node.connect` still reports `Unreachable` for a
+failed dial and `Refused` for denied admission or an unavailable transport.
 
 `Node.identity_key()` returns the local public credential as lowercase
 hexadecimal for out-of-band exchange. There is no separate `Node.load_keys`,

@@ -47,6 +47,8 @@ fn reconnect_plan_threads_expected_peer_identity() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        seed_targets: PoisonSafe::new(Vec::new()),
+        seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
@@ -391,4 +393,163 @@ fn stale_reconnect_cannot_replace_newer_publication() {
             crate::routing::hew_routing_table_free(routing_table);
         }
     }
+}
+
+#[test]
+fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
+    unsafe extern "C" fn absent(implementation: *mut std::ffi::c_void, _: *const c_char) -> c_int {
+        // SAFETY: the sender remains live until the manager joins its worker.
+        let attempts = unsafe { &*implementation.cast::<std::sync::mpsc::Sender<()>>() };
+        attempts.send(()).unwrap();
+        crate::transport::HEW_CONN_INVALID
+    }
+    crate::deterministic::hew_simtime_enable(1_000);
+    let (attempts, observed) = std::sync::mpsc::channel::<()>();
+    let ops = crate::transport::HewTransportOps {
+        connect: Some(absent),
+        listen: None,
+        accept: None,
+        send: None,
+        recv: None,
+        close_conn: None,
+        destroy: None,
+    };
+    let mut transport = HewTransport {
+        ops: &raw const ops,
+        r#impl: (&raw const attempts).cast_mut().cast(),
+    };
+    // SAFETY: transport and sender outlive manager shutdown and worker join.
+    unsafe {
+        let mgr = hew_connmgr_new(
+            &raw mut transport,
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+        );
+        let seed = SeedTarget {
+            target_addr: "127.0.0.1:1".into(),
+            expected_node_id: Some(7),
+        };
+        assert!(start_seed(mgr, seed.clone()));
+        assert!(start_seed(mgr, seed));
+        assert!(!start_seed(
+            mgr,
+            SeedTarget {
+                target_addr: "127.0.0.1:1".into(),
+                expected_node_id: Some(8)
+            }
+        ));
+        observed
+            .recv_timeout(Duration::from_secs(1))
+            .expect("initial absent dial");
+        // Advance the existing virtual monotonic clock past the capped
+        // backoff. Exceed transient reconnect's retry ceiling without making
+        // the test wait for a succession of wall-clock backoffs.
+        let watchdog = std::time::Instant::now() + Duration::from_secs(5);
+        for _ in 0..8 {
+            loop {
+                crate::deterministic::hew_simtime_advance_ms(30_000);
+                if observed.recv_timeout(Duration::from_millis(100)).is_ok() {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < watchdog,
+                    "seed stopped retrying"
+                );
+            }
+        }
+        assert_eq!((*mgr).reconnect_workers.access(|workers| workers.len()), 1);
+        hew_connmgr_free(mgr);
+        // An attempt may have completed immediately before stop, but no
+        // sender remains alive after the registered supervisor is joined.
+        while observed.try_recv().is_ok() {}
+    }
+    crate::deterministic::hew_simtime_disable();
+}
+
+#[test]
+fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
+    // SAFETY: manager is retained until the end of the test; no worker is spawned.
+    unsafe {
+        let mut transport = HewTransport {
+            ops: std::ptr::null(),
+            r#impl: std::ptr::null_mut(),
+        };
+        let mgr = hew_connmgr_new(
+            &raw mut transport,
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            1,
+        );
+        let manager = &*mgr;
+        let identity = test_node_identity(7);
+        let old = ReconnectOwner {
+            node_id: identity,
+            session_incarnation: 1,
+            publication_token: 40,
+        };
+        manager.claims.0.lock_or_recover().insert(
+            identity,
+            crate::peer_binding::LiveClaim {
+                credential: None,
+                route_slot: 7,
+                session_incarnation: 2,
+                conn_id: 8,
+                publication_token: 42,
+                state: ClaimState::Published,
+            },
+        );
+        assert!(super::super::reconnect::seed_predecessor(manager, &old).is_none());
+        manager
+            .claims
+            .0
+            .lock_or_recover()
+            .get_mut(&identity)
+            .unwrap()
+            .state = ClaimState::Retired;
+        let next = super::super::reconnect::seed_predecessor(manager, &old).unwrap();
+        assert_eq!(next.session_incarnation, 2);
+        assert_eq!(next.publication_token, 42);
+        manager
+            .seed_identities
+            .access(|identities| identities.push(identity));
+        manager.reconnect_enabled.store(true, Ordering::Release);
+        let mut actor = test_actor(8);
+        actor.peer_identity = Some(identity);
+        actor.reconnect = Some(ReconnectSettings {
+            target_addr: "other-address".into(),
+            max_retries: 5,
+            expected_node_id: None,
+        });
+        manager
+            .connections
+            .access(|connections| connections.push(actor));
+        assert!(reconnect_plan(manager, 8).is_none());
+        hew_connmgr_free(mgr);
+    }
+}
+
+#[test]
+fn connection_attempt_budget_uses_simulated_time_and_nested_scope_restores_it() {
+    use crate::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
+    use crate::transport::{connection_attempt_remaining, with_connection_attempt_deadline};
+    hew_simtime_enable(1_000);
+    assert_eq!(connection_attempt_remaining(), None);
+    with_connection_attempt_deadline(|| {
+        assert_eq!(connection_attempt_remaining(), Some(Duration::from_secs(2)));
+        hew_simtime_advance_ms(1_999);
+        with_connection_attempt_deadline(|| {
+            assert_eq!(
+                connection_attempt_remaining(),
+                Some(Duration::from_millis(1))
+            );
+            hew_simtime_advance_ms(1);
+            assert_eq!(connection_attempt_remaining(), Some(Duration::ZERO));
+        });
+        assert_eq!(connection_attempt_remaining(), Some(Duration::ZERO));
+    });
+    assert_eq!(connection_attempt_remaining(), None);
+    hew_simtime_disable();
 }

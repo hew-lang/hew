@@ -241,6 +241,8 @@ fn snapshot_connections_json_emits_expected_array() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        seed_targets: PoisonSafe::new(Vec::new()),
+        seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),

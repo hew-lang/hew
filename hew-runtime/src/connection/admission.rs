@@ -91,14 +91,26 @@ pub unsafe extern "C" fn hew_connmgr_add(mgr: *mut HewConnMgr, conn_id: c_int) -
     unsafe { add_connection(mgr, conn_id, None) }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "connection event loop handles all states"
-)]
 pub(super) unsafe fn add_connection(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
     predecessor: Option<&ReconnectOwner>,
+) -> c_int {
+    // SAFETY: the caller provides a live manager and owned connection.
+    unsafe { add_connection_recording_owner(mgr, conn_id, predecessor, &mut None) }
+}
+
+/// Return the exact admitted publication even if its reader retires before
+/// admission returns. Looking up a recycled transport id afterwards is unsound.
+#[expect(
+    clippy::too_many_lines,
+    reason = "authenticated admission is one transaction"
+)]
+pub(super) unsafe fn add_connection_recording_owner(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    predecessor: Option<&ReconnectOwner>,
+    admitted_owner: &mut Option<ReconnectOwner>,
 ) -> c_int {
     if mgr.is_null() {
         // Cannot close conn_id: no transport pointer available.  This is API
@@ -410,6 +422,11 @@ pub(super) unsafe fn add_connection(
         return -1;
     }
 
+    *admitted_owner = Some(ReconnectOwner {
+        node_id: peer_hs.node_id,
+        session_incarnation: peer_hs.session_incarnation,
+        publication_token,
+    });
     0
 }
 

@@ -711,7 +711,14 @@ impl QuicMeshConn {
         // full QUIC idle timeout (30s) on every accept slot.
         let (send, recv) = if self.is_initiator {
             let result = rt.block_on(async {
-                tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, self.peer.conn.open_bi()).await
+                tokio::time::timeout(
+                    crate::transport::connection_attempt_remaining()
+                        .map_or(MESH_HANDSHAKE_TIMEOUT, |remaining| {
+                            remaining.min(MESH_HANDSHAKE_TIMEOUT)
+                        }),
+                    self.peer.conn.open_bi(),
+                )
+                .await
             });
             let bi = result.map_err(|_| {
                 format!(
@@ -722,7 +729,14 @@ impl QuicMeshConn {
             bi.map_err(|e| format!("control open_bi: {e}"))?
         } else {
             let result = rt.block_on(async {
-                tokio::time::timeout(MESH_HANDSHAKE_TIMEOUT, self.peer.conn.accept_bi()).await
+                tokio::time::timeout(
+                    crate::transport::connection_attempt_remaining()
+                        .map_or(MESH_HANDSHAKE_TIMEOUT, |remaining| {
+                            remaining.min(MESH_HANDSHAKE_TIMEOUT)
+                        }),
+                    self.peer.conn.accept_bi(),
+                )
+                .await
             });
             let bi = result.map_err(|_| {
                 format!(
@@ -1050,6 +1064,15 @@ fn parse_socket_addr(addr_str: &str) -> Result<std::net::SocketAddr, String> {
 // could only ever trust its own loopback SPKI, which broke cross-process
 // peers (see module docs).
 
+async fn connection_attempt<T>(future: impl std::future::Future<Output = T>) -> Result<T, String> {
+    match crate::transport::connection_attempt_remaining() {
+        Some(remaining) => tokio::time::timeout(remaining, future)
+            .await
+            .map_err(|_| "connection attempt deadline".to_owned()),
+        None => Ok(future.await),
+    }
+}
+
 fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
     if data.len() > MAX_FRAME_SIZE {
         set_last_error(
@@ -1060,11 +1083,13 @@ fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
     let frame_len = u32::try_from(data.len()).unwrap_or(u32::MAX);
     let header = frame_len.to_le_bytes();
 
-    let result = rt.block_on(async {
-        send.write_all(&header).await?;
-        send.write_all(data).await?;
-        Ok::<_, quinn::WriteError>(())
-    });
+    let result = rt
+        .block_on(connection_attempt(async {
+            send.write_all(&header).await?;
+            send.write_all(data).await?;
+            Ok::<_, quinn::WriteError>(())
+        }))
+        .and_then(|result| result.map_err(|error| error.to_string()));
 
     match result {
         Ok(()) => c_int::try_from(data.len()).unwrap_or(-1),
@@ -1076,7 +1101,7 @@ fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
 }
 
 fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_int {
-    let result: Result<c_int, (String, bool)> = rt.block_on(async {
+    let result: Result<c_int, (String, bool)> = rt.block_on(connection_attempt(async {
         let mut header = [0u8; 4];
         recv.read_exact(&mut header)
             .await
@@ -1114,7 +1139,7 @@ fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_in
             .map_err(|e| (format!("payload: {e}"), false))?;
 
         Ok(c_int::try_from(frame_len).unwrap_or(-1))
-    });
+    })).map_err(|error| (error, false)).and_then(std::convert::identity);
 
     match result {
         Ok(n) => n,
@@ -1208,7 +1233,14 @@ unsafe extern "C" fn quic_mesh_connect(impl_ptr: *mut c_void, address: *const c_
         }
     };
 
-    let result = qmt.rt.block_on(async { mesh.connect(addr).await });
+    let result = qmt.rt.block_on(connection_attempt(mesh.connect(addr)));
+    let result = match result {
+        Ok(result) => result,
+        Err(error) => {
+            set_last_error(error);
+            return HEW_CONN_INVALID;
+        }
+    };
     match result {
         Ok(peer) => qmt.store_conn(QuicMeshConn::new(peer, true, &qmt.rt)),
         Err(e) => {

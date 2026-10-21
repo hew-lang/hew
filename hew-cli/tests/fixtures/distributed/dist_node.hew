@@ -690,6 +690,11 @@ actor KeyValue {
             // partition probe is the only path that can resolve the pending ask
             // early. The harness SIGKILLs this process before the sleep ends.
             KvReq.Stall => {
+                if (os.env("HEW_DIST_SCENARIO") ?? "") == "persistent_seed" {
+                    store.insert("seed-held", "started");
+                    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+                    publish_atomic(kx, "seed.inflight", "1");
+                }
                 sleep(10s);
                 KvResp.Ack
             }
@@ -1502,7 +1507,18 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     } else {
         peer_key
     };
-    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: [] };
+    let active_scenario = os.env("HEW_DIST_SCENARIO") ?? "";
+    let seed_scenario = active_scenario == "persistent_seed" || active_scenario == "persistent_seed_stop";
+    if seed_scenario && my_role == "server" {
+        let _ = wait_for_file(f"{kx}/seed.start-server");
+    }
+    let seeds = if seed_scenario && my_role == "client" {
+        let port = os.env("HEW_DIST_SEED_PORT") ?? "";
+        [f"1@127.0.0.1:{port}"]
+    } else {
+        Vec.new()
+    };
+    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: seeds };
     match Node.start(config) {
         Result.Ok(_) => {}
         Result.Err(_) => {
@@ -1548,11 +1564,15 @@ fn discover_with_retry(name: string) -> Result<Location, LookupError> {
 fn run_server(scenario: string) {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
     // A replacement server comes back on the port its predecessor published.
-    let addr = if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
+    let base_addr = if (os.env("HEW_DIST_RESTARTED") ?? "") == "1" {
         f"127.0.0.1:{wait_for_server_listening(kx)}"
     } else {
         "127.0.0.1:0"
     };
+    let addr = if scenario == "persistent_seed" {
+        let port = os.env("HEW_DIST_SEED_PORT") ?? "";
+        f"127.0.0.1:{port}"
+    } else { base_addr };
     start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue { store: s };
@@ -2943,12 +2963,59 @@ fn scenario_stale_incarnation_restart(old: KeyValue, kx: string, port: string) -
     }
 }
 
+fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
+    assert(old.handle(KvReq.Put(KvPut { key: "seed-first", val: "authenticated" })).expect("seed call") == KvResp.Ack);
+    match old.handle(KvReq.GetKey("seed-first")) {
+        .Ok(KvResp.Value(value)) => assert(value == "authenticated"),
+        _ => panic("initial seed call"),
+    }
+    let old_location = discover_with_retry("kv").expect("seed location");
+    scope {
+        let interrupted = fork old.handle(KvReq.Stall);
+        let _ = wait_for_file(f"{kx}/seed.inflight");
+        println("READY_SEED_RESTART");
+        match await interrupted {
+            .Err(ActorError.ConnectionDropped) => {}
+            _ => panic("in-flight seed request must fail once"),
+        }
+    };
+    let _ = wait_for_file(f"{kx}/server.restarted");
+    let fresh_peer = fixture_peer();
+    let fresh = fresh_peer.receive_service<KeyValue>().expect("fresh seed grant");
+    let _wire = fresh_peer.receive_service<WireProbe>().expect("fresh wire grant");
+    let _identity = fresh_peer.receive_service<IdentityProbe>().expect("fresh identity grant");
+    let fresh_location = discover_with_retry("kv").expect("fresh seed location");
+    assert(fresh_location.incarnation() > old_location.incarnation());
+    match fresh.handle(KvReq.GetKey("seed-held")) {
+        .Ok(KvResp.Value(value)) => assert(value == ""),
+        _ => panic("interrupted request replayed on restart"),
+    }
+    assert(fresh.handle(KvReq.Put(KvPut { key: "colour", val: "green" })).expect("fresh seed call") == KvResp.Ack);
+    match fresh.handle(KvReq.GetKey("colour")) {
+        .Ok(KvResp.Value(value)) => assert(value == "green"),
+        _ => panic("rejoined seed call"),
+    }
+    println("PASS persistent_seed absent-start authenticated-call higher-session no-replay fresh-call");
+    0
+}
+
 fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
     start_pinned(kx, "client", "server", "127.0.0.1:0");
+    if scenario == "persistent_seed" || scenario == "persistent_seed_stop" {
+        println("READY_SEED_STARTED");
+        if scenario == "persistent_seed_stop" {
+            let _ = wait_for_file(f"{kx}/seed.stop-now");
+            Node.shutdown();
+            println("PASS persistent_seed_stop active-attempt-joined");
+            return 0;
+        }
+    }
     let bound_port = wait_for_server_listening(kx);
     let port = os.env("HEW_DIST_PROXY_PORT") ?? bound_port;
-    let _ = Node.connect(f"1@127.0.0.1:{port}");
+    if scenario != "persistent_seed" {
+        let _ = Node.connect(f"1@127.0.0.1:{port}");
+    }
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
     } else if scenario == "quarantine_rejoin" {
@@ -2962,7 +3029,9 @@ fn run_client(scenario: string) -> i64 {
         let kv = peer.receive_service<KeyValue>().expect("kv grant");
         let wp = peer.receive_service<WireProbe>().expect("wire grant");
         let identity = peer.receive_service<IdentityProbe>().expect("identity grant");
-        if scenario == "deadline_budget" {
+        if scenario == "persistent_seed" {
+            scenario_persistent_seed(kv, kx)
+        } else if scenario == "deadline_budget" {
             scenario_deadline_budget()
         } else if scenario == "identity_location" {
             scenario_identity_location(identity)

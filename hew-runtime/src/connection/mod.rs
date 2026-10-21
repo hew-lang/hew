@@ -60,6 +60,7 @@ mod manager;
 mod peer;
 mod reader;
 mod reconnect;
+pub(crate) use reconnect::start_seed;
 mod send;
 mod swim;
 
@@ -282,6 +283,10 @@ pub struct HewConnMgr {
     pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
+    /// Configured seed targets have one manager-lifetime supervisor each.
+    seed_targets: PoisonSafe<Vec<SeedTarget>>,
+    /// Identities supervised by configured seeds cannot also arm transient retries.
+    seed_identities: PoisonSafe<Vec<NodeId>>,
     /// Counts every spawned reader until its thread function fully returns.
     ///
     /// A reader can remove and drop its own [`ConnectionActor`] on an unexpected
@@ -496,6 +501,12 @@ impl TransportClose {
     fn waiters(&self) -> usize {
         self.waiters.load(Ordering::Acquire)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SeedTarget {
+    pub(crate) target_addr: String,
+    pub(crate) expected_node_id: Option<u16>,
 }
 
 #[derive(Clone, Debug)]

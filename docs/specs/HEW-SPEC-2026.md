@@ -7890,12 +7890,15 @@ in the type system:
   `NodeConfig.at(addr)` fills the defaults around a bind address. No field is
   inert: `Node.start` pins every `peers` entry — the slot a peer occupies is
   its one-based position in that vector, so slot `0` stays reserved for local
-  dispatch — dials every `seeds` entry once while skipping its
-  own bind address. `NodeTransport` is `Tcp | QuicMesh`; both require
+  dispatch — and supervises configured `seeds` while skipping its own bind
+  address and duplicate targets. Initial absence, refused handshakes and later
+  connection loss retry with capped exponential backoff until shutdown. Seed
+  availability is not a startup requirement. Rejoin never replays actor calls.
+  `NodeTransport` is `Tcp | QuicMesh`; both require
   authenticated, pinned peers. There is no trust-mode field. `NodeError.Config`
   reports invalid configuration, `Key` an invalid identity or peer key,
-  `Unreachable` a failed dial, and `Refused` denied admission or an unavailable
-  node or transport.
+  `Unreachable` a failed explicit dial, and `Refused` denied admission or an
+  unavailable node or transport.
 - `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` do not exist.
   Each carried one fact that is a field of `NodeConfig`, and a setup sequence
   whose steps can be reordered or skipped is a second configuration authority.

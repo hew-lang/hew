@@ -26,6 +26,63 @@ use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use crate::reactor::{IoObject, Slot};
 use crate::set_last_error;
 
+/// One budget covers a synchronous dial and its authenticated admission. The
+/// scoped context crosses the C transport vtable without changing its ABI;
+/// newly spawned connection readers do not inherit it.
+pub(crate) const CONNECTION_ATTEMPT_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(2);
+
+thread_local! {
+    static CONNECTION_ATTEMPT_DEADLINE: std::cell::Cell<crate::request_deadline::RequestDeadline> = const {
+        std::cell::Cell::new(crate::request_deadline::RequestDeadline::from_raw(-1))
+    };
+}
+
+pub(crate) fn with_connection_attempt_deadline<T>(action: impl FnOnce() -> T) -> T {
+    use crate::request_deadline::RequestDeadline;
+    struct Restore(RequestDeadline);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CONNECTION_ATTEMPT_DEADLINE.set(self.0);
+        }
+    }
+    let previous = CONNECTION_ATTEMPT_DEADLINE.get();
+    let _restore = Restore(previous);
+    let budget_ns = i64::try_from(CONNECTION_ATTEMPT_TIMEOUT.as_nanos()).unwrap_or(i64::MAX);
+    CONNECTION_ATTEMPT_DEADLINE.set(
+        RequestDeadline::after(budget_ns)
+            .earlier(RequestDeadline::current())
+            .earlier(previous),
+    );
+    action()
+}
+
+pub(crate) fn connection_attempt_remaining() -> Option<std::time::Duration> {
+    CONNECTION_ATTEMPT_DEADLINE
+        .get()
+        .remaining()
+        .map(|remaining| std::time::Duration::from_nanos(u64::try_from(remaining).unwrap_or(0)))
+}
+
+/// Bound each framed syscall by the remaining absolute attempt budget, so a
+/// peer sending one byte at a time cannot extend authentication indefinitely.
+fn attempt_socket_timeout(sock: &Socket, read: bool) -> std::io::Result<()> {
+    let Some(remaining) = connection_attempt_remaining() else {
+        return Ok(());
+    };
+    if remaining.is_zero() {
+        return Err(std::io::Error::new(
+            ErrorKind::TimedOut,
+            "connection attempt deadline",
+        ));
+    }
+    if read {
+        sock.set_read_timeout(Some(remaining))
+    } else {
+        sock.set_write_timeout(Some(remaining))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -370,6 +427,10 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     // instead of killing the process, and we fail closed with `-1`.
     let mut written = 0usize;
     while written < 4 {
+        if let Err(error) = attempt_socket_timeout(sock, false) {
+            set_last_error(format!("transport authentication: {error}"));
+            return -1;
+        }
         match sock.send_with_flags(&header[written..], FRAMED_SEND_FLAGS) {
             Ok(0) => {
                 set_last_error("transport framed_send: peer closed while writing header");
@@ -385,6 +446,10 @@ fn framed_send(sock: &Socket, data: &[u8]) -> c_int {
     // Write payload.
     written = 0;
     while written < data.len() {
+        if let Err(error) = attempt_socket_timeout(sock, false) {
+            set_last_error(format!("transport authentication: {error}"));
+            return -1;
+        }
         match sock.send_with_flags(&data[written..], FRAMED_SEND_FLAGS) {
             Ok(0) => {
                 set_last_error("transport framed_send: peer closed while writing payload");
@@ -407,6 +472,10 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
     let mut header = [0u8; 4];
     let mut read_count = 0usize;
     while read_count < 4 {
+        if let Err(error) = attempt_socket_timeout(sock, true) {
+            set_last_error(format!("transport authentication: {error}"));
+            return -1;
+        }
         match (&*sock).read(&mut header[read_count..]) {
             Ok(0) => {
                 set_last_error("transport framed_recv: peer closed while reading header");
@@ -438,6 +507,10 @@ fn framed_recv(sock: &Socket, buf: &mut [u8]) -> c_int {
     // Read payload.
     read_count = 0;
     while read_count < frame_len {
+        if let Err(error) = attempt_socket_timeout(sock, true) {
+            set_last_error(format!("transport authentication: {error}"));
+            return -1;
+        }
         match (&*sock).read(&mut buf[read_count..frame_len]) {
             Ok(0) => {
                 set_last_error("transport framed_recv: peer closed while reading payload");
@@ -501,7 +574,12 @@ unsafe extern "C" fn tcp_connect(impl_ptr: *mut c_void, address: *const c_char) 
     let Ok(socket) = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)) else {
         return HEW_CONN_INVALID;
     };
-    if socket.connect(&SockAddr::from(sock_addr)).is_err() {
+    let connected = match connection_attempt_remaining() {
+        Some(remaining) if remaining.is_zero() => return HEW_CONN_INVALID,
+        Some(remaining) => socket.connect_timeout(&SockAddr::from(sock_addr), remaining),
+        None => socket.connect(&SockAddr::from(sock_addr)),
+    };
+    if connected.is_err() {
         return HEW_CONN_INVALID;
     }
     let _ = socket.set_tcp_nodelay(true);
@@ -571,7 +649,12 @@ unsafe extern "C" fn tcp_send(
     };
     // SAFETY: data is valid for `len` bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts(data.cast::<u8>(), len) };
-    framed_send(&sock, slice)
+    let previous = sock.write_timeout().ok().flatten();
+    let result = framed_send(&sock, slice);
+    if connection_attempt_remaining().is_some() {
+        let _ = sock.set_write_timeout(previous);
+    }
+    result
 }
 
 unsafe extern "C" fn tcp_recv(
@@ -589,7 +672,12 @@ unsafe extern "C" fn tcp_recv(
     };
     // SAFETY: buf is valid for buf_size bytes per caller contract.
     let slice = unsafe { std::slice::from_raw_parts_mut(buf.cast::<u8>(), buf_size) };
-    framed_recv(&sock, slice)
+    let previous = sock.read_timeout().ok().flatten();
+    let result = framed_recv(&sock, slice);
+    if connection_attempt_remaining().is_some() {
+        let _ = sock.set_read_timeout(previous);
+    }
+    result
 }
 
 unsafe extern "C" fn tcp_close_conn(impl_ptr: *mut c_void, conn: c_int) {

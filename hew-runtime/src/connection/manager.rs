@@ -108,6 +108,8 @@ pub(crate) unsafe fn connmgr_new(
         inbound_asks: Arc::default(),
         service_exports: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        seed_targets: PoisonSafe::new(Vec::new()),
+        seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
         next_publication_token: AtomicU64::new(1),
         gossip_in: AtomicU64::new(0),
@@ -382,7 +384,13 @@ pub unsafe extern "C" fn hew_connmgr_configure_reconnect(
             ));
             return -1;
         };
-        if enabled == 0 {
+        if enabled == 0
+            || mgr.seed_targets.access(|seeds| {
+                seeds
+                    .iter()
+                    .any(|seed| Some(&seed.target_addr) == target_owned.as_ref())
+            })
+        {
             conn.reconnect = None;
             return 0;
         }

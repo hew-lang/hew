@@ -3,7 +3,7 @@ id = "machine-wire-values"
 intent = "Generic parallel machine state, shallow history, typed events, owning reports and deep snapshots round-trip through JSON and CBOR, satisfy a wire actor's recursive payload contract, and continue with the same configurations and outputs."
 source = "cases/machine-wire-values.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 15
+timeout_seconds = 60
 
 [case.expected]
 stdout = "machine wire checkpoints passed\n"

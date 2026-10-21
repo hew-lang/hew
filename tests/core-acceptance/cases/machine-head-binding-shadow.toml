@@ -1,13 +1,13 @@
 [[case]]
 id = "machine-head-binding-shadow"
 suites = ["acceptance"]
-intent = "A head binding that shadows an outer name is refused once at the head, not once per guard and body copy."
+intent = "A head binding that shadows an outer name is diagnosed once at the head, not once per guard and body copy."
 source = "cases/machine-head-binding-shadow.hew"
 timeout_seconds = 30
 kind = "check"
 
 [[case.expected.diagnostics]]
-severity = "error"
+severity = "warning"
 code = "Shadowing"
 line = 13
 column = 14

@@ -179,17 +179,15 @@ fn add_recipe_callback<'ctx>(
 }
 
 fn engine<'ctx>(llvm: &Module<'ctx>, optimized: bool) -> ExecutionEngine<'ctx> {
-    if optimized {
-        // The test calls these otherwise-private callbacks by address, so retain
-        // their entry points while applying the production optimization pipeline.
-        for function in llvm.get_functions() {
-            if function
-                .get_name()
-                .to_bytes()
-                .starts_with(b"__hew_value_callback_")
-            {
-                function.set_linkage(Linkage::External);
-            }
+    // The test calls these otherwise-private callbacks by address, so retain
+    // their entry points while applying the production optimization pipeline.
+    for function in llvm.get_functions() {
+        if function
+            .get_name()
+            .to_bytes()
+            .starts_with(b"__hew_value_callback_")
+        {
+            function.set_linkage(Linkage::External);
         }
     }
     let level = if optimized {

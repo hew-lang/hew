@@ -75,6 +75,47 @@ impl Checker {
         }
     }
 
+    /// Credit module imports that contribute public impls for external public
+    /// types to the module surface. A façade can expose an associated method
+    /// without calling it locally, so call-site tracking alone would report
+    /// that provider import as unused.
+    pub(in crate::check) fn credit_public_impl_provider_imports(&mut self) {
+        let importers: std::collections::HashSet<_> = self
+            .reportable_imports
+            .iter()
+            .filter(|import| import.source_module.is_some())
+            .map(|import| import.site.file)
+            .collect();
+        if importers.is_empty() {
+            return;
+        }
+
+        let providers: std::collections::HashSet<_> = self
+            .fn_sigs
+            .iter()
+            .filter_map(|(declaration, sig)| {
+                let origin = sig.impl_method.as_ref()?;
+                let receiver = origin.receiver?;
+                if !self.defs.visibility(*declaration).is_pub()
+                    || !self.defs.visibility(receiver).is_pub()
+                {
+                    return None;
+                }
+                let provider = self.defs.module(*declaration)?;
+                let receiver_module = self.defs.module(receiver)?;
+                (self.scopes.namespace_of(provider) != self.scopes.namespace_of(receiver_module))
+                    .then_some(provider)
+            })
+            .collect();
+
+        for importer in importers {
+            for provider in &providers {
+                self.scopes
+                    .mark_import_provider_used(importer, *provider, &self.defs);
+            }
+        }
+    }
+
     /// Credit the binding at the written head of a dotted expression. The
     /// checker calls this only after selecting that expression as a type or
     /// constructor path, so lexical value shadowing has already been ruled out.

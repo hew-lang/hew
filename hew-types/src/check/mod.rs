@@ -3510,6 +3510,8 @@ impl Checker {
             }
         }
 
+        self.credit_public_impl_provider_imports();
+
         // Emit unused import warnings. A REPL fragment imports modules it will
         // reference on later inputs, so suppress this lint for eval fragments.
         if !self.repl_fragment {

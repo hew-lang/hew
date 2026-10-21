@@ -1351,10 +1351,13 @@ impl Checker {
         Some(applied_sig.return_type)
     }
 
-    /// Refuse compiler-internal memory operations before lowering source calls.
+    /// Credit a selected impl provider and refuse compiler-internal memory operations.
     pub(super) fn check_source_call_target(&mut self, span: &Span, target: &CallTarget) {
         use crate::stdlib_authority::Intrinsic;
 
+        if let CallTarget::ImplMethod(declaration) = target {
+            self.note_impl_import_use(*declaration);
+        }
         let intrinsic = match target {
             CallTarget::Builtin { endpoint } => Intrinsic::from_key(endpoint),
             CallTarget::User(declaration) => self

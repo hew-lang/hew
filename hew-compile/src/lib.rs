@@ -4928,6 +4928,56 @@ mod tests {
         );
     }
 
+    #[test]
+    fn imported_external_impl_credits_direct_and_umbrella_import_routes() {
+        let dir = tempfile::tempdir().unwrap();
+        write_source(
+            dir.path(),
+            "methods.hew",
+            "impl NodeConfig { pub fn answer() -> i64 { 42 } }",
+        );
+        write_source(dir.path(), "umbrella.hew", "import methods;");
+        write_source(dir.path(), "idle.hew", "pub fn unrelated() -> i64 { 0 }");
+        for import in [
+            "import methods;",
+            "import umbrella;",
+            "import umbrella as tools;",
+        ] {
+            let source =
+                format!("{import}\nimport idle;\nfn main() -> i64 {{ NodeConfig.answer() }}");
+            let input = write_source(dir.path(), "main.hew", &source);
+            let state = run_document_frontend(&input, &FrontendOptions::default());
+            assert!(state.stopped.is_none(), "{:?}", state.diagnostics);
+            let output = state
+                .typecheck_result
+                .as_ref()
+                .and_then(|result| result.tco.as_ref())
+                .unwrap();
+            let unused: Vec<_> = output
+                .warnings
+                .iter()
+                .filter(|warning| warning.kind == hew_types::error::TypeErrorKind::UnusedImport)
+                .map(|warning| warning.message.as_str())
+                .collect();
+            assert_eq!(
+                unused,
+                ["unused import: `idle`"],
+                "{import}: {:?}",
+                output.warnings
+            );
+        }
+        let input = write_source(
+            dir.path(),
+            "main.hew",
+            "fn main() -> i64 { NodeConfig.answer() }",
+        );
+        let missing = run_document_frontend(&input, &FrontendOptions::default());
+        assert!(
+            missing.stopped.is_some(),
+            "the supplying import is required"
+        );
+    }
+
     /// A buffer with no file behind it runs the same frontend, including the
     /// implicit `std.text.regex` import a regex literal needs.
     #[test]

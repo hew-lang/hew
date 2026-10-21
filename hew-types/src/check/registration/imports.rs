@@ -46,6 +46,35 @@ impl Checker {
         }
     }
 
+    /// Credit the module that supplied an implementation selected by identity.
+    /// Receiver-owned methods already use the receiver's lexical type binding;
+    /// only an external impl can require an otherwise unnamed module import.
+    pub(in crate::check) fn note_impl_import_use(&mut self, declaration: crate::DefId) {
+        let Some(origin) = self
+            .fn_sigs
+            .get(&declaration)
+            .and_then(|sig| sig.impl_method.as_ref())
+        else {
+            return;
+        };
+        let Some(provider) = self.defs.module(declaration) else {
+            return;
+        };
+        if origin
+            .receiver
+            .and_then(|receiver| self.defs.module(receiver))
+            .is_some_and(|receiver| {
+                self.scopes.namespace_of(receiver) == self.scopes.namespace_of(provider)
+            })
+        {
+            return;
+        }
+        if let Some(site) = self.scope_site() {
+            self.scopes
+                .mark_import_provider_used(site.file, provider, &self.defs);
+        }
+    }
+
     /// Credit the binding at the written head of a dotted expression. The
     /// checker calls this only after selecting that expression as a type or
     /// constructor path, so lexical value shadowing has already been ruled out.

@@ -359,7 +359,11 @@ impl Parser<'_> {
         clippy::too_many_lines,
         reason = "machine body parsing has one arm per section"
     )]
-    pub(crate) fn parse_machine_decl(&mut self, visibility: Visibility) -> Option<MachineDecl> {
+    pub(crate) fn parse_machine_decl(
+        &mut self,
+        visibility: Visibility,
+        attrs: &[Attribute],
+    ) -> Option<MachineDecl> {
         let name = self.expect_ident()?;
 
         // Optional generic type parameters: `machine Name<T, U> { ... }` or
@@ -497,6 +501,7 @@ impl Parser<'_> {
 
         Some(MachineDecl {
             visibility,
+            wire: Self::wire_metadata(attrs),
             name,
             body_context,
             type_params,

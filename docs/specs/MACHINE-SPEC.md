@@ -550,6 +550,40 @@ The wrapper uses ordinary Hew actors, bounded streams and resource cleanup.
 It invokes the same generated evaluator as direct `M.step`; it has no second
 transition evaluator or observer callback execution inside commit.
 
+## Wire values
+
+`#[wire]` opts a machine's values into the ordinary wire-schema rules:
+
+```hew
+#[wire]
+machine Counter<T> {
+    events { Set { value: T; } }
+    state Ready { value: T; }
+    on Set: Ready => Ready { value: event.value }
+    default { state }
+}
+```
+
+The generated state, event, output, step report, region, history, scope,
+subtree and snapshot types carry ordinary wire metadata. The standard
+`MachineDeparture`, `MachineObservedStep`, `MachineStepInfo`,
+`MachineDisposition` and `MachineStepError` carriers are wire declarations too.
+A concrete value can round-trip through the standard codecs or cross a remote
+actor boundary when all its payloads satisfy the same data rules as an ordinary
+wire record or enum. No live observer identity or subscription is serialized.
+
+A decoded machine retains its remembered shallow history. A decoded subtree
+or snapshot retains the complete saved descendant configuration and can be
+restored through the ordinary generated `restore` method. Subsequent steps
+use the same transition evaluator as a freshly constructed value.
+
+Generic parameters are schema binders; their concrete arguments determine
+encodability. `#[wire(version = 2, min_version = 1)]` propagates the version
+metadata to generated declarations. Member numbers follow ordinary wire
+numbering: record fields start at 1 and enum variants at 0. Changing source
+order can change generated member identities. Use `hew wire check` against
+the published source to check the expanded schemas before deploying a change.
+
 ## Implementation scope
 
 The native evaluator supports ordinary machines, owning value payloads,

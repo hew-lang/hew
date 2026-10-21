@@ -20,8 +20,10 @@
 //! ```
 //!
 //! `#[wire]` on a record or enum gives it a stable schema for remote actors:
-//! every field and variant carries a `@N` tag, assigned once and never
-//! reused. A required `Option<T>` always emits its key and encodes `None` as
+//! field numbers start at 1 and variant numbers at 0. Omitted numbers are
+//! assigned in declaration order, skipping explicit `@N` and reserved numbers.
+//! Preserve published numbers when evolving a schema. Generic declarations and
+//! `#[wire] machine` use the same policy; concrete payloads must be data. A required `Option<T>` always emits its key and encodes `None` as
 //! null; only `Option<T> @N optional` may omit the key for `None`. Check
 //! schema compatibility between two versions with
 //! `hew wire check <file.hew> --against <baseline.hew>`. See the `#[wire]`

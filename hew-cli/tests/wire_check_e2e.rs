@@ -548,3 +548,77 @@ fn wire_check_rejects_wire_enum_struct_variant_field_renames() {
         "{stderr}",
     );
 }
+
+#[test]
+fn wire_check_preserves_generic_parameter_identity() {
+    let baseline = "#[wire] type Pair<T, U> { first: T; second: U; } #[wire] enum Choice<T, U> { First(T); Second(U); }";
+    let renamed = "#[wire] type Pair<A, B> { first: A; second: B; } #[wire] enum Choice<A, B> { First(A); Second(B); }";
+    assert_wire_check_ok(renamed, baseline);
+    let reordered = "#[wire] type Pair<U, T> { first: T; second: U; } #[wire] enum Choice<U, T> { First(T); Second(U); }";
+    let output = run_wire_check(reordered, baseline);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("changed field type") && stderr.contains("changed payload type"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn wire_check_rejects_changed_generic_arity() {
+    let output = run_wire_check(
+        "#[wire] type Box<T, U> { value: T; }",
+        "#[wire] type Box<T> { value: T; }",
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("changed generic parameter count"));
+}
+
+#[test]
+fn wire_check_auto_enum_tags_detect_reordering() {
+    let output = run_wire_check(
+        "#[wire] enum State { Ready; Waiting; }",
+        "#[wire] enum State { Waiting; Ready; }",
+    );
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("renamed variant"));
+    assert_wire_check_ok(
+        "#[wire] enum State { Ready @1; Waiting @0; }",
+        "#[wire] enum State { Waiting @0; Ready @1; }",
+    );
+}
+
+fn generic_machine_schema(parameter: &str, states: &str) -> String {
+    format!(
+        r"#[wire] machine Switch<{parameter}> {{
+        events {{ Set {{ value: {parameter}; }} }}
+        {states}
+        on Set: Off => On {{ value: event.value }}
+        default {{ state }}
+    }}"
+    )
+}
+
+#[test]
+fn wire_check_compares_expanded_machine_schemas() {
+    let baseline = generic_machine_schema("T", "state Off; state On { value: T; }");
+    let renamed = generic_machine_schema("U", "state Off; state On { value: U; }");
+    assert_wire_check_ok(&renamed, &baseline);
+    let reordered = generic_machine_schema("T", "state On { value: T; } state Off;");
+    let output = run_wire_check(&reordered, &baseline);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("renamed variant") && stderr.contains("Switch"),
+        "{stderr}"
+    );
+    let versioned_baseline = baseline.replace("#[wire]", "#[wire(version = 1)]");
+    let raised_minimum = renamed.replace("#[wire]", "#[wire(version = 2, min_version = 2)]");
+    let output = run_wire_check(&raised_minimum, &versioned_baseline);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("min_version 2 is higher than baseline version 1"),
+        "{stderr}"
+    );
+}

@@ -524,3 +524,70 @@ fn wire_actor_codec_refusal_uses_the_first_source_site() {
         "the nested Export<Holder> result and Holder argument select one canonical source site"
     );
 }
+
+#[test]
+fn generic_wire_members_are_checked_at_concrete_codec_uses() {
+    let output = check_wire_program(
+        r#"
+        import std.encoding.cbor;
+        #[wire]
+        type Envelope<T> { value: T; maybe: Option<T> optional; }
+        #[wire]
+        enum Choice<T> { Empty; Value(T); }
+        fn main() {
+            let text: Envelope<string> = Envelope { value: "owned", maybe: .Some("present") };
+            let number: Envelope<i64> = Envelope { value: 7, maybe: .None };
+            let choice: Choice<Envelope<string>> = .Value(text);
+            let _text = cbor.encode(text);
+            let _number = cbor.encode(number);
+            let _choice = cbor.encode(choice);
+        }
+        "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    assert_eq!(codec_rewrites(&output).len(), 3);
+}
+
+#[test]
+fn generic_wire_payloads_keep_concrete_encoding_refusals() {
+    for body in [
+        r"actor Worker { receive fn ping() {} }
+        fn main() {
+            let worker = spawn Worker;
+            let value: Envelope<Worker> = Envelope { value: worker };
+            let _encoded = cbor.encode(value);
+            stop(worker);
+        }",
+        r"fn main() {
+            let value: Envelope<Option<Option<i64>>> = Envelope { value: .Some(.Some(7)) };
+            let _encoded = cbor.encode(value);
+        }",
+        r"fn item() -> i64 { 7 }
+        fn main() {
+            let value: Envelope<fn() -> i64> = Envelope { value: item };
+            let _encoded = cbor.encode(value);
+        }",
+        r"#[resource] type Handle { id: i64; }
+        impl Handle { fn close(consume self) {} }
+        fn main() {
+            let value: Envelope<Handle> = Envelope { value: Handle { id: 7 } };
+            let _encoded = cbor.encode(value);
+        }",
+    ] {
+        let output = check_wire_program(&format!(
+            "import std.encoding.cbor; #[wire] type Envelope<T> {{ value: T; }} {body}"
+        ));
+        assert!(
+            output.errors.iter().any(|error| {
+                error.kind == TypeErrorKind::BoundsNotSatisfied
+                    && error.message.contains("Serializable")
+                    && error
+                        .suggestions
+                        .iter()
+                        .any(|help| help.starts_with("E_NOT_SERIALIZABLE"))
+            }),
+            "a concrete handle, nested option, callable or resource must stay outside codec admission: {:#?}",
+            output.errors
+        );
+    }
+}

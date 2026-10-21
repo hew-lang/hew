@@ -155,9 +155,15 @@ impl SourceSpanOrigins {
     clippy::too_many_lines,
     reason = "normalize physical modules while preserving source and expansion provenance"
 )]
-pub(super) fn normalize(
-    program: &Program,
-) -> Result<Option<Arc<NormalizedProgram>>, Vec<TypeError>> {
+/// Expand machine declarations through the same checked hierarchy used by compilation.
+///
+/// # Errors
+/// Returns source diagnostics for invalid machine declarations or transition relations.
+///
+/// # Panics
+/// Panics if cloned modules or their per-item source provenance violate the
+/// normalization invariants.
+pub fn normalize(program: &Program) -> Result<Option<Arc<NormalizedProgram>>, Vec<TypeError>> {
     let contains_machine = program
         .items
         .iter()
@@ -1118,6 +1124,13 @@ impl Builder {
             generated.push(item);
             spans.push(span);
         }
+        if machine.wire.is_some() {
+            for item in &mut generated {
+                if let Item::TypeDecl(declaration) = item {
+                    self.wire_declaration(machine, declaration)?;
+                }
+            }
+        }
         for span in &spans {
             self.source_spans.insert(span.clone(), self.origin.clone());
         }
@@ -1184,6 +1197,7 @@ impl Builder {
                         name: *name,
                         implicit_fields: Vec::new(),
                         tag: None,
+                        tag_explicit: false,
                         doc_comment: None,
                         span: self.span(),
                         kind: if fields.is_empty() {
@@ -1202,6 +1216,80 @@ impl Builder {
             is_opaque: false,
             lang_item: None,
         }
+    }
+
+    /// Generated records and enums receive ordinary wire metadata. Assignment
+    /// uses the parser's shared policy; every codec consumes the resulting
+    /// declaration through the existing serial-layout and data-plan path.
+    fn wire_declaration(
+        &self,
+        machine: &MachineDecl,
+        declaration: &mut TypeDecl,
+    ) -> Result<(), TypeError> {
+        use hew_parser::ast::{WireFieldMeta, WireMetadata};
+        let source = machine.wire.as_ref().expect("wire machine");
+        let mut wire = WireMetadata {
+            field_meta: Vec::new(),
+            reserved: Vec::new(),
+            version: source.version,
+            min_version: source.min_version,
+        };
+        let fields = declaration
+            .body
+            .iter()
+            .filter_map(|member| {
+                if let TypeBodyItem::Field { name, .. } = member {
+                    Some(*name)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let tags = hew_parser::wire::assign_wire_numbers(&vec![None; fields.len()], &[], 1)
+            .map_err(|error| self.error(format!("cannot assign wire field tags: {error:?}")))?;
+        wire.field_meta = fields
+            .into_iter()
+            .zip(tags)
+            .map(|(name, field_number)| WireFieldMeta {
+                field_name: name.to_string(),
+                field_number,
+                field_number_explicit: false,
+                is_optional: false,
+                is_deprecated: false,
+                is_repeated: false,
+                // The generated report fields belong to the initial schema.
+                since: source.version.map(|version| version.min(1)),
+            })
+            .collect();
+        let explicit = declaration
+            .body
+            .iter()
+            .filter_map(|member| {
+                if let TypeBodyItem::Variant(variant) = member {
+                    Some(variant.tag)
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let tags = hew_parser::wire::assign_wire_numbers(&explicit, &[], 0)
+            .map_err(|error| self.error(format!("cannot assign wire variant tags: {error:?}")))?;
+        for (variant, tag) in declaration
+            .body
+            .iter_mut()
+            .filter_map(|member| {
+                if let TypeBodyItem::Variant(variant) = member {
+                    Some(variant)
+                } else {
+                    None
+                }
+            })
+            .zip(tags)
+        {
+            variant.tag = Some(tag);
+        }
+        declaration.wire = Some(wire);
+        Ok(())
     }
 
     fn validate_relation(

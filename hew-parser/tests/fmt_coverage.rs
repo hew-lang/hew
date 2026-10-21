@@ -1914,6 +1914,9 @@ fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
 fn fmt_wire_declarations_roundtrip() {
     // Canonical wire type form (attribute-based).
     exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1;\n}\n");
+    exact_roundtrip(
+        "#[wire]\ntype Message {\n    id: i32 @1;\n    reserved @2;\n    body: string;\n    labels: Vec<string> repeated;\n}\n",
+    );
 }
 
 #[test]
@@ -1923,6 +1926,9 @@ fn fmt_wire_attr_enum_roundtrip() {
     // variant payloads while preserving the `#[wire]` attribute.
     exact_roundtrip(
         "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
+    );
+    exact_roundtrip(
+        "#[wire]\nenum Command {\n    Start;\n    Fixed @0;\n    reserved @2;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
     );
 }
 

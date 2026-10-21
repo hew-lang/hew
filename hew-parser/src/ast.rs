@@ -1518,7 +1518,7 @@ pub enum TypeDeclKind {
     Enum,
 }
 
-/// Wire protocol metadata attached to a `TypeDecl` via `#[wire]`.
+/// Wire protocol metadata attached to a type or machine via `#[wire]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireMetadata {
     pub field_meta: Vec<WireFieldMeta>,
@@ -1543,9 +1543,16 @@ pub struct WireReserved {
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "wire field modifiers and authored spelling are independent flags"
+)]
 pub struct WireFieldMeta {
     pub field_name: String,
     pub field_number: u32,
+    /// Whether the source explicitly wrote this field number.
+    #[serde(default)]
+    pub field_number_explicit: bool,
     pub is_optional: bool,
     pub is_deprecated: bool,
     pub is_repeated: bool,
@@ -1583,6 +1590,9 @@ pub struct VariantDecl {
     /// The stable `@N` tag of a `#[wire]` enum variant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<u32>,
+    /// Whether the source explicitly wrote this tag, rather than inferring it.
+    #[serde(default)]
+    pub tag_explicit: bool,
     #[serde(default)]
     pub doc_comment: Option<String>,
     /// Source byte range of this variant (after any doc comments), used by
@@ -2029,6 +2039,9 @@ pub enum RestartPolicy {
 pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
+    /// Schema metadata inherited by the machine's generated wire declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<WireMetadata>,
     pub name: Ident,
     /// Context of the implicit `state` and `event` bindings inside the body.
     pub body_context: SyntaxContext,

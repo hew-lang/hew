@@ -1,0 +1,11 @@
+[[case]]
+id = "wire-generic-values"
+intent = "Generic wire records and enums retain owning, optional, vector and nested payloads through JSON and CBOR, with automatic enum tags skipping explicit and reserved numbers."
+source = "cases/wire-generic-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "generic wire values passed\n"
+stderr = ""
+exit = 0

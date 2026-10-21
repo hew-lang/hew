@@ -10,6 +10,7 @@ pub mod macro_syntax;
 pub mod module;
 pub mod parser;
 pub mod tail_call;
+pub mod wire;
 
 pub use loop_analysis::{
     block_leaves_enclosing_loop, expr_leaves_enclosing_loop, loop_body_has_break,

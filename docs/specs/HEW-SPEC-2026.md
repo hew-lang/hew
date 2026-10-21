@@ -7125,6 +7125,26 @@ A `#[wire] type` / `#[wire] enum`:
 - records field presence independently from the field value's null encoding
 - supports forward/backward compatibility checks
 
+Record fields receive numbers starting at 1; enum variants start at 0.
+Explicit `@N` numbers are preserved. Missing numbers are assigned in
+source order, skipping all explicit and `reserved` numbers, including later
+explicit declarations. Duplicate explicit numbers and reuse of reserved
+numbers are errors. Reordering automatically numbered members can change
+wire identities; explicitly numbered members retain them.
+
+Generic declarations are wire schema families. Concrete instantiations must
+satisfy ordinary data admission when encoded, decoded or used across a remote
+actor boundary. Parameter names are local binders: compatibility compares
+parameter positions, preserving alpha-renaming but rejecting changes of
+arity or rebinding a member to a different parameter. Nested `Option` values
+remain ambiguous under null encoding and are rejected after substitution.
+
+`#[wire] machine M` applies this policy to every generated ordinary declaration:
+state configurations, events, outputs, reports, regions, remembered history,
+scopes, subtrees and snapshots. `version` and `min_version` metadata propagate
+to those declarations. `hew wire check` expands machines and compares the
+resulting schemas; there is no separate machine codec or numbering policy.
+
 ### 7.2 Compatibility rules (normative)
 
 Hew adopts Protobuf-style invariants:
@@ -8558,7 +8578,7 @@ refuses the name it does not know rather than dropping it.
 | `#[resource]` | type declaration | Affine handle: drop glue closes it at scope exit (§3.7.8). |
 | `#[linear]` | type declaration | Linear value: must be consumed by a `consume self` method before scope exit (§3.7.8). Not combinable with `#[resource]`. |
 | `#[opaque]` | type declaration | Opaque handle whose internal representation is not accessible (§3.10.7). |
-| `#[wire]`, `#[wire(...)]` | type declaration, enum, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
+| `#[wire]`, `#[wire(...)]` | type declaration, enum, machine, field | Wire contract and per-field tag/naming metadata (§7.1, §7.3). |
 | `#[serial(...)]` | type declaration, field | Text-key case (`case = ".."`) on a type; text key (`key = ".."`) or `skip` on a field (§7.3.2). On a `#[test]` fn, runs it alone. |
 | `#[deprecated]` | type declaration | Accepted; no phase consumes it today. Wire field deprecation is the `deprecated` field modifier of §7.2, not this attribute. |
 | `#[test]` | free function | Test entry point (the language guide's Testing chapter). Exempt from the dead-code lint. |

@@ -366,6 +366,47 @@ fn comments_inside_wire_declarations() {
 }
 
 #[test]
+fn omitted_wire_tags_preserve_comments_and_reserved_clauses() {
+    assert_faithful(
+        r"#[wire]
+type Packet<T> where T: Serializable {
+    // inferred after fixed and reserved numbers
+    value: T; // payload
+    reserved @2;
+    fixed: i64 @1;
+}
+
+#[wire]
+enum Choice<T> {
+    Empty; // inferred
+    Fixed @0;
+    reserved @2;
+    Value(T);
+    Named { value: T; }
+}
+",
+    );
+}
+
+#[test]
+fn wire_tags_do_not_hide_changed_numbers_or_moved_comments() {
+    let source = "#[wire]\ntype Packet {\n    value: i64; // payload\n    fixed: i64 @2;\n}\n";
+    let formatted = format_source(source, &parse(source).program);
+    assert!(check(source, &formatted).is_ok());
+    assert!(matches!(
+        check(source, &formatted.replace("fixed: i64 @2", "fixed: i64 @3")),
+        Err(FidelityError::AstChanged)
+    ));
+    let moved = formatted
+        .replace("; // payload", ";")
+        .replace("fixed: i64 @2;", "fixed: i64 @2; // payload");
+    assert!(matches!(
+        check(source, &moved),
+        Err(FidelityError::TraceChanged { .. })
+    ));
+}
+
+#[test]
 fn trailing_comment_on_last_argument_and_element() {
     assert_faithful(
         r"fn f(a: i64, b: i64) -> i64 {

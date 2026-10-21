@@ -4720,8 +4720,31 @@ fn main() {
 }
 ```
 
-Each field carries a `@N` tag — a stable wire identifier that must never be
-reused, even if the field is later removed (HEW-SPEC-2026.md §7.2). A field
+Fields and enum variants have numeric wire identities. Explicit `@N` tags
+are preserved; omitted tags are assigned in declaration order, starting at 1
+for fields and 0 for variants and skipping every explicit or reserved number.
+Use `reserved @N;` for a removed identity. Reordering automatically numbered
+members can break compatibility; pin the numbers when evolving a published
+schema (HEW-SPEC-2026.md §7.2).
+
+Generic wire declarations use the same rules:
+
+```hew
+#[wire]
+type Envelope<T> { value: T; }
+
+#[wire]
+enum Outcome<T> { Ready(T); Missing; }
+```
+
+`Envelope<string>` and `Outcome<i64>` can be encoded and decoded. Concrete
+arguments must be data: actor handles, resources, callables and ambiguous
+nested options are refused at the codec or remote-actor boundary. Renaming
+`T` preserves the schema; changing a field to another parameter does not.
+`hew wire check` compares generic parameter positions and expanded declarations
+from `#[wire] machine` using the same compatibility rules.
+
+A field
 marked `optional` must have type `Option<T>`; the marker admits only a value
 that can represent absence. Presence and value shape are separate contracts:
 
@@ -4742,9 +4765,11 @@ same pair, and `decode` returns `Result<T, wire.DecodeError>` whose error names
 the path of the value that did not fit; the type is named at the call, and an
 unannotated `json.decode(text)` is `E_TYPE_ANNOTATION_NEEDED`. Bare values that
 implement `Serializable`, including admitted `HashMap` and `HashSet` shapes, use
-the same functions. A value is `Serializable` when it is a scalar, a `#[wire]`
-type, or a `Vec`, `HashMap`, `HashSet` or `Option` of serializable values; a
-plain type, a tuple or a resource is refused where the codec is called:
+the same functions. Ordinary records, enums and tuples are also data when
+their members are data, as are admitted `Vec`, `HashMap`, `HashSet`, `Option`
+and `Result` shapes. Resources, actor handles and callables are refused where
+the codec is called. Remote actors additionally require wire schemas for
+named records and enums:
 
 ```hew
 import std.encoding.cbor;

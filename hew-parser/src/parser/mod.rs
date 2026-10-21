@@ -886,8 +886,6 @@ pub enum ParseDiagnosticKind {
     /// wire modifier; `#[serial(..)]` replaces them.
     LegacySerialSpelling,
     LegacyRaceBraces,
-    /// A `#[wire]` enum variant without its stable `@N` tag.
-    WireVariantTagMissing,
     /// `spawn A { k: v }`: spawn keys are written in braces.
     LegacySpawnArgs,
     /// `child c: A(k: v)`: supervisor child keys are written in braces.
@@ -949,7 +947,6 @@ impl ParseDiagnosticKind {
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
             Self::LegacyRaceBraces => "E_RACE_LEGACY_BRACES",
-            Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::LegacySpawnArgs => "E_SPAWN_PAREN_ARGS",
             Self::LegacyChildArgs => "E_CHILD_PAREN_ARGS",
             Self::LegacyEventHead => "E_EVENT_HEAD_PARENS",

@@ -195,7 +195,6 @@ pub fn migrate_syntax(source: &str) -> Result<String, MigrationError> {
                         | ParseDiagnosticKind::UnitFailsArrow
                         | ParseDiagnosticKind::LegacySerialSpelling
                         | ParseDiagnosticKind::LegacyRaceBraces
-                        | ParseDiagnosticKind::WireVariantTagMissing
                         | ParseDiagnosticKind::LegacySpawnArgs
                         | ParseDiagnosticKind::LegacyChildArgs
                         | ParseDiagnosticKind::LegacyEventHead
@@ -1571,11 +1570,16 @@ impl<'a> Formatter<'a> {
         }
         self.write_indent();
         self.write_visibility(decl.visibility);
+        if decl.is_indirect {
+            self.write("indirect ");
+        }
         match decl.kind {
             TypeDeclKind::Struct => self.write("type "),
             TypeDeclKind::Enum => self.write("enum "),
         }
         self.write_ident(decl.name);
+        self.format_opt_type_params(decl.type_params.as_ref());
+        self.format_opt_where_clause(decl.where_clause.as_ref());
         self.write(" {\n");
         self.indent += 1;
         match decl.kind {
@@ -1604,8 +1608,10 @@ impl<'a> Formatter<'a> {
                         self.format_type_expr(&ty.0);
                         // Emit wire field metadata
                         if let Some(meta) = wire.field_meta.get(i) {
-                            self.write(" @");
-                            self.write(&meta.field_number.to_string());
+                            if meta.field_number_explicit {
+                                self.write(" @");
+                                self.write(&meta.field_number.to_string());
+                            }
                             self.format_wire_field_modifiers(
                                 meta.is_optional,
                                 meta.is_deprecated,
@@ -1624,17 +1630,21 @@ impl<'a> Formatter<'a> {
                 }
             }
             TypeDeclKind::Enum => {
-                // Variant bodies are tagged by variant index, not by per-field
-                // `@N`; reserved tags do not apply.  Delegate to the regular
-                // variant formatter to handle unit / tuple / struct payloads.
+                let mut reserved = wire.reserved.iter().peekable();
                 for item in &decl.body {
                     if let TypeBodyItem::Variant(v) = item {
+                        while let Some(clause) = reserved.next_if(|c| c.span.start < v.span.start) {
+                            self.format_wire_reserved(clause);
+                        }
                         self.flush_comments_before(v.span.start);
                         self.prev_source_pos = v.span.start;
                         self.format_variant(v);
                         self.flush_comments_before(v.span.end);
                         self.prev_source_pos = self.prev_source_pos.max(v.span.end);
                     }
+                }
+                for clause in reserved {
+                    self.format_wire_reserved(clause);
                 }
             }
         }
@@ -1672,6 +1682,10 @@ impl<'a> Formatter<'a> {
             self.write("\")]\n");
         }
         self.format_serial_case_attr(decl.serial_case);
+        self.format_wire_attribute(wire);
+    }
+
+    fn format_wire_attribute(&mut self, wire: &WireMetadata) {
         self.write_indent();
         if wire.version.is_some() || wire.min_version.is_some() {
             self.write("#[wire(");
@@ -1745,10 +1759,11 @@ impl<'a> Formatter<'a> {
                 self.write("}");
             }
         }
-        if let Some(tag) = v.tag {
+        let explicit_tag = v.tag.filter(|_| v.tag_explicit);
+        if let Some(tag) = explicit_tag {
             write!(self.output, " @{tag}").unwrap();
         }
-        if !matches!(v.kind, VariantKind::Struct(_)) || v.tag.is_some() {
+        if !matches!(v.kind, VariantKind::Struct(_)) || explicit_tag.is_some() {
             self.write(";");
         }
         self.newline();
@@ -2092,6 +2107,11 @@ impl<'a> Formatter<'a> {
 
     #[expect(clippy::too_many_lines, reason = "machine formatting has many clauses")]
     fn format_machine(&mut self, decl: &MachineDecl, span_start: usize, span_end: usize) {
+        if let Some(wire) = &decl.wire {
+            if !self.format_item_attributes(span_start) {
+                self.format_wire_attribute(wire);
+            }
+        }
         self.write_indent();
         self.write_visibility(decl.visibility);
         self.write("machine ");
@@ -7502,8 +7522,40 @@ type Split {
     reserved @5;
     c: i64 @3;
 }
+
+#[wire]
+enum Choice {
+    reserved @0;
+    First @1;
+    // retired in v2
+    reserved @2, @4;
+    Value(i64) @3;
+    reserved @5;
+}
 ";
         assert_eq!(roundtrip_source(src), src);
+    }
+
+    #[test]
+    fn generic_wire_and_machine_metadata_survive_both_formatter_paths() {
+        for source in [
+            "#[wire(version = 3, min_version = 2)]\ntype Packet<T: Clone> where T: Serializable { reserved @1; value: T; }\n",
+            "#[wire]\nenum Choice<T> where T: Serializable { First; reserved @1; Value(T) @9; Named { value: T; } }\n",
+            "#[wire]\nindirect enum Tree<T> where T: Serializable { Empty; Node { value: T; next: Option<Tree<T>>; } }\n",
+            "#[wire(version = 3, min_version = 2)]\npub machine Cache<T> where T: Serializable { events { Store { value: T; } Clear; } state Empty; state Full { value: T; } on Store: _ => Full { value: event.value } on Clear: _ => Empty; }\n",
+        ] {
+            let parsed = parse(source);
+            assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+            for formatted in [format_source(source, &parsed.program), format_program(&parsed.program)] {
+                let reparsed = parse(&formatted);
+                assert!(reparsed.errors.is_empty(), "{formatted}: {:?}", reparsed.errors);
+                assert!(
+                    crate::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+                    "wire metadata changed: {formatted}"
+                );
+                assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+            }
+        }
     }
 
     /// Consecutive imports stay packed; a blank line the author left between

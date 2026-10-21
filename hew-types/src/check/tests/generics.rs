@@ -909,6 +909,7 @@ fn test_wire_since_without_version_warns() {
         field_meta: vec![WireFieldMeta {
             field_name: "added_field".to_string(),
             field_number: 2,
+            field_number_explicit: true,
             is_optional: false,
             is_deprecated: false,
             is_repeated: false,
@@ -946,6 +947,7 @@ fn test_wire_since_without_version_uses_registered_decl_span() {
         field_meta: vec![WireFieldMeta {
             field_name: "added_field".to_string(),
             field_number: 2,
+            field_number_explicit: true,
             is_optional: false,
             is_deprecated: false,
             is_repeated: false,
@@ -971,6 +973,7 @@ fn test_wire_since_with_version_no_extra_warning() {
         field_meta: vec![WireFieldMeta {
             field_name: "added_field".to_string(),
             field_number: 2,
+            field_number_explicit: true,
             is_optional: false,
             is_deprecated: false,
             is_repeated: false,

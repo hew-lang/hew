@@ -972,6 +972,26 @@ fn machine_shallow_history_codecs_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn ordinary_and_machine_wire_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "wire-generic-values",
+            source_rel: "tests/core-acceptance/cases/wire-generic-values.hew",
+        },
+        ParityCase {
+            test_name: "machine-wire-values",
+            source_rel: "tests/core-acceptance/cases/machine-wire-values.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn lexical_path_helpers_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1533,6 +1553,8 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "user_codec_stream" => Some("user codec frames\n"),
+        "wire-generic-values" => Some("generic wire values passed\n"),
+        "machine-wire-values" => Some("machine wire checkpoints passed\n"),
         "recursive_structural_equality" => Some("json true false true\nvec true false true\nnode true false\nrecursive keys ok\nlist true false\n"),
         "lambda_actor_private_capture" => Some("501\n1202\n2303\nouter 0 0\n2\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),

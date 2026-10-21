@@ -484,17 +484,20 @@ pub trait Machine {
 }
 
 /// Ordered, opt-in snapshots taken after exit hooks and before transition bodies.
+#[wire]
 pub type MachineDeparture<S, T> {
     target: S;
     subtree: T;
 }
 
+#[wire]
 pub type MachineObservedStep<R, S, T> {
     report: R;
     departures: Vec<MachineDeparture<S, T>>;
 }
 
 /// A bounded machine step did not commit its staged configuration or outputs.
+#[wire]
 pub enum MachineStepError {
     InvalidLimit;
     LimitExceeded;
@@ -511,11 +514,13 @@ impl Display for MachineStepError {
 
 impl Error for MachineStepError {}
 
+#[wire]
 pub enum MachineDisposition {
     Taken;
     Ignored;
 }
 
+#[wire]
 pub type MachineStepInfo {
     input: string;
     rules: Vec<i64>;

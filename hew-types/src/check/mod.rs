@@ -68,7 +68,9 @@ pub use self::lints::{directive_suppresses, LintId, LintLevel, LintLevels, LintS
 mod machine_effects;
 mod machine_hierarchy;
 mod machine_normalize;
-pub use machine_normalize::{NormalizedProgram, SourceSpanOrigins};
+pub use machine_normalize::{
+    normalize as normalize_machine_declarations, NormalizedProgram, SourceSpanOrigins,
+};
 mod methods;
 mod nominal_identity;
 pub use self::methods::collection_dispatch_registry_for_tests;

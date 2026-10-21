@@ -27,6 +27,7 @@ fn make_machine(
     transitions: Vec<MachineTransition>,
 ) -> MachineDecl {
     MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
@@ -684,6 +685,7 @@ fn transition_count_equals_states_times_events() {
 
 fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
@@ -1280,6 +1282,7 @@ fn imported_machine_exhaustiveness_runs() {
 #[test]
 fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new("Worker"),

@@ -1,0 +1,141 @@
+import std.encoding.cbor;
+import std.encoding.json;
+
+#[wire(version = 2, min_version = 1)]
+machine TransitHistory<T> {
+    events {
+        Resume { seed: T; }
+        Advance;
+        Pause;
+        Restore { seed: T; saved: TransitHistorySubtree<T>; }
+    }
+    emits {
+        Left { value: T; }
+        Right { value: T; count: i64; }
+    }
+    state Off;
+    parallel state Active {
+        seed: T;
+        region left {
+            state L0 { value: T; }
+            state L1 {
+                value: T;
+                entry {
+                    emit Left { value: state.value };
+                }
+            }
+            initial L0 { value: state.seed };
+        }
+        region right {
+            state Inner {
+                stamp: T;
+                revision: i64;
+                state R0 {
+                    count: i64;
+                    entry {
+                        emit Right { value: state.stamp, count: state.count };
+                    }
+                }
+                state R1 {
+                    count: i64;
+                    entry {
+                        emit Right { value: state.stamp, count: state.count };
+                    }
+                }
+                initial R0 { count: 4 };
+            }
+            initial Inner { stamp: state.seed, revision: 5 };
+        }
+    }
+    on Resume: Off => Active history { seed: event.seed }
+    on Advance: L0 => L1 { value: state.value }
+    on Advance: R0 => R1 { stamp: state.stamp, revision: state.revision + 1, count: 99 }
+    on Pause: Active => Off;
+    on Restore: Off => _ {
+        match event.saved {
+            .Active { snapshot } => snapshot.restore(event.seed),
+            _ => panic("restore requires the Active subtree"),
+        }
+    }
+    default { state }
+}
+
+#[wire]
+type Checkpoint {
+    current: TransitHistory<string>;
+    event: TransitHistory.Event<string>;
+    output: TransitHistoryOutput<string>;
+    report: TransitHistoryStep<string>;
+    observed: MachineObservedStep<TransitHistoryStep<string>, TransitHistoryScope, TransitHistorySubtree<string>>;
+    target: TransitHistoryScope;
+    subtree: TransitHistorySubtree<string>;
+    snapshot: TransitHistoryActiveSnapshot<string>;
+    info: MachineStepInfo;
+    failure: MachineStepError;
+}
+
+actor Echo {
+    #[wire]
+    receive fn echo(value: Checkpoint) -> Checkpoint {
+        value
+    }
+}
+
+fn check_shallow(value: TransitHistory<string>) {
+    match value {
+        .Active { seed, left: .L1 { value: left }, right: .R0 { stamp, revision, count } } => {
+            assert(seed == "fresh" && left == "ORIGINAL" && stamp == "ORIGINAL");
+            assert(revision == 6 && count == 4);
+        }
+        _ => panic("wire round-trip lost shallow history"),
+    }
+}
+
+fn check_deep(value: TransitHistory<string>, expected_seed: string) {
+    match value {
+        .Active { seed, left: .L1 { value: left }, right: .R1 { stamp, revision, count } } => {
+            assert(seed == expected_seed && left == "ORIGINAL" && stamp == "ORIGINAL");
+            assert(revision == 6 && count == 99);
+        }
+        _ => panic("wire round-trip lost a saved parallel descendant"),
+    }
+}
+
+fn main() {
+    var transit: TransitHistory<string> = .Off;
+    let _initial = transit.step(.Resume { seed: "original".to_upper() });
+    let advanced = transit.step(.Advance);
+    let departed = transit.step_observed_with_limit(.Pause, 1, [.Active, .Inner]).expect("departures");
+    assert(departed.departures.len() == 2);
+    assert(departed.departures[0].target == .Inner && departed.departures[1].target == .Active);
+    let saved = departed.departures[1].subtree;
+    let snapshot = match saved {
+        .Active { snapshot } => snapshot,
+        _ => panic("expected Active snapshot"),
+    };
+    let event: TransitHistory.Event<string> = .Resume { seed: "fresh" };
+    let checkpoint = Checkpoint { current: transit, event: event, output: advanced.outputs[0], report: advanced, observed: departed, target: .Active, subtree: saved, snapshot: snapshot, info: transit.step_info(advanced), failure: .LimitExceeded };
+    let binary = cbor.decode<Checkpoint>(cbor.encode(checkpoint)).expect("CBOR checkpoint");
+    let text = json.decode<Checkpoint>(json.encode(checkpoint)).expect("JSON checkpoint");
+    assert(binary == checkpoint && text == checkpoint);
+    let echo = spawn Echo;
+    let echoed = echo.echo(binary).expect("wire checkpoint echo");
+    stop(echo);
+    stopped(echo);
+    assert(echoed == checkpoint);
+    for retained in [binary, text, echoed] {
+        assert(retained.report.outputs == [.Left { value: "ORIGINAL" }, .Right { value: "ORIGINAL", count: 99 }]);
+        assert(retained.output == retained.report.outputs[0]);
+        var shallow = retained.current;
+        let resumed = shallow.step(retained.event);
+        check_shallow(shallow);
+        assert(resumed.outputs == [.Left { value: "ORIGINAL" }, .Right { value: "ORIGINAL", count: 4 }]);
+        var deep = retained.current;
+        let restored = deep.step(.Restore { seed: "deep fresh", saved: retained.subtree });
+        check_deep(deep, "deep fresh");
+        assert(restored.outputs == retained.report.outputs);
+        check_deep(retained.snapshot.restore("snapshot fresh"), "snapshot fresh");
+        assert(retained.current.state_name() == "Off");
+    }
+    println("machine wire checkpoints passed");
+}

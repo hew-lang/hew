@@ -1,4 +1,4 @@
-//! Wire (`@wire`) type and enum parsing, plus the wire-field modifier helpers.
+//! Wire (`#[wire]`) declarations and wire-field modifier parsing.
 
 #[allow(
     clippy::wildcard_imports,
@@ -250,13 +250,66 @@ impl Parser<'_> {
         );
     }
 
-    fn refuse_generic_wire(&mut self, span: Span) {
-        self.error_at(
-            "`#[wire]` types cannot be generic: a tag must mean the same member in every \
-             instantiation [E_WIRE_GENERIC]"
-                .to_string(),
-            span,
-        );
+    pub(crate) fn wire_metadata(attrs: &[Attribute]) -> Option<WireMetadata> {
+        let attr = attrs.iter().find(|attr| attr.name == "wire")?;
+        let version = |name: &str| {
+            attr.args.iter().find_map(|arg| match arg {
+                AttributeArg::KeyValue { key, value } if key == name => value.parse().ok(),
+                _ => None,
+            })
+        };
+        Some(WireMetadata {
+            field_meta: Vec::new(),
+            reserved: Vec::new(),
+            version: version("version"),
+            min_version: version("min_version"),
+        })
+    }
+
+    pub(crate) fn parse_wire_reserved(&mut self) -> Option<WireReserved> {
+        let start = self.expect(&Token::Reserved)?.start;
+        let mut numbers = Vec::new();
+        loop {
+            self.expect(&Token::At)?;
+            numbers.push(
+                self.parse_wire_field_number_after_marker(WireFieldParseMode::Struct)
+                    .ok()?,
+            );
+            if !self.eat(&Token::Comma) {
+                break;
+            }
+        }
+        let clause = WireReserved {
+            numbers,
+            span: start..self.last_token_end,
+        };
+        self.expect_member_terminator("reserved");
+        Some(clause)
+    }
+
+    fn resolve_wire_numbers(
+        &mut self,
+        explicit: &[Option<u32>],
+        reserved: &[u32],
+        start: u32,
+        member: &str,
+    ) -> Option<Vec<u32>> {
+        crate::wire::assign_wire_numbers(explicit, reserved, start)
+            .map_err(|error| {
+                use crate::wire::WireNumberError;
+                self.error(match error {
+                    WireNumberError::Duplicate(number) => {
+                        format!("duplicate wire {member} @{number}")
+                    }
+                    WireNumberError::Reserved(number) => {
+                        format!("wire {member} @{number} is reserved")
+                    }
+                    WireNumberError::Exhausted => {
+                        format!("no wire {member} remains for automatic assignment")
+                    }
+                });
+            })
+            .ok()
     }
 
     /// Parse `#[wire] type Name { field: Type, ... }` into a `TypeDecl` with wire metadata.
@@ -289,52 +342,19 @@ impl Parser<'_> {
         }
         self.expect(&Token::Type)?;
         let name = self.expect_ident()?;
-        if self.peek() == Some(&Token::Less) {
-            let start = self.peek_span().start;
-            let _ = self.parse_opt_type_params();
-            self.refuse_generic_wire(start..self.last_token_end);
-        }
+        let type_params = self.parse_opt_type_params()?;
+        let where_clause = self.parse_opt_where_clause()?;
         self.expect(&Token::LeftBrace)?;
 
         let mut fields = Vec::new();
         let mut field_meta = Vec::new();
-        let mut reserved_numbers: Vec<u32> = Vec::new();
         let mut reserved = Vec::new();
-        let mut explicit_numbers: Vec<u32> = Vec::new();
-        let mut seen_explicit_numbers = std::collections::HashSet::new();
 
         while self.peek() != Some(&Token::RightBrace) && !self.at_end() {
             let mut doc_comment = self.collect_doc_comments();
             // Check for `reserved @N, @M, ...;`
             if self.peek() == Some(&Token::Reserved) {
-                let reserved_start = self.peek_span().start;
-                let first_number = reserved_numbers.len();
-                self.advance();
-                while self.peek() != Some(&Token::Semicolon) && !self.at_end() {
-                    self.expect(&Token::At)?;
-                    if let Some(Token::Integer(n_str)) = self.peek() {
-                        if let Some(num) = parse_int_literal(n_str)
-                            .ok()
-                            .and_then(|(v, _)| u32::try_from(v).ok())
-                        {
-                            reserved_numbers.push(num);
-                        } else {
-                            self.error("invalid field number after '@'".to_string());
-                        }
-                        self.advance();
-                    } else {
-                        self.error("expected field number after '@'".to_string());
-                        break;
-                    }
-                    if !self.eat(&Token::Comma) {
-                        break;
-                    }
-                }
-                reserved.push(WireReserved {
-                    numbers: reserved_numbers[first_number..].to_vec(),
-                    span: reserved_start..self.last_token_end,
-                });
-                self.expect_member_terminator("reserved");
+                reserved.push(self.parse_wire_reserved()?);
                 continue;
             }
 
@@ -350,16 +370,6 @@ impl Parser<'_> {
             let ty = self.parse_type()?;
             let parsed_field =
                 self.parse_wire_field_number_and_modifiers(WireFieldParseMode::Struct);
-            if let Some(explicit_num) = parsed_field.explicit_number {
-                if reserved_numbers.contains(&explicit_num) {
-                    self.error(format!("wire field number @{explicit_num} is reserved"));
-                }
-                if !seen_explicit_numbers.insert(explicit_num) {
-                    self.error(format!("duplicate wire field number @{explicit_num}"));
-                }
-                explicit_numbers.push(explicit_num);
-            }
-
             if let Some(key) = parsed_field.modifiers.legacy_key {
                 if !attributes.iter().any(|attr| attr.name == "serial") {
                     attributes.push(Attribute {
@@ -392,30 +402,23 @@ impl Parser<'_> {
         }
         self.expect(&Token::RightBrace)?;
 
-        // Auto-assign field numbers: 1, 2, 3... skipping explicit @N and reserved numbers
-        let used_numbers: std::collections::HashSet<u32> = explicit_numbers
+        let explicit = field_meta.iter().map(|field| field.1).collect::<Vec<_>>();
+        let reserved_numbers = reserved
             .iter()
-            .chain(reserved_numbers.iter())
-            .copied()
-            .collect();
-        let mut auto_counter: u32 = 1;
+            .flat_map(|clause| clause.numbers.iter().copied())
+            .collect::<Vec<_>>();
+        let numbers = self.resolve_wire_numbers(&explicit, &reserved_numbers, 1, "field number")?;
         let mut resolved_meta = Vec::new();
 
-        for (field_name, explicit_num, is_optional, is_deprecated, is_repeated, since) in field_meta
+        for (
+            (field_name, explicit_number, is_optional, is_deprecated, is_repeated, since),
+            field_number,
+        ) in field_meta.into_iter().zip(numbers)
         {
-            let field_number = if let Some(n) = explicit_num {
-                n
-            } else {
-                while used_numbers.contains(&auto_counter) {
-                    auto_counter += 1;
-                }
-                let n = auto_counter;
-                auto_counter += 1;
-                n
-            };
             resolved_meta.push(WireFieldMeta {
                 field_name,
                 field_number,
+                field_number_explicit: explicit_number.is_some(),
                 is_optional,
                 is_deprecated,
                 is_repeated,
@@ -425,36 +428,20 @@ impl Parser<'_> {
 
         let serial_case = self.parse_serial_case(attrs);
 
-        // Extract version and min_version from #[wire(version = N, min_version = M)]
-        let wire_attr = attrs.iter().find(|a| a.name == "wire");
-        let version = wire_attr.and_then(|a| {
-            a.args.iter().find_map(|arg| match arg {
-                AttributeArg::KeyValue { key, value } if key == "version" => value.parse().ok(),
-                _ => None,
-            })
-        });
-        let min_version = wire_attr.and_then(|a| {
-            a.args.iter().find_map(|arg| match arg {
-                AttributeArg::KeyValue { key, value } if key == "min_version" => value.parse().ok(),
-                _ => None,
-            })
-        });
+        let mut wire = Self::wire_metadata(attrs).expect("wire type has a wire attribute");
+        wire.field_meta = resolved_meta;
+        wire.reserved = reserved;
 
         Some(TypeDecl {
             origin: crate::ast::DeclarationOrigin::Authored,
             visibility,
             kind: TypeDeclKind::Struct,
             name,
-            type_params: None,
-            where_clause: None,
+            type_params,
+            where_clause,
             body: fields,
             doc_comment: None,
-            wire: Some(WireMetadata {
-                field_meta: resolved_meta,
-                reserved,
-                version,
-                min_version,
-            }),
+            wire: Some(wire),
             is_indirect: false,
             resource_marker: ResourceMarker::None,
             is_opaque: false,
@@ -468,9 +455,8 @@ impl Parser<'_> {
 
     /// Parse `#[wire] enum Name { Variant1, Variant2(T), Variant3 { f: U } }` into a
     /// `TypeDecl` with wire metadata attached.  Enums carry the type-level wire
-    /// metadata (`version`, `min_version`) but no
-    /// per-field tag numbers — variant payloads are tagged by the variant
-    /// index, not by `@N` annotations on individual fields.
+    /// metadata (`version`, `min_version`) and optional explicit variant tags.
+    /// Missing tags are assigned from zero, skipping explicit and reserved tags.
     ///
     /// The enum body itself is parsed by the shared `parse_struct_or_enum`
     /// helper (which handles unit / tuple / struct variant payloads, type
@@ -502,8 +488,8 @@ impl Parser<'_> {
 
         // Delegate enum-body parsing to the shared helper.  It consumes the
         // `enum` keyword, name, type-params, where-clause, body braces, and
-        // populates `body` with `TypeBodyItem::Variant` entries.  The
-        // resulting `TypeDecl` has `wire: None`, which we override below.
+        // populates `body` with `TypeBodyItem::Variant` entries and retains
+        // reserved clauses in the declaration's wire metadata.
         let mut td = self.parse_struct_or_enum(visibility, attrs)?;
         if td.kind != TypeDeclKind::Enum {
             // Caller dispatched us on `Token::Enum`; parse_struct_or_enum
@@ -512,73 +498,30 @@ impl Parser<'_> {
             return None;
         }
 
-        if td.type_params.is_some() {
-            let span = attrs
-                .iter()
-                .find(|a| a.name == "wire")
-                .map_or(0..0, |a| a.span.clone());
-            self.refuse_generic_wire(span);
+        let variants = td
+            .body
+            .iter_mut()
+            .filter_map(|item| match item {
+                TypeBodyItem::Variant(variant) => Some(variant),
+                TypeBodyItem::Field { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        let explicit = variants
+            .iter()
+            .map(|variant| variant.tag)
+            .collect::<Vec<_>>();
+        let reserved = td
+            .wire
+            .as_ref()
+            .expect("wire enum has wire metadata")
+            .reserved
+            .iter()
+            .flat_map(|clause| clause.numbers.iter().copied())
+            .collect::<Vec<_>>();
+        let numbers = self.resolve_wire_numbers(&explicit, &reserved, 0, "variant tag")?;
+        for (variant, number) in variants.into_iter().zip(numbers) {
+            variant.tag = Some(number);
         }
-        self.require_wire_variant_tags(&mut td);
-
-        // Extract version/min_version from `#[wire(version = N, min_version = M)]`.
-        let wire_attr = attrs.iter().find(|a| a.name == "wire");
-        let version = wire_attr.and_then(|a| {
-            a.args.iter().find_map(|arg| match arg {
-                AttributeArg::KeyValue { key, value } if key == "version" => value.parse().ok(),
-                _ => None,
-            })
-        });
-        let min_version = wire_attr.and_then(|a| {
-            a.args.iter().find_map(|arg| match arg {
-                AttributeArg::KeyValue { key, value } if key == "min_version" => value.parse().ok(),
-                _ => None,
-            })
-        });
-
-        td.wire = Some(WireMetadata {
-            field_meta: Vec::new(),
-            reserved: Vec::new(),
-            version,
-            min_version,
-        });
         Some(td)
-    }
-
-    /// Every `#[wire]` variant carries a unique stable tag. A missing tag is
-    /// refused; the declaration ordinal fills it in so `hew fmt --migrate`
-    /// writes the tag the variant already had on the wire.
-    fn require_wire_variant_tags(&mut self, td: &mut TypeDecl) {
-        let mut seen = std::collections::HashSet::new();
-        for (ordinal, item) in td.body.iter_mut().enumerate() {
-            let TypeBodyItem::Variant(variant) = item else {
-                continue;
-            };
-            let tag = if let Some(tag) = variant.tag {
-                tag
-            } else {
-                let tag = u32::try_from(ordinal).unwrap_or(u32::MAX);
-                self.error_at_with_kind_and_hint(
-                    format!(
-                        "`#[wire]` variant `{}` needs a stable tag [E_WIRE_VARIANT_TAG]",
-                        variant.name
-                    ),
-                    variant.span.clone(),
-                    format!(
-                        "write `{} @N;`; `hew fmt --migrate` writes its current tag, @{tag}",
-                        variant.name
-                    ),
-                    ParseDiagnosticKind::WireVariantTagMissing,
-                );
-                variant.tag = Some(tag);
-                tag
-            };
-            if !seen.insert(tag) {
-                self.error_at(
-                    format!("duplicate wire variant tag @{tag}"),
-                    variant.span.clone(),
-                );
-            }
-        }
     }
 }

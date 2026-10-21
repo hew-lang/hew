@@ -124,7 +124,9 @@ impl std::fmt::Display for FidelityError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             FidelityError::Reparse(e) => write!(f, "formatted output does not parse: {e}"),
-            FidelityError::AstChanged => f.write_str("formatted output parses to a different program"),
+            FidelityError::AstChanged => {
+                f.write_str("formatted output parses to a different program")
+            }
             FidelityError::TraceChanged {
                 formatted_offset,
                 expected,

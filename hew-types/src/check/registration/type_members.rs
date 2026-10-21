@@ -1234,6 +1234,9 @@ impl Checker {
         self.insert_type_def(&canonical_name, type_def);
         self.record_type_def_inference_holes(&canonical_name, hole_vars);
         self.handle_bearing_dirty = true;
+        // Pre-registered declarations may need no later member refresh. Publish
+        // their data shape now, including unit enums with no payload to change.
+        self.register_serial_layout(td);
     }
 
     /// Reserve a type-name in the given module's namespace and reject a second

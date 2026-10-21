@@ -9,6 +9,7 @@ use crate::builtin_type::{lookup_builtin_type, BuiltinType};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 
 /// A unique type variable ID for inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -738,9 +739,12 @@ impl Ty {
 }
 
 /// A substitution mapping type variables to concrete types.
+///
+/// Snapshots share immutable mappings. The first inference write to a shared
+/// map forks it, so speculative probes and checker branches remain independent.
 #[derive(Debug, Clone, Default)]
 pub struct Substitution {
-    mappings: HashMap<TypeVar, Ty>,
+    mappings: Arc<HashMap<TypeVar, Ty>>,
 }
 
 impl Substitution {
@@ -764,7 +768,7 @@ impl Substitution {
         if resolved.contains_var(var) {
             return Err(crate::unify::UnifyError::OccursCheck { var, ty: resolved });
         }
-        self.mappings.insert(var, resolved);
+        Arc::make_mut(&mut self.mappings).insert(var, resolved);
         Ok(())
     }
 
@@ -782,13 +786,13 @@ impl Substitution {
 
     /// Snapshot the current substitution state for rollback.
     #[must_use]
-    pub fn snapshot(&self) -> HashMap<TypeVar, Ty> {
-        self.mappings.clone()
+    pub fn snapshot(&self) -> Self {
+        self.clone()
     }
 
     /// Restore the substitution to a previous snapshot.
-    pub fn restore(&mut self, snapshot: HashMap<TypeVar, Ty>) {
-        self.mappings = snapshot;
+    pub fn restore(&mut self, snapshot: Self) {
+        *self = snapshot;
     }
 
     /// Walk a variable to its final resolved type.
@@ -2327,6 +2331,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn substitution_snapshots_restore_nested_inference_and_isolate_forks() {
+        let element = TypeVar(10);
+        let collection = TypeVar(11);
+        let mut subst = Substitution::new();
+        let unresolved = Ty::option(Ty::Var(element));
+        subst.insert(collection, &unresolved).unwrap();
+        let outer = subst.snapshot();
+
+        subst.insert(element, &Ty::I64).unwrap();
+        let inner = subst.snapshot();
+        subst.insert(collection, &Ty::String).unwrap();
+        assert_eq!(subst.resolve(&Ty::Var(collection)), Ty::String);
+        subst.restore(inner);
+        assert_eq!(subst.resolve(&Ty::Var(collection)), Ty::option(Ty::I64));
+        subst.restore(outer);
+        assert_eq!(subst.resolve(&Ty::Var(collection)), unresolved);
+        assert_eq!(subst.lookup(element), None);
+
+        let mut fork = subst.clone();
+        fork.insert(element, &Ty::String).unwrap();
+        assert_eq!(fork.resolve(&Ty::Var(collection)), Ty::option(Ty::String));
+        assert_eq!(subst.resolve(&Ty::Var(collection)), unresolved);
+        let recursive = TypeVar(12);
+        assert!(fork
+            .insert(recursive, &Ty::option(Ty::Var(recursive)))
+            .is_err());
+        assert_eq!(fork.lookup(recursive), None);
+        assert_eq!(fork.lookup(element), Some(&Ty::String));
+    }
+
+    #[test]
     fn monitor_ref_preserves_its_source_declaration_identity() {
         assert_eq!(
             Ty::monitor_ref(),
@@ -2719,8 +2754,8 @@ mod tests {
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
 
-        subst.mappings.insert(v1, Ty::Var(v2));
-        subst.mappings.insert(v2, Ty::Var(v1));
+        Arc::make_mut(&mut subst.mappings).insert(v1, Ty::Var(v2));
+        Arc::make_mut(&mut subst.mappings).insert(v2, Ty::Var(v1));
 
         assert_eq!(subst.resolve(&Ty::Var(v1)), Ty::Error);
     }
@@ -2731,8 +2766,8 @@ mod tests {
         let v1 = TypeVar::fresh();
         let v2 = TypeVar::fresh();
 
-        subst.mappings.insert(v1, Ty::Var(v2));
-        subst.mappings.insert(v2, Ty::Var(v1));
+        Arc::make_mut(&mut subst.mappings).insert(v1, Ty::Var(v2));
+        Arc::make_mut(&mut subst.mappings).insert(v2, Ty::Var(v1));
 
         assert_eq!(
             Ty::Tuple(vec![Ty::Var(v1)]).apply_subst(&subst),

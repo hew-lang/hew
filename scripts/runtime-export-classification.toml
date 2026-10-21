@@ -446,7 +446,7 @@ stable = [
   "hew_node_api_identity_key",
   "hew_node_api_load_keys",
   "hew_node_api_register_by_pid",
-  "hew_node_api_register_by_pid_string",
+  "hew_node_api_register_handle_string",
   "hew_node_api_set_transport",
   "hew_node_api_shutdown",
   "hew_node_api_start",

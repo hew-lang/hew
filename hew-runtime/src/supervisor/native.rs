@@ -941,6 +941,7 @@ mod tests {
                 name: ptr::null(),
                 stop_ns: 0,
                 startup_rank: 0,
+                dispatch: None,
             };
             // SAFETY: the operation adopts one initialized config and all
             // descriptors remain live through begin; this host serializes polls.
@@ -1015,6 +1016,7 @@ mod tests {
                 name: ptr::null(),
                 stop_ns: 0,
                 startup_rank: 0,
+                dispatch: None,
             };
             // SAFETY: this test owns initial invocation, then transfers the
             // published parent to its ordinary restart and teardown owners.

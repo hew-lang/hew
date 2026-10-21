@@ -182,7 +182,27 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         use hew_types::BuiltinType;
         let word = |offset, bits| self.lifecycle_word(builder, data, base + offset, bits);
         let target_tag = word(std::mem::offset_of!(HewNotificationTarget, kind), 32)?;
-        self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, target_tag)?;
+        let remote_role = builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                target_tag,
+                self.ctx.i32_type().const_int(
+                    u64::from(hew_runtime::monitor::DOWN_TARGET_REMOTE_ROLE),
+                    false,
+                ),
+                "down.remote.role",
+            )
+            .llvm_ctx("identify remote role DOWN")?;
+        let source_tag = builder
+            .build_select(
+                remote_role,
+                self.ctx.i32_type().const_int(1, false),
+                target_tag,
+                "down.source.tag",
+            )
+            .llvm_ctx("map remote role DOWN to Remote")?
+            .into_int_value();
+        self.lifecycle_variant_header(builder, target, BuiltinType::DownTarget, source_tag)?;
         let local = self.ctx.append_basic_block(function, "down.local");
         let remote = self.ctx.append_basic_block(function, "down.remote");
         let role = self.ctx.append_basic_block(function, "down.role");
@@ -198,6 +218,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                     (self.ctx.i32_type().const_zero(), local),
                     (self.ctx.i32_type().const_int(1, false), remote),
                     (self.ctx.i32_type().const_int(2, false), role),
+                    (
+                        self.ctx.i32_type().const_int(
+                            u64::from(hew_runtime::monitor::DOWN_TARGET_REMOTE_ROLE),
+                            false,
+                        ),
+                        remote,
+                    ),
                 ],
             )
             .llvm_ctx("decode DOWN target")?;
@@ -249,6 +276,13 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 .llvm_ctx("construct remote DOWN location")?
                 .into_struct_value();
         }
+        let target_kind = builder
+            .build_int_z_extend(remote_role, self.ctx.i32_type(), "down.location.kind")
+            .llvm_ctx("construct remote DOWN target kind")?;
+        location = builder
+            .build_insert_value(location, target_kind, 4, "down.location.target.kind")
+            .llvm_ctx("insert remote DOWN target kind")?
+            .into_struct_value();
         self.lifecycle_variant_payload(
             builder,
             target,

@@ -52,7 +52,7 @@ fn role_kind(role: &SemSupervisedRole) -> u64 {
     kind as u64
 }
 
-/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name, deadline and startup rank.
+/// `HewNativeChildSpec`: restart policy, role kind, spawn adapter, name, deadline, startup rank and actor dispatch.
 fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
     let ptr = ctx.ptr_type(AddressSpace::default());
     ctx.struct_type(
@@ -63,6 +63,7 @@ fn native_child_spec_type(ctx: &Context) -> inkwell::types::StructType<'_> {
             ptr.into(),
             ctx.i64_type().into(),
             ctx.i32_type().into(),
+            ptr.into(),
         ],
         false,
     )
@@ -125,6 +126,21 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                 &child.name,
                 &symbol(supervisor, &format!("child_{index}_name")),
             );
+            let dispatch = match &child.role {
+                SemSupervisedRole::Actor(actor) => self
+                    .llvm
+                    .get_function(&super::actor::symbol(*actor, "dispatch"))
+                    .ok_or_else(|| {
+                        CodegenError::FailClosed(
+                            "declared actor child lacks its dispatch function".into(),
+                        )
+                    })?
+                    .as_global_value()
+                    .as_pointer_value(),
+                SemSupervisedRole::Supervisor(_) => {
+                    self.ctx.ptr_type(AddressSpace::default()).const_null()
+                }
+            };
             entries.push(
                 entry_ty.const_named_struct(&[
                     self.ctx
@@ -165,6 +181,7 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
                             false,
                         )
                         .into(),
+                    dispatch.into(),
                 ]),
             );
         }
@@ -920,7 +937,7 @@ mod abi_tests {
     use hew_runtime::supervisor::HewNativeChildSpec;
     use std::mem::{align_of, offset_of, size_of};
 
-    fn fields() -> [(usize, usize); 6] {
+    fn fields() -> [(usize, usize); 7] {
         [
             (
                 offset_of!(HewNativeChildSpec, restart_policy),
@@ -945,6 +962,10 @@ mod abi_tests {
             (
                 offset_of!(HewNativeChildSpec, startup_rank),
                 field_size(|spec: &HewNativeChildSpec| &spec.startup_rank),
+            ),
+            (
+                offset_of!(HewNativeChildSpec, dispatch),
+                field_size(|spec: &HewNativeChildSpec| &spec.dispatch),
             ),
         ]
     }
@@ -976,6 +997,7 @@ mod abi_tests {
                 ctx.i32_type().into(),
                 ptr.into(),
                 ctx.i32_type().into(),
+                ptr.into(),
             ],
             false,
         );

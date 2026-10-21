@@ -259,7 +259,7 @@ pub struct HewConnMgr {
     /// Transport used for I/O operations.
     pub(crate) transport: *mut HewTransport,
     /// Callback for routing inbound messages to local actors.
-    /// Signature: `fn(target_actor_id: u64, msg_type: i32, data: *mut u8, size: usize)`.
+    /// The callback receives the complete carried semantic destination.
     inbound_router: Option<InboundRouter>,
     /// Optional shared routing table for node-id -> connection routes.
     routing_table: *mut HewRoutingTable,
@@ -551,7 +551,7 @@ struct ReconnectPlan {
 /// use it to route replies so they go out on the correct connection regardless
 /// of which node is stored in the process-global `CURRENT_NODE`.
 type InboundRouter = unsafe extern "C" fn(
-    u64,
+    crate::node_identity::HewLocation,
     *const std::ffi::c_char,
     *mut u8,
     usize,

@@ -441,6 +441,9 @@ pub struct HewNativeChildSpec {
     pub stop_ns: i64,
     /// Dependency-first rank among declarations; slots retain declaration order.
     pub startup_rank: u32,
+    /// Declared actor interface and codec key, independent of its occupant.
+    /// Nested supervisor declarations carry no actor dispatch.
+    pub dispatch: Option<HewDispatchFn>,
 }
 
 fn register_native_child(
@@ -479,6 +482,7 @@ fn register_native_child(
         spec.restart_policy = child.restart_policy;
         spec.stop_ns = child.stop_ns;
         spec.native_spawn = Some(child.spawn);
+        spec.dispatch = child.dispatch;
         spec.config = s.config_buf;
         if !child.name.is_null() {
             // SAFETY: the generated table stores each name as a C string literal.
@@ -1057,13 +1061,24 @@ mod tests {
                 assert_eq!(roster.child_specs[0].identity, 1);
                 assert_eq!(roster.child_specs[1].identity, 2);
                 drop(roster);
+                let role = crate::lifetime::local_handles::current_supervisor_role_owner(
+                    owner,
+                    1,
+                    crate::lifetime::local_handles::SupervisorRoleKind::Actor,
+                );
+                let (root, dispatch) = crate::supervisor::actor_role_export_metadata(role)
+                    .expect("declared interface is available before any worker is spawned");
+                assert_eq!(root, owner);
+                assert_eq!(dispatch, noop_child_dispatch as *const () as usize);
                 CALLS.lock().unwrap().push(1);
                 // SAFETY: the fixture provides its live one-byte config.
                 if unsafe { *config.cast::<u8>() } == 1 {
                     return crate::lifetime::local_handles::HewLocalPidId::INVALID;
                 }
                 // SAFETY: an empty legacy actor owns no state fields or handlers.
-                let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
+                let actor = unsafe {
+                    actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_child_dispatch))
+                };
                 // SAFETY: successful spawn publishes the direct token.
                 unsafe { (*actor).local_pid_id }
             })();
@@ -1086,7 +1101,9 @@ mod tests {
                 let sibling = crate::supervisor::hew_supervisor_native_role_owner(owner, 1, false);
                 assert!(crate::supervisor::current_actor_role_identity(sibling).is_some());
                 // SAFETY: an empty legacy actor owns no state fields or handlers.
-                let actor = unsafe { actor::hew_actor_spawn(ptr::null_mut(), 0, None) };
+                let actor = unsafe {
+                    actor::hew_actor_spawn(ptr::null_mut(), 0, Some(noop_child_dispatch))
+                };
                 // SAFETY: successful spawn publishes the direct token.
                 unsafe { (*actor).local_pid_id }
             };
@@ -1116,6 +1133,7 @@ mod tests {
                     name: ptr::null(),
                     stop_ns: 0,
                     startup_rank: 1,
+                    dispatch: Some(noop_child_dispatch),
                 },
                 HewNativeChildSpec {
                     restart_policy: RESTART_PERMANENT,
@@ -1124,6 +1142,7 @@ mod tests {
                     name: ptr::null(),
                     stop_ns: 0,
                     startup_rank: 0,
+                    dispatch: Some(noop_child_dispatch),
                 },
             ];
             if malformed_order {
@@ -1208,6 +1227,7 @@ mod tests {
             name: ptr::null(),
             stop_ns: 0,
             startup_rank: 0,
+            dispatch: None,
         };
         for (index, count) in [-1, 0, i64::from(i32::MAX) + 1, i64::MAX]
             .into_iter()

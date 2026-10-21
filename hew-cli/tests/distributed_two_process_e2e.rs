@@ -1187,6 +1187,15 @@ fn authenticated_service_grants_supply_and_revoke_exact_interface() {
     assert!(stdout.contains("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart"), "{stdout}");
 }
 
+/// The same authenticated grant follows one stable role through replacement,
+/// while the admitted crash and its one-shot monitor retain the selected worker.
+#[test]
+fn stable_role_grant_survives_worker_restart_without_replaying_calls() {
+    let stdout = run_two_process_scenario("stable_role");
+    assert!(stdout.contains("PASS stable_role same-location same-grant one-shot-monitor no-replay replacement-call nested-owner-restart new-export owner-close"), "{stdout}");
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// The linchpin assertion: a real two-process remote-ask round-trip over a
 /// loopback socket returns the exact values stored on the remote actor.
 #[test]

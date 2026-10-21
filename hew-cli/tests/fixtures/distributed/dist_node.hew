@@ -762,6 +762,125 @@ actor IdentityProbe {
     }
 }
 
+#[wire]
+enum RoleReq {
+    Read @0;
+    Add(i64) @1;
+    Crash @2;
+}
+
+actor RoleService {
+    var value: i64;
+    #[wire]
+    receive fn handle(request: RoleReq) -> i64 {
+        match request {
+            RoleReq.Read => value,
+            RoleReq.Add(amount) => {
+                value += amount;
+                value
+            }
+            RoleReq.Crash => {
+                let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+                fs.append(f"{kx}/role.calls", "x").expect("record admitted crash");
+                panic("restart exported role");
+            }
+        }
+    }
+}
+
+supervisor RoleRack {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child worker: RoleService { value: 0 };
+}
+
+supervisor RoleGroup {
+    child rack: RoleRack;
+}
+
+actor RoleObserver {
+    var registration: Result<MonitorRef, LinkError>;
+    let completed: Sink<Location>;
+    receive fn arm(service: RoleService) {
+        registration = monitor(service);
+        assert(registration_id(registration) != 0);
+    }
+    #[on(down)]
+    fn on_down(note: DownNotification) {
+        match note.target {
+            DownTarget.Remote(location) => completed.send(location).expect("one-shot role notice"),
+            _ => panic("role observation lost its remote identity"),
+        }
+    }
+}
+
+fn scenario_server_stable_role(peer: net.PeerSession, kx: string) {
+    let group = spawn RoleGroup;
+    let rack = group.rack;
+    let role = rack.worker;
+    assert(Node.register("stable-role", role) == 0);
+    let original = Node.lookup("stable-role").expect("role registration");
+    let export = peer.export(role).expect("role grant");
+    let _ = wait_for_file(f"{kx}/role.crashed");
+    restarted(role);
+    assert(role.handle(RoleReq.Read).expect("replacement") == 0);
+    assert(Node.lookup("stable-role").expect("role survives restart") == original);
+    assert(fs.read(f"{kx}/role.calls").expect("crash count") == "x");
+    publish_atomic(kx, "role.restarted", "1");
+    let _ = wait_for_file(f"{kx}/role.fresh");
+    stop(rack);
+    restarted(rack);
+    assert(Node.lookup("stable-role").expect("nested owner replacement preserves role") == original);
+    assert(role.handle(RoleReq.Read).expect("replacement nested owner") == 0);
+    let new_export = peer.export(role).expect("new export after nested owner restart");
+    publish_atomic(kx, "role.owner-restarted", "1");
+    let _ = wait_for_file(f"{kx}/role.owner-fresh");
+    stop(group);
+    stopped(group);
+    match Node.lookup("stable-role") {
+        .Err(.NotFound) => {}
+        _ => panic("closed role retained discovery"),
+    }
+    publish_atomic(kx, "role.closed", "1");
+    let _ = wait_for_file(f"{kx}/role.done");
+    new_export.close();
+    export.close();
+}
+
+fn scenario_stable_role(kx: string) -> i64 {
+    let service = fixture_peer().receive_service<RoleService>().expect("stable role grant");
+    let original = discover_with_retry("stable-role").expect("role metadata");
+    let (completed, notices): (Sink<Location>, Stream<Location>) = stream.pipe(1).expect("role notices");
+    let observer = spawn RoleObserver { registration: .Err(.NoContext), completed: completed };
+    observer.arm(service).expect("monitor role");
+    assert(service.handle(RoleReq.Add(5)).expect("first worker") == 5);
+    match service.handle(RoleReq.Crash) {
+        .Err(_) => {}
+        _ => panic("crashed call replayed or completed"),
+    }
+    assert(notices.recv().expect("selected worker completed") == original);
+    publish_atomic(kx, "role.crashed", "1");
+    let _ = wait_for_file(f"{kx}/role.restarted");
+    assert(Node.lookup("stable-role").expect("same role metadata") == original);
+    assert(service.handle(RoleReq.Read).expect("same grant replacement") == 0);
+    assert(service.handle(RoleReq.Add(7)).expect("fresh role call") == 7);
+    publish_atomic(kx, "role.fresh", "1");
+    let _ = wait_for_file(f"{kx}/role.owner-restarted");
+    assert(service.handle(RoleReq.Read).expect("existing grant after nested owner restart") == 0);
+    let new_service = fixture_peer().receive_service<RoleService>().expect("new grant after owner restart");
+    assert(new_service.handle(RoleReq.Add(9)).expect("new export call") == 9);
+    assert(service.handle(RoleReq.Read).expect("same semantic target") == 9);
+    publish_atomic(kx, "role.owner-fresh", "1");
+    let _ = wait_for_file(f"{kx}/role.closed");
+    match service.handle(RoleReq.Read) {
+        .Err(_) => {}
+        _ => panic("closed role retained call authority"),
+    }
+    publish_atomic(kx, "role.done", "1");
+    println("PASS stable_role same-location same-grant one-shot-monitor no-replay replacement-call nested-owner-restart new-export owner-close");
+    0
+}
+
 // ── Cross-node link ───────────────────────────────────────────────────────────
 //
 // The link scenarios prove the OTP "linked processes die together" semantic
@@ -1600,6 +1719,11 @@ fn run_server(scenario: string) {
     }
     if scenario == "service_grants" {
         scenario_server_service_grants(kx);
+        Node.shutdown();
+        return;
+    }
+    if scenario == "stable_role" {
+        scenario_server_stable_role(peer, kx);
         Node.shutdown();
         return;
     }
@@ -3038,6 +3162,8 @@ fn run_client(scenario: string) -> i64 {
         scenario_quarantine_rejoin()
     } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
         scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
+    } else if scenario == "stable_role" {
+        scenario_stable_role(kx)
     } else if scenario == "service_grants" {
         scenario_service_grants(kx, port)
     } else {

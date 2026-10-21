@@ -78,7 +78,7 @@ pub(crate) fn authenticated_peer_node_id_for_conn(mgr: &HewConnMgr, conn_id: c_i
 
 pub(crate) fn local_location_for_actor(mgr: &HewConnMgr, actor_id: u64) -> Option<Location> {
     let slot = crate::pid::hew_pid_serial(actor_id);
-    Location::new(mgr.local_identity?, slot, mgr.local_session_incarnation?).ok()
+    Location::direct(mgr.local_identity?, slot, mgr.local_session_incarnation?).ok()
 }
 
 /// As [`authenticated_peer_node_id_for_conn`], but tolerant of this

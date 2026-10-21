@@ -202,7 +202,7 @@ fn test_node_id(route_slot: u16) -> NodeId {
 }
 
 fn test_location(route_slot: u16, actor_slot: u64) -> Location {
-    Location::new(test_node_id(route_slot), actor_slot, 1)
+    Location::direct(test_node_id(route_slot), actor_slot, 1)
         .expect("test locations use nonzero slots and incarnations")
 }
 

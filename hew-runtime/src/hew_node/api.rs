@@ -8,7 +8,7 @@ use super::{
     TransportSelection,
 };
 use crate::connection;
-use crate::node_identity::{HewLocation, HewNodeId};
+use crate::node_identity::{HewLocation, HewNodeId, Location};
 use crate::peer_binding::TransportSelection as PeerTransport;
 use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
 use crate::set_last_error;
@@ -847,11 +847,11 @@ pub unsafe extern "C" fn hew_node_api_register(
     })
 }
 
-/// `Node::register<T>(name, pid)` — Register a named actor by bare PID.
+/// Native direct-actor registration adapter for an already-known packed ID.
 ///
-/// An actor handle lowers to a bare `u64` PID at this ABI boundary rather than a
-/// `*mut HewActor` pointer. The caller
-/// extracts the PID via `hew_actor_pid` before passing it here.
+/// Source `Node.register` passes its ordinary actor handle through
+/// [`hew_node_api_register_handle_string`], preserving direct and role identity.
+/// This native adapter accepts only an exact direct actor ID.
 ///
 /// Returns 0 on success, -1 on any of the fail-closed conditions:
 /// - `name` is null
@@ -910,17 +910,37 @@ pub unsafe extern "C" fn hew_node_api_register_by_pid(name: *const c_char, pid: 
 ///
 /// `name` must be null (the Hew empty string) or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_node_api_register_by_pid_string(
+pub unsafe extern "C" fn hew_node_api_register_handle_string(
     name: *const HewString,
-    pid: u64,
+    token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> c_int {
-    // SAFETY: caller supplies a live managed string for this synchronous copy.
+    // SAFETY: the caller lends a live managed name for this synchronous copy.
     let Ok(name) = (unsafe { string_to_cstring(name) }) else {
         set_last_error("Node::register: name contains an embedded NUL");
         return -1;
     };
-    // SAFETY: CString provides a live NUL-terminated pointer for this call.
-    unsafe { hew_node_api_register_by_pid(name.as_ptr(), pid) }
+    let Some(location) = super::service_api::local_actor_identity(token) else {
+        set_last_error("Node::register: actor authority is not live");
+        return -1;
+    };
+    let (status, observer) = with_current_node_read(|current| {
+        // SAFETY: the current-node read guard pins the node and its registry.
+        let Some(node) = (unsafe { (*current as *const HewNode).as_ref() }) else {
+            return (-1, None);
+        };
+        if node.state.load(Ordering::Acquire) != super::NODE_STATE_RUNNING
+            || node.auth.node_identity() != Some(location.node())
+            || node.auth.session_incarnation() != Some(location.incarnation())
+        {
+            return (-1, None);
+        }
+        // SAFETY: the node is pinned and the owned name remains live.
+        unsafe { super::register_location(node, name.as_ptr(), location) }
+    });
+    if let Some(observer) = observer {
+        observer.notify();
+    }
+    status
 }
 
 /// `Node::unregister(name)` — remove a name registration from the active node.
@@ -1432,7 +1452,7 @@ pub unsafe extern "C" fn hew_node_id_format(node: *const HewNodeId) -> *mut c_ch
     unsafe { owned_identity_string(&format!("{:016x}{:016x}", node.hi, node.lo)) }
 }
 
-/// Format a full location as `<node-hex>/<slot>@<session>`.
+/// Format a full location as `<node-hex>/<target-kind>:<identity>@<session>`.
 ///
 /// # Safety
 ///
@@ -1444,13 +1464,11 @@ pub unsafe extern "C" fn hew_location_format(location: *const HewLocation) -> *m
     }
     // SAFETY: caller guarantees `location` is readable.
     let location = unsafe { *location };
+    let Ok(location) = Location::try_from(location) else {
+        return ptr::null_mut();
+    };
     // SAFETY: the formatted string is copied into Hew-owned storage.
-    unsafe {
-        owned_identity_string(&format!(
-            "{:016x}{:016x}/{}@{}",
-            location.node.hi, location.node.lo, location.slot, location.incarnation
-        ))
-    }
+    unsafe { owned_identity_string(&location.to_string()) }
 }
 
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it

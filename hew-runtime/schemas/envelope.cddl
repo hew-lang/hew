@@ -173,12 +173,13 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 8        ; current schema version; decoders reject unknown values
+wire-version = 9        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
 location = {
     1 => node-id, ; node
-    2 => uint, ; slot: non-zero
+    2 => uint, ; non-zero exact actor serial or canonical full-width role token
     3 => uint, ; incarnation: non-zero, <= u32 max
+    4 => 0 / 1, ; target kind: direct actor / stable role
 }
 
 node-session = {

@@ -231,7 +231,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
     let marker = *b"hew-channel-marker:this-payload-must-never-cross-the-wire-plain!";
     // SAFETY: node_b is live for this borrow.
     let b = unsafe { &*node_b.as_ptr() };
-    let location = Location::new(
+    let location = Location::direct(
         b.auth.node_identity().expect("node b identity"),
         0x99,
         b.auth.session_incarnation().expect("node b session"),

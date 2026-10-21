@@ -379,7 +379,7 @@ mod tests {
             assert_eq!(hew_node_watch_status(watch), 0);
             let subscription = (*watch).subscription.as_ref().unwrap();
             let registration = HewLocation::from(
-                crate::node_identity::Location::new(test_node_id(51), 99, 1).unwrap(),
+                crate::node_identity::Location::direct(test_node_id(51), 99, 1).unwrap(),
             );
             let registry = &*(*node).registry;
             // Mutation after registration but before the initial read is both
@@ -430,9 +430,10 @@ mod tests {
             // Repointed registrations and locations from another session do
             // not belong to the retiring actor's exact current Location.
             let actor_id = crate::pid::hew_pid_make(51, 99);
-            let successor = crate::node_identity::Location::new(test_node_id(51), 100, 1).unwrap();
+            let successor =
+                crate::node_identity::Location::direct(test_node_id(51), 100, 1).unwrap();
             let other_session =
-                crate::node_identity::Location::new(test_node_id(51), 99, 2).unwrap();
+                crate::node_identity::Location::direct(test_node_id(51), 99, 2).unwrap();
             registry
                 .remote_names
                 .lock_or_recover()

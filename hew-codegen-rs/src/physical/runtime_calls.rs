@@ -364,40 +364,19 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::NodeRegister => {
                 let status_ty = self.ctx.i32_type();
                 let ptr = self.ctx.ptr_type(AddressSpace::default());
-                let pid_accessor = get_or_declare_external(
-                    self.llvm,
-                    "hew_local_pid_actor_id",
-                    status_ty.fn_type(&[self.ctx.i64_type().into(), ptr.into()], false),
-                )?;
-                let register = get_or_declare_external(
-                    self.llvm,
-                    "hew_node_api_register_by_pid_string",
-                    status_ty.fn_type(&[ptr.into(), self.ctx.i64_type().into()], false),
-                )?;
                 let local = self
                     .load(source(1)?, "node.register.local")?
                     .into_int_value();
-                let pid_out = self
-                    .value_emitter()
-                    .entry_scratch(self.ctx.i64_type().into(), "node.register.pid")?;
-                self.builder
-                    .build_store(pid_out, self.ctx.i64_type().const_zero())
-                    .llvm_ctx("initialize node registration pid output")?;
-                let _ = self.runtime_call_value(
-                    pid_accessor,
-                    &[local.into(), pid_out.into()],
-                    "node.register.pid",
+                let register = get_or_declare_external(
+                    self.llvm,
+                    "hew_node_api_register_handle_string",
+                    status_ty.fn_type(&[ptr.into(), local.get_type().into()], false),
                 )?;
-                let pid = self
-                    .builder
-                    .build_load(self.ctx.i64_type(), pid_out, "node.register.pid.value")
-                    .llvm_ctx("load resolved local actor pid")?
-                    .into_int_value();
                 let status = self.runtime_call_value(
                     register,
                     &[
                         self.load(source(0)?, "node.register.name")?.into(),
-                        pid.into(),
+                        local.into(),
                     ],
                     "node.register",
                 )?;

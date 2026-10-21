@@ -204,6 +204,8 @@ impl SupervisorControl {
     }
 
     pub(crate) fn finish_terminal(&self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        crate::hew_node::retire_current_role_names(self.direct_id);
         let parent = self
             .parent_stop_notification
             .lock()
@@ -1372,6 +1374,56 @@ pub(crate) fn current_actor_role_owner_slot(
     let handles = current_handles()?;
     let runtime_id = current_runtime_id()?;
     handles.actor_role_owner_slot(runtime_id, token)
+}
+
+/// Recover only an existing canonical actor-role token from carried metadata.
+/// Parsing a token never allocates a handle or confers actor authority.
+pub(crate) fn carried_role(raw: u64) -> Option<HewLocalPidId> {
+    let token = HewLocalPidId(usize::try_from(raw).ok()?);
+    let (_, _, kind) = current_actor_role_owner_slot(token)?;
+    (kind == SupervisorRoleKind::Actor).then_some(token)
+}
+
+/// The original stable control owns a role path, including nested roles.
+pub(crate) fn current_actor_role_root(token: HewLocalPidId) -> Option<HewLocalPidId> {
+    let handles = current_handles()?;
+    let runtime_id = current_runtime_id()?;
+    handles.state.access(|state| {
+        let role = state.supervisor_roles.get(&token)?;
+        match state.routes.get(&role.root)? {
+            Route::Supervisor {
+                runtime_id: owner, ..
+            }
+            | Route::RetiredSupervisor { runtime_id: owner }
+                if *owner == runtime_id && role.kind == SupervisorRoleKind::Actor =>
+            {
+                Some(role.root)
+            }
+            _ => None,
+        }
+    })
+}
+
+/// Pin exactly the worker selected once by a carried semantic target.
+/// The returned pin seam never resolves a replacement after selection.
+pub(crate) fn with_current_target_actor<R>(
+    target: crate::node_identity::Target,
+    local_route: u16,
+    run: impl FnOnce(*mut crate::actor::HewActor) -> R,
+) -> Option<R> {
+    let (id, serial) = match target {
+        crate::node_identity::Target::Direct(serial) => {
+            let serial = serial.get();
+            if !crate::pid::actor_slot_fits_internal_alias(serial) {
+                return None;
+            }
+            (crate::pid::hew_pid_make(local_route, serial), serial)
+        }
+        crate::node_identity::Target::Role(token) => {
+            crate::supervisor::current_actor_role_identity(carried_role(token.get())?)?
+        }
+    };
+    crate::lifetime::live_actors::with_actor_send_by_identity(id, serial, |pin| run(pin.as_ptr()))
 }
 
 /// Observe the stable control even after close has retired the direct route.

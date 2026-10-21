@@ -342,11 +342,8 @@ fn apply_observation_notice(notice: ObservationNotice) {
     match notice {
         ObservationNotice::Demonitor(payload) => {
             if let Some(rt) = crate::runtime::rt_current_opt() {
-                rt.monitors.remove_remote_watcher(
-                    payload.target.slot(),
-                    payload.watcher,
-                    payload.ref_id,
-                );
+                rt.monitors
+                    .remove_remote_watcher(payload.target, payload.watcher, payload.ref_id);
             }
         }
         ObservationNotice::MonitorDown(payload) => handle_inbound_monitor_down(&payload),
@@ -365,7 +362,7 @@ pub(super) fn local_actor_location(
     node: &HewNode,
     actor_id: u64,
 ) -> Option<crate::node_identity::Location> {
-    Location::new(
+    Location::direct(
         node.auth.node_identity()?,
         crate::pid::hew_pid_serial(actor_id),
         node.auth.session_incarnation()?,
@@ -430,7 +427,6 @@ pub extern "C" fn hew_node_demonitor(ref_id: i64) {
 /// exactly as the local sweep does. The remote watchers are still removed so a
 /// later sweep finds nothing.
 pub(crate) fn fan_out_remote_monitor_down(
-    target_actor_id: u64,
     watchers: Vec<crate::monitor::RemoteWatcherTarget>,
     reason: i32,
     crash_kind: u32,
@@ -450,14 +446,10 @@ pub(crate) fn fan_out_remote_monitor_down(
         if node_ref.conn_mgr.is_null() || node_ref.routing_table.is_null() {
             return;
         }
-        let Some(target) = local_actor_location(node_ref, target_actor_id) else {
-            set_last_error("monitor down fan-out: exact target Location is unavailable");
-            return;
-        };
         for watcher in watchers {
             let payload = crate::envelope::MonitorDownPayload {
                 ref_id: watcher.ref_id,
-                target,
+                target: watcher.destination,
                 reason,
                 end_reason: end as u8,
                 crash_kind: crash_kind.cast_signed(),
@@ -574,7 +566,7 @@ pub(crate) fn send_terminal_setup_notice(
 /// registered, so a forged frame cannot crash an actor this node never linked.
 pub(crate) fn handle_inbound_link_req(
     payload: &crate::envelope::LinkReqPayload,
-    target_actor_id: u64,
+    selected: crate::lifetime::live_actors::ActorIncarnation,
     conn_mgr: *mut HewConnMgr,
     conn_id: c_int,
     claim_token: u64,
@@ -588,7 +580,7 @@ pub(crate) fn handle_inbound_link_req(
         return Some(
             match rt
                 .monitors
-                .register_reciprocal_watcher(target_actor_id, payload, claim_token)
+                .register_reciprocal_watcher(selected, payload, claim_token)
             {
                 crate::monitor::RemoteWatcherSetup::Registered => {
                     crate::envelope::SETUP_STATUS_ACCEPTED
@@ -615,7 +607,7 @@ pub(crate) fn handle_inbound_link_req(
         );
     }
 
-    handle_inbound_original_link_req(rt, payload, target_actor_id, conn_mgr, conn_id, claim_token)
+    handle_inbound_original_link_req(rt, payload, selected, conn_mgr, conn_id, claim_token)
 }
 
 struct ReverseLinkSetup {
@@ -734,7 +726,7 @@ impl crate::wake::scheduled::ReadyWork for ReverseLinkSetup {
 fn handle_inbound_original_link_req(
     rt: &crate::runtime::RuntimeInner,
     payload: &crate::envelope::LinkReqPayload,
-    target_actor_id: u64,
+    selected: crate::lifetime::live_actors::ActorIncarnation,
     conn_mgr: *mut HewConnMgr,
     conn_id: c_int,
     claim_token: u64,
@@ -781,7 +773,7 @@ fn handle_inbound_original_link_req(
         reverse_ref,
         payload.linker,
         crate::monitor::WatcherAction::Link {
-            local_actor_id: target_actor_id,
+            local_actor_id: selected.actor_id(),
             policy_tag: payload.policy_tag,
         },
         crate::monitor::ObservationAuthority {
@@ -792,7 +784,8 @@ fn handle_inbound_original_link_req(
         None,
     );
     match rt.monitors.register_admitted_watcher(
-        target_actor_id,
+        selected,
+        payload.target,
         payload.linker,
         payload.ref_id,
         true,
@@ -865,12 +858,20 @@ fn handle_inbound_original_link_req(
     None
 }
 
-fn rollback_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, reverse_ref: u64) {
+fn rollback_inbound_link_setup(
+    payload: &crate::envelope::LinkReqPayload,
+    reverse_ref: u64,
+    publication: u64,
+) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.monitors
-        .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
+    rt.monitors.retract_admitted_watcher(
+        payload.target,
+        payload.linker,
+        payload.ref_id,
+        publication,
+    );
     if let Some(down) = rt.monitors.deliver_link_down_to_ref(
         reverse_ref,
         payload.linker,
@@ -887,12 +888,20 @@ fn rollback_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, revers
     }
 }
 
-fn discard_inbound_link_setup(payload: &crate::envelope::LinkReqPayload, reverse_ref: u64) {
+fn discard_inbound_link_setup(
+    payload: &crate::envelope::LinkReqPayload,
+    reverse_ref: u64,
+    publication: u64,
+) {
     let Some(rt) = crate::runtime::rt_current_opt() else {
         return;
     };
-    rt.monitors
-        .remove_remote_watcher(payload.target.slot(), payload.linker, payload.ref_id);
+    rt.monitors.retract_admitted_watcher(
+        payload.target,
+        payload.linker,
+        payload.ref_id,
+        publication,
+    );
     rt.monitors.remove_remote_observation(reverse_ref);
 }
 
@@ -985,11 +994,11 @@ fn complete_inbound_link_setup(
         crate::envelope::SETUP_STATUS_ACCEPTED => {}
         crate::envelope::SETUP_STATUS_RESOURCE_EXHAUSTED
         | crate::envelope::SETUP_STATUS_REFUSED => {
-            discard_inbound_link_setup(payload, reverse_ref);
+            discard_inbound_link_setup(payload, reverse_ref, claim_token);
             send_reverse_unlink(payload, reverse_ref, conn_mgr, owner, conn_id, claim_token);
         }
         _ => {
-            rollback_inbound_link_setup(payload, reverse_ref);
+            rollback_inbound_link_setup(payload, reverse_ref, claim_token);
             send_reverse_unlink(payload, reverse_ref, conn_mgr, owner, conn_id, claim_token);
         }
     }
@@ -1013,7 +1022,7 @@ fn complete_inbound_link_setup(
             Ok(result) => result,
             Err(err) => {
                 if status == crate::envelope::SETUP_STATUS_ACCEPTED {
-                    rollback_inbound_link_setup(payload, reverse_ref);
+                    rollback_inbound_link_setup(payload, reverse_ref, claim_token);
                     send_reverse_unlink(
                         payload,
                         reverse_ref,
@@ -1037,7 +1046,7 @@ fn complete_inbound_link_setup(
     ) != 0
         && status == crate::envelope::SETUP_STATUS_ACCEPTED
     {
-        rollback_inbound_link_setup(payload, reverse_ref);
+        rollback_inbound_link_setup(payload, reverse_ref, claim_token);
         send_reverse_unlink(payload, reverse_ref, conn_mgr, owner, conn_id, claim_token);
     }
 }
@@ -1303,7 +1312,7 @@ pub(crate) unsafe fn start_imported_observation(
         // id as a return endpoint; only links require a live actor endpoint.
         let watcher = connection::local_location_for_actor(manager, operation.actor_id)
             .or_else(|| {
-                Location::new(
+                Location::direct(
                     offer.recipient.node_id,
                     ref_id,
                     offer.recipient.session_incarnation,

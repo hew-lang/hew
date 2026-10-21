@@ -3044,7 +3044,7 @@ mod tests {
     }
 
     fn test_location(slot: u64) -> Location {
-        Location::new(NodeId::from_bytes([7; 16]), slot.max(1), 3).unwrap()
+        Location::direct(NodeId::from_bytes([7; 16]), slot.max(1), 3).unwrap()
     }
 
     #[test]

@@ -28,7 +28,7 @@ use crate::node_identity::{Location, NodeId};
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 8;
+pub const WIRE_VERSION: u8 = 9;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
@@ -2012,11 +2012,15 @@ fn location_to_value(location: Location) -> Value {
         ),
         (
             Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(location.slot())),
+            Value::Integer(Integer::from(location.target().id())),
         ),
         (
             Value::Integer(Integer::from(3u64)),
             Value::Integer(Integer::from(location.incarnation())),
+        ),
+        (
+            Value::Integer(Integer::from(4u64)),
+            Value::Integer(Integer::from(location.target().kind())),
         ),
     ])
 }
@@ -2030,7 +2034,7 @@ fn value_to_location(value: &Value, key: u64) -> Result<Location, DecodeError> {
         key,
         expected: "a location map",
     })?;
-    ensure_exact_keys(&map, &[1, 2, 3])?;
+    ensure_exact_keys(&map, &[1, 2, 3, 4])?;
     let node = value_to_node_id(required(&map, 1)?, key)?;
     let slot = value_to_u64(required(&map, 2)?, key)?;
     let incarnation_raw = value_to_u64(required(&map, 3)?, key)?;
@@ -2038,9 +2042,20 @@ fn value_to_location(value: &Value, key: u64) -> Result<Location, DecodeError> {
         key,
         expected: "a location with a u32 session incarnation",
     })?;
-    Location::new(node, slot, incarnation).map_err(|_| DecodeError::MalformedField {
+    let kind = value_to_u64(required(&map, 4)?, key)?;
+    let kind = u32::try_from(kind).map_err(|_| DecodeError::MalformedField {
         key,
-        expected: "a location with non-zero actor slot and session incarnation",
+        expected: "a known location target kind",
+    })?;
+    Location::try_from(crate::node_identity::HewLocation {
+        node: node.into(),
+        target_id: slot,
+        incarnation,
+        target_kind: kind,
+    })
+    .map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a location with a known target kind and non-zero identity and session",
     })
 }
 

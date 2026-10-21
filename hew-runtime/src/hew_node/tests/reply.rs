@@ -732,7 +732,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
         let manager = (*node_a.as_ptr()).conn_mgr;
         (
             manager as usize,
-            Location::new(
+            Location::direct(
                 peer.auth.node_identity().unwrap(),
                 99,
                 peer.auth.session_incarnation().unwrap(),

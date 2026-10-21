@@ -142,7 +142,7 @@ pub(super) static INBOUND_ASK_REPLY_ADMISSION_HOOK: std::sync::LazyLock<TestGate
     std::sync::LazyLock::new(TestGate::default);
 
 pub(super) unsafe extern "C" fn node_inbound_router(
-    target_actor_id: u64,
+    destination: crate::node_identity::HewLocation,
     identity: *const std::ffi::c_char,
     data: *mut u8,
     size: usize,
@@ -155,6 +155,9 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     deadline_ns: i64,
     kind: u8,
 ) {
+    let Ok(destination) = crate::node_identity::Location::try_from(destination) else {
+        return;
+    };
     let Some(kind) = crate::request_state::RequestKind::from_wire(kind) else {
         return;
     };
@@ -176,7 +179,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
         };
         let _remote_trace_source = crate::tracing::enter_remote_trace_source();
         handle_inbound_ask(
-            target_actor_id,
+            destination,
             identity,
             payload,
             request_id,
@@ -202,7 +205,7 @@ pub(super) unsafe extern "C" fn node_inbound_router(
     reason = "the retained reply operation owns the shutdown flag clone"
 )]
 pub(super) fn handle_inbound_ask(
-    target_actor_id: u64,
+    destination: crate::node_identity::Location,
     identity: &str,
     payload: &[u8],
     request_id: u64,
@@ -261,7 +264,9 @@ pub(super) fn handle_inbound_ask(
     }
     // Resolve target lifetime before validating its codec: a dead actor is
     // a lifecycle failure, while a missing codec is a decode failure.
-    let target = inbound_target(target_actor_id);
+    // SAFETY: the admission guard pins the current manager.
+    let route = unsafe { (*conn_mgr.0).local_node_id };
+    let target = inbound_target(destination, route);
     let Some((target, token, dispatch)) = target else {
         reject(AskError::StaleRef);
         return;
@@ -269,6 +274,7 @@ pub(super) fn handle_inbound_ask(
     // SAFETY: the admission guard pins this manager until the request retires.
     let admission = super::service::RemoteAdmission::new(
         unsafe { &*conn_mgr.0 },
+        destination,
         target,
         caller.identity.into(),
         publication,
@@ -522,12 +528,6 @@ pub(super) fn accept_loop(transport: SendTransport, conn_mgr: SendConnMgr, stop:
     }
 }
 
-pub(super) fn actor_id_to_registry_ptr(actor_id: u64) -> *mut c_void {
-    let encoded = usize::try_from(actor_id)
-        .expect("u64 actor IDs fit in usize on supported targets (64-bit required)");
-    encoded as *mut c_void
-}
-
 /// Drain this manager's admitted requests and reverse-link work before teardown.
 /// Pending actor observations are cancelled after the existing five-second ceiling.
 pub(super) fn drain_inbound_requests(inbound_active: Option<&Arc<AtomicUsize>>) {
@@ -555,13 +555,14 @@ pub(super) fn stop_node_accept_thread(node: &mut HewNode) {
 }
 
 fn inbound_target(
-    actor_id: u64,
+    location: crate::node_identity::Location,
+    route: u16,
 ) -> Option<(
     crate::lifetime::live_actors::ActorIncarnation,
     crate::lifetime::local_handles::HewLocalPidId,
     *const c_void,
 )> {
-    crate::lifetime::live_actors::with_actor_send_by_id(actor_id, |actor| {
+    crate::lifetime::local_handles::with_current_target_actor(location.target(), route, |actor| {
         // SAFETY: the send pin keeps the complete actor incarnation live.
         unsafe {
             Some((

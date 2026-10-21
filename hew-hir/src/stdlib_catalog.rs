@@ -69,23 +69,6 @@ pub enum BuiltinLinkage {
     /// gate treats them like `CompilerIntrinsic` (no C-ABI symbol to
     /// classify).
     CalleeNameDispatchOnly,
-    /// `Node::register<T>(name, pid)` — register an actor by bare PID.
-    ///
-    /// Per registry R81 (2026-05-23), an actor handle lowers to a `u64` at
-    /// the C-ABI boundary, not a `*mut HewActor`. Codegen must therefore
-    /// synthesise a two-step call sequence:
-    /// 1. `hew_actor_pid(actor_ptr: ptr) -> u64` — extract the numeric PID
-    ///    from the actor-handle alloca (which is a `ptr` in LLVM).
-    /// 2. `hew_node_api_register_by_pid_string(name: ptr, pid: u64) -> i32` — the
-    ///    actual C-ABI registration call.
-    ///
-    /// `RuntimeFfiShim` cannot be used here because the LLVM call sequence
-    /// requires an intermediate PID-extraction step that the generic
-    /// `Terminator::Call` handler cannot express.
-    NodeRegisterByPid {
-        register_symbol: &'static str,
-        pid_accessor: &'static str,
-    },
     /// Catalog row that *declares* a `#[no_mangle] pub static` runtime symbol
     /// (a `HewMapKeyLayout` or `HewValueLayout` instance) rather than a
     /// function. Used by W4.001 Stage C0b layout-descriptor entries.
@@ -135,7 +118,6 @@ impl BuiltinLinkage {
             Self::PrintIntercept { .. }
             | Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
-            | Self::NodeRegisterByPid { .. }
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
@@ -149,7 +131,6 @@ impl BuiltinLinkage {
             Self::PrintIntercept { .. }
             | Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
-            | Self::NodeRegisterByPid { .. }
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
@@ -171,7 +152,7 @@ impl BuiltinLinkage {
     ///   for `printf("%s")` and neither frees nor replaces it.
     ///
     /// Rows with no runtime edge at all — `CompilerIntrinsic`,
-    /// `CalleeNameDispatchOnly`, `NodeRegisterByPid`, `LayoutDescriptorSymbol`
+    /// `CalleeNameDispatchOnly`, `LayoutDescriptorSymbol`
     /// — stay `None` and keep their consumers' fail-closed answer.
     #[must_use]
     pub const fn audited_runtime_abi_symbol(self) -> Option<&'static str> {
@@ -182,7 +163,6 @@ impl BuiltinLinkage {
             | Self::StringCloneShim { symbol } => Some(symbol),
             Self::CompilerIntrinsic { .. }
             | Self::CalleeNameDispatchOnly
-            | Self::NodeRegisterByPid { .. }
             | Self::LayoutDescriptorSymbol { .. } => None,
         }
     }
@@ -2290,22 +2270,15 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
     ),
     // `Node::register<T>(name: String, actor: T) -> i32`
     //
-    // T is an actor type; an actor is the type of its own handle, so passing
-    // `actor` here passes that handle. Per R81, an actor handle lowers to a
-    // bare `u64` PID at the C-ABI boundary. The catalog param list
-    // `[String, U64]` is a placeholder for HIR/MIR name-resolution purposes —
-    // codegen handles this linkage variant specially and does not use the
-    // generic `declare_catalog_ffi` path (which would construct the wrong
-    // LLVM function type).
+    // The actor's ordinary handle retains its direct or stable-role identity.
+    // Scalar catalogue types are dispatch placeholders; physical lowering
+    // passes the managed name and local handle to the native registration ABI.
     direct(
         "Node::register",
         BuiltinClass::ClassB,
         &[BuiltinTy::String, BuiltinTy::U64],
         BuiltinTy::I32,
-        BuiltinLinkage::NodeRegisterByPid {
-            register_symbol: "hew_node_api_register_by_pid_string",
-            pid_accessor: "hew_actor_pid",
-        },
+        BuiltinLinkage::CalleeNameDispatchOnly,
     ),
     // `Node::lookup(name: String) -> Result<Location, LookupError>`
     //

@@ -4670,9 +4670,9 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
      "c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_node_api_register_by_pid_string",
-     "{\"native\": \"fn hew_node_api_register_by_pid_string( *const HewString, "
-     "u64, ) -> c_int\"}",
+    {"hew_node_api_register_handle_string",
+     "{\"native\": \"fn hew_node_api_register_handle_string( *const HewString, "
+     "HewLocalPidId, ) -> c_int\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_set_transport",

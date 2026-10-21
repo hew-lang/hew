@@ -8,7 +8,6 @@ use super::{
 };
 use crate::connection::{self, HewConnMgr, SendClaim};
 use crate::envelope::{NodeSessionIdentity, ServiceOfferPayload};
-use crate::lifetime::live_actors::{self, ActorIncarnation};
 use crate::peer_binding::{PeerCredential, TransportSelection};
 use crate::request_deadline::RequestDeadline;
 use crate::util::MutexExt;
@@ -38,13 +37,25 @@ impl ImportedService {
     }
 }
 
-/// Resolve a direct local incarnation through the same location authority used
-/// for service exports, while the current node keeps its manager alive.
+/// Preserve the ordinary local handle's semantic identity in the node session.
 pub(crate) fn local_actor_identity(
     token: crate::lifetime::local_handles::HewLocalPidId,
 ) -> Option<crate::node_identity::Location> {
-    let actor = crate::lifetime::local_handles::resolve_current_observation_actor(token)?;
     with_manager(|manager| {
+        if let Some(root) = crate::lifetime::local_handles::current_actor_role_root(token) {
+            if !crate::supervisor::actor_role_authority_live(root) {
+                return Err(AskError::StaleRef);
+            }
+            let session = local_session(manager).ok_or(AskError::StaleRef)?;
+            return crate::node_identity::Location::role(
+                session.node_id,
+                token.as_usize() as u64,
+                session.session_incarnation,
+            )
+            .map_err(|_| AskError::StaleRef);
+        }
+        let actor = crate::lifetime::local_handles::resolve_current_observation_actor(token)
+            .ok_or(AskError::StaleRef)?;
         connection::local_location_for_actor(manager, actor).ok_or(AskError::StaleRef)
     })
     .ok()
@@ -256,18 +267,26 @@ fn start_export(
     request_id: u64,
     claim: SendClaim,
 ) -> Result<ExportLease, AskError> {
-    let actor_id =
-        crate::lifetime::local_handles::resolve_current_actor(actor).ok_or(AskError::StaleRef)?;
-    let target = live_actors::with_actor_send_by_id(actor_id, |actor| {
-        // SAFETY: the send pin retains this exact incarnation.
-        unsafe { ActorIncarnation::of(actor) }
-    })
-    .ok_or(AskError::StaleRef)?;
-    let location =
-        connection::local_location_for_actor(manager, actor_id).ok_or(AskError::StaleRef)?;
-    let (lease, offer) = manager
-        .service_exports
-        .export(peer.peer, request_id, target, location, handlers)?;
+    let session = local_session(manager).ok_or(AskError::StaleRef)?;
+    let location = if crate::lifetime::local_handles::current_actor_role_root(actor).is_some() {
+        crate::node_identity::Location::role(
+            session.node_id,
+            actor.as_usize() as u64,
+            session.session_incarnation,
+        )
+        .map_err(|_| AskError::StaleRef)?
+    } else {
+        let actor_id = crate::lifetime::local_handles::resolve_current_actor(actor)
+            .ok_or(AskError::StaleRef)?;
+        connection::local_location_for_actor(manager, actor_id).ok_or(AskError::StaleRef)?
+    };
+    let (lease, offer) = manager.service_exports.export(
+        manager.local_node_id,
+        peer.peer,
+        request_id,
+        location,
+        handlers,
+    )?;
     let payload = crate::envelope::encode_service_offer_payload(&offer)
         .map_err(|_| AskError::EncodeFailed)?;
     let bytes = crate::envelope::encode_control_frame(&crate::envelope::ControlFrame {

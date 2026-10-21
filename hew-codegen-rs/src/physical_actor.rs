@@ -54,7 +54,7 @@ fn sender_stamp<'ctx>(
     Ok(stamp)
 }
 
-fn symbol(actor: ActorId, suffix: &str) -> String {
+pub(super) fn symbol(actor: ActorId, suffix: &str) -> String {
     format!("__hew_actor_{}_{}", actor.0, suffix)
 }
 

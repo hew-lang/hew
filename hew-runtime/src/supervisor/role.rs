@@ -189,6 +189,51 @@ pub(crate) fn current_actor_role_identity(
     role_resolve_current_child_id(owner, slot, false).ok()
 }
 
+/// Check the owning supervisor lifetime without selecting an actor incarnation.
+pub(crate) fn actor_role_authority_live(
+    root: crate::lifetime::local_handles::HewLocalPidId,
+) -> bool {
+    let Some(pin) = crate::lifetime::local_handles::pin_current_supervisor(root) else {
+        return false;
+    };
+    let sup = pin.supervisor();
+    // SAFETY: the stable control pin retains these lifecycle atomics.
+    unsafe {
+        !(*sup).cancelled.load(Ordering::Acquire)
+            && ((*sup).running.load(Ordering::Acquire) != 0
+                || (*sup).constructing.load(Ordering::Acquire))
+    }
+}
+
+/// Obtain the declared interface even while the actor role has no occupant.
+/// Only copied metadata crosses the roster guard; no worker is selected here.
+pub(crate) fn actor_role_export_metadata(
+    token: crate::lifetime::local_handles::HewLocalPidId,
+) -> Option<(crate::lifetime::local_handles::HewLocalPidId, usize)> {
+    let root = crate::lifetime::local_handles::current_actor_role_root(token)?;
+    if !actor_role_authority_live(root) {
+        return None;
+    }
+    let (owner, slot, kind) = crate::lifetime::local_handles::current_actor_role_owner_slot(token)?;
+    if kind != crate::lifetime::local_handles::SupervisorRoleKind::Actor {
+        return None;
+    }
+    let pin = crate::lifetime::local_handles::pin_current_supervisor(owner)?;
+    let sup = pin.supervisor();
+    // SAFETY: the control pin retains the supervisor and its roster.
+    let roster = unsafe { &(*sup).roster }.lock_or_recover();
+    // SAFETY: the same pin retains these atomics throughout the roster lookup.
+    if unsafe {
+        (*sup).cancelled.load(Ordering::Acquire)
+            || ((*sup).running.load(Ordering::Acquire) == 0
+                && !(*sup).constructing.load(Ordering::Acquire))
+    } {
+        return None;
+    }
+    let dispatch = roster.child_specs.get(slot as usize)?.dispatch?;
+    Some((root, dispatch as usize))
+}
+
 /// The classified refusal for a resolution that succeeded but whose
 /// incarnation was retired before the ID-pinned submission could begin
 /// (`with_actor_send_by_id` found the ID no longer live). Fail-closed and

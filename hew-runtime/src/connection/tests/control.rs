@@ -54,6 +54,11 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         setup_id: 456,
     };
 
+    let target_serial = payload
+        .target
+        .direct_serial()
+        .expect("direct actor fixture");
+
     let link_req = ControlFrame {
         version: WIRE_VERSION,
         ctrl_kind: CTRL_LINK_REQ,
@@ -64,7 +69,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
     assert!(
         crate::runtime::rt_current()
             .monitors
-            .take_remote_watchers(payload.target.slot())
+            .take_remote_watchers(target_serial)
             .is_empty(),
         "a link request claiming another node must not register a watcher"
     );
@@ -72,8 +77,14 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
     crate::runtime::rt_current()
         .monitors
         .register_remote_link_watcher_for_test(
-            payload.target.slot(),
-            test_location(2, payload.linker.slot()),
+            target_serial,
+            test_location(
+                2,
+                payload
+                    .linker
+                    .direct_serial()
+                    .expect("direct actor fixture"),
+            ),
             payload.ref_id,
         );
     let unlink = ControlFrame {
@@ -86,7 +97,7 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
 
     let watchers = crate::runtime::rt_current()
         .monitors
-        .take_remote_watchers(payload.target.slot());
+        .take_remote_watchers(target_serial);
     assert_eq!(
         watchers.len(),
         1,

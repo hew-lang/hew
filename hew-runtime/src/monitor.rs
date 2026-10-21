@@ -158,6 +158,7 @@ pub(crate) struct LinkDown {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(not(target_arch = "wasm32"))]
 struct RemoteWatcher {
+    destination: Location,
     publication: Option<u64>,
     reciprocal_ref: u64,
     watcher: Location,
@@ -168,6 +169,7 @@ struct RemoteWatcher {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct RemoteWatcherTarget {
+    pub(crate) destination: Location,
     pub(crate) publication: Option<u64>,
     pub watcher: Location,
     pub ref_id: u64,
@@ -639,9 +641,14 @@ impl MonitorState {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "registration binds selected worker, semantic destination and authenticated publication"
+    )]
     pub(crate) fn register_admitted_watcher(
         &self,
-        actor: u64,
+        actor: crate::lifetime::live_actors::ActorIncarnation,
+        destination: Location,
         watcher: Location,
         id: u64,
         link: bool,
@@ -651,6 +658,7 @@ impl MonitorState {
         self.register_remote_watcher_kind(
             actor,
             RemoteWatcher {
+                destination,
                 watcher,
                 ref_id: id,
                 is_link: link,
@@ -664,13 +672,14 @@ impl MonitorState {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn register_reciprocal_watcher(
         &self,
-        actor: u64,
+        actor: crate::lifetime::live_actors::ActorIncarnation,
         payload: &crate::envelope::LinkReqPayload,
         publication: u64,
     ) -> RemoteWatcherSetup {
         self.register_remote_watcher_kind(
             actor,
             RemoteWatcher {
+                destination: payload.target,
                 watcher: payload.linker,
                 ref_id: payload.ref_id,
                 is_link: true,
@@ -684,31 +693,31 @@ impl MonitorState {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn retract_admitted_watcher(
         &self,
-        actor: u64,
+        destination: Location,
         watcher: Location,
         id: u64,
         publication: u64,
     ) {
         let reverse = {
             let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
-            let Some(entries) = targets.get_mut(&actor) else {
-                return;
-            };
-            let Some(index) = entries.iter().position(|entry| {
-                entry.watcher == watcher
-                    && entry.ref_id == id
-                    && entry.publication == Some(publication)
-            }) else {
-                return;
-            };
-            let reverse = entries.remove(index).reciprocal_ref;
-            if entries.is_empty() {
-                targets.remove(&actor);
-            }
+            let mut reverse = Vec::new();
+            targets.retain(|_, entries| {
+                entries.retain(|entry| {
+                    let matches = entry.destination == destination
+                        && entry.watcher == watcher
+                        && entry.ref_id == id
+                        && entry.publication == Some(publication);
+                    if matches && entry.reciprocal_ref != 0 {
+                        reverse.push(entry.reciprocal_ref);
+                    }
+                    !matches
+                });
+                !entries.is_empty()
+            });
             reverse
         };
-        if reverse != 0 {
-            self.remove_remote_observation(reverse);
+        for reference in reverse {
+            self.remove_remote_observation(reference);
         }
     }
 
@@ -727,11 +736,13 @@ impl MonitorState {
     #[cfg(not(target_arch = "wasm32"))]
     fn register_remote_watcher_kind(
         &self,
-        target_actor_id: u64,
+        selected: crate::lifetime::live_actors::ActorIncarnation,
         registration: RemoteWatcher,
         reciprocal: Option<&crate::envelope::LinkReqPayload>,
     ) -> RemoteWatcherSetup {
+        let target_actor_id = selected.actor_id();
         let RemoteWatcher {
+            destination: _,
             watcher,
             ref_id: monitor_id,
             is_link: _,
@@ -800,10 +811,12 @@ impl MonitorState {
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner);
                 let watchers = targets.entry(target_serial).or_default();
-                if !watchers
-                    .iter()
-                    .any(|entry| entry.watcher == watcher && entry.ref_id == monitor_id)
-                {
+                if !watchers.iter().any(|entry| {
+                    entry.destination == registration.destination
+                        && entry.watcher == watcher
+                        && entry.ref_id == monitor_id
+                        && entry.publication == publication
+                }) {
                     watchers.push(registration);
                     self.remote_watchers_registered_total
                         .fetch_add(1, Ordering::Relaxed);
@@ -812,13 +825,9 @@ impl MonitorState {
             })
         };
 
-        if let Some(result) =
-            crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
-                // SAFETY: the send pin keeps the tracked actor allocation alive
-                // for this closure.
-                register(unsafe { &*actor })
-            })
-        {
+        if let Some(result) = crate::lifetime::live_actors::with_live_incarnation(selected, |pin| {
+            register(pin.actor())
+        }) {
             return result;
         }
 
@@ -839,6 +848,8 @@ impl MonitorState {
             .entry(target_serial)
             .or_default()
             .push(RemoteWatcher {
+                destination: Location::direct(watcher.node(), target_serial, watcher.incarnation())
+                    .expect("test destination"),
                 publication: None,
                 reciprocal_ref: 0,
                 watcher,
@@ -850,20 +861,19 @@ impl MonitorState {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn remove_remote_watcher(
         &self,
-        target_serial: u64,
+        destination: Location,
         watcher: Location,
         monitor_id: u64,
     ) {
-        let mut targets = self
-            .remote_targets
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(watchers) = targets.get_mut(&target_serial) {
-            watchers.retain(|entry| !(entry.watcher == watcher && entry.ref_id == monitor_id));
-            if watchers.is_empty() {
-                targets.remove(&target_serial);
-            }
-        }
+        let mut targets = crate::util::MutexExt::lock_or_recover(&self.remote_targets);
+        targets.retain(|_, watchers| {
+            watchers.retain(|entry| {
+                !(entry.destination == destination
+                    && entry.watcher == watcher
+                    && entry.ref_id == monitor_id)
+            });
+            !watchers.is_empty()
+        });
     }
 
     #[cfg(test)]
@@ -877,6 +887,7 @@ impl MonitorState {
                 watchers
                     .into_iter()
                     .map(|entry| RemoteWatcherTarget {
+                        destination: entry.destination,
                         publication: entry.publication,
                         watcher: entry.watcher,
                         ref_id: entry.ref_id,
@@ -1073,6 +1084,9 @@ fn terminal_monitor_reason(actor_state: i32) -> Option<i32> {
 const DOWN_TARGET_LOCAL: u32 = 0;
 #[cfg(not(target_arch = "wasm32"))]
 const DOWN_TARGET_REMOTE: u32 = 1;
+#[cfg(not(target_arch = "wasm32"))]
+/// Native notification tag for a remote stable-role Location.
+pub const DOWN_TARGET_REMOTE_ROLE: u32 = 3;
 pub(crate) const DOWN_TARGET_ROLE: u32 = 2;
 const DOWN_REASON_STOPPED: u32 = 0;
 const DOWN_REASON_TERMINATED: u32 = 1;
@@ -1107,11 +1121,14 @@ impl HewNotificationTarget {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn remote(target: Location) -> Self {
         Self {
-            kind: DOWN_TARGET_REMOTE,
+            kind: match target.target() {
+                crate::node_identity::Target::Direct(_) => DOWN_TARGET_REMOTE,
+                crate::node_identity::Target::Role(_) => DOWN_TARGET_REMOTE_ROLE,
+            },
             session_incarnation: target.incarnation(),
             node_hi: target.node().hi(),
             node_lo: target.node().lo(),
-            slot: target.slot(),
+            slot: target.target().id(),
         }
     }
 
@@ -1711,6 +1728,7 @@ pub(crate) fn notify_monitors_on_end(
                 .unwrap_or_default()
                 .into_iter()
                 .map(|entry| RemoteWatcherTarget {
+                    destination: entry.destination,
                     publication: entry.publication,
                     watcher: entry.watcher,
                     ref_id: entry.ref_id,
@@ -1765,7 +1783,6 @@ pub(crate) fn notify_monitors_on_end(
     // node/conn-mgr is installed (R7), so the local sweep above is unaffected.
     #[cfg(not(target_arch = "wasm32"))]
     crate::hew_node::fan_out_remote_monitor_down(
-        actor_id,
         remote_watchers,
         reason,
         crash_kind,
@@ -2835,7 +2852,7 @@ mod tests {
     }
 
     fn remote_location(byte: u8, slot: u64, incarnation: u32) -> Location {
-        Location::new(NodeId::from_bytes([byte; 16]), slot, incarnation).unwrap()
+        Location::direct(NodeId::from_bytes([byte; 16]), slot, incarnation).unwrap()
     }
 
     #[test]
@@ -2915,8 +2932,8 @@ mod tests {
     fn member_dead_claims_only_monitor_observations_for_its_publication() {
         let state = MonitorState::new();
         let node = NodeId::from_bytes([7; 16]);
-        let old_target = Location::new(node, 13, 1).unwrap();
-        let new_target = Location::new(node, 13, 1).unwrap();
+        let old_target = Location::direct(node, 13, 1).unwrap();
+        let new_target = Location::direct(node, 13, 1).unwrap();
         for (id, target, publication) in [(41, old_target, 10), (42, new_target, 20)] {
             state.insert_admitted_observation(
                 id,
@@ -3062,6 +3079,8 @@ mod tests {
             unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
         // SAFETY: the actor remains live throughout its observation registrations.
         let actor_id = unsafe { (*actor).id };
+        // SAFETY: this fixture retains the same actor until all registrations retire.
+        let selected = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
         let local = remote_location(91, crate::pid::hew_pid_serial(actor_id), 1);
         let remote = remote_location(92, 11, 3);
         let state = monitor_state();
@@ -3118,7 +3137,7 @@ mod tests {
                 },
             ] {
                 assert_eq!(
-                    state.register_reciprocal_watcher(actor_id, &malformed, 17),
+                    state.register_reciprocal_watcher(selected, &malformed, 17),
                     RemoteWatcherSetup::Refused
                 );
             }
@@ -3126,7 +3145,7 @@ mod tests {
                 state.remove_remote_observation(id);
             }
             assert_eq!(
-                state.register_reciprocal_watcher(actor_id, &reciprocal, 17),
+                state.register_reciprocal_watcher(selected, &reciprocal, 17),
                 if cancel_first {
                     RemoteWatcherSetup::Refused
                 } else {
@@ -3145,6 +3164,46 @@ mod tests {
     }
 
     #[test]
+    fn remote_role_registration_retracts_by_semantic_destination_and_publication() {
+        let _guard = crate::runtime_test_guard();
+        // SAFETY: the test exclusively owns this message-free actor.
+        let actor =
+            unsafe { crate::actor::hew_actor_spawn(std::ptr::null_mut(), 0, Some(noop_dispatch)) };
+        // SAFETY: the allocation remains live until both registrations retire.
+        let selected = unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) };
+        let watcher = remote_location(93, 19, 1);
+        let role = Location::role(watcher.node(), (1_u64 << 60) + 7, 1).unwrap();
+        let direct = Location::direct(role.node(), role.target().id(), 1).unwrap();
+        let state = monitor_state();
+        for destination in [role, direct] {
+            assert_eq!(
+                state.register_admitted_watcher(selected, destination, watcher, 7, false, 17, 0),
+                RemoteWatcherSetup::Registered,
+            );
+        }
+        state.retract_admitted_watcher(role, watcher, 7, 18);
+        let retained = state.take_remote_watchers(crate::pid::hew_pid_serial(selected.actor_id()));
+        assert_eq!(retained.len(), 2);
+        assert!(retained.iter().any(|entry| entry.destination == role));
+        for destination in [role, direct] {
+            assert_eq!(
+                state.register_admitted_watcher(selected, destination, watcher, 7, false, 17, 0),
+                RemoteWatcherSetup::Registered,
+            );
+        }
+        state.retract_admitted_watcher(role, watcher, 7, 17);
+        let remaining = state.take_remote_watchers(crate::pid::hew_pid_serial(selected.actor_id()));
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].destination, direct);
+        let target = HewNotificationTarget::remote(role);
+        assert_eq!(target.kind, DOWN_TARGET_REMOTE_ROLE);
+        assert_eq!(target.slot, (1_u64 << 60) + 7);
+        assert_eq!(target.session_incarnation, role.incarnation());
+        // SAFETY: both selected registrations have retired and no messages were sent.
+        unsafe { crate::actor::hew_actor_free(actor) };
+    }
+
+    #[test]
     fn remote_registration_waits_for_native_cleanup_and_preserves_late_terminal_reason() {
         let _guard = crate::runtime_test_guard();
         // SAFETY: this test exclusively owns a message-free actor allocation.
@@ -3159,11 +3218,20 @@ mod tests {
                 .store(HewActorState::Stopped as i32, Ordering::Release);
             let state = monitor_state();
             let watcher = remote_location(93, 19, 1);
+            let destination = remote_location(94, crate::pid::hew_pid_serial((*actor).id), 1);
             assert_eq!(
-                state.register_admitted_watcher((*actor).id, watcher, 1, false, 17, 0),
+                state.register_admitted_watcher(
+                    crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                    destination,
+                    watcher,
+                    1,
+                    false,
+                    17,
+                    0
+                ),
                 RemoteWatcherSetup::Registered
             );
-            state.remove_remote_watcher(crate::pid::hew_pid_serial((*actor).id), watcher, 1);
+            state.remove_remote_watcher(destination, watcher, 1);
             completion.record_close_fault(crate::fault::HewFault::with_message(
                 212,
                 "late cleanup failure".into(),
@@ -3178,7 +3246,15 @@ mod tests {
                 close_fault: Some((212, "late cleanup failure".into())),
             };
             assert_eq!(
-                state.register_admitted_watcher((*actor).id, watcher, 2, false, 17, 0),
+                state.register_admitted_watcher(
+                    crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                    destination,
+                    watcher,
+                    2,
+                    false,
+                    17,
+                    0
+                ),
                 RemoteWatcherSetup::Terminal(expected.clone()),
             );
             notify_monitors_on_end(
@@ -3189,7 +3265,15 @@ mod tests {
                 expected.close_fault.as_ref(),
             );
             assert_eq!(
-                state.register_admitted_watcher((*actor).id, watcher, 3, false, 17, 0),
+                state.register_admitted_watcher(
+                    crate::lifetime::live_actors::ActorIncarnation::of(actor),
+                    destination,
+                    watcher,
+                    3,
+                    false,
+                    17,
+                    0
+                ),
                 RemoteWatcherSetup::Terminal(expected),
             );
             crate::actor::hew_actor_free(actor);

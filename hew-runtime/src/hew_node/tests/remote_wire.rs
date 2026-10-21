@@ -623,7 +623,7 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
 
     // SAFETY: node2 is a live test node.
     let node2_ref = unsafe { node2.as_ptr().as_ref() }.expect("test node must be live");
-    let location = Location::new(
+    let location = Location::direct(
         node2_ref
             .auth
             .node_identity()

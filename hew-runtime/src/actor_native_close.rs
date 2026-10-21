@@ -674,7 +674,7 @@ mod tests {
             let completion = Arc::new(NativeActorCompletion::default());
             let payload = crate::envelope::MonitorDownPayload {
                 ref_id: 7,
-                target: crate::node_identity::Location::new(
+                target: crate::node_identity::Location::direct(
                     crate::node_identity::NodeId::from_bytes([1; 16]),
                     1,
                     1,
@@ -879,6 +879,7 @@ mod tests {
                 name: std::ptr::null(),
                 stop_ns: -1,
                 startup_rank: 0,
+                dispatch: None,
             }];
             let parent = native_spawn_for_test(
                 0,

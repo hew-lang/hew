@@ -102,8 +102,8 @@ fn quarantine_insert_blocks_then_evict_clears() {
 #[test]
 fn registry_repoint_changes_future_lookup_without_rewriting_old_location() {
     let registry = HewRegistry::default();
-    let old = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 100, 3).unwrap();
-    let new = Location::new(crate::node_identity::NodeId::from_bytes([1; 16]), 200, 3).unwrap();
+    let old = Location::direct(crate::node_identity::NodeId::from_bytes([1; 16]), 100, 3).unwrap();
+    let new = Location::direct(crate::node_identity::NodeId::from_bytes([1; 16]), 200, 3).unwrap();
     registry
         .remote_names
         .lock_or_recover()
@@ -511,11 +511,12 @@ fn local_registry_register_and_lookup() {
 
     let actor_name = CString::new("hew-node-local-registry").expect("valid actor name");
     let missing_name = CString::new("hew-node-missing-registry").expect("valid actor name");
-    let actor_id = (u64::from(102u16) << 48) | 0x1234;
 
     // SAFETY: node and C string pointers are valid for each call.
     unsafe {
         assert_eq!(hew_node_start(node.as_ptr()), 0);
+        let actor = spawn_remote_test_actor(noop_dispatch);
+        let actor_id = (*actor).id;
         assert_eq!(
             hew_node_register(node.as_ptr(), actor_name.as_ptr(), actor_id),
             0
@@ -525,10 +526,8 @@ fn local_registry_register_and_lookup() {
             local_actor_location(&*node.as_ptr(), actor_id)
         );
         assert_eq!(lookup_exact(node.as_ptr(), missing_name.as_ptr()), None);
-        assert_eq!(
-            crate::registry::hew_registry_unregister(actor_name.as_ptr()),
-            0
-        );
+        assert_eq!(hew_node_unregister(node.as_ptr(), actor_name.as_ptr()), 0);
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
     }
 
@@ -573,7 +572,6 @@ fn actor_free_unregisters_named_actor_and_emits_gossip_remove() {
 
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
-        assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         let events = cluster.take_registry_gossip(10);
         assert_eq!(events.len(), 1);
@@ -616,11 +614,9 @@ fn node_stop_unregisters_local_names() {
             lookup_exact(node.as_ptr(), actor_name.as_ptr()),
             local_actor_location(&*node.as_ptr(), actor_id)
         );
-        assert!(!crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
         assert_eq!(lookup_exact(node.as_ptr(), actor_name.as_ptr()), None);
-        assert!(crate::registry::hew_registry_lookup(actor_name.as_ptr()).is_null());
 
         assert_eq!(crate::actor::hew_actor_free(actor), 0);
     }
@@ -642,7 +638,10 @@ fn two_node_connect_and_handshake() {
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
     let actor_name = CString::new("hew-node-remote-actor").expect("valid actor name");
-    let actor_id = (u64::from(202u16) << 48) | 0x63;
+    crate::pid::hew_pid_set_local_node(202);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    // SAFETY: the allocation remains live until cleanup below.
+    let actor_id = unsafe { (*actor).id };
     // SAFETY: pointers are valid in this scope.
     unsafe {
         assert_eq!(
@@ -660,7 +659,7 @@ fn two_node_connect_and_handshake() {
 
     // SAFETY: pointers remain valid until dropped.
     unsafe {
-        let _ = crate::registry::hew_registry_unregister(actor_name.as_ptr());
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node1.as_ptr()), 0);
         assert_eq!(hew_node_stop(node2.as_ptr()), 0);
     }
@@ -708,10 +707,14 @@ fn test_node_unregister() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 50) };
     let name = c"test_unreg_actor";
+    crate::pid::hew_pid_set_local_node(50);
+    let actor = spawn_remote_test_actor(noop_dispatch);
+    // SAFETY: the allocation remains live through every registration.
+    let actor_id = unsafe { (*actor).id };
 
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, name.as_ptr(), 999), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), actor_id), 0);
         let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
@@ -719,7 +722,7 @@ fn test_node_unregister() {
         );
         assert_eq!(
             Location::try_from(found).unwrap(),
-            local_actor_location(&*node, 999).unwrap()
+            local_actor_location(&*node, actor_id).unwrap()
         );
     }
 
@@ -743,7 +746,10 @@ fn test_node_unregister() {
     }
 
     // SAFETY: node was allocated by hew_node_new above.
-    unsafe { hew_node_free(node) };
+    unsafe {
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
+        hew_node_free(node);
+    };
 }
 
 #[test]
@@ -759,16 +765,23 @@ fn register_same_name_repoints_future_lookup() {
     // SAFETY: test owns this stopped node.
     unsafe { install_test_auth(node, 51) };
     let name = c"l18_primary";
+    crate::pid::hew_pid_set_local_node(51);
+    let (first, second) = (
+        spawn_remote_test_actor(noop_dispatch),
+        spawn_remote_test_actor(noop_dispatch),
+    );
+    // SAFETY: both allocations remain live through all name changes.
+    let (first_id, second_id) = unsafe { ((*first).id, (*second).id) };
 
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, name.as_ptr(), 7001), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), first_id), 0);
         assert_eq!(
-            hew_node_register(node, name.as_ptr(), 7001),
+            hew_node_register(node, name.as_ptr(), first_id),
             0,
             "registering the same location is idempotent"
         );
-        assert_eq!(hew_node_register(node, name.as_ptr(), 7002), 0);
+        assert_eq!(hew_node_register(node, name.as_ptr(), second_id), 0);
         let mut found = HewLocation::default();
         assert_eq!(
             hew_node_lookup_location(node, name.as_ptr(), &raw mut found),
@@ -776,7 +789,7 @@ fn register_same_name_repoints_future_lookup() {
         );
         assert_eq!(
             Location::try_from(found).unwrap(),
-            local_actor_location(&*node, 7002).unwrap()
+            local_actor_location(&*node, second_id).unwrap()
         );
     }
 
@@ -784,9 +797,11 @@ fn register_same_name_repoints_future_lookup() {
     let other = c"l18_secondary";
     // SAFETY: node is a valid pointer; name is a valid C string literal.
     unsafe {
-        assert_eq!(hew_node_register(node, other.as_ptr(), 7002), 0);
-        let _ = crate::registry::hew_registry_unregister(name.as_ptr());
-        let _ = crate::registry::hew_registry_unregister(other.as_ptr());
+        assert_eq!(hew_node_register(node, other.as_ptr(), second_id), 0);
+        assert_eq!(hew_node_unregister(node, name.as_ptr()), 0);
+        assert_eq!(hew_node_unregister(node, other.as_ptr()), 0);
+        assert_eq!(crate::actor::hew_actor_free(first), 0);
+        assert_eq!(crate::actor::hew_actor_free(second), 0);
         hew_node_free(node);
     }
 }
@@ -839,9 +854,7 @@ fn unregister_keeps_issued_location_live_until_actor_death() {
         let exact = Location::try_from(target).unwrap();
         assert_eq!(
             routing::hew_routing_lookup_location((*node).routing_table, exact),
-            routing::LocationRoute::Local {
-                actor_id: (*actor).id
-            }
+            routing::LocationRoute::Local {}
         );
         assert_eq!(
             crate::lifetime::live_actors::get_actor_ptr_by_id((*actor).id),
@@ -920,8 +933,11 @@ fn remote_lookup_via_registry_gossip() {
             n.registry.cast::<c_void>(),
         );
 
-        // Local lookup should not find it (not registered locally).
-        assert!(crate::registry::hew_registry_lookup(remote_name.as_ptr()).is_null());
+        // Canonical node metadata identifies this as a remote registration.
+        assert_ne!(
+            Location::try_from(remote_location).unwrap().node(),
+            n.auth.node_identity().unwrap()
+        );
 
         // Node lookup should find it via remote_names.
         let mut found = HewLocation::default();
@@ -964,7 +980,8 @@ fn register_emits_gossip_event() {
         assert_eq!(hew_node_start(node.as_ptr()), 0);
 
         let name = c"gossip_actor";
-        let pid: u64 = (u64::from(111u16) << 48) | 0x2A;
+        let actor = spawn_remote_test_actor(noop_dispatch);
+        let pid = (*actor).id;
         assert_eq!(hew_node_register(node.as_ptr(), name.as_ptr(), pid), 0);
 
         // The cluster should have a pending registry gossip event.
@@ -972,7 +989,7 @@ fn register_emits_gossip_event() {
         assert!(!n.cluster.is_null());
         assert!(cluster::hew_cluster_registry_gossip_count(n.cluster) > 0);
 
-        let _ = crate::registry::hew_registry_unregister(name.as_ptr());
+        assert_eq!(crate::actor::hew_actor_free(actor), 0);
         assert_eq!(hew_node_stop(node.as_ptr()), 0);
     }
     crate::registry::hew_registry_clear();

@@ -2,8 +2,50 @@ import std.net.cluster;
 import std.os;
 
 actor Service {
-    fn ping() -> i64 {
+    receive fn ping() -> i64 {
         42
+    }
+    receive fn instance() -> Service {
+        self
+    }
+}
+
+supervisor ServiceRack {
+    strategy: one_for_one;
+    intensity: 3 within 60s;
+    child service: Service;
+}
+
+fn check_named_role() {
+    let rack = spawn ServiceRack;
+    let role = rack.service;
+    assert(Node.register("role", role) == 0);
+    let occupant = role.instance().expect("direct occupant");
+    assert(Node.register("occupant", occupant) == 0);
+    let direct = Node.lookup("occupant").expect("direct location");
+    let original = Node.lookup("role").expect("stable role location");
+    assert(original != direct);
+    assert(role.ping().expect("first worker") == 42);
+    stop(role);
+    restarted(role);
+    assert(role.ping().expect("replacement worker") == 42);
+    stopped(occupant);
+    match Node.lookup("occupant") {
+        .Err(.NotFound) => {}
+        _ => panic("worker completion retained direct discovery"),
+    }
+    assert(Node.lookup("role").expect("role survives worker completion") == original);
+    assert(Node.register("role-again", role) == 0);
+    assert(Node.lookup("role-again").expect("same role") == original);
+    stop(rack);
+    stopped(rack);
+    match Node.lookup("role") {
+        .Err(.NotFound) => {}
+        _ => panic("terminal supervisor retained role discovery"),
+    }
+    match Node.lookup("role-again") {
+        .Err(.NotFound) => {}
+        _ => panic("terminal supervisor retained role alias"),
     }
 }
 
@@ -69,6 +111,8 @@ fn main() {
     };
     observation.changes.recv().expect("withdrawal readiness");
     assert(observation.snapshot().expect("withdrawal snapshot").registrations.is_empty());
+    check_named_role();
+    assert(observation.snapshot().expect("role terminal cleanup").registrations.is_empty());
     // Scope cancellation releases the suspended stream and its subscription.
     let cancelled = scope within 10ms {
         cluster.wait_registered("missing").expect("wait until cancelled");

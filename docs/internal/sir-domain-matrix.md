@@ -516,7 +516,7 @@ half is superseded — see the sub-decision below) — the symbol coming from th
 (`PrintIntercept.runtime_symbol`, `RuntimeFfiShim.symbol`, `ToStringShim.symbol`,
 `StringCloneShim.symbol`), and the call lowers as an ordinary `rt.call{family}`
 joined by `MirCallableKey`. `CompilerIntrinsic`, `CalleeNameDispatchOnly`,
-`NodeRegisterByPid` and `LayoutDescriptorSymbol` rows keep their existing
+`LayoutDescriptorSymbol` rows keep their existing
 non-family handling and are P3/P4. This is a P1 deliverable, not a P5 cleanup:
 without it P1 cannot run its own gate. P1's declared domain is "all scalars +
 string + bytes" and its gate is corpus parity on program output, and the P1

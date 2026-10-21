@@ -249,13 +249,58 @@ pub(super) fn location_matches_node_session(
 ) -> bool {
     location.node() == identity.node_id
         && location.incarnation() == identity.session_incarnation
-        && crate::pid::actor_slot_fits_internal_alias(location.slot())
+        && location
+            .direct_serial()
+            .is_none_or(crate::pid::actor_slot_fits_internal_alias)
 }
 
 pub(super) fn location_matches_local_session(mgr: &HewConnMgr, location: Location) -> bool {
     Some(location.node()) == mgr.local_identity
         && Some(location.incarnation()) == mgr.local_session_incarnation
-        && crate::pid::actor_slot_fits_internal_alias(location.slot())
+        && location
+            .direct_serial()
+            .is_none_or(crate::pid::actor_slot_fits_internal_alias)
+}
+
+fn select_observation_target(
+    mgr: &HewConnMgr,
+    destination: Location,
+) -> Option<crate::lifetime::live_actors::ActorIncarnation> {
+    crate::lifetime::local_handles::with_current_target_actor(
+        destination.target(),
+        mgr.local_node_id,
+        |actor| {
+            // SAFETY: canonical target resolution pins this exact incarnation.
+            unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
+        },
+    )
+}
+
+fn send_empty_role_terminal(
+    mgr: *mut HewConnMgr,
+    connection: c_int,
+    publication: u64,
+    reference: u64,
+    destination: Location,
+    link: bool,
+) -> u8 {
+    crate::hew_node::monitor_link::send_terminal_setup_notice(
+        mgr,
+        connection,
+        publication,
+        reference,
+        destination,
+        crate::monitor::RemoteTerminal {
+            reason: crate::monitor::TerminalMonitorReason {
+                state: crate::internal::types::HewActorState::Stopped as i32,
+                crash_kind: 0,
+                end: crate::internal::types::ActorEndReason::Stopped,
+            },
+            close_fault: None,
+        },
+        link,
+    );
+    SETUP_STATUS_ACCEPTED
 }
 
 fn send_setup_result_frame(
@@ -334,56 +379,66 @@ fn handle_monitor_req_frame(
         set_last_error("connection reader monitor req: no runtime installed");
         return;
     };
-    let target_actor_id = crate::pid::hew_pid_make(mgr_ref.local_node_id, payload.target.slot());
-    crate::hew_node::remote_setup_race_probe_wait(
-        crate::hew_node::RemoteSetupKind::Monitor,
-        target_actor_id,
-    );
-    let target = crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
-        // SAFETY: the send pin retains this exact incarnation.
-        unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
-    });
-    let status = target
-        .ok_or(crate::internal::types::AskError::StaleRef)
-        .and_then(|target| {
-            crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
-                .ok_or(crate::internal::types::AskError::Unauthorized)
-                .and_then(|claim| {
-                    mgr_ref.service_exports.claim_observation(
+    let selected = select_observation_target(mgr_ref, payload.target);
+    if let Some(target) = selected {
+        crate::hew_node::remote_setup_race_probe_wait(
+            crate::hew_node::RemoteSetupKind::Monitor,
+            target.actor_id(),
+        );
+    }
+    let status = crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
+        .ok_or(crate::internal::types::AskError::Unauthorized)
+        .and_then(|claim| {
+            mgr_ref.service_exports.claim_observation(
+                payload.target,
+                peer_identity,
+                payload.grant_id,
+                &claim.publication_removed(),
+                || match selected {
+                    Some(target) => match rt.monitors.register_admitted_watcher(
                         target,
-                        peer_identity,
-                        payload.grant_id,
-                        &claim.publication_removed(),
-                        || match rt.monitors.register_admitted_watcher(
-                            target_actor_id,
-                            payload.watcher,
-                            payload.ref_id,
-                            false,
+                        payload.target,
+                        payload.watcher,
+                        payload.ref_id,
+                        false,
+                        claim_token,
+                        0,
+                    ) {
+                        crate::monitor::RemoteWatcherSetup::Registered => SETUP_STATUS_ACCEPTED,
+                        crate::monitor::RemoteWatcherSetup::Terminal(reason) => {
+                            crate::hew_node::monitor_link::send_terminal_setup_notice(
+                                mgr,
+                                conn_id,
+                                claim_token,
+                                payload.ref_id,
+                                payload.target,
+                                reason,
+                                false,
+                            );
+                            SETUP_STATUS_ACCEPTED
+                        }
+                        crate::monitor::RemoteWatcherSetup::Refused => {
+                            crate::envelope::SETUP_STATUS_REFUSED
+                        }
+                        crate::monitor::RemoteWatcherSetup::TargetGone => SETUP_STATUS_TARGET_GONE,
+                    },
+                    None if matches!(
+                        payload.target.target(),
+                        crate::node_identity::Target::Role(_)
+                    ) =>
+                    {
+                        send_empty_role_terminal(
+                            mgr,
+                            conn_id,
                             claim_token,
-                            0,
-                        ) {
-                            crate::monitor::RemoteWatcherSetup::Registered => SETUP_STATUS_ACCEPTED,
-                            crate::monitor::RemoteWatcherSetup::Terminal(reason) => {
-                                crate::hew_node::monitor_link::send_terminal_setup_notice(
-                                    mgr,
-                                    conn_id,
-                                    claim_token,
-                                    payload.ref_id,
-                                    payload.target,
-                                    reason,
-                                    false,
-                                );
-                                SETUP_STATUS_ACCEPTED
-                            }
-                            crate::monitor::RemoteWatcherSetup::Refused => {
-                                crate::envelope::SETUP_STATUS_REFUSED
-                            }
-                            crate::monitor::RemoteWatcherSetup::TargetGone => {
-                                SETUP_STATUS_TARGET_GONE
-                            }
-                        },
-                    )
-                })
+                            payload.ref_id,
+                            payload.target,
+                            false,
+                        )
+                    }
+                    None => SETUP_STATUS_TARGET_GONE,
+                },
+            )
         })
         .unwrap_or(crate::envelope::SETUP_STATUS_REFUSED);
     send_setup_result_frame(
@@ -435,7 +490,7 @@ fn handle_demonitor_frame(
         return;
     };
     rt.monitors.retract_admitted_watcher(
-        payload.target.slot(),
+        payload.target,
         payload.watcher,
         payload.ref_id,
         claim_token,
@@ -570,49 +625,60 @@ fn handle_link_req_frame(
         set_last_error("connection reader link req Location mismatch");
         return;
     }
-    let target_actor_id = crate::pid::hew_pid_make(mgr_ref.local_node_id, payload.target.slot());
+    let selected = select_observation_target(mgr_ref, payload.target);
     if payload.reciprocate == 1 {
-        crate::hew_node::remote_setup_race_probe_wait(
-            crate::hew_node::RemoteSetupKind::Link,
-            target_actor_id,
-        );
+        if let Some(target) = selected {
+            crate::hew_node::remote_setup_race_probe_wait(
+                crate::hew_node::RemoteSetupKind::Link,
+                target.actor_id(),
+            );
+        }
     }
+    let apply = || match selected {
+        Some(target) => {
+            crate::hew_node::handle_inbound_link_req(&payload, target, mgr, conn_id, claim_token)
+        }
+        None if matches!(
+            payload.target.target(),
+            crate::node_identity::Target::Role(_)
+        ) =>
+        {
+            Some(send_empty_role_terminal(
+                mgr,
+                conn_id,
+                claim_token,
+                payload.ref_id,
+                payload.target,
+                true,
+            ))
+        }
+        None => Some(SETUP_STATUS_TARGET_GONE),
+    };
     let status = if payload.reciprocate == 0 {
-        crate::hew_node::handle_inbound_link_req(
-            &payload,
-            target_actor_id,
-            mgr,
-            conn_id,
-            claim_token,
-        )
-    } else if payload.reciprocate == 1 && payload.reciprocal_ref == 0 {
-        let target =
-            crate::lifetime::live_actors::with_actor_send_by_id(target_actor_id, |actor| {
-                // SAFETY: the send pin retains this exact incarnation.
-                unsafe { crate::lifetime::live_actors::ActorIncarnation::of(actor) }
-            });
-        target
-            .ok_or(crate::internal::types::AskError::StaleRef)
+        // A reciprocal request is authorized by its existing observation below.
+        // An absent actor cannot install that reciprocal target registration.
+        selected
             .and_then(|target| {
-                crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
-                    .ok_or(crate::internal::types::AskError::Unauthorized)
-                    .and_then(|claim| {
-                        mgr_ref.service_exports.claim_observation(
-                            target,
-                            peer_identity,
-                            payload.grant_id,
-                            &claim.publication_removed(),
-                            || {
-                                crate::hew_node::handle_inbound_link_req(
-                                    &payload,
-                                    target_actor_id,
-                                    mgr,
-                                    conn_id,
-                                    claim_token,
-                                )
-                            },
-                        )
-                    })
+                crate::hew_node::handle_inbound_link_req(
+                    &payload,
+                    target,
+                    mgr,
+                    conn_id,
+                    claim_token,
+                )
+            })
+            .or(Some(SETUP_STATUS_TARGET_GONE))
+    } else if payload.reciprocate == 1 && payload.reciprocal_ref == 0 {
+        crate::connection::claim_send(mgr_ref, conn_id, Some(claim_token))
+            .ok_or(crate::internal::types::AskError::Unauthorized)
+            .and_then(|claim| {
+                mgr_ref.service_exports.claim_observation(
+                    payload.target,
+                    peer_identity,
+                    payload.grant_id,
+                    &claim.publication_removed(),
+                    apply,
+                )
             })
             .unwrap_or(Some(crate::envelope::SETUP_STATUS_REFUSED))
     } else {
@@ -665,7 +731,7 @@ fn handle_unlink_frame(
     }
     if let Some(rt) = crate::runtime::rt_current_opt() {
         rt.monitors.retract_admitted_watcher(
-            payload.target.slot(),
+            payload.target,
             payload.linker,
             payload.ref_id,
             claim_token,

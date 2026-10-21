@@ -12073,9 +12073,9 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_node_api_register_by_pid_string( *const HewString, u64, ) -> c_int"
+        "native": "fn hew_node_api_register_handle_string( *const HewString, HewLocalPidId, ) -> c_int"
       },
-      "symbol": "hew_node_api_register_by_pid_string"
+      "symbol": "hew_node_api_register_handle_string"
     },
     {
       "availability": [

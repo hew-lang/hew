@@ -299,6 +299,44 @@ class HomebrewDelivery(unittest.TestCase):
         self.calls = []
         self.terminal = {"status": "completed", "conclusion": "success"}
 
+    def test_deferred_macos_keeps_homebrew_unpublished_without_credentials(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            previous = Path.cwd()
+            os.chdir(tmp)
+            try:
+                Path("dist").mkdir()
+                receipt = {
+                    "version": VERSION,
+                    "source": SHA,
+                    "platforms": {
+                        "darwin-aarch64": {
+                            "state": "deferred",
+                            "owner": "maintainer",
+                            "reason": "notarization service unavailable",
+                            "evidence": "qualification run",
+                        }
+                    },
+                }
+                Path(f"dist/hew-v{VERSION}-platforms.json").write_text(
+                    json.dumps(receipt)
+                )
+                with (
+                    patch.dict(
+                        os.environ, {"VERSION": VERSION, "GITHUB_SHA": SHA}, clear=True
+                    ),
+                    patch.object(channel, "command") as command,
+                ):
+                    channel.publish_homebrew()
+                    command.assert_not_called()
+                    receipt["source"] = "b" * 40
+                    Path(f"dist/hew-v{VERSION}-platforms.json").write_text(
+                        json.dumps(receipt)
+                    )
+                    with self.assertRaisesRegex(RuntimeError, "source/version"):
+                        channel.publish_homebrew()
+            finally:
+                os.chdir(previous)
+
     def fake(self, *args, check=True):
         self.calls.append(args)
         if args[1:3] == ("run", "list"):

@@ -10,7 +10,7 @@ usage() {
 usage: scripts/stage-release-package.sh \
   --source-dir DIR --bin-dir DIR [--bin-suffix SUFFIX] \
   --native-lib FILE --native-triple TRIPLE --native-lib-name NAME \
-  --wasi-lib-dir DIR --destination DIR --completion-shells "SHELL ..."
+  --wasi-lib-dir DIR [--optional-wasi] --destination DIR --completion-shells "SHELL ..."
 EOF
 }
 
@@ -28,6 +28,7 @@ native_lib_name=
 wasi_lib_dir=
 destination=
 completion_shells=
+optional_wasi=false
 
 while [ "$#" -gt 0 ]; do
     option=$1
@@ -38,6 +39,11 @@ while [ "$#" -gt 0 ]; do
         [ "$#" -ge 2 ] || die "$option requires a value"
         value=$2
         shift 2
+        ;;
+    --optional-wasi)
+        optional_wasi=true
+        shift
+        continue
         ;;
     --help | -h)
         usage
@@ -89,11 +95,17 @@ for header in hew.h hew_host.h; do
     [ -f "$source_dir/hew-cabi/include/$header" ] ||
         die "missing public C header: $source_dir/hew-cabi/include/$header"
 done
-[ -d "$wasi_lib_dir" ] || die "missing portable WASI library directory: $wasi_lib_dir"
-for wasi_lib in libhew_runtime.a libhew_std.a; do
-    [ -f "$wasi_lib_dir/$wasi_lib" ] ||
-        die "missing portable WASI library: $wasi_lib_dir/$wasi_lib"
-done
+include_wasi=true
+if [ ! -d "$wasi_lib_dir" ] && [ "$optional_wasi" = true ]; then
+    include_wasi=false
+    printf 'Standalone WASI libraries unavailable; staging the native toolchain.\n'
+else
+    [ -d "$wasi_lib_dir" ] || die "missing portable WASI library directory: $wasi_lib_dir"
+    for wasi_lib in libhew_runtime.a libhew_std.a; do
+        [ -f "$wasi_lib_dir/$wasi_lib" ] ||
+            die "missing portable WASI library: $wasi_lib_dir/$wasi_lib"
+    done
+fi
 for document in LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-LICENSES README.md; do
     [ -f "$source_dir/$document" ] || die "missing release document: $source_dir/$document"
 done
@@ -112,7 +124,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$package_root/bin" "$package_root/lib/$native_triple" \
-    "$package_root/lib/wasm32-wasip1" "$package_root/std" \
+    "$package_root/std" \
     "$package_root/include" "$package_root/completions" "$package_root/share/hew"
 
 cp "$bin_dir/hew$bin_suffix" "$package_root/bin/hew$bin_suffix"
@@ -120,9 +132,12 @@ chmod +x "$package_root/bin/hew$bin_suffix"
 
 cp "$native_lib" "$package_root/lib/$native_lib_name"
 cp "$native_lib" "$package_root/lib/$native_triple/$native_lib_name"
-for wasi_lib in libhew_runtime.a libhew_std.a; do
-    cp "$wasi_lib_dir/$wasi_lib" "$package_root/lib/wasm32-wasip1/$wasi_lib"
-done
+if [ "$include_wasi" = true ]; then
+    mkdir -p "$package_root/lib/wasm32-wasip1"
+    for wasi_lib in libhew_runtime.a libhew_std.a; do
+        cp "$wasi_lib_dir/$wasi_lib" "$package_root/lib/wasm32-wasip1/$wasi_lib"
+    done
+fi
 cp -R "$source_dir/std/." "$package_root/std/"
 cp "$source_dir/scripts/debug/hew-gdb.py" "$source_dir/scripts/debug/hew_lldb.py" \
     "$package_root/share/hew/"

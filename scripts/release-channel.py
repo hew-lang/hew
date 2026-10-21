@@ -223,6 +223,24 @@ def publish_homebrew() -> None:
     version = os.environ["VERSION"]
     repo = "hew-lang/homebrew-hew"
     workflow = "update-formula.yml"
+    receipt_path = Path(f"dist/hew-v{version}-platforms.json")
+    if receipt_path.is_file():
+        receipt = json.loads(receipt_path.read_text())
+        if (
+            receipt.get("version") != version
+            or receipt.get("source") != os.environ["GITHUB_SHA"]
+        ):
+            raise RuntimeError("Homebrew platform receipt source/version differs")
+        macos = receipt.get("platforms", {}).get("darwin-aarch64", {})
+        if macos.get("state") == "deferred":
+            message = "Homebrew deferred: macOS archive unavailable. " + json.dumps(
+                macos
+            )
+            print(f"::notice::{message}", flush=True)
+            if summary := os.environ.get("GITHUB_STEP_SUMMARY"):
+                with Path(summary).open("a") as output:
+                    output.write(message + "\n")
+            return
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("HOMEBREW_TAP_TOKEN is not set")
     # Producer checksums come from the downloaded release-assets artefact.

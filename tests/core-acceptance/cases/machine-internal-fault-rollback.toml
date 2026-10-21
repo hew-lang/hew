@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-internal-fault-rollback"
+intent = "An ordinary helper fault during stabilization rolls back the preceding external state and output changes."
+source = "cases/machine-internal-fault-rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\n"
+stderr = "hew: failure: DivideByZero (202)\n"
+exit = 1

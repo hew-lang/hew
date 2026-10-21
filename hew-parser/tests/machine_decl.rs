@@ -3,6 +3,73 @@
 use hew_parser::ast::Ident;
 
 #[test]
+fn machine_internal_triggers_and_final_leaves_retain_typed_facts() {
+    use hew_parser::ast::{Item, MachineTrigger};
+    let parsed = hew_parser::parse(
+        r"
+machine Delivery {
+    events { Send; Completion; }
+    state Ready { final: i64; parallel: i64; }
+    parallel state Running {
+        region left { initial state Waiting; final state Paid; }
+        region right { initial final state Reserved; }
+    }
+    final state Finished;
+    on Completion: Ready => Finished;
+    on completion: Running => Finished;
+    always: Ready => Finished when false;
+    default { state }
+}
+
+fn history(completion: i64, final: i64, always: i64) -> i64 {
+    completion + final + always
+}
+
+",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Machine(machine) = &parsed.program.items[0].0 else {
+        panic!("machine");
+    };
+    assert_eq!(
+        machine
+            .transitions
+            .iter()
+            .map(|rule| rule.trigger)
+            .collect::<Vec<_>>(),
+        [
+            MachineTrigger::Event(Ident::new("Completion")),
+            MachineTrigger::Completion,
+            MachineTrigger::Always
+        ]
+    );
+    assert!(machine
+        .states
+        .iter()
+        .filter(|state| state.is_final)
+        .map(|state| state.name.name.as_str())
+        .eq(["Paid", "Reserved", "Finished"]));
+    assert!(machine
+        .transitions
+        .iter()
+        .all(|rule| rule.event_bindings.is_empty()));
+    assert!(machine.transitions[2].guard.is_some());
+}
+
+#[test]
+fn machine_internal_triggers_refuse_input_payloads_and_reserved_vocabulary() {
+    for member in [
+        "events { completion; } state A;",
+        "events { E; } state A; on completion { value }: A => A;",
+        "events { E; } state A; always { value }: A => A;",
+        "events { E; } final state Group { initial state A; }",
+    ] {
+        let parsed = hew_parser::parse(&format!("machine M {{ {member} }}"));
+        assert!(!parsed.errors.is_empty(), "accepted {member}");
+    }
+}
+
+#[test]
 fn parse_simple_machine() {
     let source = r"machine Light {
     events {
@@ -35,7 +102,10 @@ fn main() {}
         assert_eq!(m.events.len(), 1);
         assert_eq!(m.events[0].name, Ident::new("Toggle"));
         assert_eq!(m.transitions.len(), 2);
-        assert_eq!(m.transitions[0].event_name, Ident::new("Toggle"));
+        assert_eq!(
+            m.transitions[0].trigger,
+            hew_parser::ast::MachineTrigger::Event(Ident::new("Toggle"))
+        );
         assert_eq!(m.transitions[0].source_state, Ident::new("Off"));
         assert_eq!(m.transitions[0].target_state, Ident::new("On"));
         assert_eq!(m.transitions[1].source_state, Ident::new("On"));

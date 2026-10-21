@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use hew_parser::ast::{
     sym, Block, Expr, Ident, MachineDecl, MachineTransition, MachineTransitionBodyForm,
+    MachineTrigger,
 };
 use serde_json::{json, Value};
 
@@ -25,6 +26,7 @@ struct Node {
     entry: Option<String>,
     exit: Option<String>,
     parallel: bool,
+    is_final: bool,
     initial: Option<(usize, Option<String>)>,
 }
 
@@ -103,6 +105,7 @@ impl<'a> Chart<'a> {
                 entry: state.entry.as_ref().map(block_text),
                 exit: state.exit.as_ref().map(block_text),
                 parallel: false,
+                is_final: state.is_final,
                 initial: None,
             });
         }
@@ -123,6 +126,7 @@ impl<'a> Chart<'a> {
                 entry: group.entry.as_ref().map(block_text),
                 exit: group.exit.as_ref().map(block_text),
                 parallel: !group.regions.is_empty(),
+                is_final: false,
                 initial: None,
             });
         }
@@ -158,6 +162,7 @@ impl<'a> Chart<'a> {
                     entry: None,
                     exit: None,
                     parallel: false,
+                    is_final: false,
                     initial: declarations.get(&region.initial).copied().map(|initial| {
                         (
                             initial,
@@ -294,6 +299,9 @@ impl<'a> Chart<'a> {
     fn annotations(&self, index: usize) -> Vec<String> {
         let node = &self.nodes[index];
         let mut lines = Vec::new();
+        if node.is_final {
+            lines.push("final".into());
+        }
         if !node.fields.is_empty() {
             lines.push(format!("fields: {}", node.fields.join(", ")));
         }
@@ -326,7 +334,7 @@ impl<'a> Chart<'a> {
     }
 
     fn label(rule: &MachineTransition) -> String {
-        let mut label = rule.event_name.to_string();
+        let mut label = rule.trigger.to_string();
         if !rule.event_bindings.is_empty() {
             let _ = write!(
                 label,
@@ -560,6 +568,9 @@ impl<'a> Chart<'a> {
         let label = dot_text(&annotations.join("\n"));
         if node.kind == Kind::State {
             line(out, depth, format!("{} [label=\"{label}\"];", node.id));
+            if node.is_final {
+                line(out, depth, format!("{} [peripheries=2];", node.id));
+            }
             return;
         }
         line(out, depth, format!("subgraph cluster_{} {{", node.id));
@@ -625,7 +636,8 @@ impl<'a> Chart<'a> {
             "composites": self.nodes.iter().enumerate().filter(|(_, node)| node.kind == Kind::Compound).map(|(index, node)| self.node_json(index, node)).collect::<Vec<_>>(),
             "regions": self.nodes.iter().enumerate().filter(|(_, node)| node.kind == Kind::Region).map(|(index, node)| self.node_json(index, node)).collect::<Vec<_>>(),
             "transitions": self.edges.iter().map(|edge| json!({
-                "event": edge.rule.event_name.to_string(), "from": edge.rule.source_state.to_string(), "to": edge.rule.target_state.to_string(),
+                "trigger": match edge.rule.trigger { MachineTrigger::Event(_) => "event", MachineTrigger::Completion => "completion", MachineTrigger::Always => "always" },
+                "event": edge.rule.trigger.event_name().map(|name| name.to_string()), "from": edge.rule.source_state.to_string(), "to": edge.rule.target_state.to_string(),
                 "fromId": edge.from, "toId": edge.to, "scope": edge.scope.map(|scope| self.nodes[scope].id.as_str()),
                 "fromPath": edge.rule.source_path.iter().map(ToString::to_string).collect::<Vec<_>>(), "toPath": edge.rule.target_path.iter().map(ToString::to_string).collect::<Vec<_>>(),
                 "guarded": edge.rule.guard.is_some(), "guard": edge.rule.guard.as_ref().map(hew_parser::fmt::format_expression),
@@ -640,7 +652,7 @@ impl<'a> Chart<'a> {
         json!({
             "id": node.id, "name": node.name, "path": self.path(index), "fields": node.fields,
             "parent": node.parent.map(|parent| self.nodes[parent].name.as_str()), "parentId": node.parent.map(|parent| self.nodes[parent].id.as_str()),
-            "parallel": node.parallel, "initial": node.initial.as_ref().map(|(initial, _)| self.nodes[*initial].name.as_str()),
+            "parallel": node.parallel, "final": node.is_final, "initial": node.initial.as_ref().map(|(initial, _)| self.nodes[*initial].name.as_str()),
             "initialId": node.initial.as_ref().map(|(initial, _)| self.nodes[*initial].id.as_str()),
             "initialValue": node.initial.as_ref().and_then(|(_, value)| value.as_deref()),
             "members": self.children(Some(index)).iter().filter(|child| self.nodes[**child].kind != Kind::Region).map(|child| self.nodes[*child].name.as_str()).collect::<Vec<_>>(),
@@ -694,6 +706,7 @@ impl<'a> Chart<'a> {
     fn list_node(&self, out: &mut String, index: usize, depth: usize) {
         let node = &self.nodes[index];
         let kind = match node.kind {
+            Kind::State if node.is_final => "final ",
             Kind::State => "",
             Kind::Compound if node.parallel => "parallel ",
             Kind::Compound => "compound ",
@@ -714,6 +727,46 @@ impl<'a> Chart<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_and_internal_rules_use_their_authored_trigger_kinds() {
+        let parsed = hew_parser::parse(
+            r"
+machine Delivery {
+    events { Completion; }
+    state Ready;
+    state Running { initial state Waiting; final state Sent; }
+    final state Finished;
+    on Completion: Ready => Running;
+    on completion: Running => Finished;
+    always: Ready => Finished when false;
+    default { state }
+}
+",
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let hew_parser::ast::Item::Machine(machine) = &parsed.program.items[0].0 else {
+            panic!("machine");
+        };
+        let chart = Chart::new(machine, "Delivery");
+        let json = chart.json();
+        let rules = json["transitions"].as_array().unwrap();
+        assert_eq!(rules[0]["trigger"], "event");
+        assert_eq!(rules[0]["event"], "Completion");
+        assert_eq!(rules[1]["trigger"], "completion");
+        assert_eq!(rules[2]["trigger"], "always");
+        assert!(rules[1]["event"].is_null() && rules[2]["event"].is_null());
+        assert!(json["states"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["name"] == "Sent" && node["final"] == true));
+        let mermaid = chart.mermaid();
+        assert!(mermaid.contains(": completion"), "{mermaid}");
+        assert!(mermaid.contains(": always [false]"), "{mermaid}");
+        assert!(chart.dot().contains("peripheries=2"));
+        assert!(chart.list().contains("final Sent"));
+    }
 
     #[test]
     fn source_logic_is_escaped_at_each_render_boundary() {

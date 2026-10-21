@@ -480,6 +480,23 @@ pub trait Machine {
     fn step_info(self, report: Self.Step) -> MachineStepInfo;
 }
 
+/// A bounded machine step did not commit its staged configuration or outputs.
+pub enum MachineStepError {
+    InvalidLimit;
+    LimitExceeded;
+}
+
+impl Display for MachineStepError {
+    fn fmt(self) -> string {
+        match self {
+            .InvalidLimit => "machine step limit must be positive",
+            .LimitExceeded => "machine stabilization limit exceeded",
+        }
+    }
+}
+
+impl Error for MachineStepError {}
+
 pub enum MachineDisposition {
     Taken;
     Ignored;

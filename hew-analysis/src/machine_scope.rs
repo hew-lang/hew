@@ -1,9 +1,9 @@
 //! What a machine body binds at a cursor offset.
 //!
-//! A transition body, its guard, and a state's `entry`/`exit` hooks bind
-//! exactly two implicit names: `state` is the source state's payload and
-//! `event` is the incoming input (HEW-SPEC-2026 §3.11.3). `self` is an actor
-//! or method receiver and is never bound here, so the editor never offers it.
+//! Transition bodies and guards bind `state` to the source payload. External
+//! rules also bind `event` to the incoming input; internal rules have no input.
+//! Hooks receive the bindings available for the transition that runs them.
+//! `self` is an actor or method receiver and is never bound here.
 //! Completions and hover read this one description rather than each deriving
 //! the scope from the AST again.
 
@@ -54,16 +54,16 @@ pub fn scope_at(machine: &MachineDecl, offset: usize) -> Option<MachineScope> {
         } else {
             qualified(machine, transition.source_state)
         };
-        let bindings = vec![
-            MachineBinding {
-                name: "state",
-                ty: source,
-            },
-            MachineBinding {
+        let mut bindings = vec![MachineBinding {
+            name: "state",
+            ty: source,
+        }];
+        if let hew_parser::ast::MachineTrigger::Event(event) = transition.trigger {
+            bindings.push(MachineBinding {
                 name: "event",
-                ty: format!("{}Event.{}", machine.name, transition.event_name),
-            },
-        ];
+                ty: format!("{}Event.{event}", machine.name),
+            });
+        }
         return Some(MachineScope {
             bindings,
             head_bindings: transition

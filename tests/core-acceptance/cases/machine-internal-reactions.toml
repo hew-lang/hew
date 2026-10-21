@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-internal-reactions"
+intent = "External, eventless and completion sets share transactional staging, structural finality, canonical hooks and a per-set bound."
+source = "cases/machine-internal-reactions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "internal reactions and bounded rollback passed\n"
+stderr = ""
+exit = 0

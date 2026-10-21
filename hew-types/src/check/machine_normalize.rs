@@ -16,10 +16,10 @@ use std::sync::Arc;
 use hew_parser::ast::{
     Block, CallArg, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord,
     DeclarationOrigin, Expr, FieldLabel, FnDecl, Ident, IntRadix, Item, Literal, MachineDecl,
-    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MatchArm,
-    NominalPatternPayload, Path, Pattern, PatternField, Program, ResourceMarker, Span, Spanned,
-    Stmt, StringPart, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
-    Visibility,
+    MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm, MachineTrigger,
+    MatchArm, NominalPatternPayload, Path, Pattern, PatternField, Program, ResourceMarker, Span,
+    Spanned, Stmt, StringPart, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl,
+    VariantKind, Visibility,
 };
 
 use super::machine_hierarchy::{Hierarchy, NodeId};
@@ -912,7 +912,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} fn step_with_limit(var self, event: {name}.Event{generic}, limit: i64) -> Result<{name}Step{generic}, MachineStepError> {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
         let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
         let machine_names = [
             machine.name,
@@ -980,7 +980,7 @@ impl Builder {
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
         step.visibility = machine.visibility;
-        step.body = self.configuration_step(machine, &hierarchy)?;
+        step.body = self.default_step();
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -1008,6 +1008,12 @@ impl Builder {
             trailing_expr: Some(Box::new(expression)),
         };
         self.refresh_signature(state_name);
+        let bounded = &mut implementation.methods[2];
+        bounded.origin = DeclarationOrigin::MachineStep;
+        bounded.visibility = machine.visibility;
+        bounded.params[1].name = Ident::new(configuration::EVENT);
+        bounded.body = self.configuration_step(machine, &hierarchy)?;
+        self.refresh_signature(bounded);
         let implementation_span = impl_start..self.next_span;
         let contract_start = self.next_span;
         let Item::Impl(mut contract) = shell.next().expect("machine trait shell").0 else {
@@ -1218,10 +1224,8 @@ impl Builder {
             }
         }
         for transition in &machine.transitions {
-            if !machine
-                .events
-                .iter()
-                .any(|event| event.name == transition.event_name)
+            if matches!(transition.trigger, MachineTrigger::Event(name)
+                if !machine.events.iter().any(|event| event.name == name))
                 || (transition.source_state.name != hew_parser::ast::sym::UNDERSCORE
                     && hierarchy
                         .resolve(transition.source_state, transition.span.clone())
@@ -1479,7 +1483,7 @@ impl Builder {
         fields: &mut [(Ident, Spanned<Expr>)],
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<(), TypeError> {
         for (_, value) in fields.iter_mut() {
             *value = self.rewrite(value, machine, state, event)?;
@@ -1497,7 +1501,7 @@ impl Builder {
         index: usize,
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<Spanned<Expr>, TypeError> {
         let rule = &machine.transitions[index];
         let value = self.rewrite(part, machine, state, event)?;
@@ -1544,7 +1548,7 @@ impl Builder {
         source: &Spanned<Expr>,
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<Spanned<Expr>, TypeError> {
         let saved = self.origin.clone();
         self.origin = source.1.clone();
@@ -1564,7 +1568,7 @@ impl Builder {
         expr: &mut Expr,
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<(), TypeError> {
         match expr {
             Expr::Ident(name)
@@ -1573,6 +1577,14 @@ impl Builder {
                     && name.ctx == machine.body_context =>
             {
                 return Err(self.error("an initial constructor cannot read the input event"));
+            }
+            Expr::Ident(name)
+                if name.name.as_str() == "event" && name.ctx == machine.body_context =>
+            {
+                if event.is_none() {
+                    return Err(self.error("an internal reaction cannot read an input event"));
+                }
+                *name = Ident::new(configuration::EVENT);
             }
             Expr::Ident(name) if name.name.as_str() == "self" => return Err(self.self_refusal()),
             Expr::Ident(name)
@@ -1621,6 +1633,13 @@ impl Builder {
             }
             Expr::FieldAccess { object, field } if matches!(&object.0, Expr::Ident(name) if name.name.as_str() == "event" && name.ctx == machine.body_context) =>
             {
+                let event = event.ok_or_else(|| {
+                    self.error(if self.initializing {
+                        "an initial constructor cannot read the input event"
+                    } else {
+                        "an internal reaction cannot read an input event"
+                    })
+                })?;
                 let field = field.0;
                 if !event.fields.iter().any(|(name, _)| *name == field) {
                     return Err(self.error(format!(
@@ -1850,7 +1869,7 @@ impl Builder {
         args: &mut [CallArg],
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<(), TypeError> {
         for arg in args {
             let value = match arg {
@@ -1865,7 +1884,7 @@ impl Builder {
         arms: &mut [MatchArm],
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<(), TypeError> {
         for arm in arms {
             self.refuse_const_shadow(&arm.pattern, machine)?;
@@ -1931,7 +1950,7 @@ impl Builder {
         block: &Block,
         machine: &MachineDecl,
         state: &MachineState,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
     ) -> Result<Block, TypeError> {
         let mut block = block.clone();
         for (stmt, span) in &mut block.stmts {

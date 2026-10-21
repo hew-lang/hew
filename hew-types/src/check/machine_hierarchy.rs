@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 
-use hew_parser::ast::{sym, Block, Expr, Ident, MachineDecl, Span, Spanned, TypeExpr};
+use hew_parser::ast::{
+    sym, Block, Expr, Ident, MachineDecl, MachineTrigger, Span, Spanned, TypeExpr,
+};
 
 use crate::error::{TypeError, TypeErrorKind};
 
@@ -246,6 +248,16 @@ impl Hierarchy {
                     ));
                 }
             }
+            if rule.trigger == MachineTrigger::Completion
+                && source.is_none_or(|node| {
+                    !matches!(self.nodes[node.0].declaration, Declaration::Compound(_))
+                })
+            {
+                return Err(refusal(
+                    rule.span.clone(),
+                    "a completion transition must name a compound source state".to_string(),
+                ));
+            }
             let target = if rule.target_state.name == sym::UNDERSCORE {
                 None
             } else {
@@ -334,7 +346,8 @@ impl Hierarchy {
             .iter()
             .enumerate()
             .filter(|(index, rule)| {
-                rule.event_name == event && path.contains(&self.rules[*index].source)
+                rule.trigger == MachineTrigger::Event(event)
+                    && path.contains(&self.rules[*index].source)
             })
             .map(|(index, _)| index)
             .collect();
@@ -405,6 +418,14 @@ impl Hierarchy {
         path
     }
 
+    pub(super) fn completion_owner(&self, rule: usize) -> NodeId {
+        self.rules[rule].owner.expect("checked completion source")
+    }
+
+    pub(super) fn is_final(&self, machine: &MachineDecl, node: NodeId) -> bool {
+        matches!(self.nodes[node.0].declaration, Declaration::Leaf(index) if machine.states[index].is_final)
+    }
+
     pub(super) fn parent(&self, node: NodeId) -> Option<NodeId> {
         self.nodes[node.0].parent
     }
@@ -420,12 +441,16 @@ impl Hierarchy {
         self.rules[rule].ordinal
     }
 
-    pub(super) fn candidate_order(&self, machine: &MachineDecl, event: Ident) -> Vec<usize> {
+    pub(super) fn candidate_order(
+        &self,
+        machine: &MachineDecl,
+        trigger: MachineTrigger,
+    ) -> Vec<usize> {
         let mut rules = machine
             .transitions
             .iter()
             .enumerate()
-            .filter_map(|(index, rule)| (rule.event_name == event).then_some(index))
+            .filter_map(|(index, rule)| (rule.trigger == trigger).then_some(index))
             .collect::<Vec<_>>();
         rules.sort_by_key(|index| {
             (

@@ -44,6 +44,7 @@ fn make_machine(
 
 fn unit_state(name: &str) -> MachineState {
     MachineState {
+        is_final: false,
         name: Ident::new(name),
         fields: vec![],
         entry: None,
@@ -54,6 +55,7 @@ fn unit_state(name: &str) -> MachineState {
 
 fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
     MachineState {
+        is_final: false,
         name: Ident::new(name),
         fields: fields
             .into_iter()
@@ -92,7 +94,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
     // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
     // dotted target constructor rather than the source value.
     MachineTransition {
-        event_name: Ident::new(event),
+        trigger: MachineTrigger::Event(Ident::new(event)),
         source_state: Ident::new(source),
         target_state: Ident::new(target),
         target_is_contextual: false,
@@ -153,7 +155,7 @@ fn payload_transition(
 
 fn wildcard_transition(event: &str) -> MachineTransition {
     MachineTransition {
-        event_name: Ident::new(event),
+        trigger: MachineTrigger::Event(Ident::new(event)),
         source_state: Ident::new("_"),
         target_state: Ident::new("_"),
         target_is_contextual: false,

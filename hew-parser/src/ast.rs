@@ -2202,6 +2202,9 @@ pub struct MachineRegion {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineState {
     pub name: Ident,
+    /// A final leaf contributes completion to its containing compound.
+    #[serde(default)]
+    pub is_final: bool,
     pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Optional `entry { ... }` lifecycle block executed when entering this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2237,9 +2240,36 @@ pub enum MachineTransitionBodyForm {
     Block,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MachineTrigger {
+    Event(Ident),
+    Completion,
+    Always,
+}
+
+impl MachineTrigger {
+    #[must_use]
+    pub const fn event_name(self) -> Option<Ident> {
+        match self {
+            Self::Event(name) => Some(name),
+            Self::Completion | Self::Always => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MachineTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Event(name) => name.fmt(f),
+            Self::Completion => f.write_str("completion"),
+            Self::Always => f.write_str("always"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineTransition {
-    pub event_name: Ident,
+    pub trigger: MachineTrigger,
     pub source_state: Ident,
     pub target_state: Ident,
     /// Authored qualified paths, retained for hierarchy checking and tools.

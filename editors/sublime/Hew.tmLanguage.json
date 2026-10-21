@@ -890,7 +890,7 @@
         {
           "comment": "Contextual identifiers (special meaning in specific contexts)",
           "name": "variable.language.contextual.hew",
-          "match": "\\b(block|clone|coalesce|consume|default|drop_new|drop_old|emit|emits|error|events|export|fail|fails|fallback|handle|initial|intensity|json|mailbox|overflow|pool|reenter|repeated|stop|suspends|wired_to|within|yaml)\\b"
+          "match": "\\b(always|block|clone|coalesce|completion|consume|default|drop_new|drop_old|emit|emits|error|events|export|fail|fails|fallback|final|handle|history|initial|intensity|json|mailbox|overflow|parallel|pool|reenter|region|repeated|stop|suspends|wired_to|within|yaml)\\b"
         },
         {
           "comment": "Identifier (catch-all for variables, parameters, fields)",

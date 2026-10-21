@@ -1824,3 +1824,27 @@ fn doc_fence_imports_its_package_outside_the_working_directory() {
         assert!(events.contains("hello, Hew\\n"), "{engine}: {events}");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn machine_internal_reactions_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-internal-reactions",
+            source_rel: "tests/core-acceptance/cases/machine-internal-reactions.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-fault-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-internal-fault-rollback.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-default-limit",
+            source_rel: "tests/core-acceptance/cases/machine-internal-default-limit.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}

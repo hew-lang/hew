@@ -485,3 +485,49 @@ fn history_destinations_require_a_compound() {
         );
     }
 }
+
+#[test]
+fn internal_reactions_do_not_capture_external_event_parameters() {
+    for body in ["event", "event.value"] {
+        let source = format!(
+            r"machine M {{
+            events {{ Go {{ value: i64; }} }}
+            state A;
+            state B;
+            always: A => B {{ let invalid = {body}; B }}
+            default {{ state }}
+        }}"
+        );
+        let output = check_source(&source);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("internal reaction cannot read an input event")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn completion_requires_a_compound_source() {
+    for source in ["A", "_"] {
+        let code = format!(
+            r"machine M {{
+            events {{ Go; }}
+            state A;
+            state B;
+            on completion: {source} => B;
+            default {{ state }}
+        }}"
+        );
+        let output = check_source(&code);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("completion transition must name a compound source")),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}

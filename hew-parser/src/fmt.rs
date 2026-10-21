@@ -12,12 +12,12 @@ use crate::ast::{
     CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
     FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item,
     LambdaParam, Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path, Pattern,
-    PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy, SelectArm, Span,
-    Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound,
-    TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind,
-    TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WireMetadata,
-    WireReserved,
+    MachineTrigger, MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path,
+    Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
+    SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
+    TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl,
+    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
+    WireMetadata, WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -2300,6 +2300,9 @@ impl<'a> Formatter<'a> {
     /// Emit one leaf `state` declaration (fields + entry/exit).
     fn format_machine_leaf_state(&mut self, state: &MachineState) {
         self.write_indent();
+        if state.is_final {
+            self.write("final ");
+        }
         self.write("state ");
         self.write_ident(state.name);
         let has_entry_exit = state.entry.is_some() || state.exit.is_some();
@@ -2346,8 +2349,14 @@ impl<'a> Formatter<'a> {
     /// Emit one machine transition head + body in the `=>` / `reenter` surface.
     /// Caller writes the leading indent.
     fn format_machine_transition(&mut self, transition: &MachineTransition, span_end: usize) {
-        self.write("on ");
-        self.write_ident(transition.event_name);
+        match transition.trigger {
+            MachineTrigger::Event(name) => {
+                self.write("on ");
+                self.write_ident(name);
+            }
+            MachineTrigger::Completion => self.write("on completion"),
+            MachineTrigger::Always => self.write("always"),
+        }
         if !transition.event_bindings.is_empty() {
             self.write(" { ");
             for (i, (name, _)) in transition.event_bindings.iter().enumerate() {
@@ -2571,6 +2580,9 @@ impl<'a> Formatter<'a> {
         state: &MachineState,
         _span_end: usize,
     ) {
+        if state.is_final {
+            self.write("final ");
+        }
         self.write("state ");
         self.write_ident(name);
         let has_entry_exit = state.entry.is_some() || state.exit.is_some();

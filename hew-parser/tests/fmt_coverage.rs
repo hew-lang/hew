@@ -2008,6 +2008,25 @@ fn fmt_machine_state_with_fields_roundtrip() {
 }
 
 #[test]
+fn fmt_machine_final_completion_and_always_roundtrip() {
+    let formatted = roundtrip("machine Delivery{events{Send;Completion;}state Ready;state Running{initial state Waiting;final state Paid;on Send:Waiting=>Paid;}final state Finished;on Completion:Ready=>Running;on completion:Running=>Finished;always:Ready=>Finished when false;default{state}}");
+    assert!(formatted.contains("final state Paid;"), "{formatted}");
+    assert!(formatted.contains("final state Finished;"), "{formatted}");
+    assert!(
+        formatted.contains("on completion: Running => Finished;"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("always: Ready => Finished when false;"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("on Completion: Ready => Running;"),
+        "{formatted}"
+    );
+}
+
+#[test]
 fn fmt_machine_event_with_payload_roundtrip() {
     exact_roundtrip(
         "machine Bank {\n    events {\n        Deposit { amount: Int; }\n    }\n\n    state Open;\n\n    on Deposit: Open => Open;\n}\n",

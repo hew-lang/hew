@@ -2,8 +2,11 @@
 
 use super::{
     Block, Builder, Expr, Hierarchy, Ident, Literal, MachineDecl, MachineEvent, MachineState,
-    MatchArm, NodeId, Pattern, Spanned, Stmt, TypeError, DISPOSITION, INPUT,
+    MachineTrigger, MatchArm, NodeId, Pattern, Spanned, Stmt, TypeError, DISPOSITION, INPUT,
 };
+
+pub(super) const EVENT: &str = "_$machine_event";
+const USED: &str = "_$machine_used";
 
 pub(super) const WORK: &str = "_$machine_work";
 
@@ -35,6 +38,7 @@ impl Builder {
         }
         Ok(MachineState {
             name,
+            is_final: hierarchy.is_final(machine, node),
             fields,
             entry: None,
             exit: None,
@@ -220,120 +224,104 @@ impl Builder {
         Ok(body)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "emit one event transaction with selection, exits, bodies and entries in their shared staging scope"
-    )]
+    pub(super) fn default_step(&mut self) -> Block {
+        let receiver = self.ident("self");
+        let event = self.ident("event");
+        let limit = self.integer(1024);
+        let method = (Ident::new("step_with_limit"), self.span());
+        let call = self.expr(Expr::MethodCall {
+            receiver: Box::new(receiver),
+            method,
+            args: vec![
+                hew_parser::ast::CallArg::Positional(event),
+                hew_parser::ast::CallArg::Positional(limit),
+            ],
+        });
+        let binding = (
+            Pattern::Identifier(Ident::new("_$machine_result")),
+            self.span(),
+        );
+        let ok = (
+            Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
+                name: Ident::new("Ok"),
+                payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(vec![binding])),
+            }),
+            self.span(),
+        );
+        let result = self.ident("_$machine_result");
+        let wildcard = (Pattern::Wildcard, self.span());
+        let err = (
+            Pattern::ContextVariant(hew_parser::ast::ContextVariantPattern {
+                name: Ident::new("Err"),
+                payload: Some(hew_parser::ast::NominalPatternPayload::Tuple(vec![
+                    wildcard,
+                ])),
+            }),
+            self.span(),
+        );
+        let panic = self.ident("panic");
+        let message = self.expr(Expr::Literal(Literal::String(
+            "machine stabilization limit exceeded".to_string(),
+        )));
+        let fault = self.expr(Expr::Call {
+            function: Box::new(panic),
+            args: vec![hew_parser::ast::CallArg::Positional(message)],
+            type_args: None,
+            is_tail_call: false,
+        });
+        let result = self.expr(Expr::Match {
+            scrutinee: Box::new(call),
+            arms: vec![
+                MatchArm {
+                    append_separator: None,
+                    pattern: ok,
+                    guard: None,
+                    body: result,
+                },
+                MatchArm {
+                    append_separator: None,
+                    pattern: err,
+                    guard: None,
+                    body: fault,
+                },
+            ],
+        });
+        Block {
+            stmts: Vec::new(),
+            trailing_expr: Some(Box::new(result)),
+        }
+    }
+
     pub(super) fn configuration_step(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
     ) -> Result<Block, TypeError> {
-        // Reuse the ordinary report/commit shell. Only its dispatch expression
-        // differs: all selected configuration writes share this staging value.
         let mut shell = self.step_body_shell(machine);
+        let limit = self.ident("limit");
+        let zero = self.integer(0);
+        let invalid = self.binary(hew_parser::ast::BinaryOp::LessEqual, limit, zero);
+        let failure = self.limit_failure("InvalidLimit");
+        shell.stmts.push(self.if_do(invalid, vec![failure]));
         shell.stmts.extend(self.history_prelude(machine, hierarchy));
+        let current = self.ident("self");
+        let ty = self.machine_ty(machine, "");
+        shell.stmts.push(self.var(WORK, Some(ty), current));
+        let zero = self.integer(0);
+        let ty = self.ty("i64");
+        shell.stmts.push(self.var(USED, Some(ty), zero));
         let mut arms = Vec::new();
         for event in &machine.events {
             let pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
-            let mut stmts = Vec::new();
             let input = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
-            stmts.push(self.assign(INPUT, input));
-            let current = self.ident("self");
-            let ty = self.machine_ty(machine, "");
-            stmts.push(self.var(WORK, Some(ty), current));
-            let ordered = hierarchy.candidate_order(machine, event.name);
-            let mut authored = Vec::new();
-            for index in &ordered {
-                let value = self.boolean(false);
-                stmts.push(self.var(format!("_$machine_selected_{index}"), None, value));
-                let ordinal = hierarchy.ordinal(*index);
-                if !authored.contains(&ordinal) {
-                    authored.push(ordinal);
-                    let value = self.boolean(false);
-                    stmts.push(self.var(format!("_$machine_seen_{ordinal}"), None, value));
-                }
-            }
-            for (position, index) in ordered.iter().enumerate() {
-                let rule = &machine.transitions[*index];
-                let (source, _) = hierarchy.boundary(*index);
-                let state = self.source_configuration(machine, hierarchy, source)?;
-                let guard = if let Some(guard) = &rule.guard {
-                    self.rewrite_rule_part(guard, *index, machine, &state, event)?
-                } else {
-                    self.boolean(true)
-                };
-                let seen = self.boolean(true);
-                let seen = self.assign(
-                    format!("_$machine_seen_{}", hierarchy.ordinal(*index)),
-                    seen,
-                );
-                let guard = self.block(vec![seen], guard);
-                let guard =
-                    self.focus(machine, hierarchy, source, guard, Focus::Predicate, true)?;
-                let mut conditions = Vec::new();
-                let seen = self.ident(format!("_$machine_seen_{}", hierarchy.ordinal(*index)));
-                conditions.push(self.not(seen));
-                for prior in &ordered[..position] {
-                    if hierarchy.conflicts(*index, *prior) {
-                        let selected = self.ident(format!("_$machine_selected_{prior}"));
-                        conditions.push(self.not(selected));
-                    }
-                }
-                let eligible = self.conjunction(conditions);
-                let select = self.assign(format!("_$machine_selected_{index}"), guard);
-                stmts.push(self.if_do(eligible, vec![select]));
-            }
-            self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
-            self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
-            let mut bodies = ordered.clone();
-            bodies.sort_by_key(|index| machine.transitions[*index].span.start);
-            for index in bodies {
-                let rule = &machine.transitions[index];
-                let (source, _) = hierarchy.boundary(index);
-                let state = self.source_configuration(machine, hierarchy, source)?;
-                if hierarchy.target(index).is_none() {
-                    self.configuration_root = Some(self.current_root(machine, hierarchy, source)?);
-                }
-                self.history_target = rule
-                    .history
-                    .then(|| hierarchy.target(index).expect("checked history target"));
-                self.history_sites = if rule.history {
-                    super::history::destination_sites(&rule.body)
-                } else {
-                    Vec::new()
-                };
-                let body = self.rewrite_rule_part(&rule.body, index, machine, &state, event);
-                self.history_target = None;
-                self.history_sites.clear();
-                self.configuration_root = None;
-                let body = body?;
-                let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
-                let region = hierarchy.write_region(index);
-                let body = if let Some(target) = target {
-                    self.wrap_destination(machine, hierarchy, target, region, body)?
-                } else {
-                    body
-                };
-                let body = self.focus(
-                    machine,
-                    hierarchy,
-                    source,
-                    body,
-                    Focus::Configuration(region),
-                    hierarchy.regional_owner(index),
-                )?;
-                let body = self.retain_history(machine, hierarchy, body)?;
-                let update = self.assign(WORK, body);
-                let selected = self.ident(format!("_$machine_selected_{index}"));
-                let record = self.record_rule(hierarchy.ordinal(index));
-                let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
-                let disposition = self.assign(DISPOSITION, taken);
-                stmts.push(self.if_do(selected, vec![update, record, disposition]));
-            }
-            self.configuration_hooks(machine, hierarchy, event, &ordered, true, &mut stmts)?;
-            let value = self.ident(WORK);
-            let body = self.block(stmts, value);
+            let set_input = self.assign(INPUT, input);
+            let pass = self.configuration_pass(
+                machine,
+                hierarchy,
+                MachineTrigger::Event(event.name),
+                Some(event),
+            )?;
+            let body = self.block(vec![set_input], pass);
             arms.push(MatchArm {
                 append_separator: None,
                 pattern,
@@ -341,20 +329,242 @@ impl Builder {
                 body,
             });
         }
-        let event = self.ident("event");
+        let event = self.ident(EVENT);
         let dispatch = self.expr(Expr::Match {
             scrutinee: Box::new(event),
             arms,
         });
-        self.finish_step(machine, &mut shell, dispatch);
+        shell.stmts.push(self.stmt(Stmt::Expression(dispatch)));
+        let mut reactions = Vec::new();
+        for trigger in [MachineTrigger::Completion, MachineTrigger::Always] {
+            if machine
+                .transitions
+                .iter()
+                .any(|rule| rule.trigger == trigger)
+            {
+                let pass = self.configuration_pass(machine, hierarchy, trigger, None)?;
+                let again = self.stmt(Stmt::Continue { label: None });
+                reactions.push(self.if_do(pass, vec![again]));
+            }
+        }
+        if !reactions.is_empty() {
+            reactions.push(self.stmt(Stmt::Break {
+                label: None,
+                value: None,
+            }));
+            shell.stmts.push(self.stmt(Stmt::Loop {
+                label: None,
+                body: Block {
+                    stmts: reactions,
+                    trailing_expr: None,
+                },
+            }));
+        }
+        let candidate = self.ident(WORK);
+        self.finish_step(machine, &mut shell, candidate);
+        let report = *shell.trailing_expr.take().expect("step report");
+        shell.trailing_expr = Some(Box::new(self.result("Ok", report)));
         Ok(shell)
+    }
+
+    fn integer(&mut self, value: i128) -> Spanned<Expr> {
+        self.expr(Expr::Literal(Literal::Integer {
+            value,
+            radix: hew_parser::ast::IntRadix::Decimal,
+        }))
+    }
+
+    fn binary(
+        &mut self,
+        op: hew_parser::ast::BinaryOp,
+        left: Spanned<Expr>,
+        right: Spanned<Expr>,
+    ) -> Spanned<Expr> {
+        self.expr(Expr::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        })
+    }
+
+    fn result(&mut self, name: &str, value: Spanned<Expr>) -> Spanned<Expr> {
+        let callee = self.variant(Ident::new(name), Vec::new(), Vec::new());
+        self.expr(Expr::Call {
+            function: Box::new(callee),
+            args: vec![hew_parser::ast::CallArg::Positional(value)],
+            type_args: None,
+            is_tail_call: false,
+        })
+    }
+
+    fn limit_failure(&mut self, name: &str) -> Spanned<Stmt> {
+        let error = self.variant(Ident::new(name), Vec::new(), Vec::new());
+        let result = self.result("Err", error);
+        self.stmt(Stmt::Return(Some(result)))
+    }
+
+    /// Completion is structural: an exclusive child's final descendant, or all
+    /// active regions of a parallel state. Focus tests inspect staged values.
+    fn configuration_complete(
+        &mut self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+        node: NodeId,
+    ) -> Result<Spanned<Expr>, TypeError> {
+        let children = hierarchy.children(node);
+        if children.is_empty() {
+            let value = self.boolean(hierarchy.is_final(machine, node));
+            return self.focus(machine, hierarchy, node, value, Focus::Predicate, true);
+        }
+        let children = children
+            .into_iter()
+            .map(|child| self.configuration_complete(machine, hierarchy, child))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(if hierarchy.is_parallel(node) {
+            self.conjunction(children)
+        } else {
+            self.disjunction(children)
+        })
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one selection and staged update path serves external and internal transition sets"
+    )]
+    fn configuration_pass(
+        &mut self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+        trigger: MachineTrigger,
+        event: Option<&MachineEvent>,
+    ) -> Result<Spanned<Expr>, TypeError> {
+        let mut stmts = Vec::new();
+        let ordered = hierarchy.candidate_order(machine, trigger);
+        let mut authored = Vec::new();
+        for index in &ordered {
+            let value = self.boolean(false);
+            stmts.push(self.var(format!("_$machine_selected_{index}"), None, value));
+            let ordinal = hierarchy.ordinal(*index);
+            if !authored.contains(&ordinal) {
+                authored.push(ordinal);
+                let value = self.boolean(false);
+                stmts.push(self.var(format!("_$machine_seen_{ordinal}"), None, value));
+            }
+        }
+        for (position, index) in ordered.iter().enumerate() {
+            let rule = &machine.transitions[*index];
+            let (source, _) = hierarchy.boundary(*index);
+            let state = self.source_configuration(machine, hierarchy, source)?;
+            let guard = if let Some(guard) = &rule.guard {
+                self.rewrite_rule_part(guard, *index, machine, &state, event)?
+            } else {
+                self.boolean(true)
+            };
+            let seen = self.boolean(true);
+            let seen = self.assign(
+                format!("_$machine_seen_{}", hierarchy.ordinal(*index)),
+                seen,
+            );
+            let guard = self.block(vec![seen], guard);
+            let guard = self.focus(machine, hierarchy, source, guard, Focus::Predicate, true)?;
+            let guard = if trigger == MachineTrigger::Completion {
+                let complete = self.configuration_complete(
+                    machine,
+                    hierarchy,
+                    hierarchy.completion_owner(*index),
+                )?;
+                self.conjunction(vec![complete, guard])
+            } else {
+                guard
+            };
+            let mut conditions = Vec::new();
+            let seen = self.ident(format!("_$machine_seen_{}", hierarchy.ordinal(*index)));
+            conditions.push(self.not(seen));
+            for prior in &ordered[..position] {
+                if hierarchy.conflicts(*index, *prior) {
+                    let selected = self.ident(format!("_$machine_selected_{prior}"));
+                    conditions.push(self.not(selected));
+                }
+            }
+            let eligible = self.conjunction(conditions);
+            let select = self.assign(format!("_$machine_selected_{index}"), guard);
+            stmts.push(self.if_do(eligible, vec![select]));
+        }
+        let selections = ordered
+            .iter()
+            .map(|index| self.ident(format!("_$machine_selected_{index}")))
+            .collect();
+        let selected = self.disjunction(selections);
+        stmts.push(self.let_value("_$machine_any", None, selected));
+        let used = self.ident(USED);
+        let limit = self.ident("limit");
+        let exhausted = self.binary(hew_parser::ast::BinaryOp::GreaterEqual, used, limit);
+        let failure = self.limit_failure("LimitExceeded");
+        let refuse = self.if_do(exhausted, vec![failure]);
+        let used = self.ident(USED);
+        let one = self.integer(1);
+        let increment = self.binary(hew_parser::ast::BinaryOp::Add, used, one);
+        let charge = self.assign(USED, increment);
+        let selected = self.ident("_$machine_any");
+        stmts.push(self.if_do(selected, vec![refuse, charge]));
+        self.configuration_hooks(machine, hierarchy, event, &ordered, false, &mut stmts)?;
+        self.capture_history(machine, hierarchy, &ordered, &mut stmts)?;
+        let mut bodies = ordered.clone();
+        bodies.sort_by_key(|index| machine.transitions[*index].span.start);
+        for index in bodies {
+            let rule = &machine.transitions[index];
+            let (source, _) = hierarchy.boundary(index);
+            let state = self.source_configuration(machine, hierarchy, source)?;
+            if hierarchy.target(index).is_none() {
+                self.configuration_root = Some(self.current_root(machine, hierarchy, source)?);
+            }
+            self.history_target = rule
+                .history
+                .then(|| hierarchy.target(index).expect("checked history target"));
+            self.history_sites = if rule.history {
+                super::history::destination_sites(&rule.body)
+            } else {
+                Vec::new()
+            };
+            let body = self.rewrite_rule_part(&rule.body, index, machine, &state, event);
+            self.history_target = None;
+            self.history_sites.clear();
+            self.configuration_root = None;
+            let body = body?;
+            let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
+            let region = hierarchy.write_region(index);
+            let body = if let Some(target) = target {
+                self.wrap_destination(machine, hierarchy, target, region, body)?
+            } else {
+                body
+            };
+            let body = self.focus(
+                machine,
+                hierarchy,
+                source,
+                body,
+                Focus::Configuration(region),
+                hierarchy.regional_owner(index),
+            )?;
+            let body = self.retain_history(machine, hierarchy, body)?;
+            let update = self.assign(WORK, body);
+            let selected = self.ident(format!("_$machine_selected_{index}"));
+            let record = self.record_rule(hierarchy.ordinal(index));
+            let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
+            let disposition = self.assign(DISPOSITION, taken);
+            stmts.push(self.if_do(selected, vec![update, record, disposition]));
+        }
+        self.configuration_hooks(machine, hierarchy, event, &ordered, true, &mut stmts)?;
+
+        let selected = self.ident("_$machine_any");
+        Ok(self.block(stmts, selected))
     }
 
     fn configuration_hooks(
         &mut self,
         machine: &MachineDecl,
         hierarchy: &Hierarchy,
-        event: &MachineEvent,
+        event: Option<&MachineEvent>,
         rules: &[usize],
         entry: bool,
         stmts: &mut Vec<Spanned<Stmt>>,
@@ -677,14 +887,9 @@ impl Builder {
     ) -> Result<Spanned<Expr>, TypeError> {
         let mut scope = self.source_configuration(machine, hierarchy, parent)?;
         scope.fields = hierarchy.inherited_fields(machine, parent)?;
-        let event = MachineEvent {
-            name: Ident::new("initial"),
-            fields: Vec::new(),
-            span: self.origin.clone(),
-        };
         let was_initializing = self.initializing;
         self.initializing = true;
-        let result = self.rewrite(value, machine, &scope, &event);
+        let result = self.rewrite(value, machine, &scope, None);
         self.initializing = was_initializing;
         result
     }

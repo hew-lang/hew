@@ -71,7 +71,8 @@ For `machine M`, the compiler supplies:
 | `MOutput` | The independent output enum |
 | `MStepDisposition` | `Taken` and `Ignored` variants |
 | `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rules: Vec<i64>` |
-| `step(var self, event: M.Event) -> MStep` | Staged mutable evaluation |
+| `step(var self, event: M.Event) -> MStep` | Staged evaluation with at most 1024 transition sets |
+| `step_with_limit(var self, event: M.Event, limit: i64) -> Result<MStep, MachineStepError>` | Staged evaluation with an explicit positive bound |
 | `state_name(self) -> string` | Current state tag |
 
 Each machine implements the compiler-generated `Machine` interface. Its
@@ -79,7 +80,7 @@ associated `Event` and `Step` types identify the input and report types;
 `step_info(report)` returns the common `MachineStepInfo` view. Handwritten
 implementations cannot replace the checked machine evaluator. A report's
 `input` is the source event tag; `rules` contains the zero-based source rule
-ordinals in body execution order. It is empty when the default handles the input.
+ordinals in body execution order. It is empty when no external or internal transition is taken.
 
 `MStep` is must-use: discarding it as an expression produces the ordinary
 must-use diagnostic. A caller can explicitly acknowledge deliberate discard
@@ -289,6 +290,62 @@ an input event or another region, emit outputs, or perform effects. Explicit
 region values bypass initial construction for those fields. `initial state Name`
 remains the shorthand for an initial child. Separate initial constructor clauses
 work in regions and exclusive compounds, including compounds nested in regions.
+
+## Final states and internal reactions
+
+A `final state` completes its containing exclusive state. A parallel state is
+complete when every active region has reached a final descendant. Completion
+propagates through nested compounds. A final state can carry payload and ordinary
+entry and exit hooks.
+
+`on completion: Compound => Target` reacts to a completed compound. An
+`always: Source => Target` rule is eligible whenever its source is active and its
+guard succeeds. Both use the ordinary target, guard, history and hook rules;
+neither binds an input `event` or accepts event-head payload bindings. The exact
+lower-case name `completion` is reserved in the input vocabulary; `Completion`
+remains an ordinary event name.
+
+```hew
+machine Job {
+    events { Start; }
+    state Idle;
+    state Running {
+        initial state Working;
+        final state Ready;
+    }
+    state Finished;
+    on Start: Idle => Running;
+    always: Working => Ready;
+    on completion: Running => Finished;
+    default { state }
+}
+
+fn main() {
+    var job: Job = .Idle;
+    let report = job.step_with_limit(.Start, 3).expect("stabilization fits the limit");
+    assert(job == .Finished);
+    assert(report.rules == [0, 1, 2]);
+}
+```
+
+After the external transition set, the evaluator repeatedly selects completion
+rules, then selects `always` rules only if no completion rule is enabled. Each
+set uses deepest-owner priority, declaration order and the same compatibility
+rules as an external set. Even an ignored external input initiates stabilization.
+Construction by itself does not run internal reactions.
+
+Each nonempty compatible set consumes one unit of the limit, including the
+external set. Simultaneous transitions in independent regions count once. A
+successful report combines outputs and rule ordinals from every set in execution
+order, and keeps the original external input tag. `Taken` means at least one
+external or internal transition was selected.
+
+A nonpositive bound returns `.Err(.InvalidLimit)`. When another set is enabled
+but the bound is exhausted, the call returns `.Err(.LimitExceeded)` before that
+set's exit hooks. Both errors leave the original machine, saved history and
+outputs unchanged. Ordinary hook or helper faults propagate as usual and also
+roll back the whole call. `step(event)` uses a bound of 1024 and raises an ordinary
+fault if stabilization exceeds it.
 
 ## Shallow history
 

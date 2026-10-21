@@ -372,10 +372,7 @@ fn assert_native_objects_match(roots: &[PathBuf; 2]) {
             objects
         })
         .collect();
-    assert!(
-        objects[0] == objects[1],
-        "native C object bytes across roots"
-    );
+    assert_eq!(objects[0], objects[1], "native C object bytes across roots");
 }
 
 #[cfg(target_os = "linux")]

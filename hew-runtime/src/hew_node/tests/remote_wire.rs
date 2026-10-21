@@ -131,7 +131,7 @@ fn wire_route_slot_peer_observes_configured_slot() {
     let mut authenticated = 0u16;
     for _ in 0..100 {
         // SAFETY: mgr2 is a live manager pointer for the duration of the read.
-        conn_id = unsafe { connection::hew_connmgr_conn_id_for_node(mgr2, ID_A) };
+        conn_id = unsafe { connection::first_active_connection_for_test(mgr2, ID_A) };
         if conn_id >= 0 {
             // SAFETY: mgr2 is live for this read.
             authenticated =
@@ -345,8 +345,8 @@ fn two_node_remote_ask_reply() {
     // Routing: target_node_id=312 ≠ local_node_id=311 → remote path.
     // routing_table[312] provides the outbound conn_id (populated during handshake).
     // On node2 the inbound router fires handle_inbound_ask with conn_mgr=node2.conn_mgr;
-    // send_reply_envelope uses hew_connmgr_conn_id_for_node to find the accepted
-    // connection whose peer_node_id == 311, enabling the reply to flow back to node1.
+    // send_reply_envelope selects the published connection that received the ask,
+    // enabling the reply to flow back to node1.
     let send_value: u32 = 21;
     let target = granted_target_for_node(&node1, &node2, actor_id, test_dispatch(), 1);
     // SAFETY: send_value is a valid u32 on the stack; reply is sized-block-allocated, freed below.
@@ -1004,12 +1004,12 @@ fn unconfigured_peer_pair_rejected_during_connection_admission() {
     // SAFETY: both connection managers remain live until teardown below.
     unsafe {
         assert_eq!(
-            connection::hew_connmgr_conn_id_for_node((*node1.as_ptr()).conn_mgr, 343),
+            connection::first_active_connection_for_test((*node1.as_ptr()).conn_mgr, 343),
             -1,
             "initiator must not install a route for the rejected peer"
         );
         assert_eq!(
-            connection::hew_connmgr_conn_id_for_node((*node2.as_ptr()).conn_mgr, 342),
+            connection::first_active_connection_for_test((*node2.as_ptr()).conn_mgr, 342),
             -1,
             "responder must not install a route for the rejected peer"
         );
@@ -1137,10 +1137,10 @@ fn connection_drop_wakes_pending_remote_ask() {
 
     // SAFETY: both nodes are running and their connection managers are valid here.
     let outbound_conn_id =
-        unsafe { connection::hew_connmgr_conn_id_for_node((*node1.as_ptr()).conn_mgr, 321) };
+        unsafe { connection::first_active_connection_for_test((*node1.as_ptr()).conn_mgr, 321) };
     // SAFETY: both nodes are running and their connection managers are valid here.
     let accepted_conn_id =
-        unsafe { connection::hew_connmgr_conn_id_for_node((*node2.as_ptr()).conn_mgr, 320) };
+        unsafe { connection::first_active_connection_for_test((*node2.as_ptr()).conn_mgr, 320) };
     assert!(
         outbound_conn_id >= 0,
         "initiator outbound connection missing"
@@ -1257,7 +1257,7 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
 
     // SAFETY: both nodes are running and their connection managers are valid here.
     let outbound_conn_id =
-        unsafe { connection::hew_connmgr_conn_id_for_node((*node1.as_ptr()).conn_mgr, 331) };
+        unsafe { connection::first_active_connection_for_test((*node1.as_ptr()).conn_mgr, 331) };
     assert!(
         outbound_conn_id >= 0,
         "initiator outbound connection missing"

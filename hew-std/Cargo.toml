@@ -74,7 +74,7 @@ tungstenite = { version = "0.30", features = ["__rustls-tls"] }
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 url = "2"
 uuid = { version = "1.23.3", features = ["v4", "v7"] }
-webpki-roots = "1"
+webpki-roots = "1.0.10"
 zeroize = { version = "1.9.0", features = ["zeroize_derive"] }
 
 [target.'cfg(windows)'.dependencies]

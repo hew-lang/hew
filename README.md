@@ -17,7 +17,7 @@ A statically-typed, actor-oriented programming language for concurrent and distr
 curl -fsSL https://hew.sh/install | bash
 ```
 
-Pre-built binaries for Linux (x86_64, ARM64), macOS (x86_64, ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
+Pre-built binaries for Linux (x86_64, ARM64), macOS (ARM64), FreeBSD 15.1 or newer (x86_64), and Windows (x86_64) — plus `.deb`, `.rpm`, and Arch packages — are published on the [Releases](https://github.com/hew-lang/hew/releases) page. See the [Getting Started Guide](https://hew.sh/docs/getting-started/) for installation options, editor setup, and troubleshooting.
 
 The current release is [Hew v0.6.1](https://github.com/hew-lang/hew/releases/tag/v0.6.1).
 Read its [upgrade notes](docs/releases/v0.6.1.md) and
@@ -368,7 +368,7 @@ standard library in `build/`. Add `build/bin` to your `PATH` to use it.
 Use `make hew-debug` for a debug compiler. `make assemble` additionally builds
 debug support binaries, WASI and supported native cross-architecture archives. On Linux,
 the opposite architecture is included when its multiarch sysroot is installed;
-on macOS, the opposite Darwin architecture is included. The same non-LTO
+macOS uses its ARM64 host archive. The same non-LTO
 cross archive is reused by tests, assembly, installation, and packaging.
 
 See the [Makefile](Makefile) header for all targets.

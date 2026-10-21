@@ -107,7 +107,7 @@ After cutting a release, update them:
 
 ```sh
 VERSION=0.1.0
-for target in linux-x86_64 linux-aarch64 darwin-x86_64 darwin-aarch64; do
+for target in linux-x86_64 linux-aarch64 darwin-aarch64; do
   curl -fsSL -O \
     "https://github.com/hew-lang/hew/releases/download/v${VERSION}/hew-v${VERSION}-${target}.tar.gz"
 done

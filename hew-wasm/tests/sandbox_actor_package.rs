@@ -1454,37 +1454,35 @@ fn a_late_owned_reply_drains_before_the_next_actor_turn() {
     let trace = execute(source);
     assert_eq!(stdout(&trace), "deadline\nclosed 9\nready\n");
     assert_eq!(trace["final_state"]["exit_code"], 0);
-    // The virtual clock lets the worker dispatch before the deadline, so the
-    // first attempt takes the late-reply leg: the ticket is created, the
-    // caller times out, and its close reaches the audit before the worker's
-    // next turn.
-    let received: Vec<String> = trace["events"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|event| event["message"] == "actor.receive")
-        .map(|event| {
-            let text: serde_json::Value =
-                serde_json::from_str(event["text"].as_str().unwrap()).unwrap();
-            format!(
-                "{}.{}",
-                text["actor_id"].as_str().unwrap(),
-                text["handler"].as_str().unwrap()
-            )
-        })
-        .collect();
-    assert_eq!(
-        received,
-        [
-            "actor:a2.create",
-            "actor:a1.create",
-            "actor:a1.record",
-            "actor:a2.ready",
-            "actor:a1.receipt",
-            "actor:a1.last_closed",
-        ],
-        "{trace:#}"
-    );
+    // Both losing calls must finish their ticket cleanup before the worker
+    // accepts its next turn. Other audit observations are not ordering evidence.
+    let assert_close_before_ready = |trace: &serde_json::Value| {
+        let received: Vec<String> = trace["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["message"] == "actor.receive")
+            .map(|event| {
+                let text: serde_json::Value =
+                    serde_json::from_str(event["text"].as_str().unwrap()).unwrap();
+                format!(
+                    "{}.{}",
+                    text["actor_id"].as_str().unwrap(),
+                    text["handler"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let closed = received
+            .iter()
+            .position(|event| event == "actor:a1.record")
+            .unwrap();
+        let ready = received
+            .iter()
+            .position(|event| event == "actor:a2.ready")
+            .unwrap();
+        assert!(closed < ready, "{trace:#}");
+    };
+    assert_close_before_ready(&trace);
 
     let definitions = &source[..source.find("fn main()").unwrap()];
     let selection = format!(
@@ -1498,8 +1496,8 @@ fn main() {{
         after 1ms => println("timeout"),
     }}
     let _ = release.send(1);
-    worker.ready().expect("ready");
-    assert(audit.receipt().expect("receipt") == 1);
+    let created = worker.ready().expect("ready");
+    assert(audit.receipt(created).expect("receipt") == 1);
     let closed = audit.last_closed().expect("last");
     assert(closed == 9);
     println(f"closed {{closed}}");
@@ -1514,6 +1512,7 @@ fn main() {{
     let trace = execute(&selection);
     assert_eq!(stdout(&trace), "timeout\nclosed 9\nready\n");
     assert_eq!(trace["final_state"]["exit_code"], 0);
+    assert_close_before_ready(&trace);
 }
 
 #[test]

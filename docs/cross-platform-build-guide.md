@@ -96,10 +96,10 @@ This applies to all crates that define `extern "C"` functions: `hew-runtime`,
 Similarly, when casting `libc::malloc` results or building C strings, cast
 to `c_char`, not `i8`.
 
-## macOS (x86_64 and aarch64)
+## macOS (aarch64)
 
-**Tested on:** macOS x86_64 (Homebrew LLVM 22.1.8), GitHub Actions `macos-13`
-(x86_64) and `macos-14` (aarch64)
+Supported macOS builds target Apple silicon. Intel macOS is no longer a
+supported distribution or qualification target.
 
 macOS source builds need an LLVM 22 installation discoverable by `llvm-sys`.
 

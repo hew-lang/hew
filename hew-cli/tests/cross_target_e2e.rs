@@ -2,7 +2,7 @@ mod support;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 use std::sync::OnceLock;
 
 use object::{Architecture, BinaryFormat, Object, ObjectSection};
@@ -10,13 +10,10 @@ use object::{Architecture, BinaryFormat, Object, ObjectSection};
 use support::require_codegen;
 use support::{hew_binary, repo_root};
 
-#[cfg(target_os = "macos")]
-static DARWIN_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
-
 #[cfg(target_os = "linux")]
 static LINUX_CROSS_LIB_STATUS: OnceLock<Result<(), String>> = OnceLock::new();
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 const REQUIRED_CROSS_TARGET_RUNTIME_SYMBOL: &str = "hew_shutdown_wait";
 
 fn workspace() -> tempfile::TempDir {
@@ -93,29 +90,7 @@ fn linux_cross_sysroot_path(cross_triple: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-#[cfg(target_os = "macos")]
-fn darwin_cross_target() -> (&'static str, Architecture) {
-    if cfg!(target_arch = "aarch64") {
-        ("x86_64-apple-darwin", Architecture::X86_64)
-    } else {
-        ("aarch64-apple-darwin", Architecture::Aarch64)
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn require_darwin_cross_target_library() {
-    if let Err(error) = DARWIN_CROSS_LIB_STATUS.get_or_init(bootstrap_darwin_cross_target_library) {
-        panic!("{error}");
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn bootstrap_darwin_cross_target_library() -> Result<(), String> {
-    let (target, _) = darwin_cross_target();
-    bootstrap_cross_target_library(target)
-}
-
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn bootstrap_cross_target_library(target: &str) -> Result<(), String> {
     // The cross-target archive lives in the shared workspace target directory,
     // so the build must be serialized against every other nextest process. The
@@ -142,7 +117,7 @@ fn bootstrap_cross_target_library(target: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn archive_defines_symbol(archive: &Path, symbol: &str) -> Result<bool, String> {
     if !archive.is_file() {
         return Ok(false);
@@ -177,7 +152,7 @@ fn archive_defines_symbol(archive: &Path, symbol: &str) -> Result<bool, String> 
     Ok(false)
 }
 
-#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[cfg(target_os = "linux")]
 fn nm_line_defines_symbol(line: &str, symbol: &str) -> bool {
     let fields: Vec<&str> = line.split_whitespace().collect();
     let Some(name) = fields.last() else {
@@ -639,50 +614,6 @@ fn native_link_same_arch_explicit_target_produces_runnable_binary() {
     assert!(
         !stderr.contains("newer macOS version"),
         "deployment-target mismatch warning in linker output:\n{stderr}",
-    );
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn native_link_darwin_cross_arch_produces_foreign_macho_binary() {
-    require_codegen();
-    require_darwin_cross_target_library();
-
-    let dir = workspace();
-    let source = write_main(dir.path());
-    let output_path = dir.path().join("hello-cross-arch");
-    let (target, expected_arch) = darwin_cross_target();
-
-    let result = Command::new(hew_binary())
-        .args([
-            "build",
-            source.to_str().expect("source path"),
-            "--target",
-            target,
-            "-o",
-            output_path.to_str().expect("output path"),
-        ])
-        .current_dir(dir.path())
-        .output()
-        .expect("run hew build");
-
-    assert!(
-        result.status.success(),
-        "hew build --target {target} failed\nstdout:\n{}\nstderr:\n{}",
-        String::from_utf8_lossy(&result.stdout),
-        String::from_utf8_lossy(&result.stderr),
-    );
-    assert!(output_path.exists(), "output binary not created");
-
-    let data = std::fs::read(&output_path).expect("read binary");
-    let obj = object::File::parse(data.as_slice()).expect("parse binary");
-    assert_eq!(obj.format(), BinaryFormat::MachO, "expected Mach-O binary");
-    assert_eq!(obj.architecture(), expected_arch, "wrong cross-arch output");
-
-    let stderr = String::from_utf8_lossy(&result.stderr);
-    assert!(
-        !stderr.contains("--emit-obj"),
-        "cross-arch Darwin native link regressed to fail-closed path:\n{stderr}",
     );
 }
 

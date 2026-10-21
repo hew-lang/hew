@@ -3292,10 +3292,23 @@ enum Command {
         "{migrated}"
     );
     assert!(
-        migrated.contains("Start @0;") && migrated.contains("Stop @1;"),
+        migrated.contains("Start;") && migrated.contains("Stop;"),
         "{migrated}"
     );
-    assert!(parse(&migrated).errors.is_empty());
+    let reparsed = parse(&migrated);
+    assert!(reparsed.errors.is_empty());
+    let Item::TypeDecl(command) = &reparsed.program.items[1].0 else {
+        panic!("expected command enum");
+    };
+    let tags: Vec<_> = command
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Variant(variant) => Some((variant.tag, variant.tag_explicit)),
+            TypeBodyItem::Field { .. } => None,
+        })
+        .collect();
+    assert_eq!(tags, [(Some(0), false), (Some(1), false)]);
 }
 
 #[test]

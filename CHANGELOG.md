@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-10-21
+
+- Fix browser Test compilation failing with a missing `std.link_monitor` module.
+
+See the [release notes](docs/releases/v0.6.5.md) for upgrade details.
+
 ## [0.6.4] - 2026-10-21
 
 - Authenticate discovered nodes through Noise or TLS relays under one cluster

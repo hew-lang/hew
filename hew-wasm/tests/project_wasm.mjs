@@ -90,3 +90,25 @@ test('loose editor buffers retain relative imports rather than acquiring project
   assert.equal(rootedImport.bytecode, null);
   assert.ok(rootedImport.diagnostics.some(d => d.kind === 'E_MODULE_NOT_FOUND'));
 });
+
+test('browser Test compiles embedded stdlib and executes each selected test', async () => {
+  const output = JSON.parse(compiler.compileTestsToSandboxBytecode(`
+import std.math;
+#[test] fn passes() { assert(math.abs(-4) == 4); println("browser test passed"); }
+#[test] fn fails() { assert(1 == 2); }
+#[test] #[real_time] fn host_only() {}
+`, 'playground.hew'));
+  assert.deepEqual(output.diagnostics, []);
+  assert.equal(output.tests.length, 3);
+  const [passes, fails, hostOnly] = output.tests;
+  assert.equal(passes.identity, 'playground.hew::passes');
+  const options = {codecBridge: compiler.executeCodec};
+  const passed = await runBytecode(passes.bytecode, options);
+  assert.equal(passed.result, 'ok');
+  assert.equal(passed.final_state.stdout.join(''), 'browser test passed\n');
+  const failed = await runBytecode(fails.bytecode, options);
+  assert.notEqual(failed.result, 'ok');
+  assert.equal(failed.final_state.runtime_failures[0].assertion.left, '1');
+  assert.equal(hostOnly.real_time, true);
+  assert.equal(hostOnly.bytecode, null);
+});

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-10-21
+
+- Add typed wall-clock timestamps with calendar, formatting, codec and cron
+  operations, plus lazy Map updates and per-child process environments.
+- Execute actor supervision, links and monitors through the shared WASI
+  lifecycle implementation, including startup failure and cancellation cleanup.
+- Return typed errors for oversized remote requests and replies while keeping
+  unrelated calls and the connection alive.
+- Generate membership, registry, service-offer and terminal controls from Hew
+  wire types through the shared codec, with publication-bound cleanup.
+- Expose the shared multi-file browser project compiler and structured
+  diagnostic fixes across CLI, editor and browser consumers.
+- Preserve package publication provenance and resume against exact artifacts;
+  require Linux and browser products for patch releases.
+
+See the [release notes](docs/releases/v0.6.3.md) for upgrade details.
+
 ## [0.6.2] - 2026-10-19
 
 - Give `std.encoding.toml` values the checked owning model used by JSON and

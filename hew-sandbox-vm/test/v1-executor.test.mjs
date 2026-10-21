@@ -16,7 +16,7 @@ const PRINT_LN = {
 function pkg(overrides) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.3",
+    hew_version: "0.6.4",
     compiler_version: "v1-executor-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

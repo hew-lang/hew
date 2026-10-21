@@ -100,6 +100,17 @@ pub(super) fn reader_loop(
 
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
+        if read_len > buf.len() {
+            if read_len > crate::transport::MAX_FRAME_SIZE {
+                set_last_error(
+                    "connection reader: requested frame capacity exceeds transport limit",
+                );
+                reader_cleanup(mgr, conn_id, &stop_flag);
+                break;
+            }
+            buf.resize(read_len, 0);
+            continue;
+        }
 
         // Every frame passes through the connection's channel; a message that
         // fails authentication ends the connection, never a plaintext retry.

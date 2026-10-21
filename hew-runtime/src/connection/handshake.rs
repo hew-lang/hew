@@ -273,6 +273,9 @@ pub(super) unsafe fn upgrade_noise(
         }
         #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
         let n = n as usize;
+        if n > msg.len() {
+            return None;
+        }
         handshake.read_message(&msg[..n], &mut payload).ok()?;
         let n = handshake.write_message(&[], &mut msg).ok()?;
         // SAFETY: msg points to n readable bytes.
@@ -287,6 +290,9 @@ pub(super) unsafe fn upgrade_noise(
         }
         #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
         let n = n as usize;
+        if n > msg.len() {
+            return None;
+        }
         handshake.read_message(&msg[..n], &mut payload).ok()?;
         let n = handshake.write_message(&[], &mut msg).ok()?;
         // SAFETY: msg points to n readable bytes.
@@ -300,6 +306,9 @@ pub(super) unsafe fn upgrade_noise(
         }
         #[expect(clippy::cast_sign_loss, reason = "n > 0 checked above")]
         let n = n as usize;
+        if n > msg.len() {
+            return None;
+        }
         handshake.read_message(&msg[..n], &mut payload).ok()?;
     }
 

@@ -1369,6 +1369,21 @@ fn enrolled_mesh_peers_call_and_refuse_a_foreign_authority() {
     }
 }
 
+/// Valid mesh frames larger than the initial reader buffer retain framing.
+#[test]
+fn mesh_large_requests_replies_and_declared_errors_preserve_following_frames() {
+    let scene = SecureScenario::with_transport(true);
+    let mut server = scene.spawn_server("mesh_large");
+    let client = scene.spawn_client("mesh_large", &[]);
+    let _server_stdout = wait_for_server_ready(&mut server);
+    let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
+    assert!(
+        stdout.contains("PASS mesh_large request reply declared-error following-frame no-replay"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
 /// Node identity/location proof across two OS processes. The remote actor's
 /// key-backed node id, complete location and session incarnation must match the registry
 /// lookup exactly, and its node id must differ from the client's.

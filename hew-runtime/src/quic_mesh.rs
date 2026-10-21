@@ -620,10 +620,25 @@ pub fn mesh_identity_load_or_create(
     Ok(material_from_mesh_tls(&tls, &spki))
 }
 
+/// Receive framing belongs to the stream, including a header awaiting capacity.
+struct MeshRecv {
+    stream: RecvStream,
+    pending_length: Option<usize>,
+}
+
+impl MeshRecv {
+    fn new(stream: RecvStream) -> Self {
+        Self {
+            stream,
+            pending_length: None,
+        }
+    }
+}
+
 struct QuicMeshConn {
     peer: PeerConn,
     send: std::sync::Mutex<Option<SendStream>>,
-    recv: std::sync::Mutex<Option<RecvStream>>,
+    recv: std::sync::Mutex<Option<MeshRecv>>,
     is_initiator: bool,
     /// Set once the control stream has been opened (or accepted) and both
     /// halves are stashed in `send`/`recv`. Once true, the per-direction
@@ -740,7 +755,7 @@ impl QuicMeshConn {
         *self
             .recv
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(recv);
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(MeshRecv::new(recv));
         self.streams_ready.store(true, Ordering::Release);
         Ok(())
     }
@@ -1087,14 +1102,17 @@ fn framed_send_mesh(rt: &Runtime, send: &mut SendStream, data: &[u8]) -> c_int {
     }
 }
 
-fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_int {
+fn framed_recv_mesh(rt: &Runtime, recv: &mut MeshRecv, buf: &mut [u8]) -> c_int {
     let result: Result<c_int, (String, bool)> = rt.block_on(connection_attempt(async {
-        let mut header = [0u8; 4];
-        recv.read_exact(&mut header)
-            .await
-            .map_err(|e| (format!("header: {e}"), false))?;
-
-        let frame_len = u32::from_le_bytes(header) as usize;
+        let frame_len = if let Some(length) = recv.pending_length {
+            length
+        } else {
+            let mut header = [0u8; 4];
+            recv.stream.read_exact(&mut header)
+                .await
+                .map_err(|e| (format!("header: {e}"), false))?;
+            u32::from_le_bytes(header) as usize
+        };
         if frame_len > MAX_FRAME_SIZE {
             // P1.2: do NOT attempt to drain `frame_len` undefined bytes off
             // the wire — a malicious peer could have written a small header
@@ -1104,7 +1122,7 @@ fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_in
             // The send half remains open so the application can still emit a
             // final diagnostic; the connection-level close is the caller's
             // decision.
-            let _ = recv.stop(VarInt::from_u32(2));
+            let _ = recv.stream.stop(VarInt::from_u32(2));
             return Err((
                 format!(
                     "frame too large: {frame_len} bytes exceeds MAX_FRAME_SIZE {MAX_FRAME_SIZE}; recv stream stopped"
@@ -1112,19 +1130,18 @@ fn framed_recv_mesh(rt: &Runtime, recv: &mut RecvStream, buf: &mut [u8]) -> c_in
                 true,
             ));
         }
+        recv.pending_length = Some(frame_len);
         if frame_len > buf.len() {
-            // Receiver-side buffer too small. The wire frame itself is valid;
-            // do not poison the stream. Caller must retry with a larger buf.
-            return Err((
-                format!("frame {frame_len} exceeds buffer {}", buf.len()),
-                false,
-            ));
+            // Retain the checked header without consuming payload or writing
+            // into the short buffer. The next call resumes this exact frame.
+            return Ok(c_int::try_from(frame_len).unwrap_or(-1));
         }
 
-        recv.read_exact(&mut buf[..frame_len])
+        recv.stream.read_exact(&mut buf[..frame_len])
             .await
             .map_err(|e| (format!("payload: {e}"), false))?;
 
+        recv.pending_length = None;
         Ok(c_int::try_from(frame_len).unwrap_or(-1))
     })).map_err(|error| (error, false)).and_then(std::convert::identity);
 
@@ -2849,7 +2866,7 @@ mod tests {
 
         // A accepts the stream and calls framed_recv_mesh — must return -1
         // and set last-error mentioning oversize.
-        let (_asend, mut arecv) = conn_a.conn.accept_bi().await.expect("accept_bi");
+        let (_asend, arecv) = conn_a.conn.accept_bi().await.expect("accept_bi");
 
         // Run framed_recv_mesh on a dedicated current-thread runtime since
         // it expects to block_on a separate runtime handle. `set_last_error`
@@ -2861,7 +2878,7 @@ mod tests {
                 .build()
                 .unwrap();
             let mut buf = vec![0u8; 64];
-            let n = framed_recv_mesh(&rt, &mut arecv, &mut buf);
+            let n = framed_recv_mesh(&rt, &mut MeshRecv::new(arecv), &mut buf);
             let err_ptr = crate::hew_last_error();
             let err = if err_ptr.is_null() {
                 String::new()
@@ -2882,6 +2899,63 @@ mod tests {
             err.contains("oversize") || err.contains("MAX_FRAME_SIZE"),
             "expected oversize diagnostic, got: {err}"
         );
+    }
+
+    /// A capacity retry retains the frame header and the following frame.
+    #[tokio::test]
+    async fn framed_recv_resizes_without_losing_large_or_following_frame() {
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            let (tls_a, spki_a) = MeshTls::self_signed(vec!["a".into()]).unwrap();
+            let (tls_b, spki_b) = MeshTls::self_signed(vec!["b".into()]).unwrap();
+            let mesh_a =
+                QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_a.with_peer_spki(spki_b))
+                    .unwrap();
+            let mesh_b =
+                QuicMesh::listen("127.0.0.1:0".parse().unwrap(), tls_b.with_peer_spki(spki_a))
+                    .unwrap();
+            let (connect, accept) = tokio::join!(
+                mesh_b.connect(mesh_a.local_addr().unwrap()),
+                mesh_a.accept()
+            );
+            let conn_b = connect.unwrap();
+            let conn_a = accept.unwrap().unwrap();
+            let (mut send, _recv) = conn_b.conn.open_bi().await.unwrap();
+            let expected: Vec<u8> = (0..131_072)
+                .map(|index| u8::try_from(index % 251).unwrap())
+                .collect();
+            let payload = expected.clone();
+            let sending = tokio::spawn(async move {
+                send.write_all(&u32::try_from(payload.len()).unwrap().to_le_bytes())
+                    .await
+                    .unwrap();
+                send.write_all(&payload).await.unwrap();
+                send.write_all(&5u32.to_le_bytes()).await.unwrap();
+                send.write_all(b"after").await.unwrap();
+            });
+            let (_send, recv) = conn_a.conn.accept_bi().await.unwrap();
+            tokio::task::spawn_blocking(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap();
+                let mut recv = MeshRecv::new(recv);
+                let mut small = vec![0xa5; 65536];
+                for _ in 0..2 {
+                    assert_eq!(framed_recv_mesh(&rt, &mut recv, &mut small), 131_072);
+                    assert!(small.iter().all(|byte| *byte == 0xa5));
+                }
+                let mut large = vec![0; 131_072];
+                assert_eq!(framed_recv_mesh(&rt, &mut recv, &mut large), 131_072);
+                assert_eq!(large, expected);
+                assert_eq!(framed_recv_mesh(&rt, &mut recv, &mut small), 5);
+                assert_eq!(&small[..5], b"after");
+            })
+            .await
+            .unwrap();
+            sending.await.unwrap();
+        })
+        .await
+        .expect("mesh capacity test watchdog");
     }
 
     /// P1.3 — `ensure_control_stream` must time out instead of hanging when

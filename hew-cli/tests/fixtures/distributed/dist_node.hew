@@ -946,6 +946,24 @@ fn scenario_server_message_size(peer: net.PeerSession, kx: string) {
     stopped(service);
 }
 
+fn scenario_mesh_large(kx: string) -> i64 {
+    let peer = fixture_peer();
+    let service: SizeProbe = peer.receive_service<SizeProbe>().expect("mesh size service");
+    assert(service.accept("x".repeat(131072)).expect("large mesh request") == 131072);
+    assert(service.accept("after").expect("following request") == 5);
+    assert(service.reply(131072).expect("large mesh reply") == "r".repeat(131072));
+    assert(service.reply(5).expect("following reply") == "rrrrr");
+    match service.decline(131072) {
+        .Err(ActorError.Failed(value)) => assert(value == "e".repeat(131072)),
+        _ => panic("large mesh declared error changed"),
+    }
+    assert(service.accept("final").expect("following declared error") == 5);
+    assert(service.count().expect("each handler ran once") == 6);
+    publish_atomic(kx, "size.done", "1");
+    println("PASS mesh_large request reply declared-error following-frame no-replay");
+    0
+}
+
 fn scenario_message_size(kx: string) -> i64 {
     let service = fixture_peer().receive_service<SizeProbe>().expect("size grant");
     let local = spawn SizeProbe;
@@ -1848,7 +1866,7 @@ fn run_server(scenario: string) {
         Node.shutdown();
         return;
     }
-    if scenario == "message_size" {
+    if scenario == "message_size" || scenario == "mesh_large" {
         scenario_server_message_size(peer, kx);
         Node.shutdown();
         return;
@@ -3293,6 +3311,8 @@ fn run_client(scenario: string) -> i64 {
         scenario_quarantine_rejoin()
     } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
         scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
+    } else if scenario == "mesh_large" {
+        scenario_mesh_large(kx)
     } else if scenario == "message_size" {
         scenario_message_size(kx)
     } else if scenario == "stable_role" {

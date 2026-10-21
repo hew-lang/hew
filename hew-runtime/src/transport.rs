@@ -109,6 +109,9 @@ pub struct HewTransportOps {
     pub listen: Option<unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int>,
     pub accept: Option<unsafe extern "C" fn(*mut c_void, c_int) -> c_int>,
     pub send: Option<unsafe extern "C" fn(*mut c_void, c_int, *const c_void, usize) -> c_int>,
+    /// Receive one frame. A positive result above capacity requests a larger
+    /// buffer: no payload bytes were consumed or written, and the transport
+    /// retains the checked header for retry. Errors return a negative result.
     pub recv: Option<unsafe extern "C" fn(*mut c_void, c_int, *mut c_void, usize) -> c_int>,
     pub close_conn: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub destroy: Option<unsafe extern "C" fn(*mut c_void)>,

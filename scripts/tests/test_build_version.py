@@ -171,6 +171,27 @@ class SharedTargetVersion(unittest.TestCase):
             probe(second, f"0.6.3-dev.1+{following_sha}|second")
             probe(first, "0.6.1|first")
 
+            shallow = base / "shallow source"
+            git(
+                base,
+                "clone",
+                "--quiet",
+                "--no-local",
+                "--depth",
+                "1",
+                "--no-tags",
+                str(second),
+                str(shallow),
+            )
+            (shallow / "portable-release-libs").mkdir()
+            (shallow / "portable-release-libs/archive.a").write_bytes(b"build input")
+            shallow_sha = git(shallow, "rev-parse", "--short=7", "HEAD")
+            probe(shallow, f"0.6.3-dev.1+{shallow_sha}|second")
+            (shallow / "notes").write_text("tracked edit\n")
+            probe(shallow, f"0.6.3-dev.1+{shallow_sha}.dirty|second")
+            git(shallow, "add", "notes")
+            probe(shallow, f"0.6.3-dev.1+{shallow_sha}.dirty|second")
+
 
 if __name__ == "__main__":
     unittest.main()

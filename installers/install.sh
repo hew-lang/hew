@@ -134,6 +134,9 @@ detect_platform() {
     aarch64 | arm64) ARCH="aarch64" ;;
     *) err "unsupported architecture: $(uname -m)" ;;
     esac
+    if [ "$OS" = darwin ] && [ "$ARCH" != aarch64 ]; then
+        err "Hew supports macOS on Apple silicon; Intel macOS is no longer supported"
+    fi
 }
 
 # ---------------------------------------------------------------------------

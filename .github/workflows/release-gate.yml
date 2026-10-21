@@ -1,7 +1,8 @@
 # Pre-Release Cross-Platform Gate
 #
 # Validates that the release candidate commit builds and passes tests on all
-# CI-supported platforms BEFORE tagging.  This workflow should be at least as
+# supported platforms BEFORE tagging; release acceptance follows
+# docs/release-runbook.md#platform-policy.  This workflow should be at least as
 # comprehensive as the main CI for the crates shipped in a release tarball.
 #
 # Trigger:
@@ -38,8 +39,7 @@ on:
       platforms:
         description: "Run the full gate or resume a platform subset for the same source."
         type: choice
-        options:
-          [all, linux-x86_64, windows-x86_64, macos-x86_64, windows-intel-macos]
+        options: [all, linux-x86_64, windows-x86_64, macos-aarch64]
         default: all
 
 # Qualification belongs to a source revision and platform selection. Preserve
@@ -56,7 +56,7 @@ env:
   LLVM_VERSION: "22"
   LLVM_FULL_VERSION: "22.1.5"
   # Pinned wasmtime release tag; every job here provisions the runner from
-  # THIS tag's assets (x86_64-linux, aarch64-linux, aarch64-macos, x86_64-macos,
+  # THIS tag's assets (x86_64-linux, aarch64-linux, aarch64-macos,
   # x86_64-windows), so the gate measures the same runtime CI measured. The one
   # exception is the FreeBSD guest, which takes what pkg serves and says so.
   WASMTIME_VERSION: "v47.0.2"
@@ -90,7 +90,7 @@ jobs:
             exit 1
           fi
           case "${platforms}" in
-            all|linux-x86_64|windows-x86_64|macos-x86_64|windows-intel-macos) ;;
+            all|linux-x86_64|windows-x86_64|macos-aarch64) ;;
             *) echo "::error::unsupported qualification platforms: ${platforms}"; exit 1 ;;
           esac
           printf 'source_sha=%s\nplatforms=%s\n' "${source_sha}" "${platforms}" >> "$GITHUB_OUTPUT"
@@ -117,6 +117,7 @@ jobs:
             echo
             echo '| Identity | Value |'
             echo '| --- | --- |'
+            echo '| Acceptance policy | [Platform policy](../blob/main/docs/release-runbook.md#platform-policy) |'
             printf '| Tested source commit | %s |\n' "${SOURCE_SHA}"
             printf '| Workflow commit | %s |\n' "${WORKFLOW_SHA}"
             printf '| Platform selection | %s |\n' "${PLATFORMS}"
@@ -466,10 +467,6 @@ jobs:
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
-      - name: Run native acceptance
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        run: make core-acceptance
-
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
@@ -481,23 +478,19 @@ jobs:
           fail_on_parse_error: true
           require_tests: true
 
+      - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        run: make core-acceptance
+
   # ─────────────────────────────────────────────────────────────────────────
   # macOS arm64 — full Rust build + workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-macos:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'macos-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
-    name: Release Gate — macOS ${{ matrix.arch }}
-    strategy:
-      fail-fast: false
-      matrix:
-        # macos-14's lldb predates DW_TAG_variant_part support.
-        arch: ${{ fromJSON(needs.gate-release-checks.outputs.platforms != 'all' && '["x86_64"]' || '["aarch64", "x86_64"]') }}
-    runs-on: ${{ matrix.arch == 'x86_64' && 'macos-15-intel' || 'macos-15' }}
-    # Intel's cold build and workspace tests take about two hours before the
-    # native corpus begins. Budget the complete gate while retaining the ARM
-    # runner's existing limit.
-    timeout-minutes: ${{ matrix.arch == 'x86_64' && 360 || 180 }}
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'macos-aarch64'
+    name: Release Gate — macOS aarch64
+    runs-on: macos-15
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -510,7 +503,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: "aarch64-apple-darwin, x86_64-apple-darwin"
+          targets: "aarch64-apple-darwin"
           tools: nextest@0.9.120
           cache-shared-key: build-test-macos
 
@@ -550,7 +543,7 @@ jobs:
       - name: Install WASI prerequisites
         env:
           GH_TOKEN: ${{ github.token }}
-          WASMTIME_ARCH: ${{ matrix.arch }}
+          WASMTIME_ARCH: aarch64
         run: |
           set -euo pipefail
           rustup target add wasm32-wasip1
@@ -584,27 +577,27 @@ jobs:
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
         run: make test-cabi
 
-      - name: Run native acceptance
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        run: make core-acceptance
-
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
         with:
           commit: ${{ needs.gate-release-checks.outputs.source_sha }}
           report_paths: "{target/nextest/ci/junit.xml,target/nextest/ci-cabi/junit.xml}"
-          check_name: Release Gate Test Results (macOS ${{ matrix.arch }})
+          check_name: Release Gate Test Results (macOS aarch64)
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
+
+      - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        run: make core-acceptance
 
   # ─────────────────────────────────────────────────────────────────────────
   # Windows x86_64 — Rust workspace tests
   # ─────────────────────────────────────────────────────────────────────────
   gate-windows:
     needs: gate-release-checks
-    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64' || needs.gate-release-checks.outputs.platforms == 'windows-intel-macos'
+    if: needs.gate-release-checks.outputs.platforms == 'all' || needs.gate-release-checks.outputs.platforms == 'windows-x86_64'
     name: Release Gate — Windows x86_64
     runs-on: windows-2022
     timeout-minutes: 240
@@ -743,11 +736,6 @@ jobs:
         shell: bash
         run: make SHELL=bash test-cabi
 
-      - name: Run native acceptance
-        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
-        shell: bash
-        run: make SHELL=bash core-acceptance
-
       - name: Upload test reports
         if: always()
         uses: mikepenz/action-junit-report@3a81627bfac62268172037048872e8ebd4207e6d # v6.4.1
@@ -758,6 +746,11 @@ jobs:
           fail_on_failure: true
           fail_on_parse_error: true
           require_tests: true
+
+      - name: Run native acceptance
+        if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}
+        shell: bash
+        run: make SHELL=bash core-acceptance
 
   # ─────────────────────────────────────────────────────────────────────────
   # FreeBSD x86_64 — full build + workspace tests

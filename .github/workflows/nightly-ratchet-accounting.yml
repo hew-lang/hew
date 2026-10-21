@@ -103,7 +103,7 @@ jobs:
 
       - uses: ./.github/actions/setup-rust-build
         with:
-          targets: "aarch64-apple-darwin, x86_64-apple-darwin, wasm32-wasip1"
+          targets: "aarch64-apple-darwin, wasm32-wasip1"
           tools: nextest@0.9.120
           cache-shared-key: nightly-ratchet-accounting-macos
 

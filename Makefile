@@ -332,11 +332,6 @@ require-host-cargo-target:
 		echo "Error: Cargo target $(EFFECTIVE_CARGO_TARGET) is not host $(HOST_TRIPLE); use a dedicated cross-library target" >&2; \
 		exit 2; \
 	fi
-ifeq ($(shell uname -s),Darwin)
-DARWIN_NATIVE_LIB_TRIPLES := aarch64-apple-darwin x86_64-apple-darwin
-else
-DARWIN_NATIVE_LIB_TRIPLES :=
-endif
 ifeq ($(shell uname -s),Linux)
 ifneq ($(filter aarch64-%-linux-musl,$(HOST_TRIPLE)),)
 LINUX_CROSS_LIB_TRIPLE := x86_64-unknown-linux-musl
@@ -353,7 +348,7 @@ LINUX_CROSS_SYSROOT := /usr/aarch64-linux-gnu
 endif
 endif
 LINUX_CROSS_AVAILABLE := $(if $(wildcard $(LINUX_CROSS_SYSROOT)),$(LINUX_CROSS_LIB_TRIPLE))
-CROSS_NATIVE_LIB_TRIPLES := $(filter-out $(HOST_TRIPLE),$(DARWIN_NATIVE_LIB_TRIPLES) $(LINUX_CROSS_AVAILABLE))
+CROSS_NATIVE_LIB_TRIPLES := $(filter-out $(HOST_TRIPLE),$(LINUX_CROSS_AVAILABLE))
 NATIVE_LIB_TRIPLES := $(HOST_TRIPLE) $(CROSS_NATIVE_LIB_TRIPLES)
 
 # Local sanitizer targets for the Rust runtime. `make asan` also runs in

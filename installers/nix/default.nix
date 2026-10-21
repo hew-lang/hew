@@ -18,10 +18,6 @@ let
       url = "https://github.com/hew-lang/hew/releases/download/v${version}/hew-v${version}-linux-aarch64.tar.gz";
       sha256 = "__SHA256_LINUX_AARCH64__";
     };
-    "x86_64-darwin" = {
-      url = "https://github.com/hew-lang/hew/releases/download/v${version}/hew-v${version}-darwin-x86_64.tar.gz";
-      sha256 = "__SHA256_DARWIN_X86_64__";
-    };
     "aarch64-darwin" = {
       url = "https://github.com/hew-lang/hew/releases/download/v${version}/hew-v${version}-darwin-aarch64.tar.gz";
       sha256 = "__SHA256_DARWIN_AARCH64__";
@@ -53,7 +49,7 @@ in stdenv.mkDerivation rec {
     # Install target-specific lib subtree for Darwin so find_hew_lib() can
     # probe lib/<triple>/libhew.a before falling back to the flat path.
     ${lib.optionalString stdenv.isDarwin ''
-      triple="${if stdenv.hostPlatform.isAarch64 then "aarch64-apple-darwin" else "x86_64-apple-darwin"}"
+      triple="aarch64-apple-darwin"
       if [ -f "lib/$triple/libhew.a" ]; then
         install -Dm644 "lib/$triple/libhew.a" "$out/lib/$triple/libhew.a"
       fi
@@ -102,7 +98,7 @@ in stdenv.mkDerivation rec {
       { name = "Stephen Olesen"; email = "slepp@slepp.ca"; github = "slepp"; }
       { name = "The Hew Project Developers"; email = "hello@hew.sh"; github = "hew-lang"; }
     ];
-    platforms = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+    platforms = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
     sourceProvenance = with sourceTypes; [ binaryNativeCode ];
   };
 }

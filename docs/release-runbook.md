@@ -18,8 +18,8 @@ validate ─► build ─────────────► package and pro
    `docs/syntax-data.json`, `docs/releases/<tag>.md`), then runs
    `make release-checks` (dependency policy, notices, installer ordering).
 2. **build** produces, in parallel: the portable WASI libraries, the
-   cross-built FreeBSD and Windows libraries, the six current platform archives
-   (Linux x86_64/aarch64, macOS arm64/x86_64 signed and notarized, Windows
+   cross-built FreeBSD and Windows libraries, the five current platform archives
+   (Linux x86_64/aarch64, macOS arm64 signed and notarized, Windows
    x86_64, FreeBSD x86_64), and the two npm tarballs
    (`@hew-lang/wasm` from `hew-wasm`, `@hew-lang/sandbox-vm`).
 3. **package and prove**: Linux distro packages with install smoke (final
@@ -57,7 +57,7 @@ and proves everything and publishes nothing; a dispatch from a branch with
 
 Release artefacts on the GitHub Release:
 
-- `hew-v<version>-<platform>.tar.gz` / `.zip`: the six current toolchain archives
+- `hew-v<version>-<platform>.tar.gz` / `.zip`: the five current toolchain archives
 - `hew-v<version>-wasm32-wasip1-libs.tar.gz`: the WASI runtime and standard
   library (`libhew_runtime.a`, `libhew_std.a`) that every archive also carries
 - `hew-lang-wasm-<version>.tgz`, `hew-lang-sandbox-vm-<version>.tgz`: the
@@ -126,13 +126,42 @@ published Hew release; nothing here pushes into them.
 
 `v0.6.0-rc3` qualified native compiler distributions after the SIR/MIR
 cutover under a scoped test ratchet and named exclusions; it shipped on
-2026-09-17 (`d1557a957`), and every later candidate runs the full release
-gate again with no version-keyed exemption.
+2026-09-17 (`d1557a957`), and later candidates follow the platform policy below.
+
+## Platform policy
+
+Linux x86_64 and aarch64 are the primary platforms. macOS on Apple silicon is
+secondary. Windows and FreeBSD remain supported; Intel macOS is retired.
+
+A major regression that prevents the compiler/runtime from building or running,
+or prevents a basic Hew program from compiling and executing, blocks a release
+on any supported platform. Establish whether the failure is a product regression,
+a runner/toolchain problem or a defective test before assigning that severity.
+
+For patch releases, require successful Linux qualification and the relevant
+safety, integration and packaging checks. Assess other platform failures against
+their actual impact, the Linux correctness/performance benefits and the cost of
+resolving platform-specific friction. Windows and FreeBSD test failures may be
+backlogged rather than delay a substantive Linux patch. Apply the same impact
+assessment to secondary macOS coverage. This does not permit a known major
+build/run regression to be deferred.
+
+Record each accepted nonblocking failure with the tested revision, affected
+behaviour, evidence, owner and intended resolution in another patch or before
+the next minor release. Preserve failed and pending results as such; accepting a
+release does not turn them green. Continue useful running checks without
+restarting successful suites. Review the platform backlog before a minor release.
+
+For the 0.6 series, standalone WASI and non-browser WebAssembly builds are
+non-gating. Keep the compiler/VM checks necessary for browser development and
+actual browser sandbox execution. Matching unsupported cases are not parity.
+Optional target or harness work must not displace the native Linux outcome.
 
 ## Prerequisites
 
 - [ ] All release PRs merged to `main`
-- [ ] `main` CI is green
+- [ ] Required protected `main` checks pass; other results have been assessed
+      under the [platform policy](#platform-policy)
       (check [Actions → CI](../../actions/workflows/ci.yml))
 - [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed
 - [ ] The latest completed nightly sanitizer run has been reviewed for its
@@ -239,42 +268,44 @@ and the docs site, publishing nothing), so tag-time packaging fails here
 rather than on the tag. `.github/workflows/release-gate.yml` checks the
 release identity and `make release-checks`, then runs:
 
-| Platform                        | Build scope                    | Test scope                                                   |
-| ------------------------------- | ------------------------------ | ------------------------------------------------------------ |
-| Linux x86_64                    | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
-| Linux aarch64                   | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
-| macOS arm64                     | hew-cli, hew-lib               | Rust workspace, codegen E2E (native)                         |
-| macOS x86_64 (`macos-15-intel`) | hew-cli, hew-lib               | Rust workspace, codegen E2E (native)                         |
-| Windows x86_64                  | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
-| FreeBSD x86_64                  | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
+| Platform       | Build scope                    | Test scope                                                   |
+| -------------- | ------------------------------ | ------------------------------------------------------------ |
+| Linux x86_64   | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
+| Linux aarch64  | hew-cli, hew-lib, WASM runtime | Rust workspace, codegen E2E (native + WASM)                  |
+| macOS arm64    | hew-cli, hew-lib               | Rust workspace, codegen E2E (native)                         |
+| Windows x86_64 | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
+| FreeBSD x86_64 | hew-cli, hew-lib               | Rust workspace + C-ABI + executable release-library consumer |
 
 Each toolchain carries one executable. Language-server and Observe entry points
 are `hew lsp` and `hew observe`; neither needs a sibling executable.
 
-Require successful results for every release-gate platform and
-`gate-sanitizers`, plus a successful `release.yml` dry run, on the recorded
-`release_sha`. The sanitizer job must execute ASan successfully. Rust workspace
+Apply the platform policy above to every result on the recorded `release_sha`.
+Require successful Linux qualification, executed `gate-sanitizers` and the
+relevant `release.yml` packaging proof. Record any accepted secondary/optional
+platform failure and its follow-up; a pending job is not a pass. Rust workspace
 jobs use `make test-strict`; their green result means an all-pass result.
 Report known failures separately from passing tests.
 
-If Windows or Intel macOS needs a retry after a workflow correction, use the
+If Windows needs a focused retry after a workflow correction, use the
 updated gate with the original candidate's full commit SHA:
 
 ```bash
 gh workflow run release-gate.yml --ref main \
   -f source_sha="$release_sha" \
-  -f platforms=windows-intel-macos
+  -f platforms=windows-x86_64
 ```
 
-This runs candidate validation, identity and dependency checks, then Windows
-and Intel macOS. A green partial run supplies only those platform results.
+This runs candidate validation, identity and dependency checks, then Windows.
+Use `platforms=macos-aarch64` for a focused Apple silicon run. A green partial
+run supplies only the selected platform results.
 For each contributing run, record its URL and the qualification summary's
 source SHA, workflow SHA and platform selection. Except for the scoped
 reuse described below, every source SHA must match the recorded
-`release_sha`. Review workflow corrections for changes to the required checks. Combine successful Windows and Intel results with
-successful jobs for all remaining platforms and sanitizers from the full gate.
-Missing, skipped, cancelled or failed required jobs still need successful
-evidence. Requalify affected contracts on the changed candidate, and run a new
+`release_sha`. Review workflow corrections for changes to the required checks.
+Combine successful scoped runs with applicable results from the full gate.
+Missing, skipped, cancelled or failed primary checks still need successful
+evidence. Other platform results follow the recorded impact assessment above.
+Requalify affected contracts on the changed candidate, and run a new
 release dry run when implementation, dependency, build or packaging inputs change.
 
 Completed qualification may be retained for unchanged contracts. Record both
@@ -445,9 +476,9 @@ git fetch origin main
 git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
-1. Confirm every release bar and the final-candidate checklist are green on
-   the exact candidate commit, including sanitizer evidence, required secrets,
-   and branch protection.
+1. Confirm the recorded candidate satisfies the platform policy and required
+   checks, including sanitizer evidence, packaging proof, required secrets and
+   branch protection. Record accepted nonblocking failures and follow-up owners.
 2. Create the signed tag and push it only after the preceding evidence is recorded:
 
    ```bash
@@ -468,18 +499,17 @@ git merge-base --is-ancestor "$release_sha" origin/main
    "Downstream repositories").
 6. Rebuild Android from the tagged candidate and verify its artifact.
 
-Do not tag until the recorded candidate has complete successful release-gate
-evidence (including any same-candidate platform resumes) and a successful
-`release.yml` dry run. In particular, `gate-sanitizers` must have executed ASan
-successfully. Review the latest completed nightly run for its recorded revision
+Do not tag until the recorded candidate satisfies the platform policy and
+relevant release packaging proof. Resolve major supported-platform build/run
+regressions and record any accepted nonblocking failures and their owners.
+In particular, `gate-sanitizers` must have executed ASan successfully. Review the latest completed nightly run for its recorded revision
 and scope. Current workflows do not execute TSan or Miri; before tagging,
 record the coverage and release-acceptance decision for that missing evidence
 (see [Sanitizer trust contract](#sanitizer-trust-contract)).
 
 macOS release notes:
 
-- arm64 release builds run on `macos-15`; Intel release builds run on
-  `macos-15-intel`
+- ARM64 release builds run on `macos-15`
 - `MACOSX_DEPLOYMENT_TARGET=13.0` is exported in the release workflow so the
   shipped binaries remain compatible with macOS 13+
 - Tag releases require all of:
@@ -492,7 +522,7 @@ macOS release notes:
 
 ## Phase 6 — Post-release verification
 
-- [ ] The GitHub Release has the six current platform archives, the WASI library
+- [ ] The GitHub Release has the five current platform archives, the WASI library
       archive, both npm tarballs, the checksum manifest and, for a final
       release, the Linux packages; `gh attestation verify <asset> --repo
 hew-lang/hew` passes for a downloaded archive
@@ -552,7 +582,7 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                        |
 | Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                        |
 | Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                        |
-| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Yes                                                        |
+| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Browser-required scope in 0.6; standalone advisory         |
 | Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                                |
 | Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                        |
 | Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                        |
@@ -563,10 +593,10 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Yes                                                        |
 | Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                        |
 | Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                   |
-| macOS build + tests                  | ci.yml + release-gate.yml                                               | Yes                                                        |
-| Windows build + tests                | ci.yml + release-gate.yml                                               | Yes                                                        |
-| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Yes for release branches                                   |
-| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Yes for release branches                                   |
+| macOS build + tests                  | ci.yml + release-gate.yml                                               | Platform policy                                            |
+| Windows build + tests                | ci.yml + release-gate.yml                                               | Platform policy                                            |
+| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Platform policy                                            |
+| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Platform policy                                            |
 | Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Yes for release branches                                   |
 | Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review before release               |
 | Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release               |
@@ -575,6 +605,11 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 | Miri                                 | Local `make miri`; no current workflow job                              | Current CI evidence unavailable; release decision required |
 | Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                   |
 | Local cross-platform build           | `make pre-release`                                                      | Recommended                                                |
+
+The table describes checks and their normal release use. Platform-dependent
+rows follow the [platform policy](#platform-policy), including the major
+build/run regression threshold and patch-release weighting. Required protected
+checks remain required; acceptance does not authorize bypassing repository rules.
 
 ## Known gaps (tracked)
 
@@ -623,13 +658,13 @@ that missing evidence or establish safety sign-off.
 - **linux-aarch64**: The pre-tag release gate builds and tests on a native
   Ubuntu 24.04 arm runner; the tag workflow additionally runs packaged-archive
   and clean-room smoke checks.
-- **FreeBSD**: x86_64 has a full blocking pre-tag build/test lane; aarch64
+- **FreeBSD**: x86_64 has a full pre-tag build/test lane; aarch64
   proves only the release compiler build and compile/run smoke under emulation.
   Its pre-tag lane does not build the LSP, observe tool or release library, or
   execute the Rust/compiled-Hew suites. The current tag workflow builds and
   requires only the x86_64 FreeBSD archive; no aarch64 archive job or required
-  asset exists. Restore and qualify that lane or record a release-owner decision
-  to defer it and align supported-platform claims before tagging. Cross-built
+  asset exists. Apply the platform policy to failures and track the missing
+  aarch64 archive as a distribution gap rather than a shipped product. Cross-built
   aarch64 libraries do not prove a shipped archive. The x86_64 nightly remains
   additional early warning rather than the release authority.
 - **Local Debian bookworm arm64 hosts**: `apt.llvm.org/bookworm` arm64 does not

@@ -50,8 +50,9 @@ validate ─► build ─────────────► package and pro
 npm and GitHub Packages verify the complete published tarball against the
 source-stamped producer archive. GHCR verifies the image index and both
 architecture digests. Conflicting content or an unreadable destination fails
-the job. Homebrew waits for the downstream run to succeed and checks formula
-versions, source URLs and checksums against the release artefacts. A published
+the job. Homebrew reuses a completed update or waits for an existing active
+run before dispatching a new one. It checks formula versions, source URLs and
+checksums against the release artefacts. A published
 GitHub Release is never modified, so **Re-run failed jobs** on the
 tag's run is the recovery path for any failure. Dispatching `release.yml` from
 the tag ref with `dry_run` cleared starts a fresh run of the same tag. A

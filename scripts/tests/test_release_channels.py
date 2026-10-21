@@ -284,7 +284,7 @@ class HomebrewDelivery(unittest.TestCase):
         self.checksums = {
             target: str(i) * 64
             for i, target in enumerate(
-                ("darwin-x86_64", "darwin-aarch64", "linux-x86_64", "linux-aarch64"), 1
+                ("darwin-aarch64", "linux-x86_64", "linux-aarch64"), 1
             )
         }
         self.formula = f'  version "{VERSION}"\n' + "\n".join(
@@ -292,6 +292,10 @@ class HomebrewDelivery(unittest.TestCase):
             for target, value in self.checksums.items()
         )
         self.list_count = 0
+        self.existing = False
+        self.active = False
+        self.return_url = True
+        self.unreadable = False
         self.calls = []
         self.terminal = {"status": "completed", "conclusion": "success"}
 
@@ -301,17 +305,34 @@ class HomebrewDelivery(unittest.TestCase):
             self.list_count += 1
             result = (
                 []
-                if self.list_count == 1
+                if self.list_count == 1 and not self.existing
                 else [
                     {
                         "databaseId": 42,
                         "headSha": SHA,
-                        "url": "https://example.invalid/run/42",
+                        "url": "https://github.com/hew-lang/homebrew-hew/actions/runs/42",
+                        "status": "in_progress" if self.active else "completed",
+                        "conclusion": None if self.active else "success",
                     }
                 ]
             )
         elif args[1:3] == ("run", "view"):
+            if "--log" in args:
+                if self.unreadable:
+                    raise RuntimeError("Cannot read downstream log")
+                return subprocess.CompletedProcess(
+                    args, 0, f"  VERSION: {VERSION}\n", ""
+                )
             result = self.terminal
+        elif args[1:3] == ("workflow", "run"):
+            return subprocess.CompletedProcess(
+                args,
+                0,
+                "https://github.com/hew-lang/homebrew-hew/actions/runs/42\n"
+                if self.return_url
+                else "",
+                "",
+            )
         elif args[1:3] == ("api", "repos/hew-lang/homebrew-hew"):
             result = {"default_branch": "main"}
         elif args[1] == "api" and "/commits/" in args[2]:
@@ -350,6 +371,35 @@ class HomebrewDelivery(unittest.TestCase):
             2,
         )
 
+    def test_existing_completion_and_exact_formula_skip_dispatch(self):
+        self.existing = True
+        self.execute()
+        self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
+        self.assertFalse(any(args[1:3] == ("run", "watch") for args in self.calls))
+
+    def test_existing_active_run_is_awaited_without_another_dispatch(self):
+        self.existing = self.active = True
+        self.execute()
+        self.assertTrue(any(args[1:3] == ("run", "watch") for args in self.calls))
+        self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
+
+    def test_existing_unreadable_outcome_blocks_dispatch(self):
+        self.existing = self.unreadable = True
+        with self.assertRaisesRegex(RuntimeError, "Cannot read"):
+            self.execute()
+        self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
+
+    def test_direct_dispatch_url_preserves_exact_run_without_discovery(self):
+        self.execute()
+        self.assertEqual(self.list_count, 1)
+        watch = next(args for args in self.calls if args[1:3] == ("run", "watch"))
+        self.assertEqual(watch[3], "42")
+
+    def test_missing_dispatch_url_uses_unique_new_run(self):
+        self.return_url = False
+        self.execute()
+        self.assertEqual(self.list_count, 2)
+
     def test_dispatch_or_nonterminal_success_does_not_complete(self):
         self.terminal = {"status": "in_progress", "conclusion": None}
         with self.assertRaisesRegex(RuntimeError, "did not complete"):
@@ -359,9 +409,11 @@ class HomebrewDelivery(unittest.TestCase):
         )
 
     def test_successful_run_with_wrong_formula_fails(self):
+        self.existing = True
         self.formula = self.formula.replace('version "1.2.3"', 'version "1.2.2"')
         with self.assertRaisesRegex(RuntimeError, "version differs"):
             self.execute()
+        self.assertFalse(any(args[1:3] == ("workflow", "run") for args in self.calls))
 
     def test_correct_version_wrong_source_or_checksum_fails(self):
         for text in (

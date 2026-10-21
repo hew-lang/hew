@@ -228,7 +228,7 @@ def publish_homebrew() -> None:
     # Producer checksums come from the downloaded release-assets artefact.
     checksums = {}
     lines = Path(f"dist/hew-v{version}-checksums.txt").read_text().splitlines()
-    for target in ("darwin-x86_64", "darwin-aarch64", "linux-x86_64", "linux-aarch64"):
+    for target in ("darwin-aarch64", "linux-x86_64", "linux-aarch64"):
         name = f"hew-v{version}-{target}.tar.gz"
         matches = [line.split()[0] for line in lines if line.split()[-1] == name]
         if len(matches) != 1 or not re.fullmatch(r"[a-f0-9]{64}", matches[0]):
@@ -252,10 +252,91 @@ def publish_homebrew() -> None:
             fields,
         )
 
-    before = {run["databaseId"] for run in runs()}
+    prior = runs()
     branch = gh_json("api", f"repos/{repo}")["default_branch"]
+
+    def run_version(run):
+        log = command(
+            "gh", "run", "view", str(run["databaseId"]), "-R", repo, "--log"
+        ).stdout
+        versions = set(re.findall(r"\bVERSION:[ \t]+([^\s]+)[ \t]*$", log, re.M))
+        if len(versions) != 1:
+            raise RuntimeError(
+                "Cannot identify Homebrew run version; inspect downstream run"
+            )
+        return versions.pop()
+
+    def finish(run, outcome):
+        terminal = gh_json(
+            "run",
+            "view",
+            str(run["databaseId"]),
+            "-R",
+            repo,
+            "--json",
+            "status,conclusion",
+        )
+        if terminal != {"status": "completed", "conclusion": "success"}:
+            raise RuntimeError("Homebrew update did not complete successfully")
+        if run_version(run) != version:
+            raise RuntimeError("Homebrew run version differs")
+        source = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
+        formulas = ["hew.rb"] + ([] if "-" in version else ["hew@stable.rb"])
+        for formula in formulas:
+            text = command(
+                "gh",
+                "api",
+                f"repos/{repo}/contents/Formula/{formula}?ref={source}",
+                "-H",
+                "Accept: application/vnd.github.raw+json",
+            ).stdout
+            verify_formula(text, version, checksums)
+        print(
+            json.dumps(
+                {
+                    "result": "complete",
+                    "outcome": outcome,
+                    "run_id": run["databaseId"],
+                    "run_url": run["url"],
+                    "formula_source": source,
+                    "version": version,
+                },
+                sort_keys=True,
+            )
+        )
+
+    # A retry first proves the existing downstream result. Unreadable run logs
+    # are an unknown outcome and must not trigger another dispatch.
+    active = [
+        run
+        for run in prior
+        if run["status"] != "completed" and run_version(run) == version
+    ]
+    if len(active) > 1:
+        raise RuntimeError("Ambiguous active Homebrew runs; inspect downstream runs")
+    if active:
+        run = active[0]
+        command(
+            "gh", "run", "watch", str(run["databaseId"]), "-R", repo, "--exit-status"
+        )
+        finish(run, "verified-existing")
+        return
+    for run in prior:
+        if (
+            run["status"] == "completed"
+            and run["conclusion"] == "success"
+            and run_version(run) == version
+        ):
+            finish(run, "verified-existing")
+            return
+    if len(prior) == 100:
+        raise RuntimeError(
+            "Homebrew history is truncated; inspect older runs before dispatch"
+        )
+
+    before = {run["databaseId"] for run in prior}
     head = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
-    command(
+    dispatched = command(
         "gh",
         "workflow",
         "run",
@@ -267,38 +348,41 @@ def publish_homebrew() -> None:
         "-f",
         f"version={version}",
     )
+    urls = set(
+        re.findall(
+            r"https://github\.com/hew-lang/homebrew-hew/actions/runs/(\d+)",
+            dispatched.stdout,
+        )
+    )
+    if len(urls) > 1:
+        raise RuntimeError("Ambiguous Homebrew dispatch response")
     run = None
-    for _ in range(30):
-        candidates = [item for item in runs() if item["databaseId"] not in before]
-        if len(candidates) > 1:
-            raise RuntimeError("Ambiguous Homebrew dispatch; inspect downstream runs")
-        if candidates:
-            run = candidates[0]
-            if run["headSha"] != head:
-                raise RuntimeError("Homebrew workflow source changed during dispatch")
-            break
-        time.sleep(2)
+    if urls:
+        run_id = int(urls.pop())
+        run = {
+            "databaseId": run_id,
+            "url": f"https://github.com/{repo}/actions/runs/{run_id}",
+        }
+    else:
+        for _ in range(30):
+            candidates = [item for item in runs() if item["databaseId"] not in before]
+            if len(candidates) > 1:
+                raise RuntimeError(
+                    "Ambiguous Homebrew dispatch; inspect downstream runs"
+                )
+            if candidates:
+                run = candidates[0]
+                if run["headSha"] != head:
+                    raise RuntimeError(
+                        "Homebrew workflow source changed during dispatch"
+                    )
+                break
+            time.sleep(2)
     if run is None:
         raise RuntimeError("Homebrew dispatch has no readable downstream run")
     print(f"Waiting for Homebrew run: {run['url']}", flush=True)
     command("gh", "run", "watch", str(run["databaseId"]), "-R", repo, "--exit-status")
-    terminal = gh_json(
-        "run", "view", str(run["databaseId"]), "-R", repo, "--json", "status,conclusion"
-    )
-    if terminal != {"status": "completed", "conclusion": "success"}:
-        raise RuntimeError("Homebrew update did not complete successfully")
-    source = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
-    formulas = ["hew.rb"] + ([] if "-" in version else ["hew@stable.rb"])
-    for formula in formulas:
-        text = command(
-            "gh",
-            "api",
-            f"repos/{repo}/contents/Formula/{formula}?ref={source}",
-            "-H",
-            "Accept: application/vnd.github.raw+json",
-        ).stdout
-        verify_formula(text, version, checksums)
-    print(f"Verified Homebrew run {run['databaseId']} and formula source {source}")
+    finish(run, "verified-after-action")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,25 @@ use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
 #[test]
+fn nested_enum_record_patterns_preserve_outer_checked_bindings() {
+    let source = r"
+enum A { A0; A1; }
+enum B { B0 { value: i64; } B1; }
+enum Inner { Inner { a: A; b: B; } }
+enum Other { R0; R1; }
+enum Tree { Outer { number: i64; tree: Inner; other: Other; } Outside; }
+fn compare(tree: Tree) -> bool {
+    match tree {
+        .Outer { number, tree: .Inner { a: .A0, b: .B0 { value } }, other: .R0 } => value == number,
+        _ => false,
+    }
+}
+";
+    let (_, _, lowered) = parse_typecheck_and_lower(source);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+}
+
+#[test]
 fn source_annotations_keep_user_nominals_with_builtin_spellings() {
     for name in ["Task", "Unit", "Stream", "Sink", "Connection"] {
         let source = format!(

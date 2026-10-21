@@ -93,10 +93,15 @@ fn tcp_dial_refuses_plaintext_and_previous_protocol_peers() {
         let peer = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("node dials the peer");
             let _ = read_frame(&mut stream);
-            let mut handshake =
+            let bytes =
                 crate::connection::test_handshake_record(peer_node, 1, peer_pub, offers_noise);
-            handshake[4..6].copy_from_slice(&version.to_be_bytes());
-            write_frame(&mut stream, &handshake);
+            let mut handshake = crate::node_protocol_generated::NodeHandshake::decode(
+                hew_codec::Format::Cbor,
+                &bytes,
+            )
+            .expect("checked test handshake");
+            handshake.protocol_version = version;
+            write_frame(&mut stream, &handshake.encode(hew_codec::Format::Cbor));
             offer_plaintext_frame(&mut stream);
             read_until_closed(&mut stream)
         });

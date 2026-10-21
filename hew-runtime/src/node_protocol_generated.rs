@@ -726,3 +726,115 @@ impl ClusterEnrollment {
         })
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NodeHandshake {
+    pub(crate) protocol_version: u16,
+    pub(crate) schema_hash: u32,
+    pub(crate) feature_flags: u32,
+    pub(crate) node: Vec<u8>,
+    pub(crate) incarnation: u32,
+    pub(crate) noise_key: Vec<u8>,
+    pub(crate) enrollment: Vec<u8>,
+}
+impl NodeHandshake {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("protocol_version", 1, 0),
+        Member::new("schema_hash", 2, 0),
+        Member::new("feature_flags", 3, 0),
+        Member::new("node", 4, 0),
+        Member::new("incarnation", 5, 0),
+        Member::new("noise_key", 6, 0),
+        Member::new("enrollment", 7, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.protocol_version;
+        sink.u64(u64::from(*value));
+        sink.field(1);
+        let value = &self.schema_hash;
+        sink.u64(u64::from(*value));
+        sink.field(2);
+        let value = &self.feature_flags;
+        sink.u64(u64::from(*value));
+        sink.field(3);
+        let value = &self.node;
+        sink.bytes(value);
+        sink.field(4);
+        let value = &self.incarnation;
+        sink.u64(u64::from(*value));
+        sink.field(5);
+        let value = &self.noise_key;
+        sink.bytes(value);
+        sink.field(6);
+        let value = &self.enrollment;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut protocol_version = None;
+        let mut schema_hash = None;
+        let mut feature_flags = None;
+        let mut node = None;
+        let mut incarnation = None;
+        let mut noise_key = None;
+        let mut enrollment = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    protocol_version = Some(
+                        u16::try_from(source.read_u64(u64::from(u16::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    schema_hash = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                2 => {
+                    feature_flags = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                3 => {
+                    node = Some(source.read_bytes()?);
+                }
+                4 => {
+                    incarnation = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                5 => {
+                    noise_key = Some(source.read_bytes()?);
+                }
+                6 => {
+                    enrollment = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            protocol_version: protocol_version.expect("checked required field"),
+            schema_hash: schema_hash.expect("checked required field"),
+            feature_flags: feature_flags.expect("checked required field"),
+            node: node.expect("checked required field"),
+            incarnation: incarnation.expect("checked required field"),
+            noise_key: noise_key.expect("checked required field"),
+            enrollment: enrollment.expect("checked required field"),
+        })
+    }
+}

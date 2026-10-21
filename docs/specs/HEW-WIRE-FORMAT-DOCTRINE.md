@@ -64,7 +64,7 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### Handler identity and reply status
 
-Wire version 10 carries a service-request map in envelope key 5. Its key 1 is
+Wire version 11 carries a service-request map in envelope key 5. Its key 1 is
 the canonical dotted handler declaration (`package.module.Actor.handler`);
 keys 2 and 3 carry the recipient-bound export grant and request kind. The checker renders this
 from declaration ownership; import aliases, local dispatch indices and

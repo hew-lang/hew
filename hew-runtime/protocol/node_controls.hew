@@ -81,3 +81,14 @@ pub type ClusterEnrollment {
     member: bytes @2;
     signature: bytes @3;
 }
+
+#[wire]
+pub type NodeHandshake {
+    protocol_version: u16 @1;
+    schema_hash: u32 @2;
+    feature_flags: u32 @3;
+    node: bytes @4;
+    incarnation: u32 @5;
+    noise_key: bytes @6;
+    enrollment: bytes @7;
+}

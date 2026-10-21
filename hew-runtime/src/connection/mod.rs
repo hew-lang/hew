@@ -87,8 +87,7 @@ pub const CONN_STATE_DRAINING: i32 = 2;
 /// Connection is closed.
 pub const CONN_STATE_CLOSED: i32 = 3;
 
-const HEW_HANDSHAKE_SIZE: usize = 72;
-const HEW_HANDSHAKE_MAGIC: [u8; 4] = *b"HEW\x02";
+const MAX_HANDSHAKE_BYTES: usize = 8192;
 // Every node advertises Noise; a TCP peer whose record lacks this bit is a
 // plaintext peer and is refused (`ChannelRefusal::PlaintextPeer`).
 const HEW_FEATURE_SUPPORTS_ENCRYPTION: u32 = 1 << 0;
@@ -120,8 +119,8 @@ const RECONNECT_JITTER_MAX_PERCENT: u64 = 110;
 
 // ── Connection actor ───────────────────────────────────────────────────
 
-/// Fixed-size protocol handshake exchanged before actor traffic.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Checked protocol handshake exchanged before actor traffic.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct HewHandshake {
     protocol_version: u16,
     schema_hash: u32,
@@ -129,46 +128,43 @@ struct HewHandshake {
     node_id: NodeId,
     session_incarnation: u32,
     static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
+    enrollment: Vec<u8>,
 }
 
 impl HewHandshake {
-    fn serialize(self) -> [u8; HEW_HANDSHAKE_SIZE] {
-        let mut out = [0u8; HEW_HANDSHAKE_SIZE];
-        out[0..4].copy_from_slice(&HEW_HANDSHAKE_MAGIC);
-        out[4..6].copy_from_slice(&self.protocol_version.to_be_bytes());
-        // 6..8 and 36..40 are reserved and remain zero.
-        out[8..12].copy_from_slice(&self.schema_hash.to_be_bytes());
-        out[12..16].copy_from_slice(&self.feature_flags.to_be_bytes());
-        out[16..32].copy_from_slice(&self.node_id.to_bytes());
-        out[32..36].copy_from_slice(&self.session_incarnation.to_be_bytes());
-        out[40..72].copy_from_slice(&self.static_noise_pubkey);
-        out
+    fn serialize(&self) -> Vec<u8> {
+        crate::node_protocol_generated::NodeHandshake {
+            protocol_version: self.protocol_version,
+            schema_hash: self.schema_hash,
+            feature_flags: self.feature_flags,
+            node: self.node_id.to_bytes().to_vec(),
+            incarnation: self.session_incarnation,
+            noise_key: self.static_noise_pubkey.to_vec(),
+            enrollment: self.enrollment.clone(),
+        }
+        .encode(hew_codec::Format::Cbor)
     }
 
     fn deserialize(buf: &[u8]) -> Option<Self> {
-        if buf.len() != HEW_HANDSHAKE_SIZE
-            || buf[0..4] != HEW_HANDSHAKE_MAGIC
-            || buf[6..8] != [0, 0]
-            || buf[36..40] != [0, 0, 0, 0]
-        {
+        if buf.len() > MAX_HANDSHAKE_BYTES {
             return None;
         }
-        let mut node_id = [0u8; 16];
-        node_id.copy_from_slice(&buf[16..32]);
-        if node_id == [0; 16] {
+        let wire =
+            crate::node_protocol_generated::NodeHandshake::decode(hew_codec::Format::Cbor, buf)
+                .ok()?;
+        let node: [u8; 16] = wire.node.try_into().ok()?;
+        if node == [0; 16] || wire.incarnation == 0 {
             return None;
         }
-        let mut static_noise_pubkey = [0u8; NOISE_STATIC_PUBKEY_LEN];
-        static_noise_pubkey.copy_from_slice(&buf[40..72]);
-        let handshake = Self {
-            protocol_version: u16::from_be_bytes([buf[4], buf[5]]),
-            schema_hash: u32::from_be_bytes([buf[8], buf[9], buf[10], buf[11]]),
-            feature_flags: u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]),
-            node_id: NodeId::from_bytes(node_id),
-            session_incarnation: u32::from_be_bytes([buf[32], buf[33], buf[34], buf[35]]),
-            static_noise_pubkey,
-        };
-        (handshake.session_incarnation != 0).then_some(handshake)
+        Some(Self {
+            protocol_version: wire.protocol_version,
+            schema_hash: wire.schema_hash,
+            feature_flags: wire.feature_flags,
+            node_id: NodeId::from_bytes(node),
+            session_incarnation: wire.incarnation,
+            static_noise_pubkey: wire.noise_key.try_into().ok()?,
+            enrollment: wire.enrollment,
+        })
     }
 }
 

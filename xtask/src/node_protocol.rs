@@ -15,6 +15,7 @@ const ROOTS: &[&str] = &[
     "SwimControl",
     "ClusterEnrollment",
     "ClusterMember",
+    "NodeHandshake",
 ];
 
 pub fn run(args: &[String]) -> crate::Result<()> {
@@ -108,9 +109,11 @@ impl Generator<'_> {
             DataKind::Scalar => match ty {
                 ResolvedTy::String => "String".into(),
                 ResolvedTy::Bytes => "Vec<u8>".into(),
-                ResolvedTy::U8 | ResolvedTy::U32 | ResolvedTy::U64 | ResolvedTy::I32 => {
-                    ty.to_string()
-                }
+                ResolvedTy::U8
+                | ResolvedTy::U16
+                | ResolvedTy::U32
+                | ResolvedTy::U64
+                | ResolvedTy::I32 => ty.to_string(),
                 _ => return Err(format!("protocol scalar is not supported: {ty}")),
             },
             DataKind::Record { table: Some(_), .. } => ty.to_string(),
@@ -125,7 +128,9 @@ impl Generator<'_> {
             DataKind::Scalar => match ty {
                 ResolvedTy::String => format!("sink.str({value});"),
                 ResolvedTy::Bytes => format!("sink.bytes({value});"),
-                ResolvedTy::U8 | ResolvedTy::U32 => format!("sink.u64(u64::from(*{value}));"),
+                ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 => {
+                    format!("sink.u64(u64::from(*{value}));")
+                }
                 ResolvedTy::U64 => format!("sink.u64(*{value});"),
                 ResolvedTy::I32 => format!("sink.i64(i64::from(*{value}));"),
                 _ => return Err(format!("protocol scalar is not supported: {ty}")),
@@ -149,7 +154,7 @@ impl Generator<'_> {
                 ResolvedTy::String => "source.read_str()?".into(),
                 ResolvedTy::Bytes => "source.read_bytes()?".into(),
                 ResolvedTy::U64 => "source.read_u64(u64::MAX)?".into(),
-                ResolvedTy::U8 | ResolvedTy::U32 => format!("{ty}::try_from(source.read_u64(u64::from({ty}::MAX))?).expect(\"checked integer width\")"),
+                ResolvedTy::U8 | ResolvedTy::U16 | ResolvedTy::U32 => format!("{ty}::try_from(source.read_u64(u64::from({ty}::MAX))?).expect(\"checked integer width\")"),
                 ResolvedTy::I32 => "i32::try_from(source.read_i64(i64::from(i32::MIN), i64::from(i32::MAX))?).expect(\"checked integer width\")".into(),
                 _ => return Err(format!("protocol scalar is not supported: {ty}")),
             },
@@ -166,6 +171,7 @@ impl Generator<'_> {
                 ResolvedTy::String => "tstr".into(),
                 ResolvedTy::Bytes => "bstr".into(),
                 ResolvedTy::U8 => "0..255".into(),
+                ResolvedTy::U16 => "0..65535".into(),
                 ResolvedTy::U32 => "0..4294967295".into(),
                 ResolvedTy::U64 => "uint".into(),
                 ResolvedTy::I32 => "-2147483648..2147483647".into(),

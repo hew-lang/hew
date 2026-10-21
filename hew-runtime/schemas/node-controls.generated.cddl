@@ -70,3 +70,13 @@ cluster-enrollment = {
     3 => bstr, ; signature
 }
 
+node-handshake = {
+    1 => 0..65535, ; protocol_version
+    2 => 0..4294967295, ; schema_hash
+    3 => 0..4294967295, ; feature_flags
+    4 => bstr, ; node
+    5 => 0..4294967295, ; incarnation
+    6 => bstr, ; noise_key
+    7 => bstr, ; enrollment
+}
+

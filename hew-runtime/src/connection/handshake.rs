@@ -2,6 +2,7 @@
 
 use std::ffi::c_int;
 
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::envelope::{FRAME_TYPE_CONTROL, FRAME_TYPE_ENVELOPE, WIRE_VERSION};
@@ -11,7 +12,7 @@ use crate::transport::HewTransport;
 
 use super::{
     HewHandshake, FNV1A32_OFFSET_BASIS, FNV1A32_PRIME, HEW_FEATURE_SUPPORTS_GOSSIP,
-    HEW_HANDSHAKE_SIZE, NOISE_STATIC_PUBKEY_LEN,
+    MAX_HANDSHAKE_BYTES, NOISE_STATIC_PUBKEY_LEN,
 };
 use super::{HEW_FEATURE_SUPPORTS_ENCRYPTION, NOISE_MAX_MSG_SIZE, NOISE_PATTERN};
 
@@ -51,10 +52,11 @@ pub(super) fn local_handshake(
         node_id: local_node_id,
         session_incarnation,
         static_noise_pubkey,
+        enrollment: Vec::new(),
     }
 }
 
-/// A genuine v2 record for a raw-socket test peer, optionally without the
+/// A genuine checked handshake record for a raw-socket test peer, optionally without the
 /// Noise capability so the peer presents itself as plaintext.
 #[cfg(test)]
 pub(crate) fn test_handshake_record(
@@ -62,7 +64,7 @@ pub(crate) fn test_handshake_record(
     session_incarnation: u32,
     static_noise_pubkey: [u8; NOISE_STATIC_PUBKEY_LEN],
     offers_noise: bool,
-) -> [u8; HEW_HANDSHAKE_SIZE] {
+) -> Vec<u8> {
     let mut record = local_handshake(node_id, session_incarnation, static_noise_pubkey);
     if !offers_noise {
         record.feature_flags &= !HEW_FEATURE_SUPPORTS_ENCRYPTION;
@@ -106,55 +108,35 @@ pub(super) unsafe fn send_frame(
     unsafe { send_fn(t.r#impl, conn_id, payload.as_ptr().cast(), payload.len()) == expected }
 }
 
-unsafe fn recv_frame_exact(
-    transport: *mut HewTransport,
-    conn_id: c_int,
-    payload: &mut [u8],
-) -> bool {
-    if transport.is_null() {
-        return false;
-    }
-    // SAFETY: transport pointer validity is guaranteed by caller.
-    let t = unsafe { &*transport };
-    // SAFETY: vtable pointer validity is guaranteed by transport construction.
-    let Some(ops) = (unsafe { t.ops.as_ref() }) else {
-        return false;
-    };
-    let Some(recv_fn) = ops.recv else {
-        return false;
-    };
-    let Ok(expected) = c_int::try_from(payload.len()) else {
-        return false;
-    };
-    // SAFETY: payload pointer is valid for payload.len() writable bytes.
-    unsafe {
-        recv_fn(
-            t.r#impl,
-            conn_id,
-            payload.as_mut_ptr().cast(),
-            payload.len(),
-        ) == expected
-    }
-}
-
 unsafe fn handshake_send(
     transport: *mut HewTransport,
     conn_id: c_int,
-    handshake: HewHandshake,
+    handshake: &HewHandshake,
 ) -> c_int {
-    // SAFETY: transport and conn_id are validated by caller; serialize returns a fixed-size buffer.
+    // SAFETY: transport and conn_id are validated by caller; serialization produces one checked metadata frame.
     -c_int::from(!unsafe { send_frame(transport, conn_id, &handshake.serialize()) })
 }
 
 unsafe fn handshake_recv(transport: *mut HewTransport, conn_id: c_int) -> Option<HewHandshake> {
-    let mut buf = [0u8; HEW_HANDSHAKE_SIZE];
-    // SAFETY: transport and conn_id are validated by caller; buf is stack-allocated with correct size.
-    if !unsafe { recv_frame_exact(transport, conn_id, &mut buf) } {
-        set_last_error(format!(
-            "hew_connmgr_add: failed to receive handshake for conn {conn_id}"
-        ));
+    let mut buf = vec![0u8; MAX_HANDSHAKE_BYTES];
+    // SAFETY: caller pins the transport and connection during admission.
+    let transport = unsafe { transport.as_ref() }?;
+    // SAFETY: a live transport owns its operations table.
+    let recv = unsafe { transport.ops.as_ref() }?.recv?;
+    // SAFETY: buf is writable for its advertised bounded capacity.
+    let length = unsafe {
+        recv(
+            transport.r#impl,
+            conn_id,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    let length = usize::try_from(length).ok()?;
+    if length == 0 || length > buf.len() {
         return None;
     }
+    buf.truncate(length);
     let Some(handshake) = HewHandshake::deserialize(&buf) else {
         set_last_error(format!(
             "hew_connmgr_add: invalid handshake payload for conn {conn_id}"
@@ -167,7 +149,7 @@ unsafe fn handshake_recv(transport: *mut HewTransport, conn_id: c_int) -> Option
 pub(super) unsafe fn handshake_exchange(
     transport: *mut HewTransport,
     conn_id: c_int,
-    local: HewHandshake,
+    local: &HewHandshake,
 ) -> Option<HewHandshake> {
     // SAFETY: transport and conn_id validated by caller contract.
     if unsafe { handshake_send(transport, conn_id, local) } != 0 {
@@ -178,14 +160,14 @@ pub(super) unsafe fn handshake_exchange(
     }
     // SAFETY: same contract — transport remains valid through handshake sequence.
     let peer = unsafe { handshake_recv(transport, conn_id) }?;
-    if !version_compatible(&local, &peer) {
+    if !version_compatible(local, &peer) {
         set_last_error(format!(
             "hew_connmgr_add: handshake protocol mismatch for conn {conn_id} (local={}, peer={})",
             local.protocol_version, peer.protocol_version
         ));
         return None;
     }
-    if !schema_compatible(&local, &peer) {
+    if !schema_compatible(local, &peer) {
         set_last_error(format!(
             "hew_connmgr_add: handshake schema hash mismatch for conn {conn_id} (local={:#010x}, peer={:#010x})",
             local.schema_hash, peer.schema_hash
@@ -225,6 +207,39 @@ fn noise_is_initiator(local: &HewHandshake, peer: &HewHandshake) -> Option<bool>
     }
 }
 
+/// Construct the one Noise handshake used by direct and relayed admission.
+/// Canonical records bind identity, session, contract and enrolment to key proof.
+pub(super) fn noise_handshake_state(
+    local: &HewHandshake,
+    peer: &HewHandshake,
+    local_private_key: &[u8],
+) -> Option<(snow::HandshakeState, bool)> {
+    let initiator = noise_is_initiator(local, peer)?;
+    let (first, second) = if initiator {
+        (local, peer)
+    } else {
+        (peer, local)
+    };
+    let mut transcript = Sha256::new();
+    transcript.update(b"hew-node-handshake\0");
+    // Each checked CBOR record is self-delimiting; both endpoints hash the
+    // exact same initiator/responder order through the shared codec.
+    transcript.update(first.serialize());
+    transcript.update(second.serialize());
+    let prologue = transcript.finalize();
+    let builder = snow::Builder::new(NOISE_PATTERN.parse().ok()?)
+        .prologue(&prologue)
+        .ok()?
+        .local_private_key(local_private_key)
+        .ok()?;
+    let handshake = if initiator {
+        builder.build_initiator().ok()?
+    } else {
+        builder.build_responder().ok()?
+    };
+    Some((handshake, initiator))
+}
+
 pub(super) unsafe fn upgrade_noise(
     transport: *mut HewTransport,
     conn_id: c_int,
@@ -232,28 +247,13 @@ pub(super) unsafe fn upgrade_noise(
     peer: &HewHandshake,
     local_private_key: &[u8],
 ) -> Option<(snow::StatelessTransportState, [u8; NOISE_STATIC_PUBKEY_LEN])> {
-    let initiator = noise_is_initiator(local, peer)?;
+    let (mut handshake, initiator) = noise_handshake_state(local, peer, local_private_key)?;
     // SAFETY: transport pointer validity is guaranteed by caller.
     let t = unsafe { &*transport };
     // SAFETY: vtable pointer validity is guaranteed by transport construction.
     let ops = unsafe { t.ops.as_ref() }?;
     let send_fn = ops.send?;
     let recv_fn = ops.recv?;
-
-    let builder = snow::Builder::new(NOISE_PATTERN.parse().ok()?);
-    let mut handshake = if initiator {
-        builder
-            .local_private_key(local_private_key)
-            .ok()?
-            .build_initiator()
-            .ok()?
-    } else {
-        builder
-            .local_private_key(local_private_key)
-            .ok()?
-            .build_responder()
-            .ok()?
-    };
 
     // Wrap handshake buffers in Zeroizing so ephemeral key material is
     // zeroised on all exit paths (normal return, early `?`, and unwind).

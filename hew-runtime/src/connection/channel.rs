@@ -326,7 +326,7 @@ pub(super) unsafe fn channel_kind(transport: *const HewTransport) -> Option<Chan
     None
 }
 
-/// The static key this node presents in its v2 record, and the private half
+/// The static key this node presents in its checked handshake record, and the private half
 /// the Noise handshake uses. quic-mesh presents a zero key and no private key.
 pub(super) fn local_channel_key(
     kind: ChannelKind,
@@ -347,7 +347,7 @@ pub(super) fn local_channel_key(
     }
 }
 
-/// Establish the channel for a connection whose v2 records have been
+/// Establish the channel for a connection whose checked handshake records have been
 /// exchanged, returning its protection and the peer credential it
 /// authenticated.
 ///

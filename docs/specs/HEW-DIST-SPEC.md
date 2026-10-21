@@ -261,33 +261,27 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 10 handshake
+## 4. Protocol-version 11 handshake
 
-Version 10 carries disjoint direct-actor and stable-role destinations throughout
-requests, grants, registry gossip and observations, plus typed route-size failures. Upgrade communicating nodes
-together: earlier peers fail the handshake before route publication. There is
-no downgrade or legacy location codec.
+Version 11 carries checked handshake metadata, including cluster enrolment,
+through the same generated node schema and codec as other internal controls.
+It retains direct-actor and stable-role destinations and typed route-size
+failures. Upgrade communicating nodes together: earlier peers fail before route
+publication.
 
-Every connection exchanges exactly 72 bytes before actor traffic. The layout
-magic remains `HEW\x02`; the independently checked protocol version is `10`:
-
-| Offset | Size | Field |
-|---:|---:|---|
-| `0` | 4 | magic `HEW\x02` |
-| `4` | 2 | protocol version, big-endian, value `10` |
-| `6` | 2 | reserved, zero |
-| `8` | 4 | schema hash, big-endian |
-| `12` | 4 | feature flags, big-endian |
-| `16` | 16 | key-derived `NodeId` |
-| `32` | 4 | durable session incarnation, big-endian |
-| `36` | 4 | reserved, zero |
-| `40` | 32 | Noise static public key, or zero when the transport authenticates by SPKI |
+Each connection exchanges one bounded CBOR `NodeHandshake` record from
+`node_controls.hew`: protocol version, schema hash, feature flags, key-derived
+`NodeId`, durable session incarnation, Noise public key (zero for mesh), and
+cluster enrolment bytes. Generated bindings own the field tags and integer
+widths. Fixed-offset handshake records are retired. Noise binds the ordered canonical
+initiator and responder records into its handshake transcript before key proof;
+changing a node/session identity, negotiated contract or enrolment invalidates
+the handshake. TLS carries the same checked metadata inside its protected session.
 
 The receiver MUST reject:
 
-- any length other than 72 bytes;
-- magic other than `HEW\x02` or protocol version other than `10`;
-- non-zero reserved bytes;
+- oversized, malformed, duplicate, unknown, missing or trailing fields;
+- protocol version other than `11`;
 - an all-zero `NodeId`;
 - session incarnation `0`;
 - schema incompatibility;
@@ -305,7 +299,7 @@ buried member.
 Transport framing carries CBOR wire frames defined by
 `hew-runtime/schemas/envelope.cddl` together with
 `hew-runtime/schemas/node-controls.generated.cddl`. The wire schema version
-is `10`.
+is `11`.
 
 Service offers, registry gossip, SWIM and monitor/link DOWN payloads use checked
 internal Hew data declarations in `hew-runtime/protocol/node_controls.hew`. The frontend's closed

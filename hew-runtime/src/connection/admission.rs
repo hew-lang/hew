@@ -189,7 +189,7 @@ pub(super) unsafe fn add_connection_recording_owner(
         local_noise_pubkey,
     );
     // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
-    let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, local_hs) }) else {
+    let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, &local_hs) }) else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
         unsafe { close_transport_conn(mgr.transport, conn_id) };
         return -1;

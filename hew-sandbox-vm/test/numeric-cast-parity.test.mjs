@@ -28,7 +28,7 @@ function castPackage(constant, casts, printKind) {
 
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.6.4",
+    hew_version: "0.6.5",
     compiler_version: "numeric-cast-parity-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

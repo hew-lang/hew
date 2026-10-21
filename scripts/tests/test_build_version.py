@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import tempfile
@@ -170,6 +171,56 @@ class SharedTargetVersion(unittest.TestCase):
             following_sha = open_development_version("0.6.2", "0.6.3")
             probe(second, f"0.6.3-dev.1+{following_sha}|second")
             probe(first, "0.6.1|first")
+
+    def test_embedded_std_inventory_follows_source_root(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="hew-embedded-std-") as temporary:
+            base = Path(temporary)
+            first = base / "first source"
+            second = base / "second source"
+            crate = first / "hew-wasm"
+            (crate / "src").mkdir(parents=True)
+            (first / "std").mkdir()
+            (crate / "Cargo.toml").write_text(
+                '[package]\nname = "hew-embedded-std-probe"\nversion = "0.1.0"\nedition = "2024"\n'
+            )
+            (crate / "build.rs").write_bytes((ROOT / "hew-wasm/build.rs").read_bytes())
+            (crate / "src/main.rs").write_text(
+                'include!(concat!(env!("OUT_DIR"), "/std_sources.rs"));\n'
+                'fn main() { for (path, text) in STD_SOURCES { println!("{path}|{}", text.trim()); } }\n'
+            )
+            (first / "Makefile").write_text(
+                "export HEW_BUILD_SOURCE_ROOT := $(CURDIR)\nprobe:\n"
+                '\tcargo run --quiet --offline --manifest-path hew-wasm/Cargo.toml --target-dir "$(PROBE_TARGET)"\n'
+            )
+            (first / "std/first.hew").write_text("first source\n")
+            shutil.copytree(first, second, copy_function=shutil.copy2)
+            (second / "std/first.hew").unlink()
+            (second / "std/second.hew").write_text("second source\n")
+
+            # Both inventories predate compilation and all Rust inputs retain
+            # identical timestamps. Only the exported source root changes.
+            for directory, expected in [
+                (second, "./std/second.hew|second source"),
+                (first, "./std/first.hew|first source"),
+                (second, "./std/second.hew|second source"),
+            ]:
+                result = subprocess.run(
+                    [
+                        "make",
+                        "--no-print-directory",
+                        "-s",
+                        "probe",
+                        f"PROBE_TARGET={base / 'shared target'}",
+                    ],
+                    cwd=directory,
+                    text=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+                print(f"PASS embedded std {directory.name}: {expected}", flush=True)
 
 
 if __name__ == "__main__":

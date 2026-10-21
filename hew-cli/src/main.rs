@@ -44,6 +44,7 @@ mod migrate_checks;
 mod migrate_fails;
 mod migrate_variants;
 mod native_link;
+mod node;
 mod package;
 mod platform;
 mod playground;

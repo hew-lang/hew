@@ -71,6 +71,8 @@ pub enum Command {
     Watch(WatchArgs),
     /// Wire schema compatibility tools.
     Wire(WireCommand),
+    /// Manage persistent node identities.
+    Node(NodeCommand),
     /// State machine tools.
     Machine(MachineCommand),
     /// Format Hew source files or project directories in-place, or read stdin.
@@ -1061,3 +1063,33 @@ pub struct GenerateArgs {
 // Command libraries own their options so help and execution share one schema.
 pub use hew_lsp::Options as LspArgs;
 pub use hew_observe::Options as ObserveArgs;
+
+// Node
+
+#[derive(Debug, Args)]
+pub struct NodeCommand {
+    #[command(subcommand)]
+    pub command: NodeSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum NodeSubcommand {
+    /// Load or create an owner-only key file and print its public credential.
+    Identity(NodeIdentityArgs),
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub enum NodeIdentityTransport {
+    Tcp,
+    QuicMesh,
+}
+
+#[derive(Debug, Args)]
+pub struct NodeIdentityArgs {
+    /// Persistent private identity file (created only when absent).
+    #[arg(long)]
+    pub key: PathBuf,
+    /// Transport whose public credential should be printed.
+    #[arg(long, value_enum, default_value = "tcp")]
+    pub transport: NodeIdentityTransport,
+}

@@ -1886,6 +1886,7 @@ dependencies = [
  "hew-observe",
  "hew-parser",
  "hew-pkg",
+ "hew-runtime",
  "hew-sir",
  "hew-testutil",
  "hew-types",

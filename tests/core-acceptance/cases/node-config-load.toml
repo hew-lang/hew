@@ -1,0 +1,10 @@
+[[case]]
+id = "node-config-load"
+intent = "Load checked cluster TOML, apply typed environment overrides, resolve file-relative identity paths and start the resulting node without losing configuration diagnostics."
+source = "cases/node-config-load.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = ""
+exit = 0

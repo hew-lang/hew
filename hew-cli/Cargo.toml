@@ -14,6 +14,9 @@ name = "hew"
 path = "src/main.rs"
 
 [dependencies]
+hew-runtime = { path = "../hew-runtime", default-features = false, features = [
+  "quic",
+] }
 hew-lsp = { path = "../hew-lsp" }
 hew-observe = { path = "../hew-observe" }
 hew-analysis = { path = "../hew-analysis" }

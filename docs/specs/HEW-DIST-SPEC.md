@@ -155,8 +155,49 @@ NodeConfig {
 ```
 
 `NodeConfig.at(addr)` fills the defaults around a bind address.
-`NodeConfig.load() -> Result<NodeConfig, NodeError>` reads `[cluster]` plus
-`HEW_NODE_*` overrides and is deferred to v0.8.0.
+Import `std.net` to use `NodeConfig.load() -> Result<NodeConfig, ConfigError>`.
+The loader reads `[cluster]` from `hew.toml` in the working directory, or the
+file selected by `HEW_NODE_CONFIG`, then applies `HEW_NODE_BIND`,
+`HEW_NODE_TRANSPORT`, `HEW_NODE_KEY`, `HEW_NODE_PEERS` and `HEW_NODE_SEEDS`.
+`bind` and `key` are required non-empty strings; `transport` defaults to `tcp`
+and also accepts `quic-mesh`. Peer and seed lists default to empty. Environment
+lists use TOML array syntax, so `HEW_NODE_SEEDS='[]'` clears the configured list.
+An absent default file permits environment-only configuration; an explicitly
+selected file must exist. Malformed TOML, unknown cluster fields and wrong
+field types are errors even when an environment override replaces that field.
+File key paths are relative to the configuration file's directory; an
+environment key path is relative to the process working directory.
+
+Configuration errors carry ordinary Hew values:
+
+```hew
+pub type ConfigError {
+    source: string;
+    field: string;
+    message: string;
+}
+```
+
+`ConfigError` implements `Display` and `Error`; for example,
+`hew.toml: cluster.seeds: expected an array of strings`. Loading configuration
+does not start a node, create keys or advance a session. Runtime admission
+continues to report `NodeError` through `Node.start` and `Node.connect`.
+
+```toml
+[cluster]
+bind = "127.0.0.1:9000"
+transport = "tcp"
+key = "node.key"
+peers = []
+seeds = ["127.0.0.1:9001"]
+```
+
+Use `hew node identity --key node.key --transport tcp` to load or create a
+persistent identity and print its public credential alone. `tcp` is the default;
+`quic-mesh` prints the TLS SPKI credential. The command reuses the node's secure
+identity storage without starting a node or changing session state. Paste this
+credential into the peer's `peers` list. Routing slots remain the one-based
+positions in that list; the credential does not choose a routing slot.
 
 No field is inert. `Node.start` loads or creates the stable credential named by
 `key` for the transport named by `transport`, pins every `peers` entry to the

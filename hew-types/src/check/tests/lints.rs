@@ -2865,6 +2865,35 @@ fn dead_code_library_unit_exempts_pub_fn() {
 }
 
 #[test]
+fn dead_code_library_public_roots_reach_generic_helpers() {
+    let source = r"
+fn leaf<T>(value: T) -> T { value }
+fn recurse<T>(value: T, depth: i64) -> T {
+    if depth <= 0 { leaf(value) } else { recurse(value, depth - 1) }
+}
+pub fn identity<T>(value: T) -> T { recurse(value, 3) }
+fn stranded() { stranded(); }
+";
+    for (suffix, expected) in [("", 1), ("fn main() {}", 4)] {
+        let parsed = hew_parser::parse(&format!("{source}{suffix}"));
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+        let output = checker.check_program(&parsed.program);
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
+        assert_eq!(
+            count_dead_code(&output.warnings),
+            expected,
+            "{:?}",
+            output.warnings
+        );
+        assert!(output.warnings.iter().any(|warning| {
+            warning.kind == TypeErrorKind::Lint(LintId::DeadCode)
+                && warning.message.contains("`stranded`")
+        }));
+    }
+}
+
+#[test]
 fn dead_code_binary_unit_still_reports_pub_fn() {
     // Negative control for `dead_code_library_unit_exempts_pub_fn`: the same
     // two functions plus a root `fn main` make this a binary unit, so both

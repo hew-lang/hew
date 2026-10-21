@@ -666,6 +666,8 @@ export function validatePackageGraph(pkg: PackageV1): void {
           }
           break;
         case "extern.call":
+          if (term.result_resource != null)
+            at(pkg.resources ?? [], term.result_resource, "resource");
           at(pkg.externs, term.extern, "extern");
           variant(term.result_shape);
           aggregate(term.aggregate_result_shape);

@@ -67,7 +67,7 @@ test.after(() => {
 for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
   const fixture = path.join(root, "fixtures", dir);
   if (!fs.existsSync(path.join(fixture, "bytecode.json"))) continue;
-  test(`freshly compiled fixture replay: ${dir}`, () => {
+  test(`freshly compiled fixture replay: ${dir}`, async () => {
     const source = fs.readFileSync(path.join(fixture, "main.hew"), "utf8");
     const output = globalThis.__hewSandboxCompileToSandboxBytecode(
       source,
@@ -78,7 +78,7 @@ for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
     const expected = JSON.parse(
       fs.readFileSync(path.join(fixture, "expected.trace.json"), "utf8"),
     );
-    const actual = runBytecode(compiled.bytecode, {
+    const actual = await runBytecode(compiled.bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
       replay: expected.replay,
@@ -88,24 +88,24 @@ for (const dir of fs.readdirSync(path.join(root, "fixtures"))) {
   });
 }
 
-test("runProgram hello_world returns stdout and zero exit code", () => {
+test("runProgram hello_world returns stdout and zero exit code", async () => {
   const source = fs.readFileSync(
     path.join(root, "fixtures/01-hello-world/main.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
 
   assert.equal(result.stdout, "Hello, sandbox!\n");
   assert.equal(result.exit_code, 0);
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("source-defined collection updates preserve ownership and callback recovery", () => {
+test("source-defined collection updates preserve ownership and callback recovery", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/collection-update.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(
@@ -114,18 +114,18 @@ test("source-defined collection updates preserve ownership and callback recovery
   );
 });
 
-test("runProgram preserves timestamp codec values and located errors", () => {
+test("runProgram preserves timestamp codec values and located errors", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/timestamp-codecs.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp codecs ok\n");
 });
 
-test("timestamp.now uses the replay clock's Unix coordinate exactly once", () => {
+test("timestamp.now uses the replay clock's Unix coordinate exactly once", async () => {
   const output = globalThis.__hewSandboxCompileToSandboxBytecode(
     `
 fn main() {
@@ -143,14 +143,14 @@ fn main() {
     [-1000, -1, "-1|999000000\n"],
     [-1000, -1001, "-2|999000000\n"],
   ]) {
-    const trace = runBytecode(compiled.bytecode, {
+    const trace = await runBytecode(compiled.bytecode, {
       replay: { virtual_clock: { epoch_ms, current_ms, tick_ms: 0 } },
     });
     assert.equal(trace.result, "ok", JSON.stringify(trace.final_state));
     assert.equal(trace.final_state.stdout.join(""), expected);
   }
   for (const current_ms of [NaN, Infinity, -Infinity]) {
-    const trace = runBytecode(compiled.bytecode, {
+    const trace = await runBytecode(compiled.bytecode, {
       replay: { virtual_clock: { epoch_ms: 0, current_ms, tick_ms: 0 } },
     });
     assert.notEqual(trace.result, "ok");
@@ -165,10 +165,10 @@ fn main() {
         malformed.runtime_families[term.family].family === "TimestampNow",
     );
   delete clockCall.aggregate_result_shape;
-  assert.equal(runBytecode(malformed).result, "sandbox_rejected");
+  assert.equal((await runBytecode(malformed)).result, "sandbox_rejected");
 });
 
-test("serialized bytecode preserves supervisor child i64 bounds", () => {
+test("serialized bytecode preserves supervisor child i64 bounds", async () => {
   const compileOutput = globalThis.__hewSandboxCompileToSandboxBytecode(
     `
 actor Bounds {
@@ -202,7 +202,7 @@ fn main() {
   assert.ok(compiled.bytecode, "compiler should emit bytecode");
   const bytecode = JSON.parse(JSON.stringify(compiled.bytecode));
   assert.equal(bytecode.schema_version, "hew.sandbox.bytecode.v1");
-  const trace = runBytecode(bytecode);
+  const trace = await runBytecode(bytecode);
   assert.equal(trace.result, "ok");
   assert.equal(
     trace.final_state.stdout.join(""),
@@ -210,8 +210,8 @@ fn main() {
   );
 });
 
-test("runProgram reads two stdin lines from the page input buffer byte-cleanly", () => {
-  const result = runProgram(
+test("runProgram reads two stdin lines from the page input buffer byte-cleanly", async () => {
+  const result = await runProgram(
     `
 import std.io;
 
@@ -229,8 +229,8 @@ fn main() {
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("runProgram hands a read_line loop successive lines, an empty line, then None at end of input", () => {
-  const result = runProgram(
+test("runProgram hands a read_line loop successive lines, an empty line, then None at end of input", async () => {
+  const result = await runProgram(
     `
 import std.io;
 
@@ -254,8 +254,8 @@ fn main() {
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("runProgram read_all keeps line endings and the unterminated tail after a read_line", () => {
-  const result = runProgram(
+test("runProgram read_all keeps line endings and the unterminated tail after a read_line", async () => {
+  const result = await runProgram(
     `
 import std.io;
 
@@ -275,7 +275,7 @@ fn main() {
   assert.deepEqual(result.diagnostics, []);
 });
 
-test("runProgram records each consumed stdin line as a replay.input event without duplicating the record", () => {
+test("runProgram records each consumed stdin line as a replay.input event without duplicating the record", async () => {
   const compiled = globalThis.__hewSandboxCompileToSandboxBytecode(
     `
 import std.io;
@@ -293,7 +293,7 @@ fn main() {
     typeof compiled === "string"
       ? JSON.parse(compiled).bytecode
       : compiled.bytecode;
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     replay: { inputs: [{ kind: "stdin", data: "x\ny\n" }] },
   });
   // A read suspends, so the scheduler records its steps alongside; stdin is
@@ -315,12 +315,12 @@ fn main() {
   assert.deepEqual(trace.final_state.stdout, ["x\n", "y\n"]);
 });
 
-test("compute-only loops and recursion yield, cancel and close their owners", () => {
+test("compute-only loops and recursion yield, cancel and close their owners", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/compute-safepoints.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.equal(
     result.stdout,
@@ -328,7 +328,7 @@ test("compute-only loops and recursion yield, cancel and close their owners", ()
   );
 });
 
-test("authored close helpers yield without abandoning explicit or implicit release", () => {
+test("authored close helpers yield without abandoning explicit or implicit release", async () => {
   const source = fs.readFileSync(
     path.join(
       repoRoot,
@@ -336,7 +336,7 @@ test("authored close helpers yield without abandoning explicit or implicit relea
     ),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.equal(
     result.stdout,
@@ -344,8 +344,8 @@ test("authored close helpers yield without abandoning explicit or implicit relea
   );
 });
 
-test("runProgram parse errors return diagnostics and do not execute cached bytecode", () => {
-  const result = runProgram('fn main( {\n    println("nope");\n}\n', "");
+test("runProgram parse errors return diagnostics and do not execute cached bytecode", async () => {
+  const result = await runProgram('fn main( {\n    println("nope");\n}\n', "");
 
   assert.notEqual(result.exit_code, 0);
   assert.equal(result.stdout, "");
@@ -355,8 +355,8 @@ test("runProgram parse errors return diagnostics and do not execute cached bytec
   );
 });
 
-test("runProgram type errors return diagnostics and do not execute", () => {
-  const result = runProgram(
+test("runProgram type errors return diagnostics and do not execute", async () => {
+  const result = await runProgram(
     'fn main() {\n    let x: i64 = "oops";\n    println(x);\n}\n',
     "",
   );
@@ -369,8 +369,8 @@ test("runProgram type errors return diagnostics and do not execute", () => {
   );
 });
 
-test("runProgram panics map to non-zero exit code and a trap diagnostic", () => {
-  const result = runProgram(
+test("runProgram panics map to non-zero exit code and a trap diagnostic", async () => {
+  const result = await runProgram(
     'fn main() {\n    panic("sandbox panic");\n}\n',
     "",
   );
@@ -424,8 +424,8 @@ for (const [name, body, expected] of [
     "closed 1\nclosed 2\n",
   ],
 ]) {
-  test(`compiled resource lifecycle: ${name}`, () => {
-    const result = runProgram(
+  test(`compiled resource lifecycle: ${name}`, async () => {
+    const result = await runProgram(
       `
 #[resource]
 type Ticket { id: i64; }
@@ -440,29 +440,29 @@ fn main() { var fresh = Ticket { id: 1 }; ${body} }
   });
 }
 
-test("runProgram shares checked UTC calendar semantics with native", () => {
+test("runProgram shares checked UTC calendar semantics with native", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/timestamp-calendar.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp calendar ok\n");
 });
 
-test("runProgram executes the shared source cron parser and search", () => {
+test("runProgram executes the shared source cron parser and search", async () => {
   const source = fs.readFileSync(
     path.join(repoRoot, "tests/core-acceptance/cases/timestamp-cron.hew"),
     "utf8",
   );
-  const result = runProgram(source, "");
+  const result = await runProgram(source, "");
   assert.equal(result.exit_code, 0, JSON.stringify(result.diagnostics));
   assert.deepEqual(result.diagnostics, []);
   assert.equal(result.stdout, "timestamp cron ok\n");
 });
 
-test("calendar extern results require their checked record descriptor", () => {
+test("calendar extern results require their checked record descriptor", async () => {
   const output = globalThis.__hewSandboxCompileToSandboxBytecode(
     'import std.time.datetime; fn main() { println(datetime.to_iso8601(timestamp.from_unix_secs(0)).expect("calendar")); }',
     "sandbox-vm-export",
@@ -482,7 +482,7 @@ test("calendar extern results require their checked record descriptor", () => {
     assert.ok(call);
     if (mismatch === "missing") delete call.aggregate_result_shape;
     else malformed.aggregates[call.aggregate_result_shape].fields.reverse();
-    const trace = runBytecode(malformed, {
+    const trace = await runBytecode(malformed, {
       calendarBridge: globalThis.__hewSandboxExecuteCalendar,
     });
     assert.equal(trace.result, "sandbox_rejected");

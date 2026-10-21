@@ -86,7 +86,7 @@ export function admitPackage(
     };
   }
 
-  const timerResources = new Set<number>();
+  const opaqueResources = new Set<number>();
   for (const function_ of pkg.functions) {
     for (const block of function_.blocks) {
       if (block.ops.some((op) => op.op === "actor.ingress_adapter"))
@@ -216,6 +216,32 @@ export function admitPackage(
             span: null,
           };
       }
+      if (term.op === "extern.call") {
+        const registration = resolveExtern(pkg.externs[term.extern]!);
+        if (
+          registration.kind === "directory" &&
+          "release" in registration.operation
+        ) {
+          const resource =
+            term.result_resource == null
+              ? undefined
+              : pkg.resources?.[term.result_resource];
+          if (
+            resource?.kind !== "nominal" ||
+            resource.release !== registration.operation.release ||
+            term.result == null ||
+            term.result === "never"
+          )
+            return {
+              category: "invalid_package",
+              code: "sandbox.package.owner_result",
+              capability: null,
+              message:
+                "filesystem acquisition lacks its compiler-selected owner release slot",
+              span: null,
+            };
+        }
+      }
       if (term.op === "actor.call" && term.operation.op === "timer_schedule") {
         const operation = term.operation;
         const handler = pkg.actors
@@ -241,7 +267,7 @@ export function admitPackage(
               "timer schedule lacks its checked handler, timing or non-waiting admission",
             span: null,
           };
-        timerResources.add(operation.resource);
+        opaqueResources.add(operation.resource);
       }
       if (
         term.op === "actor.call" &&
@@ -300,7 +326,7 @@ export function admitPackage(
   }
 
   for (const [index, resource] of (pkg.resources ?? []).entries()) {
-    if (resource.kind === "opaque" && !timerResources.has(index))
+    if (resource.kind === "opaque" && !opaqueResources.has(index))
       return unavailable("resource.opaque_close");
     if (
       resource.kind === "nominal" &&
@@ -452,7 +478,8 @@ function rejectRegistration(refusal: Refused): SandboxRejection {
     code: UNSUPPORTED,
     capability: refusal.capability,
     message:
-      refusal.capability === "codecBridge" ||
+      refusal.message ??
+      (refusal.capability === "codecBridge" ||
       refusal.capability === "calendarBridge"
         ? `This operation requires the ${refusal.capability === "codecBridge" ? "codec" : "calendar"} Wasm bridge.`
         : refusal.description !== undefined
@@ -460,7 +487,7 @@ function rejectRegistration(refusal: Refused): SandboxRejection {
           : capabilityMessage(
               refusal.capability.split("::")[0]!,
               refusal.category === "native_only",
-            ),
+            )),
     span: null,
   };
 }

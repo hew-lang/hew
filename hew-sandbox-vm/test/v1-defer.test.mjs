@@ -45,8 +45,8 @@ function printTerm(value, to) {
   };
 }
 
-function run(bytecode) {
-  return runBytecode(bytecode, {
+async function run(bytecode) {
+  return await runBytecode(bytecode, {
     fixtureId: "v1-defer",
     traceId: "trace:v1-defer",
     replay: { seed: 1, step_budget: 10_000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
@@ -57,7 +57,7 @@ function stdout(trace) {
   return trace.final_state.stdout.join("");
 }
 
-test("deferred bodies run in reverse registration order as the scope ends", () => {
+test("deferred bodies run in reverse registration order as the scope ends", async () => {
   // The shape of:
   //
   //     fn main() {
@@ -65,7 +65,7 @@ test("deferred bodies run in reverse registration order as the scope ends", () =
   //         defer println("second: closing resources");
   //         println("first: doing work");
   //     }
-  const trace = run(
+  const trace = await run(
     pkg(
       ["first: doing work", "second: closing resources", "third: cleanup done"],
       [
@@ -197,8 +197,8 @@ function parkPackage(faulting) {
   );
 }
 
-test("a deferred body reached while unwinding runs on its own fault state", () => {
-  const trace = run(parkPackage(true));
+test("a deferred body reached while unwinding runs on its own fault state", async () => {
+  const trace = await run(parkPackage(true));
 
   // The body's own dispatch took its normal edge, so the panic was parked at
   // the boundary rather than leaking into the cleanup being run.
@@ -210,11 +210,11 @@ test("a deferred body reached while unwinding runs on its own fault state", () =
   assert.equal(trace.final_state.runtime_failures[0].message, "boom");
 });
 
-test("the same deferred body on the ordinary path leaves the program succeeding", () => {
+test("the same deferred body on the ordinary path leaves the program succeeding", async () => {
   // Negative control: the body prints the same line either way, so the panic
   // above is the parked fault coming back at `finish_defer` and not something
   // the body itself produced.
-  const trace = run(parkPackage(false));
+  const trace = await run(parkPackage(false));
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(stdout(trace), "body saw no fault\n");

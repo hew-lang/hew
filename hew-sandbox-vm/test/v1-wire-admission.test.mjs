@@ -9,7 +9,7 @@ const external = JSON.parse(
     "utf8",
   ),
 );
-test("malformed instruction operands are rejected before any output", () => {
+test("malformed instruction operands are rejected before any output", async () => {
   for (const value of [-1, 4294967296, "0", null]) {
     const package_ = structuredClone(external);
     const operation = package_.functions
@@ -18,7 +18,7 @@ test("malformed instruction operands are rejected before any output", () => {
       .find((op) => op.op === "const.str");
     assert.ok(operation, "external package contains a string instruction");
     operation.str = value;
-    const trace = runBytecode(package_);
+    const trace = await runBytecode(package_);
     assert.equal(trace.result, "sandbox_rejected", JSON.stringify(value));
     assert.equal(
       trace.final_state.sandbox_rejections[0].category,
@@ -27,7 +27,7 @@ test("malformed instruction operands are rejected before any output", () => {
     assert.deepEqual(trace.final_state.stdout, []);
   }
 });
-test("malformed call boundaries are rejected before execution", () => {
+test("malformed call boundaries are rejected before execution", async () => {
   const package_ = structuredClone(external);
   const term = package_.functions
     .flatMap((fn) => fn.blocks)
@@ -35,7 +35,7 @@ test("malformed call boundaries are rejected before execution", () => {
     .find((term) => term.op === "runtime.call");
   assert.ok(term, "external package contains a runtime call");
   term.args[0].decision = "invent_ownership";
-  const trace = runBytecode(package_);
+  const trace = await runBytecode(package_);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(
     trace.final_state.sandbox_rejections[0].category,
@@ -44,12 +44,12 @@ test("malformed call boundaries are rejected before execution", () => {
   assert.deepEqual(trace.final_state.stdout, []);
 });
 
-function assertBeforeOutput(
+async function assertBeforeOutput(
   bytecode,
   category = "invalid_package",
   options = {},
 ) {
-  const trace = runBytecode(bytecode, options);
+  const trace = await runBytecode(bytecode, options);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(trace.final_state.sandbox_rejections[0].category, category);
   assert.deepEqual(trace.final_state.stdout, []);
@@ -57,9 +57,9 @@ function assertBeforeOutput(
   return trace;
 }
 
-test("nested runtime identities reject unknown operations and malformed payloads before output", () => {
+test("nested runtime identities reject unknown operations and malformed payloads before output", async () => {
   assert.equal(
-    runBytecode(external).result,
+    (await runBytecode(external)).result,
     "ok",
     "the independent package executes before mutation",
   );
@@ -77,11 +77,11 @@ test("nested runtime identities reject unknown operations and malformed payloads
       id: bytecode.runtime_families.length,
       ...identity,
     });
-    assertBeforeOutput(bytecode);
+    await assertBeforeOutput(bytecode);
   }
 });
 
-test("known unavailable runtime operations retain their declared capability identities", () => {
+test("known unavailable runtime operations retain their declared capability identities", async () => {
   for (const [identity, capability] of [
     [{ family: "Vector", detail: "TakeAll" }, "Vector::TakeAll"],
     [{ family: "Semaphore", detail: "Acquire" }, "Semaphore::Acquire"],
@@ -92,7 +92,7 @@ test("known unavailable runtime operations retain their declared capability iden
       id: bytecode.runtime_families.length,
       ...identity,
     });
-    const trace = assertBeforeOutput(bytecode, "not_implemented");
+    const trace = await assertBeforeOutput(bytecode, "not_implemented");
     assert.equal(
       trace.final_state.sandbox_rejections[0].capability,
       capability,
@@ -100,7 +100,7 @@ test("known unavailable runtime operations retain their declared capability iden
   }
 });
 
-test("nested suspension details and manifest identities are checked before output", () => {
+test("nested suspension details and manifest identities are checked before output", async () => {
   for (const replacement of [
     { kind: "Safepoint", detail: { budget: "4000" } },
     { kind: "NativeIo", detail: { operation: "InventOperation" } },
@@ -112,11 +112,11 @@ test("nested suspension details and manifest identities are checked before outpu
     assert.equal(term.op, "suspend");
     Object.assign(term, replacement);
     bytecode.suspend_kinds = [replacement.kind];
-    assertBeforeOutput(bytecode);
+    await assertBeforeOutput(bytecode);
   }
   const bytecode = structuredClone(external);
   bytecode.suspend_kinds.push("InventSuspension");
-  assertBeforeOutput(bytecode);
+  await assertBeforeOutput(bytecode);
 });
 
 function bridgePackage(term, ops = [], extra = {}) {
@@ -167,7 +167,7 @@ function bridgePackage(term, ops = [], extra = {}) {
   return bytecode;
 }
 
-test("missing codec bridge rejects before output; a supplied bridge executes the registered route", () => {
+test("missing codec bridge rejects before output; a supplied bridge executes the registered route", async () => {
   const bytecode = bridgePackage(
     {
       op: "wire.codec",
@@ -193,12 +193,12 @@ test("missing codec bridge rejects before output; a supplied bridge executes the
     },
   );
   assert.equal(
-    assertBeforeOutput(bytecode, "not_implemented").final_state
+    (await assertBeforeOutput(bytecode, "not_implemented")).final_state
       .sandbox_rejections[0].capability,
     "codecBridge",
   );
   let calls = 0;
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     codecBridge(request) {
       calls += 1;
       assert.equal(JSON.parse(request).value, null);
@@ -214,7 +214,7 @@ test("missing codec bridge rejects before output; a supplied bridge executes the
   const malformed = structuredClone(bytecode);
   malformed.actors = [null];
   calls = 0;
-  assertBeforeOutput(malformed, "invalid_package", {
+  await assertBeforeOutput(malformed, "invalid_package", {
     codecBridge() {
       calls += 1;
       throw new Error("bridge must not run for an invalid package");
@@ -223,7 +223,7 @@ test("missing codec bridge rejects before output; a supplied bridge executes the
   assert.equal(calls, 0);
 });
 
-test("missing calendar bridge rejects before output and the supplied bridge receives the call", () => {
+test("missing calendar bridge rejects before output and the supplied bridge receives the call", async () => {
   const bytecode = bridgePackage(
     {
       op: "extern.call",
@@ -245,12 +245,12 @@ test("missing calendar bridge rejects before output and the supplied bridge rece
     },
   );
   assert.equal(
-    assertBeforeOutput(bytecode, "not_implemented").final_state
+    (await assertBeforeOutput(bytecode, "not_implemented")).final_state
       .sandbox_rejections[0].capability,
     "calendarBridge",
   );
   let calls = 0;
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     calendarBridge(request) {
       calls += 1;
       assert.equal(JSON.parse(request).operation, "format");

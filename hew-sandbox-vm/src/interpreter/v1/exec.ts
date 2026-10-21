@@ -1,3 +1,8 @@
+import {
+  BrowserDirectories,
+  type BrowserIoError,
+  type DirectoryOperation,
+} from "./browser-directory.js";
 /// The `hew.sandbox.bytecode.v1` executor.
 ///
 /// The package is a projection of verified ownership SIR, so this executor
@@ -111,6 +116,7 @@ type CallerStamp =
 const DEFAULT_ACTOR_STOP_NS = 5_000_000_000;
 
 interface FrameContext {
+  fileError?: BrowserIoError | null;
   parked?: boolean;
   rcOwner?: RcOwner | null;
   pollBudget?: { remaining: number };
@@ -335,10 +341,10 @@ class StdinReader {
   }
 }
 
-export function runPackageV1(
+export async function runPackageV1(
   pkg: CheckedPackage,
   options: RunOptions = {},
-): SandboxTrace {
+): Promise<SandboxTrace> {
   const fixtureId = options.fixtureId ?? "package";
   const replay: ReplayConfig = {
     seed: options.replay?.seed ?? 0,
@@ -365,6 +371,20 @@ export function runPackageV1(
     return trace.finish();
   }
 
+  const directoryRefusal = await BrowserDirectories.admission(
+    options.directoryRoots,
+  );
+  if (directoryRefusal) {
+    trace.reject({
+      category: "not_implemented",
+      code: "sandbox.host.directory",
+      capability: "directoryRoots",
+      message: directoryRefusal,
+      span: null,
+    });
+    return trace.finish();
+  }
+
   const vm = new ExecutorV1(
     admission,
     trace,
@@ -373,7 +393,7 @@ export function runPackageV1(
     options,
   );
   try {
-    vm.run();
+    await vm.run();
   } catch (error) {
     if (!(error instanceof Halt)) {
       const message = error instanceof Error ? error.message : String(error);
@@ -414,9 +434,11 @@ class ExecutorV1 {
   private readonly consumedResources = new WeakSet<object>();
   private running = false;
   private rootComplete = false;
+  private terminating = false;
   private rootFault: Fault | null = null;
 
   private readonly pkg: PackageV1;
+  private readonly directories: BrowserDirectories;
 
   constructor(
     admission: AdmittedPackage,
@@ -427,12 +449,28 @@ class ExecutorV1 {
   ) {
     const pkg = admission.bytecode;
     this.pkg = pkg;
+    this.directories = new BrowserDirectories(options.directoryRoots);
     this.scheduler = new FrameScheduler(trace, policy);
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
       calendarBridge: options.calendarBridge,
+      fileError: (operation) => {
+        const error = this.current.context.fileError;
+        switch (operation) {
+          case "HasError":
+            return { kind: "bool", value: error != null };
+          case "LastErrorKind":
+            return { kind: "i64", value: BigInt(error?.kind ?? 0) };
+          case "LastErrno":
+            if (error) error.kind = 0;
+            return { kind: "i64", value: 0n };
+          case "LastError":
+            this.current.context.fileError = null;
+            return stringValue(error?.message ?? "");
+        }
+      },
       pipes: this.pipes,
       generatorStream: (value) => {
         const id = this.ids.channel();
@@ -509,21 +547,40 @@ class ExecutorV1 {
 
   /// One instruction or terminator executed is one step, ownership ops
   /// included: the package's ops are what the program does.
-  run(): void {
-    this.runFrame(this.current);
-    this.scheduler.run();
-    if (!this.rootComplete) {
-      throw new Error("the root frame is waiting with no runnable work");
+  async run(): Promise<void> {
+    const root = this.current.context;
+    const cancel = () => {
+      const fault: Fault = {
+        kind: "panic",
+        message: "execution cancelled",
+        cancelled: true,
+      };
+      if (root.cancel) root.cancel(fault);
+      else root.pendingCancellation ??= fault;
+    };
+    this.options.signal?.addEventListener("abort", cancel, { once: true });
+    if (this.options.signal?.aborted) cancel();
+    try {
+      this.runFrame(this.current);
+      await this.scheduler.run();
+      if (!this.rootComplete) {
+        throw new Error("the root frame is waiting with no runnable work");
+      }
+      // Native main return drains accepted work before closing idle actors.
+      for (const owner of this.supervisors.values())
+        if (!owner.supervisor) this.stopSupervisor(owner);
+      for (const actor of this.actors.values())
+        if (!actor.supervisor && actor.alive) this.requestActorStop(actor);
+      await this.scheduler.run();
+      if (this.rootFault) this.haltWithFault(this.rootFault);
+      if (this.trace.exitCode === 0 && this.faultDebts.size)
+        this.trace.exitCode = 1;
+    } finally {
+      this.terminating = true;
+      await this.scheduler.retireHost();
+      this.directories.retire((value) => this.closeHostResource(value));
+      this.options.signal?.removeEventListener("abort", cancel);
     }
-    // Native main return drains accepted work before closing idle actors.
-    for (const owner of this.supervisors.values())
-      if (!owner.supervisor) this.stopSupervisor(owner);
-    for (const actor of this.actors.values())
-      if (!actor.supervisor && actor.alive) this.requestActorStop(actor);
-    this.scheduler.run();
-    if (this.rootFault) this.haltWithFault(this.rootFault);
-    if (this.trace.exitCode === 0 && this.faultDebts.size)
-      this.trace.exitCode = 1;
   }
 
   private runFrame(frame: Activation): void {
@@ -1845,7 +1902,9 @@ class ExecutorV1 {
           throw new Error(
             `external operation ${registration.capability} was refused after admission`,
           );
-        this.callShim(act, term, registration.shim);
+        if (registration.kind === "directory")
+          this.callDirectory(act, term, registration.operation);
+        else this.callShim(act, term, registration.shim);
         return;
       }
       case "wire.codec": {
@@ -1979,6 +2038,41 @@ class ExecutorV1 {
     }
     act.block = target;
     act.opIndex = 0;
+  }
+
+  private callDirectory(
+    act: Activation,
+    term: Extract<TermV1, { op: "extern.call" }>,
+    operation: DirectoryOperation,
+  ): void {
+    const args = term.args.map((operand) => this.boundary(act, operand));
+    const result = this.directories.call(operation, args, term.result_resource);
+    if (!(result instanceof Promise)) {
+      this.completeShim(act, term, result);
+      return;
+    }
+    // Acquisitions are synchronous in the language. Retain borrowed inputs and
+    // publish the new owner before the next authored cancellation safepoint.
+    this.running = false;
+    act.context.parked = true;
+    act.context.cancel = (
+      fault = { kind: "panic", message: "task cancelled", cancelled: true },
+    ) => {
+      act.context.pendingCancellation ??= fault;
+    };
+    this.scheduler.submitHost(
+      act.context.id,
+      result,
+      (outcome) => {
+        act.context.parked = false;
+        act.context.fileError = outcome.error;
+        this.completeShim(act, term, outcome.value);
+        this.runFrame(act);
+      },
+      (error) => {
+        throw error;
+      },
+    );
   }
 
   /// Run a runtime or extern shim. A fault it raises takes the call's `unwind`
@@ -2726,6 +2820,49 @@ class ExecutorV1 {
         return;
       }
       case "NativeIo": {
+        if (
+          term.detail.operation === "FileRead" ||
+          term.detail.operation === "FileWrite"
+        ) {
+          const args = term.inputs.map((operand) =>
+            this.boundary(act, operand),
+          );
+          const wake = this.park(act, term);
+          const cancel = act.context.cancel!;
+          let stopped: Fault | null =
+            act.context.pendingCancellation ?? this.scopeDeadline(act) ?? null;
+          act.context.cancel = (
+            fault = {
+              kind: "panic",
+              message: "task cancelled",
+              cancelled: true,
+            },
+          ) => {
+            stopped ??= fault;
+          };
+          this.scheduler.submitHost(
+            act.context.id,
+            this.directories.io(
+              term.detail.operation,
+              args,
+              () => stopped !== null || this.terminating,
+            ),
+            (outcome) => {
+              // The producer is quiescent. Restore park's latch so cancellation
+              // between readiness and frame resumption still retires the result.
+              act.context.cancel = cancel;
+              act.context.fileError = outcome.error;
+              if (stopped) {
+                this.closeValue(outcome.value, null);
+                cancel(stopped);
+              } else wake(outcome.value);
+            },
+            (error) => {
+              throw error;
+            },
+          );
+          return;
+        }
         if (term.detail?.operation === "SinkFinish") {
           const wake = this.park(act, term);
           const cancel = act.context.cancel!;
@@ -3277,11 +3414,16 @@ class ExecutorV1 {
               value.cell.weak -= 1;
             }
             break;
+          case "host_resource": {
+            if (value.owner.closed) break;
+            this.closeHostResource(value);
+            break;
+          }
           case "timer": {
             if (value.closed) break;
             const resource = this.pkg.resources?.[value.resource];
             if (resource?.kind !== "opaque")
-              throw new Error("timer lost its selected close");
+              throw new Error("opaque owner lost its selected close");
             this.invokeFrame(
               actor,
               resource.close,
@@ -3391,7 +3533,22 @@ class ExecutorV1 {
     next();
   }
 
+  private closeHostResource(
+    value: Extract<VmValue, { kind: "host_resource" }>,
+  ): void {
+    if (value.owner.closed) return;
+    const resource = this.pkg.resources?.[value.resource];
+    const release =
+      resource?.kind === "nominal"
+        ? resolveExtern({ symbol: resource.release })
+        : null;
+    if (release?.kind !== "directory" || release.operation.action !== "close")
+      throw new Error("filesystem owner lost its selected release");
+    this.directories.call(release.operation, [value]);
+  }
+
   private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "host_resource") this.closeHostResource(value);
     if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);
     else if (value.kind === "sink" || value.kind === "stream")

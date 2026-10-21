@@ -3,10 +3,10 @@ import { runPackageV1 } from "./v1/exec.js";
 import { TraceBuilder } from "./trace.js";
 import type { RunOptions, SandboxTrace } from "./types.js";
 
-export function runBytecode(
+export async function runBytecode(
   input: unknown,
   options: RunOptions = {},
-): SandboxTrace {
+): Promise<SandboxTrace> {
   let bytecode;
   try {
     bytecode = validateBytecodePackage(input);

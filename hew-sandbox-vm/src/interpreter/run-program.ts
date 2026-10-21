@@ -1,6 +1,7 @@
 import { runBytecode } from "./interpreter.js";
 import type { PackageV1 } from "./v1/package.js";
 import type {
+  RunOptions,
   JsonValue,
   RuntimeStatus,
   SandboxRejection,
@@ -46,11 +47,12 @@ declare global {
   var compileToSandboxBytecode: SandboxCompiler | undefined;
 }
 
-export function runProgram(
+export async function runProgram(
   source: string,
   stdin: string,
   files?: Map<string, string | Uint8Array>,
-): RunProgramResult {
+  options: RunOptions = {},
+): Promise<RunProgramResult> {
   const compileOutput = compileSource(source, files);
   if (
     hasErrorDiagnostics(compileOutput.diagnostics) ||
@@ -68,10 +70,12 @@ export function runProgram(
   }
 
   const bytecode = compileOutput.bytecode;
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
+    ...options,
     fixtureId: "page-run",
-    codecBridge: globalThis.__hewSandboxExecuteCodec,
-    calendarBridge: globalThis.__hewSandboxExecuteCalendar,
+    codecBridge: options.codecBridge ?? globalThis.__hewSandboxExecuteCodec,
+    calendarBridge:
+      options.calendarBridge ?? globalThis.__hewSandboxExecuteCalendar,
     traceId: "trace:page-run",
     replay: { inputs: [{ kind: "stdin", data: stdin }] },
   });

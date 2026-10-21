@@ -1074,6 +1074,10 @@ export type TermV1 = { span?: SpanV1 | null | null } & (
     }
   | {
       op: "extern.call";
+      /**
+       * Exact resource release slot selected from the checked result type.
+       */
+      result_resource?: number | null;
       args: Array<BoundaryOperand>;
       result: CallResult;
       normal?: Edge | null | null;

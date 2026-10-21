@@ -94,10 +94,10 @@ function packageWithSameDisplayName() {
   };
 }
 
-test("record close follows exact shape when display names collide", () => {
+test("record close follows exact shape when display names collide", async () => {
   const bytecode = packageWithSameDisplayName();
   assert.equal(admitPackage(bytecode), null);
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     fixtureId: "resource-shape",
     traceId: "trace:resource-shape",
     replay: {
@@ -111,11 +111,11 @@ test("record close follows exact shape when display names collide", () => {
   assert.equal(trace.final_state.stdout.join(""), "closed\n");
 });
 
-test("record close without an exact shape is refused at load", () => {
+test("record close without an exact shape is refused at load", async () => {
   const bytecode = packageWithSameDisplayName();
   delete bytecode.resources[0].shape;
   assert.equal(
-    runBytecode(bytecode).final_state.sandbox_rejections[0]?.category,
+    (await runBytecode(bytecode)).final_state.sandbox_rejections[0]?.category,
     "invalid_package",
   );
 });

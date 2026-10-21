@@ -108,7 +108,7 @@ fn execute_options(
             import fs from 'node:fs';
             import { runBytecode } from './dist/interpreter/index.js';
             const package_ = JSON.parse(fs.readFileSync(process.argv[1], 'utf8'));
-            process.stdout.write(JSON.stringify(runBytecode(package_, JSON.parse(process.argv[2]))));
+            process.stdout.write(JSON.stringify(await runBytecode(package_, JSON.parse(process.argv[2]))));
         ",
         ])
         .arg(file.path())

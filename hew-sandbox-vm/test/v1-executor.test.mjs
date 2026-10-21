@@ -60,8 +60,8 @@ function printTerm(value, to) {
   };
 }
 
-function run(bytecode, options = {}) {
-  return runBytecode(bytecode, {
+async function run(bytecode, options = {}) {
+  return await runBytecode(bytecode, {
     fixtureId: "v1-test",
     traceId: "trace:v1-test",
     replay: {
@@ -77,8 +77,8 @@ function stdout(trace) {
   return trace.final_state.stdout.join("");
 }
 
-test("v1: a package prints its string literal and exits 0", () => {
-  const trace = run(
+test("v1: a package prints its string literal and exits 0", async () => {
+  const trace = await run(
     pkg({
       strings: ["hello, sandbox"],
       runtime_families: [PRINT_LN],
@@ -104,8 +104,8 @@ test("v1: a package prints its string literal and exits 0", () => {
   assert.equal(trace.final_state.exit_code, 0);
 });
 
-test("v1: an entry that returns a status publishes it as the exit code", () => {
-  const trace = run(
+test("v1: an entry that returns a status publishes it as the exit code", async () => {
+  const trace = await run(
     pkg({
       entry: { function: 0, exit: "status" },
       functions: [
@@ -128,9 +128,9 @@ test("v1: an entry that returns a status publishes it as the exit code", () => {
   assert.equal(trace.final_state.exit_code, 7);
 });
 
-test("v1: copy_value is a deep clone, so mutating the original leaves the copy alone", () => {
+test("v1: copy_value is a deep clone, so mutating the original leaves the copy alone", async () => {
   // let v = Vec::new(); let c = v.clone(); v.push(1); print(c.len()); print(v.len())
-  const trace = run(
+  const trace = await run(
     pkg({
       runtime_families: [
         PRINT_LN,
@@ -215,8 +215,8 @@ function toStringCall(value, dst, to) {
   };
 }
 
-test("v1: a store through a place is visible through a live loan of it", () => {
-  const trace = run(
+test("v1: a store through a place is visible through a live loan of it", async () => {
+  const trace = await run(
     pkg({
       strings: ["before", "after"],
       runtime_families: [PRINT_LN],
@@ -257,7 +257,7 @@ test("v1: a store through a place is visible through a live loan of it", () => {
   assert.equal(stdout(trace), "after\n");
 });
 
-test("v1: an out-of-bounds index takes the unwind edge before the program ends", () => {
+test("v1: an out-of-bounds index takes the unwind edge before the program ends", async () => {
   const indexPackage = (at) =>
     pkg({
       strings: ["cleanup ran"],
@@ -338,7 +338,7 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
       ],
     });
 
-  const trapped = run(indexPackage(9));
+  const trapped = await run(indexPackage(9));
   assert.equal(trapped.result, "trap");
   assert.equal(
     stdout(trapped),
@@ -356,13 +356,13 @@ test("v1: an out-of-bounds index takes the unwind edge before the program ends",
 
   // Negative control: the same package with an index in range never reaches
   // the unwind edge.
-  const fine = run(indexPackage(0));
+  const fine = await run(indexPackage(0));
   assert.equal(fine.result, "ok");
   assert.equal(stdout(fine), "42\n");
   assert.equal(fine.final_state.exit_code, 0);
 });
 
-test("v1: checked.binary takes the failure edge the package names instead of trapping", () => {
+test("v1: checked.binary takes the failure edge the package names instead of trapping", async () => {
   const overflowing = (lhs) =>
     pkg({
       strings: ["overflowed"],
@@ -409,13 +409,13 @@ test("v1: checked.binary takes the failure edge the package names instead of tra
 
   // i32's largest value plus one leaves on the named overflow edge, and the
   // program keeps running: the VM never trapped on its own.
-  const overflowed = run(overflowing(2147483647));
+  const overflowed = await run(overflowing(2147483647));
   assert.equal(overflowed.result, "ok");
   assert.equal(stdout(overflowed), "overflowed\n");
   assert.equal(overflowed.final_state.exit_code, 0);
 
   // Negative control: one below the bound stays on the normal edge.
-  const fine = run(overflowing(2147483646));
+  const fine = await run(overflowing(2147483646));
   assert.equal(fine.result, "ok");
   assert.equal(stdout(fine), "2147483647\n");
 });
@@ -433,7 +433,7 @@ function toStringCall2(value, dst, to) {
   };
 }
 
-test("v1: switch.variant dispatches on the recorded tag", () => {
+test("v1: switch.variant dispatches on the recorded tag", async () => {
   const forTag = (tag) =>
     pkg({
       strings: ["none", "some"],
@@ -493,12 +493,12 @@ test("v1: switch.variant dispatches on the recorded tag", () => {
       ],
     });
 
-  assert.equal(stdout(run(forTag(0))), "some\n");
-  assert.equal(stdout(run(forTag(1))), "none\n");
+  assert.equal(stdout(await run(forTag(0))), "some\n");
+  assert.equal(stdout(await run(forTag(1))), "none\n");
 });
 
-test("v1: switch.variant does not join equal display names across shapes", () => {
-  const trace = run(
+test("v1: switch.variant does not join equal display names across shapes", async () => {
+  const trace = await run(
     pkg({
       variants: [
         { id: 0, name: "Choice", cases: [{ name: "Yes", fields: [] }] },
@@ -538,8 +538,8 @@ test("v1: switch.variant does not join equal display names across shapes", () =>
   );
 });
 
-test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", () => {
-  const trace = run(
+test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at end of input", async () => {
+  const trace = await run(
     pkg({
       runtime_families: [PRINT_LN, { id: 1, family: "BytesDecodeUtf8Lossy" }],
       suspend_kinds: ["NativeIo"],
@@ -565,7 +565,7 @@ test("v1: a stdin line read resumes with the raw line bytes, then empty bytes at
   assert.equal(stdout(trace), "first\r\n\nsecond\n\n");
 });
 
-test("v1: a native I/O suspension other than a stdin line read is refused at load", () => {
+test("v1: a native I/O suspension other than a stdin line read is refused at load", async () => {
   const tcpRead = pkg({
     runtime_families: [PRINT_LN],
     suspend_kinds: ["NativeIo"],
@@ -579,7 +579,7 @@ test("v1: a native I/O suspension other than a stdin line read is refused at loa
       ]),
     ],
   });
-  assertRejected(run(tcpRead), "NativeIo::TcpRead");
+  assertRejected(await run(tcpRead), "NativeIo::TcpRead");
 });
 
 function decodeTerm(source, dst, to) {
@@ -611,7 +611,7 @@ function readLineTerm(dst, to) {
   };
 }
 
-test("v1: a seeded program prints the same numbers whatever the chaos seed is", () => {
+test("v1: a seeded program prints the same numbers whatever the chaos seed is", async () => {
   const randomPackage = pkg({
     runtime_families: [PRINT_LN, { id: 1, family: "I64ToString" }],
     externs: [
@@ -663,8 +663,8 @@ test("v1: a seeded program prints the same numbers whatever the chaos seed is", 
 
   // `random.seed(1); random.randint(0, 99)` is 17 on native Hew, and the VM
   // runs the same MT19937, so the draw does not depend on the VM's own seed.
-  assert.equal(stdout(run(randomPackage, { seed: 1 })), "17\n");
-  assert.equal(stdout(run(randomPackage, { seed: 9999 })), "17\n");
+  assert.equal(stdout(await run(randomPackage, { seed: 1 })), "17\n");
+  assert.equal(stdout(await run(randomPackage, { seed: 9999 })), "17\n");
 });
 
 // ── admission ───────────────────────────────────────────────────────────────
@@ -711,9 +711,9 @@ function assertRejected(trace, named) {
   );
 }
 
-test("v1: a native-only runtime family is refused at load", () => {
+test("v1: a native-only runtime family is refused at load", async () => {
   assertRejected(
-    run(
+    await run(
       wouldPrint({
         runtime_families: [{ id: 1, family: "FileRead", detail: "Open" }],
       }),
@@ -722,8 +722,8 @@ test("v1: a native-only runtime family is refused at load", () => {
   );
 });
 
-test("v1: an unknown runtime identity is rejected before any output", () => {
-  const trace = run(
+test("v1: an unknown runtime identity is rejected before any output", async () => {
+  const trace = await run(
     wouldPrint({ runtime_families: [{ id: 1, family: "NoSuchFamily" }] }),
   );
   assert.equal(trace.result, "sandbox_rejected");
@@ -735,17 +735,17 @@ test("v1: an unknown runtime identity is rejected before any output", () => {
   assert.equal(trace.final_state.step_count, 0);
 });
 
-test("v1: an extern symbol with no shim is refused at load", () => {
+test("v1: an extern symbol with no shim is refused at load", async () => {
   assertRejected(
-    run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })),
+    await run(wouldPrint({ externs: [{ id: 0, symbol: "hew_open_socket" }] })),
     "hew_open_socket",
   );
 });
 
-test("v1: a package with no entry is refused rather than picking a function to run", () => {
+test("v1: a package with no entry is refused rather than picking a function to run", async () => {
   const headless = wouldPrint({});
   delete headless.entry;
-  const trace = run(headless);
+  const trace = await run(headless);
   assert.equal(trace.result, "sandbox_rejected");
   assert.deepEqual(trace.final_state.stdout, []);
 });

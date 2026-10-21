@@ -5748,9 +5748,15 @@ actor's construction and callbacks.
 Confinement is independent of suspension and deterministic execution. Existing
 `fn[suspends]` types retain their meaning; no public effect-row syntax is
 introduced. An in-memory implementation can satisfy the same ordinary domain
-trait as a native resource adapter. Native file resources remain native-only;
-directory resources are also native-only. The in-memory implementation is
-available to the shared browser VM. Hosted directory grants are not provided.
+trait as a native resource adapter. Ambient file constructors remain native-only.
+A WASI host can explicitly preopen real directories. A browser host can supply
+origin-private filesystem (OPFS) directory handles through its execution options;
+no directory authority is supplied by default. Both hosts use the ordinary
+`ReadDir`, `WriteDir` and child file APIs. Browser picker-backed directories are
+refused because their symlink confinement is not standardized. Browser file
+writes are visible before returning, and cancellation drains or aborts pending
+host operations before releasing their borrowed resources. WASI preview1 host
+syscalls are synchronous and cannot be interrupted after entry.
 
 Application source roots and the configured standard library remain trusted.
 This is a checked source boundary, not an operating-system sandbox or a

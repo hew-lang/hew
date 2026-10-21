@@ -26,14 +26,14 @@ function validateBytecodePackage(bytecode, label) {
 }
 
 for (const dir of m3FixtureDirs) {
-  test(`recorded v1 package replay: ${dir}`, () => {
+  test(`recorded v1 package replay: ${dir}`, async () => {
     const bytecode = readJson(`fixtures/${dir}/bytecode.json`);
     const expected = readJson(`fixtures/${dir}/expected.trace.json`);
 
     assert.ok(bytecode.functions.length > 0, `${dir} bytecode fixture must not be empty`);
     validateBytecodePackage(bytecode, dir);
 
-    const actual = runBytecode(bytecode, {
+    const actual = await runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
       replay: expected.replay,
@@ -43,7 +43,7 @@ for (const dir of m3FixtureDirs) {
     assert.ok(validateTrace(actual), ajv.errorsText(validateTrace.errors));
     assertFixtureTrace(actual, expected, dir);
 
-    const rerun = runBytecode(bytecode, {
+    const rerun = await runBytecode(bytecode, {
       fixtureId: expected.fixture_id,
       traceId: expected.trace_id,
       replay: expected.replay,
@@ -53,10 +53,10 @@ for (const dir of m3FixtureDirs) {
   });
 }
 
-test("the observable-fields comparison still fails when stdout diverges (negative control)", () => {
+test("the observable-fields comparison still fails when stdout diverges (negative control)", async () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
   const expected = readJson("fixtures/06-vector-basics/expected.trace.json");
-  const actual = runBytecode(bytecode, {
+  const actual = await runBytecode(bytecode, {
     fixtureId: expected.fixture_id,
     traceId: expected.trace_id,
     replay: expected.replay,
@@ -72,7 +72,7 @@ test("the observable-fields comparison still fails when stdout diverges (negativ
   );
 });
 
-test("Vec::get returns None rather than trapping when the index is past the end", () => {
+test("Vec::get returns None rather than trapping when the index is past the end", async () => {
   const bytecode = readJson("fixtures/06-vector-basics/bytecode.json");
   // The fixture reads index 1, which is in range. Move the read past the end
   // through the constant that feeds it: `get` answers None, where an indexing
@@ -84,7 +84,7 @@ test("Vec::get returns None rather than trapping when the index is past the end"
   assert.ok(index, "vector fixture must read a constant index");
   index.value = "99";
 
-  const trace = runBytecode(bytecode, {
+  const trace = await runBytecode(bytecode, {
     fixtureId: "vector-get-none",
     traceId: "trace:vector-get-none",
     replay: {

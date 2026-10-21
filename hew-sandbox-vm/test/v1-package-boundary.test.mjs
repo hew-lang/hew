@@ -12,8 +12,8 @@ const original = JSON.parse(
   ),
 );
 
-function rejected(pkg) {
-  const trace = runBytecode(pkg);
+async function rejected(pkg) {
+  const trace = await runBytecode(pkg);
   assert.equal(trace.result, "sandbox_rejected");
   assert.equal(
     trace.final_state.sandbox_rejections[0].category,
@@ -24,8 +24,8 @@ function rejected(pkg) {
   return trace;
 }
 
-test("complete package validation rejects malformed tables before execution", () => {
-  const baseline = runBytecode(original);
+test("complete package validation rejects malformed tables before execution", async () => {
+  const baseline = await runBytecode(original);
   assert.equal(baseline.result, "ok");
   assert.ok(baseline.final_state.stdout.join("").length > 0);
   for (const mutate of [
@@ -44,7 +44,7 @@ test("complete package validation rejects malformed tables before execution", ()
   ]) {
     const pkg = structuredClone(original);
     mutate(pkg);
-    const trace = rejected(pkg);
+    const trace = await rejected(pkg);
     if (pkg.actors?.[0] === null)
       assert.match(
         trace.final_state.sandbox_rejections[0].message,
@@ -53,7 +53,7 @@ test("complete package validation rejects malformed tables before execution", ()
   }
 });
 
-test("invalid references, edge arguments and manifests fail before the first step", () => {
+test("invalid references, edge arguments and manifests fail before the first step", async () => {
   for (const mutate of [
     (pkg) => {
       pkg.entry.function = pkg.functions.length;
@@ -84,11 +84,11 @@ test("invalid references, edge arguments and manifests fail before the first ste
   ]) {
     const pkg = structuredClone(original);
     mutate(pkg);
-    rejected(pkg);
+    await rejected(pkg);
   }
 });
 
-test("codec string payloads and their references are checked at load", () => {
+test("codec string payloads and their references are checked at load", async () => {
   for (const shape of [
     "not JSON",
     JSON.stringify({
@@ -110,11 +110,11 @@ test("codec string payloads and their references are checked at load", () => {
   ]) {
     const pkg = structuredClone(original);
     pkg.codecs = [shape];
-    rejected(pkg);
+    await rejected(pkg);
   }
 });
 
-test("negative supervisor stop deadlines reject before construction or host effects", () => {
+test("negative supervisor stop deadlines reject before construction or host effects", async () => {
   const pkg = JSON.parse(
     fs.readFileSync(
       new URL(
@@ -125,7 +125,7 @@ test("negative supervisor stop deadlines reject before construction or host effe
     ),
   );
   assert.equal(
-    runBytecode(pkg).result,
+    (await runBytecode(pkg)).result,
     "ok",
     "independent supervisor package executes",
   );
@@ -135,7 +135,7 @@ test("negative supervisor stop deadlines reject before construction or host effe
     calls++;
     throw new Error("malformed package reached a bridge");
   };
-  const trace = runBytecode(pkg, {
+  const trace = await runBytecode(pkg, {
     codecBridge: bridge,
     calendarBridge: bridge,
   });
@@ -153,7 +153,7 @@ test("negative supervisor stop deadlines reject before construction or host effe
   assert.equal(calls, 0);
 });
 
-test("unknown actor and supervisor policies reject before execution", () => {
+test("unknown actor and supervisor policies reject before execution", async () => {
   const supervisor = JSON.parse(
     fs.readFileSync(
       new URL(
@@ -163,7 +163,7 @@ test("unknown actor and supervisor policies reject before execution", () => {
       "utf8",
     ),
   );
-  assert.equal(runBytecode(supervisor).result, "ok");
+  assert.equal((await runBytecode(supervisor)).result, "ok");
   for (const mutate of [
     (pkg) => {
       pkg.actors[0].overflow = "invent_overflow";
@@ -177,7 +177,7 @@ test("unknown actor and supervisor policies reject before execution", () => {
   ]) {
     const pkg = structuredClone(supervisor);
     mutate(pkg);
-    rejected(pkg);
+    await rejected(pkg);
   }
   const counter = JSON.parse(
     fs.readFileSync(
@@ -191,10 +191,10 @@ test("unknown actor and supervisor policies reject before execution", () => {
     keys: [{ message: 0, param: 0 }],
   };
   assert.equal(
-    runBytecode(counter).result,
+    (await runBytecode(counter)).result,
     "ok",
     "the recorded actor executes with a valid coalescing key",
   );
   counter.actors[0].coalesce.fallback = "invent_fallback";
-  rejected(counter);
+  await rejected(counter);
 });

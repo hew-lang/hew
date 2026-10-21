@@ -103,8 +103,8 @@ function mathPackage(key, args, printKind) {
   };
 }
 
-function math(key, args, printKind = "F64") {
-  const trace = runBytecode(mathPackage(key, args, printKind), {
+async function math(key, args, printKind = "F64") {
+  const trace = await runBytecode(mathPackage(key, args, printKind), {
     fixtureId: "math-intrinsic",
     traceId: "trace:math-intrinsic",
     replay: {
@@ -124,110 +124,110 @@ function math(key, args, printKind = "F64") {
 
 const f = (value) => ({ kind: "float", value });
 const i = (value) => ({ kind: "int", value: String(value) });
-const int64 = (key, args) => math(key, args, "I64");
+const int64 = async (key, args) => await math(key, args, "I64");
 
-test("the elementary f64 intrinsics match native", () => {
-  assert.equal(math("Sqrt", [f(16)]), "4");
-  assert.equal(math("Sqrt", [f(2)]), "1.41421");
-  assert.equal(math("Exp", [f(1)]), "2.71828");
-  assert.equal(math("Log", [f(2.718281828459045)]), "1");
-  assert.equal(math("Sin", [f(0.5)]), "0.479426");
-  assert.equal(math("Cos", [f(0.5)]), "0.877583");
-  assert.equal(math("Tan", [f(0.5)]), "0.546302");
-  assert.equal(math("Asin", [f(0.5)]), "0.523599");
-  assert.equal(math("Acos", [f(0.5)]), "1.0472");
-  assert.equal(math("Atan", [f(0.5)]), "0.463648");
-  assert.equal(math("Sinh", [f(0.5)]), "0.521095");
-  assert.equal(math("Cosh", [f(0.5)]), "1.12763");
-  assert.equal(math("Tanh", [f(0.5)]), "0.462117");
-  assert.equal(math("Exp2", [f(10)]), "1024");
-  assert.equal(math("Log2", [f(1024)]), "10");
-  assert.equal(math("Log10", [f(1000)]), "3");
-  assert.equal(math("Log1p", [f(1e-7)]), "1e-07");
-  assert.equal(math("Expm1", [f(1e-7)]), "1e-07");
-  assert.equal(math("Cbrt", [f(27)]), "3");
-  assert.equal(math("AbsF64", [f(-3.5)]), "3.5");
+test("the elementary f64 intrinsics match native", async () => {
+  assert.equal(await math("Sqrt", [f(16)]), "4");
+  assert.equal(await math("Sqrt", [f(2)]), "1.41421");
+  assert.equal(await math("Exp", [f(1)]), "2.71828");
+  assert.equal(await math("Log", [f(2.718281828459045)]), "1");
+  assert.equal(await math("Sin", [f(0.5)]), "0.479426");
+  assert.equal(await math("Cos", [f(0.5)]), "0.877583");
+  assert.equal(await math("Tan", [f(0.5)]), "0.546302");
+  assert.equal(await math("Asin", [f(0.5)]), "0.523599");
+  assert.equal(await math("Acos", [f(0.5)]), "1.0472");
+  assert.equal(await math("Atan", [f(0.5)]), "0.463648");
+  assert.equal(await math("Sinh", [f(0.5)]), "0.521095");
+  assert.equal(await math("Cosh", [f(0.5)]), "1.12763");
+  assert.equal(await math("Tanh", [f(0.5)]), "0.462117");
+  assert.equal(await math("Exp2", [f(10)]), "1024");
+  assert.equal(await math("Log2", [f(1024)]), "10");
+  assert.equal(await math("Log10", [f(1000)]), "3");
+  assert.equal(await math("Log1p", [f(1e-7)]), "1e-07");
+  assert.equal(await math("Expm1", [f(1e-7)]), "1e-07");
+  assert.equal(await math("Cbrt", [f(27)]), "3");
+  assert.equal(await math("AbsF64", [f(-3.5)]), "3.5");
 });
 
-test("the two- and three-argument f64 intrinsics match native", () => {
-  assert.equal(math("Pow", [f(2), f(10)]), "1024");
-  assert.equal(math("Atan2", [f(1), f(1)]), "0.785398");
-  assert.equal(math("Hypot", [f(3), f(4)]), "5");
-  assert.equal(math("Powi", [f(2), i(10)]), "1024");
-  assert.equal(math("Powi", [f(1.5), i(-2)]), "0.444444");
-  assert.equal(math("Fma", [f(2), f(3), f(4)]), "10");
-  assert.equal(math("FromBits", [i("4636737291354636288")]), "100");
+test("the two- and three-argument f64 intrinsics match native", async () => {
+  assert.equal(await math("Pow", [f(2), f(10)]), "1024");
+  assert.equal(await math("Atan2", [f(1), f(1)]), "0.785398");
+  assert.equal(await math("Hypot", [f(3), f(4)]), "5");
+  assert.equal(await math("Powi", [f(2), i(10)]), "1024");
+  assert.equal(await math("Powi", [f(1.5), i(-2)]), "0.444444");
+  assert.equal(await math("Fma", [f(2), f(3), f(4)]), "10");
+  assert.equal(await math("FromBits", [i("4636737291354636288")]), "100");
 });
 
-test("rounding follows the IEEE operation, not the JS one of the same name", () => {
-  assert.equal(math("Floor", [f(2.7)]), "2");
-  assert.equal(math("Floor", [f(-2.7)]), "-3");
-  assert.equal(math("Ceil", [f(2.1)]), "3");
-  assert.equal(math("Ceil", [f(-2.1)]), "-2");
-  assert.equal(math("Trunc", [f(2.9)]), "2");
-  assert.equal(math("Trunc", [f(-2.9)]), "-2");
+test("rounding follows the IEEE operation, not the JS one of the same name", async () => {
+  assert.equal(await math("Floor", [f(2.7)]), "2");
+  assert.equal(await math("Floor", [f(-2.7)]), "-3");
+  assert.equal(await math("Ceil", [f(2.1)]), "3");
+  assert.equal(await math("Ceil", [f(-2.1)]), "-2");
+  assert.equal(await math("Trunc", [f(2.9)]), "2");
+  assert.equal(await math("Trunc", [f(-2.9)]), "-2");
 
   // `Round` is half away from zero. `Math.round` ties toward positive
   // infinity, so it would read -2 for -2.5 and 1 for 0.49999999999999994.
-  assert.equal(math("Round", [f(2.5)]), "3");
-  assert.equal(math("Round", [f(-2.5)]), "-3");
-  assert.equal(math("Round", [f(3.5)]), "4");
-  assert.equal(math("Round", [f(1.5)]), "2");
-  assert.equal(math("Round", [f(-1.5)]), "-2");
-  assert.equal(math("Round", [f(-0.5)]), "-1");
-  assert.equal(math("Round", [f(0.49999999999999994)]), "0");
+  assert.equal(await math("Round", [f(2.5)]), "3");
+  assert.equal(await math("Round", [f(-2.5)]), "-3");
+  assert.equal(await math("Round", [f(3.5)]), "4");
+  assert.equal(await math("Round", [f(1.5)]), "2");
+  assert.equal(await math("Round", [f(-1.5)]), "-2");
+  assert.equal(await math("Round", [f(-0.5)]), "-1");
+  assert.equal(await math("Round", [f(0.49999999999999994)]), "0");
 });
 
-test("min and max let a NaN operand lose, as minnum and maxnum do", () => {
+test("min and max let a NaN operand lose, as minnum and maxnum do", async () => {
   // `Math.min`/`Math.max` propagate NaN; the LLVM intrinsics return the other
   // operand, which is what native prints.
-  assert.equal(math("MinF64", [f(NaN), f(3)]), "3");
-  assert.equal(math("MaxF64", [f(NaN), f(3)]), "3");
-  assert.equal(math("MinF64", [f(3), f(NaN)]), "3");
-  assert.equal(math("MaxF64", [f(3), f(NaN)]), "3");
-  assert.equal(math("MinF64", [f(NaN), f(NaN)]), "nan");
+  assert.equal(await math("MinF64", [f(NaN), f(3)]), "3");
+  assert.equal(await math("MaxF64", [f(NaN), f(3)]), "3");
+  assert.equal(await math("MinF64", [f(3), f(NaN)]), "3");
+  assert.equal(await math("MaxF64", [f(3), f(NaN)]), "3");
+  assert.equal(await math("MinF64", [f(NaN), f(NaN)]), "nan");
   // Negative control: ordinary operands still order normally.
-  assert.equal(math("MinF64", [f(3.5), f(7.5)]), "3.5");
-  assert.equal(math("MaxF64", [f(3.5), f(7.5)]), "7.5");
+  assert.equal(await math("MinF64", [f(3.5), f(7.5)]), "3.5");
+  assert.equal(await math("MaxF64", [f(3.5), f(7.5)]), "7.5");
 });
 
-test("copysign and the signed zeros match native", () => {
-  assert.equal(math("Copysign", [f(3), f(-1)]), "-3");
-  assert.equal(math("Copysign", [f(-3), f(1)]), "3");
-  assert.equal(math("Copysign", [f(0), f(-1)]), "-0");
-  assert.equal(math("Round", [f(-0)]), "-0");
-  assert.equal(math("Trunc", [f(-0.5)]), "-0");
+test("copysign and the signed zeros match native", async () => {
+  assert.equal(await math("Copysign", [f(3), f(-1)]), "-3");
+  assert.equal(await math("Copysign", [f(-3), f(1)]), "3");
+  assert.equal(await math("Copysign", [f(0), f(-1)]), "-0");
+  assert.equal(await math("Round", [f(-0)]), "-0");
+  assert.equal(await math("Trunc", [f(-0.5)]), "-0");
   // Operands that compare equal resolve to the first, so the sign of a zero
   // travels through min and max the way native's does.
-  assert.equal(math("MinF64", [f(0), f(-0)]), "0");
-  assert.equal(math("MinF64", [f(-0), f(0)]), "-0");
-  assert.equal(math("MaxF64", [f(0), f(-0)]), "0");
-  assert.equal(math("MaxF64", [f(-0), f(0)]), "-0");
+  assert.equal(await math("MinF64", [f(0), f(-0)]), "0");
+  assert.equal(await math("MinF64", [f(-0), f(0)]), "-0");
+  assert.equal(await math("MaxF64", [f(0), f(-0)]), "0");
+  assert.equal(await math("MaxF64", [f(-0), f(0)]), "-0");
 });
 
-test("the integer intrinsics work in the integer domain", () => {
-  assert.equal(int64("AbsI64", [i(-5)]), "5");
-  assert.equal(int64("AbsI64", [i(5)]), "5");
+test("the integer intrinsics work in the integer domain", async () => {
+  assert.equal(await int64("AbsI64", [i(-5)]), "5");
+  assert.equal(await int64("AbsI64", [i(5)]), "5");
   assert.equal(
-    int64("AbsI64", [i("-9223372036854775807")]),
+    await int64("AbsI64", [i("-9223372036854775807")]),
     "9223372036854775807",
   );
-  assert.equal(int64("MinI64", [i(3), i(7)]), "3");
-  assert.equal(int64("MaxI64", [i(3), i(7)]), "7");
+  assert.equal(await int64("MinI64", [i(3), i(7)]), "3");
+  assert.equal(await int64("MaxI64", [i(3), i(7)]), "7");
   // Beyond the JS safe range, so a float-domain implementation would lose
   // digits here.
   assert.equal(
-    int64("MaxI64", [i("9007199254740993"), i("9007199254740992")]),
+    await int64("MaxI64", [i("9007199254740993"), i("9007199254740992")]),
     "9007199254740993",
   );
 });
 
-test("fma is fused: the product is not rounded before the addend arrives", () => {
+test("fma is fused: the product is not rounded before the addend arrives", async () => {
   // Native reads 4.93038e-32 for the fused form and 0 for the unfused one, so
   // this case fails on any implementation that computes a * b + c in two
   // roundings.
   assert.equal(
-    math("Fma", [
+    await math("Fma", [
       f(1.0000000000000002),
       f(1.0000000000000002),
       f(-1.0000000000000004),
@@ -236,8 +236,8 @@ test("fma is fused: the product is not rounded before the addend arrives", () =>
   );
 });
 
-test("an unknown math intrinsic is rejected as malformed bytecode", () => {
-  const trace = runBytecode(
+test("an unknown math intrinsic is rejected as malformed bytecode", async () => {
+  const trace = await runBytecode(
     {
       ...mathPackage("Sqrt", [f(16)], "F64"),
       runtime_families: [

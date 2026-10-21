@@ -120,10 +120,10 @@ for (const withOwner of [false, true]) {
     withOwner
       ? "owner and config constructor ABI executes"
       : "legacy config-only constructor ABI executes",
-    () => {
+    async () => {
       const bytecode = constructorPackage(withOwner);
       assert.equal(admitPackage(bytecode), null);
-      const trace = runBytecode(bytecode);
+      const trace = await runBytecode(bytecode);
       assert.equal(
         trace.result,
         "ok",
@@ -256,7 +256,7 @@ function lateConstructorPackage(stopNs) {
 for (const stopNs of [0, 1_000_000]) {
   test(
     "a late constructor result uses canonical teardown budget " + stopNs,
-    () => {
+    async () => {
       const bytecode = lateConstructorPackage(stopNs);
       if (stopNs > 0) {
         bytecode.suspend_kinds = ["Sleep"];
@@ -287,7 +287,7 @@ for (const stopNs of [0, 1_000_000]) {
           block(2, [], { op: "return", value: null, span: null }),
         );
       }
-      const trace = runBytecode(bytecode);
+      const trace = await runBytecode(bytecode);
       assert.equal(
         trace.result,
         "panic",

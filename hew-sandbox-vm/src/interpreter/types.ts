@@ -170,6 +170,9 @@ export interface SandboxTrace {
 }
 
 export interface RunOptions {
+  /** Explicit browser filesystem authority; absent roots grant no access. */
+  directoryRoots?: import("./v1/browser-directory.js").DirectoryRoots;
+  signal?: AbortSignal;
   /** Supplied process arguments including argv[0]. Defaults to ["main.hew"]. */
   argv?: readonly string[];
   codecBridge?: (request: string) => string;

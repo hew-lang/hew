@@ -158,8 +158,8 @@ function printTerm(value, to) {
   };
 }
 
-function run(bytecode) {
-  return runBytecode(bytecode, {
+async function run(bytecode) {
+  return await runBytecode(bytecode, {
     fixtureId: "v1-closure",
     traceId: "trace:v1-closure",
     replay: { seed: 1, step_budget: 10_000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
@@ -170,8 +170,8 @@ function stdout(trace) {
   return trace.final_state.stdout.join("");
 }
 
-test("a closure carries the value it captured, not the place it came from", () => {
-  const trace = run(closurePackage());
+test("a closure carries the value it captured, not the place it came from", async () => {
+  const trace = await run(closurePackage());
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   // 9 is the reassigned place; 7 is what the closure captured before it.
@@ -179,17 +179,17 @@ test("a closure carries the value it captured, not the place it came from", () =
   assert.equal(trace.final_state.exit_code, 0);
 });
 
-test("a closure made from a later reading captures that later value", () => {
+test("a closure made from a later reading captures that later value", async () => {
   // Negative control for the case above: capturing value 10, the reading taken
   // after the store, yields 9. So the 7 there is the captured value travelling
   // with the closure and not a stale read the VM cannot tell apart.
-  const trace = run(closurePackage(10));
+  const trace = await run(closurePackage(10));
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(stdout(trace), "9\n9\n");
 });
 
-test("two closures over one body keep their own environments", () => {
+test("two closures over one body keep their own environments", async () => {
   // Both closures name the same body; only the environment differs, so calling
   // each in turn must print what each captured.
   const pkg = closurePackage();
@@ -228,17 +228,17 @@ test("two closures over one body keep their own environments", () => {
     { id: 5, params: [], ops: [], term: printTerm(13, 3) }
   );
 
-  const trace = run(pkg);
+  const trace = await run(pkg);
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(stdout(trace), "9\n7\n9\n");
 });
 
-test("an indirect call on a value that is not callable names what it got", () => {
+test("an indirect call on a value that is not callable names what it got", async () => {
   const pkg = closurePackage();
   // Hand `read` an integer where its callable belongs.
   pkg.functions[0].blocks[1].ops = [{ op: "const.int", dst: 6, value: "1", ty: "i64", span: null }];
 
-  const trace = run(pkg);
+  const trace = await run(pkg);
   assert.equal(trace.result, "runtime_failure");
   assert.match(trace.final_state.runtime_failures[0].message, /expected a callable value, got i64/);
 });

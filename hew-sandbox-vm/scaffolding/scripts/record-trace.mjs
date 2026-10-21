@@ -22,7 +22,7 @@ if (!bytecodePath || !tracePath) {
 const bytecode = JSON.parse(fs.readFileSync(bytecodePath, "utf8"));
 const previous = JSON.parse(fs.readFileSync(tracePath, "utf8"));
 
-const trace = runBytecode(bytecode, {
+const trace = await runBytecode(bytecode, {
   fixtureId: previous.fixture_id,
   traceId: previous.trace_id,
   replay: { ...previous.replay, inputs: previous.replay.inputs.filter((input) => input.kind !== "user_event" || input.data?.family !== "actor.scheduler-step") },

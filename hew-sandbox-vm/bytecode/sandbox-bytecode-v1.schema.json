@@ -7261,6 +7261,13 @@
             "result": {
               "$ref": "#/$defs/CallResult"
             },
+            "result_resource": {
+              "description": "Exact resource release slot selected from the checked result type.",
+              "format": "uint32",
+              "maximum": 4294967295,
+              "minimum": 0,
+              "type": ["integer", "null"]
+            },
             "result_shape": {
               "format": "uint32",
               "maximum": 4294967295,

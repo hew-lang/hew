@@ -865,6 +865,9 @@ pub enum TermKind {
     },
     #[serde(rename = "extern.call")]
     ExternCall {
+        /// Exact resource release slot selected from the checked result type.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_resource: Option<u32>,
         args: Vec<BoundaryOperand>,
         result: CallResult,
         #[serde(default, skip_serializing_if = "Option::is_none")]

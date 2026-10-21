@@ -144,8 +144,8 @@ function lifecyclePackage(request) {
   };
 }
 
-function run(bytecode) {
-  return runBytecode(bytecode, {
+async function run(bytecode) {
+  return await runBytecode(bytecode, {
     fixtureId: "lifecycle",
     traceId: "trace:lifecycle",
     replay: {
@@ -157,10 +157,10 @@ function run(bytecode) {
   });
 }
 
-test("stop returns before the hook and releases state after it", () => {
+test("stop returns before the hook and releases state after it", async () => {
   const bytecode = lifecyclePackage("stop");
   assert.equal(admitPackage(bytecode), null);
-  const trace = run(bytecode);
+  const trace = await run(bytecode);
   assert.equal(
     trace.result,
     "ok",
@@ -169,10 +169,10 @@ test("stop returns before the hook and releases state after it", () => {
   assert.equal(trace.final_state.stdout.join(""), "after\nhook\nrelease\n");
 });
 
-test("terminate skips the stop hook and still releases owned state", () => {
+test("terminate skips the stop hook and still releases owned state", async () => {
   const bytecode = lifecyclePackage("terminate");
   assert.equal(admitPackage(bytecode), null);
-  const trace = run(bytecode);
+  const trace = await run(bytecode);
   assert.equal(
     trace.result,
     "ok",

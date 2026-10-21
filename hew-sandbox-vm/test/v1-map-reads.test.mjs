@@ -195,8 +195,8 @@ function match(scrutinee, someTag, noneTag, someTo, noneTo, payload) {
   };
 }
 
-function run(bytecode) {
-  return runBytecode(bytecode, {
+async function run(bytecode) {
+  return await runBytecode(bytecode, {
     fixtureId: "v1-map",
     traceId: "trace:v1-map",
     replay: { seed: 1, step_budget: 10_000, virtual_clock: { epoch_ms: 0, tick_ms: 1, current_ms: 0 }, inputs: [] }
@@ -207,18 +207,18 @@ function stdout(trace) {
   return trace.final_state.stdout.join("");
 }
 
-test("a map answers contains_key and get for a present key and a missing one", () => {
-  const trace = run(mapPackage());
+test("a map answers contains_key and get for a present key and a missing one", async () => {
+  const trace = await run(mapPackage());
 
   assert.equal(trace.result, "ok", JSON.stringify(trace.final_state.runtime_failures));
   assert.equal(stdout(trace), "true\nfalse\n95\nmissing\n");
   assert.equal(trace.final_state.exit_code, 0);
 });
 
-test("Map(Get) takes its tag from the descriptor the call names", () => {
+test("Map(Get) takes its tag from the descriptor the call names", async () => {
   // The same program with `None` declared first. The published numeric roles
   // send both answers to the matching arms without a name lookup in the VM.
-  const trace = run(
+  const trace = await run(
     mapPackage([{ name: "None", fields: [] }, { name: "Some", fields: ["0"] }])
   );
 
@@ -226,10 +226,10 @@ test("Map(Get) takes its tag from the descriptor the call names", () => {
   assert.equal(stdout(trace), "true\nfalse\n95\nmissing\n");
 });
 
-test("Map(Get) refuses a missing checked Option role tag", () => {
+test("Map(Get) refuses a missing checked Option role tag", async () => {
   const bytecode = mapPackage();
   delete bytecode.variants[0].runtime_tags;
-  const trace = run(bytecode);
+  const trace = await run(bytecode);
   assert.equal(trace.result, "runtime_failure");
   assert.match(trace.final_state.runtime_failures[0].message, /no checked OptionSome tag/);
 });

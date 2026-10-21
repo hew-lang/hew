@@ -36,7 +36,7 @@ try {
     if (typeof codecBridge !== "function") throw new Error("hew-wasm executeCodec export is missing; rebuild the Wasm package");
   }
   const propertyPath = reportPath ? path.join(path.dirname(reportPath), "property.cbor") : null;
-  const trace = runBytecode(packageValue, {
+  const trace = await runBytecode(packageValue, {
     codecBridge,
     calendarBridge,
     propertyInput: propertyPath && fs.existsSync(propertyPath) ? [...fs.readFileSync(propertyPath)] : [],

@@ -1,3 +1,7 @@
+import {
+  DIRECTORY_OPERATIONS,
+  type DirectoryOperation,
+} from "./browser-directory.js";
 import { executeCalendar } from "./calendar.js";
 import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
@@ -39,6 +43,9 @@ export interface ShimHost {
   /// A snapshot of the supplied process arguments, including argv[0].
   readonly argv: readonly string[];
   unixTimeMillis(): number;
+  fileError(
+    operation: "HasError" | "LastErrorKind" | "LastErrno" | "LastError",
+  ): VmValue;
   calendarBridge?: (request: string) => string;
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
@@ -76,14 +83,19 @@ export type RuntimeShim = (
 
 export type HostBridges = Pick<
   import("../types.js").RunOptions,
-  "codecBridge" | "calendarBridge"
+  "codecBridge" | "calendarBridge" | "directoryRoots"
 >;
-type BridgeRequirement = keyof HostBridges;
+type BridgeRequirement = "codecBridge" | "calendarBridge";
+export type DirectoryRegistration = {
+  kind: "directory";
+  operation: DirectoryOperation;
+};
 export type Refused = {
   kind: "refused";
   category: "native_only" | "not_implemented";
   capability: string;
   description?: string;
+  message?: string;
 };
 type Ordinary = {
   kind: "ordinary";
@@ -156,10 +168,20 @@ function resumable(continuation: RuntimeContinuation): RuntimeRegistration {
 export function registrationRefusal(
   registration:
     | RuntimeRegistration
+    | DirectoryRegistration
     | { kind: "resumable"; bridge: BridgeRequirement },
   bridges: HostBridges,
 ): Refused | null {
   if (registration.kind === "refused") return registration;
+  if (
+    registration.kind === "directory" &&
+    registration.operation.action === "root" &&
+    !bridges.directoryRoots?.[registration.operation.access]
+  )
+    return {
+      ...refused(`directoryRoots.${registration.operation.access}`),
+      message: `This operation requires a host-supplied OPFS ${registration.operation.access} directory handle.`,
+    };
   return "bridge" in registration &&
     registration.bridge &&
     typeof bridges[registration.bridge] !== "function"
@@ -181,9 +203,17 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
     case "Print":
       return ordinary(printShim(entry.detail));
     case "FileRead":
-      return entry.detail === "LastError"
-        ? ordinary(() => str(""))
-        : refused(`FileRead::${entry.detail}`, true);
+      switch (entry.detail) {
+        case "HasError":
+        case "LastErrorKind":
+        case "LastErrno":
+        case "LastError": {
+          const operation = entry.detail;
+          return ordinary((host) => host.fileError(operation));
+        }
+        default:
+          return refused(`FileRead::${entry.detail}`, true);
+      }
     case "AsyncIo":
     case "Tcp":
       return refused(`${entry.family}::${entry.detail}`, true);
@@ -264,7 +294,13 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
 export function resolveExtern(entry: {
   symbol: string;
   native_capability?: string | null;
-}): Ordinary | Refused {
+}): Ordinary | Refused | DirectoryRegistration {
+  if (Object.hasOwn(DIRECTORY_OPERATIONS, entry.symbol))
+    return {
+      kind: "directory",
+      operation:
+        DIRECTORY_OPERATIONS[entry.symbol as keyof typeof DIRECTORY_OPERATIONS],
+    };
   const registration = Object.hasOwn(EXTERN_SHIMS, entry.symbol)
     ? EXTERN_SHIMS[entry.symbol]
     : undefined;
@@ -334,8 +370,8 @@ const NATIVE_IO_ROUTES = {
   TlsConnect: refused("NativeIo::TlsConnect", true),
   TlsRead: refused("NativeIo::TlsRead", true),
   TlsWrite: refused("NativeIo::TlsWrite", true),
-  FileRead: refused("NativeIo::FileRead", true),
-  FileWrite: refused("NativeIo::FileWrite", true),
+  FileRead: "FileRead",
+  FileWrite: "FileWrite",
 } as const satisfies {
   [K in NativeIoTerm["detail"]["operation"]]: K | Refused;
 };

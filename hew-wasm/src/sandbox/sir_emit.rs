@@ -282,6 +282,17 @@ impl<'m> Walker<'m> {
         }
     }
 
+    fn result_resource(&self, result: &CallResult) -> Option<u32> {
+        let CallResult::Value(result) = result else {
+            return None;
+        };
+        self.module
+            .resources
+            .keys()
+            .position(|ty| *ty == result.ty)
+            .map(table_index)
+    }
+
     fn aggregate_result_shape(&self, result: &CallResult) -> Option<u32> {
         match result {
             CallResult::Value(def) => self
@@ -1708,6 +1719,7 @@ impl<'m> Walker<'m> {
                 unwind,
                 ..
             } => wire::TermKind::ExternCall {
+                result_resource: self.result_resource(result),
                 aggregate_result_shape: self.aggregate_result_shape(result).map(Some),
                 args: boundaries(args),
                 result: call_result(result),
@@ -1807,6 +1819,7 @@ impl<'m> Walker<'m> {
                     .first()
                     .ok_or_else(|| EmitError::new("offload has no resume edge"))?;
                 wire::TermKind::ExternCall {
+                    result_resource: self.result_resource(result),
                     aggregate_result_shape: None,
                     args: boundaries(inputs),
                     result: call_result(result),

@@ -76,9 +76,7 @@ try {
       path.dirname(fileURLToPath(import.meta.url)),
       "../../../hew-wasm/pkg/hew_wasm.js",
     );
-    const location =
-      process.env.HEW_WASM_MODULE ??
-      (fs.existsSync(local) ? pathToFileURL(local).href : "@hew-lang/wasm");
+    const location = process.env.HEW_WASM_MODULE ?? pathToFileURL(local).href;
     const wasm = await import(location);
     if (typeof wasm.default === "function") {
       const resolved = location.startsWith("file:")

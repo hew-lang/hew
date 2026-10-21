@@ -1,0 +1,10 @@
+[[case]]
+id = "imported-runtime-clocks"
+intent = "Imported helpers retain declared wall-clock and monotonic runtime targets instead of calling their source signature bodies."
+source = "fixtures/imported-runtime-clocks/main.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "imported runtime clocks ok\n"
+exit = 0

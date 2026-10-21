@@ -589,7 +589,9 @@ impl Checker {
                         head.canonical_type
                     ),
                 },
-                CallTarget::impl_method,
+                // Static calls through nominal heads retain the same declared
+                // runtime/implementation selection as direct builtin calls.
+                |_| self.call_target_for_signature(&internal_member),
             );
         self.record_method_call_rewrite(
             span,

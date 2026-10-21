@@ -144,15 +144,15 @@ impl Checker {
         c_symbol: &str,
         sig: &FnSig,
     ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let selected = sig.impl_method.as_ref().map(|method| method.declaration);
+        let origin = selected.and_then(|declaration| self.extern_method_origins.get(&declaration));
         if let Some(operation) = crate::runtime_call::ServiceOp::source_method(
             signature_key,
             c_symbol,
             &sig.params,
             &sig.return_type,
         ) {
-            let canonical = self
-                .extern_method_origins
-                .get(signature_key)
+            let canonical = origin
                 .is_some_and(|(module, trusted)| *trusted && module.as_deref() == Some("std.net"))
                 || self.canonical_std_root_sources.contains("std.net");
             return canonical.then_some(crate::RuntimeCallFamily::Service(operation));
@@ -162,9 +162,33 @@ impl Checker {
             c_symbol,
             &sig.params,
             &sig.return_type,
-        )?;
-        let canonical_stdlib = self.extern_method_origins
-                .get(signature_key)
+        )
+        .or_else(|| {
+            let selected = selected?;
+            // Runtime declarations publish a source signature, while imported
+            // calls may select its qualified alias. Join through the exact
+            // selected implementation declaration, retaining the metadata's
+            // endpoint and complete signature checks.
+            crate::runtime_call::canonical_std_io_extern_signatures()
+                .iter()
+                .filter(|entry| entry.symbol == c_symbol)
+                .find_map(|entry| {
+                    let canonical_key = format!("{}.{}", entry.module, entry.signature_key);
+                    let same_declaration = [entry.signature_key, canonical_key.as_str()]
+                        .into_iter()
+                        .any(|key| self.impl_method_declaration_ids.get(key) == Some(&selected));
+                    if !same_declaration {
+                        return None;
+                    }
+                    crate::runtime_call::canonical_std_io_extern_signature(
+                        entry.signature_key,
+                        c_symbol,
+                        &sig.params,
+                        &sig.return_type,
+                    )
+                })
+        })?;
+        let canonical_stdlib = origin
                 .is_some_and(|(module, trusted)| {
                     *trusted && module.as_deref() == Some(declaration.module)
                 })
@@ -377,9 +401,10 @@ impl Checker {
         receiver_ty: &Ty,
     ) {
         let consumes_receiver = crate::builtin_names::runtime_symbol_consumes_receiver(&c_symbol);
-        let (declaring_module, trusted_compiled_stdlib) = self
-            .extern_method_origins
-            .get(&signature_key)
+        let (declaring_module, trusted_compiled_stdlib) = sig
+            .impl_method
+            .as_ref()
+            .and_then(|method| self.extern_method_origins.get(&method.declaration))
             .cloned()
             .unwrap_or((None, false));
         let extern_identity = ExternMethodCallIdentity {

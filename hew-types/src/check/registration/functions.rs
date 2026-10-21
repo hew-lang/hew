@@ -1631,9 +1631,7 @@ impl Checker {
                     .as_deref()
                     .is_some_and(|module| self.checking_canonical_stdlib_source(module));
             let origin = (declaring_module, trusted_compiled_stdlib);
-            self.extern_method_origins
-                .insert(method_key.clone(), origin.clone());
-            self.extern_method_origins.insert(registered_key, origin);
+            self.extern_method_origins.insert(declaration_id, origin);
         }
         self.publish_impl_method_sig(type_name, method.name.name.as_str(), &sig);
         // Preserve every exact declaration even when a trait method or concrete

@@ -1477,6 +1477,11 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
+	$(PYTHON) scripts/tests/test_release_channels.py
+
+.PHONY: test-release-channels
+test-release-channels: ## Test: verify release delivery identity and completion
+	$(PYTHON) scripts/tests/test_release_channels.py
 
 # A dependency-free Rust fixture exercises the actual version producer; it does not
 # build the compiler or share the toolchain target directory.

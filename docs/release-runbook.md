@@ -39,7 +39,7 @@ validate ─► build ─────────────► package and pro
    | `publish-npm`             | npmjs `@hew-lang/{wasm,sandbox-vm}`, provenance                    |
    | `publish-github-packages` | GitHub Packages mirror of the same tarballs                        |
    | `publish-ghcr`            | `ghcr.io/hew-lang/hew:<version>` (+ `latest` for finals), attested |
-   | `publish-homebrew`        | dispatches `hew-lang/homebrew-hew` `update-formula.yml`            |
+   | `publish-homebrew`        | waits for `hew-lang/homebrew-hew` and verifies formula sources     |
    | `publish-docs`            | docs.hew.sh (Cloudflare Pages `hew-docs`)                          |
 
    Every publish job names the one `release` environment. GitHub's
@@ -47,8 +47,12 @@ validate ─► build ─────────────► package and pro
    releases all five waiting jobs. Prereleases publish npm on dist-tag `next`
    and never move Docker `latest`; finals take `latest` on both.
 
-Every publish job skips a destination that already holds the version, and a
-published GitHub Release is never modified, so **Re-run failed jobs** on the
+npm and GitHub Packages verify the complete published tarball against the
+source-stamped producer archive. GHCR verifies the image index and both
+architecture digests. Conflicting content or an unreadable destination fails
+the job. Homebrew waits for the downstream run to succeed and checks formula
+versions, source URLs and checksums against the release artefacts. A published
+GitHub Release is never modified, so **Re-run failed jobs** on the
 tag's run is the recovery path for any failure. Dispatching `release.yml` from
 the tag ref with `dry_run` cleared starts a fresh run of the same tag. A
 dispatch from a branch, and every push to `release/**`, is a dry run: it builds
@@ -491,8 +495,8 @@ git merge-base --is-ancestor "$release_sha" origin/main
 3. The tag runs `.github/workflows/release.yml` (see "What happens on a `v*`
    tag"). Approve the `release` environment once when
    the run reaches it; everything else proceeds on its own. If a job fails,
-   fix the cause and use **Re-run failed jobs**; destinations that already hold
-   the version are skipped.
+   fix the cause and use **Re-run failed jobs**; npm and OCI content already
+   published must match the producer artefacts before the job completes.
 4. Verify npm with `npm view @hew-lang/wasm@<version> dist-tags version` and,
    from a scratch project that installs both packages, `npm audit signatures`
    (verified registry signatures and attestations). A prerelease must hold

@@ -12,7 +12,7 @@
 #                        publish-homebrew, publish-docs   [environment release]
 #
 # Every publish job consumes the artefacts built earlier in the same run and
-# skips a destination that already holds this version, so "Re-run failed
+# verifies a destination already holds identical content, so "Re-run failed
 # jobs" is the recovery path. The GitHub Release goes out on the signed tag;
 # every external destination waits on the one `release` environment, so a
 # single approval releases them all.
@@ -1456,7 +1456,7 @@ jobs:
   # npm — @hew-lang/wasm and @hew-lang/sandbox-vm. npmjs is the primary
   # registry (OIDC trusted publishing with provenance, bound to release.yml and
   # environment `release`); GitHub Packages is an independent mirror. Prereleases
-  # take dist-tag `next`, finals `latest`. A version already present is skipped.
+  # take dist-tag `next`, finals `latest`. Existing versions require identical bytes.
   # ─────────────────────────────────────────────────────────────────────────
   publish-npm:
     needs: [validate, github-release]
@@ -1472,6 +1472,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1498,22 +1500,7 @@ jobs:
         shell: bash
         env:
           REGISTRY: https://registry.npmjs.org
-        run: |
-          set -uo pipefail
-          status=0
-          for pkg in wasm sandbox-vm; do
-            name="@hew-lang/${pkg}"
-            if [ -n "$(npm view "${name}@${VERSION}" version --registry "${REGISTRY}" 2>/dev/null)" ]; then
-              echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
-              continue
-            fi
-            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
-              --provenance --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
-              echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
-              status=1
-            fi
-          done
-          exit "${status}"
+        run: python3 scripts/release-channel.py npm
 
   publish-github-packages:
     needs: [validate, github-release]
@@ -1529,6 +1516,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1548,22 +1537,7 @@ jobs:
         env:
           REGISTRY: https://npm.pkg.github.com
           NODE_AUTH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          status=0
-          for pkg in wasm sandbox-vm; do
-            name="@hew-lang/${pkg}"
-            if [ -n "$(npm view "${name}@${VERSION}" version --registry "${REGISTRY}" 2>/dev/null)" ]; then
-              echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
-              continue
-            fi
-            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
-              --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
-              echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
-              status=1
-            fi
-          done
-          exit "${status}"
+        run: python3 scripts/release-channel.py npm
 
   # ─────────────────────────────────────────────────────────────────────────
   # GHCR — push the clean-room-proved image archives unchanged, join them in
@@ -1585,6 +1559,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       PRERELEASE: ${{ needs.validate.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Log in to GHCR
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
@@ -1595,48 +1571,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Skip a version already published
-        id: existing
-        run: |
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
-            echo "::notice::${IMAGE}:${VERSION} already exists; skipping"
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Download image archives
-        if: steps.existing.outputs.exists == 'false'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: docker-image-*
           path: images
           merge-multiple: true
 
-      - name: Push images and the multi-arch tag
+      - name: Publish and verify producer images
         id: push
-        if: steps.existing.outputs.exists == 'false'
-        shell: bash
         run: |
-          set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; }
-          sources=()
-          for arch in amd64 arm64; do
-            # skopeo reads the docker login above and keeps the archive's
-            # digests, so GHCR serves the bytes the clean-room test proved.
-            skopeo copy --preserve-digests \
-              "oci-archive:images/hew-image-${arch}.tar" "docker://${IMAGE}:${VERSION}-${arch}"
-            sources+=("${IMAGE}:${VERSION}-${arch}")
-          done
-          tags=(--tag "${IMAGE}:${VERSION}")
-          # A prerelease is installable by its exact tag but never moves latest.
-          [[ "${PRERELEASE}" == false ]] && tags+=(--tag "${IMAGE}:latest")
-          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -er .digest)"
-          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          python3 scripts/release-channel.py ghcr
 
       - name: Attest image provenance
-        if: steps.existing.outputs.exists == 'false'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -1652,19 +1600,24 @@ jobs:
     needs: [validate, github-release]
     if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     environment: release
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Download producer release checksums
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+
       - name: Dispatch the homebrew-hew formula update
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN is not set"
-            exit 1
-          fi
-          gh workflow run update-formula.yml -R hew-lang/homebrew-hew -f version="${VERSION}"
+        run: python3 scripts/release-channel.py homebrew
 
   # ─────────────────────────────────────────────────────────────────────────
   # docs.hew.sh — deploy the site generated by build-docs to Cloudflare Pages.

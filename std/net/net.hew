@@ -762,7 +762,7 @@ extern "C" {
     fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }
 
-/// An authenticated configured peer in the current node and peer sessions.
+/// An authenticated peer in the current local and remote node sessions.
 #[resource]
 #[opaque]
 pub type PeerSession {

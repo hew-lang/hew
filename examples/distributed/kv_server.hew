@@ -1,14 +1,12 @@
-// examples/distributed/kv_server.hew — authenticated KV service issuer
-//
-// Run both peers once without arguments to create their node keys and print
-// their public credentials. Then exchange the credentials and run:
-//   hew run examples/distributed/kv_server.hew <client-credential> [port]
-//   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
-// Keep the key files between runs. Start the client while this server listens.
-// Enrol both printed credentials under one operator authority with
-// `hew node admit --authority authority.key --credential HEX --output FILE`.
-// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
+// Create one authority with `hew node authority --key authority.key`.
+// Enrol both node credentials under it with
+// `hew node identity --key PATH --transport TRANSPORT` and
+// `hew node admit --authority authority.key --credential HEX --transport TRANSPORT --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file, then start the server
+// and client. Without that setting, each program prints its credential and exits.
+// TCP: server [port], client [host] [port]. Mesh uses loopback ports 9000/9001.
 import std.net;
+import std.net.cluster;
 
 import std.os;
 
@@ -30,47 +28,41 @@ actor KeyValue {
     }
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    for attempt in 0..2400 {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                if attempt == 2399 {
-                    panic("authenticated KV client session did not arrive");
+// This two-node example offers its service to the other enrolled member.
+fn authenticated_peer() -> net.PeerSession {
+    let local = Node.id().expect("local identity");
+    let observation = cluster.watch().expect("watch peers");
+    loop {
+        for member in observation.snapshot().expect("peer snapshot").members {
+            if member.id != local && member.state == cluster.State.Alive {
+                match Node.peer(member.id) {
+                    .Ok(peer) => return peer,
+                    .Err(_) => {}
                 }
-                sleep(50ms);
             }
         }
+        assert(observation.changes.recv().is_some());
     }
-    panic("authenticated KV client session did not arrive");
 }
 
 fn main() {
     let args = os.args();
-    let client_credential = match args.get(1) {
-        .Some(value) => value,
-        .None => "--identity",
-    };
-    let port = match args.get(2) {
+    let port = match args.get(1) {
         .Some(value) => value,
         .None => "9100",
     };
-    var bind = "127.0.0.1:0";
-    if client_credential != "--identity" {
-        bind = f"127.0.0.1:{port}";
-    }
+    let bind = f"127.0.0.1:{port}";
     let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: "kv-server.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("KV server node starts");
     println(f"[kv-server] public credential: {Node.identity_key()}");
-    if client_credential == "--identity" {
+    if (os.env("HEW_NODE_CLUSTER") ?? "").is_empty() {
         Node.shutdown();
         return;
     }
     let empty: HashMap<string, string> = HashMap.new();
     let store = spawn KeyValue { store: empty };
-    // A registry name would provide discovery metadata only. This example
-    // supplies call authority directly through the authenticated service grant.
-    let peer = authenticated_peer(client_credential);
+    Node.register("kv", store);
+    let peer = authenticated_peer();
     let export = peer.export(store).expect("client accepts KeyValue service");
     println("[kv-server] KeyValue service offered to authenticated client");
 

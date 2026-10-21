@@ -1,19 +1,12 @@
-// quic_mesh/server.hew — QUIC mesh service issuer
-//
-// This node exports a Counter service to one authenticated peer. The registry
-// is not used as call authority: the client receives an ordinary Counter
-// handle through the peer's offer.
-//
-// First run both programs without arguments to create their node keys and
-// print their public credentials. Then exchange those credentials and run:
-//   hew run examples/quic_mesh/server.hew <client-credential>
-//   hew run examples/quic_mesh/client.hew <server-credential>
-// Start the client while the server is listening. Keep each key file between
-// runs so the printed credentials continue to identify the same nodes.
-// Enrol both printed credentials under one operator authority with
-// `hew node admit --authority authority.key --credential HEX --output FILE`.
-// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
+// Create one authority with `hew node authority --key authority.key`.
+// Enrol both node credentials under it with
+// `hew node identity --key PATH --transport TRANSPORT` and
+// `hew node admit --authority authority.key --credential HEX --transport TRANSPORT --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file, then start the server
+// and client. Without that setting, each program prints its credential and exits.
+// TCP: server [port], client [host] [port]. Mesh uses loopback ports 9000/9001.
 import std.net;
+import std.net.cluster;
 
 import std.os;
 
@@ -31,37 +24,34 @@ actor Counter {
     }
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    for attempt in 0..2400 {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                if attempt == 2399 {
-                    panic("authenticated client session did not arrive");
+// This two-node example offers its service to the other enrolled member.
+fn authenticated_peer() -> net.PeerSession {
+    let local = Node.id().expect("local identity");
+    let observation = cluster.watch().expect("watch peers");
+    loop {
+        for member in observation.snapshot().expect("peer snapshot").members {
+            if member.id != local && member.state == cluster.State.Alive {
+                match Node.peer(member.id) {
+                    .Ok(peer) => return peer,
+                    .Err(_) => {}
                 }
-                sleep(50ms);
             }
         }
+        assert(observation.changes.recv().is_some());
     }
-    panic("authenticated client session did not arrive");
 }
 
 fn main() {
-    let args = os.args();
-    let peer_credential = match args.get(1) {
-        .Some(value) => value,
-        .None => "--identity",
-    };
     let config = NodeConfig { bind: "127.0.0.1:9000", transport: NodeTransport.QuicMesh, key: "quic-mesh-server.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("QUIC mesh node starts");
     println(f"[server] public credential: {Node.identity_key()}");
-    if peer_credential == "--identity" {
+    if (os.env("HEW_NODE_CLUSTER") ?? "").is_empty() {
         Node.shutdown();
         return;
     }
     let counter = spawn Counter { count: 0 };
-    // Wait for the client to connect and authenticate with its enrolled key.
-    let peer = authenticated_peer(peer_credential);
+    Node.register("counter", counter);
+    let peer = authenticated_peer();
     let export = peer.export(counter).expect("client accepts Counter service");
     println("[server] Counter service offered to authenticated client");
 

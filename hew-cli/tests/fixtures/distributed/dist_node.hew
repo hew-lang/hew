@@ -163,19 +163,19 @@ fn supplied_sum(service: ServiceFacade) -> i64 {
     service.add(right: 5, left: 37).expect("supplied add")
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    var attempts: i64 = 0;
+fn authenticated_peer() -> net.PeerSession {
+    let local = Node.id().expect("local identity");
+    let observation = cluster.watch().expect("watch authenticated peers");
     loop {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                attempts += 1;
-                if attempts >= 100 {
-                    panic("authenticated peer unavailable");
+        for member in observation.snapshot().expect("peer snapshot").members {
+            if member.id != local && member.state == cluster.State.Alive {
+                match Node.peer(member.id) {
+                    .Ok(peer) => return peer,
+                    .Err(_) => {}
                 }
-                sleep(20ms);
             }
         }
+        assert(observation.changes.recv().is_some());
     }
 }
 
@@ -209,8 +209,7 @@ fn scenario_server_service_grants(kx: string) {
     let facade = spawn ServiceFacade { file: fs.open_read(path).expect("file"), started: started, gate: gate };
     assert(supplied_sum(facade) == 42);
     Node.register("service-facade", facade);
-    let credential = wait_for_file(f"{kx}/client.pub");
-    let peer = authenticated_peer(credential);
+    let peer = authenticated_peer();
     let generic = spawn GenericEcho<i64>;
     let generic_export = peer.export(generic).expect("generic offer admission");
     let export = peer.export(facade).expect("offer admission");
@@ -246,15 +245,14 @@ fn scenario_server_service_grants(kx: string) {
     let port = wait_for_server_listening(kx);
     Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp, key: f"{kx}/server.key", cluster: f"{kx}/server.enrollment", seeds: [] }).expect("restart node");
     publish_atomic(kx, "service.node-restarted", "1");
-    let restarted_peer = authenticated_peer(credential);
+    let restarted_peer = authenticated_peer();
     let restarted = new_service_facade(path);
     let restarted_export = restarted_peer.export(restarted).expect("restarted node offer");
     let _ = wait_for_file(f"{kx}/service.done");
 }
 
 fn scenario_service_grants(kx: string, port: string) -> i64 {
-    let credential = wait_for_file(f"{kx}/server.pub");
-    let peer = authenticated_peer(credential);
+    let peer = authenticated_peer();
     let _ = wait_for_file(f"{kx}/service.admitted");
     match peer.receive_service<GenericEcho<string>>() {
         .Err(ActorError.RoutingFailed) => {}
@@ -375,7 +373,7 @@ fn scenario_service_grants(kx: string, port: string) -> i64 {
         .Err(ActorError.Dead) => {}
         _ => panic("stale peer session imported service"),
     }
-    let restarted = authenticated_peer(credential).receive_service<ServiceFacade>().expect("restarted service");
+    let restarted = authenticated_peer().receive_service<ServiceFacade>().expect("restarted service");
     assert(supplied_sum(restarted) == 42);
     publish_atomic(kx, "service.done", "1");
     println("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart");
@@ -1803,14 +1801,7 @@ fn wait_for_server_listening(kx: string) -> string {
 }
 
 fn fixture_peer() -> net.PeerSession {
-    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
-    let role = os.env("HEW_DIST_ROLE") ?? "";
-    let other = if role == "client" {
-        "server"
-    } else {
-        "client"
-    };
-    authenticated_peer(wait_for_file(f"{kx}/{other}.pub"))
+    authenticated_peer()
 }
 
 fn discover_with_retry(name: string) -> Result<Location, LookupError> {

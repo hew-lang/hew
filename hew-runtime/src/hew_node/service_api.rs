@@ -8,7 +8,7 @@ use super::{
 };
 use crate::connection::{self, HewConnMgr, SendClaim};
 use crate::envelope::{NodeSessionIdentity, ServiceOfferPayload};
-use crate::peer_binding::{PeerCredential, TransportSelection};
+use crate::node_identity::{HewNodeId, NodeId};
 use crate::request_deadline::RequestDeadline;
 use crate::util::MutexExt;
 use std::ffi::{c_char, c_void, CStr};
@@ -97,27 +97,22 @@ fn peer_claim(manager: &HewConnMgr, session: &PeerSession) -> Result<SendClaim, 
     Ok(claim)
 }
 
-/// Acquire the currently authenticated configured peer, without connecting.
+/// Acquire the currently authenticated node session, without connecting.
 ///
 /// # Safety
-/// `credential` is readable and `output` is writable for one handle.
+/// `node` is readable and `output` is writable for one handle.
 #[no_mangle]
 pub unsafe extern "C" fn hew_node_peer_new(
-    credential: *const hew_cabi::string::HewString,
+    node: *const HewNodeId,
     output: *mut *mut c_void,
 ) -> i32 {
-    // SAFETY: the source passes a live string for this synchronous borrow.
-    let credential = unsafe { hew_cabi::string::string_as_str(credential) };
+    // SAFETY: the source passes a live identity for this synchronous borrow.
+    let Some(node) = (unsafe { node.as_ref() }) else {
+        return hew_cabi::node::NodeFailure::Refused as i32;
+    };
+    let identity = NodeId::from(*node);
     let result = with_manager(|manager| {
-        let bytes = super::api::decode_hex(credential).ok_or(AskError::Unauthorized)?;
-        let credential = match manager.auth.transport() {
-            TransportSelection::Tcp => {
-                PeerCredential::NoiseKey(bytes.try_into().map_err(|_| AskError::Unauthorized)?)
-            }
-            TransportSelection::QuicMesh if !bytes.is_empty() => PeerCredential::Spki(bytes),
-            TransportSelection::QuicMesh => return Err(AskError::Unauthorized),
-        };
-        let claim = connection::claim_send_by_identity(manager, credential.node_id(), None)
+        let claim = connection::claim_send_by_identity(manager, identity, None)
             .ok_or(AskError::Partition)?;
         Ok(PeerSession {
             owner: Arc::downgrade(&manager.service_exports),

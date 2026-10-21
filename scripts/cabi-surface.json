@@ -12231,7 +12231,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_node_peer_new( *const hew_cabi::string::HewString, *mut *mut c_void, ) -> i32"
+        "native": "fn hew_node_peer_new( *const HewNodeId, *mut *mut c_void, ) -> i32"
       },
       "symbol": "hew_node_peer_new"
     },

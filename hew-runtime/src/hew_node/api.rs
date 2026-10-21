@@ -1475,10 +1475,12 @@ pub unsafe extern "C" fn hew_location_format(location: *const HewLocation) -> *m
 /// (4 KiB). The mesh allowlist re-enforces this, but `decode_hex` checks it
 /// *before* allocating so an oversize hex argument can't force a large up-front
 /// `Vec`. A well-formed RSA-4096 SPKI is under 1 KiB; anything larger is junk.
+#[cfg(test)]
 pub(super) const MAX_SPKI_DECODE_BYTES: usize = 4096;
 
 /// Decode a lowercase/uppercase hex string to bytes. Returns `None` on an odd
 /// length, oversize input, or any non-hex digit — fail-closed, no partial decode.
+#[cfg(test)]
 pub(super) fn decode_hex(s: &str) -> Option<Vec<u8>> {
     let s = s.as_bytes();
     if s.is_empty() || !s.len().is_multiple_of(2) {

@@ -533,7 +533,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                     hew_types::RuntimeCallFamily::Service(
                         hew_types::runtime_call::ServiceOp::Peer,
                     ) => vec![
-                        self.load(source(0)?, "node.peer.credential")?.into(),
+                        self.slots[source(0)?.0 as usize].into(),
                         peer_storage.expect("peer slot").into(),
                     ],
                     hew_types::RuntimeCallFamily::NodeStart => {

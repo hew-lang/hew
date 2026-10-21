@@ -445,9 +445,12 @@ Global snapshot and watch creation require a running node.
 
 ## 7.1 Supplied service grants
 
-`Node.peer(credential: string) -> Result<net.PeerSession, NodeError>` selects a
-configured credential on a currently authenticated connection. It does not dial.
-The peer handle binds the local and remote `NodeId` and session incarnations.
+`Node.peer(id: NodeId) -> Result<net.PeerSession, NodeError>` selects a
+currently authenticated node session. It does not dial. Obtain the identity from
+a discovered `Location.node_id()` or an authenticated membership snapshot;
+cluster enrolment owns the corresponding credential. The peer handle binds the
+local and remote `NodeId` and session incarnations. A discovered identity alone
+grants no actor access: the issuer must still offer an actor interface.
 `Node.connect(address)` retains its existing discovery and connection behaviour.
 
 `peer.export(actor)` suspends until the recipient acknowledges admission of an

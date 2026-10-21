@@ -1,15 +1,12 @@
-// quic_mesh/client.hew — QUIC mesh service client
-//
-// First run both programs without arguments to create their node keys and
-// print their public credentials. Then exchange those credentials and run:
-//   hew run examples/quic_mesh/server.hew <client-credential>
-//   hew run examples/quic_mesh/client.hew <server-credential>
-// Start this client while the server is listening. Keep each key file between
-// runs so the printed credentials continue to identify the same nodes.
-// Enrol both printed credentials under one operator authority with
-// `hew node admit --authority authority.key --credential HEX --output FILE`.
-// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
+// Create one authority with `hew node authority --key authority.key`.
+// Enrol both node credentials under it with
+// `hew node identity --key PATH --transport TRANSPORT` and
+// `hew node admit --authority authority.key --credential HEX --transport TRANSPORT --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file, then start the server
+// and client. Without that setting, each program prints its credential and exits.
+// TCP: server [port], client [host] [port]. Mesh uses loopback ports 9000/9001.
 import std.net;
+import std.net.cluster;
 
 import std.os;
 
@@ -26,36 +23,17 @@ actor Counter {
     }
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    for attempt in 0..300 {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                if attempt == 299 {
-                    panic("authenticated server session did not arrive");
-                }
-                sleep(50ms);
-            }
-        }
-    }
-    panic("authenticated server session did not arrive");
-}
-
 fn main() {
-    let args = os.args();
-    let server_credential = match args.get(1) {
-        .Some(value) => value,
-        .None => "--identity",
-    };
     let config = NodeConfig { bind: "127.0.0.1:9001", transport: NodeTransport.QuicMesh, key: "quic-mesh-client.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("QUIC mesh node starts");
     println(f"[client] public credential: {Node.identity_key()}");
-    if server_credential == "--identity" {
+    if (os.env("HEW_NODE_CLUSTER") ?? "").is_empty() {
         Node.shutdown();
         return;
     }
     Node.connect("127.0.0.1:9000").expect("connect to admitted QUIC peer");
-    let peer = authenticated_peer(server_credential);
+    let location = cluster.wait_registered("counter").expect("discover Counter server");
+    let peer = Node.peer(location.node_id()).expect("admitted Counter server");
     let counter: Counter = peer.receive_service<Counter>().expect("receive Counter service");
     println("[client] received the Counter service");
     for amount in [10, 20, 30] {

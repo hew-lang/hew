@@ -5175,7 +5175,7 @@ return `Result`.
 
 `Node.lookup(name)` returns `Result<Location, LookupError>` for discovery. A
 `Location` describes identity but cannot authorize an actor call. Obtain call
-authority from an authenticated `Node.peer(credential)` session and an explicit
+authority from an authenticated `Node.peer(node_id)` session and an explicit
 service offer. All receive handlers of an exported actor must be `#[wire]`, and an imported
 service cannot be exported onward.
 

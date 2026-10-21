@@ -233,7 +233,7 @@ impl Checker {
         self.register_builtin_fn("Node::connect", vec![Ty::String], node_result);
         self.register_builtin_fn(
             "Node::peer",
-            vec![Ty::String],
+            vec![Ty::builtin_named(BuiltinType::NodeId, Vec::new())],
             Ty::result(
                 crate::actor_delivery::nominal(crate::KnownDecl::PeerSession, Vec::new()),
                 Ty::builtin_named(BuiltinType::NodeError, Vec::new()),

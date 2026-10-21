@@ -4723,8 +4723,8 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
      "native", "stable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_peer_new",
-     "{\"native\": \"fn hew_node_peer_new( *const hew_cabi::string::HewString, "
-     "*mut *mut c_void, ) -> i32\"}",
+     "{\"native\": \"fn hew_node_peer_new( *const HewNodeId, *mut *mut c_void, "
+     ") -> i32\"}",
      "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_register",

@@ -1,14 +1,12 @@
-// examples/distributed/kv_client.hew — authenticated KV service client
-//
-// Run both peers once without arguments to create their node keys and print
-// their public credentials. Then exchange the credentials and run:
-//   hew run examples/distributed/kv_server.hew <client-credential>
-//   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
-// Keep the key files between runs. Start this client while the server listens.
-// Enrol both printed credentials under one operator authority with
-// `hew node admit --authority authority.key --credential HEX --output FILE`.
-// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
+// Create one authority with `hew node authority --key authority.key`.
+// Enrol both node credentials under it with
+// `hew node identity --key PATH --transport TRANSPORT` and
+// `hew node admit --authority authority.key --credential HEX --transport TRANSPORT --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file, then start the server
+// and client. Without that setting, each program prints its credential and exits.
+// TCP: server [port], client [host] [port]. Mesh uses loopback ports 9000/9001.
 import std.net;
+import std.net.cluster;
 
 import std.os;
 
@@ -26,45 +24,27 @@ actor KeyValue {
     }
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    for attempt in 0..300 {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                if attempt == 299 {
-                    panic("authenticated KV server session did not arrive");
-                }
-                sleep(50ms);
-            }
-        }
-    }
-    panic("authenticated KV server session did not arrive");
-}
-
 fn main() -> i64 {
     let args = os.args();
-    let server_credential = match args.get(1) {
-        .Some(value) => value,
-        .None => "--identity",
-    };
-    let host = match args.get(2) {
+    let host = match args.get(1) {
         .Some(value) => value,
         .None => "127.0.0.1",
     };
-    let port = match args.get(3) {
+    let port = match args.get(2) {
         .Some(value) => value,
         .None => "9100",
     };
     let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: "kv-client.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("KV client node starts");
     println(f"[kv-client] public credential: {Node.identity_key()}");
-    if server_credential == "--identity" {
+    if (os.env("HEW_NODE_CLUSTER") ?? "").is_empty() {
         Node.shutdown();
         return 0;
     }
     let address = f"{host}:{port}";
     Node.connect(address).expect("connect to admitted KV server");
-    let peer = authenticated_peer(server_credential);
+    let location = cluster.wait_registered("kv").expect("discover KV server");
+    let peer = Node.peer(location.node_id()).expect("admitted KV server");
     let kv: KeyValue = peer.receive_service<KeyValue>().expect("receive KeyValue service");
     println("[kv-client] received the KeyValue service");
     let first = kv.put("hello", "world").expect("store first value completes");

@@ -787,3 +787,19 @@ fn main() {{}}
         );
     }
 }
+
+/// Peer acquisition uses the discovered identity; credentials belong to admission.
+#[test]
+fn node_peer_selects_a_typed_node_identity() {
+    let valid = check_source("fn acquire(id: NodeId) { let _ = Node.peer(id); } fn main() {}");
+    assert!(valid.errors.is_empty(), "{:?}", valid.errors);
+    let invalid = check_source("fn main() { let _ = Node.peer(\"credential\"); }");
+    assert!(
+        invalid
+            .errors
+            .iter()
+            .any(|error| error.message.contains("NodeId")),
+        "{:?}",
+        invalid.errors
+    );
+}

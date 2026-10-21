@@ -72,7 +72,7 @@ impl ServiceOp {
             contract: Some(RuntimeSemanticContract {
                 arguments: match self {
                     Self::Peer => &[RuntimeArgumentContract {
-                        ty: RuntimeValueKind::String,
+                        ty: RuntimeValueKind::BuiltinArgument(crate::BuiltinType::NodeId),
                         effect: RuntimeArgumentEffect::Borrow,
                     }],
                     Self::Export => &[

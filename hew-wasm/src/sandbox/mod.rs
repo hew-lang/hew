@@ -232,6 +232,26 @@ pub fn compile_tests_to_sandbox_bytecode(
     project_dir: &std::path::Path,
     coverage_enabled: bool,
 ) -> Result<TestCompileOutput, CompileError> {
+    compile_tests_with_inputs(
+        source,
+        source_path,
+        selections,
+        companion,
+        project_dir,
+        coverage_enabled,
+        hew_compile::SourceSet::default(),
+    )
+}
+
+fn compile_tests_with_inputs(
+    source: &str,
+    source_path: &std::path::Path,
+    selections: &[hew_types::DeclarationOccurrence],
+    companion: Option<&std::path::Path>,
+    project_dir: &std::path::Path,
+    coverage_enabled: bool,
+    documents: hew_compile::SourceSet,
+) -> Result<TestCompileOutput, CompileError> {
     let label = source_path.to_string_lossy();
     let mut entries = Vec::new();
     let mut coverage = coverage_enabled.then(hew_compile::SourceCoverageMap::default);
@@ -240,6 +260,7 @@ pub fn compile_tests_to_sandbox_bytecode(
         Some(DEFAULT_PROFILE_ALIAS),
         &label,
         hew_compile::FrontendOptions {
+            documents,
             project_dir: Some(project_dir.to_path_buf()),
             test_entry_selections: selections.to_vec(),
             host_admission: hew_compile::HostAdmission::Tests(selections.to_vec()),
@@ -288,13 +309,11 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
     let parsed = hew_parser::parse(source);
     let tests = hew_analysis::test_discovery::discover_tests(&parsed.program);
     let parse_diagnostics = convert_parse_diagnostics(&parsed.errors);
-    if parse_diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.severity == "error")
+    if tests.is_empty()
+        || parse_diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity == "error")
     {
-        return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
-    }
-    if tests.is_empty() {
         return serde_json::json!({"diagnostics": parse_diagnostics, "tests": []}).to_string();
     }
     let eligible = tests
@@ -336,7 +355,15 @@ pub fn compile_tests_to_sandbox_bytecode_js(source: &str, file: &str) -> String 
         })
         .to_string();
     }
-    match compile_tests_to_sandbox_bytecode(source, path, &selections, None, project_dir, false) {
+    match compile_tests_with_inputs(
+        source,
+        path,
+        &selections,
+        None,
+        project_dir,
+        false,
+        hew_compile::SourceSet::in_memory(),
+    ) {
         Ok(output) => {
             if output.bytecodes.len() != eligible.len() {
                 if output

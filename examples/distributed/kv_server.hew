@@ -5,6 +5,9 @@
 //   hew run examples/distributed/kv_server.hew <client-credential> [port]
 //   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
 // Keep the key files between runs. Start the client while this server listens.
+// Enrol both printed credentials under one operator authority with
+// `hew node admit --authority authority.key --credential HEX --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
 import std.net;
 
 import std.os;
@@ -56,10 +59,7 @@ fn main() {
     if client_credential != "--identity" {
         bind = f"127.0.0.1:{port}";
     }
-    var config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: "kv-server.key", peers: [], seeds: [] };
-    if client_credential != "--identity" {
-        config.peers = [client_credential];
-    }
+    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: "kv-server.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("KV server node starts");
     println(f"[kv-server] public credential: {Node.identity_key()}");
     if client_credential == "--identity" {

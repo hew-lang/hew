@@ -375,7 +375,7 @@ pub(super) unsafe fn establish(
             // Per-node pre-gate (issue #2652, D14): the authenticated key must
             // be pinned in this node's snapshot. Claim reservation later binds
             // it to the claimed NodeId.
-            if !auth.noise_pubkey_allowlisted(&peer_static_key) {
+            if auth.admission().is_none() && !auth.noise_pubkey_allowlisted(&peer_static_key) {
                 return Err(ChannelRefusal::KeyNotPinned);
             }
             if peer.static_noise_pubkey != peer_static_key {

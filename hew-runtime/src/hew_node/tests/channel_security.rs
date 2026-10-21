@@ -106,7 +106,7 @@ fn tcp_dial_refuses_plaintext_and_previous_protocol_peers() {
             read_until_closed(&mut stream)
         });
 
-        let target = CString::new(format!("711@{peer_addr}")).expect("connect target");
+        let target = CString::new(format!("{peer_addr}")).expect("connect target");
         crate::hew_clear_error();
         // SAFETY: the node and target are valid for the call.
         let rc = unsafe { hew_node_connect(node.as_ptr(), target.as_ptr()) };
@@ -172,7 +172,7 @@ fn tcp_accept_refuses_a_plaintext_dialler_and_then_admits_a_noise_peer() {
         "no connection is installed for the plaintext dialler"
     );
 
-    let target = CString::new(format!("721@127.0.0.1:{port_b}")).expect("connect target");
+    let target = CString::new(format!("127.0.0.1:{port_b}")).expect("connect target");
     // SAFETY: both nodes are live and started.
     unsafe {
         connect_with_retry(node_a.as_ptr(), &target);
@@ -226,7 +226,7 @@ fn tcp_noise_channel_never_carries_node_traffic_in_the_clear() {
     let _guard = crate::runtime_test_guard();
     let (node_a, _, node_b, port_b) = start_authorized_tcp_pair(730, 731);
     let (relay_port, recorded) = start_recording_relay(port_b);
-    let target = CString::new(format!("731@127.0.0.1:{relay_port}")).expect("connect target");
+    let target = CString::new(format!("127.0.0.1:{relay_port}")).expect("connect target");
     // SAFETY: both nodes are live and started.
     unsafe {
         connect_with_retry(node_a.as_ptr(), &target);
@@ -318,7 +318,7 @@ fn tcp_connect_reports_publication_refusal() {
             ),
             1,
         );
-        let target = CString::new(format!("741@127.0.0.1:{port_b}")).expect("connect target");
+        let target = CString::new(format!("127.0.0.1:{port_b}")).expect("connect target");
         let status = hew_node_connect(node_a.as_ptr(), target.as_ptr());
         let detail = last_error();
         assert_eq!(

@@ -10,6 +10,7 @@ use crate::envelope::{
 };
 use crate::node_identity::NodeId;
 use crate::set_last_error;
+use crate::util::MutexExt;
 
 use super::control::authenticated_peer_identity;
 use super::handshake::supports_gossip;
@@ -54,7 +55,7 @@ fn node_session_for_route(
         });
     }
     Some(crate::envelope::NodeSessionIdentity {
-        node_id: mgr.auth.node_id_for_route_slot(route_slot)?,
+        node_id: super::peer::identity_for_route_slot(mgr, route_slot)?,
         session_incarnation: cluster.member_session(route_slot)?,
     })
 }
@@ -67,16 +68,22 @@ fn route_slot_for_identity(mgr: &HewConnMgr, node_id: NodeId) -> Option<u16> {
     if Some(node_id) == mgr.local_identity {
         Some(mgr.local_node_id)
     } else {
-        mgr.auth.route_slot_for_node_id(node_id).or_else(|| {
-            #[cfg(test)]
-            {
-                let bytes = node_id.to_bytes();
-                if bytes[..14].iter().all(|byte| *byte == 0) {
-                    return Some(u16::from_be_bytes([bytes[14], bytes[15]]));
+        mgr.claims
+            .0
+            .lock_or_recover()
+            .get(&node_id)
+            .map(|claim| claim.route_slot)
+            .or_else(|| mgr.auth.route_slot_for_node_id(node_id))
+            .or_else(|| {
+                #[cfg(test)]
+                {
+                    let bytes = node_id.to_bytes();
+                    if bytes[..14].iter().all(|byte| *byte == 0) {
+                        return Some(u16::from_be_bytes([bytes[14], bytes[15]]));
+                    }
                 }
-            }
-            None
-        })
+                None
+            })
     }
 }
 
@@ -95,7 +102,7 @@ fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossip
                     node_session_for_route(mgr, cluster, route_slot)?
                 } else {
                     crate::envelope::NodeSessionIdentity {
-                        node_id: mgr.auth.node_id_for_route_slot(route_slot)?,
+                        node_id: super::peer::identity_for_route_slot(mgr, route_slot)?,
                         session_incarnation: session?,
                     }
                 },

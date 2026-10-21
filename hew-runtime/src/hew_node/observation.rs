@@ -169,7 +169,7 @@ fn snapshot(owner: Option<&Arc<NodeObservation>>) -> *mut HewNodeSnapshot {
                 if slot == node.route_slot {
                     continue;
                 }
-                if let Some(id) = node.auth.node_id_for_route_slot(slot) {
+                if let Some(id) = super::identity_for_route_slot(node, slot) {
                     members.push(Member {
                         id: id.into(),
                         session,

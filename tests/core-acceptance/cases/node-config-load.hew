@@ -11,7 +11,7 @@ fn rejected(source: string, field: string) -> bool {
 }
 
 fn main() -> i64 {
-    for name in ["HEW_NODE_CONFIG", "HEW_NODE_BIND", "HEW_NODE_KEY", "HEW_NODE_TRANSPORT", "HEW_NODE_PEERS", "HEW_NODE_SEEDS"] {
+    for name in ["HEW_NODE_CONFIG", "HEW_NODE_BIND", "HEW_NODE_KEY", "HEW_NODE_TRANSPORT", "HEW_NODE_CLUSTER", "HEW_NODE_SEEDS"] {
         os.remove_env(name).expect("clear override");
     }
     let directory = path.combine(os.temp_dir(), f"node-config-load-{os.pid()}");
@@ -21,9 +21,9 @@ fn main() -> i64 {
     if !rejected(file, "") {
         return 1;
     }
-    fs.write(file, "[cluster]\nbind = '127.0.0.1:0'\nkey = 'node.key'\npeers = ['pin']\nseeds = ['1@127.0.0.1:1']\n").expect("write config");
+    fs.write(file, "[cluster]\nbind = '127.0.0.1:0'\nkey = 'node.key'\ncluster = 'node.enrollment'\nseeds = ['127.0.0.1:1']\n").expect("write config");
     let original = NodeConfig.load().expect("load file");
-    if original.bind != "127.0.0.1:0" || original.key != path.combine(directory, "node.key") || original.peers != ["pin"] || original.seeds != ["1@127.0.0.1:1"] {
+    if original.bind != "127.0.0.1:0" || original.key != path.combine(directory, "node.key") || original.cluster != path.combine(directory, "node.enrollment") || original.seeds != ["127.0.0.1:1"] {
         return 2;
     }
     match original.transport {
@@ -36,10 +36,10 @@ fn main() -> i64 {
     os.set_env("HEW_NODE_BIND", "localhost:8888").expect("bind");
     os.set_env("HEW_NODE_KEY", "environment.key").expect("key");
     os.set_env("HEW_NODE_TRANSPORT", "quic-mesh").expect("transport");
-    os.set_env("HEW_NODE_PEERS", "[]").expect("clear peers");
+    os.set_env("HEW_NODE_CLUSTER", "environment.enrollment").expect("cluster");
     os.set_env("HEW_NODE_SEEDS", "['localhost:9000']").expect("seeds");
     let overridden = NodeConfig.load().expect("overrides");
-    if overridden.bind != "localhost:8888" || overridden.key != "environment.key" || !overridden.peers.is_empty() || overridden.seeds != ["localhost:9000"] {
+    if overridden.bind != "localhost:8888" || overridden.key != "environment.key" || overridden.cluster != "environment.enrollment" || overridden.seeds != ["localhost:9000"] {
         return 5;
     }
     match overridden.transport {
@@ -60,6 +60,10 @@ fn main() -> i64 {
         return 9;
     }
     os.remove_env("HEW_NODE_SEEDS").expect("clear seeds");
+    fs.write(file, "[cluster]\ncluster = 42\n").expect("invalid overridden enrolment field");
+    if !rejected(file, "cluster.cluster") {
+        return 18;
+    }
     fs.write(file, "[cluster]\nbind = 42\n").expect("invalid overridden field");
     if !rejected(file, "cluster.bind") {
         return 10;
@@ -98,6 +102,7 @@ fn main() -> i64 {
     fs.write(file, "[cluster]\nbind = '127.0.0.1:0'\nkey = 'node.key'\n").expect("valid config");
     os.remove_env("HEW_NODE_BIND").expect("clear bind");
     os.remove_env("HEW_NODE_KEY").expect("clear key");
+    os.remove_env("HEW_NODE_CLUSTER").expect("clear enrolment override");
     let ready = NodeConfig.load().expect("ready config");
     Node.start(ready).expect("start loaded config");
     if Node.identity_key().is_empty() {

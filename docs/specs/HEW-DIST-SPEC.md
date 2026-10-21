@@ -65,19 +65,10 @@ A route slot is a non-zero `u16` alias local to one receiving node. Slot `0` is
 reserved for local dispatch and MUST NOT be assigned to a peer.
 
 Route slots are not distributed identity and do not appear in `Location`.
-Different nodes MAY assign different route slots to the same peer. A route slot
-is assigned by position: the slot a peer occupies is its one-based position in
-the `NodeConfig.peers` vector the local node started with, so the first entry is
-slot `1` and slot `0` stays reserved (§3). APIs that accept a route-slot
-argument, including the `slot@addr` form of `Node.connect`, interpret it only in
-the caller's local routing namespace.
-
-The peer-binding table is one-to-one:
-
-- one route slot maps to exactly one credential;
-- one credential maps to exactly one route slot;
-- repeated identical pins are idempotent;
-- conflicting pins fail closed.
+Different nodes MAY assign different route slots to the same peer. The canonical
+identity-claim owner assigns an unused slot at admission, retains that alias
+across the peer's session changes, and rejects exhaustion. Slots never establish
+identity or cluster membership and are absent from programmer configuration.
 
 ### 2.3 Session incarnation
 
@@ -122,7 +113,7 @@ for calls and observations.
 Released v0.6.1 loads an existing identity file or creates one when absent.
 `NodeConfig.key` must be non-empty; `NodeConfig.at(address)` leaves it empty.
 Preserve that file across upgrades and keep it private. Replacing the key
-changes the node's identity and the credentials its peers must pin. For TCP,
+changes the node's identity and requires a new cluster enrolment. For TCP,
 unreadable files and files with the wrong length are refused rather than regenerated.
 
 **Unreleased hardening on `main`:** the following stricter file checks and
@@ -155,7 +146,7 @@ NodeConfig {
     bind: string,          // listen address
     transport: NodeTransport, // Tcp | QuicMesh
     key: string,           // path to the stable credential
-    peers: Vec<string>,    // pinned peer credentials, slot = position
+    cluster: string,       // path to this node's cluster enrolment
     seeds: Vec<string>     // addresses discovered and rejoined while the node lives
 }
 ```
@@ -164,15 +155,15 @@ NodeConfig {
 Import `std.net` to use `NodeConfig.load() -> Result<NodeConfig, ConfigError>`.
 The loader reads `[cluster]` from `hew.toml` in the working directory, or the
 file selected by `HEW_NODE_CONFIG`, then applies `HEW_NODE_BIND`,
-`HEW_NODE_TRANSPORT`, `HEW_NODE_KEY`, `HEW_NODE_PEERS` and `HEW_NODE_SEEDS`.
+`HEW_NODE_TRANSPORT`, `HEW_NODE_KEY`, `HEW_NODE_CLUSTER` and `HEW_NODE_SEEDS`.
 `bind` and `key` are required non-empty strings; `transport` defaults to `tcp`
-and also accepts `quic-mesh`. Peer and seed lists default to empty. Environment
+and also accepts `quic-mesh`. The cluster path and seed list default to empty. Environment
 lists use TOML array syntax, so `HEW_NODE_SEEDS='[]'` clears the configured list.
 An absent default file permits environment-only configuration; an explicitly
 selected file must exist. Malformed TOML, unknown cluster fields and wrong
 field types are errors even when an environment override replaces that field.
-File key paths are relative to the configuration file's directory; an
-environment key path is relative to the process working directory.
+File identity and enrolment paths are relative to the configuration file's
+directory; environment paths are relative to the process working directory.
 
 Configuration errors carry ordinary Hew values:
 
@@ -194,7 +185,7 @@ continues to report `NodeError` through `Node.start` and `Node.connect`.
 bind = "127.0.0.1:9000"
 transport = "tcp"
 key = "node.key"
-peers = []
+cluster = "node.enrollment"
 seeds = ["127.0.0.1:9001"]
 ```
 
@@ -202,24 +193,24 @@ Use `hew node identity --key node.key --transport tcp` to load or create a
 persistent identity and print its public credential alone. `tcp` is the default;
 `quic-mesh` prints the TLS SPKI credential. The command reuses the node's secure
 identity storage without starting a node or changing session state. Paste this
-credential into the peer's `peers` list. Routing slots remain the one-based
-positions in that list; the credential does not choose a routing slot.
+credential into `hew node admit` to obtain its cluster enrolment. Admission
+allocates internal routing aliases separately from identity.
 
 No field is inert. `Node.start` loads or creates the stable credential named by
-`key` for the transport named by `transport`, pins every `peers` entry to the
-route slot that is its one-based position in that vector, and supervises each
+`key` for the transport named by `transport`, validates the enrolment named by
+`cluster` against that credential, and supervises each
 configured seed while skipping its own `bind` address and duplicate targets.
 Seed discovery retries initial absence, refused authentication and later
 connection loss with capped exponential backoff and jitter until shutdown.
 `Node.start` succeeds once the local node and seed supervision are running;
 seed availability is not a startup requirement. Both transports authenticate
-pinned peers before publishing routes. Rejoin preserves identity pins and
+enrolled peers before publishing routes. Rejoin preserves cluster authority and
 session fences and never replays an admitted actor request. Shutdown cancels
 retry waits and joins discovery workers. Numeric-address dial and authenticated
 admission share a bounded attempt budget; QUIC hostname resolution still uses
 the platform resolver, whose completion can delay shutdown.
 `NodeError.Config` reports invalid configuration and `Key` invalid identity or
-peer credentials. Explicit `Node.connect` still reports `Unreachable` for a
+cluster enrolment. Explicit `Node.connect` still reports `Unreachable` for a
 failed dial and `Refused` for denied admission or an unavailable transport.
 
 `Node.identity_key()` returns the local public credential as lowercase
@@ -250,7 +241,7 @@ peer sends can select a weaker one.
   static key directly after the record of §4. A TCP peer whose record does not
   set feature bit `0` (Noise) MUST be refused before any actor traffic, as MUST
   a failed Noise handshake.
-- **quic-mesh** relies on its mutually pinned TLS 1.3 session. Its record
+- **quic-mesh** relies on its mutually authenticated TLS 1.3 session. Its record
   carries a zero Noise key.
 - **Any other transport**, including plain QUIC and Unix sockets, carries no
   node traffic.
@@ -286,7 +277,8 @@ The receiver MUST reject:
 - session incarnation `0`;
 - schema incompatibility;
 - a `NodeId` that differs from the authenticated credential derivation;
-- a credential that is not pinned to the selected receiver-local route slot;
+- a missing, forged or foreign-authority enrolment, or one for a different
+  proved transport credential;
 - a lower-session replay;
 - an equal-session attempt to revive a buried member.
 
@@ -665,10 +657,12 @@ these surfaces. There is no wasm networking shim and no success-shaped fallback.
 
 ## 13. Configuration example
 
-Each operator exchanges the output of `Node.identity_key()` out of band and
-lists the peer's credential in `NodeConfig.peers`. A peer's route slot is its
-one-based position in that vector, so the single peer below occupies slot `1`
-and slot `0` stays reserved for local dispatch:
+An operator creates one cluster authority with `hew node authority --key authority.key`,
+loads each public credential with `hew node identity --key node.key`, and issues
+an enrolment with `hew node admit --authority authority.key --credential HEX
+--output node.enrollment`. Add `--transport quic-mesh` to both identity and admit
+for mesh nodes. The authority key remains with the operator. Each node installs
+its own identity and enrolment; peers authenticate under that same root.
 
 ```hew,no_run
 import std.os;
@@ -677,24 +671,23 @@ fn main() {
     var config = NodeConfig.at("127.0.0.1:9000");
     config.transport = NodeTransport.Tcp;
     config.key = "server.key";
-    config.peers = [os.env("HEW_PEER_CREDENTIAL").expect("supply the peer's public credential")];
+    config.cluster = os.env("HEW_NODE_CLUSTER").expect("supply the cluster enrolment path");
     Node.start(config).expect("node starts");
-    println(f"pin this credential on peers: {Node.identity_key()}");
+    println(f"node credential: {Node.identity_key()}");
     Node.shutdown();
 }
 ```
 
-A client that pinned the server at local route slot `1` connects with:
+An enrolled client connects with:
 
 ```hew,ignore
-match Node.connect("1@127.0.0.1:9000") {
+match Node.connect("127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
 }
 let found: Result<Location, LookupError> = Node.lookup("counter");
 ```
 
-The route-slot prefix selects the local credential pin. The authenticated key
-derives the peer's `NodeId`; the numeric prefix is never the peer identity. The
-discovered location is metadata; the client receives callable actor authority
+The enrolled transport key derives the peer's `NodeId`. A discovered location
+is metadata; the client receives callable actor authority
 from the server's authenticated export offer (§7.1).

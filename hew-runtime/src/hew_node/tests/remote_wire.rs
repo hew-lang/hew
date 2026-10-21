@@ -22,7 +22,7 @@ fn two_node_remote_ask_reply_records_remote_attribution() {
     let actor_id = unsafe { (*echo_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 304);
 
-    let connect_addr = CString::new(format!("304@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this call.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both nodes remain live through the handshake and ask.
@@ -193,7 +193,7 @@ fn two_node_remote_send_quic_mesh_rejects_unknown_peer() {
     let (node1, _node1_port) = start_quic_mesh_test_listener_node(411, tls_a);
     let (node2, node2_port) = start_quic_mesh_test_listener_node(412, tls_b);
 
-    let connect_addr = CString::new(format!("412@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
 
     // Try once — the mTLS handshake must fail. We loop briefly to allow
     // for connection-attempt teardown, but every attempt must return -1.
@@ -261,7 +261,7 @@ fn two_node_remote_void_ask_returns_sentinel() {
     let actor_id = unsafe { (*void_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 314);
 
-    let connect_addr = CString::new(format!("314@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.
@@ -334,7 +334,7 @@ fn two_node_remote_ask_reply() {
         "actor PID must encode node2's ID"
     );
 
-    let connect_addr = CString::new(format!("312@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this call.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers are valid.
@@ -406,7 +406,7 @@ fn two_node_remote_call_wakes_on_wire_reply() {
     let actor_id = unsafe { (*echo_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 322);
 
-    let connect_addr = CString::new(format!("322@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this call.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers are valid.
@@ -474,7 +474,7 @@ fn two_node_inbound_orphaned_ask_reports_orphaned() {
     let actor_id = unsafe { (*actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
-    let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -540,7 +540,7 @@ fn two_node_inbound_actor_stopped_reports_actor_stopped() {
     let actor_id = unsafe { (*actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
-    let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -615,7 +615,7 @@ fn two_node_inbound_ask_to_never_spawned_actor_reports_dead() {
     let anchor_id = unsafe { (*anchor).id };
     let bogus_serial = crate::pid::hew_pid_serial(anchor_id) + 1_000_000;
 
-    let connect_addr = CString::new(format!("322@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -700,7 +700,7 @@ fn two_node_inbound_dead_actor_ask_reports_dead_not_decode_failure() {
     let actor_id = unsafe { (*actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 320);
 
-    let connect_addr = CString::new(format!("320@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -791,7 +791,7 @@ fn two_node_inbound_mailbox_full_reports_mailbox_full() {
         "pre-fill into empty bounded mailbox must succeed"
     );
 
-    let connect_addr = CString::new(format!("327@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -858,7 +858,7 @@ fn two_node_remote_nonvoid_empty_reply_returns_null() {
     let actor_id = unsafe { (*empty_reply_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 318);
 
-    let connect_addr = CString::new(format!("318@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.
@@ -923,7 +923,7 @@ fn two_node_remote_ask_timeout_reports_timeout() {
     let actor_id = unsafe { (*silent_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 329);
 
-    let connect_addr = CString::new(format!("329@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.
@@ -991,7 +991,7 @@ fn unconfigured_peer_pair_rejected_during_connection_admission() {
     }
     let (node2, node2_port) = start_tcp_test_listener_node(343);
 
-    let connect_addr = CString::new(format!("343@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this admission attempt.
     let connect_rc = unsafe { hew_node_connect(node1.as_ptr(), connect_addr.as_ptr()) };
     assert_eq!(
@@ -1049,7 +1049,7 @@ fn node_stop_wakes_pending_remote_ask() {
     let actor_id = unsafe { (*blocked_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 316);
 
-    let connect_addr = CString::new(format!("316@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.
@@ -1129,7 +1129,7 @@ fn connection_drop_wakes_pending_remote_ask() {
     let actor_id = unsafe { (*blocked_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 321);
 
-    let connect_addr = CString::new(format!("321@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.
@@ -1249,7 +1249,7 @@ fn swim_dead_wakes_pending_remote_ask_with_partition() {
     let actor_id = unsafe { (*blocked_actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 331);
 
-    let connect_addr = CString::new(format!("331@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and the connect address are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until the end of the test.

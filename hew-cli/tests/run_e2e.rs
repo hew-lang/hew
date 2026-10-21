@@ -462,16 +462,23 @@ fn run_float_comparison_branches_for_f64_and_f32() {
     assert_eq!(String::from_utf8_lossy(&output.stdout), "28\n");
 }
 
-/// CAP-12: a `NodeConfig` with a `key` and a pinned `peers` entry mints and
-/// persists this node's TLS identity (the keyfile must exist after the run
-/// and survive unchanged on a second run) and pins a peer SPKI in the
-/// fail-closed allowlist through `Node::start`; the node then starts,
-/// registers, and shuts down. Native quic-mesh; no parity on WASM.
+/// An enrolled mesh node loads its stable identity, registers an actor and
+/// shuts down; subsequent starts preserve the same identity file.
 #[test]
 fn run_node_peer_auth_surface_persists_keys_and_runs() {
     require_codegen();
 
     let dir = support::tempdir();
+    let authority = dir.path().join("authority.key");
+    hew_runtime::cluster_admission::authority_identity(&authority).expect("create authority");
+    let identity =
+        hew_runtime::quic_mesh::mesh_identity_load_or_create(&dir.path().join("node.key"))
+            .expect("create mesh identity");
+    let credential = hew_runtime::peer_binding::PeerCredential::Spki(identity.spki().to_vec());
+    let bundle =
+        hew_runtime::cluster_admission::issue(&authority, &credential).expect("issue enrolment");
+    hew_runtime::cluster_admission::write_bundle(&dir.path().join("node.enrollment"), &bundle)
+        .expect("install enrolment");
     let path = dir.path().join("node_peer_auth.hew");
     std::fs::write(
         &path,
@@ -483,7 +490,7 @@ fn run_node_peer_auth_surface_persists_keys_and_runs() {
 }
 
 fn main() {
-    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", peers: ["3059301306072a8648ce3d020106082a8648ce3d030107"], seeds: [] };
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "node.key", cluster: "node.enrollment", seeds: [] };
     match Node.start(config) {
         .Ok(_) => {}
         .Err(_) => panic("node start failed"),
@@ -540,11 +547,30 @@ fn main() {
         first, second,
         "load_keys must not rotate a persisted identity"
     );
+
+    std::fs::write(&path, r#"
+fn main() -> i64 {
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.QuicMesh, key: "other.key", cluster: "node.enrollment", seeds: [] };
+    match Node.start(config) {
+        .Err(.Key) => 0,
+        _ => 1,
+    }
+}
+"#).expect("write mismatched enrolment fixture");
+    let mismatch = run_bounded_hew_run(&path, dir.path());
+    assert!(
+        mismatch.status.success(),
+        "mismatched enrolment must return Key: {mismatch:?}"
+    );
+    assert_eq!(
+        first,
+        std::fs::read(&keyfile).expect("original identity remains")
+    );
 }
 
-/// Invalid peer credentials return a typed error before the node starts.
+/// Invalid cluster enrolments return a typed error before the node starts.
 #[test]
-fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
+fn run_node_missing_enrolment_is_surfaced_and_start_fails_closed() {
     require_codegen();
 
     let dir = support::tempdir();
@@ -557,7 +583,7 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
                 bind: "127.0.0.1:0",
                 transport: NodeTransport.QuicMesh,
                 key: "",
-                peers: ["zznothexzz"],
+                cluster: "missing.enrollment",
                 seeds: [],
             };
             match Node.start(config) {
@@ -578,8 +604,8 @@ fn run_node_allow_peer_bad_hex_is_surfaced_and_start_fails_closed() {
         "typed refusal should complete: {stderr}"
     );
     assert!(
-        stdout.contains("Key: the node identity or peer key is invalid"),
-        "bad peer credentials must return their typed reason; stdout: {stdout}"
+        stdout.contains("Key: the node identity or cluster enrolment is invalid"),
+        "invalid cluster enrolments must return their typed reason; stdout: {stdout}"
     );
     assert!(
         stdout.contains("refused") && !stdout.contains("started"),
@@ -609,7 +635,7 @@ fn run_node_load_keys_corrupt_keyfile_is_surfaced_and_start_fails_closed() {
                 bind: "127.0.0.1:0",
                 transport: NodeTransport.QuicMesh,
                 key: "node.key",
-                peers: [],
+                cluster: "",
                 seeds: [],
             };
             match Node.start(config) {
@@ -654,7 +680,7 @@ fn run_node_start_fails_closed_when_identity_cannot_be_established() {
                 bind: "127.0.0.1:0",
                 transport: NodeTransport.QuicMesh,
                 key: "no_such_dir/node.key",
-                peers: [],
+                cluster: "",
                 seeds: [],
             };
             match Node.start(config) {

@@ -183,11 +183,14 @@ pub(super) unsafe fn add_connection_recording_owner(
         );
         return -1;
     };
-    let local_hs = local_handshake(
+    let mut local_hs = local_handshake(
         local_identity,
         local_session_incarnation,
         local_noise_pubkey,
     );
+    if let Some(admission) = mgr.auth.admission() {
+        local_hs.enrollment = admission.bundle().to_vec();
+    }
     // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
     let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, &local_hs) }) else {
         // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
@@ -230,12 +233,13 @@ pub(super) unsafe fn add_connection_recording_owner(
         return -1;
     }
     if posture == Posture::Strict {
-        let unconfigured = !mgr.auth.has_bindings();
+        let unconfigured =
+            mgr.auth.admission().is_none() && !(cfg!(test) && mgr.auth.has_bindings());
         if unconfigured {
             // SAFETY: mgr.transport and conn_id are valid per caller contract.
             unsafe { close_transport_conn(mgr.transport, conn_id) };
             set_last_error(format!(
-                "hew_connmgr_add: strict connection requires configured peer credentials (conn {conn_id})"
+                "hew_connmgr_add: strict connection requires an installed cluster enrolment (conn {conn_id})"
             ));
             return -1;
         }
@@ -260,6 +264,16 @@ pub(super) unsafe fn add_connection_recording_owner(
         Ok(established) => established,
         Err(refusal) => return refuse_channel(refusal),
     };
+    if let Some(admission) = mgr.auth.admission() {
+        if let Err(error) = admission.verify_peer(&peer_hs.enrollment, &peer_credential) {
+            // SAFETY: admission still owns this unpublished transport handle.
+            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: cluster admission refused: {error}"
+            ));
+            return -1;
+        }
+    }
     let derived_peer_identity = peer_credential.node_id();
     if derived_peer_identity != peer_hs.node_id {
         // SAFETY: mgr.transport and conn_id are valid per caller contract.
@@ -270,24 +284,13 @@ pub(super) unsafe fn add_connection_recording_owner(
         ));
         return -1;
     }
-    let Some(peer_route_slot) = mgr.auth.route_slot_for_credential(&peer_credential) else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: authenticated credential has no configured route slot (conn {conn_id})"
-        ));
-        return -1;
+    let requested_route_slot = if cfg!(test) {
+        mgr.auth
+            .route_slot_for_credential(&peer_credential)
+            .unwrap_or(0)
+    } else {
+        0
     };
-    if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: peer route slot {peer_route_slot} does not match expected node id {} for conn {conn_id}",
-            expected_peer_node_id.unwrap_or_default()
-        ));
-        return -1;
-    }
-
     // Reserve the authenticated NodeId/session claim before any route, cluster,
     // registry, SWIM, monitor, link, or reply-table publication.
     let Some(claim_token) = next_publication_token(mgr) else {
@@ -301,7 +304,7 @@ pub(super) unsafe fn add_connection_recording_owner(
     let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
-        peer_route_slot,
+        requested_route_slot,
         peer_hs.session_incarnation,
         Some(&peer_credential),
         conn_id,
@@ -316,6 +319,28 @@ pub(super) unsafe fn add_connection_recording_owner(
             return -1;
         }
     };
+
+    let reserved_route_slot = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&peer_hs.node_id)
+        .filter(|claim| claim.conn_id == conn_id && claim.publication_token == claim_token)
+        .map(|claim| claim.route_slot);
+    let Some(peer_route_slot) = reserved_route_slot else {
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        // SAFETY: this failed admission still owns its unpublished handle.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error("hew_connmgr_add: reserved identity lost its route assignment");
+        return -1;
+    };
+    if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        // SAFETY: admission owns the unpublished transport handle.
+        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        set_last_error("hew_connmgr_add: peer route slot does not match selected target");
+        return -1;
+    }
 
     let mut actor = ConnectionActor::new(conn_id, Arc::new(protection));
     actor.transport = mgr.transport;

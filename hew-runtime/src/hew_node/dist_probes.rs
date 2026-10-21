@@ -139,8 +139,8 @@ pub extern "C" fn hew_dist_member_state(node_id: u16) -> i64 {
     })
 }
 
-/// Return the port this node's TCP listener is bound to, or -1 when no node or
-/// TCP listener is installed.
+/// Return the port this node's TCP or mesh listener is bound to, or -1 when
+/// no supported listener is installed.
 ///
 /// Test-introspection probe for the two-process fixture: the server binds port
 /// 0 and publishes the port it got, so no port is chosen ahead of the bind.
@@ -154,8 +154,14 @@ pub extern "C" fn hew_dist_bound_port() -> i64 {
         }
         // SAFETY: the read lock pins CURRENT_NODE, and with it its transport,
         // for the duration of this call.
-        unsafe { crate::transport::hew_transport_tcp_bound_port((*node_ptr).transport) }
-            .map_or(-1, i64::from)
+        let transport = unsafe { (*node_ptr).transport };
+        // SAFETY: the node guard pins the transport for both checked accessors.
+        let port = unsafe { crate::transport::hew_transport_tcp_bound_port(transport) };
+        #[cfg(feature = "quic")]
+        // SAFETY: same node guard; the accessor checks its transport kind.
+        let port = port
+            .or_else(|| unsafe { crate::quic_mesh::hew_transport_quic_mesh_bound_port(transport) });
+        port.map_or(-1, i64::from)
     })
 }
 

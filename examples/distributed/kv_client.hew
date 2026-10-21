@@ -5,6 +5,9 @@
 //   hew run examples/distributed/kv_server.hew <client-credential>
 //   hew run examples/distributed/kv_client.hew <server-credential> [host] [port]
 // Keep the key files between runs. Start this client while the server listens.
+// Enrol both printed credentials under one operator authority with
+// `hew node admit --authority authority.key --credential HEX --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
 import std.net;
 
 import std.os;
@@ -52,18 +55,15 @@ fn main() -> i64 {
         .Some(value) => value,
         .None => "9100",
     };
-    var config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: "kv-client.key", peers: [], seeds: [] };
-    if server_credential != "--identity" {
-        config.peers = [server_credential];
-    }
+    let config = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: "kv-client.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("KV client node starts");
     println(f"[kv-client] public credential: {Node.identity_key()}");
     if server_credential == "--identity" {
         Node.shutdown();
         return 0;
     }
-    let address = f"1@{host}:{port}";
-    Node.connect(address).expect("connect to pinned KV server");
+    let address = f"{host}:{port}";
+    Node.connect(address).expect("connect to admitted KV server");
     let peer = authenticated_peer(server_credential);
     let kv: KeyValue = peer.receive_service<KeyValue>().expect("receive KeyValue service");
     println("[kv-client] received the KeyValue service");

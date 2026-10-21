@@ -169,9 +169,7 @@ fn concurrent_start_config_keeps_transactions_atomic() {
                     bind: hew_cabi::string::string_from_str("127.0.0.1:0"),
                     transport: 0,
                     key: hew_cabi::string::string_from_str(&key_path),
-                    // SAFETY: these freshly allocated string vectors are
-                    // moved into the consuming NodeConfig call below.
-                    peers: unsafe { crate::vec::hew_vec_new_str() },
+                    cluster: hew_cabi::string::string_from_str(""),
                     // SAFETY: these freshly allocated string vectors are
                     // moved into the consuming NodeConfig call below.
                     seeds: unsafe { crate::vec::hew_vec_new_str() },
@@ -215,7 +213,7 @@ fn concurrent_start_config_keeps_transactions_atomic() {
     );
 }
 
-/// F6 fail-closed (C ABI): a failed `Node::load_keys` / `Node::allow_peer`
+/// F6 fail-closed (C ABI): a failed `Node::load_keys` / synthetic peer bindings
 /// poisons the staged config, so the next `Node::start` refuses to bind a
 /// listener (returns -1) rather than silently coming up with an ephemeral
 /// identity or an incomplete allowlist. This is the closed half of the
@@ -258,7 +256,7 @@ fn start_refuses_after_failed_peer_auth_setup_fail_closed() {
     reset_staging();
     let bad_hex = CString::new("nothex!!").expect("valid C string");
     // SAFETY: bad_hex is a valid NUL-terminated C string for this call.
-    let rc_allow = unsafe { hew_node_api_allow_peer(2, bad_hex.as_ptr()) };
+    let rc_allow = unsafe { test_stage_peer_pin(2, bad_hex.as_ptr()) };
     // SAFETY: bind is a valid NUL-terminated C string for this call.
     let rc_start_after_allow = unsafe { hew_node_api_start(bind.as_ptr()) };
     if rc_start_after_allow == 0 {
@@ -411,7 +409,7 @@ fn node_identity_key_reads_three_state_config_without_owner_deref() {
 
 /// Issue #2652 (item 2): `Node::set_transport` must pin the selection BEFORE
 /// any transport-sensitive credential is staged. A `set_transport` that would
-/// change the transport after `Node::allow_peer` / `Node::load_keys` staged
+/// change the transport after synthetic peer bindings / `Node::load_keys` staged
 /// material is refused fail-closed (returns `-1`) and leaves both the pinned
 /// config transport and the process-global `HEW_TRANSPORT` unchanged, so the
 /// already-staged Noise pubkeys / mesh SPKIs are never reinterpreted under a
@@ -455,7 +453,7 @@ fn set_transport_rejected_after_credential_staging() {
 
     let noise_hex = CString::new("11".repeat(32)).unwrap();
     // SAFETY: noise_hex is a valid 32-byte (64-hex) C string.
-    assert_eq!(unsafe { hew_node_api_allow_peer(2, noise_hex.as_ptr()) }, 0);
+    assert_eq!(unsafe { test_stage_peer_pin(2, noise_hex.as_ptr()) }, 0);
     assert_eq!(
         pinned_transport(),
         Some(PT::Tcp),
@@ -500,7 +498,7 @@ fn set_transport_rejected_after_credential_staging() {
 
 /// Issue #2666 (concurrency): `Node::set_transport` folds its staged-credential
 /// check, the `HEW_TRANSPORT` write, and the config pin into ONE
-/// `PEER_AUTH_STATE` critical section, and `Node::allow_peer` / `Node::load_keys`
+/// `PEER_AUTH_STATE` critical section, and synthetic peer bindings / `Node::load_keys`
 /// re-verify the pinned selection under that same lock. Together these close
 /// the check-then-pin race: a credential is only ever staged when its type
 /// agrees with the pinned transport, so a concurrent `set_transport` can never
@@ -554,7 +552,7 @@ fn set_transport_credential_typing_atomic_under_concurrent_allow_peer() {
             let hex = CString::new(allow_hex).expect("valid hex credential");
             barrier.wait();
             // SAFETY: hex is a valid C string for this call.
-            unsafe { hew_node_api_allow_peer(2, hex.as_ptr()) }
+            unsafe { test_stage_peer_pin(2, hex.as_ptr()) }
         });
 
         let _ = set_thread.join().expect("set_transport thread panicked");

@@ -719,7 +719,7 @@ fn remote_call_setup_expiry_and_cancel_do_not_wait_for_a_blocked_sender() {
     let _real_sched;
     let (node_a, _, node_b, port_b) = start_authorized_tcp_pair(740, 741);
     _real_sched = init_real_scheduler();
-    let address = CString::new(format!("741@127.0.0.1:{port_b}")).unwrap();
+    let address = CString::new(format!("127.0.0.1:{port_b}")).unwrap();
     // SAFETY: both nodes remain live through the scoped senders and calls.
     unsafe {
         connect_with_retry(node_a.as_ptr(), &address);

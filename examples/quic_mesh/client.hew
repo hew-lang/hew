@@ -6,6 +6,9 @@
 //   hew run examples/quic_mesh/client.hew <server-credential>
 // Start this client while the server is listening. Keep each key file between
 // runs so the printed credentials continue to identify the same nodes.
+// Enrol both printed credentials under one operator authority with
+// `hew node admit --authority authority.key --credential HEX --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
 import std.net;
 
 import std.os;
@@ -44,17 +47,14 @@ fn main() {
         .Some(value) => value,
         .None => "--identity",
     };
-    var config = NodeConfig { bind: "127.0.0.1:9001", transport: NodeTransport.QuicMesh, key: "quic-mesh-client.key", peers: [], seeds: [] };
-    if server_credential != "--identity" {
-        config.peers = [server_credential];
-    }
+    let config = NodeConfig { bind: "127.0.0.1:9001", transport: NodeTransport.QuicMesh, key: "quic-mesh-client.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("QUIC mesh node starts");
     println(f"[client] public credential: {Node.identity_key()}");
     if server_credential == "--identity" {
         Node.shutdown();
         return;
     }
-    Node.connect("1@127.0.0.1:9000").expect("connect to pinned QUIC peer");
+    Node.connect("127.0.0.1:9000").expect("connect to admitted QUIC peer");
     let peer = authenticated_peer(server_credential);
     let counter: Counter = peer.receive_service<Counter>().expect("receive Counter service");
     println("[client] received the Counter service");

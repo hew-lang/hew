@@ -317,21 +317,53 @@ impl Drop for PeerLink {
     }
 }
 
-/// A shared credentialed-TCP-Noise scenario context (issue #2652). Both node
-/// processes read the same key-exchange directory: each mints its own stable
-/// Noise identity under `<kx>/<role>.key`, publishes its `identity_key()` to
-/// `<kx>/<role>.pub`, and pins the peer credential to receiver-local route slot
-/// 1 or 2 before the v2 handshake. The directory also holds each key's durable
-/// session journal and is reclaimed when this value drops.
+/// Nodes share one installed cluster authority, with separate stable transport
+/// identities and enrolments. Session journals remain owned by each node.
 struct SecureScenario {
     kx_dir: tempfile::TempDir,
+    mesh: bool,
 }
 
 impl SecureScenario {
     fn new() -> Self {
-        Self {
-            kx_dir: tempfile::tempdir().expect("create key-exchange dir for scenario"),
+        Self::with_transport(false)
+    }
+
+    fn with_transport(mesh: bool) -> Self {
+        use hew_runtime::{cluster_admission, encryption, peer_binding::PeerCredential};
+        let kx_dir = tempfile::tempdir().expect("create cluster directory");
+        let authority = kx_dir.path().join("authority.key");
+        let foreign = kx_dir.path().join("foreign.key");
+        cluster_admission::authority_identity(&authority).expect("create authority");
+        cluster_admission::authority_identity(&foreign).expect("create foreign authority");
+        for role in ["server", "client"] {
+            let key = kx_dir.path().join(format!("{role}.key"));
+            let credential = if mesh {
+                let identity = hew_runtime::quic_mesh::mesh_identity_load_or_create(&key)
+                    .expect("create mesh identity");
+                PeerCredential::Spki(identity.spki().to_vec())
+            } else {
+                let identity =
+                    encryption::noise_identity_load_or_create(&key).expect("create Noise identity");
+                PeerCredential::NoiseKey(identity.public())
+            };
+            let text = match &credential {
+                PeerCredential::NoiseKey(key) => hew_runtime::peer_binding::hex_lower(key),
+                PeerCredential::Spki(spki) => hew_runtime::peer_binding::hex_lower(spki),
+            };
+            std::fs::write(kx_dir.path().join(format!("{role}.pub")), text)
+                .expect("publish public credential");
+            for (issuer, suffix) in [(&authority, "enrollment"), (&foreign, "foreign.enrollment")] {
+                let bundle =
+                    cluster_admission::issue(issuer, &credential).expect("issue enrolment");
+                cluster_admission::write_bundle(
+                    &kx_dir.path().join(format!("{role}.{suffix}")),
+                    &bundle,
+                )
+                .expect("install enrolment");
+            }
         }
+        Self { kx_dir, mesh }
     }
 
     /// Spawn one node process with the strict-binding environment, shared
@@ -340,7 +372,10 @@ impl SecureScenario {
         let binary = compiled_node_binary();
         let mut command = Command::new(binary);
         command
-            .env("HEW_TRANSPORT", "tcp")
+            .env(
+                "HEW_DIST_TRANSPORT",
+                if self.mesh { "quic-mesh" } else { "tcp" },
+            )
             .env("HEW_DIST_ROLE", role)
             .env("HEW_DIST_SCENARIO", scenario)
             .env("HEW_DIST_KX_DIR", self.kx_dir.path())
@@ -453,10 +488,7 @@ fn run_client_to_completion(
 fn run_two_process_scenario(scenario: &str) -> String {
     let scene = SecureScenario::new();
 
-    // Launch BOTH processes concurrently. Under strict peer binding each side
-    // stages `allow_peer(peer_id, peer_key)` before `Node::start`, so the server
-    // cannot reach READY until the client has published its Noise credential —
-    // a launch-server-then-wait-then-launch-client ordering would deadlock.
+    // Both processes load their operator-provisioned identity and enrolment.
     let mut server = scene.spawn_server(scenario);
     let client = scene.spawn_client(scenario, &[]);
 
@@ -471,7 +503,7 @@ fn run_two_process_scenario(scenario: &str) -> String {
 fn run_handshake_rejection_scenario() -> String {
     let scene = SecureScenario::new();
     let mut server =
-        scene.spawn_server_with_env("handshake_reject", &[("HEW_DIST_BAD_PEER_PIN", "1")]);
+        scene.spawn_server_with_env("handshake_reject", &[("HEW_DIST_FOREIGN_CLUSTER", "1")]);
     let client = scene.spawn_client("handshake_reject", &[]);
 
     let _server_stdout = wait_for_server_ready(&mut server);
@@ -1296,19 +1328,45 @@ fn local_actor_operations_compose_with_imported_peer() {
 }
 
 /// A valid v2 Noise handshake admits the key-derived peer identity and carries a
-/// typed request/reply round trip; a validly encoded but unpinned peer credential
-/// must remain unroutable with no legacy handshake fallback.
+/// typed request/reply round trip; a credential enrolled under another root
+/// remains unroutable.
 #[test]
-fn authenticated_v2_handshake_rejects_wrong_credential_pin() {
+fn authenticated_handshake_rejects_foreign_cluster_authority() {
     let stdout = run_handshake_rejection_scenario();
     assert!(
         stdout.contains("PASS handshake_reject unroutable"),
-        "wrong peer credential must be rejected before routing; client stdout:\n{stdout}"
+        "foreign cluster authority must be rejected before routing; client stdout:\n{stdout}"
     );
     assert!(
         !stdout.contains("FAIL "),
         "client reported a FAIL on handshake rejection; client stdout:\n{stdout}"
     );
+}
+
+/// Both node transports enforce the same installed cluster root before calls.
+#[test]
+fn enrolled_mesh_peers_call_and_refuse_a_foreign_authority() {
+    for scenario in ["remote_ask", "handshake_reject"] {
+        let scene = SecureScenario::with_transport(true);
+        let extra: &[(&str, &str)] = if scenario == "handshake_reject" {
+            &[("HEW_DIST_FOREIGN_CLUSTER", "1")]
+        } else {
+            &[]
+        };
+        let mut server = scene.spawn_server_with_env(scenario, extra);
+        let client = scene.spawn_client(scenario, &[]);
+        let _server_stdout = wait_for_server_ready(&mut server);
+        let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
+        let expected = if scenario == "remote_ask" {
+            "PASS remote_ask get-hello=world"
+        } else {
+            "PASS handshake_reject unroutable"
+        };
+        assert!(
+            stdout.contains(expected) && !stdout.contains("FAIL "),
+            "{stdout}"
+        );
+    }
 }
 
 /// Node identity/location proof across two OS processes. The remote actor's

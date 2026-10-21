@@ -1,17 +1,8 @@
-//! Peer authentication authority: binds an authenticated peer credential
-//! (Noise static key on TCP, certificate SPKI on quic-mesh) to one receiver-
-//! local route slot and its key-derived [`NodeId`].
+//! Per-node frozen transport identity and cluster admission facts.
 //!
-//! # Why this module exists
-//!
-//! Historically the distributed runtime authenticated a *key* against a flat
-//! process-global allowlist (a single set of admitted Noise/SPKI credentials
-//! shared across every node) and, *independently*, checked that a
-//! peer's self-declared handshake numeric id was plausible
-//! (`connection::peer_identity_compatible`). Nothing bound the two: any admitted
-//! key could claim any route. This module is the authority that closes that
-//! gap — it maps one route slot to one authenticated credential and returns a
-//! structured [`PeerAuthz`] verdict, never a bare bool.
+//! Enrolment authenticates a transport credential under the installed root.
+//! Canonical connection claims assign receiver-local aliases and bind the
+//! proved credential to its key-derived [`NodeId`] and durable session.
 //!
 //! # Two authorities (never one process-global that governs all nodes)
 //!
@@ -359,12 +350,13 @@ pub fn hex_lower(bytes: &[u8]) -> String {
     s
 }
 
-/// The mutable public-API staging config, accumulated by `Node::allow_peer` /
-/// `Node::load_keys` / `Node::set_transport` before a public node exists.
+/// Staged node identity and admission facts before a public node exists.
 ///
 /// Frozen into a [`PeerAuthSnapshot`] via [`PeerAuthConfig::snapshot`] at start.
 #[derive(Clone, Debug, Default)]
 pub struct PeerAuthConfig {
+    /// Installed cluster-root enrollment for this transport identity.
+    pub admission: Option<Arc<crate::cluster_admission::Admission>>,
     /// Receiver-local route slot advertised by this node.
     pub local_route_slot: Option<NonZeroU16>,
     /// Low-level diagnostic-only unverified posture. The public start path does
@@ -508,6 +500,16 @@ impl PeerAuthConfig {
                     .to_string(),
             );
         }
+        if let Some(admission) = &self.admission {
+            if Some(admission.credential().node_id()) != self.node_identity
+                || admission.transport() != self.transport.unwrap_or(TransportSelection::Tcp)
+            {
+                return Err(
+                    "Node::start: cluster enrollment does not bind the loaded transport identity"
+                        .into(),
+                );
+            }
+        }
         if self.unverified_optout && !self.bindings.is_empty() {
             return Err(
                 "Node::start: unverified opt-out cannot be combined with configured peer \
@@ -564,6 +566,7 @@ impl PeerAuthConfig {
         }
         PeerAuthSnapshot {
             inner: Arc::new(SnapshotInner {
+                admission: self.admission.clone(),
                 local_route_slot: self.local_route_slot,
                 unverified: self.unverified_optout,
                 transport: self.transport.unwrap_or(TransportSelection::Tcp),
@@ -589,6 +592,7 @@ pub struct PeerAuthSnapshot {
 }
 
 struct SnapshotInner {
+    admission: Option<Arc<crate::cluster_admission::Admission>>,
     local_route_slot: Option<NonZeroU16>,
     unverified: bool,
     transport: TransportSelection,
@@ -602,6 +606,12 @@ struct SnapshotInner {
 }
 
 impl PeerAuthSnapshot {
+    /// The installed cluster root and local transport enrollment.
+    #[must_use]
+    pub fn admission(&self) -> Option<&crate::cluster_admission::Admission> {
+        self.inner.admission.as_deref()
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(
         node_identity: NodeId,
@@ -620,6 +630,7 @@ impl PeerAuthSnapshot {
         let _ = std::fs::remove_file(&lease_path);
         Self {
             inner: Arc::new(SnapshotInner {
+                admission: None,
                 local_route_slot: None,
                 unverified: false,
                 transport: TransportSelection::Tcp,
@@ -645,6 +656,7 @@ impl PeerAuthSnapshot {
     pub fn unconfigured() -> Self {
         Self {
             inner: Arc::new(SnapshotInner {
+                admission: None,
                 local_route_slot: None,
                 unverified: false,
                 transport: TransportSelection::Tcp,
@@ -833,7 +845,7 @@ impl PeerAuthSnapshot {
         if self.inner.unverified {
             return Posture::Unverified;
         }
-        if self.has_bindings() {
+        if self.admission().is_some() || self.has_bindings() {
             return Posture::Strict;
         }
         match remote {

@@ -1115,7 +1115,7 @@ pub struct NodeAdmissionArgs {
     pub credential: String,
     #[arg(long, value_enum, default_value = "tcp")]
     pub transport: NodeIdentityTransport,
-    /// Enrollment bundle installed as NodeConfig.cluster.
+    /// Enrolment bundle installed as NodeConfig.cluster.
     #[arg(long)]
     pub output: PathBuf,
 }

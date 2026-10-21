@@ -5,12 +5,29 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use crate::envelope::EnvelopeFrame;
-use crate::node_identity::Location;
+use crate::node_identity::{Location, NodeId};
 use crate::peer_binding::{ClaimState, Posture};
 use crate::util::{CondvarExt, MutexExt};
 
 use super::identity_claim::CLAIM_RESERVE_WAIT_MS;
 use super::{HewConnMgr, CONN_STATE_ACTIVE};
+
+/// Project a receiver-local alias from the canonical identity claims. Retired
+/// claims retain identity for departure observations and session replay fences.
+pub(crate) fn identity_for_route_slot(mgr: &HewConnMgr, route_slot: u16) -> Option<NodeId> {
+    if route_slot == mgr.local_node_id {
+        return mgr.local_identity;
+    }
+    let identity = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .iter()
+        .find_map(|(identity, claim)| (claim.route_slot == route_slot).then_some(*identity));
+    #[cfg(test)]
+    let identity = identity.or_else(|| mgr.auth.node_id_for_route_slot(route_slot));
+    identity
+}
 
 /// The posture-agnostic receiver-local route slot assigned to an ACTIVE
 /// connection, or `0` if none. It carries no control-plane authority: an

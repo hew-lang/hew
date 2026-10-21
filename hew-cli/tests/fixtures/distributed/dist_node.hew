@@ -188,7 +188,7 @@ fn new_service_facade(path: string) -> ServiceFacade {
 fn connect_service_peer(port: string) {
     var attempts: i64 = 0;
     loop {
-        match Node.connect(f"1@127.0.0.1:{port}") {
+        match Node.connect(f"127.0.0.1:{port}") {
             .Ok(_) => return,
             .Err(_) => {
                 attempts += 1;
@@ -244,7 +244,7 @@ fn scenario_server_service_grants(kx: string) {
     stop(replacement);
     stopped(replacement);
     let port = wait_for_server_listening(kx);
-    Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp, key: f"{kx}/server.key", peers: [credential], seeds: [] }).expect("restart node");
+    Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp, key: f"{kx}/server.key", cluster: f"{kx}/server.enrollment", seeds: [] }).expect("restart node");
     publish_atomic(kx, "service.node-restarted", "1");
     let restarted_peer = authenticated_peer(credential);
     let restarted = new_service_facade(path);
@@ -1737,28 +1737,14 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-// Start this node pinned to its peer. The mutual exchange is two-phase: each
-// node mints its durable identity with a first start, publishes it and stops,
-// then waits for the peer's published credential and starts again pinned to it
-// as route slot 1.
-fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
+// Load this node's identity and its operator-issued cluster enrolment.
+fn start_admitted(kx: string, my_role: string, peer_role: string, bind: string) {
     let key = f"{kx}/{my_role}.key";
-    let mint = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key, peers: [], seeds: [] };
-    match Node.start(mint) {
-        Result.Ok(_) => {}
-        Result.Err(_) => {
-            println(f"FAIL {my_role} identity-mint");
-            exit(2);
-        }
-    }
-    let me = Node.identity_key();
-    Node.shutdown();
-    publish_atomic(kx, f"{my_role}.pub", me);
-    let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
-    let configured_peer_key = if (os.env("HEW_DIST_BAD_PEER_PIN") ?? "") == "1" {
-        "0000000000000000000000000000000000000000000000000000000000000000"
+    let _ = wait_for_file(f"{kx}/{peer_role}.pub");
+    let cluster = if (os.env("HEW_DIST_FOREIGN_CLUSTER") ?? "") == "1" {
+        f"{kx}/{my_role}.foreign.enrollment"
     } else {
-        peer_key
+        f"{kx}/{my_role}.enrollment"
     };
     let active_scenario = os.env("HEW_DIST_SCENARIO") ?? "";
     let seed_scenario = active_scenario == "persistent_seed" || active_scenario == "persistent_seed_stop";
@@ -1767,15 +1753,20 @@ fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
     }
     let seeds = if seed_scenario && my_role == "client" {
         let port = os.env("HEW_DIST_SEED_PORT") ?? "";
-        [f"1@127.0.0.1:{port}"]
+        [f"127.0.0.1:{port}"]
     } else {
         Vec.new()
     };
-    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: seeds };
+    let transport = if (os.env("HEW_DIST_TRANSPORT") ?? "tcp") == "quic-mesh" {
+        NodeTransport.QuicMesh
+    } else {
+        NodeTransport.Tcp
+    };
+    let config = NodeConfig { bind: bind, transport: transport, key: key, cluster: cluster, seeds: seeds };
     match Node.start(config) {
         Result.Ok(_) => {}
         Result.Err(_) => {
-            println(f"FAIL {my_role} pinned-start");
+            println(f"FAIL {my_role} admitted-start");
             exit(2);
         }
     }
@@ -1828,7 +1819,7 @@ fn run_server(scenario: string) {
     } else {
         base_addr
     };
-    start_pinned(kx, "server", "client", addr);
+    start_admitted(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue { store: s };
     Node.register("kv", kv);
@@ -3172,7 +3163,7 @@ fn scenario_stale_incarnation_restart(old: KeyValue, kx: string, port: string) -
     let old_incarnation = old_location.incarnation();
     println(f"READY_STALE_CAPTURED node={old_node.display()} incarnation={old_incarnation}");
     let _ = wait_for_file(f"{kx}/server.restarted");
-    let _ = Node.connect(f"1@127.0.0.1:{port}");
+    let _ = Node.connect(f"127.0.0.1:{port}");
     let fresh_peer = fixture_peer();
     let fresh = fresh_peer.receive_service<KeyValue>().expect("fresh kv grant");
     let _wire = fresh_peer.receive_service<WireProbe>().expect("fresh wire grant");
@@ -3281,7 +3272,7 @@ fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
 
 fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
-    start_pinned(kx, "client", "server", "127.0.0.1:0");
+    start_admitted(kx, "client", "server", "127.0.0.1:0");
     if scenario == "persistent_seed" || scenario == "persistent_seed_stop" {
         println("READY_SEED_STARTED");
         if scenario == "persistent_seed_stop" {
@@ -3294,7 +3285,7 @@ fn run_client(scenario: string) -> i64 {
     let bound_port = wait_for_server_listening(kx);
     let port = os.env("HEW_DIST_PROXY_PORT") ?? bound_port;
     if scenario != "persistent_seed" {
-        let _ = Node.connect(f"1@127.0.0.1:{port}");
+        let _ = Node.connect(f"127.0.0.1:{port}");
     }
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()

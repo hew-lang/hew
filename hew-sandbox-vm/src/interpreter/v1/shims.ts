@@ -775,7 +775,6 @@ const UNIT_FAMILIES = {
   InstantDurationSince: refused("InstantDurationSince"),
   InstantElapsed: refused("InstantElapsed"),
   InstantNow: refused("InstantNow"),
-  NodeAllowPeer: refused("NodeAllowPeer"),
   NodeConnect: refused("NodeConnect"),
   NodeId: refused("NodeId"),
   NodeIdDisplay: refused("NodeIdDisplay"),

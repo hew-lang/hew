@@ -665,7 +665,6 @@ export type RuntimeCallFamily =
   | { IntMethod: [IntBitOp, IntMethodWidth] }
   | { IntArith: [IntArithKind, IntMethodWidth] }
   | { FloatMethod: FloatMethodOp }
-  | "NodeAllowPeer"
   | "NodeConnect"
   | "NodeId"
   | "NodeIdDisplay"

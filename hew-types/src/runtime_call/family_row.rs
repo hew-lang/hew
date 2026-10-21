@@ -4916,15 +4916,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::VariantResult,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::NodeAllowPeer => RuntimeOpRow {
-                authority: RuntimeAuthority::Ambient,
-                symbol: "Node::allow_peer",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::Service(op) => op.row(),
             Self::NodeConnect => RuntimeOpRow {
                 authority: RuntimeAuthority::Ambient,

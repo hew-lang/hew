@@ -5212,11 +5212,9 @@ credential-kind byte is `1` for a TCP Noise static key and `2` for a canonical
 TLS leaf SPKI. Keeping the key preserves the `NodeId`; rotating the key rotates
 the identity.
 
-`NodeConfig.peers` lists the peer credentials this node will accept, and a
-peer's receiver-local non-zero `u16` route slot is its one-based position in
-that list, so the first entry is slot `1`. Slot `0` is reserved for local
-dispatch. A route slot is only a compact alias inside the configuring process:
-it never becomes the peer's identity and may differ on every node.
+`NodeConfig.cluster` names this node's enrolment under an operator-installed
+cluster authority. Enrolled peers prove possession of their transport keys.
+Receiver-local route slots are internal compact aliases allocated at admission.
 
 Starting a node is one call, and it returns `Result<(), NodeError>`, so a
 refused start stops the program instead of printing and carrying on:
@@ -5226,17 +5224,19 @@ fn main() {
     var config = NodeConfig.at("127.0.0.1:9000");
     config.transport = NodeTransport.Tcp;
     config.key = "node.key";
+    config.cluster = "node.enrollment";
     Node.start(config).expect("node starts");
-    println(f"pin this credential on peers: {Node.identity_key()}");
+    println(f"node credential: {Node.identity_key()}");
     Node.shutdown();
 }
 ```
 
-Set `config.peers` to the full credentials exchanged out of band before
-starting communicating nodes. Use `NodeTransport.QuicMesh` for mutually
-authenticated QUIC mesh. The legacy `HEW_TRANSPORT=quic` selector is still
-recognized in v0.6.1, but cannot satisfy authenticated node startup; its removal
-is an unreleased change. `std.net.quic` is a separate socket API.
+Create one authority with `hew node authority --key authority.key`, obtain each
+node's credential with `hew node identity --key node.key`, and issue its file
+with `hew node admit --authority authority.key --credential HEX --output node.enrollment`.
+For mesh identities, add `--transport quic-mesh` to identity and admit. Install
+each enrolment alongside its matching key; keep the authority key with the operator.
+`std.net.quic` remains a separate socket API.
 
 `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` are gone: each
 carried one fact that is now a `NodeConfig` field. Set the non-empty key path
@@ -5244,33 +5244,26 @@ before calling `Node.start`: `NodeConfig.at` alone does not configure an
 identity. Keep an existing key private and retain it across upgrades rather
 than regenerating it.
 
-On TCP, the pinned credential is the peer's 32-byte Noise public key. On
-quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched
-credential is rejected before the peer becomes routable. Every node connection
-is encrypted: TCP runs Noise and quic-mesh runs mutually pinned TLS 1.3, and a
-peer that offers a plaintext channel is refused.
+On TCP, the credential is a 32-byte Noise public key; on quic-mesh it is the
+certificate's canonical SPKI. Membership, key possession and the claimed identity
+are checked before a peer becomes routable. TCP runs Noise and quic-mesh runs
+TLS 1.3. Actor service grants authorize calls separately from cluster membership.
 
-A client selects its local pin when connecting. The slot it names is the
-server's position in the client's own `NodeConfig.peers`, so a client that
-lists the server first dials slot `1`:
+An enrolled client dials the server's address:
 
 ```hew,ignore
-match Node.connect("1@127.0.0.1:9000") {
+match Node.connect("127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
 }
 ```
-
-The `1@` prefix is the client's route slot for that server, and it is local to
-the client: the same server may sit at a different slot on every node. The
-authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
 higher session. A `Location` carries the complete identity:
 
 ```text
-{ node: NodeId, slot: u64, incarnation: u32 }
+{ node: NodeId, target: Direct(allocation) | Role(token), incarnation: u32 }
 ```
 
 The value is an allocation-free 32-byte inline identity record. It has no

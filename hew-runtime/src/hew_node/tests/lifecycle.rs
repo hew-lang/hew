@@ -632,8 +632,7 @@ fn two_node_connect_and_handshake() {
 
     let (node1, _node1_port, node2, node2_port) = start_authorized_tcp_pair(201, 202);
 
-    let connect_addr =
-        CString::new(format!("202@127.0.0.1:{node2_port}")).expect("valid connect addr");
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).expect("valid connect addr");
     // SAFETY: node pointer and connect_addr are valid for this call.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
 
@@ -668,29 +667,47 @@ fn two_node_connect_and_handshake() {
 }
 
 #[test]
-fn exact_identity_prunes_remote_names_for_departed_node() {
+fn departure_prunes_exact_session_and_preserves_rejoined_names() {
     let _guard = crate::runtime_test_guard();
-
-    let registry = HewRegistry::default();
+    let (local, _, peer, port) = start_authorized_tcp_pair(801, 802);
+    let target = CString::new(format!("127.0.0.1:{port}")).unwrap();
+    // SAFETY: both owned nodes and the target remain live throughout the call.
+    unsafe { connect_with_retry(local.as_ptr(), &target) };
+    // SAFETY: the test owns both live nodes.
+    let (local_node, peer_node) = unsafe { (&*local.as_ptr(), &*peer.as_ptr()) };
+    let identity = peer_node.auth.node_identity().unwrap();
+    let session = peer_node.auth.session_incarnation().unwrap();
+    let old = Location::direct(identity, 1, session).unwrap();
+    let fresh = Location::direct(identity, 2, session + 1).unwrap();
+    // SAFETY: the live node owns its registry and cluster.
+    let (registry, cluster) = unsafe { (&*local_node.registry, &*local_node.cluster) };
     {
-        let mut map = registry.remote_names.lock_or_recover();
-        map.insert("remote-a".to_owned(), test_location(202, 0x10));
-        map.insert("remote-b".to_owned(), test_location(202, 0x11));
-        map.insert("other-node".to_owned(), test_location(303, 0x20));
+        let mut names = registry.remote_names.lock_or_recover();
+        names.insert("old".into(), old);
+        names.insert("fresh".into(), fresh);
+        names.insert("other".into(), test_location(803, 3));
     }
-
-    let _ = take_registry_names_if(
-        &registry,
-        |location| location.node() == test_node_id(202),
-        |_| {},
+    cluster.seed_member_for_test(802, crate::cluster::MEMBER_DEAD, 1);
+    node_membership_callback(
+        802,
+        crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+        local.as_ptr().cast(),
     );
-
-    let map = registry.remote_names.lock_or_recover();
-    assert!(!map.contains_key("remote-a"));
-    assert!(!map.contains_key("remote-b"));
+    {
+        let names = registry.remote_names.lock_or_recover();
+        assert!(!names.contains_key("old"));
+        assert_eq!(names.get("fresh"), Some(&fresh));
+        assert_eq!(names.get("other"), Some(&test_location(803, 3)));
+    }
+    cluster.seed_member_for_test(802, crate::cluster::MEMBER_ALIVE, 2);
+    node_membership_callback(
+        802,
+        crate::cluster::HEW_MEMBERSHIP_EVENT_NODE_DEAD,
+        local.as_ptr().cast(),
+    );
     assert_eq!(
-        map.get("other-node").copied(),
-        Some(test_location(303, 0x20))
+        registry.remote_names.lock_or_recover().get("fresh"),
+        Some(&fresh)
     );
 }
 

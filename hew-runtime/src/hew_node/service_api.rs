@@ -117,10 +117,6 @@ pub unsafe extern "C" fn hew_node_peer_new(
             TransportSelection::QuicMesh if !bytes.is_empty() => PeerCredential::Spki(bytes),
             TransportSelection::QuicMesh => return Err(AskError::Unauthorized),
         };
-        manager
-            .auth
-            .route_slot_for_credential(&credential)
-            .ok_or(AskError::Unauthorized)?;
         let claim = connection::claim_send_by_identity(manager, credential.node_id(), None)
             .ok_or(AskError::Partition)?;
         Ok(PeerSession {

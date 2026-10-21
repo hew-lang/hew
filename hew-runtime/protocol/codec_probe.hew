@@ -1,5 +1,5 @@
 // Cross-language value evidence uses the exact internal checked declarations.
-import node_controls.{ServiceOffer, MonitorDown, WireLocation, WireSession, DownReason, CleanupFault, RegistryGossip, SwimControl, SwimGossip};
+import node_controls.{ServiceOffer, MonitorDown, WireLocation, WireSession, DownReason, CleanupFault, RegistryGossip, SwimControl, SwimGossip, ClusterMember, ClusterEnrollment, NodeHandshake};
 import std.encoding.cbor;
 import std.encoding.msgpack;
 import std.fs;
@@ -62,7 +62,50 @@ fn check_swim(value: SwimControl) {
     }
 }
 
+fn member() -> ClusterMember {
+    ClusterMember { transport: 0, credential: "0123456789abcdef0123456789abcdef".to_bytes() }
+}
+
+fn enrollment() -> ClusterEnrollment {
+    ClusterEnrollment { authority: "authority".to_bytes(), member: cbor.encode(member()), signature: "signature".to_bytes() }
+}
+
+fn handshake() -> NodeHandshake {
+    NodeHandshake { protocol_version: 65535, schema_hash: 4294967295, feature_flags: 3, node: "0123456789abcdef".to_bytes(), incarnation: 4, noise_key: member().credential, enrollment: cbor.encode(enrollment()) }
+}
+
+fn check_member(value: ClusterMember) {
+    assert(value.transport == 0 && value.credential == member().credential);
+}
+
+fn check_enrollment(value: ClusterEnrollment) {
+    assert(value.authority == "authority".to_bytes() && value.signature == "signature".to_bytes());
+    assert(value.member == cbor.encode(member()));
+}
+
+fn check_handshake(value: NodeHandshake) {
+    assert(value.protocol_version == 65535 && value.schema_hash == 4294967295 && value.feature_flags == 3);
+    assert(value.node == "0123456789abcdef".to_bytes() && value.incarnation == 4);
+    assert(value.noise_key == member().credential && value.enrollment == cbor.encode(enrollment()));
+}
+
+fn check_admission() {
+    check_member(cbor.decode<ClusterMember>(fs.read_bytes("rust-member.cbor").expect("read")).expect("decode"));
+    check_member(msgpack.decode<ClusterMember>(fs.read_bytes("rust-member.msgpack").expect("read")).expect("decode"));
+    check_enrollment(cbor.decode<ClusterEnrollment>(fs.read_bytes("rust-enrollment.cbor").expect("read")).expect("decode"));
+    check_enrollment(msgpack.decode<ClusterEnrollment>(fs.read_bytes("rust-enrollment.msgpack").expect("read")).expect("decode"));
+    check_handshake(cbor.decode<NodeHandshake>(fs.read_bytes("rust-handshake.cbor").expect("read")).expect("decode"));
+    check_handshake(msgpack.decode<NodeHandshake>(fs.read_bytes("rust-handshake.msgpack").expect("read")).expect("decode"));
+    fs.write_bytes("hew-member.cbor", cbor.encode(member())).expect("write");
+    fs.write_bytes("hew-member.msgpack", msgpack.encode(member())).expect("write");
+    fs.write_bytes("hew-enrollment.cbor", cbor.encode(enrollment())).expect("write");
+    fs.write_bytes("hew-enrollment.msgpack", msgpack.encode(enrollment())).expect("write");
+    fs.write_bytes("hew-handshake.cbor", cbor.encode(handshake())).expect("write");
+    fs.write_bytes("hew-handshake.msgpack", msgpack.encode(handshake())).expect("write");
+}
+
 fn main() -> i64 {
+    check_admission();
     check_registry(cbor.decode<RegistryGossip>(fs.read_bytes("rust-registry.cbor").expect("read")).expect("decode"));
     check_registry(msgpack.decode<RegistryGossip>(fs.read_bytes("rust-registry.msgpack").expect("read")).expect("decode"));
     check_swim(cbor.decode<SwimControl>(fs.read_bytes("rust-swim.cbor").expect("read")).expect("decode"));

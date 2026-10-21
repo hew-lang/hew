@@ -10,6 +10,9 @@
 //   hew run examples/quic_mesh/client.hew <server-credential>
 // Start the client while the server is listening. Keep each key file between
 // runs so the printed credentials continue to identify the same nodes.
+// Enrol both printed credentials under one operator authority with
+// `hew node admit --authority authority.key --credential HEX --output FILE`.
+// Set HEW_NODE_CLUSTER to this node's enrolment file for communicating runs.
 import std.net;
 
 import std.os;
@@ -49,10 +52,7 @@ fn main() {
         .Some(value) => value,
         .None => "--identity",
     };
-    var config = NodeConfig { bind: "127.0.0.1:9000", transport: NodeTransport.QuicMesh, key: "quic-mesh-server.key", peers: [], seeds: [] };
-    if peer_credential != "--identity" {
-        config.peers = [peer_credential];
-    }
+    let config = NodeConfig { bind: "127.0.0.1:9000", transport: NodeTransport.QuicMesh, key: "quic-mesh-server.key", cluster: os.env("HEW_NODE_CLUSTER") ?? "", seeds: [] };
     Node.start(config).expect("QUIC mesh node starts");
     println(f"[server] public credential: {Node.identity_key()}");
     if peer_credential == "--identity" {
@@ -60,7 +60,7 @@ fn main() {
         return;
     }
     let counter = spawn Counter { count: 0 };
-    // Wait for the client to connect and authenticate with its pinned key.
+    // Wait for the client to connect and authenticate with its enrolled key.
     let peer = authenticated_peer(peer_credential);
     let export = peer.export(counter).expect("client accepts Counter service");
     println("[server] Counter service offered to authenticated client");

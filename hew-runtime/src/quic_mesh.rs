@@ -37,28 +37,11 @@
 //! verifier is installed as both [`rustls::server::danger::ClientCertVerifier`]
 //! and [`rustls::client::danger::ServerCertVerifier`].
 //!
-//! Per-node peer authentication is supported via a per-transport mesh-SPKI
-//! allowlist installed from the owning node's frozen `PeerAuthSnapshot`
-//! ([`hew_quic_mesh_transport_install_auth`], issue #2652 / D14). `Node::allow_peer`
-//! binds the DER-encoded `SubjectPublicKeyInfo` bytes of each peer's leaf
-//! certificate before `Node::start`; the listener installs that set into its
-//! [`MeshTls::allowed_peer_spkis`]. The listener also
-//! unconditionally trusts its own SPKI to preserve self-loopback (a peer
-//! that obtains the cert cannot authenticate without the private key).
-//!
-//! The per-node Noise peer authority (bound via `Node::allow_peer` in
-//! `peer_binding.rs`) is intentionally
-//! NOT unified with the mesh-SPKI allowlist: Noise uses raw X25519 DH keys
-//! that cannot directly sign X.509 certificates (X25519 is for DH; signing
-//! would require Ed25519). Fully unifying the two identities requires
-//! re-keying the mesh cert from a signing-capable representation of the Noise
-//! identity, which is out of scope for A3. A3 keeps the mesh-SPKI allowlist
-//! as a sibling of the Noise allowlist and documents the deliberate split.
-//!
-//! NATIVE-TODO(post-A3): unify Noise and mesh identities once the runtime
-//! moves to a signing-capable static key (Ed25519 → derived X25519 for
-//! Noise, Ed25519 directly for X.509). Until then, callers must register
-//! both lists.
+//! Node listeners install their frozen cluster admission facts through
+//! [`hew_quic_mesh_transport_install_auth`]. TLS proves possession of the leaf
+//! SPKI; the common checked node handshake then verifies its enrolment under
+//! the installed authority before publishing a peer session. Standalone
+//! [`MeshTls`] users retain their explicit SPKI allowlist.
 //!
 //! # Wire framing
 //!
@@ -235,6 +218,8 @@ fn extract_spki_from_cert_der(cert_der: &[u8]) -> Result<Vec<u8>, MeshError> {
 /// Installed on the server side to verify connecting clients.
 #[derive(Debug)]
 struct SpkiClientVerifier {
+    /// Verify transport key possession; node enrollment gates publication.
+    cluster_admission: bool,
     /// DER-encoded SPKI bytes that are accepted.
     allowed: std::collections::HashSet<Vec<u8>>,
 }
@@ -252,7 +237,7 @@ impl rustls::server::danger::ClientCertVerifier for SpkiClientVerifier {
     ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
         let spki = extract_spki_from_cert_der(end_entity.as_ref())
             .map_err(|e| rustls::Error::General(format!("SPKI extraction failed: {e}")))?;
-        if self.allowed.contains(&spki) {
+        if self.cluster_admission || self.allowed.contains(&spki) {
             Ok(rustls::server::danger::ClientCertVerified::assertion())
         } else {
             Err(rustls::Error::General(
@@ -297,6 +282,8 @@ impl rustls::server::danger::ClientCertVerifier for SpkiClientVerifier {
 /// Installed on the client side to verify the server it connects to.
 #[derive(Debug)]
 struct SpkiServerVerifier {
+    /// Verify transport key possession; node enrollment gates publication.
+    cluster_admission: bool,
     /// DER-encoded SPKI bytes that are accepted.
     allowed: std::collections::HashSet<Vec<u8>>,
 }
@@ -312,7 +299,7 @@ impl rustls::client::danger::ServerCertVerifier for SpkiServerVerifier {
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
         let spki = extract_spki_from_cert_der(end_entity.as_ref())
             .map_err(|e| rustls::Error::General(format!("SPKI extraction failed: {e}")))?;
-        if self.allowed.contains(&spki) {
+        if self.cluster_admission || self.allowed.contains(&spki) {
             Ok(rustls::client::danger::ServerCertVerified::assertion())
         } else {
             Err(rustls::Error::General(
@@ -452,12 +439,13 @@ type MeshIdentity = (MeshTls, Vec<u8>);
 /// setup error.
 #[derive(Default)]
 struct InstalledMeshAuth {
+    cluster_admission: bool,
     /// This node's stable mesh identity (from `Node::load_keys`), or `None` for
     /// the self-signed loopback-dev fallback.
     identity: Option<MeshIdentity>,
     /// DER-encoded peer `SubjectPublicKeyInfo` bytes permitted to connect.
     allowed_peer_spkis: HashSet<Vec<u8>>,
-    /// Sticky fail-closed poison: a failed `Node::load_keys` / `Node::allow_peer`
+    /// Sticky fail-closed poison: a failed `Node::load_keys`
     /// makes `ensure_identity` refuse to mint/reuse a listener identity.
     setup_error: Option<String>,
 }
@@ -824,7 +812,7 @@ impl QuicMeshTransport {
     /// transport. Returns a clone of the cached `MeshTls` (without an
     /// allowlist applied) and the local SPKI bytes.
     fn ensure_identity(&self) -> Result<(MeshTls, Vec<u8>), MeshError> {
-        // Fail-closed: a failed `Node::load_keys` / `Node::allow_peer` poisons
+        // Fail-closed: a failed `Node::load_keys` poisons
         // this node's mesh identity. Refuse to mint or reuse any identity so the
         // listener can never bind with an ephemeral self-signed cert (the
         // operator's pinned identity failed to load) or an incomplete allowlist.
@@ -1301,7 +1289,12 @@ unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_c
 
     let mesh = {
         let _guard = qmt.rt.enter();
-        match QuicMesh::listen(addr, tls) {
+        let cluster_admission = qmt
+            .installed_auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cluster_admission;
+        match QuicMesh::listen_mode(addr, tls, cluster_admission) {
             Ok(mesh) => mesh,
             Err(e) => {
                 set_last_error(format!("quic_mesh listen: {e}"));
@@ -1651,7 +1644,6 @@ pub(crate) unsafe fn hew_quic_mesh_transport_conn_remote_ip_class(
 ///
 /// `transport` must be a valid pointer returned by
 /// [`hew_transport_quic_mesh_new`] (and not yet freed).
-#[cfg(test)]
 pub(crate) unsafe fn hew_transport_quic_mesh_bound_port(
     transport: *mut HewTransport,
 ) -> Option<u16> {
@@ -1740,6 +1732,7 @@ pub unsafe fn hew_quic_mesh_transport_install_auth(
     // SAFETY: ops-check above guarantees impl is a QuicMeshTransport.
     let qmt = unsafe { &*t.r#impl.cast::<QuicMeshTransport>() };
     let auth = InstalledMeshAuth {
+        cluster_admission: snapshot.admission().is_some(),
         identity: snapshot.mesh_identity().map(mesh_tls_from_material),
         allowed_peer_spkis: snapshot.mesh_spki_allowlist().clone(),
         setup_error: snapshot.setup_error().map(str::to_owned),
@@ -1752,7 +1745,7 @@ pub unsafe fn hew_quic_mesh_transport_install_auth(
 ///
 /// Calling this **before** `listen` ensures the same cert is used by
 /// subsequent `listen`; callers can publish the returned SPKI to peers
-/// out-of-band so peers can bind it in their own `Node::allow_peer` allowlist
+/// to the cluster operator for enrolment
 /// before they `listen`.
 ///
 /// On the first call the cert + SPKI are generated and cached on the
@@ -1839,7 +1832,15 @@ impl QuicMesh {
     /// Returns [`MeshError::Tls`] if TLS configuration fails, or
     /// [`MeshError::Quic`] if the UDP socket cannot be bound.
     pub fn listen(addr: std::net::SocketAddr, tls: MeshTls) -> Result<Mesh, MeshError> {
-        let (server_config, client_config) = build_tls_configs(&tls)?;
+        Self::listen_mode(addr, tls, false)
+    }
+
+    fn listen_mode(
+        addr: std::net::SocketAddr,
+        tls: MeshTls,
+        cluster_admission: bool,
+    ) -> Result<Mesh, MeshError> {
+        let (server_config, client_config) = build_tls_configs(&tls, cluster_admission)?;
         let mut endpoint =
             Endpoint::server(server_config, addr).map_err(|e| MeshError::Quic(e.to_string()))?;
         endpoint.set_default_client_config(client_config);
@@ -1860,12 +1861,14 @@ const MESH_IDLE_TIMEOUT_SECS: u64 = 30;
 /// Build Quinn server and client configs from a [`MeshTls`].
 fn build_tls_configs(
     tls: &MeshTls,
+    cluster_admission: bool,
 ) -> Result<(quinn::ServerConfig, quinn::ClientConfig), MeshError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
 
     // ── Server config (verifies client certs via SPKI allowlist) ────────────
 
     let client_verifier = Arc::new(SpkiClientVerifier {
+        cluster_admission,
         allowed: tls.allowed_peer_spkis.clone(),
     });
 
@@ -1898,6 +1901,7 @@ fn build_tls_configs(
     // ── Client config (verifies server cert via SPKI allowlist) ─────────────
 
     let server_verifier = Arc::new(SpkiServerVerifier {
+        cluster_admission,
         allowed: tls.allowed_peer_spkis.clone(),
     });
 
@@ -2463,6 +2467,7 @@ mod tests {
         );
         let qmt = QuicMeshTransport::new(rt);
         qmt.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
             identity: Some(mesh_tls_from_material(&material1)),
             allowed_peer_spkis: HashSet::new(),
             setup_error: None,
@@ -2680,6 +2685,7 @@ mod tests {
         let registered = vec![0x55u8; 48];
         let other = vec![0x66u8; 48];
         qmt.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
             identity: None,
             allowed_peer_spkis: [registered.clone()].into_iter().collect(),
             setup_error: None,
@@ -2721,11 +2727,13 @@ mod tests {
         let peer_b = vec![0xB1u8; 48];
         let peer_d = vec![0xD2u8; 48];
         node1.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
             identity: None,
             allowed_peer_spkis: [peer_b.clone()].into_iter().collect(),
             setup_error: None,
         });
         node2.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
             identity: None,
             allowed_peer_spkis: [peer_d.clone()].into_iter().collect(),
             setup_error: Some("node2: simulated load_keys failure".into()),
@@ -2759,7 +2767,7 @@ mod tests {
     }
 
     /// F6 fail-closed: an installed peer-auth setup failure (a failed
-    /// `Node::load_keys` / `Node::allow_peer`, staged into the snapshot) makes
+    /// `Node::load_keys`, staged into the snapshot) makes
     /// `ensure_identity` refuse to mint or reuse an identity, so the mesh
     /// listener cannot bind with an ephemeral cert or an incomplete allowlist. A
     /// transport with no installed poison mints the loopback-dev default (a
@@ -2789,6 +2797,7 @@ mod tests {
         );
         let poisoned = QuicMeshTransport::new(rt1);
         poisoned.install_auth(InstalledMeshAuth {
+            cluster_admission: false,
             identity: None,
             allowed_peer_spkis: HashSet::new(),
             setup_error: Some("test: simulated load_keys failure".into()),

@@ -6,8 +6,8 @@ mod protocol;
 
 use hew_codec::Format;
 use protocol::{
-    CleanupFault, DownReason, MonitorDown, RegistryGossip, ServiceOffer, SwimControl, SwimGossip,
-    WireLocation, WireSession,
+    CleanupFault, ClusterEnrollment, ClusterMember, DownReason, MonitorDown, NodeHandshake,
+    RegistryGossip, ServiceOffer, SwimControl, SwimGossip, WireLocation, WireSession,
 };
 
 fn offer() -> ServiceOffer {
@@ -67,6 +67,64 @@ fn swim() -> SwimControl {
     }
 }
 
+fn member() -> ClusterMember {
+    ClusterMember {
+        transport: 0,
+        credential: b"0123456789abcdef0123456789abcdef".to_vec(),
+    }
+}
+
+fn enrollment() -> ClusterEnrollment {
+    ClusterEnrollment {
+        authority: b"authority".to_vec(),
+        member: member().encode(Format::Cbor),
+        signature: b"signature".to_vec(),
+    }
+}
+
+fn handshake() -> NodeHandshake {
+    NodeHandshake {
+        protocol_version: u16::MAX,
+        schema_hash: u32::MAX,
+        feature_flags: 3,
+        node: b"0123456789abcdef".to_vec(),
+        incarnation: 4,
+        noise_key: member().credential,
+        enrollment: enrollment().encode(Format::Cbor),
+    }
+}
+
+fn write_admission_values(dir: &std::path::Path, format: Format, extension: &str) {
+    for (name, bytes) in [
+        ("member", member().encode(format)),
+        ("enrollment", enrollment().encode(format)),
+        ("handshake", handshake().encode(format)),
+    ] {
+        std::fs::write(dir.join(format!("rust-{name}.{extension}")), bytes).unwrap();
+    }
+}
+
+fn check_admission_values(dir: &std::path::Path, format: Format, extension: &str) {
+    let member_bytes = std::fs::read(dir.join(format!("hew-member.{extension}"))).unwrap();
+    let enrollment_bytes = std::fs::read(dir.join(format!("hew-enrollment.{extension}"))).unwrap();
+    let handshake_bytes = std::fs::read(dir.join(format!("hew-handshake.{extension}"))).unwrap();
+    assert_eq!(
+        ClusterMember::decode(format, &member_bytes).unwrap(),
+        member()
+    );
+    assert_eq!(
+        ClusterEnrollment::decode(format, &enrollment_bytes).unwrap(),
+        enrollment()
+    );
+    assert_eq!(
+        NodeHandshake::decode(format, &handshake_bytes).unwrap(),
+        handshake()
+    );
+    assert_eq!(member_bytes, member().encode(format));
+    assert_eq!(enrollment_bytes, enrollment().encode(format));
+    assert_eq!(handshake_bytes, handshake().encode(format));
+}
+
 #[test]
 fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
     support::require_codegen();
@@ -80,6 +138,7 @@ fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
         .unwrap();
     }
     for (format, extension) in [(Format::Cbor, "cbor"), (Format::Msgpack, "msgpack")] {
+        write_admission_values(dir.path(), format, extension);
         std::fs::write(
             dir.path().join(format!("rust-registry.{extension}")),
             registry().encode(format),
@@ -119,6 +178,7 @@ fn checked_node_values_cross_native_hew_and_rust_in_both_formats() {
     let output = support::run_bounded_command(run, "run checked node codec probe");
     support::assert_success(&output, "run checked node codec probe");
     for (format, extension) in [(Format::Cbor, "cbor"), (Format::Msgpack, "msgpack")] {
+        check_admission_values(dir.path(), format, extension);
         let registry_bytes =
             std::fs::read(dir.path().join(format!("hew-registry.{extension}"))).unwrap();
         let swim_bytes = std::fs::read(dir.path().join(format!("hew-swim.{extension}"))).unwrap();

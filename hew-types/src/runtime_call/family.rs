@@ -178,7 +178,6 @@ pub enum RuntimeCallFamily {
     // Their runtime FFI symbols are carried separately by the stdlib catalog;
     // the family records the source-level builtin identity used by checker,
     // MIR, and codegen dispatch.
-    NodeAllowPeer,
     NodeConnect,
     NodeId,
     /// The identity and location accessors `std/builtins.hew` declares through

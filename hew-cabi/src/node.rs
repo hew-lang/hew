@@ -6,7 +6,7 @@
 pub enum NodeFailure {
     /// The supplied configuration is invalid.
     Config = -1,
-    /// The local identity or a configured peer key is invalid.
+    /// The local identity or its cluster enrolment is invalid.
     Key = -2,
     /// The peer could not be reached.
     Unreachable = -3,

@@ -20,7 +20,7 @@ use std::thread::{self, JoinHandle};
 
 use crate::cluster::{self, ClusterConfig, HewCluster};
 use crate::connection::{self, HewConnMgr};
-use crate::node_identity::{HewLocation, Location};
+use crate::node_identity::{HewLocation, Location, NodeId};
 use crate::peer_binding::{PeerAuthSnapshot, TransportSelection as PeerTransport};
 use crate::routing::{self, HewRoutingTable};
 use crate::transport::{self, HewTransport, HewTransportOps};
@@ -1553,6 +1553,16 @@ unsafe fn cleanup_start_failure(
     }
 }
 
+/// Resolve the canonical admitted identity while this node pins its manager.
+fn identity_for_route_slot(node: &HewNode, route_slot: u16) -> Option<NodeId> {
+    if route_slot == node.route_slot {
+        return node.auth.node_identity();
+    }
+    // SAFETY: the live node owns its manager for this borrow.
+    let manager = unsafe { node.conn_mgr.as_ref() };
+    manager.and_then(|manager| connection::identity_for_route_slot(manager, route_slot))
+}
+
 /// Callback invoked by the cluster when a peer leaves or is declared dead.
 /// Drops any cached remote names owned by that departed node.
 extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut c_void) {
@@ -1567,17 +1577,28 @@ extern "C" fn node_membership_callback(node_id: u16, event: u8, user_data: *mut 
 
     // SAFETY: user_data is the owning HewNode installed during hew_node_start.
     let node = unsafe { &*(user_data.cast::<HewNode>()) };
-    let Some(dead_identity) = node.auth.node_id_for_route_slot(node_id) else {
+    let Some(dead_identity) = identity_for_route_slot(node, node_id) else {
         return;
     };
-    if node.registry.is_null() {
+    if node.registry.is_null() || node.cluster.is_null() {
+        return;
+    }
+    // SAFETY: the callback-owning node pins its canonical membership state.
+    let Some((_, session, state)) = unsafe { &*node.cluster }
+        .observation_members()
+        .into_iter()
+        .find(|(slot, _, _)| *slot == node_id)
+    else {
+        return;
+    };
+    if !matches!(state, cluster::MEMBER_DEAD | cluster::MEMBER_LEFT) {
         return;
     }
     // SAFETY: registry belongs to the live callback-owning node.
     let registry = unsafe { &*node.registry };
     if !take_registry_names_if(
         registry,
-        |location| location.node() == dead_identity,
+        |location| location.node() == dead_identity && location.incarnation() == session,
         |_| {},
     )
     .is_empty()
@@ -1762,7 +1783,7 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
 
     // Install the frozen per-node mesh peer-auth material (stable identity + peer
     // SPKI allowlist + setup-error poison, derived from `Node::load_keys` /
-    // `Node::allow_peer` bindings, issue #2652 / D14) onto this transport before
+    // cluster enrolment and transport identity) onto this transport before
     // it binds. The mTLS handshake then admits exactly the bound peers and no
     // other, and a poisoned setup refuses to bind (fail-closed). Per-instance —
     // no process-global allowlist, so two concurrent mesh nodes stay isolated.

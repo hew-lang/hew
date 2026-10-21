@@ -9,8 +9,10 @@ use super::{
 };
 use crate::connection;
 use crate::node_identity::{HewLocation, HewNodeId, Location};
+#[cfg(test)]
+use crate::peer_binding::PeerCredential;
 use crate::peer_binding::TransportSelection as PeerTransport;
-use crate::peer_binding::{ConfigState, PeerCredential, PEER_AUTH_STATE};
+use crate::peer_binding::{ConfigState, PEER_AUTH_STATE};
 use crate::set_last_error;
 use crate::transport::HEW_CONN_INVALID;
 use crate::vec::HewVec;
@@ -19,18 +21,14 @@ use hew_cabi::string::{string_as_str, string_to_cstring, HewString};
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::ptr;
 use std::sync::atomic::Ordering;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 unsafe fn parse_connect_target(addr: *const c_char) -> Option<(Option<u16>, CString)> {
     // SAFETY: caller validates non-null and C-string.
     let c_addr = unsafe { CStr::from_ptr(addr) };
     let addr_text = c_addr.to_string_lossy();
-    if let Some((prefix, target)) = addr_text.split_once('@') {
-        let node_id = prefix.parse::<u16>().ok().filter(|node_id| *node_id != 0)?;
-        if target.is_empty() {
-            return None;
-        }
-        return Some((Some(node_id), CString::new(target.as_bytes()).ok()?));
+    if addr_text.contains('@') {
+        return None;
     }
     if c_addr.to_bytes().is_empty() {
         return None;
@@ -60,8 +58,8 @@ fn valid_seed_address(address: &str, transport: u8) -> bool {
 
 /// Connect to a remote node and register routing for its node ID.
 ///
-/// Supports `"<node_id>@<addr>"` to require an exact peer `NodeId`. Without a
-/// prefix, the authenticated handshake `NodeId` is authoritative.
+/// The authenticated handshake establishes the peer identity; numeric route
+/// aliases are internal to the receiving node.
 ///
 /// # Safety
 ///
@@ -263,7 +261,7 @@ fn merge_start_env_into_config(
 ) -> Result<(), String> {
     // Transport (issue #2652): a selection pinned by an earlier transport-
     // sensitive op (`Node::set_transport` / `Node::load_keys` /
-    // `Node::allow_peer`) is authoritative and wins over any later env change —
+    // test peer bindings) is authoritative and wins over any later env change —
     // start uses the STORED selection. Only when unpinned do we adopt the
     // start-time env selection.
     let effective = if let Some(pinned) = cfg.transport {
@@ -297,7 +295,7 @@ pub struct HewNodeConfig {
     pub(super) bind: *const HewString,
     pub(super) transport: u8,
     pub(super) key: *const HewString,
-    pub(super) peers: *mut HewVec,
+    pub(super) cluster: *const HewString,
     pub(super) seeds: *mut HewVec,
 }
 
@@ -311,7 +309,7 @@ const _: () = {
     assert!(std::mem::offset_of!(HewNodeConfig, bind) == 0);
     assert!(std::mem::offset_of!(HewNodeConfig, transport) == std::mem::size_of::<usize>());
     assert!(std::mem::offset_of!(HewNodeConfig, key) == 2 * std::mem::size_of::<usize>());
-    assert!(std::mem::offset_of!(HewNodeConfig, peers) == 3 * std::mem::size_of::<usize>());
+    assert!(std::mem::offset_of!(HewNodeConfig, cluster) == 3 * std::mem::size_of::<usize>());
     assert!(std::mem::offset_of!(HewNodeConfig, seeds) == 4 * std::mem::size_of::<usize>());
 };
 
@@ -319,25 +317,22 @@ struct ConsumedNodeConfig {
     bind: *const HewString,
     transport: u8,
     key: *const HewString,
-    peers: *mut HewVec,
+    cluster: *const HewString,
     seeds: *mut HewVec,
 }
 
 impl Drop for ConsumedNodeConfig {
     fn drop(&mut self) {
-        for field in [self.bind, self.key] {
+        for field in [self.bind, self.key, self.cluster] {
             if !field.is_null() {
                 // SAFETY: this owner is created only from the moved managed fields
                 // of one NodeConfig and drops each managed string once.
                 unsafe { crate::string::hew_string_drop(field.cast_mut()) };
             }
         }
-        for field in [self.peers, self.seeds] {
-            if !field.is_null() {
-                // SAFETY: this owner is created only from the two moved vector
-                // fields of one NodeConfig and drops each vector once.
-                unsafe { crate::vec::hew_vec_free(field) };
-            }
+        if !self.seeds.is_null() {
+            // SAFETY: this owner consumes the sole moved seed vector once.
+            unsafe { crate::vec::hew_vec_free(self.seeds) };
         }
     }
 }
@@ -421,7 +416,7 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         bind: config.bind,
         transport: config.transport,
         key: config.key,
-        peers: config.peers,
+        cluster: config.cluster,
         seeds: config.seeds,
     };
     // SAFETY: each helper validates its managed source handle before borrowing.
@@ -448,9 +443,25 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         };
         key
     };
-    // SAFETY: the helper validates and balances every borrowed vector string.
-    let Ok(peers) = (unsafe { config_strings(owned.peers, "peers") }) else {
-        return -1;
+    let cluster = if owned.cluster.is_null() {
+        String::new()
+    } else {
+        // SAFETY: the config owner keeps the managed path live through this copy.
+        let Ok(path) = (unsafe { config_string(owned.cluster, "cluster") }) else {
+            return -1;
+        };
+        path
+    };
+    let admission = if cluster.is_empty() {
+        None
+    } else {
+        match crate::cluster_admission::Admission::load(std::path::Path::new(&cluster)) {
+            Ok(admission) => Some(Arc::new(admission)),
+            Err(error) => {
+                set_last_error(format!("Node::start: cluster enrollment: {error}"));
+                return NodeFailure::Key as c_int;
+            }
+        }
     };
     // SAFETY: the helper validates and balances every borrowed vector string.
     let Ok(seeds) = (unsafe { config_strings(owned.seeds, "seeds") }) else {
@@ -464,15 +475,6 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
         set_last_error("Node::start: key contains NUL");
         return NodeFailure::Key as c_int;
     };
-    let mut peer_credentials = Vec::with_capacity(peers.len());
-    for peer in peers {
-        if let Ok(peer) = CString::new(peer) {
-            peer_credentials.push(peer);
-        } else {
-            set_last_error("Node::start: peer credential contains NUL");
-            return NodeFailure::Key as c_int;
-        }
-    }
     let Ok(bind_c) = CString::new(bind.clone()) else {
         set_last_error("Node::start: bind contains NUL");
         return -1;
@@ -537,14 +539,16 @@ pub unsafe extern "C" fn hew_node_api_start_config(config: *const HewNodeConfig)
             set_last_error("Node::start: a stable identity key is required");
             return Err(NodeFailure::Key as c_int);
         }
-        for (index, credential) in peer_credentials.iter().enumerate() {
-            let Ok(slot) = u16::try_from(index + 1) else {
-                set_last_error("Node::start: too many pinned peers");
-                return Err(-1);
+        {
+            let mut state = PEER_AUTH_STATE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let ConfigState::Building(config) = &mut state.state else {
+                return Err(NodeFailure::Refused as c_int);
             };
-            // SAFETY: the credential C string lives for this transaction; the
-            // low-level call copies and validates it before returning.
-            if unsafe { hew_node_api_allow_peer(slot, credential.as_ptr()) } != 0 {
+            config.admission = admission;
+            if let Err(message) = config.validate_public() {
+                set_last_error(message);
                 return Err(NodeFailure::Key as c_int);
             }
         }
@@ -594,7 +598,7 @@ pub unsafe extern "C" fn hew_node_api_start(addr: *const c_char) -> c_int {
         return -1;
     }
     // Fail-closed: a failed pre-start peer-auth step (`Node::load_keys` /
-    // `Node::allow_peer`) poisons the staged config; the check runs below inside
+    // test peer bindings) poisons the staged config; the check runs below inside
     // the staging lock (D14 — the poison lives on the per-node config, not a
     // process-global record). The mesh `ensure_identity` boundary re-checks the
     // installed snapshot as defence in depth.
@@ -1023,7 +1027,7 @@ pub unsafe extern "C" fn hew_node_api_lookup_location_string(
 ///
 /// Supported values: `"tcp"` (default), `"quic"`, `"quic-mesh"`.
 /// Must be called before `Node::start` — and, per issue #2652, before any
-/// transport-sensitive credential is staged (`Node::allow_peer` /
+/// transport-sensitive credential is staged (test peer bindings /
 /// `Node::load_keys`). Peer credentials and stable identities are interpreted
 /// under the pinned transport (a 32-byte Noise pubkey on TCP vs a cert SPKI on
 /// quic-mesh), so once any is staged a transport change is refused fail-closed
@@ -1050,7 +1054,7 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     let requested = peer_transport_from_normalized(normalized);
 
     // Transport must be pinned BEFORE identity credential staging (issue #2652):
-    // `Node::allow_peer` / `Node::load_keys` interpret their credential under the
+    // `Node::load_keys` interpret their credential under the
     // pinned transport. A `set_transport` after staging would reinterpret the
     // already-staged Noise pubkeys / mesh SPKIs under a different transport —
     // credential confusion. Refuse fail-closed (no env mutation) when the
@@ -1063,7 +1067,7 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     // Hold PEER_AUTH_STATE across the staged-credential check, the HEW_TRANSPORT
     // env write, AND the Building-config pin as ONE critical section. The check
     // and the pin must be atomic: if the guard were released between them, a
-    // concurrent `Node::allow_peer` / `Node::load_keys` could stage a credential
+    // concurrent `Node::load_keys` could stage a credential
     // under the old transport in the gap and have it silently reinterpreted
     // under the newly-pinned transport — the exact credential confusion the
     // check exists to prevent. ENV_LOCK is acquired *inside* the PEER_AUTH_STATE
@@ -1078,7 +1082,7 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
             if cfg.has_staged_credentials() && cfg.transport != Some(requested) {
                 drop(guard);
                 let msg = "Node::set_transport: transport cannot be changed after peer \
-                     credentials or a stable identity have been staged (Node::allow_peer / \
+                     credentials or a stable identity have been staged (\
                      Node::load_keys) — select the transport before staging (fail-closed)"
                     .to_string();
                 eprintln!("hew: {msg}");
@@ -1101,7 +1105,7 @@ pub unsafe extern "C" fn hew_node_api_set_transport(name: *const c_char) -> c_in
     0
 }
 
-/// Surface a `Node::load_keys` / `Node::allow_peer` peer-auth setup failure on
+/// Surface a `Node::load_keys` peer-auth setup failure on
 /// every channel:
 ///
 /// - `hew_last_error` — the thread-local programmatic surface (unchanged from
@@ -1138,7 +1142,7 @@ fn node_peer_auth_setup_failed(msg: impl Into<String>) {
 /// mesh TLS identity (SPKI) on quic-mesh, a stable Noise static keypair on
 /// tcp-noise. Must be called **before** `Node::start` so the listener/handshake
 /// presents the loaded key. Peers pin the resulting public credential via
-/// `Node::allow_peer`; persisting the key keeps that credential stable across
+/// test peer bindings; persisting the key keeps that credential stable across
 /// restarts. Native only (plain quic has no pinnable peer identity).
 ///
 /// Returns `0` on success, `-1` on a null/invalid path or key I/O failure
@@ -1264,7 +1268,7 @@ fn stage_loaded_identity(
     0
 }
 
-/// `Node::allow_peer(route_slot, credential_hex)` — pin a peer's authenticated
+/// Synthetic test setup: pin a peer's authenticated
 /// credential to a receiver-local route slot. The
 /// credential is interpreted by the node's pinned transport (TCP ⇒ 32-byte
 /// Noise pubkey; quic-mesh ⇒ cert SPKI). The exact one-to-one pin is staged
@@ -1278,18 +1282,15 @@ fn stage_loaded_identity(
 /// # Safety
 ///
 /// `credential_hex` must be a valid null-terminated C string.
-#[no_mangle]
-pub unsafe extern "C" fn hew_node_api_allow_peer(
-    route_slot: u16,
-    credential_hex: *const c_char,
-) -> c_int {
+#[cfg(test)]
+pub(super) unsafe fn test_stage_peer_pin(route_slot: u16, credential_hex: *const c_char) -> c_int {
     // SAFETY: caller guarantees credential_hex is a valid C string (or null).
     let Some(s) = (unsafe { crate::util::cstr_to_str(&credential_hex, "Node::allow_peer") }) else {
-        node_peer_auth_setup_failed("Node::allow_peer: invalid credential argument");
+        node_peer_auth_setup_failed("test peer binding: invalid credential argument");
         return -1;
     };
     let Some(bytes) = decode_hex(s) else {
-        node_peer_auth_setup_failed("Node::allow_peer: peer key must be hex-encoded SPKI bytes");
+        node_peer_auth_setup_failed("test peer binding: peer key must be hex-encoded SPKI bytes");
         return -1;
     };
     // Interpret the credential per the node's pinned transport (env-resolved;
@@ -1298,7 +1299,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
     let transport = match transport_selection_from_env() {
         Ok(sel) => sel,
         Err(msg) => {
-            node_peer_auth_setup_failed(format!("Node::allow_peer: {msg}"));
+            node_peer_auth_setup_failed(format!("test peer binding: {msg}"));
             return -1;
         }
     };
@@ -1306,7 +1307,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         TransportSelection::Tcp => {
             let Ok(key) = <[u8; crate::peer_binding::NOISE_KEY_LEN]>::try_from(bytes.as_slice())
             else {
-                node_peer_auth_setup_failed("Node::allow_peer: Noise pubkey must be 32 bytes");
+                node_peer_auth_setup_failed("test peer binding: Noise pubkey must be 32 bytes");
                 return -1;
             };
             PeerCredential::NoiseKey(key)
@@ -1314,7 +1315,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         #[cfg(feature = "quic")]
         TransportSelection::QuicMesh => {
             if bytes.is_empty() || bytes.len() > MAX_SPKI_DECODE_BYTES {
-                node_peer_auth_setup_failed("Node::allow_peer: mesh SPKI is empty or oversize");
+                node_peer_auth_setup_failed("test peer binding: mesh SPKI is empty or oversize");
                 return -1;
             }
             PeerCredential::Spki(bytes)
@@ -1328,7 +1329,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
     let ConfigState::Building(cfg) = &mut guard.state else {
         drop(guard);
         node_peer_auth_setup_failed(
-            "Node::allow_peer: peer auth config is locked while the public node lifecycle \
+            "test peer binding: peer auth config is locked while the public node lifecycle \
              is active (Starting/Running)",
         );
         return -1;
@@ -1344,7 +1345,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         if pinned != transport.as_peer_transport() {
             drop(guard);
             node_peer_auth_setup_failed(
-                "Node::allow_peer: the transport was changed concurrently while this \
+                "test peer binding: the transport was changed concurrently while this \
                  credential was being interpreted — select the transport before staging \
                  peer credentials (fail-closed)",
             );
@@ -1352,7 +1353,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
         }
     }
     if let Err(err) = cfg.pin_peer(route_slot, credential) {
-        let msg = format!("Node::allow_peer: {err}");
+        let msg = format!("test peer binding: {err}");
         drop(guard);
         node_peer_auth_setup_failed(msg);
         return -1;
@@ -1371,7 +1372,7 @@ pub unsafe extern "C" fn hew_node_api_allow_peer(
 /// `Node::identity_key()` — Return this node's stable public credential for the
 /// pinned transport as lowercase hex (issue #2652, D8): the Noise static public
 /// key on TCP, the certificate SPKI on quic-mesh. Operators hand the returned
-/// value to peers so they can bind it via `Node::allow_peer`.
+/// value to the cluster operator for enrolment.
 ///
 /// Reads the three-state public staging config (BLOCK-7 point 3 — never
 /// dereferences the owning node pointer):

@@ -152,6 +152,28 @@ fn profiler_endpoint_captures_fixture_observability_data() {
     );
 }
 
+fn enrol_observe_nodes(directory: &Path, nodes: &[(&str, &Path, &str)]) {
+    let authority = directory.join("authority.key");
+    hew_runtime::cluster_admission::authority_identity(&authority)
+        .expect("create cluster authority");
+    for &(name, key, expected) in nodes {
+        let identity =
+            hew_runtime::encryption::noise_identity_load_or_create(key).expect("load identity");
+        assert_eq!(
+            &hew_runtime::peer_binding::hex_lower(&identity.public()),
+            expected
+        );
+        let credential = hew_runtime::peer_binding::PeerCredential::NoiseKey(identity.public());
+        let bundle = hew_runtime::cluster_admission::issue(&authority, &credential)
+            .expect("issue enrolment");
+        hew_runtime::cluster_admission::write_bundle(
+            &directory.join(format!("{name}.enrollment")),
+            &bundle,
+        )
+        .expect("install enrolment");
+    }
+}
+
 /// `supervisor.restarts_by_child_total` reports each child's lifetime restart total
 /// separately: a supervisor with two children restarted a different number of
 /// times must emit two distinct series values, not a shared or collapsed one.
@@ -163,6 +185,13 @@ fn restarts_by_child_counts_each_child_separately() {
     let second_key = fixture.dir.path().join("second.key");
     let first_identity = mint_observe_identity(&fixture.binary, &first_key);
     let second_identity = mint_observe_identity(&fixture.binary, &second_key);
+    enrol_observe_nodes(
+        fixture.dir.path(),
+        &[
+            ("first", &first_key, &first_identity),
+            ("second", &second_key, &second_identity),
+        ],
+    );
     let first_node_port = reserve_local_port();
     let second_node_port = reserve_local_port();
     let port = reserve_local_port();
@@ -173,11 +202,14 @@ fn restarts_by_child_counts_each_child_separately() {
             .env("HEW_OBSERVE", "hot")
             .env("HEW_WORKERS", "1")
             .env("HEW_OBSERVE_KEY", &first_key)
-            .env("HEW_OBSERVE_PEER", &second_identity)
+            .env(
+                "HEW_OBSERVE_CLUSTER",
+                fixture.dir.path().join("first.enrollment"),
+            )
             .env("HEW_OBSERVE_BIND", format!("127.0.0.1:{first_node_port}"))
             .env(
                 "HEW_OBSERVE_CONNECT",
-                format!("1@127.0.0.1:{second_node_port}"),
+                format!("127.0.0.1:{second_node_port}"),
             )
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -191,7 +223,10 @@ fn restarts_by_child_counts_each_child_separately() {
             .env("HEW_WORKERS", "1")
             .env("HEW_OBSERVE", "hot")
             .env("HEW_OBSERVE_KEY", &second_key)
-            .env("HEW_OBSERVE_PEER", &first_identity)
+            .env(
+                "HEW_OBSERVE_CLUSTER",
+                fixture.dir.path().join("second.enrollment"),
+            )
             .env("HEW_OBSERVE_BIND", format!("127.0.0.1:{second_node_port}"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

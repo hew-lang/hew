@@ -1436,7 +1436,7 @@ fn register() {
             "fn main() {\n",
             "    let config = NodeConfig.at(\"127.0.0.1:9000\");\n",
             "    let _ = Node.start(config);\n",
-            "    let _ = Node.connect(\"1@127.0.0.1:9001\");\n",
+            "    let _ = Node.connect(\"127.0.0.1:9001\");\n",
             "}\n",
         );
         let output = check_native(source);

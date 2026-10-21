@@ -34,6 +34,27 @@ pub(super) enum ClaimReservation {
     Rejected(String),
 }
 
+/// Select under the claims lock; retained identities keep their existing alias.
+pub(super) fn select_route_alias(
+    claims: &std::collections::HashMap<NodeId, LiveClaim>,
+    local: u16,
+    identity: NodeId,
+    requested: u16,
+) -> Option<u16> {
+    if requested != 0 {
+        return Some(requested);
+    }
+    if let Some(existing) = claims.get(&identity) {
+        return Some(existing.route_slot);
+    }
+    let occupied: std::collections::HashSet<u16> = claims
+        .values()
+        .map(|claim| claim.route_slot)
+        .chain(std::iter::once(local))
+        .collect();
+    (1..=u16::MAX).find(|candidate| !occupied.contains(candidate))
+}
+
 /// Reserve a `NodeId` claim for a connection mid-admission (issue #2652, D3
 /// step 1). Runs under the claims mutex; the condvar coordinates the
 /// reserve/publish handoff.
@@ -47,7 +68,8 @@ pub(super) enum ClaimReservation {
 /// - absent ⇒ insert `Reserved`; no supersede.
 #[expect(
     clippy::too_many_arguments,
-    reason = "admission carries the authenticated claim and optional reconnect predecessor"
+    clippy::too_many_lines,
+    reason = "one reservation transaction owns alias allocation and authenticated session handoff"
 )]
 pub(super) fn reserve_identity_claim(
     mgr: &HewConnMgr,
@@ -59,13 +81,16 @@ pub(super) fn reserve_identity_claim(
     publication_token: u64,
     predecessor: Option<&ReconnectOwner>,
 ) -> ClaimReservation {
-    if route_slot == 0 || session_incarnation == 0 {
+    if (route_slot == 0 && mgr.auth.admission().is_none()) || session_incarnation == 0 {
         return ClaimReservation::Rejected(format!(
             "invalid route slot/session for NodeId {node_id} (route_slot={route_slot}, session={session_incarnation})"
         ));
     }
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
+    let Some(route_slot) = select_route_alias(&map, mgr.local_node_id, node_id, route_slot) else {
+        return ClaimReservation::Rejected("peer route alias space is exhausted".into());
+    };
     loop {
         if mgr.reconnect_shutdown.load(Ordering::Acquire)
             || crate::transport::connection_attempt_remaining()

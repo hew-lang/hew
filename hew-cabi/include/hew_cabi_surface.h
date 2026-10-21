@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1653u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1652u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1652] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4623,11 +4623,6 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1653] = {
      "\"wasm32-wasip1\": \"fn hew_native_runtime_finish( i32) -> i32\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "not-applicable", HEW_CABI_OWNERSHIP_UNMEASURED},
-    {"hew_node_api_allow_peer",
-     "{\"native\": \"fn hew_node_api_allow_peer( u16, *const c_char, ) -> "
-     "c_int\"}",
-     "native", "stable", "nul-terminated", "no-in-signature-extent",
-     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_api_connect",
      "{\"native\": \"fn hew_node_api_connect( *const c_char) -> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",

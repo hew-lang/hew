@@ -280,6 +280,8 @@ pub enum SendError {
     InvalidMessage;
     /// The request deadline expired before admission.
     TimedOut;
+    /// The complete encoded message exceeds the destination route's capacity.
+    MessageTooLarge;
 }
 
 impl Display for SendError {
@@ -287,6 +289,7 @@ impl Display for SendError {
         match self {
             SendError.Unauthorized => "Unauthorized: the peer refused the message grant",
             SendError.InvalidMessage => "InvalidMessage: the message could not be encoded or decoded",
+            SendError.MessageTooLarge => "MessageTooLarge: the encoded message exceeds the route capacity",
             SendError.TimedOut => "TimedOut: the deadline expired before admission",
             SendError.Full => "Full: the destination mailbox is full",
             SendError.Closed => "Closed: the sink or connection is closed",
@@ -363,8 +366,8 @@ impl Error for Never {}
 /// Omitted parameters default to `Never`.
 ///
 /// Only `Rejected` is safely retryable: nothing was accepted, so the caller
-/// may make the same call again. Every other variant means the request was
-/// accepted or its fate is unknown, so repeating it would duplicate work.
+/// may make the same call again. Other variants do not return the request or
+/// establish whether its handler ran; repeating it may duplicate work.
 pub enum ActorError<E, Req> {
     /// Nothing was accepted. `failure.reason` explains why;
     /// `failure.message.retry()` or `.to(target)` consumes the sealed request.
@@ -386,12 +389,15 @@ pub enum ActorError<E, Req> {
     NodeNotRunning;
     /// The destination node or actor could not be routed.
     RoutingFailed;
-    /// The request payload could not be encoded.
+    /// The request or reply payload could not be encoded or decoded.
     EncodeFailed;
     /// The remote connection closed before the reply arrived.
     ConnectionDropped;
     /// The route to the peer is unavailable or the peer is suspected dead.
     Partition;
+    /// The complete encoded request or reply exceeds the route's capacity.
+    /// A reply refusal may follow handler execution; it is not safe to retry.
+    MessageTooLarge;
 }
 
 impl<E: Display, Req> Display for ActorError<E, Req> {
@@ -405,7 +411,8 @@ impl<E: Display, Req> Display for ActorError<E, Req> {
             ActorError.TimedOut => "TimedOut: the deadline elapsed before a reply arrived",
             ActorError.NodeNotRunning => "NodeNotRunning: the local node is not running or is shutting down",
             ActorError.RoutingFailed => "RoutingFailed: the destination node or actor could not be routed",
-            ActorError.EncodeFailed => "EncodeFailed: the request payload could not be encoded",
+            ActorError.EncodeFailed => "EncodeFailed: the request or reply payload could not be encoded or decoded",
+            ActorError.MessageTooLarge => "MessageTooLarge: the encoded request or reply exceeds the route capacity",
             ActorError.ConnectionDropped => "ConnectionDropped: the remote connection closed before the reply arrived",
             ActorError.Partition => "Partition: the route to the peer is unavailable or the peer is suspected dead",
         }

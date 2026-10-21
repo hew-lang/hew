@@ -43,6 +43,34 @@ projection of that SIR, including ownership transfers, cleanup edges, actor
 protocols and suspension points. The historical target argument is retained for
 browser callers; it does not select a separate source-language profile.
 
+`compileProjectToSandboxBytecode(requestJson, "sandbox-vm-export")` compiles
+named documents through that same frontend. The request supplies an entry and
+UTF-8 files, including ordinary package manifests when imports use package roots:
+
+```js
+const request = {
+  entry: "main.hew",
+  files: [
+    {
+      path: "main.hew",
+      source: "import user.nav; fn main() { println(nav.go()); }",
+    },
+    { path: "user/hew.toml", source: '[package]\nname = "user"\n' },
+    { path: "user/nav.hew", source: 'pub fn go() -> string { "MOVE" }' },
+  ],
+};
+const compiled = JSON.parse(
+  compileProjectToSandboxBytecode(JSON.stringify(request)),
+);
+```
+
+The response adds `resolved_files`: the sorted, unique entry and transitively
+read supplied `.hew` sources. Unused documents, manifests and embedded standard
+library sources are excluded. Diagnostics and their notes retain project-relative
+file identity and file-local UTF-8 offsets. Paths stay inside the supplied project;
+the embedded standard library cannot be replaced and missing files never read
+the host filesystem. Native package and directory-module rules apply.
+
 Execute the package with `runBytecode` from `@hew-lang/sandbox-vm`. Its loader
 admits the package's declared operations before running any instruction. A
 refusal distinguishes `native_only`, `not_implemented` and `invalid_package`.

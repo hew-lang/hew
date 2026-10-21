@@ -91,7 +91,7 @@ use tokio::sync::Mutex;
 
 use crate::peer_binding::{MeshIdentityMaterial, PeerAuthSnapshot, RemoteIpClass};
 use crate::set_last_error;
-use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID};
+use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID, MAX_FRAME_SIZE};
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -425,7 +425,6 @@ impl std::error::Error for MeshError {}
 // ---------------------------------------------------------------------------
 
 const MAX_CONNS: usize = 64;
-const MAX_FRAME_SIZE: usize = 16 * 1024 * 1024;
 const QUIC_MESH_WORKER_THREADS: usize = 2;
 /// Control-stream handshake timeout (P1.3). Bounds how long
 /// `ensure_control_stream` will wait for the peer's `open_bi`/`accept_bi`

@@ -30,9 +30,13 @@ markers per the project's `Shims, Stubs, and Seams` rule.
 ### Decision
 
 The Hew runtime's actor-to-actor wire format is **CBOR** (RFC 8949), with
-the schema defined in **CDDL** (RFC 8610). The doc-of-truth schema is
-[`hew-runtime/schemas/envelope.cddl`][cddl]. The Rust-native frame types
-that conform to that schema live in
+structural schemas described in **CDDL** (RFC 8610).
+[`hew-runtime/schemas/envelope.cddl`][cddl] combines with
+`hew-runtime/schemas/node-controls.generated.cddl`. Service-offer, registry-gossip, SWIM and terminal
+observation structures are checked Hew declarations in
+`hew-runtime/protocol/node_controls.hew`; their generated Rust walks use the
+ordinary format-neutral codec Sink/Source. Runtime adapters retain semantic
+validation. The remaining Rust-native frame codecs live in
 [`hew-runtime/src/envelope.rs`][envelope-rs].
 
 [cddl]: ../../hew-runtime/schemas/envelope.cddl
@@ -50,7 +54,7 @@ that conform to that schema live in
 - A `Location` carries a 16-byte key-derived `NodeId`, a tagged non-zero exact
   actor serial or full-width canonical role token, and a non-zero durable session incarnation. Receiver-local route slots do not
   enter the frame.
-- `version` is fixed at `9`. Decoders **must** reject unknown
+- `version` is fixed at `10`. Decoders **must** reject unknown
   versions with `UnknownVersion`; they must not best-effort parse a frame
   whose version they do not recognise.
 
@@ -60,7 +64,7 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### Handler identity and reply status
 
-Wire version 9 carries a service-request map in envelope key 5. Its key 1 is
+Wire version 10 carries a service-request map in envelope key 5. Its key 1 is
 the canonical dotted handler declaration (`package.module.Actor.handler`);
 keys 2 and 3 carry the recipient-bound export grant and request kind. The checker renders this
 from declaration ownership; import aliases, local dispatch indices and
@@ -76,7 +80,7 @@ local dispatch numbering therefore do not change the protocol.
 Replies use key 5 status `0` for success, `1` for failure after admission or
 unknown admission, and `3` for definitely not admitted, with no target or source
 and a positive request ID. The connection handshake requires protocol version
-9, and envelope decoders reject other versions before dispatch. Communicating
+10, and envelope decoders reject other versions before dispatch. Communicating
 peers must upgrade together; there is no compatibility path for older payloads.
 
 Monitor and link DOWN payloads retain the terminal actor state, semantic end
@@ -97,7 +101,8 @@ the frame does not interpret it. The bytes inside that `bstr` are the
 **per-`#[wire]`-type CBOR body** the codegen serializer emits for the
 message being sent, and they have their own doc-of-truth schema in
 [`hew-runtime/schemas/wire-body.cddl`][wire-body-cddl]. Together,
-`envelope.cddl` (the container) and `wire-body.cddl` (the body) make the
+`envelope.cddl` with `node-controls.generated.cddl` (the container) and
+`wire-body.cddl` (the body) make the
 whole internode wire — frame and body — CDDL-described.
 
 [wire-body-cddl]: ../../hew-runtime/schemas/wire-body.cddl

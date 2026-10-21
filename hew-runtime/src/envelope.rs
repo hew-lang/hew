@@ -9,13 +9,15 @@
 //! Runtime frames are encoded as definite-length CBOR maps with unsigned
 //! integer keys. Key `2` carries the explicit `frame_type` discriminator, and
 //! payload fields are encoded as CBOR byte strings (`bstr`), not arrays.
-//! `schemas/envelope.cddl` is the wire contract.
+//! `schemas/envelope.cddl` and `schemas/node-controls.generated.cddl` describe
+//! the wire contract. Checked Hew declarations own generated control structure;
+//! this module owns domain validation and the remaining frame codecs.
 //!
 //! # Wire format history
 //!
 //! The HBF (Hew Binary Format) era closed when the CBOR-native wire format landed. This module is the
 //! CBOR-native replacement: `EnvelopeFrame` owns the payload as a `Vec<u8>`,
-//! the CDDL schema is the doc-of-truth, and there is no fallback HBF path.
+//! CDDL documents its structure, and there is no fallback HBF path.
 
 use std::collections::BTreeMap;
 
@@ -24,11 +26,12 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::node_identity::{Location, NodeId};
+use crate::node_protocol_generated as protocol;
 
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 9;
+pub const WIRE_VERSION: u8 = 10;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
@@ -345,7 +348,7 @@ pub struct NodeSessionIdentity {
 
 /// A single piggybacked membership-gossip entry carried on a SWIM frame.
 ///
-/// Encoded as a definite CBOR map `{1: node_id, 2: state, 3: incarnation}`.
+/// Encoded as a definite CBOR map `{1: member_session, 2: state, 3: incarnation}`.
 /// This is the SWIM infection-style dissemination vehicle (C6): every PING /
 /// ACK carries a bounded batch of recent membership transitions so that nodes
 /// not directly connected to a failing peer still learn of its state change.
@@ -365,13 +368,13 @@ pub struct SwimGossipEntry {
 /// `{1: msg_type, 2: from_node, 3: incarnation, 4: target_node, 5: [gossip]}`.
 ///
 /// - `msg_type` is one of the `SWIM_MSG_*` constants (PING / ACK / `PING_REQ`).
-/// - `from_node` is the sender's node ID. The receiver cross-checks this
+/// - `from` is the sender's node identity and durable session. The receiver cross-checks this
 ///   against the authenticated handshake identity of the connection the frame
 ///   arrived on and rejects mismatches (cross-attribution defence).
 /// - `incarnation` is the sender's current incarnation (used for ACKs and
 ///   self-refutation).
-/// - `target_node` is the probe subject for `PING_REQ` indirect probing (C4);
-///   `0` for direct PING / ACK.
+/// - `target` is the probe subject and durable session for indirect probing;
+///   absent for direct PING / ACK.
 /// - `gossip` is the bounded piggybacked membership batch (C6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwimControlPayload {
@@ -609,6 +612,8 @@ impl From<ciborium::ser::Error<std::io::Error>> for EncodeError {
 /// Errors returned by the bounded registry-gossip payload codec.
 #[derive(Debug)]
 pub enum RegistryGossipPayloadError {
+    /// The shared checked data reader refused this control payload.
+    Data(hew_codec::DecodeError),
     /// Payload exceeded [`MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES`].
     PayloadTooLarge { len: usize, max: usize },
     /// Payload CBOR was malformed or truncated.
@@ -634,6 +639,7 @@ pub enum RegistryGossipPayloadError {
 impl std::fmt::Display for RegistryGossipPayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "registry gossip payload is too large ({len} > {max})")
             }
@@ -666,6 +672,7 @@ impl std::fmt::Display for RegistryGossipPayloadError {
 impl std::error::Error for RegistryGossipPayloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::CborDecode(e) => Some(e),
             Self::CborEncode(e) => Some(e),
             Self::PayloadTooLarge { .. }
@@ -683,6 +690,7 @@ impl std::error::Error for RegistryGossipPayloadError {
 impl From<DecodeError> for RegistryGossipPayloadError {
     fn from(err: DecodeError) -> Self {
         match err {
+            DecodeError::Data(error) => Self::Data(error),
             DecodeError::Cbor(e) => Self::CborDecode(e),
             DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
             DecodeError::MalformedKey => Self::MalformedKey,
@@ -703,6 +711,8 @@ impl From<DecodeError> for RegistryGossipPayloadError {
 /// Errors returned by the bounded SWIM control payload codec.
 #[derive(Debug)]
 pub enum SwimPayloadError {
+    /// The shared checked data reader refused this control payload.
+    Data(hew_codec::DecodeError),
     /// Encoded payload exceeded [`MAX_SWIM_PAYLOAD_BYTES`].
     PayloadTooLarge { len: usize, max: usize },
     /// Gossip batch exceeded [`MAX_SWIM_GOSSIP_ENTRIES`].
@@ -728,6 +738,7 @@ pub enum SwimPayloadError {
 impl std::fmt::Display for SwimPayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "SWIM payload is too large ({len} > {max})")
             }
@@ -762,6 +773,7 @@ impl std::fmt::Display for SwimPayloadError {
 impl std::error::Error for SwimPayloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::CborDecode(e) => Some(e),
             Self::CborEncode(e) => Some(e),
             Self::PayloadTooLarge { .. }
@@ -779,6 +791,7 @@ impl std::error::Error for SwimPayloadError {
 impl From<DecodeError> for SwimPayloadError {
     fn from(err: DecodeError) -> Self {
         match err {
+            DecodeError::Data(error) => Self::Data(error),
             DecodeError::Cbor(e) => Self::CborDecode(e),
             DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
             DecodeError::MalformedKey => Self::MalformedKey,
@@ -799,6 +812,8 @@ impl From<DecodeError> for SwimPayloadError {
 /// Errors returned by the bounded cross-node monitor payload codecs.
 #[derive(Debug)]
 pub enum MonitorPayloadError {
+    /// A checked shared data walk refused a control payload.
+    Data(hew_codec::DecodeError),
     /// Encoded payload exceeded its control-message size limit.
     PayloadTooLarge { len: usize, max: usize },
     /// Payload CBOR was malformed or truncated.
@@ -822,6 +837,7 @@ pub enum MonitorPayloadError {
 impl std::fmt::Display for MonitorPayloadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::PayloadTooLarge { len, max } => {
                 write!(f, "monitor payload is too large ({len} > {max})")
             }
@@ -850,6 +866,7 @@ impl std::fmt::Display for MonitorPayloadError {
 impl std::error::Error for MonitorPayloadError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::CborDecode(e) => Some(e),
             Self::CborEncode(e) => Some(e),
             Self::PayloadTooLarge { .. }
@@ -866,6 +883,7 @@ impl std::error::Error for MonitorPayloadError {
 impl From<DecodeError> for MonitorPayloadError {
     fn from(err: DecodeError) -> Self {
         match err {
+            DecodeError::Data(error) => Self::Data(error),
             DecodeError::Cbor(e) => Self::CborDecode(e),
             DecodeError::MalformedFrame { reason } => Self::MalformedPayload { reason },
             DecodeError::MalformedKey => Self::MalformedKey,
@@ -1018,27 +1036,14 @@ pub fn encode_service_offer_payload(offer: &ServiceOfferPayload) -> Result<Vec<u
             reason: "invalid service offer",
         });
     }
-    let value = Value::Map(vec![
-        (
-            Value::Integer(1.into()),
-            Value::Integer(offer.grant_id.into()),
-        ),
-        (Value::Integer(2.into()), location_to_value(offer.target)),
-        (
-            Value::Integer(3.into()),
-            node_session_to_value(offer.recipient),
-        ),
-        (
-            Value::Integer(4.into()),
-            Value::Array(offer.handlers.iter().cloned().map(Value::Text).collect()),
-        ),
-        (
-            Value::Integer(5.into()),
-            Value::Integer(offer.request_id.into()),
-        ),
-    ]);
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes)?;
+    let bytes = protocol::ServiceOffer {
+        request_id: offer.request_id,
+        grant_id: offer.grant_id,
+        target: wire_location(offer.target),
+        recipient: wire_session(offer.recipient),
+        handlers: offer.handlers.clone(),
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_SERVICE_OFFER_BYTES {
         return Err(EncodeError::InvalidEnvelope {
             reason: "service offer exceeds its size limit",
@@ -1057,36 +1062,14 @@ pub fn decode_service_offer_payload(bytes: &[u8]) -> Result<ServiceOfferPayload,
             reason: "service offer exceeds its size limit",
         });
     }
-    let mut cursor = std::io::Cursor::new(bytes);
-    let value: Value = ciborium::de::from_reader(&mut cursor)?;
-    if cursor.position() != bytes.len() as u64 {
-        return Err(DecodeError::MalformedFrame {
-            reason: "service offer has trailing bytes",
-        });
-    }
-    let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
-    let Value::Array(handlers) = required(&map, 4)? else {
-        return Err(DecodeError::MalformedField {
-            key: 4,
-            expected: "a bounded handler interface",
-        });
-    };
-    if handlers.len() > MAX_SERVICE_HANDLERS {
-        return Err(DecodeError::MalformedField {
-            key: 4,
-            expected: "a bounded handler interface",
-        });
-    }
+    let wire = protocol::ServiceOffer::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(DecodeError::Data)?;
     let offer = ServiceOfferPayload {
-        request_id: value_to_u64(required(&map, 5)?, 5)?,
-        grant_id: value_to_u64(required(&map, 1)?, 1)?,
-        target: value_to_location(required(&map, 2)?, 2)?,
-        recipient: value_to_node_session(required(&map, 3)?, 3)?,
-        handlers: handlers
-            .iter()
-            .map(|handler| value_to_text(handler, 4))
-            .collect::<Result<_, _>>()?,
+        request_id: wire.request_id,
+        grant_id: wire.grant_id,
+        target: checked_location(&wire.target, 2)?,
+        recipient: checked_session(&wire.recipient, 3)?,
+        handlers: wire.handlers,
     };
     if !valid_service_offer(&offer) {
         return Err(DecodeError::MalformedFrame {
@@ -1107,23 +1090,12 @@ pub fn encode_registry_gossip_payload(
 ) -> Result<Vec<u8>, RegistryGossipPayloadError> {
     validate_registry_gossip_payload(payload)?;
 
-    let value = Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.op)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            Value::Text(payload.name.clone()),
-        ),
-        (
-            Value::Integer(Integer::from(3u64)),
-            location_to_value(payload.location),
-        ),
-    ]);
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes)
-        .map_err(RegistryGossipPayloadError::CborEncode)?;
+    let bytes = protocol::RegistryGossip {
+        op: payload.op,
+        name: payload.name.clone(),
+        location: wire_location(payload.location),
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_REGISTRY_GOSSIP_PAYLOAD_BYTES {
         return Err(RegistryGossipPayloadError::PayloadTooLarge {
             len: bytes.len(),
@@ -1138,6 +1110,8 @@ pub fn encode_registry_gossip_payload(
 /// Errors returned by the fail-closed envelope decoders.
 #[derive(Debug)]
 pub enum DecodeError {
+    /// A checked shared data walk refused a control payload.
+    Data(hew_codec::DecodeError),
     /// The underlying CBOR bytes were malformed or truncated.
     Cbor(ciborium::de::Error<std::io::Error>),
     /// The top-level CBOR item is not a schema-conformant frame map.
@@ -1169,6 +1143,7 @@ pub enum DecodeError {
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Data(error) => write!(f, "checked control decode failed: {error}"),
             Self::Cbor(e) => write!(f, "CBOR decode failed: {e}"),
             Self::MalformedFrame { reason } => write!(f, "malformed CBOR frame: {reason}"),
             Self::MalformedKey => {
@@ -1199,6 +1174,7 @@ impl std::fmt::Display for DecodeError {
 impl std::error::Error for DecodeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Data(error) => Some(error),
             Self::Cbor(e) => Some(e),
             Self::MalformedFrame { .. }
             | Self::MalformedKey
@@ -1292,26 +1268,12 @@ pub fn decode_registry_gossip_payload(
         });
     }
 
-    let value: Value =
-        ciborium::de::from_reader(bytes).map_err(RegistryGossipPayloadError::CborDecode)?;
-    let map = collect_map(&value).map_err(RegistryGossipPayloadError::from)?;
-    ensure_exact_keys(&map, &[1, 2, 3]).map_err(RegistryGossipPayloadError::from)?;
+    let wire = protocol::RegistryGossip::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(RegistryGossipPayloadError::Data)?;
     let payload = RegistryGossipPayload {
-        op: value_to_u8(
-            required(&map, 1).map_err(RegistryGossipPayloadError::from)?,
-            1,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
-        name: value_to_text(
-            required(&map, 2).map_err(RegistryGossipPayloadError::from)?,
-            2,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
-        location: value_to_location(
-            required(&map, 3).map_err(RegistryGossipPayloadError::from)?,
-            3,
-        )
-        .map_err(RegistryGossipPayloadError::from)?,
+        op: wire.op,
+        name: wire.name,
+        location: checked_location(&wire.location, 3)?,
     };
     validate_registry_gossip_payload(&payload)?;
     Ok(payload)
@@ -1332,51 +1294,22 @@ pub fn encode_swim_payload(payload: &SwimControlPayload) -> Result<Vec<u8>, Swim
         });
     }
 
-    let gossip = Value::Array(
-        payload
+    let bytes = protocol::SwimControl {
+        msg_type: payload.msg_type,
+        from: wire_session(payload.from),
+        incarnation: payload.incarnation,
+        target: payload.target.map(wire_session),
+        gossip: payload
             .gossip
             .iter()
-            .map(|entry| {
-                Value::Map(vec![
-                    (
-                        Value::Integer(Integer::from(1u64)),
-                        node_session_to_value(entry.member),
-                    ),
-                    (
-                        Value::Integer(Integer::from(2u64)),
-                        Value::Integer(Integer::from(entry.state)),
-                    ),
-                    (
-                        Value::Integer(Integer::from(3u64)),
-                        Value::Integer(Integer::from(entry.incarnation)),
-                    ),
-                ])
+            .map(|entry| protocol::SwimGossip {
+                member: wire_session(entry.member),
+                state: entry.state,
+                incarnation: entry.incarnation,
             })
             .collect(),
-    );
-
-    let value = Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.msg_type)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            node_session_to_value(payload.from),
-        ),
-        (
-            Value::Integer(Integer::from(3u64)),
-            Value::Integer(Integer::from(payload.incarnation)),
-        ),
-        (
-            Value::Integer(Integer::from(4u64)),
-            node_session_option_to_value(payload.target),
-        ),
-        (Value::Integer(Integer::from(5u64)), gossip),
-    ]);
-
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes).map_err(SwimPayloadError::CborEncode)?;
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_SWIM_PAYLOAD_BYTES {
         return Err(SwimPayloadError::PayloadTooLarge {
             len: bytes.len(),
@@ -1401,40 +1334,34 @@ pub fn decode_swim_payload(bytes: &[u8]) -> Result<SwimControlPayload, SwimPaylo
         });
     }
 
-    let value: Value = ciborium::de::from_reader(bytes).map_err(SwimPayloadError::CborDecode)?;
-    let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5])?;
-
-    let gossip_value = required(&map, 5)?;
-    let Value::Array(entries) = gossip_value else {
-        return Err(SwimPayloadError::MalformedField {
-            key: 5,
-            expected: "array",
-        });
-    };
-    if entries.len() > MAX_SWIM_GOSSIP_ENTRIES {
+    let wire = protocol::SwimControl::decode(hew_codec::Format::Cbor, bytes)
+        .map_err(SwimPayloadError::Data)?;
+    if wire.gossip.len() > MAX_SWIM_GOSSIP_ENTRIES {
         return Err(SwimPayloadError::TooManyGossipEntries {
-            len: entries.len(),
+            len: wire.gossip.len(),
             max: MAX_SWIM_GOSSIP_ENTRIES,
         });
     }
-    let mut gossip = Vec::with_capacity(entries.len());
-    for entry in entries {
-        let entry_map = collect_map(entry)?;
-        ensure_exact_keys(&entry_map, &[1, 2, 3])?;
-        gossip.push(SwimGossipEntry {
-            member: value_to_node_session(required(&entry_map, 1)?, 1)?,
-            state: value_to_i32(required(&entry_map, 2)?, 2)?,
-            incarnation: value_to_u64(required(&entry_map, 3)?, 3)?,
-        });
-    }
-
     Ok(SwimControlPayload {
-        msg_type: value_to_i32(required(&map, 1)?, 1)?,
-        from: value_to_node_session(required(&map, 2)?, 2)?,
-        incarnation: value_to_u64(required(&map, 3)?, 3)?,
-        target: value_to_node_session_option(required(&map, 4)?, 4)?,
-        gossip,
+        msg_type: wire.msg_type,
+        from: checked_session(&wire.from, 2)?,
+        incarnation: wire.incarnation,
+        target: wire
+            .target
+            .as_ref()
+            .map(|target| checked_session(target, 4))
+            .transpose()?,
+        gossip: wire
+            .gossip
+            .iter()
+            .map(|entry| {
+                Ok(SwimGossipEntry {
+                    member: checked_session(&entry.member, 1)?,
+                    state: entry.state,
+                    incarnation: entry.incarnation,
+                })
+            })
+            .collect::<Result<_, DecodeError>>()?,
     })
 }
 
@@ -1515,50 +1442,25 @@ pub fn decode_monitor_req_payload(bytes: &[u8]) -> Result<MonitorReqPayload, Mon
 pub fn encode_monitor_down_payload(
     payload: &MonitorDownPayload,
 ) -> Result<Vec<u8>, MonitorPayloadError> {
-    let close_fault = match &payload.close_fault {
-        None => Value::Null,
-        Some((0, _)) => {
-            return Err(MonitorPayloadError::MalformedField {
-                key: 6,
-                expected: "a nonzero cleanup fault code",
-            });
-        }
-        Some((_, message)) if message.len() > MAX_TERMINAL_FAULT_MESSAGE_BYTES => {
-            return Err(MonitorPayloadError::MalformedField {
-                key: 6,
-                expected: "cleanup fault diagnostic of at most 4096 UTF-8 bytes",
-            });
-        }
-        Some((code, message)) => Value::Map(vec![
-            (Value::Integer(1u64.into()), Value::Integer((*code).into())),
-            (Value::Integer(2u64.into()), Value::Text(message.clone())),
-        ]),
-    };
-    let value = Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(payload.ref_id)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            location_to_value(payload.target),
-        ),
-        (
-            Value::Integer(Integer::from(3u64)),
-            down_reason_to_value(payload.reason),
-        ),
-        (
-            Value::Integer(Integer::from(4u64)),
-            Value::Integer(Integer::from(payload.crash_kind)),
-        ),
-        (
-            Value::Integer(Integer::from(5u64)),
-            Value::Integer(Integer::from(payload.end_reason)),
-        ),
-        (Value::Integer(6u64.into()), close_fault),
-    ]);
-    let mut bytes = Vec::new();
-    ciborium::ser::into_writer(&value, &mut bytes).map_err(MonitorPayloadError::CborEncode)?;
+    validate_cleanup_fault(payload.close_fault.as_ref())?;
+    let bytes = protocol::MonitorDown {
+        ref_id: payload.ref_id,
+        target: wire_location(payload.target),
+        reason: protocol::DownReason {
+            tag: DOWN_REASON_ACTOR_STATE,
+            code: payload.reason,
+        },
+        crash_kind: payload.crash_kind,
+        end_reason: payload.end_reason,
+        close_fault: payload
+            .close_fault
+            .as_ref()
+            .map(|(code, message)| protocol::CleanupFault {
+                code: *code,
+                message: message.clone(),
+            }),
+    }
+    .encode(hew_codec::Format::Cbor);
     if bytes.len() > MAX_TERMINAL_PAYLOAD_BYTES {
         return Err(MonitorPayloadError::PayloadTooLarge {
             len: bytes.len(),
@@ -1583,57 +1485,30 @@ pub fn decode_monitor_down_payload(
             max: MAX_TERMINAL_PAYLOAD_BYTES,
         });
     }
-    let mut cursor = std::io::Cursor::new(bytes);
-    let value: Value =
-        ciborium::de::from_reader(&mut cursor).map_err(MonitorPayloadError::CborDecode)?;
-    if cursor.position() != bytes.len() as u64 {
-        return Err(MonitorPayloadError::MalformedPayload {
-            reason: "monitor DOWN has trailing bytes",
-        });
-    }
-    let map = collect_map(&value)?;
-    ensure_exact_keys(&map, &[1, 2, 3, 4, 5, 6])?;
-    let end_reason = value_to_u8(required(&map, 5)?, 5)?;
-    if end_reason > 4 {
+    let wire =
+        protocol::MonitorDown::decode(hew_codec::Format::Cbor, bytes).map_err(DecodeError::Data)?;
+    if wire.end_reason > 4 {
         return Err(DecodeError::MalformedField {
             key: 5,
             expected: "a known actor end reason",
         }
         .into());
     }
-    let close_fault = match required(&map, 6)? {
-        Value::Null => None,
-        value => {
-            let fault = collect_map(value)?;
-            ensure_exact_keys(&fault, &[1, 2])?;
-            let code = value_to_i32(required(&fault, 1)?, 1)?;
-            if code == 0 {
-                return Err(MonitorPayloadError::MalformedField {
-                    key: 6,
-                    expected: "a nonzero cleanup fault code",
-                });
-            }
-            let Value::Text(message) = required(&fault, 2)? else {
-                return Err(MonitorPayloadError::MalformedField {
-                    key: 6,
-                    expected: "cleanup fault diagnostic text",
-                });
-            };
-            if message.len() > MAX_TERMINAL_FAULT_MESSAGE_BYTES {
-                return Err(MonitorPayloadError::MalformedField {
-                    key: 6,
-                    expected: "cleanup fault diagnostic of at most 4096 UTF-8 bytes",
-                });
-            }
-            Some((code, message.clone()))
+    if wire.reason.tag != DOWN_REASON_ACTOR_STATE {
+        return Err(DecodeError::MalformedField {
+            key: 3,
+            expected: "a known DOWN reason tag",
         }
-    };
+        .into());
+    }
+    let close_fault = wire.close_fault.map(|fault| (fault.code, fault.message));
+    validate_cleanup_fault(close_fault.as_ref())?;
     Ok(MonitorDownPayload {
-        ref_id: value_to_u64(required(&map, 1)?, 1)?,
-        target: value_to_location(required(&map, 2)?, 2)?,
-        reason: value_to_down_reason(required(&map, 3)?, 3)?,
-        crash_kind: value_to_i32(required(&map, 4)?, 4)?,
-        end_reason,
+        ref_id: wire.ref_id,
+        target: checked_location(&wire.target, 2)?,
+        reason: wire.reason.code,
+        crash_kind: wire.crash_kind,
+        end_reason: wire.end_reason,
         close_fault,
     })
 }
@@ -1942,14 +1817,6 @@ fn value_to_u64(value: &Value, key: u64) -> Result<u64, DecodeError> {
     })
 }
 
-fn value_to_i32(value: &Value, key: u64) -> Result<i32, DecodeError> {
-    let integer = value_to_integer(value, key, "an i32 integer")?;
-    i32::try_from(integer).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "an i32 integer",
-    })
-}
-
 fn value_to_integer(value: &Value, key: u64, expected: &'static str) -> Result<i128, DecodeError> {
     match value {
         Value::Integer(integer) => Ok(integer_to_i128(*integer)),
@@ -1988,13 +1855,23 @@ fn value_to_node_id(value: &Value, key: u64) -> Result<NodeId, DecodeError> {
             expected: "a 16-byte node id",
         });
     };
-    let bytes: [u8; 16] = bytes
-        .as_slice()
-        .try_into()
-        .map_err(|_| DecodeError::MalformedField {
-            key,
-            expected: "a 16-byte node id",
-        })?;
+    checked_node_id(bytes, key)
+}
+
+fn wire_location(location: Location) -> protocol::WireLocation {
+    protocol::WireLocation {
+        node: location.node().to_bytes().to_vec(),
+        target_id: location.target().id(),
+        incarnation: location.incarnation(),
+        target_kind: location.target().kind(),
+    }
+}
+
+fn checked_node_id(bytes: &[u8], key: u64) -> Result<NodeId, DecodeError> {
+    let bytes: [u8; 16] = bytes.try_into().map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a non-zero 16-byte node id",
+    })?;
     if bytes == [0; 16] {
         return Err(DecodeError::MalformedField {
             key,
@@ -2002,6 +1879,35 @@ fn value_to_node_id(value: &Value, key: u64) -> Result<NodeId, DecodeError> {
         });
     }
     Ok(NodeId::from_bytes(bytes))
+}
+
+fn checked_location(wire: &protocol::WireLocation, key: u64) -> Result<Location, DecodeError> {
+    Location::try_from(crate::node_identity::HewLocation {
+        node: checked_node_id(&wire.node, key)?.into(),
+        target_id: wire.target_id,
+        incarnation: wire.incarnation,
+        target_kind: wire.target_kind,
+    })
+    .map_err(|_| DecodeError::MalformedField {
+        key,
+        expected: "a location with a known target kind and non-zero identity and session",
+    })
+}
+
+fn validate_cleanup_fault(fault: Option<&(i32, String)>) -> Result<(), MonitorPayloadError> {
+    match fault {
+        Some((0, _)) => Err(MonitorPayloadError::MalformedField {
+            key: 6,
+            expected: "a nonzero cleanup fault code",
+        }),
+        Some((_, message)) if message.len() > MAX_TERMINAL_FAULT_MESSAGE_BYTES => {
+            Err(MonitorPayloadError::MalformedField {
+                key: 6,
+                expected: "cleanup fault diagnostic of at most 4096 UTF-8 bytes",
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn location_to_value(location: Location) -> Value {
@@ -2067,88 +1973,30 @@ fn value_to_location_option(value: &Value, key: u64) -> Result<Option<Location>,
     }
 }
 
-fn node_session_to_value(identity: NodeSessionIdentity) -> Value {
-    Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            node_id_to_value(identity.node_id),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(identity.session_incarnation)),
-        ),
-    ])
+fn wire_session(identity: NodeSessionIdentity) -> protocol::WireSession {
+    protocol::WireSession {
+        node: identity.node_id.to_bytes().to_vec(),
+        incarnation: identity.session_incarnation,
+    }
 }
 
-fn node_session_option_to_value(identity: Option<NodeSessionIdentity>) -> Value {
-    identity.map_or(Value::Null, node_session_to_value)
-}
-
-fn value_to_node_session(value: &Value, key: u64) -> Result<NodeSessionIdentity, DecodeError> {
-    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "a node-session map",
-    })?;
-    ensure_exact_keys(&map, &[1, 2])?;
-    let session_raw = value_to_u64(required(&map, 2)?, key)?;
-    let session_incarnation =
-        u32::try_from(session_raw).map_err(|_| DecodeError::MalformedField {
-            key,
-            expected: "a node session with a u32 incarnation",
-        })?;
-    if session_incarnation == 0 {
+fn checked_session(
+    wire: &protocol::WireSession,
+    key: u64,
+) -> Result<NodeSessionIdentity, DecodeError> {
+    if wire.incarnation == 0 {
         return Err(DecodeError::MalformedField {
             key,
             expected: "a node session with non-zero incarnation",
         });
     }
     Ok(NodeSessionIdentity {
-        node_id: value_to_node_id(required(&map, 1)?, key)?,
-        session_incarnation,
+        node_id: checked_node_id(&wire.node, key)?,
+        session_incarnation: wire.incarnation,
     })
 }
 
-fn value_to_node_session_option(
-    value: &Value,
-    key: u64,
-) -> Result<Option<NodeSessionIdentity>, DecodeError> {
-    if matches!(value, Value::Null) {
-        Ok(None)
-    } else {
-        value_to_node_session(value, key).map(Some)
-    }
-}
-
 const DOWN_REASON_ACTOR_STATE: u8 = 1;
-
-fn down_reason_to_value(reason: i32) -> Value {
-    Value::Map(vec![
-        (
-            Value::Integer(Integer::from(1u64)),
-            Value::Integer(Integer::from(DOWN_REASON_ACTOR_STATE)),
-        ),
-        (
-            Value::Integer(Integer::from(2u64)),
-            Value::Integer(Integer::from(reason)),
-        ),
-    ])
-}
-
-fn value_to_down_reason(value: &Value, key: u64) -> Result<i32, DecodeError> {
-    let map = collect_map(value).map_err(|_| DecodeError::MalformedField {
-        key,
-        expected: "a typed DOWN reason map",
-    })?;
-    ensure_exact_keys(&map, &[1, 2])?;
-    let tag = value_to_u8(required(&map, 1)?, key)?;
-    if tag != DOWN_REASON_ACTOR_STATE {
-        return Err(DecodeError::MalformedField {
-            key,
-            expected: "a known DOWN reason tag",
-        });
-    }
-    value_to_i32(required(&map, 2)?, key)
-}
 
 fn validate_registry_gossip_payload(
     payload: &RegistryGossipPayload,

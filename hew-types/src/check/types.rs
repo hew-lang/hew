@@ -3265,9 +3265,9 @@ pub struct Checker {
     /// [`TypeCheckOutput::user_comparison_dispatch`].
     pub(super) user_comparison_dispatch: HashMap<SpanKey, UserComparisonDispatch>,
     pub(super) numeric_operand_coercions: HashMap<SpanKey, Ty>,
-    /// Declaring provenance for attributed methods, keyed by canonical
-    /// `Type::method` signature identity.
-    pub(super) extern_method_origins: HashMap<String, (Option<String>, bool)>,
+    /// Declaring provenance for attributed methods, keyed by the selected
+    /// source declaration so lexical and canonical aliases share one fact.
+    pub(super) extern_method_origins: HashMap<crate::DefId, (Option<String>, bool)>,
     /// Declared C-boundary signatures for the `#[extern_symbol]` methods this
     /// unit dispatched, keyed by source declaration identity.
     pub(super) extern_method_signatures: HashMap<(crate::DefId, String), ExternMethodSignature>,

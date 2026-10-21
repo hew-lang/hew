@@ -56,6 +56,7 @@ fn main() {
             ActorError.NodeNotRunning => println("node not running"),
             ActorError.RoutingFailed => println("routing failed"),
             ActorError.EncodeFailed => println("encode failed"),
+            ActorError.MessageTooLarge => println("encode failed"),
             ActorError.ConnectionDropped => println("connection dropped"),
             ActorError.Partition => println("partition"),
             ActorError.Refused => println("refused"),

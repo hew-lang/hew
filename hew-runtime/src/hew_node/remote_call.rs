@@ -202,8 +202,13 @@ fn setup_remote_ask(
                 }
             },
             move |result| {
-                if result.is_err_and(|error| error != connection::ChannelError::Preparation) {
-                    completion_table.fail_connection(connection);
+                match result {
+                    Err(connection::ChannelError::FrameTooLarge { .. }) => {
+                        // The channel proved nonpublication before writes or nonce use.
+                        completion_table.refuse(request_id, AskError::MessageTooLarge);
+                    }
+                    Ok(()) | Err(connection::ChannelError::Preparation) => {}
+                    Err(_) => completion_table.fail_connection(connection),
                 }
             },
         );

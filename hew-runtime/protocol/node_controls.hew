@@ -1,0 +1,69 @@
+// Internal node controls: checked by the ordinary Hew data-plan authority.
+// Runtime owners validate identity, admission, terminal and resource policy.
+#[wire]
+pub type WireLocation {
+    node: bytes @1;
+    target_id: u64 @2;
+    incarnation: u32 @3;
+    target_kind: u32 @4;
+}
+
+#[wire]
+pub type WireSession {
+    node: bytes @1;
+    incarnation: u32 @2;
+}
+
+#[wire]
+pub type CleanupFault {
+    code: i32 @1;
+    message: string @2;
+}
+
+#[wire]
+pub type DownReason {
+    tag: u8 @1;
+    code: i32 @2;
+}
+
+#[wire]
+pub type ServiceOffer {
+    grant_id: u64 @1;
+    target: WireLocation @2;
+    recipient: WireSession @3;
+    handlers: Vec<string> @4;
+    request_id: u64 @5;
+}
+
+#[wire]
+pub type MonitorDown {
+    ref_id: u64 @1;
+    target: WireLocation @2;
+    reason: DownReason @3;
+    crash_kind: i32 @4;
+    end_reason: u8 @5;
+    close_fault: Option<CleanupFault> @6;
+}
+
+#[wire]
+pub type RegistryGossip {
+    op: u8 @1;
+    name: string @2;
+    location: WireLocation @3;
+}
+
+#[wire]
+pub type SwimGossip {
+    member: WireSession @1;
+    state: i32 @2;
+    incarnation: u64 @3;
+}
+
+#[wire]
+pub type SwimControl {
+    msg_type: i32 @1;
+    from: WireSession @2;
+    incarnation: u64 @3;
+    target: Option<WireSession> @4;
+    gossip: Vec<SwimGossip> @5;
+}

@@ -1,0 +1,83 @@
+// Cross-language value evidence uses the exact internal checked declarations.
+import node_controls.{ServiceOffer, MonitorDown, WireLocation, WireSession, DownReason, CleanupFault, RegistryGossip, SwimControl, SwimGossip};
+import std.encoding.cbor;
+import std.encoding.msgpack;
+import std.fs;
+
+fn offer() -> ServiceOffer {
+    ServiceOffer { grant_id: 7, target: WireLocation { node: "0123456789abcdef".to_bytes(), target_id: 4294967297, incarnation: 4, target_kind: 1 }, recipient: WireSession { node: "fedcba9876543210".to_bytes(), incarnation: 2 }, handlers: ["tests.Service.read", "tests.Service.write"], request_id: 3 }
+}
+
+fn down() -> MonitorDown {
+    MonitorDown { ref_id: 19, target: offer().target, reason: DownReason { tag: 1, code: -1 }, crash_kind: 2, end_reason: 2, close_fault: .Some(CleanupFault { code: -7, message: "cleanup café" }) }
+}
+
+fn check_offer(value: ServiceOffer) {
+    assert(value.grant_id == 7 && value.request_id == 3);
+    assert(value.target.node == "0123456789abcdef".to_bytes());
+    assert(value.target.target_id == 4294967297 && value.target.incarnation == 4 && value.target.target_kind == 1);
+    assert(value.recipient.node == "fedcba9876543210".to_bytes() && value.recipient.incarnation == 2);
+    assert(value.handlers == ["tests.Service.read", "tests.Service.write"]);
+}
+
+fn check_down(value: MonitorDown) {
+    assert(value.ref_id == 19 && value.reason.tag == 1 && value.reason.code == -1);
+    assert(value.target.node == "0123456789abcdef".to_bytes() && value.target.target_id == 4294967297);
+    assert(value.crash_kind == 2 && value.end_reason == 2);
+    match value.close_fault {
+        .Some(fault) => {
+            assert(fault.code == -7 && fault.message == "cleanup café");
+        }
+        .None => {
+            assert(false);
+        }
+    }
+}
+
+fn registry() -> RegistryGossip {
+    RegistryGossip { op: 5, name: "worker café", location: offer().target }
+}
+
+fn swim() -> SwimControl {
+    SwimControl { msg_type: 3, from: offer().recipient, incarnation: 4294967297, target: .Some(WireSession { node: "0123456789abcdef".to_bytes(), incarnation: 4 }), gossip: [SwimGossip { member: offer().recipient, state: 2, incarnation: 19 }] }
+}
+
+fn check_registry(value: RegistryGossip) {
+    assert(value.op == 5 && value.name == "worker café");
+    assert(value.location.node == "0123456789abcdef".to_bytes() && value.location.target_id == 4294967297);
+}
+
+fn check_swim(value: SwimControl) {
+    assert(value.msg_type == 3 && value.from.node == "fedcba9876543210".to_bytes());
+    assert(value.from.incarnation == 2 && value.incarnation == 4294967297);
+    assert(value.gossip.len() == 1 && value.gossip[0].state == 2 && value.gossip[0].incarnation == 19);
+    assert(value.gossip[0].member.node == value.from.node && value.gossip[0].member.incarnation == 2);
+    match value.target {
+        .Some(target) => {
+            assert(target.node == "0123456789abcdef".to_bytes() && target.incarnation == 4);
+        }
+        .None => {
+            assert(false);
+        }
+    }
+}
+
+fn main() -> i64 {
+    check_registry(cbor.decode<RegistryGossip>(fs.read_bytes("rust-registry.cbor").expect("read")).expect("decode"));
+    check_registry(msgpack.decode<RegistryGossip>(fs.read_bytes("rust-registry.msgpack").expect("read")).expect("decode"));
+    check_swim(cbor.decode<SwimControl>(fs.read_bytes("rust-swim.cbor").expect("read")).expect("decode"));
+    check_swim(msgpack.decode<SwimControl>(fs.read_bytes("rust-swim.msgpack").expect("read")).expect("decode"));
+    fs.write_bytes("hew-registry.cbor", cbor.encode(registry())).expect("write");
+    fs.write_bytes("hew-registry.msgpack", msgpack.encode(registry())).expect("write");
+    fs.write_bytes("hew-swim.cbor", cbor.encode(swim())).expect("write");
+    fs.write_bytes("hew-swim.msgpack", msgpack.encode(swim())).expect("write");
+    check_offer(cbor.decode<ServiceOffer>(fs.read_bytes("rust-offer.cbor").expect("read")).expect("decode"));
+    check_offer(msgpack.decode<ServiceOffer>(fs.read_bytes("rust-offer.msgpack").expect("read")).expect("decode"));
+    check_down(cbor.decode<MonitorDown>(fs.read_bytes("rust-down.cbor").expect("read")).expect("decode"));
+    check_down(msgpack.decode<MonitorDown>(fs.read_bytes("rust-down.msgpack").expect("read")).expect("decode"));
+    fs.write_bytes("hew-offer.cbor", cbor.encode(offer())).expect("write");
+    fs.write_bytes("hew-offer.msgpack", msgpack.encode(offer())).expect("write");
+    fs.write_bytes("hew-down.cbor", cbor.encode(down())).expect("write");
+    fs.write_bytes("hew-down.msgpack", msgpack.encode(down())).expect("write");
+    0
+}

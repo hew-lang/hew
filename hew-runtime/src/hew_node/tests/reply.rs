@@ -566,6 +566,7 @@ fn rejection_reason_codes_round_trip_supported_remote_failures() {
     for ask_error in [
         AskError::Timeout,
         AskError::EncodeFailed,
+        AskError::MessageTooLarge,
         AskError::SendFailed,
         AskError::PayloadSizeMismatch,
         AskError::LocalShutdown,

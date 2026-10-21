@@ -2994,14 +2994,6 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                 CodegenError::FailClosed("submission lacks its SendFailure recipe".into())
             })?;
         let reason_ty = &failure.fields[0].ty;
-        let reason = self
-            .module
-            .variant_glue
-            .iter()
-            .find(|glue| glue.ty == *reason_ty)
-            .ok_or_else(|| {
-                CodegenError::FailClosed("submission lacks its SendError recipe".into())
-            })?;
         let success = self
             .ctx
             .append_basic_block(self.value, "submission.accepted");
@@ -3050,55 +3042,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .build_unconditional_branch(done)
             .llvm_ctx("finish unknown delivery")?;
         self.builder.position_at_end(rejected);
-        use hew_mir::RuntimeVariantRole as Role;
-        use hew_runtime::internal::types::AskError;
-        let mut reason_tag = self.ctx.i8_type().const_zero();
-        for code in AskError::ALL
-            .iter()
-            .copied()
-            .filter(|code| *code != AskError::None)
-        {
-            let role = match code {
-                AskError::MailboxFull => Role::SendErrorFull,
-                AskError::ActorStopped | AskError::OrphanedAsk | AskError::StaleRef => {
-                    Role::SendErrorDead
-                }
-                AskError::NodeNotRunning | AskError::LocalShutdown => Role::SendErrorLocalShutdown,
-                AskError::RoutingFailed | AskError::Partition => Role::SendErrorPartition,
-                AskError::Unauthorized => Role::SendErrorUnauthorized,
-                AskError::EncodeFailed
-                | AskError::DecodeFailure
-                | AskError::PayloadSizeMismatch => Role::SendErrorInvalidMessage,
-                AskError::Timeout | AskError::NoRunnableWork => Role::SendErrorTimedOut,
-                AskError::Cancelled => Role::SendErrorCancelled,
-                AskError::VersionMismatch => Role::SendErrorVersionMismatch,
-                AskError::ConnectionDropped | AskError::MonitorLost => Role::SendErrorClosed,
-                _ => Role::SendErrorBackpressure,
-            };
-            let tag = reason.runtime_tag(role).ok_or_else(|| {
-                CodegenError::FailClosed("send refusal lacks its semantic tag".into())
-            })?;
-            let matches = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_int(code as u64, false),
-                    "submission.reason.matches",
-                )
-                .llvm_ctx("select refusal reason")?;
-            reason_tag = self
-                .builder
-                .build_select(
-                    matches,
-                    self.ctx.i8_type().const_int(u64::from(tag), false),
-                    reason_tag,
-                    "submission.reason.tag",
-                )
-                .llvm_ctx("name refusal reason")?
-                .into_int_value();
-        }
-        let reason = self.actor_unit_variant(reason_ty, reason_tag)?;
+        let reason = self.actor_send_error_reason(status, reason_ty)?;
         let failure = self.ask_record(failure_ty, &[reason, message.into()])?;
         let slot = self.value_emitter().entry_scratch(
             llvm_type(
@@ -3129,6 +3073,73 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .llvm_ctx("finish rejected submission")?;
         self.builder.position_at_end(done);
         Ok(())
+    }
+
+    /// Translate runtime refusal status through the same SendError roles for
+    /// mailbox submissions and returned completion requests.
+    pub(super) fn actor_send_error_reason(
+        &self,
+        status: IntValue<'ctx>,
+        reason_ty: &ResolvedTy,
+    ) -> CodegenResult<BasicValueEnum<'ctx>> {
+        let reason = self
+            .module
+            .variant_glue
+            .iter()
+            .find(|glue| glue.ty == *reason_ty)
+            .ok_or_else(|| {
+                CodegenError::FailClosed("submission lacks its SendError recipe".into())
+            })?;
+        use hew_mir::RuntimeVariantRole as Role;
+        use hew_runtime::internal::types::AskError;
+        let mut reason_tag = self.ctx.i8_type().const_zero();
+        for code in AskError::ALL
+            .iter()
+            .copied()
+            .filter(|code| *code != AskError::None)
+        {
+            let role = match code {
+                AskError::MailboxFull => Role::SendErrorFull,
+                AskError::ActorStopped | AskError::OrphanedAsk | AskError::StaleRef => {
+                    Role::SendErrorDead
+                }
+                AskError::NodeNotRunning | AskError::LocalShutdown => Role::SendErrorLocalShutdown,
+                AskError::RoutingFailed | AskError::Partition => Role::SendErrorPartition,
+                AskError::Unauthorized => Role::SendErrorUnauthorized,
+                AskError::EncodeFailed
+                | AskError::DecodeFailure
+                | AskError::PayloadSizeMismatch => Role::SendErrorInvalidMessage,
+                AskError::MessageTooLarge => Role::SendErrorMessageTooLarge,
+                AskError::Timeout | AskError::NoRunnableWork => Role::SendErrorTimedOut,
+                AskError::Cancelled => Role::SendErrorCancelled,
+                AskError::VersionMismatch => Role::SendErrorVersionMismatch,
+                AskError::ConnectionDropped | AskError::MonitorLost => Role::SendErrorClosed,
+                _ => Role::SendErrorBackpressure,
+            };
+            let tag = reason.runtime_tag(role).ok_or_else(|| {
+                CodegenError::FailClosed("send refusal lacks its semantic tag".into())
+            })?;
+            let matches = self
+                .builder
+                .build_int_compare(
+                    IntPredicate::EQ,
+                    status,
+                    self.ctx.i32_type().const_int(code as u64, false),
+                    "submission.reason.matches",
+                )
+                .llvm_ctx("select refusal reason")?;
+            reason_tag = self
+                .builder
+                .build_select(
+                    matches,
+                    self.ctx.i8_type().const_int(u64::from(tag), false),
+                    reason_tag,
+                    "submission.reason.tag",
+                )
+                .llvm_ctx("name refusal reason")?
+                .into_int_value();
+        }
+        self.actor_unit_variant(reason_ty, reason_tag)
     }
 
     /// Construct the field-less variant a runtime status tag names. The payload

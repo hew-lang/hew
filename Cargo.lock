@@ -6159,6 +6159,7 @@ dependencies = [
 name = "xtask"
 version = "0.6.3"
 dependencies = [
+ "hew-parser",
  "hew-types",
  "hew-wasm",
  "quick-xml",

@@ -635,9 +635,9 @@ release-checks: dependency-policy licenses-check test-install-version-resolution
 # Deterministic generated repository artifacts. Behavioral ratchets remain
 # owned by their named test targets; they are intentionally not re-recorded by
 # a generic command from observed compiler output.
-baselines: syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
+baselines: node-protocol syntax-data sandbox-bytecode wasm-capability playground-manifest licenses cabi-surface
 
-baselines-check: syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
+baselines-check: node-protocol-check syntax-data-check sandbox-bytecode-check wasm-capability-check playground-manifest-check sandbox-fixtures-check licenses-check cabi-surface-check ## Check: verify deterministic generated artifacts are current
 
 
 # Install hew-sandbox-vm's npm dependencies, skipping the install when
@@ -681,8 +681,9 @@ playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and b
 	npm --prefix hew-sandbox-vm run build
 	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib \
 		--test v05_wasm_coverage --test sandbox_actor_package \
-		--test sandbox_embedded_std --test sandbox_spread_profile
+		--test sandbox_embedded_std --test sandbox_spread_profile --test sandbox_project
 	$(MAKE) wasm
+	node --test hew-wasm/tests/project_wasm.mjs
 
 # Focused curated playground WASI runtime preflight.
 playground-wasi-check: wasm-runtime hew-native
@@ -1477,6 +1478,12 @@ test-build-harness:
 	$(PYTHON) scripts/tests/test_cargo_output_dir.py
 	$(PYTHON) scripts/tests/test_compiled_hew_shards.py
 	$(PYTHON) scripts/tests/test_release_qualification.py
+	$(MAKE) test-release-channels
+
+.PHONY: test-release-channels
+test-release-channels: ## Test: verify release delivery identity and completion
+	$(PYTHON) scripts/tests/test_release_channels.py
+	$(PYTHON) scripts/tests/test_release_assets.py
 
 # A dependency-free Rust fixture exercises the actual version producer; it does not
 # build the compiler or share the toolchain target directory.
@@ -1773,3 +1780,11 @@ sandbox-bytecode: sandbox-vm-deps ## Generate: Rust-owned sandbox instruction ty
 sandbox-bytecode-check: sandbox-vm-deps ## Check: generated sandbox instruction types and schema
 	cargo run -p xtask -- sandbox-bytecode --check
 	node hew-sandbox-vm/scaffolding/scripts/generate-bytecode-validator.mjs --check
+
+.PHONY: node-protocol node-protocol-check
+node-protocol: ## Generate: checked internal node control bindings and CDDL
+	cargo run -p xtask -- node-protocol --write
+
+LINT_GATES += node-protocol-check
+node-protocol-check: ## Check: internal node control bindings match checked Hew plans
+	cargo run -p xtask -- node-protocol --check

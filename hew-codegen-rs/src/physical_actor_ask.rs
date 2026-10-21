@@ -395,44 +395,20 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         if policy == hew_types::actor_delivery::SendPolicy::Reject {
             let rejected = self.ctx.append_basic_block(self.value, "ask.rejected");
             let replied = self.ctx.append_basic_block(self.value, "ask.replied");
-            let full = self
+            let rejected_request = self
                 .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_int(
-                        hew_runtime::internal::types::AskError::MailboxFull as u64,
-                        false,
-                    ),
-                    "ask.refused.full",
-                )
-                .llvm_ctx("classify full-mailbox rejection")?;
-            let shutting_down = self
-                .builder
-                .build_int_compare(
-                    IntPredicate::EQ,
-                    status,
-                    self.ctx.i32_type().const_int(
-                        hew_runtime::internal::types::AskError::LocalShutdown as u64,
-                        false,
-                    ),
-                    "ask.refused.shutdown",
-                )
-                .llvm_ctx("classify shutdown rejection")?;
+                .build_load(ptr, request, "ask.rejected.envelope")
+                .llvm_ctx("take returned request evidence")?
+                .into_pointer_value();
             let refused = self
                 .builder
-                .build_or(full, shutting_down, "ask.refused")
-                .llvm_ctx("classify request rejection")?;
+                .build_is_not_null(rejected_request, "ask.refused")
+                .llvm_ctx("classify owned request rejection")?;
             self.builder
                 .build_conditional_branch(refused, rejected, replied)
                 .llvm_ctx("select owned rejection")?;
             self.builder.position_at_end(rejected);
-            let request = self
-                .builder
-                .build_load(ptr, request, "ask.rejected.envelope")
-                .llvm_ctx("take rejected envelope")?
-                .into_pointer_value();
-            self.emit_ask_refused(result, target, message, request, shutting_down)?;
+            self.emit_ask_refused(result, target, message, rejected_request, status)?;
             self.builder
                 .build_unconditional_branch(done)
                 .llvm_ctx("finish rejected request")?;
@@ -446,19 +422,16 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         Ok(())
     }
 
-    /// A `policy(target, on_full: .Reject)` call refused admission, because
-    /// the destination mailbox is full or the runtime is shutting down:
-    /// nothing was accepted, so `Rejected` returns the refusal reason
-    /// (`Full` or `LocalShutdown`) and the original owned request. These are
-    /// the only refusals a completion call reports; every other outcome means
-    /// the request was accepted or its fate is unknown.
+    /// A Reject call returned its original request as nonadmission evidence.
+    /// The status explains the refusal; a status alone must never manufacture
+    /// ownership, since the same size failure can follow handler execution.
     fn emit_ask_refused(
         &self,
         result: StorageId,
         target: StorageId,
         message: u32,
         request: PointerValue<'ctx>,
-        shutting_down: IntValue<'ctx>,
+        status: IntValue<'ctx>,
     ) -> CodegenResult<()> {
         let glue = self
             .module
@@ -520,25 +493,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         )?;
         let reason_ty = ResolvedTy::from_ty(&hew_types::Ty::send_error())
             .map_err(|error| CodegenError::FailClosed(error.to_string()))?;
-        let reason_tag = |role| {
-            self.module
-                .variant_glue
-                .iter()
-                .find(|glue| glue.ty == reason_ty)
-                .and_then(|glue| glue.runtime_tag(role))
-                .map(|tag| self.ctx.i32_type().const_int(u64::from(tag), false))
-                .ok_or_else(|| {
-                    CodegenError::FailClosed("send refusal reason lacks its runtime role".into())
-                })
-        };
-        let full = reason_tag(hew_mir::RuntimeVariantRole::SendErrorFull)?;
-        let local_shutdown = reason_tag(hew_mir::RuntimeVariantRole::SendErrorLocalShutdown)?;
-        let tag = self
-            .builder
-            .build_select(shutting_down, local_shutdown, full, "ask.refused.reason")
-            .llvm_ctx("select refusal reason")?
-            .into_int_value();
-        let reason = self.actor_unit_variant(&reason_ty, tag)?;
+        let reason = self.actor_send_error_reason(status, &reason_ty)?;
         let failure = self.ask_record(&failure_ty, &[reason, message])?;
         let object_ty = llvm_type(
             self.ctx,
@@ -997,6 +952,7 @@ pub(super) const fn actor_error_variant_role(
         Role::NodeNotRunning => Variant::ActorErrorNodeNotRunning,
         Role::RoutingFailed => Variant::ActorErrorRoutingFailed,
         Role::EncodeFailed => Variant::ActorErrorEncodeFailed,
+        Role::MessageTooLarge => Variant::ActorErrorMessageTooLarge,
         Role::ConnectionDropped => Variant::ActorErrorConnectionDropped,
         Role::Partition => Variant::ActorErrorPartition,
     }

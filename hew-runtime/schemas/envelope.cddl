@@ -1,3 +1,4 @@
+; Combine with node-controls.generated.cddl for the complete schema.
 ; Hew wire envelope CDDL schema — doc-of-truth for the CBOR wire layer.
 ;
 ; Every on-wire CBOR frame produced by the Hew runtime MUST conform to one
@@ -52,11 +53,8 @@ control-frame = {
     4 => bstr, ; payload: 0..* bytes; empty bstr for bare signals
 }
 
-registry-gossip-payload = {
-    1 => registry-gossip-op, ; op
-    2 => text, ; name: bounded by runtime to 1024 UTF-8 bytes
-    3 => location, ; location: exact identity for both add and remove
-}
+registry-gossip-payload = registry-gossip
+; Runtime policy: add/remove operation, bounded NUL-free name, valid location.
 
 registry-gossip-op = 5 / 6         ; add / remove
 
@@ -77,24 +75,10 @@ monitor-req-payload = {
     5 => uint, ; grant_id: active recipient-bound export grant
 }
 
-monitor-down-payload = {
-    1 => uint, ; ref_id: echoed from the request
-    2 => location, ; target
-    3 => down-reason, ; reason
-    4 => -2147483648..2147483647, ; crash_kind
-    5 => 0..4, ; end_reason: stopped, terminated, crashed, lost, local shutdown
-    6 => cleanup-fault / nil, ; close_fault
-} ; complete encoded payload at most 8192 bytes
-
-cleanup-fault = {
-    1 => (-2147483648..-1) / (1..2147483647), ; code
-    2 => text, ; message: at most 4096 UTF-8 bytes
-}
-
-down-reason = {
-    1 => 1, ; tag: 1 = actor-state
-    2 => int, ; code
-}
+monitor-down-payload = monitor-down
+; monitor-down, cleanup-fault and down-reason are generated from checked Hew.
+; Runtime terminal policy: end_reason <= 4, reason.tag = 1, nonzero fault code,
+; fault.message <= 4096 UTF-8 bytes; complete payload <= 8192 bytes.
 
 ; ── Cross-node link payloads ──────────────────────────────────────────────────
 ;
@@ -153,13 +137,9 @@ envelope-frame = {
 
 ; ── Primitive aliases ────────────────────────────────────────────────────────
 
-service-offer-payload = {
-    1 => uint .gt 0, ; grant_id
-    2 => location, ; target
-    3 => node-session, ; recipient
-    4 => [1*256 handler-identity], ; handlers: strictly ordered, no duplicates
-    5 => uint .gt 0, ; request_id
-} ; complete encoded payload at most 65536 bytes
+service-offer-payload = service-offer
+; Runtime admission policy: nonzero grant/request/session, 1..256 strictly
+; sorted unique handler identities; complete offer <= 65536 bytes.
 
 service-request = {
     1 => handler-identity, ; handler
@@ -173,30 +153,14 @@ reply-status = 0 / 1 / 3 ; success / failure after admission or unknown / not ad
 ; Withdrawal has a target, nil source/budget, positive request_id and empty payload.
 withdrawal = 2
 
-wire-version = 9        ; current schema version; decoders reject unknown values
+wire-version = 10        ; current schema version; decoders reject unknown values
 node-id = bstr .size 16
-location = {
-    1 => node-id, ; node
-    2 => uint, ; non-zero exact actor serial or canonical full-width role token
-    3 => uint, ; incarnation: non-zero, <= u32 max
-    4 => 0 / 1, ; target kind: direct actor / stable role
-}
+location = wire-location
+node-session = wire-session
+; Runtime identity policy: nonzero 16-byte node id, nonzero u32 session,
+; nonzero target id and known target kind (direct actor / stable role).
 
-node-session = {
-    1 => node-id, ; node
-    2 => uint, ; incarnation: non-zero, <= u32 max
-}
-
-swim-gossip-entry = {
-    1 => node-session, ; member
-    2 => int, ; state
-    3 => uint, ; incarnation
-}
-
-swim-control-payload = {
-    1 => int, ; msg_type
-    2 => node-session, ; from
-    3 => uint, ; incarnation
-    4 => node-session / nil, ; target
-    5 => [* swim-gossip-entry], ; gossip
-}
+swim-gossip-entry = swim-gossip
+swim-control-payload = swim-control
+; Runtime policy: bounded batch/payload, nonzero member sessions and node ids.
+; Authenticated sender attribution and membership transitions belong to SWIM.

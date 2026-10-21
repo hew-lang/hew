@@ -1,0 +1,61 @@
+; Generated from hew-runtime/protocol/node_controls.hew; run make node-protocol.
+; Structural types only. Runtime owners enforce identity and resource policy.
+wire-location = {
+    1 => bstr, ; node
+    2 => uint, ; target_id
+    3 => 0..4294967295, ; incarnation
+    4 => 0..4294967295, ; target_kind
+}
+
+wire-session = {
+    1 => bstr, ; node
+    2 => 0..4294967295, ; incarnation
+}
+
+cleanup-fault = {
+    1 => -2147483648..2147483647, ; code
+    2 => tstr, ; message
+}
+
+down-reason = {
+    1 => 0..255, ; tag
+    2 => -2147483648..2147483647, ; code
+}
+
+service-offer = {
+    1 => uint, ; grant_id
+    2 => wire-location, ; target
+    3 => wire-session, ; recipient
+    4 => [* tstr], ; handlers
+    5 => uint, ; request_id
+}
+
+monitor-down = {
+    1 => uint, ; ref_id
+    2 => wire-location, ; target
+    3 => down-reason, ; reason
+    4 => -2147483648..2147483647, ; crash_kind
+    5 => 0..255, ; end_reason
+    6 => (cleanup-fault) / nil, ; close_fault
+}
+
+registry-gossip = {
+    1 => 0..255, ; op
+    2 => tstr, ; name
+    3 => wire-location, ; location
+}
+
+swim-gossip = {
+    1 => wire-session, ; member
+    2 => -2147483648..2147483647, ; state
+    3 => uint, ; incarnation
+}
+
+swim-control = {
+    1 => -2147483648..2147483647, ; msg_type
+    2 => wire-session, ; from
+    3 => uint, ; incarnation
+    4 => (wire-session) / nil, ; target
+    5 => [* swim-gossip], ; gossip
+}
+

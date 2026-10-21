@@ -12,7 +12,7 @@
 #                        publish-homebrew, publish-docs   [environment release]
 #
 # Every publish job consumes the artefacts built earlier in the same run and
-# skips a destination that already holds this version, so "Re-run failed
+# verifies a destination already holds identical content, so "Re-run failed
 # jobs" is the recovery path. The GitHub Release goes out on the signed tag;
 # every external destination waits on the one `release` environment, so a
 # single approval releases them all.
@@ -51,6 +51,10 @@ on:
         description: "Build and prove only. Publishing also requires dispatching from a v* tag."
         type: boolean
         default: true
+      deferrals:
+        description: 'Optional release notes as JSON: {"windows-x86_64":"Packaging context or qualification link"}'
+        type: string
+        default: "{}"
 
 permissions:
   contents: read
@@ -291,6 +295,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build:
     needs: [validate, build-cross-release-libs, build-portable-release-libs]
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
     strategy:
@@ -305,8 +310,7 @@ jobs:
             rust_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
-    # Windows release artifacts are part of the published v0.4.0 asset set.
-    # Timeouts, cancellations, or build failures must block the release.
+    # Secondary platform failures retain their real result for patch assessment.
     # Windows consumes a pre-built toolchain artifact; no source LLVM build here.
     timeout-minutes: 90
 
@@ -327,6 +331,7 @@ jobs:
           path: cross-release-libs/${{ matrix.rust_target }}
 
       - name: Download portable release libraries
+        if: needs.build-portable-release-libs.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-release-libs
@@ -553,7 +558,7 @@ jobs:
             --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "libhew.a" \
-            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
             --destination "${ARCHIVE_NAME}" \
             --completion-shells "bash zsh fish"
 
@@ -604,7 +609,7 @@ jobs:
             --native-lib "cross-release-libs/${{ matrix.rust_target }}/hew.lib" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "hew.lib" \
-            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
             --destination "${ARCHIVE_NAME}" \
             --completion-shells "bash zsh fish powershell"
 
@@ -752,6 +757,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-linux:
     needs: [validate, build-portable-release-libs]
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
     strategy:
@@ -789,6 +795,7 @@ jobs:
           python-version: "3.12"
 
       - name: Download portable release libraries
+        if: needs.build-portable-release-libs.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-release-libs
@@ -866,7 +873,7 @@ jobs:
             --native-lib "target/${{ matrix.rust_target }}/release-lib/libhew.a" \
             --native-triple "${{ matrix.rust_target }}" \
             --native-lib-name "libhew.a" \
-            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+            --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
             --destination "${ARCHIVE_NAME}" \
             --completion-shells "bash zsh fish"
 
@@ -899,12 +906,13 @@ jobs:
           path: ${{ env.ARCHIVE_NAME }}.tar.gz
 
   # ─────────────────────────────────────────────────────────────────────────
-  # FreeBSD build — x86_64 via QEMU VM (tier-1, required release gate)
+  # FreeBSD build — x86_64 via QEMU VM (assessed under the patch policy)
   # ─────────────────────────────────────────────────────────────────────────
   build-freebsd:
     needs: [validate, build-cross-release-libs, build-portable-release-libs]
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 180
 
@@ -926,6 +934,7 @@ jobs:
           path: cross-release-libs/x86_64-unknown-freebsd
 
       - name: Download portable release libraries
+        if: needs.build-portable-release-libs.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-release-libs
@@ -983,7 +992,7 @@ jobs:
               --native-lib "cross-release-libs/x86_64-unknown-freebsd/libhew.a" \
               --native-triple "x86_64-unknown-freebsd" \
               --native-lib-name "libhew.a" \
-              --wasi-lib-dir "portable-release-libs/wasm32-wasip1" \
+              --wasi-lib-dir "portable-release-libs/wasm32-wasip1" --optional-wasi \
               --destination "${ARCHIVE_NAME}" \
               --completion-shells "bash zsh fish"
 
@@ -1012,13 +1021,6 @@ jobs:
           name: ${{ steps.archive.outputs.name }}
           path: ${{ steps.archive.outputs.name }}.tar.gz
 
-  # ─────────────────────────────────────────────────────────────────────────
-  # FreeBSD build — aarch64 via QEMU VM (tier-1, required release gate)
-  # Runs inside a FreeBSD 15.1 aarch64 VM under QEMU emulation on a standard
-  # x86_64 runner (vmactions/freebsd-vm with arch: aarch64). Emulation is slow
-  # but needs no new host infra. The native aarch64 build is not reproducible
-  # locally; CI is the proving gate for this toolchain asset.
-  # ─────────────────────────────────────────────────────────────────────────
   # ─────────────────────────────────────────────────────────────────────────
   # npm packages — @hew-lang/wasm (hew-wasm) and @hew-lang/sandbox-vm, built,
   # executed and packed once; the publish jobs upload these exact tarballs.
@@ -1108,6 +1110,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   linux-packages:
     needs: [validate, build-linux]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.build-linux.result == 'success' }}
     strategy:
       fail-fast: false
       matrix:
@@ -1180,6 +1183,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   docker-image:
     needs: [validate, build-linux]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.build-linux.result == 'success' }}
     name: Docker image (${{ matrix.arch }})
     strategy:
       fail-fast: false
@@ -1245,6 +1249,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-docs:
     needs: [validate, build-linux]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.build-linux.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -1296,8 +1301,8 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Release assets — the complete, checksummed set every later job consumes.
-  # Runs on dry runs too, so a missing asset fails before any tag is pushed.
+  # Release assets — required Linux/browser products plus available optional
+  # outputs. Failed/unavailable producers remain explicit in the checked receipt.
   # ─────────────────────────────────────────────────────────────────────────
   release-assets:
     needs:
@@ -1312,12 +1317,35 @@ jobs:
         docker-image,
         build-docs,
       ]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.build-linux.result == 'success' && needs.build-npm-packages.result == 'success' }}
+    permissions:
+      contents: read
+      actions: read # inspect available producer artefacts from this run
+    outputs:
+      homebrew: ${{ steps.assemble.outputs.homebrew }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       VERSION: ${{ needs.validate.outputs.version }}
       FINAL: ${{ needs.validate.outputs.prerelease == 'false' }}
+      PRODUCER_JOBS: ${{ toJSON(needs) }}
+      PATCH_DEFERRALS: ${{ inputs.deferrals || '{}' }}
     steps:
+      - name: Checkout release inventory
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Find available Linux package artefacts
+        id: available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" --jq '.artifacts[] | select(.expired == false) | .name' > producer-artifacts.txt
+          if grep -q '^linux-packages-' producer-artifacts.txt; then
+            echo 'packages=true' >> "${GITHUB_OUTPUT}"
+          else
+            echo 'packages=false' >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Download platform archives
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1326,7 +1354,7 @@ jobs:
           merge-multiple: true
 
       - name: Download Linux packages
-        if: env.FINAL == 'true'
+        if: env.FINAL == 'true' && steps.available.outputs.packages == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: "linux-packages-*"
@@ -1340,44 +1368,23 @@ jobs:
           path: dist
 
       - name: Download portable WASI libraries
+        if: needs.build-portable-release-libs.result == 'success'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: portable-release-libs
           path: portable-release-libs
 
       - name: Assemble and checksum the release set
+        id: assemble
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf "dist/hew-v${VERSION}-wasm32-wasip1-libs.tar.gz" -C portable-release-libs wasm32-wasip1
-          cd dist
-          required=(
-            "hew-v${VERSION}-darwin-aarch64.tar.gz"
-            "hew-v${VERSION}-windows-x86_64.zip"
-            "hew-v${VERSION}-linux-x86_64.tar.gz"
-            "hew-v${VERSION}-linux-aarch64.tar.gz"
-            "hew-v${VERSION}-freebsd-x86_64.tar.gz"
-            "hew-v${VERSION}-wasm32-wasip1-libs.tar.gz"
-            "hew-lang-wasm-${VERSION}.tgz"
-            "hew-lang-sandbox-vm-${VERSION}.tgz"
-          )
-          for asset in "${required[@]}"; do
-            if [ ! -s "${asset}" ]; then
-              echo "::error::Missing required release asset: ${asset}"
-              exit 1
-            fi
-          done
-          if [[ "${FINAL}" == true ]]; then
-            shopt -s nullglob
-            packages=(hew_*.deb hew-*.rpm hew-bin-*.pkg.tar.zst)
-            if [ "${#packages[@]}" -eq 0 ]; then
-              echo "::error::Final release has no Linux package artifacts"
-              exit 1
-            fi
+          if [[ -d portable-release-libs/wasm32-wasip1 ]]; then
+            tar -czf "dist/hew-v${VERSION}-wasm32-wasip1-libs.tar.gz" -C portable-release-libs wasm32-wasip1
           fi
-          sha256sum -- * | tee "../hew-v${VERSION}-checksums.txt"
-          mv "../hew-v${VERSION}-checksums.txt" .
-          ls -l
+          python3 scripts/release-assets.py --version "${VERSION}" \
+            --source "${GITHUB_SHA}" --run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --jobs "${PRODUCER_JOBS}" --deferrals "${PATCH_DEFERRALS}" | tee -a "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload release set
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -1393,7 +1400,7 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   github-release:
     needs: [validate, release-assets]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.release-assets.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -1456,11 +1463,11 @@ jobs:
   # npm — @hew-lang/wasm and @hew-lang/sandbox-vm. npmjs is the primary
   # registry (OIDC trusted publishing with provenance, bound to release.yml and
   # environment `release`); GitHub Packages is an independent mirror. Prereleases
-  # take dist-tag `next`, finals `latest`. A version already present is skipped.
+  # take dist-tag `next`, finals `latest`. Existing versions require identical bytes.
   # ─────────────────────────────────────────────────────────────────────────
   publish-npm:
     needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' }}
     name: Publish to npmjs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1472,6 +1479,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1498,26 +1507,11 @@ jobs:
         shell: bash
         env:
           REGISTRY: https://registry.npmjs.org
-        run: |
-          set -uo pipefail
-          status=0
-          for pkg in wasm sandbox-vm; do
-            name="@hew-lang/${pkg}"
-            if [ -n "$(npm view "${name}@${VERSION}" version --registry "${REGISTRY}" 2>/dev/null)" ]; then
-              echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
-              continue
-            fi
-            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
-              --provenance --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
-              echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
-              status=1
-            fi
-          done
-          exit "${status}"
+        run: python3 scripts/release-channel.py npm
 
   publish-github-packages:
     needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' }}
     name: Mirror npm packages to GitHub Packages
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1529,6 +1523,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       DIST_TAG: ${{ needs.validate.outputs.npm_dist_tag }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Download npm tarballs
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -1548,30 +1544,15 @@ jobs:
         env:
           REGISTRY: https://npm.pkg.github.com
           NODE_AUTH_TOKEN: ${{ github.token }}
-        run: |
-          set -uo pipefail
-          status=0
-          for pkg in wasm sandbox-vm; do
-            name="@hew-lang/${pkg}"
-            if [ -n "$(npm view "${name}@${VERSION}" version --registry "${REGISTRY}" 2>/dev/null)" ]; then
-              echo "::notice::${name}@${VERSION} already on ${REGISTRY}; skipping"
-              continue
-            fi
-            if ! npm publish "./packages/hew-lang-${pkg}-${VERSION}.tgz" --ignore-scripts --access public \
-              --tag "${DIST_TAG}" --registry "${REGISTRY}"; then
-              echo "::error::publishing ${name}@${VERSION} to ${REGISTRY} failed"
-              status=1
-            fi
-          done
-          exit "${status}"
+        run: python3 scripts/release-channel.py npm
 
   # ─────────────────────────────────────────────────────────────────────────
   # GHCR — push the clean-room-proved image archives unchanged, join them in
   # one multi-arch tag (plus `latest` for final releases) and attest it.
   # ─────────────────────────────────────────────────────────────────────────
   publish-ghcr:
-    needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    needs: [validate, github-release, docker-image]
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' && needs.docker-image.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: release
@@ -1585,6 +1566,8 @@ jobs:
       VERSION: ${{ needs.validate.outputs.version }}
       PRERELEASE: ${{ needs.validate.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
       - name: Log in to GHCR
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
@@ -1595,48 +1578,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Skip a version already published
-        id: existing
-        run: |
-          if docker buildx imagetools inspect "${IMAGE}:${VERSION}" >/dev/null 2>&1; then
-            echo "::notice::${IMAGE}:${VERSION} already exists; skipping"
-            echo "exists=true" >> "${GITHUB_OUTPUT}"
-          else
-            echo "exists=false" >> "${GITHUB_OUTPUT}"
-          fi
-
       - name: Download image archives
-        if: steps.existing.outputs.exists == 'false'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: docker-image-*
           path: images
           merge-multiple: true
 
-      - name: Push images and the multi-arch tag
+      - name: Publish and verify producer images
         id: push
-        if: steps.existing.outputs.exists == 'false'
-        shell: bash
         run: |
-          set -euo pipefail
           command -v skopeo >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq skopeo; }
-          sources=()
-          for arch in amd64 arm64; do
-            # skopeo reads the docker login above and keeps the archive's
-            # digests, so GHCR serves the bytes the clean-room test proved.
-            skopeo copy --preserve-digests \
-              "oci-archive:images/hew-image-${arch}.tar" "docker://${IMAGE}:${VERSION}-${arch}"
-            sources+=("${IMAGE}:${VERSION}-${arch}")
-          done
-          tags=(--tag "${IMAGE}:${VERSION}")
-          # A prerelease is installable by its exact tag but never moves latest.
-          [[ "${PRERELEASE}" == false ]] && tags+=(--tag "${IMAGE}:latest")
-          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
-          digest="$(docker buildx imagetools inspect "${IMAGE}:${VERSION}" --format '{{json .Manifest}}' | jq -er .digest)"
-          echo "digest=${digest}" >> "${GITHUB_OUTPUT}"
+          python3 scripts/release-channel.py ghcr
 
       - name: Attest image provenance
-        if: steps.existing.outputs.exists == 'false'
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.IMAGE }}
@@ -1649,29 +1604,34 @@ jobs:
   # included); Formula/hew@stable.rb tracks final releases only.
   # ─────────────────────────────────────────────────────────────────────────
   publish-homebrew:
-    needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    needs: [validate, github-release, release-assets]
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' && needs.release-assets.outputs.homebrew == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 20
     environment: release
+    env:
+      VERSION: ${{ needs.validate.outputs.version }}
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Download producer release checksums
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: dist
+
       - name: Dispatch the homebrew-hew formula update
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           VERSION: ${{ needs.validate.outputs.version }}
-        run: |
-          if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::HOMEBREW_TAP_TOKEN is not set"
-            exit 1
-          fi
-          gh workflow run update-formula.yml -R hew-lang/homebrew-hew -f version="${VERSION}"
+        run: python3 scripts/release-channel.py homebrew
 
   # ─────────────────────────────────────────────────────────────────────────
   # docs.hew.sh — deploy the site generated by build-docs to Cloudflare Pages.
   # ─────────────────────────────────────────────────────────────────────────
   publish-docs:
-    needs: [validate, github-release]
-    if: needs.validate.outputs.publish == 'true' && github.ref_type == 'tag'
+    needs: [validate, github-release, build-docs]
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' && needs.build-docs.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release

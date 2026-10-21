@@ -170,8 +170,9 @@ resubmits to the original actor, while `.to(other)` consumes it and resubmits
 to a compatible handler. Both return the handler completion result. The
 checker requires the same handler name, parameter types and reply contract.
 Dropping the request releases its payload. Rejection is the only outcome
-from which the same request may safely be resubmitted: every other variant means the request
-was accepted or its fate is unknown. One view type per kind — `policy`
+that returns an unaccepted request for safe resubmission. Other variants do not
+return the request or establish whether its handler ran; repeating a call may
+duplicate work. One view type per kind — `policy`
 completes, `mailbox` submits — and both are immutable.
 
 **Rejected requests.** A rejected completion or

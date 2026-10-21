@@ -225,8 +225,9 @@ fn envelope_frame(
 
 fn assert_published_schema(rule: &str, bytes: &[u8]) {
     let schema = format!(
-        "start = {rule}\n{}",
-        include_str!("../schemas/envelope.cddl")
+        "start = {rule}\n{}\n{}",
+        include_str!("../schemas/envelope.cddl"),
+        include_str!("../schemas/node-controls.generated.cddl")
     );
     cddl::validate_cbor_from_slice(&schema, bytes, None).unwrap_or_else(|error| {
         panic!("encoded {rule} does not conform to the published schema: {error:?}")
@@ -400,6 +401,29 @@ fn service_offer_and_request_reject_noncanonical_authority() {
         handlers: vec!["tests.Service.read".into()],
     };
     let bytes = encode_service_offer_payload(&offer).unwrap();
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(7u64)),
+            (int(2u64), location_value(offer.target)),
+            (
+                int(3u64),
+                Value::Map(vec![
+                    (
+                        int(1u64),
+                        Value::Bytes(offer.recipient.node_id.to_bytes().to_vec())
+                    ),
+                    (int(2u64), int(4u32)),
+                ])
+            ),
+            (
+                int(4u64),
+                Value::Array(vec![Value::Text("tests.Service.read".into())])
+            ),
+            (int(5u64), int(3u64)),
+        ])),
+        "preserve the existing service-offer CBOR bytes"
+    );
     assert_eq!(decode_service_offer_payload(&bytes).unwrap(), offer);
     let mut trailing = bytes.clone();
     trailing.push(0);
@@ -601,6 +625,16 @@ fn registry_gossip_payload_round_trips_and_matches_cluster_ops() {
         location(10, 0x6200_0000_0000_0042, 31),
     );
     let bytes = encode_registry_gossip_payload(&original).expect("payload should encode");
+    assert_published_schema("registry-gossip-payload", &bytes);
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(original.op)),
+            (int(2u64), Value::Text(original.name.clone())),
+            (int(3u64), location_value(original.location)),
+        ])),
+        "preserve registry gossip bytes"
+    );
     let decoded = decode_registry_gossip_payload(&bytes).expect("payload should decode");
     assert_eq!(decoded, original);
 
@@ -639,7 +673,7 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
     let missing_name = Value::Map(vec![(int(1u64), int(REGISTRY_GOSSIP_OP_ADD))]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&missing_name)),
-        Err(RegistryGossipPayloadError::MissingKey { key: 2 })
+        Err(RegistryGossipPayloadError::Data(hew_codec::DecodeError::Missing { path })) if path == ".name"
     ));
 
     let duplicate_name = Value::Map(vec![
@@ -650,7 +684,9 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&duplicate_name)),
-        Err(RegistryGossipPayloadError::DuplicateKey { key: 2 })
+        Err(RegistryGossipPayloadError::Data(
+            hew_codec::DecodeError::Syntax { .. }
+        ))
     ));
 
     let unknown_key = Value::Map(vec![
@@ -661,7 +697,7 @@ fn registry_gossip_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_registry_gossip_payload(&value_to_cbor(&unknown_key)),
-        Err(RegistryGossipPayloadError::UnknownKey { key: 4 })
+        Err(RegistryGossipPayloadError::Data(hew_codec::DecodeError::Invalid { path, .. })) if path.is_empty()
     ));
 
     let add_zero_node = Value::Map(vec![
@@ -939,7 +975,7 @@ fn same_envelope_produces_same_bytes() {
     // 3=>ctrl_kind, 4=>empty bstr.
     assert_eq!(
         to_cbor(&minimal_control()),
-        vec![0xa4, 0x01, 0x09, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
+        vec![0xa4, 0x01, 0x0a, 0x02, 0x00, 0x03, 0x00, 0x04, 0x40]
     );
 
     // a8 map(8), then k/v pairs: 1=>version, 2=>frame_type,
@@ -948,7 +984,7 @@ fn same_envelope_produces_same_bytes() {
     assert_eq!(
         encode_envelope_frame(&minimal_envelope()).unwrap(),
         vec![
-            0xa8, 0x01, 0x09, 0x02, 0x01, 0x03, 0xa4, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
+            0xa8, 0x01, 0x0a, 0x02, 0x01, 0x03, 0xa4, 0x01, 0x50, 0x01, 0x01, 0x01, 0x01, 0x01,
             0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x02, 0x01, 0x03,
             0x01, 0x04, 0x00, 0x04, 0xf6, 0x05, 0xa3, 0x01, 0x72, 0x74, 0x65, 0x73, 0x74, 0x73,
             0x2e, 0x41, 0x63, 0x74, 0x6f, 0x72, 0x2e, 0x68, 0x61, 0x6e, 0x64, 0x6c, 0x65, 0x02,
@@ -1273,6 +1309,34 @@ fn swim_payload_round_trips_with_piggybacked_gossip() {
         ],
     };
     let bytes = encode_swim_payload(&original).expect("payload should encode");
+    assert_published_schema("swim-control-payload", &bytes);
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(original.msg_type)),
+            (int(2u64), node_session_value(original.from)),
+            (int(3u64), int(original.incarnation)),
+            (
+                int(4u64),
+                original.target.map_or(Value::Null, node_session_value)
+            ),
+            (
+                int(5u64),
+                Value::Array(
+                    original
+                        .gossip
+                        .iter()
+                        .map(|entry| Value::Map(vec![
+                            (int(1u64), node_session_value(entry.member)),
+                            (int(2u64), int(entry.state)),
+                            (int(3u64), int(entry.incarnation)),
+                        ]))
+                        .collect()
+                )
+            ),
+        ])),
+        "preserve populated SWIM bytes"
+    );
     let decoded = decode_swim_payload(&bytes).expect("payload should decode");
     assert_eq!(decoded, original);
 
@@ -1322,7 +1386,7 @@ fn swim_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_swim_payload(&value_to_cbor(&unknown_key)),
-        Err(SwimPayloadError::UnknownKey { key: 6 })
+        Err(SwimPayloadError::Data(hew_codec::DecodeError::Invalid { path, .. })) if path.is_empty()
     ));
 
     // Missing required key 5 (gossip array).
@@ -1334,7 +1398,7 @@ fn swim_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_swim_payload(&value_to_cbor(&missing_gossip)),
-        Err(SwimPayloadError::MissingKey { key: 5 })
+        Err(SwimPayloadError::Data(hew_codec::DecodeError::Missing { path })) if path == ".gossip"
     ));
 
     // Duplicate key 1.
@@ -1348,7 +1412,9 @@ fn swim_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_swim_payload(&value_to_cbor(&duplicate)),
-        Err(SwimPayloadError::DuplicateKey { key: 1 })
+        Err(SwimPayloadError::Data(
+            hew_codec::DecodeError::Syntax { .. }
+        ))
     ));
 
     // Gossip field is not an array.
@@ -1361,7 +1427,7 @@ fn swim_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_swim_payload(&value_to_cbor(&gossip_not_array)),
-        Err(SwimPayloadError::MalformedField { key: 5, .. })
+        Err(SwimPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".gossip"
     ));
 
     for malformed_from in [
@@ -1380,10 +1446,13 @@ fn swim_payload_codec_rejects_malformed_payloads() {
             (int(4u64), Value::Null),
             (int(5u64), Value::Array(vec![])),
         ]);
-        assert!(matches!(
-            decode_swim_payload(&value_to_cbor(&malformed)),
-            Err(SwimPayloadError::MalformedField { key: 2, .. })
-        ));
+        let error = decode_swim_payload(&value_to_cbor(&malformed)).unwrap_err();
+        assert!(match error {
+            SwimPayloadError::MalformedField { key: 2, .. } => true,
+            SwimPayloadError::Data(hew_codec::DecodeError::Range { path, .. }) =>
+                path == ".from.incarnation",
+            _ => false,
+        });
     }
 
     let malformed_target = Value::Map(vec![
@@ -1395,7 +1464,7 @@ fn swim_payload_codec_rejects_malformed_payloads() {
     ]);
     assert!(matches!(
         decode_swim_payload(&value_to_cbor(&malformed_target)),
-        Err(SwimPayloadError::MalformedField { key: 4, .. })
+        Err(SwimPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".target"
     ));
 
     // Oversized payload (byte cap).
@@ -1535,6 +1604,18 @@ fn monitor_down_payload_round_trips_with_cddl_shape() {
         close_fault: None,
     };
     let bytes = encode_monitor_down_payload(&original).expect("down should encode");
+    assert_eq!(
+        bytes,
+        value_to_cbor(&Value::Map(vec![
+            (int(1u64), int(4242u64)),
+            (int(2u64), location_value(original.target)),
+            (int(3u64), down_reason_value(5)),
+            (int(4u64), int(1i32)),
+            (int(5u64), int(2u8)),
+            (int(6u64), Value::Null),
+        ])),
+        "preserve the existing monitor-DOWN CBOR bytes"
+    );
     let decoded = decode_monitor_down_payload(&bytes).expect("down should decode");
     assert_eq!(decoded, original);
 
@@ -1585,7 +1666,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&malformed_target)),
-        Err(MonitorPayloadError::MalformedField { key: 2, .. })
+        Err(MonitorPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".target"
     ));
 
     let untyped_reason = Value::Map(vec![
@@ -1598,7 +1679,7 @@ fn monitor_down_payload_rejects_malformed_location_and_reason_shapes() {
     ]);
     assert!(matches!(
         decode_monitor_down_payload(&value_to_cbor(&untyped_reason)),
-        Err(MonitorPayloadError::MalformedField { key: 3, .. })
+        Err(MonitorPayloadError::Data(hew_codec::DecodeError::Type { path, .. })) if path == ".reason"
     ));
 
     let unknown_reason_tag = Value::Map(vec![
@@ -2118,4 +2199,258 @@ fn monitor_control_frame_round_trips_through_wire_frame() {
         decode_monitor_req_payload(&decoded.payload).expect("payload should decode"),
         req
     );
+}
+
+fn fields_at<'a>(value: &'a mut Value, path: &[u64]) -> &'a mut Vec<(Value, Value)> {
+    if let Value::Array(items) = value {
+        let (index, tail) = path.split_first().expect("array path index");
+        return fields_at(&mut items[usize::try_from(*index).unwrap()], tail);
+    }
+    let Value::Map(fields) = value else {
+        panic!("control record map")
+    };
+    if let Some((key, tail)) = path.split_first() {
+        let child = &mut fields
+            .iter_mut()
+            .find(|(field, _)| *field == int(*key))
+            .unwrap()
+            .1;
+        fields_at(child, tail)
+    } else {
+        fields
+    }
+}
+
+fn checked_control_values() -> (Value, Value) {
+    use hew_runtime::envelope::{encode_service_offer_payload, ServiceOfferPayload};
+    let offer = ServiceOfferPayload {
+        request_id: 3,
+        grant_id: 7,
+        target: location(1, 8, 2),
+        recipient: node_session(2, 4),
+        handlers: vec!["tests.Service.read".into()],
+    };
+    let offer_value = decode_value(&encode_service_offer_payload(&offer).unwrap());
+    let down = MonitorDownPayload {
+        ref_id: 3,
+        target: offer.target,
+        reason: -1,
+        crash_kind: 0,
+        end_reason: 2,
+        close_fault: Some((-7, "cleanup diagnostic".into())),
+    };
+    let down_value = decode_value(&encode_monitor_down_payload(&down).unwrap());
+    (offer_value, down_value)
+}
+
+#[test]
+fn checked_controls_refuse_unknown_duplicate_and_missing_nested_fields() {
+    use hew_runtime::envelope::decode_service_offer_payload;
+    let (offer_value, down_value) = checked_control_values();
+    // Every nested map must obey the same shared strict-reader policy.
+    for (value, paths, monitor) in [
+        (offer_value.clone(), vec![vec![], vec![2], vec![3]], false),
+        (
+            down_value.clone(),
+            vec![vec![], vec![2], vec![3], vec![6]],
+            true,
+        ),
+    ] {
+        for path in paths {
+            for mutation in 0..3 {
+                let mut invalid = value.clone();
+                let fields = fields_at(&mut invalid, &path);
+                match mutation {
+                    0 => fields.push((int(99u64), int(0u64))),
+                    1 => fields.push(fields[0].clone()),
+                    _ => {
+                        fields.remove(0);
+                    }
+                }
+                let bytes = value_to_cbor(&invalid);
+                let refused = if monitor {
+                    decode_monitor_down_payload(&bytes).is_err()
+                } else {
+                    decode_service_offer_payload(&bytes).is_err()
+                };
+                assert!(
+                    refused,
+                    "nested path {path:?}, mutation {mutation}, monitor {monitor}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn checked_controls_refuse_invalid_integer_widths_and_identities() {
+    use hew_runtime::envelope::decode_service_offer_payload;
+    let (offer_value, down_value) = checked_control_values();
+    for (value, path, key, invalid_value, monitor) in [
+        (
+            offer_value.clone(),
+            vec![2],
+            3,
+            int(u64::from(u32::MAX) + 1),
+            false,
+        ),
+        (
+            offer_value.clone(),
+            vec![3],
+            2,
+            int(u64::from(u32::MAX) + 1),
+            false,
+        ),
+        (offer_value.clone(), vec![], 1, int(-1i64), false),
+        (
+            offer_value.clone(),
+            vec![2],
+            1,
+            Value::Bytes(vec![1; 15]),
+            false,
+        ),
+        (
+            offer_value.clone(),
+            vec![2],
+            1,
+            Value::Bytes(vec![0; 16]),
+            false,
+        ),
+        (offer_value.clone(), vec![2], 4, int(2u32), false),
+        (offer_value.clone(), vec![3], 2, int(0u32), false),
+        (
+            down_value.clone(),
+            vec![3],
+            2,
+            int(i64::from(i32::MIN) - 1),
+            true,
+        ),
+        (
+            down_value.clone(),
+            vec![6],
+            1,
+            int(i64::from(i32::MAX) + 1),
+            true,
+        ),
+        (down_value.clone(), vec![], 5, int(256u32), true),
+        (down_value, vec![], 4, Value::Float(1.5), true),
+    ] {
+        let mut invalid = value;
+        fields_at(&mut invalid, &path)
+            .iter_mut()
+            .find(|(field, _)| *field == int(key))
+            .unwrap()
+            .1 = invalid_value;
+        let bytes = value_to_cbor(&invalid);
+        let refused = if monitor {
+            decode_monitor_down_payload(&bytes).is_err()
+        } else {
+            decode_service_offer_payload(&bytes).is_err()
+        };
+        assert!(refused, "integer/identity boundary at {path:?}/{key}");
+    }
+}
+
+#[test]
+fn membership_controls_refuse_trailing_input() {
+    let registry = registry_payload(REGISTRY_GOSSIP_OP_ADD, "worker", location(11, 42, 37));
+    let swim = swim_payload(2, node_session(44, 157), vec![]);
+    let mut registry_bytes = encode_registry_gossip_payload(&registry).unwrap();
+    let mut swim_bytes = encode_swim_payload(&swim).unwrap();
+    registry_bytes.push(0);
+    swim_bytes.push(0);
+    assert!(matches!(
+        decode_registry_gossip_payload(&registry_bytes),
+        Err(RegistryGossipPayloadError::Data(
+            hew_codec::DecodeError::Syntax { .. }
+        ))
+    ));
+    assert!(matches!(
+        decode_swim_payload(&swim_bytes),
+        Err(SwimPayloadError::Data(
+            hew_codec::DecodeError::Syntax { .. }
+        ))
+    ));
+}
+
+fn membership_control_values() -> (Value, Value) {
+    let registry = registry_payload(REGISTRY_GOSSIP_OP_ADD, "worker", location(11, 42, 37));
+    let mut swim = swim_payload(
+        3,
+        node_session(44, 157),
+        vec![SwimGossipEntry {
+            member: node_session(45, 158),
+            state: 2,
+            incarnation: 19,
+        }],
+    );
+    swim.target = Some(node_session(46, 159));
+    (
+        decode_value(&encode_registry_gossip_payload(&registry).unwrap()),
+        decode_value(&encode_swim_payload(&swim).unwrap()),
+    )
+}
+
+#[test]
+fn membership_controls_refuse_nested_unknown_duplicate_and_missing_fields() {
+    let (registry, swim) = membership_control_values();
+    for (value, paths, is_swim) in [
+        (registry, vec![vec![], vec![3]], false),
+        (
+            swim,
+            vec![vec![], vec![2], vec![4], vec![5, 0], vec![5, 0, 1]],
+            true,
+        ),
+    ] {
+        for path in paths {
+            for mutation in 0..3 {
+                let mut invalid = value.clone();
+                let fields = fields_at(&mut invalid, &path);
+                match mutation {
+                    0 => fields.push((int(99u64), int(0u64))),
+                    1 => fields.push(fields[0].clone()),
+                    _ => {
+                        fields.remove(0);
+                    }
+                }
+                let bytes = value_to_cbor(&invalid);
+                let refused = if is_swim {
+                    decode_swim_payload(&bytes).is_err()
+                } else {
+                    decode_registry_gossip_payload(&bytes).is_err()
+                };
+                assert!(
+                    refused,
+                    "nested path {path:?}, mutation {mutation}, swim {is_swim}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn membership_controls_refuse_invalid_integer_widths_and_sessions() {
+    let (_, swim) = membership_control_values();
+    for (path, key, value) in [
+        (vec![], 1, int(i64::from(i32::MIN) - 1)),
+        (vec![], 3, int(-1i64)),
+        (vec![2], 2, int(u64::from(u32::MAX) + 1)),
+        (vec![4], 2, int(0u32)),
+        (vec![5, 0], 2, int(i64::from(i32::MAX) + 1)),
+        (vec![5, 0], 3, Value::Float(1.5)),
+        (vec![5, 0, 1], 2, int(0u32)),
+        (vec![5, 0, 1], 1, Value::Bytes(vec![0; 16])),
+        (vec![5, 0, 1], 1, Value::Bytes(vec![1; 15])),
+    ] {
+        let mut invalid = swim.clone();
+        fields_at(&mut invalid, &path)
+            .iter_mut()
+            .find(|(field, _)| *field == int(key))
+            .unwrap()
+            .1 = value;
+        assert!(
+            decode_swim_payload(&value_to_cbor(&invalid)).is_err(),
+            "boundary at {path:?}/{key}"
+        );
+    }
 }

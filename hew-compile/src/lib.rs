@@ -2363,9 +2363,9 @@ fn package_module_path(name: &str) -> ModulePath {
 
 /// The anchor of `file` (spec 3.5.1): the std root for a file under
 /// `<std root>/std/`, otherwise the nearest manifest if it declares `[package]`.
-/// A virtual workspace is a search boundary, not a package anchor. A path
-/// that is not absolute names no file on disk (an editor or browser buffer)
-/// and has no package.
+/// A virtual workspace is a search boundary, not a package anchor. Rooted
+/// in-memory source identities can name a supplied package without a host
+/// filesystem; loose relative buffers have no package of their own.
 fn anchor_for(
     file: &Path,
     std_roots: &[PathBuf],
@@ -2377,7 +2377,7 @@ fn anchor_for(
     }
     let Some(dir) = file
         .parent()
-        .filter(|_| file.is_absolute())
+        .filter(|_| file.is_absolute() || (!documents.filesystem && file.has_root()))
         .and_then(|dir| {
             dir.ancestors()
                 .find(|dir| documents.is_file(&dir.join("hew.toml")))
@@ -9620,5 +9620,36 @@ fn main() {
         }
         assert_eq!(batch.dependency_bootstraps(), 1);
         assert_eq!(batch.dependency_cache_hits(), 1);
+    }
+}
+
+#[cfg(test)]
+mod source_anchor_tests {
+    use super::*;
+    use hew_types::module_registry::ModuleAnchor;
+
+    #[test]
+    fn rooted_in_memory_sources_use_the_supplied_package_manifest() {
+        // wasm32-unknown-unknown has rooted paths but no absolute host paths.
+        // Source identity belongs to the provider, not host filesystem support.
+        let root = Path::new("/hew-browser-anchor");
+        let mut documents = SourceSet::in_memory();
+        documents.insert(root.join("hew.toml"), "[package]\nname = \"app\"\n");
+        let anchor = anchor_for(&root.join("lib.hew"), &[], &documents).unwrap();
+        assert!(
+            matches!(anchor, ModuleAnchor::Package { dir, name: Some(name) }
+            if dir == root && name == package_module_path("app"))
+        );
+    }
+
+    #[test]
+    fn loose_buffers_keep_relative_import_semantics_with_either_provider() {
+        for mut documents in [SourceSet::in_memory(), SourceSet::new()] {
+            documents.insert("user/hew.toml", "[package]\nname = \"user\"\n");
+            assert!(matches!(
+                anchor_for(Path::new("user/nav.hew"), &[], &documents).unwrap(),
+                ModuleAnchor::Loose
+            ));
+        }
     }
 }

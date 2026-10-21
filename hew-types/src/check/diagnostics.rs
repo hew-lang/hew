@@ -149,8 +149,8 @@ impl Checker {
     }
 
     /// Emit warnings for functions that are never called (dead code).
-    /// Uses BFS reachability from entry points: main, actor handlers, and
-    /// underscore-prefixed functions.
+    /// Uses BFS reachability from main, actor handlers, underscore-prefixed
+    /// functions and public library functions.
     pub(super) fn emit_dead_code_warnings(&mut self) {
         // A REPL fragment's helpers are routinely defined on one input and
         // called on a later one, so whole-program reachability would flag
@@ -158,6 +158,13 @@ impl Checker {
         if self.repl_fragment {
             return;
         }
+
+        // A root without main is a library: its public entry points and their
+        // transitive callees are reachable by consumers of this unit.
+        let library_unit = !self
+            .fn_def_spans
+            .keys()
+            .any(|name| self.root_owned_fn_leaf(name) == Some("main"));
 
         let mut reachable = HashSet::new();
         let mut queue = std::collections::VecDeque::new();
@@ -172,6 +179,12 @@ impl Checker {
                 || fn_name.starts_with('_')
                 || root_leaf.is_some_and(|leaf| leaf.starts_with('_'))
                 || self.test_fn_names.contains(fn_name)
+                || (library_unit
+                    && root_leaf.is_some()
+                    && self
+                        .fn_visibility
+                        .get(fn_name)
+                        .is_some_and(|vis| vis.is_pub()))
             {
                 reachable.insert(fn_name.clone());
                 queue.push_back(fn_name.clone());
@@ -227,27 +240,12 @@ impl Checker {
             (a_span.start, a_span.end, a_name).cmp(&(b_span.start, b_span.end, b_name))
         });
 
-        // A root module with no `fn main` cannot link as a binary, so it is
-        // a library unit: every `pub fn` in it is public API for another
-        // crate/module to call, not dead code from this compilation unit's
-        // point of view. Reuses the same root lookup the BFS above tests
-        // `main` with (`root_owned_fn_leaf`), so "library" and "has no root
-        // main" stay one fact instead of two derivations of it.
-        let has_root_main = self
-            .fn_def_spans
-            .keys()
-            .any(|fn_name| self.root_owned_fn_leaf(fn_name) == Some("main"));
-        let library_unit = !self.repl_fragment && !has_root_main;
-
         // Route through the lint registry so `dead_code` is configurable
         // (`-A/-W/-D`) and suppressible (`// hew:allow(dead_code)`). The
         // collect-then-emit split releases the `&self.fn_def_spans` borrow
         // before the `&mut self` emit calls. Default level is `Warn`, so the
         // warning still appears exactly as before unless reconfigured.
         for (def_span, fn_name, stored_module, is_pub) in findings {
-            if is_pub && library_unit {
-                continue;
-            }
             // An unreferenced `pub fn` is dead only from THIS compilation
             // unit's point of view — it is public API another crate/module
             // may call. `_`-prefixing it would rename the public surface

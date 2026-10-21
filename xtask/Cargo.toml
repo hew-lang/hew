@@ -14,6 +14,7 @@ publish = false
 workspace = true
 
 [dependencies]
+hew-parser = { path = "../hew-parser" }
 hew-types = { path = "../hew-types" }
 hew-wasm = { path = "../hew-wasm" }
 quick-xml = "0.42.0"

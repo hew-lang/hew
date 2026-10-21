@@ -1,9 +1,20 @@
 import clock_source;
 
+type Node {
+    value: i64;
+}
+
+impl Node {
+    fn shutdown() -> i64 {
+        42
+    }
+}
+
 fn main() {
     let direct = timestamp.now();
     assert(direct.unix_secs_floor() > 0);
     assert(clock_source.seconds() > 0);
     assert(clock_source.elapsed() >= 0ns);
+    assert(Node.shutdown() == 42);
     println("imported runtime clocks ok");
 }

@@ -11943,19 +11943,6 @@
       "nul": "nul-terminated",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_node_api_allow_peer( u16, *const c_char, ) -> c_int"
-      },
-      "symbol": "hew_node_api_allow_peer"
-    },
-    {
-      "availability": [
-        "native"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "nul-terminated",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_node_api_connect( *const c_char) -> c_int"
       },
       "symbol": "hew_node_api_connect"
@@ -12244,7 +12231,7 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_node_peer_new( *const hew_cabi::string::HewString, *mut *mut c_void, ) -> i32"
+        "native": "fn hew_node_peer_new( *const HewNodeId, *mut *mut c_void, ) -> i32"
       },
       "symbol": "hew_node_peer_new"
     },

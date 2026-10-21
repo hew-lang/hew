@@ -1,0 +1,30 @@
+machine Counter {
+    events {
+        Start;
+    }
+    emits {
+        Pending { label: string; }
+    }
+    state Idle { label: string; }
+    state Running {
+        divisor: i64;
+        state Ready { count: i64; }
+        initial Ready { count: 10 / state.divisor };
+    }
+    on Start: Idle => Running {
+        emit Pending { label: state.label + ":pending" };
+        Running { divisor: 0 }
+    }
+    default { state }
+}
+
+fn main() {
+    var counter: Counter = .Idle { label: "original".to_upper() };
+    defer {
+        match counter {
+            .Idle { label } => println("rollback:" + label),
+            _ => println("incorrect commit"),
+        }
+    }
+    let _report = counter.step(.Start);
+}

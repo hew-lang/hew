@@ -27,6 +27,7 @@ fn make_machine(
     transitions: Vec<MachineTransition>,
 ) -> MachineDecl {
     MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
@@ -44,6 +45,7 @@ fn make_machine(
 
 fn unit_state(name: &str) -> MachineState {
     MachineState {
+        is_final: false,
         name: Ident::new(name),
         fields: vec![],
         entry: None,
@@ -54,6 +56,7 @@ fn unit_state(name: &str) -> MachineState {
 
 fn state_with_fields(name: &str, fields: Vec<(&str, &str)>) -> MachineState {
     MachineState {
+        is_final: false,
         name: Ident::new(name),
         fields: fields
             .into_iter()
@@ -92,7 +95,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
     // (MACHINE-SPEC, "Rule selection and coverage"), so the body is the
     // dotted target constructor rather than the source value.
     MachineTransition {
-        event_name: Ident::new(event),
+        trigger: MachineTrigger::Event(Ident::new(event)),
         source_state: Ident::new(source),
         target_state: Ident::new(target),
         target_is_contextual: false,
@@ -109,6 +112,7 @@ fn transition(event: &str, source: &str, target: &str) -> MachineTransition {
         ),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
+        history: false,
         span: 0..0,
     }
 }
@@ -152,7 +156,7 @@ fn payload_transition(
 
 fn wildcard_transition(event: &str) -> MachineTransition {
     MachineTransition {
-        event_name: Ident::new(event),
+        trigger: MachineTrigger::Event(Ident::new(event)),
         source_state: Ident::new("_"),
         target_state: Ident::new("_"),
         target_is_contextual: false,
@@ -163,6 +167,7 @@ fn wildcard_transition(event: &str) -> MachineTransition {
         body: (Expr::Ident(Ident::new("state")), 0..0),
         body_form: MachineTransitionBodyForm::Block,
         reenter: false,
+        history: false,
         span: 0..0,
     }
 }
@@ -680,6 +685,7 @@ fn transition_count_equals_states_times_events() {
 
 fn make_generic_machine(name: &str, type_params: &[&str]) -> MachineDecl {
     MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new(name),
@@ -1276,6 +1282,7 @@ fn imported_machine_exhaustiveness_runs() {
 #[test]
 fn imported_generic_machine_type_params_survive_registration() {
     let md = MachineDecl {
+        wire: None,
         body_context: hew_parser::ast::SyntaxContext::ROOT,
         visibility: Visibility::Pub,
         name: Ident::new("Worker"),

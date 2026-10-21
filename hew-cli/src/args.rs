@@ -1076,6 +1076,10 @@ pub struct NodeCommand {
 pub enum NodeSubcommand {
     /// Load or create an owner-only key file and print its public credential.
     Identity(NodeIdentityArgs),
+    /// Load or create a private cluster authority and print its public key.
+    Authority(NodeAuthorityArgs),
+    /// Enrol an existing node transport credential under a cluster authority.
+    Admit(NodeAdmissionArgs),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -1092,4 +1096,26 @@ pub struct NodeIdentityArgs {
     /// Transport whose public credential should be printed.
     #[arg(long, value_enum, default_value = "tcp")]
     pub transport: NodeIdentityTransport,
+}
+
+#[derive(Debug, Args)]
+pub struct NodeAuthorityArgs {
+    /// Persistent private cluster authority file (created only when absent).
+    #[arg(long)]
+    pub key: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct NodeAdmissionArgs {
+    /// Existing private cluster authority file.
+    #[arg(long)]
+    pub authority: PathBuf,
+    /// Public node transport credential printed by `hew node identity`.
+    #[arg(long)]
+    pub credential: String,
+    #[arg(long, value_enum, default_value = "tcp")]
+    pub transport: NodeIdentityTransport,
+    /// Enrolment bundle installed as NodeConfig.cluster.
+    #[arg(long)]
+    pub output: PathBuf,
 }

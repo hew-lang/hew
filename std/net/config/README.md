@@ -19,14 +19,30 @@ Pass the loaded configuration to `Node.start` to start networking. That call
 loads or creates the identity file named by `cluster.key` or `HEW_NODE_KEY`.
 
 Set `HEW_NODE_CONFIG` to select another file. `bind` and `key` are required;
-`transport` defaults to `tcp`, and `peers` and `seeds` default to empty lists.
+`transport` defaults to `tcp`, `cluster` defaults to an empty path, and `seeds`
+defaults to an empty list.
 Environment overrides are `HEW_NODE_BIND`, `HEW_NODE_KEY`, `HEW_NODE_TRANSPORT`,
-`HEW_NODE_PEERS` and `HEW_NODE_SEEDS`. Lists use TOML arrays, including `[]` to
-clear a list. File key paths are relative to the configuration directory;
-environment key paths are relative to the working directory.
+`HEW_NODE_CLUSTER` and `HEW_NODE_SEEDS`. Seeds use TOML arrays, including `[]`
+to clear the list. File identity and enrolment paths are relative to the
+configuration directory; environment paths are relative to the working directory.
 
 Errors retain their `source`, `field` and `message` in `ConfigError`, with a
 human-readable `Display` implementation. Configuration loading never creates
 an identity or starts networking. Use `hew node identity --key node.key` to
 load or create the same TCP identity used by `Node.start` and print its public
 credential. Add `--transport quic-mesh` for a QUIC credential.
+
+Before connecting nodes, enrol their public credentials under one authority:
+
+```sh
+hew node authority --key authority.key
+hew node identity --key node.key
+hew node admit --authority authority.key --credential PUBLIC_CREDENTIAL --output node.enrollment
+```
+
+Set `cluster = "node.enrollment"` in `[cluster]` or set `HEW_NODE_CLUSTER`.
+The installed enrolment supplies the trusted cluster authority and binds the
+local transport credential. Every peer proves possession of its enrolled key.
+An empty cluster path permits isolated local use, with peer admission refused.
+Keep `authority.key` with the operator; nodes need only their own identity and
+enrolment files. Actor service grants remain separate from cluster membership.

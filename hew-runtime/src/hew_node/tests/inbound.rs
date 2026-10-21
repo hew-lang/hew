@@ -85,7 +85,7 @@ fn send_reply_envelope_bails_before_touching_stopping_connmgr() {
 fn replies_select_the_request_publication_during_connection_overlap() {
     let _guard = crate::runtime_test_guard();
     let (client, _, server, port) = start_authorized_tcp_pair(355, 356);
-    let address = CString::new(format!("356@127.0.0.1:{port}")).unwrap();
+    let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
     // SAFETY: both test nodes retain their managers and routing tables.
     let (client_manager, server_manager, client_routes, server_routes) = unsafe {
         connect_with_retry(client.as_ptr(), &address);
@@ -368,7 +368,7 @@ fn node_stop_waits_to_free_connmgr_until_inbound_ask_error_worker_drains() {
     let actor_id = unsafe { (*actor).id };
     assert_eq!(crate::pid::hew_pid_node(actor_id), 354);
 
-    let connect_addr = CString::new(format!("354@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -650,7 +650,7 @@ fn handle_inbound_ask_capture_safe_for_secondary_node_freed_connmgr() {
     // Establish the node1→node2 connection so node2 has an ACTIVE connection
     // back to node1 — the entry `feature_flags_for_node` would walk if the
     // capture dereferenced the (soon-to-be-freed) manager.
-    let connect_addr = CString::new(format!("364@127.0.0.1:{node2_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node2_port}")).unwrap();
     // SAFETY: node1 and connect_addr are valid for this connection attempt.
     unsafe { connect_with_retry(node1.as_ptr(), &connect_addr) };
     // SAFETY: both node pointers remain valid until teardown.
@@ -723,7 +723,7 @@ fn queued_withdrawal_requires_the_exact_request_and_connection_publication() {
     let (actor_id, manager) = unsafe { ((*actor).id, &*(*node.as_ptr()).conn_mgr) };
     // SAFETY: the test retains both authenticated nodes through every admission.
     let peer_id = unsafe { (*peer.as_ptr()).auth.node_identity().unwrap() };
-    let address = CString::new(format!("365@127.0.0.1:{port}")).unwrap();
+    let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
     let mut previous_publication = None;
     for iteration in 0..2 {
         // SAFETY: both authenticated nodes remain live through the reconnect.
@@ -811,7 +811,7 @@ fn service_revocation_refuses_an_already_queued_dispatch_claim() {
     crate::pid::hew_pid_set_local_node(367);
     let actor = spawn_remote_test_actor(noop_dispatch);
     inbound_test_codec(noop_dispatch, 0);
-    let address = CString::new(format!("367@127.0.0.1:{port}")).unwrap();
+    let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
     // SAFETY: this test retains both nodes and the actor until all requests retire.
     let (actor_id, incarnation, manager, peer_id) = unsafe {
         connect_with_retry(peer.as_ptr(), &address);
@@ -991,7 +991,7 @@ fn mailbox_admission_precedes_dispatch_and_preserves_queued_authority() {
             crate::pid::hew_pid_set_local_node(367);
             let actor = spawn_remote_test_actor(noop_dispatch);
             inbound_test_codec(noop_dispatch, 0);
-            let address = CString::new(format!("367@127.0.0.1:{port}")).unwrap();
+            let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
             // SAFETY: this test retains both nodes and the actor until all requests retire.
             let (actor_id, incarnation, manager, peer_id) = unsafe {
                 connect_with_retry(peer.as_ptr(), &address);
@@ -1157,7 +1157,7 @@ fn admitted_lifecycle_observes_peer_cleanup_and_revokes_only_future_setup() {
     inbound_test_codec(noop_dispatch, 0);
     crate::pid::hew_pid_set_local_node(371);
     let watcher = spawn_remote_test_actor(noop_dispatch);
-    let address = CString::new(format!("372@127.0.0.1:{port}")).unwrap();
+    let address = CString::new(format!("127.0.0.1:{port}")).unwrap();
     // SAFETY: both nodes and actor allocations remain live through all observers.
     unsafe {
         connect_with_retry(client.as_ptr(), &address);

@@ -433,3 +433,32 @@ fn claim_concurrent_reserve_publish_yields_exactly_one_owner() {
     drop(winners);
     free_claim_test_mgr(mgr_ptr, transport);
 }
+
+/// Alias exhaustion refuses a new identity while retained retired identities
+/// keep their alias; a vacant local alias is never handed to a peer.
+#[test]
+fn route_alias_allocation_preserves_retired_identities_and_refuses_exhaustion() {
+    use super::super::identity_claim::{select_route_alias, test_node_identity};
+    let mut claims = std::collections::HashMap::new();
+    for slot in 2..=u16::MAX {
+        claims.insert(
+            test_node_identity(slot),
+            crate::peer_binding::LiveClaim {
+                credential: None,
+                route_slot: slot,
+                session_incarnation: 1,
+                conn_id: -1,
+                publication_token: 1,
+                state: crate::peer_binding::ClaimState::Retired,
+            },
+        );
+    }
+    let newcomer = crate::node_identity::NodeId::from_bytes([0xaa; 16]);
+    assert_eq!(select_route_alias(&claims, 1, newcomer, 0), None);
+    assert_eq!(
+        select_route_alias(&claims, 1, test_node_identity(42), 0),
+        Some(42)
+    );
+    claims.remove(&test_node_identity(42));
+    assert_eq!(select_route_alias(&claims, 1, newcomer, 0), Some(42));
+}

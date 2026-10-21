@@ -4054,16 +4054,6 @@
               "type": "null"
             },
             "family": {
-              "const": "NodeAllowPeer"
-            }
-          }
-        },
-        {
-          "properties": {
-            "detail": {
-              "type": "null"
-            },
-            "family": {
               "const": "NodeConnect"
             }
           }

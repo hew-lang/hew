@@ -1,0 +1,48 @@
+import std.encoding.cbor;
+import std.encoding.json;
+
+#[wire]
+type Parcel<T> {
+    item: T;
+    id: i64 @7;
+    maybe: Option<T>;
+    many: Vec<T>;
+    reserved @2;
+}
+
+#[wire]
+enum Status<T> {
+    reserved @0, @2;
+    Pending;
+    Value(T) @7;
+    Empty;
+}
+
+fn check<T: Serializable + Eq>(value: T) {
+    assert(cbor.decode<T>(cbor.encode(value)).expect("CBOR generic value") == value);
+    assert(json.decode<T>(json.encode(value)).expect("JSON generic value") == value);
+}
+
+fn main() {
+    let words: Parcel<string> = Parcel { item: "parcel".to_upper(), id: 17, maybe: .Some("retained".to_upper()), many: ["first".to_upper(), "second"] };
+    let numbers: Parcel<i64> = Parcel { item: -42, id: 18, maybe: .None, many: [0, 17, 99] };
+    let nested: Parcel<Parcel<string>> = Parcel { item: words, id: 19, maybe: .Some(words), many: [words, words] };
+    check(words);
+    check(numbers);
+    check(nested);
+    let states: Vec<Status<string>> = [.Pending, .Value(words.item), .Empty];
+    for value in states {
+        check(value);
+    }
+    let numeric: Status<i64> = .Value(-91);
+    let nested_status: Status<Parcel<string>> = .Value(words);
+    check(numeric);
+    check(nested_status);
+    let pending: Status<string> = .Pending;
+    let raw = cbor.encode(pending);
+    assert(raw.len() == 1 && raw[0] == 1);
+    let empty: Status<i64> = .Empty;
+    let empty_raw = cbor.encode(empty);
+    assert(empty_raw.len() == 1 && empty_raw[0] == 3);
+    println("generic wire values passed");
+}

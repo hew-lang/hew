@@ -265,6 +265,7 @@ impl Checker {
                     fields: HashMap::new(),
                     field_order: Vec::new(),
                     variants,
+                    implicit_variant_fields: HashMap::default(),
                     methods: HashMap::new(),
                     doc_comment: None,
                     is_indirect: false,

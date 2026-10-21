@@ -2923,8 +2923,10 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            implicit_fields: Vec::new(),
             name: Ident::new("Has"),
             tag: None,
+            tag_explicit: false,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("Tag"), 0..0),
@@ -2985,8 +2987,10 @@ fn imported_enum_payload_keeps_its_defining_module_identity() {
         type_params: None,
         where_clause: None,
         body: vec![TypeBodyItem::Variant(hew_parser::ast::VariantDecl {
+            implicit_fields: Vec::new(),
             name: Ident::new("Message"),
             tag: None,
+            tag_explicit: false,
             kind: VariantKind::Tuple(vec![(
                 TypeExpr::Named {
                     path: hew_parser::ast::Path::single(

@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-deep-history-rollback"
+intent = "Ordinary faults after departure capture and during restored entry leave the history owner, machine and saved subtree unchanged; a later successful restore runs normal entry hooks."
+source = "cases/machine-deep-history-rollback.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "deep history atomic rollback passed\n"
+stderr = ""
+exit = 0

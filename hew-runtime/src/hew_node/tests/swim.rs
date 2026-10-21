@@ -34,7 +34,7 @@ fn dead_node_is_detected_by_survivor_via_driven_swim() {
     let (node_a, _node_a_port, node_b, node_b_port) = start_authorized_tcp_pair(NODE_A, NODE_B);
 
     // Connect A → B and wait for the handshake so A knows B is ALIVE.
-    let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node_b_port}")).unwrap();
     // SAFETY: node_a and the connect addr are valid for this call.
     unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
     // SAFETY: both nodes are valid here.
@@ -139,7 +139,7 @@ fn alive_node_is_not_falsely_killed_by_driven_swim() {
     let (node_a, _node_a_port, node_b, node_b_port) =
         start_authorized_quic_mesh_pair(NODE_A, NODE_B);
 
-    let connect_addr = CString::new(format!("{NODE_B}@127.0.0.1:{node_b_port}")).unwrap();
+    let connect_addr = CString::new(format!("127.0.0.1:{node_b_port}")).unwrap();
     // SAFETY: node_a and the connect addr are valid for this call.
     unsafe { connect_with_retry(node_a.as_ptr(), &connect_addr) };
     // SAFETY: both nodes are valid here.

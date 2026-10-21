@@ -67,3 +67,48 @@ pub type SwimControl {
     target: Option<WireSession> @4;
     gossip: Vec<SwimGossip> @5;
 }
+
+// Admission binds an existing transport credential to the installed cluster root.
+#[wire]
+pub type ClusterMember {
+    transport: u8 @1;
+    credential: bytes @2;
+}
+
+#[wire]
+pub type ClusterEnrollment {
+    authority: bytes @1;
+    member: bytes @2;
+    signature: bytes @3;
+}
+
+#[wire]
+pub type NodeHandshake {
+    protocol_version: u16 @1;
+    schema_hash: u32 @2;
+    feature_flags: u32 @3;
+    node: bytes @4;
+    incarnation: u32 @5;
+    noise_key: bytes @6;
+    enrollment: bytes @7;
+}
+
+// Relay carriage is transport: only the inner authenticated session publishes authority.
+#[wire]
+pub type RelayOpen {
+    circuit: u64 @1;
+    origin: WireSession @2;
+    target: WireSession @3;
+}
+
+#[wire]
+pub type RelayChunk {
+    circuit: u64 @1;
+    offset: u64 @2;
+    body: bytes @3;
+}
+
+#[wire]
+pub type RelayClose {
+    circuit: u64 @1;
+}

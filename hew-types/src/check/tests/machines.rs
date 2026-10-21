@@ -353,3 +353,181 @@ fn lone_shorthand_transition_body_names_the_payload_spelling() {
     let output = check(&source.replace("Busy { n }", "Busy { n: state.n }"));
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
+
+#[test]
+fn parallel_regions_refuse_shared_parent_mutation() {
+    for mutation in ["state.count += 1;", "state.values.push(3);"] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Tick; }}
+    parallel state Running {{
+        count: i64;
+        values: Vec<i64>;
+        region left {{ initial state L; }}
+        region right {{ initial state R; }}
+    }}
+    on Tick: L => L {{ {mutation} state }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert!(
+            !output.errors.is_empty(),
+            "regional mutation was accepted: {mutation}"
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::MutabilityError),
+            "{mutation}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn parallel_initializers_read_only_enclosing_payload() {
+    for field in ["event.value", "state.left"] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Start {{ value: i64; }} }}
+    state Idle;
+    parallel state Running {{
+        count: i64;
+        region left {{ initial state L; }}
+        region right {{ state R {{ value: i64; }} initial R {{ value: {field} }}; }}
+    }}
+    on Start: Idle => Running {{ count: event.value }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert!(
+            !output.errors.is_empty(),
+            "initializer read was accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn exclusive_compound_hooks_only_check_reachable_inputs() {
+    let source = r"
+machine Routed {
+    events { Enter { value: i64; } Leave; }
+    emits { Value { value: i64; } }
+    state Outside;
+    state Inside {
+        entry { emit Value { value: event.value }; }
+        initial state Waiting;
+    }
+    on Enter: Outside => Inside;
+    on Leave: Waiting => Outside;
+    default { state }
+}
+fn main() {}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn exclusive_initializers_use_parent_payload_and_reject_effects() {
+    for (value, accepted) in [
+        ("state.seed + 2", true),
+        ("event.seed", false),
+        ("state.count", false),
+        ("{ println(\"effect\"); 1 }", false),
+    ] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Start {{ seed: i64; }} }}
+    state Idle;
+    state Running {{
+        seed: i64;
+        state Ready {{ count: i64; }}
+        initial Ready {{ count: {value} }};
+    }}
+    on Start: Idle => Running {{ seed: event.seed }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert_eq!(
+            output.errors.is_empty(),
+            accepted,
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn history_destinations_require_a_compound() {
+    for target in ["Leaf", "_"] {
+        let source = format!("machine M {{ events {{ Tick; }} state Leaf; on Tick: Leaf => {target} history; default {{ state }} }} fn main() {{}}");
+        let output = check_source(&source);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("history destination must name a compound")),
+            "{target}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn internal_reactions_do_not_capture_external_event_parameters() {
+    for body in ["event", "event.value"] {
+        let source = format!(
+            r"machine M {{
+            events {{ Go {{ value: i64; }} }}
+            state A;
+            state B;
+            always: A => B {{ let invalid = {body}; B }}
+            default {{ state }}
+        }}"
+        );
+        let output = check_source(&source);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("internal reaction cannot read an input event")),
+            "{body}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn completion_requires_a_compound_source() {
+    for source in ["A", "_"] {
+        let code = format!(
+            r"machine M {{
+            events {{ Go; }}
+            state A;
+            state B;
+            on completion: {source} => B;
+            default {{ state }}
+        }}"
+        );
+        let output = check_source(&code);
+        assert!(
+            output.errors.iter().any(|error| error
+                .message
+                .contains("completion transition must name a compound source")),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}

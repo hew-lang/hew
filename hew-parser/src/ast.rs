@@ -1518,7 +1518,7 @@ pub enum TypeDeclKind {
     Enum,
 }
 
-/// Wire protocol metadata attached to a `TypeDecl` via `#[wire]`.
+/// Wire protocol metadata attached to a type or machine via `#[wire]`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WireMetadata {
     pub field_meta: Vec<WireFieldMeta>,
@@ -1543,9 +1543,16 @@ pub struct WireReserved {
 
 /// Per-field wire protocol metadata (auto-assigned or explicit field numbers, modifiers).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "wire field modifiers and authored spelling are independent flags"
+)]
 pub struct WireFieldMeta {
     pub field_name: String,
     pub field_number: u32,
+    /// Whether the source explicitly wrote this field number.
+    #[serde(default)]
+    pub field_number_explicit: bool,
     pub is_optional: bool,
     pub is_deprecated: bool,
     pub is_repeated: bool,
@@ -1575,11 +1582,17 @@ pub enum TypeBodyItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariantDecl {
+    /// Internal fields initialized by compiler-authored constructor plans.
+    #[serde(skip)]
+    pub implicit_fields: Vec<ImplicitVariantField>,
     pub name: Ident,
     pub kind: VariantKind,
     /// The stable `@N` tag of a `#[wire]` enum variant.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<u32>,
+    /// Whether the source explicitly wrote this tag, rather than inferring it.
+    #[serde(default)]
+    pub tag_explicit: bool,
     #[serde(default)]
     pub doc_comment: Option<String>,
     /// Source byte range of this variant (after any doc comments), used by
@@ -1587,6 +1600,18 @@ pub struct VariantDecl {
     /// Set to `0..0` for synthetically constructed variants.
     #[serde(skip)]
     pub span: Span,
+}
+
+/// An internal physical payload slot whose omitted value is checker-authored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplicitVariantField {
+    pub field_index: usize,
+    pub initialization: ImplicitVariantFieldInitialization,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplicitVariantFieldInitialization {
+    EmptyOption,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -2014,6 +2039,9 @@ pub enum RestartPolicy {
 pub struct MachineDecl {
     #[serde(default)]
     pub visibility: Visibility,
+    /// Schema metadata inherited by the machine's generated wire declarations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wire: Option<WireMetadata>,
     pub name: Ident,
     /// Context of the implicit `state` and `event` bindings inside the body.
     pub body_context: SyntaxContext,
@@ -2065,11 +2093,16 @@ pub struct MachineDecl {
 impl MachineDecl {
     /// Authored rules, including rules scoped to compound states.
     pub fn authored_transitions(&self) -> impl Iterator<Item = &MachineTransition> {
-        self.transitions.iter().chain(
-            self.composite_groups
-                .iter()
-                .flat_map(|group| &group.parent_transitions),
-        )
+        self.transitions
+            .iter()
+            .chain(self.composite_groups.iter().flat_map(|group| {
+                group.parent_transitions.iter().chain(
+                    group
+                        .regions
+                        .iter()
+                        .flat_map(|region| &region.parent_transitions),
+                )
+            }))
     }
 
     /// Authored hooks and the declaration whose payload they bind.
@@ -2095,16 +2128,29 @@ impl MachineDecl {
     pub fn state_path(&self, name: Ident) -> Vec<Ident> {
         let mut path = vec![name];
         let mut current = name;
-        for _ in 0..self.composite_groups.len() {
-            let Some(parent) = self
+        for _ in 0..=self.composite_groups.len() * 2 {
+            if let Some(parent) = self
                 .composite_groups
                 .iter()
                 .find(|group| group.members.contains(&current))
-            else {
-                break;
-            };
-            current = parent.name;
-            path.push(current);
+            {
+                current = parent.name;
+                path.push(current);
+                continue;
+            }
+            if let Some((parent, region)) = self.composite_groups.iter().find_map(|group| {
+                group
+                    .regions
+                    .iter()
+                    .find(|region| region.members.contains(&current))
+                    .map(|region| (group, region))
+            }) {
+                path.push(region.name);
+                current = parent.name;
+                path.push(current);
+                continue;
+            }
+            break;
         }
         path.reverse();
         path
@@ -2118,9 +2164,18 @@ pub struct CompositeGroup {
     pub name: Ident,
     /// Direct child declarations, in source order.
     pub members: Vec<Ident>,
-    /// The substate marked `initial` — the state entered when the composite is
-    /// targeted by name.
-    pub initial: Ident,
+    /// The substate marked `initial` for an exclusive composite. A parallel
+    /// composite instead stores one initial child on each region.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial: Option<Ident>,
+    /// Explicit pure constructor for fresh descent into an exclusive child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<Spanned<Expr>>,
+    /// Regions make this composite a parallel configuration. Each region
+    /// stores its own typed active child; no combined-state variants are
+    /// generated.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<MachineRegion>,
     /// Compound entry hook, evaluated before entering its descendants.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry: Option<Block>,
@@ -2139,9 +2194,30 @@ pub struct CompositeGroup {
     pub span: Span,
 }
 
+/// One independently active branch of a parallel composite state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MachineRegion {
+    pub name: Ident,
+    /// Direct child declarations, in source order.
+    pub members: Vec<Ident>,
+    /// The direct child entered when this region is initialized.
+    pub initial: Ident,
+    /// An explicit pure initial constructor, evaluated on fresh descent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<Spanned<Expr>>,
+    /// Region-level transitions are retained with their source scope.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parent_transitions: Vec<MachineTransition>,
+    #[serde(default)]
+    pub span: Span,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineState {
     pub name: Ident,
+    /// A final leaf contributes completion to its containing compound.
+    #[serde(default)]
+    pub is_final: bool,
     pub fields: Vec<(Ident, Spanned<TypeExpr>)>,
     /// Optional `entry { ... }` lifecycle block executed when entering this state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2177,9 +2253,36 @@ pub enum MachineTransitionBodyForm {
     Block,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MachineTrigger {
+    Event(Ident),
+    Completion,
+    Always,
+}
+
+impl MachineTrigger {
+    #[must_use]
+    pub const fn event_name(self) -> Option<Ident> {
+        match self {
+            Self::Event(name) => Some(name),
+            Self::Completion | Self::Always => None,
+        }
+    }
+}
+
+impl std::fmt::Display for MachineTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Event(name) => name.fmt(f),
+            Self::Completion => f.write_str("completion"),
+            Self::Always => f.write_str("always"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MachineTransition {
-    pub event_name: Ident,
+    pub trigger: MachineTrigger,
     pub source_state: Ident,
     pub target_state: Ident,
     /// Authored qualified paths, retained for hierarchy checking and tools.
@@ -2223,6 +2326,9 @@ pub struct MachineTransition {
     /// Moore-style rule that self-loops must be annotated or empty).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub reenter: bool,
+    /// Restore the target compound's saved immediate child configuration.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub history: bool,
     /// Byte span from `on` through the rule's end; shared by the per-member
     /// rules a composite's parent rule expands to.
     #[serde(default)]

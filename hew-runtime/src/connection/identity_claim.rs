@@ -34,6 +34,27 @@ pub(super) enum ClaimReservation {
     Rejected(String),
 }
 
+/// Select under the claims lock; retained identities keep their existing alias.
+pub(super) fn select_route_alias(
+    claims: &std::collections::HashMap<NodeId, LiveClaim>,
+    local: u16,
+    identity: NodeId,
+    requested: u16,
+) -> Option<u16> {
+    if requested != 0 {
+        return Some(requested);
+    }
+    if let Some(existing) = claims.get(&identity) {
+        return Some(existing.route_slot);
+    }
+    let occupied: std::collections::HashSet<u16> = claims
+        .values()
+        .map(|claim| claim.route_slot)
+        .chain(std::iter::once(local))
+        .collect();
+    (1..=u16::MAX).find(|candidate| !occupied.contains(candidate))
+}
+
 /// Reserve a `NodeId` claim for a connection mid-admission (issue #2652, D3
 /// step 1). Runs under the claims mutex; the condvar coordinates the
 /// reserve/publish handoff.
@@ -47,7 +68,8 @@ pub(super) enum ClaimReservation {
 /// - absent ⇒ insert `Reserved`; no supersede.
 #[expect(
     clippy::too_many_arguments,
-    reason = "admission carries the authenticated claim and optional reconnect predecessor"
+    clippy::too_many_lines,
+    reason = "one reservation transaction owns alias allocation and authenticated session handoff"
 )]
 pub(super) fn reserve_identity_claim(
     mgr: &HewConnMgr,
@@ -59,13 +81,16 @@ pub(super) fn reserve_identity_claim(
     publication_token: u64,
     predecessor: Option<&ReconnectOwner>,
 ) -> ClaimReservation {
-    if route_slot == 0 || session_incarnation == 0 {
+    if (route_slot == 0 && mgr.auth.admission().is_none()) || session_incarnation == 0 {
         return ClaimReservation::Rejected(format!(
             "invalid route slot/session for NodeId {node_id} (route_slot={route_slot}, session={session_incarnation})"
         ));
     }
     let (lock, condvar) = &mgr.claims;
     let mut map = lock.lock_or_recover();
+    let Some(route_slot) = select_route_alias(&map, mgr.local_node_id, node_id, route_slot) else {
+        return ClaimReservation::Rejected("peer route alias space is exhausted".into());
+    };
     loop {
         if mgr.reconnect_shutdown.load(Ordering::Acquire)
             || crate::transport::connection_attempt_remaining()
@@ -217,6 +242,12 @@ pub(super) fn publish_identity_claim(
             && c.conn_id == conn_id
             && c.publication_token == publication_token
     });
+    // Clear predecessor discovery before exposing Published to the new reader.
+    // Holding the claim lock fences an old publication's final name mutation.
+    // SAFETY: the node retains its canonical registry through all manager users.
+    let registry = unsafe { mgr.registry.as_ref() };
+    let names_changed =
+        still_ours && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
     if still_ours {
         if let Some(claim) = map.get_mut(&node_id) {
             claim.state = ClaimState::Published;
@@ -224,6 +255,9 @@ pub(super) fn publish_identity_claim(
     }
     drop(map);
     condvar.notify_all();
+    if names_changed {
+        registry.expect("changed registry").notify_names();
+    }
     still_ours
 }
 
@@ -407,6 +441,7 @@ pub(super) fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_i
             conn.peer_identity = Some(node_id);
             conn.peer_session_incarnation = 1;
             conn.publication_token = token;
+            conn.transport = super::ConnectionTransport::borrowed(mgr.transport);
         }
     });
     token
@@ -702,6 +737,7 @@ fn close_superseded_connection_once(mgr: &HewConnMgr, conn_id: c_int, publicatio
                 (
                     connection.transport_close.claim(),
                     Arc::clone(&connection.transport_close),
+                    connection.transport.clone(),
                 )
             })
     });
@@ -709,9 +745,9 @@ fn close_superseded_connection_once(mgr: &HewConnMgr, conn_id: c_int, publicatio
     // `None`: the actor is gone, so its close already happened (or is happening
     // under someone else's claim) and the id may belong to a successor.
     // Neither may close here.
-    if let Some((true, transport_close)) = claim {
+    if let Some((true, transport_close, transport)) = claim {
         // SAFETY: mgr.transport is valid while the manager is alive.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(transport.as_ptr(), conn_id) };
         transport_close.finish();
     }
 }

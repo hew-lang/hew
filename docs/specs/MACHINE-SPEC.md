@@ -67,19 +67,24 @@ For `machine M`, the compiler supplies:
 | Item | Meaning |
 | --- | --- |
 | `M` | The state enum |
-| `MEvent` | The input enum |
+| `M.Event` | The input enum |
 | `MOutput` | The independent output enum |
 | `MStepDisposition` | `Taken` and `Ignored` variants |
-| `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rule: Option<i64>` |
-| `step(var self, event: MEvent) -> MStep` | Staged mutable evaluation |
+| `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rules: Vec<i64>` |
+| `step(var self, event: M.Event) -> MStep` | Staged evaluation with at most 1024 transition sets |
+| `step_with_limit(var self, event: M.Event, limit: i64) -> Result<MStep, MachineStepError>` | Staged evaluation with an explicit positive bound |
 | `state_name(self) -> string` | Current state tag |
+| `MScope` | Unit variants naming the machine's compound states |
+| `MSubtree` | Typed departure snapshots, one variant per compound state |
+| `step_observed_with_limit(var self, event: M.Event, limit: i64, requested: Vec<MScope>)` | The same bounded evaluator, returning `Result<MachineObservedStep<MStep, MScope, MSubtree>, MachineStepError>` |
 
 Each machine implements the compiler-generated `Machine` interface. Its
 associated `Event` and `Step` types identify the input and report types;
+`Scope` and `Subtree` identify the opt-in departure observation types;
 `step_info(report)` returns the common `MachineStepInfo` view. Handwritten
 implementations cannot replace the checked machine evaluator. A report's
-`input` is the source event tag; `rule` is the zero-based source rule ordinal,
-or `None` when the default handles the input.
+`input` is the source event tag; `rules` contains the zero-based source rule
+ordinals in body execution order. It is empty when no external or internal transition is taken.
 
 `MStep` is must-use: discarding it as an expression produces the ordinary
 must-use diagnostic. A caller can explicitly acknowledge deliberate discard
@@ -173,8 +178,13 @@ Embedding the value in an actor does not move those effects into `step`.
 ## Hierarchy
 
 A compound state groups leaf states or other compounds. Exactly one direct
-child is marked `initial`; targeting a compound follows those markers until a
-leaf is reached. Compound fields are inherited by descendant leaves, and an
+child is chosen by `initial state Child` or an explicit `initial Child { ... };`
+constructor. Targeting a compound follows those choices until a leaf is reached.
+An explicit constructor supplies child payload using the newly supplied parent
+payload; inherited parent fields carry through automatically. Each nested initial
+constructor runs once on fresh descent, before entry hooks. Targeting a leaf
+directly bypasses initial constructors and supplies its full inherited payload.
+Compound fields are inherited by descendant leaves, and an
 inherited field name cannot be redeclared. State names remain unique within a
 machine; a qualified transition head such as `Connection.Handshake.Waiting`
 must follow the declared parentage.
@@ -202,8 +212,263 @@ continue to retain their shared ancestors. Code that previously used `_` for
 an intra-compound move and relied on skipped compound hooks should name the
 target instead.
 
-The hierarchy represents one active branch. Parallel regions and history
-states are not part of this surface.
+## Parallel regions
+
+A parallel state holds one active configuration per named region. Regions may
+contain exclusive compounds or further parallel states. State names remain unique
+within the machine; region names are scoped to their containing parallel state.
+
+```hew
+machine Checkout {
+    events { Advance; Cancel; }
+    parallel state Running {
+        region payment { initial state Waiting; state Paid; }
+        region stock { initial state Empty; state Reserved; }
+    }
+    state Stopped;
+    on Advance: Waiting => Paid;
+    on Advance: Empty => Reserved;
+    on Cancel: Running => Stopped;
+    default { state }
+}
+
+fn main() {
+    var checkout: Checkout = .Running { payment: .Waiting, stock: .Empty };
+    let saved = checkout;
+    let report = checkout.step(.Advance);
+    assert(report.rules == [0, 1]);
+    match checkout {
+        .Running { payment: .Paid, stock: .Reserved } => {}
+        _ => panic("both regions must advance"),
+    }
+    match saved {
+        .Running { payment: .Waiting, stock: .Empty } => {}
+        _ => panic("the saved configuration changed"),
+    }
+}
+```
+
+Each region field has an inferred closed enum type. Regional leaves are variants
+of that field's type; they are not additional root variants. Parent payload is
+stored once alongside the region fields. Ordinary constructors and destructuring
+expose this structure, and ordinary copies remain independent. Construction does
+not execute hooks.
+
+Selection observes one pre-step configuration. Deeper sources have priority,
+with source declaration order breaking ties. A shared ancestor candidate is
+considered once. Candidates conflicting with an already selected transition are
+skipped before their guards run; each eligible guard runs at most once. All
+compatible disjoint regional transitions are selected before exits or bodies.
+An enabled descendant therefore defeats a conflicting ancestor rule for the same
+input, including a parent cancellation rule.
+
+Exit hooks run deepest first, selected bodies run in source order, and entry
+hooks run outermost first. Equal-depth hooks follow region declaration order.
+Shared hooks run once. Regional rules and hooks may read shared ancestor payload
+but cannot mutate it; an ancestor-owned rule can update that ancestor's payload.
+State, outputs and the ordered report commit together after every selected body
+and entry succeeds.
+
+An in-region named destination retains its common ancestors and preserves other
+regions. A named destination in a sibling region exits and re-enters the containing
+parallel configuration, initializing its other regions. Its configuration-write
+domain conflicts with transitions below that parallel state; unrelated outer
+regions can still advance. A computed `_` destination exits the complete active
+configuration and enters the returned root value. In such a body, `state` is the
+complete staged root configuration.
+
+A transition constructing a parallel state may omit regional fields to use their
+initial configurations. A region with an initial payload can declare a separate
+constructor:
+
+```hew,ignore
+region stock {
+    state WaitingForStock { count: i64; }
+    initial WaitingForStock { count: state.initial_stock };
+}
+```
+
+The initializer runs on fresh descent inside the staged transaction. It may read
+the enclosing payload, including newly supplied parent fields, but cannot read
+an input event or another region, emit outputs, or perform effects. Explicit
+region values bypass initial construction for those fields. `initial state Name`
+remains the shorthand for an initial child. Separate initial constructor clauses
+work in regions and exclusive compounds, including compounds nested in regions.
+
+## Final states and internal reactions
+
+A `final state` completes its containing exclusive state. A parallel state is
+complete when every active region has reached a final descendant. Completion
+propagates through nested compounds. A final state can carry payload and ordinary
+entry and exit hooks.
+
+`on completion: Compound => Target` reacts to a completed compound. An
+`always: Source => Target` rule is eligible whenever its source is active and its
+guard succeeds. Both use the ordinary target, guard, history and hook rules;
+neither binds an input `event` or accepts event-head payload bindings. The exact
+lower-case name `completion` is reserved in the input vocabulary; `Completion`
+remains an ordinary event name.
+
+```hew
+machine Job {
+    events { Start; }
+    state Idle;
+    state Running {
+        initial state Working;
+        final state Ready;
+    }
+    state Finished;
+    on Start: Idle => Running;
+    always: Working => Ready;
+    on completion: Running => Finished;
+    default { state }
+}
+
+fn main() {
+    var job: Job = .Idle;
+    let report = job.step_with_limit(.Start, 3).expect("stabilization fits the limit");
+    assert(job == .Finished);
+    assert(report.rules == [0, 1, 2]);
+}
+```
+
+After the external transition set, the evaluator repeatedly selects completion
+rules, then selects `always` rules only if no completion rule is enabled. Each
+set uses deepest-owner priority, declaration order and the same compatibility
+rules as an external set. Even an ignored external input initiates stabilization.
+Construction by itself does not run internal reactions.
+
+Each nonempty compatible set consumes one unit of the limit, including the
+external set. Simultaneous transitions in independent regions count once. A
+successful report combines outputs and rule ordinals from every set in execution
+order, and keeps the original external input tag. `Taken` means at least one
+external or internal transition was selected.
+
+A nonpositive bound returns `.Err(.InvalidLimit)`. When another set is enabled
+but the bound is exhausted, the call returns `.Err(.LimitExceeded)` before that
+set's exit hooks. Both errors leave the original machine, saved history and
+outputs unchanged. Ordinary hook or helper faults propagate as usual and also
+roll back the whole call. `step(event)` uses a bound of 1024 and raises an ordinary
+fault if stabilization exceeds it.
+
+## Shallow history
+
+A `history` target restores a compound's last active immediate child and that
+child's own payload. The history is saved after exit hooks, before the transition
+body. A compound child resumes through its initial descendants: shallow history
+does not remember the child's deeper active branch. A parallel target restores
+one immediate child per region. Normal entry hooks run on every restored branch.
+
+```hew
+machine Editor {
+    events { Open; Review; Pause; Resume; }
+    state Closed;
+    state Editing {
+        initial state Draft;
+        state Reviewing;
+    }
+    on Open: Closed => Editing;
+    on Review: Draft => Reviewing;
+    on Pause: Editing => Closed;
+    on Resume: Closed => Editing history;
+    default { state }
+}
+
+fn main() {
+    var editor: Editor = .Closed;
+    let _opened = editor.step(.Open);
+    let _reviewing = editor.step(.Review);
+    let _paused = editor.step(.Pause);
+    let _resumed = editor.step(.Resume);
+    assert(editor.state_name() == "Reviewing");
+}
+```
+
+The target must name a compound. When no history has been saved, its ordinary
+initial constructors run. Parent payload comes from the transition's constructor;
+history supplies the immediate child's payload. Explicit region values override
+history for those regions. `history reenter` also exits and re-enters an already
+active target compound, saving its current child before restoring it.
+
+Saved history belongs to the machine value. Ordinary copies retain independent
+history; equality and supported JSON/CBOR codecs include it. Constructing a new
+state value starts with empty history. A failed exit, initializer, body or entry
+commits neither the candidate configuration nor its saved history or outputs.
+
+## Deep history as an ordinary library value
+
+`std.machine.history` retains requested compound subtrees alongside a machine.
+The owner is an ordinary value: copying it copies both the current machine and
+its saved subtrees. `state()` returns the current machine; `saved(target)`
+returns the latest departed subtree or `None` before its first departure.
+
+```hew
+import std.machine.history;
+
+machine Document {
+    events {
+        Pause;
+        Resume { title: string; saved: Option<DocumentSubtree>; }
+    }
+    state Closed;
+    state Editing {
+        title: string;
+        state Review { text: string; }
+        initial Review { text: "new draft" };
+    }
+    on Pause: Editing => Closed;
+    on Resume: Closed => _ {
+        match event.saved {
+            .Some(.Editing { snapshot }) => snapshot.restore(event.title),
+            .None => Editing { title: event.title },
+        }
+    }
+    default { state }
+}
+
+fn main() {
+    let initial: Document = .Closed;
+    var owner = history.track(initial, [DocumentScope.Editing]);
+    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) });
+    let _pause = owner.step(.Pause);
+    let _resume = owner.step(.Resume { title: "reopened", saved: owner.saved(.Editing) });
+    assert(owner.state() == .Review { title: "reopened", text: "new draft" });
+}
+```
+
+Each requested departure saves the active descendants and their complete
+payloads, including all nested parallel regions. It excludes the requested
+compound's own payload, its ancestors' payloads and native shallow-history
+slots. A `DocumentSubtree.Editing { snapshot }` contains a
+`DocumentEditingSnapshot`; its variants name the possible active
+configurations below `Editing`.
+
+`snapshot.restore(...)` constructs an ordinary machine value. Its arguments
+provide fresh enclosing payloads in outer-to-inner declaration order. When the
+requested compound lies inside a parallel region, the arguments also provide
+the sibling region configurations, in the enclosing state's field order.
+Sibling parameters start with `Parent_region`; scalar parameters start with
+their source field names. A numeric suffix disambiguates collisions. For example, restoring `Nested` inside `Work.left` with
+`Work.seed`, sibling `Work.right` and `Nested.revision` takes
+`restore(seed, Work_right, revision)`. The saved descendants remain intact.
+Returning the constructed value from a computed transition runs normal entry
+hooks and participates in the ordinary staged commit. Before the first saved
+departure, the caller's `None` arm uses the normal initial constructors.
+
+The low-level `step_observed_with_limit` returns `report` and an ordered
+`departures` vector. Each departure has a typed `target` and `subtree`.
+Capture occurs after the transition set's exit hooks and before its bodies;
+within a set, deeper scopes precede ancestors, with source declaration order
+breaking ties. Duplicate requests capture a scope once. Internal completion
+and `always` sets use the same boundary, so a subtree entered and exited during
+one call is observable even when absent from the final machine. Unrequested
+subtrees are not captured. Ordinary `step` and `step_with_limit` request none.
+
+The library stages its current machine and retained entries together. Its
+`step_with_limit(event, limit)` returns the ordinary typed bound errors; its
+`step(event)` uses the default bound of 1024 transition sets. A bound error or
+an ordinary guard, exit, body or entry fault commits neither machine nor saved
+subtrees. Saved values returned earlier remain independent of later departures.
 
 ## Observed ownership
 
@@ -284,6 +549,40 @@ loop {
 The wrapper uses ordinary Hew actors, bounded streams and resource cleanup.
 It invokes the same generated evaluator as direct `M.step`; it has no second
 transition evaluator or observer callback execution inside commit.
+
+## Wire values
+
+`#[wire]` opts a machine's values into the ordinary wire-schema rules:
+
+```hew
+#[wire]
+machine Counter<T> {
+    events { Set { value: T; } }
+    state Ready { value: T; }
+    on Set: Ready => Ready { value: event.value }
+    default { state }
+}
+```
+
+The generated state, event, output, step report, region, history, scope,
+subtree and snapshot types carry ordinary wire metadata. The standard
+`MachineDeparture`, `MachineObservedStep`, `MachineStepInfo`,
+`MachineDisposition` and `MachineStepError` carriers are wire declarations too.
+A concrete value can round-trip through the standard codecs or cross a remote
+actor boundary when all its payloads satisfy the same data rules as an ordinary
+wire record or enum. No live observer identity or subscription is serialized.
+
+A decoded machine retains its remembered shallow history. A decoded subtree
+or snapshot retains the complete saved descendant configuration and can be
+restored through the ordinary generated `restore` method. Subsequent steps
+use the same transition evaluator as a freshly constructed value.
+
+Generic parameters are schema binders; their concrete arguments determine
+encodability. `#[wire(version = 2, min_version = 1)]` propagates the version
+metadata to generated declarations. Member numbers follow ordinary wire
+numbering: record fields start at 1 and enum variants at 0. Changing source
+order can change generated member identities. Use `hew wire check` against
+the published source to check the expanded schemas before deploying a change.
 
 ## Implementation scope
 

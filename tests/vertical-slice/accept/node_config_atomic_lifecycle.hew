@@ -38,7 +38,7 @@ fn main() -> i64 {
     }
     // Empty bind reaches the first managed-field rejection while later owned
     // strings and vectors are populated; consuming Node.start must release all.
-    let empty_bind = NodeConfig { bind: "", transport: NodeTransport.Tcp, key: key_path(), peers: ["later-peer"], seeds: ["127.0.0.1:1"] };
+    let empty_bind = NodeConfig { bind: "", transport: NodeTransport.Tcp, key: key_path(), cluster: f"{os.temp_dir()}/unread-enrolment-{os.pid()}", seeds: ["127.0.0.1:1"] };
     match Node.start(empty_bind) {
         .Err(.Config) => {}
         _ => return 7,
@@ -49,7 +49,7 @@ fn main() -> i64 {
         .Err(.Config) => {}
         _ => return 9,
     }
-    let absent_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key_path(), peers: Vec.new(), seeds: ["127.0.0.1:1"] };
+    let absent_seed = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key_path(), cluster: "", seeds: ["127.0.0.1:1"] };
     match Node.start(absent_seed) {
         .Ok(_) => {}
         _ => return 3,

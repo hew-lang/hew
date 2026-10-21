@@ -1,0 +1,19 @@
+machine Endless {
+    events {
+        Tick;
+    }
+    state A { text: string; }
+    state B { text: string; }
+    always: A => B { text: state.text + "b" }
+    always: B => A { text: state.text + "a" }
+    default { state }
+}
+
+fn main() {
+    var endless: Endless = .A { text: "original".to_upper() };
+    let before = endless;
+    defer {
+        println(endless == before);
+    }
+    let _report = endless.step(.Tick);
+}

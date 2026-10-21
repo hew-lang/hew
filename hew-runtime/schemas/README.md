@@ -1,7 +1,7 @@
 # hew-runtime/schemas
 
 This directory contains structural CDDL for the Hew CBOR wire protocol.
-`protocol/node_controls.hew` owns service-offer, registry-gossip, SWIM and
+`protocol/node_controls.hew` owns handshake, cluster-enrolment, service-offer, registry-gossip, SWIM and
 monitor-DOWN structures, including their nested location, session, reason and cleanup records. Ordinary
 checker data plans generate `src/node_protocol_generated.rs` and
 `schemas/node-controls.generated.cddl`; use `make node-protocol` to regenerate
@@ -11,7 +11,7 @@ the checked-in Rust and do not invoke the compiler or generator.
 Read `envelope.cddl` together with `node-controls.generated.cddl`. Runtime
 adapters own semantic validation (identity, grants, sorted interfaces, terminal
 reason tags and resource bounds); the generated schema describes data structure,
-not those admission rules. The remaining frame and handshake shapes
+not those admission rules. The remaining frame shapes
 have not yet moved to checked Hew declarations.
 
 ## What is CDDL?
@@ -28,11 +28,11 @@ with their manually maintained CDDL until they move to checked declarations.
 
 | File                           | Covers                                                                                                         |
 | ------------------------------ | -------------------------------------------------------------------------------------------------------------- |
-| `node-controls.generated.cddl` | Checked service-offer, registry, membership and monitor-DOWN data structures                                   |
+| `node-controls.generated.cddl` | Checked handshake, enrolment, service-offer, registry, membership and monitor-DOWN data structures             |
 | `envelope.cddl`                | Control frames and data envelope frames (CBOR wire layer) — the transport CONTAINER                            |
 | `wire-body.cddl`               | The per-`#[wire]`-type CBOR body carried inside an envelope frame's `payload` (`bstr`) slot — the message BODY |
 
-The fixed-width authenticated handshake is specified in HEW-DIST-SPEC §4.
+The generated authenticated handshake is specified in HEW-DIST-SPEC §4.
 
 ### Frame vs body
 

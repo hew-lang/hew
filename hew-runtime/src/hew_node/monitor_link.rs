@@ -1127,7 +1127,7 @@ pub(crate) fn fan_out_monitor_lost_for_member_owner(
             return None;
         }
         // SAFETY: current-node read lock pins the node.
-        unsafe { (*node).auth.node_id_for_route_slot(dead_node_id) }
+        unsafe { super::identity_for_route_slot(&*node, dead_node_id) }
     });
     let Some(dead_node) = dead_node else {
         return;

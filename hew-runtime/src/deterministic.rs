@@ -352,17 +352,13 @@ pub extern "C" fn hew_deterministic_reset() {
 
 // ── Tests ──────────────────────────────────────────────────────────────
 
+/// Serialize tests that mutate the process-wide deterministic controls.
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// Serialize deterministic tests since they share global state
-    /// (`GLOBAL_SEED`, `SIMTIME_ENABLED`, `SIMTIME_MS`, FAULTS).
-    // INTENTIONAL: TEST_LOCK uses .lock().unwrap() below — this is a
-    // short-lived test serialisation barrier that does not outlive the
-    // test function, so closure-style access adds no value.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn seed_control() {

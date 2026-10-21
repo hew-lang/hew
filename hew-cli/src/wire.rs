@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use hew_parser::ast::{Item, TypeBodyItem, TypeDeclKind, TypeExpr, VariantDecl, VariantKind};
+use hew_parser::ast::{
+    Ident, Item, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, VariantDecl, VariantKind,
+};
 
 // Private schema types — mirror the information extracted from `Item::TypeDecl` with `#[wire]`.
 // These exist so the compatibility logic does not depend on parser AST types directly.
@@ -16,7 +18,7 @@ enum WireSchemaKind {
 #[derive(Debug)]
 struct WireSchemaField {
     name: String,
-    ty: String,
+    ty: SchemaType,
     field_number: u32,
     is_optional: bool,
     is_repeated: bool,
@@ -27,8 +29,42 @@ struct WireSchemaField {
 struct WireSchema {
     name: String,
     kind: WireSchemaKind,
+    parameters: Vec<Ident>,
     fields: Vec<WireSchemaField>,
     variants: Vec<VariantDecl>,
+}
+
+/// Equality uses the declaration's generic parameter positions, so renaming
+/// a binder cannot change a schema. Diagnostics show those positions as well.
+#[derive(Debug, Clone)]
+struct SchemaType {
+    spelling: String,
+    identity: String,
+}
+
+impl SchemaType {
+    fn new(ty: &TypeExpr, parameters: &[Ident]) -> Self {
+        Self {
+            spelling: type_expr_to_string(ty, &[]),
+            identity: type_expr_to_string(ty, parameters),
+        }
+    }
+}
+
+impl PartialEq for SchemaType {
+    fn eq(&self, other: &Self) -> bool {
+        self.identity == other.identity
+    }
+}
+
+impl std::fmt::Display for SchemaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.identity == self.spelling {
+            f.write_str(&self.spelling)
+        } else {
+            write!(f, "{} (schema {})", self.spelling, self.identity)
+        }
+    }
 }
 
 /// A wire schema with optional version metadata.
@@ -107,73 +143,97 @@ fn parse_wire_decls(path: &str) -> Result<Vec<VersionedWireSchema>, String> {
         return Err(format!("Error: cannot parse {path}:\n{details}"));
     }
 
-    Ok(parsed
-        .program
+    let expanded =
+        hew_types::normalize_machine_declarations(&parsed.program).map_err(|errors| {
+            let details = errors
+                .into_iter()
+                .map(|error| error.message)
+                .collect::<Vec<_>>()
+                .join("\n");
+            format!("Error: cannot expand wire declarations in {path}:\n{details}")
+        })?;
+    let program = expanded
+        .as_ref()
+        .map_or(&parsed.program, |expanded| &expanded.program);
+    Ok(program
         .items
-        .into_iter()
+        .iter()
         .filter_map(|(item, _)| match item {
-            Item::TypeDecl(td) if td.wire.is_some() => {
-                let wire = td.wire.unwrap();
-                let kind = match td.kind {
-                    TypeDeclKind::Struct => WireSchemaKind::Struct,
-                    TypeDeclKind::Enum => WireSchemaKind::Enum,
-                };
-                // Build a map of field name → type string from the body
-                let field_types: std::collections::HashMap<String, String> = td
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        TypeBodyItem::Field { name, ty, .. } => {
-                            Some((name.to_string(), type_expr_to_string(&ty.0)))
-                        }
-                        TypeBodyItem::Variant(_) => None,
-                    })
-                    .collect();
-                let variants: Vec<VariantDecl> = td
-                    .body
-                    .iter()
-                    .filter_map(|item| match item {
-                        TypeBodyItem::Variant(variant) => Some(variant.clone()),
-                        TypeBodyItem::Field { .. } => None,
-                    })
-                    .collect();
-                let field_since: BTreeMap<u32, u32> = wire
-                    .field_meta
-                    .iter()
-                    .filter_map(|fm| fm.since.map(|s| (fm.field_number, s)))
-                    .collect();
-                let version = wire.version;
-                let min_version = wire.min_version;
-                let fields = wire
-                    .field_meta
-                    .into_iter()
-                    .map(|fm| {
-                        let ty = field_types.get(&fm.field_name).cloned().unwrap_or_default();
-                        WireSchemaField {
-                            name: fm.field_name,
-                            ty,
-                            field_number: fm.field_number,
-                            is_optional: fm.is_optional,
-                            is_repeated: fm.is_repeated,
-                            is_deprecated: fm.is_deprecated,
-                        }
-                    })
-                    .collect();
-                Some(VersionedWireSchema {
-                    schema: WireSchema {
-                        name: td.name.to_string(),
-                        kind,
-                        fields,
-                        variants,
-                    },
-                    version,
-                    min_version,
-                    field_since,
-                })
-            }
+            Item::TypeDecl(td) => schema_from_declaration(td),
             _ => None,
         })
         .collect())
+}
+
+fn schema_from_declaration(td: &TypeDecl) -> Option<VersionedWireSchema> {
+    let wire = td.wire.as_ref()?;
+    let parameters = td
+        .type_params
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .map(|param| param.name)
+        .collect::<Vec<_>>();
+    let kind = match td.kind {
+        TypeDeclKind::Struct => WireSchemaKind::Struct,
+        TypeDeclKind::Enum => WireSchemaKind::Enum,
+    };
+    // Build a map of field name → type string from the body
+    let field_types: std::collections::HashMap<String, SchemaType> = td
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Field { name, ty, .. } => {
+                Some((name.to_string(), SchemaType::new(&ty.0, &parameters)))
+            }
+            TypeBodyItem::Variant(_) => None,
+        })
+        .collect();
+    let variants: Vec<VariantDecl> = td
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Variant(variant) => Some(variant.clone()),
+            TypeBodyItem::Field { .. } => None,
+        })
+        .collect();
+    let field_since: BTreeMap<u32, u32> = wire
+        .field_meta
+        .iter()
+        .filter_map(|fm| fm.since.map(|s| (fm.field_number, s)))
+        .collect();
+    let version = wire.version;
+    let min_version = wire.min_version;
+    let fields = wire
+        .field_meta
+        .iter()
+        .map(|fm| {
+            let ty = field_types
+                .get(&fm.field_name)
+                .cloned()
+                .expect("wire field has a declared type");
+            WireSchemaField {
+                name: fm.field_name.clone(),
+                ty,
+                field_number: fm.field_number,
+                is_optional: fm.is_optional,
+                is_repeated: fm.is_repeated,
+                is_deprecated: fm.is_deprecated,
+            }
+        })
+        .collect();
+    Some(VersionedWireSchema {
+        schema: WireSchema {
+            name: td.name.to_string(),
+            kind,
+            parameters,
+            fields,
+            variants,
+        },
+        version,
+        min_version,
+        field_since,
+    })
 }
 
 fn compare_wire_schemas(
@@ -220,6 +280,13 @@ fn compare_wire_schemas(
                     baseline_vws.schema.kind, current_vws.schema.kind
                 ));
                 continue;
+            }
+            if baseline_vws.schema.parameters.len() != current_vws.schema.parameters.len() {
+                report.errors.push(format!(
+                    "wire `{name}` changed generic parameter count: {} -> {}",
+                    baseline_vws.schema.parameters.len(),
+                    current_vws.schema.parameters.len()
+                ));
             }
             match current_vws.schema.kind {
                 WireSchemaKind::Struct => {
@@ -379,7 +446,14 @@ fn compare_wire_enum(
             ));
             continue;
         }
-        compare_wire_enum_variant_payload(wire_name, current_variant, baseline_variant, report);
+        compare_wire_enum_variant_payload(
+            wire_name,
+            current_variant,
+            baseline_variant,
+            &current.schema.parameters,
+            &baseline.schema.parameters,
+            report,
+        );
     }
     for variant in &current.schema.variants {
         if !baseline
@@ -401,6 +475,8 @@ fn compare_wire_enum_variant_payload(
     wire_name: &str,
     current_variant: &VariantDecl,
     baseline_variant: &VariantDecl,
+    current_parameters: &[Ident],
+    baseline_parameters: &[Ident],
     report: &mut CompatibilityReport,
 ) {
     match (&current_variant.kind, &baseline_variant.kind) {
@@ -411,10 +487,10 @@ fn compare_wire_enum_variant_payload(
                 current_variant.name.name.as_str(),
                 current_fields
                     .iter()
-                    .map(|field| type_expr_to_string(&field.0)),
+                    .map(|field| SchemaType::new(&field.0, current_parameters)),
                 baseline_fields
                     .iter()
-                    .map(|field| type_expr_to_string(&field.0)),
+                    .map(|field| SchemaType::new(&field.0, baseline_parameters)),
                 report,
             );
         }
@@ -440,8 +516,8 @@ fn compare_wire_enum_variant_payload(
                     ));
                 }
 
-                let current_ty = type_expr_to_string(&current_ty.0);
-                let baseline_ty = type_expr_to_string(&baseline_ty.0);
+                let current_ty = SchemaType::new(&current_ty.0, current_parameters);
+                let baseline_ty = SchemaType::new(&baseline_ty.0, baseline_parameters);
                 if current_ty != baseline_ty {
                     report.errors.push(format!(
                         "changed payload type for `{wire_name}.{}` item {payload_position}: `{}` -> `{}`",
@@ -487,19 +563,19 @@ fn describe_field_type(field: &WireSchemaField) -> String {
     if field.is_repeated {
         format!("repeated {}", field.ty)
     } else {
-        field.ty.clone()
+        field.ty.to_string()
     }
 }
 
 fn compare_wire_enum_payload_types(
     wire_name: &str,
     variant_name: &str,
-    current_payload: impl Iterator<Item = String>,
-    baseline_payload: impl Iterator<Item = String>,
+    current_payload: impl Iterator<Item = SchemaType>,
+    baseline_payload: impl Iterator<Item = SchemaType>,
     report: &mut CompatibilityReport,
 ) {
-    let current_payload: Vec<String> = current_payload.collect();
-    let baseline_payload: Vec<String> = baseline_payload.collect();
+    let current_payload: Vec<SchemaType> = current_payload.collect();
+    let baseline_payload: Vec<SchemaType> = baseline_payload.collect();
 
     if current_payload.len() != baseline_payload.len() {
         report.errors.push(format!(
@@ -543,25 +619,56 @@ fn warn_new_required_and_deprecated_fields(
     }
 }
 
-fn type_expr_to_string(te: &TypeExpr) -> String {
+fn type_expr_to_string(te: &TypeExpr, parameters: &[Ident]) -> String {
     match te {
-        TypeExpr::Named {
-            path: named_path,
-            type_args: Some(args),
-        } => {
-            let name = &named_path.to_string(); // TRANSITION(P1): deleted by A1 commit 2
-            let arg_strs: Vec<String> = args.iter().map(|a| type_expr_to_string(&a.0)).collect();
-            format!("{name}<{}>", arg_strs.join(", "))
+        TypeExpr::Named { path, type_args } => {
+            let name = path
+                .segments
+                .iter()
+                .enumerate()
+                .map(|(index, (name, _))| {
+                    if index == 0 {
+                        if let Some(position) =
+                            parameters.iter().position(|parameter| parameter == name)
+                        {
+                            return format!("$parameter{position}");
+                        }
+                    }
+                    name.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(".");
+            if let Some(args) = type_args {
+                let args = args
+                    .iter()
+                    .map(|arg| type_expr_to_string(&arg.0, parameters))
+                    .collect::<Vec<_>>();
+                format!("{name}<{}>", args.join(", "))
+            } else {
+                name
+            }
         }
-        TypeExpr::Named {
-            path,
-            type_args: None,
-        } => path.to_string(),
-        TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(&inner.0)),
+        TypeExpr::Option(inner) => format!("Option<{}>", type_expr_to_string(&inner.0, parameters)),
         TypeExpr::Tuple(items) => {
-            let parts: Vec<String> = items.iter().map(|i| type_expr_to_string(&i.0)).collect();
+            let parts = items
+                .iter()
+                .map(|item| type_expr_to_string(&item.0, parameters))
+                .collect::<Vec<_>>();
             format!("({})", parts.join(", "))
         }
+        TypeExpr::Array { element, size } => {
+            format!("[{}; {size}]", type_expr_to_string(&element.0, parameters))
+        }
+        TypeExpr::Result { ok, err }
+        | TypeExpr::Fallible {
+            success: ok,
+            error: err,
+        } => format!(
+            "Result<{}, {}>",
+            type_expr_to_string(&ok.0, parameters),
+            type_expr_to_string(&err.0, parameters)
+        ),
+        TypeExpr::Slice(inner) => format!("[{}]", type_expr_to_string(&inner.0, parameters)),
         _ => String::from("?"),
     }
 }

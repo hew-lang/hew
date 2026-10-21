@@ -441,7 +441,6 @@ stable = [
   "hew_msg_envelope_payload_ptr",
   "hew_msg_envelope_release",
   "hew_msg_node_free",
-  "hew_node_api_allow_peer",
   "hew_node_api_connect",
   "hew_node_api_identity_key",
   "hew_node_api_load_keys",
@@ -1949,13 +1948,6 @@ discharge-depth = "none"
 # hew-runtime/src/string.rs. Every one borrows its handles through
 # string_as_str / string_as_bytes and returns a scalar, so no owner crosses the
 # boundary in either direction and the caller keeps every handle it passed.
-[[ownership.contracts]]
-symbol = "hew_node_api_allow_peer"
-result = "none"
-params = ["borrow", "borrow"]
-release-symbol = ""
-discharge-depth = "none"
-
 [[ownership.contracts]]
 symbol = "hew_node_api_load_keys"
 result = "none"

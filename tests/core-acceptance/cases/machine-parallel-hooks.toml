@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-parallel-hooks"
+intent = "Descendant priority, disjoint transitions and cross-region reentry preserve canonical hook and body order."
+source = "cases/machine-parallel-hooks.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "left done exit/right done exit/parent exit/cross body/parent entry/right entry/\nparallel hooks and conflict passed\n"
+stderr = ""
+exit = 0

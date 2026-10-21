@@ -1,0 +1,91 @@
+import std.encoding.json;
+import std.encoding.cbor;
+
+machine Editor {
+    events { Open; Review; Pause; Resume { version: i64; } }
+    emits { Entered { label: string; } }
+    state Idle;
+    state Closed { reason: string; }
+    state Editing {
+        version: i64;
+        state Draft { text: string; }
+        state Reviewing {
+            text: string;
+            entry { emit Entered { label: state.text }; }
+            exit { state.text += ":saved"; }
+        }
+        initial Draft { text: "new".to_upper() };
+    }
+    on Open: Idle => Editing { version: 1 }
+    on Review: Draft => Reviewing { version: state.version, text: state.text + ":review" }
+    on Pause: Editing => Closed { reason: "paused".to_upper() }
+    on Resume: Closed => Editing history {
+        let temporary: Editor = .Closed { reason: "PAUSED" };
+        assert(temporary == fresh_editor());
+        Editing { version: event.version }
+    }
+    default { state }
+}
+
+fn fresh_editor() -> Editor { .Closed { reason: "PAUSED" } }
+
+machine Generic<T> {
+    events { Next; Pause; Resume { seed: T; } }
+    state Stopped;
+    state Live {
+        seed: T;
+        state One { value: T; }
+        state Two { value: T; }
+        initial One { value: state.seed };
+    }
+    on Next: One => Two { seed: state.seed, value: state.value }
+    on Pause: Live => Stopped;
+    on Resume: Stopped => Live history { seed: event.seed }
+    default { state }
+}
+
+fn check_review(editor: Editor, version: i64) {
+    match editor {
+        .Reviewing { version: current, text } => assert(current == version && text == "NEW:review:saved"),
+        _ => panic("saved immediate child payload"),
+    }
+}
+
+fn main() {
+    var first: Editor = .Closed { reason: "first" };
+    let _first = first.step(.Resume { version: 7 });
+    match first {
+        .Draft { version, text } => assert(version == 7 && text == "NEW"),
+        _ => panic("missing history uses initial constructor"),
+    }
+    var editor: Editor = .Idle;
+    let _open = editor.step(.Open);
+    let _review = editor.step(.Review);
+    let _pause = editor.step(.Pause);
+    let paused = editor;
+    let fresh: Editor = .Closed { reason: "PAUSED" };
+    assert(paused != fresh);
+    var from_json = json.decode<Editor>(json.encode(paused)).expect("JSON history");
+    var from_cbor = cbor.decode<Editor>(cbor.encode(paused)).expect("CBOR history");
+    assert(from_json == paused && from_cbor == paused);
+    let resumed = editor.step(.Resume { version: 9 });
+    assert(resumed.outputs == [.Entered { label: "NEW:review:saved" }]);
+    check_review(editor, 9);
+    let _json_resume = from_json.step(.Resume { version: 10 });
+    let _cbor_resume = from_cbor.step(.Resume { version: 11 });
+    check_review(from_json, 10);
+    check_review(from_cbor, 11);
+    match paused {
+        .Closed { reason } => assert(reason == "PAUSED"),
+        _ => panic("retained copy changed"),
+    }
+    var generic: Generic<string> = .One { seed: "before", value: "retained".to_upper() };
+    let _next = generic.step(.Next);
+    let _stop = generic.step(.Pause);
+    let _restart = generic.step(.Resume { seed: "after" });
+    match generic {
+        .Two { seed, value } => assert(seed == "after" && value == "RETAINED"),
+        _ => panic("generic child payload"),
+    }
+    println("shallow history values and codecs passed");
+}

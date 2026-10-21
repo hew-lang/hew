@@ -578,6 +578,11 @@ impl Checker {
                     (&context.record, &variant),
                     (None, VariantDef::Unit) | (Some(_), VariantDef::Struct(_))
                 );
+                let shape_matches = shape_matches
+                    || (context.record.is_none()
+                        && self.type_def_at(&owner).is_some_and(|td| {
+                            Self::variant_is_source_unit(td, context.name.name.as_str())
+                        }));
                 if !shape_matches {
                     self.report_error(
                         TypeErrorKind::PathKindMismatch,
@@ -1500,8 +1505,14 @@ impl Checker {
                                 }
                                 let provided: HashSet<&str> =
                                     fields.iter().map(|(n, _)| n.name.as_str()).collect();
-                                for (declared, _) in &variant_fields {
-                                    if !provided.contains(declared.as_str()) {
+                                for (index, (declared, _)) in variant_fields.iter().enumerate() {
+                                    if !provided.contains(declared.as_str())
+                                        && !self.is_implicit_variant_field(
+                                            expected_enum_name,
+                                            short,
+                                            index,
+                                        )
+                                    {
                                         self.report_error(
                                             TypeErrorKind::UndefinedField,
                                             span,
@@ -1532,6 +1543,13 @@ impl Checker {
                                 self.enforce_type_def_instantiation_bounds(
                                     expected_enum_name,
                                     &resolved_args,
+                                    span,
+                                );
+                                self.record_variant_constructor_plan(
+                                    expected_enum_name,
+                                    short,
+                                    expected,
+                                    fields,
                                     span,
                                 );
                                 self.record_type(span, expected);

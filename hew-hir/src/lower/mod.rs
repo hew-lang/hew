@@ -1233,6 +1233,7 @@ struct LowerCtx {
     pattern_resolutions: HashMap<SpanKey, hew_types::ArmResolution>,
     /// Checker-authored canonical record-pattern plans keyed by pattern span.
     pattern_plans: HashMap<SpanKey, hew_types::PatternPlan>,
+    variant_constructor_plans: HashMap<SpanKey, hew_types::VariantConstructorPlan>,
     /// Compiler-recognised lang-item registry surfaced by the checker.
     ///
     /// HIR f-string lowering looks up the `Display` trait method here

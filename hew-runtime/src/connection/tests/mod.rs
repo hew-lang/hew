@@ -241,6 +241,8 @@ fn snapshot_connections_json_emits_expected_array() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        relay: relay::RelayHub::default(),
+        registry: std::ptr::null(),
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -320,6 +322,7 @@ fn swim_control_frame_bytes(payload: &SwimControlPayload) -> Vec<u8> {
 /// it until after the gate is already waiting.
 fn install_strict_conn(mgr: &HewConnMgr, node_id: u16, conn_id: c_int, token: u64) {
     let mut strict = test_actor(conn_id);
+    strict.transport = ConnectionTransport::borrowed(mgr.transport);
     strict.peer_node_id = node_id;
     strict.peer_identity = Some(test_node_identity(node_id));
     strict.peer_session_incarnation = 1;

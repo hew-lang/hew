@@ -1914,6 +1914,9 @@ fn fmt_assoc_binding_in_where_trait_bound_roundtrip() {
 fn fmt_wire_declarations_roundtrip() {
     // Canonical wire type form (attribute-based).
     exact_roundtrip("#[wire]\ntype Message {\n    id: i32 @1;\n}\n");
+    exact_roundtrip(
+        "#[wire]\ntype Message {\n    id: i32 @1;\n    reserved @2;\n    body: string;\n    labels: Vec<string> repeated;\n}\n",
+    );
 }
 
 #[test]
@@ -1923,6 +1926,9 @@ fn fmt_wire_attr_enum_roundtrip() {
     // variant payloads while preserving the `#[wire]` attribute.
     exact_roundtrip(
         "#[wire]\nenum Command {\n    Start @0;\n    Push(i64) @1;\n    Move { x: i32; y: i32; } @2;\n}\n",
+    );
+    exact_roundtrip(
+        "#[wire]\nenum Command {\n    Start;\n    Fixed @0;\n    reserved @2;\n    Push(i64);\n    Move { x: i32; y: i32; }\n}\n",
     );
 }
 
@@ -2004,6 +2010,25 @@ fn fmt_machine_contextual_target_with_reenter_and_guard_roundtrip() {
 fn fmt_machine_state_with_fields_roundtrip() {
     exact_roundtrip(
         "machine Bucket {\n    events {\n        Drain;\n    }\n\n    state Full { tokens: Int; }\n    state Empty;\n\n    on Drain: Full => Empty;\n    on Drain: Empty => Empty;\n}\n",
+    );
+}
+
+#[test]
+fn fmt_machine_final_completion_and_always_roundtrip() {
+    let formatted = roundtrip("machine Delivery{events{Send;Completion;}state Ready;state Running{initial state Waiting;final state Paid;on Send:Waiting=>Paid;}final state Finished;on Completion:Ready=>Running;on completion:Running=>Finished;always:Ready=>Finished when false;default{state}}");
+    assert!(formatted.contains("final state Paid;"), "{formatted}");
+    assert!(formatted.contains("final state Finished;"), "{formatted}");
+    assert!(
+        formatted.contains("on completion: Running => Finished;"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("always: Ready => Finished when false;"),
+        "{formatted}"
+    );
+    assert!(
+        formatted.contains("on Completion: Ready => Running;"),
+        "{formatted}"
     );
 }
 

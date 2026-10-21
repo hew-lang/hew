@@ -113,9 +113,9 @@ def publish_npm() -> None:
             if registry == "https://registry.npmjs.org":
                 args.append("--provenance")
             command(*args)
-            if npm_dist(spec, registry) is None:
-                raise RuntimeError(f"Published package is unreadable: {spec}")
-        npm_verify(spec, registry, archive)
+            print(f"Published: {spec} on {registry}")
+        else:
+            npm_verify(spec, registry, archive)
 
 
 def oci_raw(reference: str, *, absent: bool = False) -> str | None:
@@ -252,7 +252,13 @@ def publish_homebrew() -> None:
         if len(matches) != 1 or not re.fullmatch(r"[a-f0-9]{64}", matches[0]):
             raise RuntimeError(f"Missing producer checksum: {name}")
         checksums[target] = matches[0]
-    fields = "databaseId,headSha,status,conclusion,event,url"
+    fields = "databaseId,headSha,status,conclusion,event,url,displayTitle"
+    title = f"Update Hew {version}"
+    published = gh_json(
+        "release", "view", f"v{version}", "-R", "hew-lang/hew", "--json", "publishedAt"
+    )["publishedAt"]
+    if not published:
+        raise RuntimeError("Source release has no publication time")
 
     def runs():
         return gh_json(
@@ -264,6 +270,8 @@ def publish_homebrew() -> None:
             workflow,
             "--event",
             "workflow_dispatch",
+            "--created",
+            f">={published}",
             "--limit",
             "100",
             "--json",
@@ -273,17 +281,6 @@ def publish_homebrew() -> None:
     prior = runs()
     branch = gh_json("api", f"repos/{repo}")["default_branch"]
 
-    def run_version(run):
-        log = command(
-            "gh", "run", "view", str(run["databaseId"]), "-R", repo, "--log"
-        ).stdout
-        versions = set(re.findall(r"\bVERSION:[ \t]+([^\s]+)[ \t]*$", log, re.M))
-        if len(versions) != 1:
-            raise RuntimeError(
-                "Cannot identify Homebrew run version; inspect downstream run"
-            )
-        return versions.pop()
-
     def finish(run, outcome):
         terminal = gh_json(
             "run",
@@ -292,11 +289,14 @@ def publish_homebrew() -> None:
             "-R",
             repo,
             "--json",
-            "status,conclusion",
+            "status,conclusion,displayTitle",
         )
-        if terminal != {"status": "completed", "conclusion": "success"}:
+        if (
+            terminal.get("status") != "completed"
+            or terminal.get("conclusion") != "success"
+        ):
             raise RuntimeError("Homebrew update did not complete successfully")
-        if run_version(run) != version:
+        if terminal.get("displayTitle") != title:
             raise RuntimeError("Homebrew run version differs")
         source = gh_json("api", f"repos/{repo}/commits/{branch}")["sha"]
         formulas = ["hew.rb"] + ([] if "-" in version else ["hew@stable.rb"])
@@ -323,12 +323,12 @@ def publish_homebrew() -> None:
             )
         )
 
-    # A retry first proves the existing downstream result. Unreadable run logs
-    # are an unknown outcome and must not trigger another dispatch.
+    # Version-bearing workflow metadata survives log expiry. Older runs predate
+    # this source release and cannot be its successful downstream delivery.
     active = [
         run
         for run in prior
-        if run["status"] != "completed" and run_version(run) == version
+        if run["status"] != "completed" and run.get("displayTitle") == title
     ]
     if len(active) > 1:
         raise RuntimeError("Ambiguous active Homebrew runs; inspect downstream runs")
@@ -343,10 +343,20 @@ def publish_homebrew() -> None:
         if (
             run["status"] == "completed"
             and run["conclusion"] == "success"
-            and run_version(run) == version
+            and run.get("displayTitle") == title
         ):
             finish(run, "verified-existing")
             return
+    ambiguous = [
+        run
+        for run in prior
+        if not run.get("displayTitle", "").startswith("Update Hew ")
+    ]
+    if ambiguous:
+        raise RuntimeError(
+            "Homebrew runs since source publication lack version metadata; "
+            f"reconcile before redispatch: {[run['url'] for run in ambiguous]}"
+        )
     if len(prior) == 100:
         raise RuntimeError(
             "Homebrew history is truncated; inspect older runs before dispatch"
@@ -383,7 +393,12 @@ def publish_homebrew() -> None:
         }
     else:
         for _ in range(30):
-            candidates = [item for item in runs() if item["databaseId"] not in before]
+            candidates = [
+                item
+                for item in runs()
+                if item["databaseId"] not in before
+                and item.get("displayTitle") == title
+            ]
             if len(candidates) > 1:
                 raise RuntimeError(
                     "Ambiguous Homebrew dispatch; inspect downstream runs"

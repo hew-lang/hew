@@ -41,7 +41,8 @@ pub use callable::{
     ClosureInstanceKey, SemCaptureField, SemClosure, SemClosureEntry,
 };
 pub use capability::{
-    derived_capability_components, is_actor_reference, is_identity_carrier, SemValueMethodPlan,
+    derived_capability_components, is_actor_reference, is_identity_carrier,
+    value_capability_callees, SemValueMethodPlan,
 };
 pub use coverage::{CoverageCounter, CoveragePlan};
 pub use debug::{SemDebugFacts, SemDebugScope};

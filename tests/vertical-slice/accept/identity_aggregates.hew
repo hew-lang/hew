@@ -9,7 +9,7 @@ actor Worker {
 }
 
 fn main() -> i64 {
-    match Node.start(NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-cap13-identity-aggregates-{os.pid()}.key", peers: Vec.new(), seeds: Vec.new() }) {
+    match Node.start(NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: f"{os.temp_dir()}/hew-cap13-identity-aggregates-{os.pid()}.key", cluster: "", seeds: Vec.new() }) {
         .Ok(_) => {}
         .Err(_) => return 13,
     }

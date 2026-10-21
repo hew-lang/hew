@@ -97,7 +97,9 @@ pub(crate) fn run_module_pipeline(
     level: OptLevel,
 ) -> CodegenResult<()> {
     let pipeline = match level {
-        OptLevel::O0 => "default<O0>",
+        // Coroutine splitting leaves constant cleanup selectors behind at O0.
+        // Fold those selectors before reachability cleanup removes dead parts.
+        OptLevel::O0 => "default<O0>,function(instsimplify),globaldce",
         // Physical loop chunks retain their shared-budget suppression choice
         // as an invariant branch. Once the main pipeline has promoted scalar
         // storage and established checked arithmetic bounds, unswitch that
@@ -256,3 +258,7 @@ pub(crate) fn initialise_llvm_targets() {
         Target::initialize_all(&InitializationConfig::default());
     });
 }
+
+#[cfg(test)]
+#[path = "llvm_pipeline_tests.rs"]
+mod pipeline_tests;

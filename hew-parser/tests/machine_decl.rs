@@ -3,6 +3,73 @@
 use hew_parser::ast::Ident;
 
 #[test]
+fn machine_internal_triggers_and_final_leaves_retain_typed_facts() {
+    use hew_parser::ast::{Item, MachineTrigger};
+    let parsed = hew_parser::parse(
+        r"
+machine Delivery {
+    events { Send; Completion; }
+    state Ready { final: i64; parallel: i64; }
+    parallel state Running {
+        region left { initial state Waiting; final state Paid; }
+        region right { initial final state Reserved; }
+    }
+    final state Finished;
+    on Completion: Ready => Finished;
+    on completion: Running => Finished;
+    always: Ready => Finished when false;
+    default { state }
+}
+
+fn history(completion: i64, final: i64, always: i64) -> i64 {
+    completion + final + always
+}
+
+",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Machine(machine) = &parsed.program.items[0].0 else {
+        panic!("machine");
+    };
+    assert_eq!(
+        machine
+            .transitions
+            .iter()
+            .map(|rule| rule.trigger)
+            .collect::<Vec<_>>(),
+        [
+            MachineTrigger::Event(Ident::new("Completion")),
+            MachineTrigger::Completion,
+            MachineTrigger::Always
+        ]
+    );
+    assert!(machine
+        .states
+        .iter()
+        .filter(|state| state.is_final)
+        .map(|state| state.name.name.as_str())
+        .eq(["Paid", "Reserved", "Finished"]));
+    assert!(machine
+        .transitions
+        .iter()
+        .all(|rule| rule.event_bindings.is_empty()));
+    assert!(machine.transitions[2].guard.is_some());
+}
+
+#[test]
+fn machine_internal_triggers_refuse_input_payloads_and_reserved_vocabulary() {
+    for member in [
+        "events { completion; } state A;",
+        "events { E; } state A; on completion { value }: A => A;",
+        "events { E; } state A; always { value }: A => A;",
+        "events { E; } final state Group { initial state A; }",
+    ] {
+        let parsed = hew_parser::parse(&format!("machine M {{ {member} }}"));
+        assert!(!parsed.errors.is_empty(), "accepted {member}");
+    }
+}
+
+#[test]
 fn parse_simple_machine() {
     let source = r"machine Light {
     events {
@@ -35,7 +102,10 @@ fn main() {}
         assert_eq!(m.events.len(), 1);
         assert_eq!(m.events[0].name, Ident::new("Toggle"));
         assert_eq!(m.transitions.len(), 2);
-        assert_eq!(m.transitions[0].event_name, Ident::new("Toggle"));
+        assert_eq!(
+            m.transitions[0].trigger,
+            hew_parser::ast::MachineTrigger::Event(Ident::new("Toggle"))
+        );
         assert_eq!(m.transitions[0].source_state, Ident::new("Off"));
         assert_eq!(m.transitions[0].target_state, Ident::new("On"));
         assert_eq!(m.transitions[1].source_state, Ident::new("On"));
@@ -600,7 +670,7 @@ fn composite_parent_rules_retain_authored_scope() {
     assert_eq!(m.composite_groups.len(), 1);
     let group = &m.composite_groups[0];
     assert_eq!(group.name, Ident::new("Connected"));
-    assert_eq!(group.initial, Ident::new("Authenticating"));
+    assert_eq!(group.initial, Some(Ident::new("Authenticating")));
     assert_eq!(
         group.members,
         vec![
@@ -608,6 +678,58 @@ fn composite_parent_rules_retain_authored_scope() {
             Ident::new("Active"),
             Ident::new("Draining")
         ]
+    );
+}
+
+#[test]
+fn parallel_regions_keep_typed_paths_and_round_trip() {
+    let source = r"machine Checkout {
+    events { Pay; Reserve; }
+
+    parallel state Running {
+        region payment {
+            initial state Waiting;
+            state Paid;
+        }
+        region stock {
+            initial state Empty;
+            state Reserved;
+        }
+    }
+
+    on Pay: Running.payment.Waiting => Running.payment.Paid;
+    on Reserve: Running.stock.Empty => Running.stock.Reserved;
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(
+        parsed.errors.is_empty(),
+        "parse errors: {:?}",
+        parsed.errors
+    );
+    let machine = first_machine_named(&parsed.program, "Checkout");
+    let running = &machine.composite_groups[0];
+    assert_eq!(running.name, Ident::new("Running"));
+    assert_eq!(running.initial, None);
+    assert_eq!(running.regions.len(), 2);
+    assert_eq!(running.regions[0].name, Ident::new("payment"));
+    assert_eq!(running.regions[0].initial, Ident::new("Waiting"));
+    assert_eq!(running.regions[1].initial, Ident::new("Empty"));
+    assert_eq!(
+        machine.state_path(Ident::new("Paid")),
+        ["Running", "payment", "Paid"].map(Ident::new)
+    );
+
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "reparse failed: {:?}\n--- formatted ---\n{formatted}",
+        reparsed.errors
+    );
+    assert!(
+        hew_parser::ast_eq::program_eq_ignoring_spans(&parsed.program, &reparsed.program),
+        "parallel region AST changed after format round-trip:\n{formatted}"
     );
 }
 
@@ -1490,5 +1612,69 @@ fn machine_default_does_not_silently_discard_computation() {
             .any(|error| error.message.contains("machine default must be")),
         "{:?}",
         parsed.errors
+    );
+}
+
+#[test]
+fn parallel_payload_initializer_round_trips() {
+    let source = r"machine Work {
+    events { Tick; }
+    parallel state Active {
+        count: i64;
+        region worker {
+            state Waiting { count: i64; }
+            initial Waiting { count: state.count };
+        }
+    }
+    default { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let machine = first_machine_named(&parsed.program, "Work");
+    assert!(machine.composite_groups[0].regions[0]
+        .initial_value
+        .is_some());
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "{formatted}: {:?}",
+        reparsed.errors
+    );
+    let machine = first_machine_named(&reparsed.program, "Work");
+    assert!(machine.composite_groups[0].regions[0]
+        .initial_value
+        .is_some());
+}
+
+#[test]
+fn exclusive_payload_initializer_round_trips() {
+    let source = r"machine Work {
+    events { Start; }
+    state Idle;
+    state Active {
+        count: i64;
+        state Waiting { remaining: i64; }
+        initial .Waiting { remaining: state.count };
+    }
+    on Start: Idle => Active { count: 3 }
+    default { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "{formatted}: {:?}",
+        reparsed.errors
+    );
+    let machine = first_machine_named(&reparsed.program, "Work");
+    assert!(machine.composite_groups[0].initial_value.is_some());
+    assert_eq!(
+        formatted,
+        hew_parser::fmt::format_program(&reparsed.program)
     );
 }

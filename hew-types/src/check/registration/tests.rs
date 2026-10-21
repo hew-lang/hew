@@ -9,6 +9,33 @@ use super::*;
 use hew_parser::ast::Ident;
 
 #[cfg(test)]
+mod pre_registered_data_tests {
+    use super::*;
+
+    #[test]
+    fn embedded_data_satisfies_serializable_bounds_without_member_refresh() {
+        let parsed = hew_parser::parse(
+            r#"
+            fn retain<T: Serializable>(value: T) -> T { value }
+            fn main() {
+                let info = MachineStepInfo {
+                    input: "Tick", rules: [0], disposition: .Taken
+                };
+                let _retained = retain(info);
+            }
+            "#,
+        );
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let output = Checker::default().check_program(&parsed.program);
+        assert!(
+            output.errors.is_empty(),
+            "ordinary embedded records and unit enums must have data layouts: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[cfg(test)]
 mod canonical_type_publication_tests {
     use super::*;
 
@@ -21,6 +48,7 @@ mod canonical_type_publication_tests {
             fields: HashMap::new(),
             field_order: Vec::new(),
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods,
             doc_comment: None,
             is_indirect: false,

@@ -389,7 +389,7 @@ impl Parser<'_> {
     /// modifier, then the keyword (or lookahead-disambiguated `type` form)
     /// that decides what item this becomes. Item forms with no legal
     /// top-level attribute position (`const`, `import`, `supervisor`,
-    /// `machine`, type aliases, tuple-form records, `impl` blocks, `extern`
+    /// type aliases, tuple-form records, `impl` blocks, `extern`
     /// blocks) resolve to [`AttrPosition::Unsupported`], which the closed
     /// table lists no attribute for.
     ///
@@ -418,9 +418,10 @@ impl Parser<'_> {
             }
             Some(Token::Trait) => Some(AttrPosition::TraitDecl),
             Some(Token::Actor) => Some(AttrPosition::ActorDecl),
+            Some(Token::Machine) => Some(AttrPosition::MachineDecl),
             Some(Token::Identifier(id)) if FOREIGN_KEYWORD_IDENTS.contains(id) => None,
             // `type` alias/tuple-record forms, `const`, `import`,
-            // `supervisor`, `machine`, `impl`, `extern`, and anything else:
+            // `supervisor`, `impl`, `extern`, and anything else:
             // no attribute is legal on these item forms.
             _ => Some(AttrPosition::Unsupported),
         }
@@ -524,7 +525,7 @@ impl Parser<'_> {
                     }
                     Some(Token::Machine) => {
                         self.advance();
-                        Item::Machine(self.parse_machine_decl(vis)?)
+                        Item::Machine(self.parse_machine_decl(vis, &attrs)?)
                     }
                     Some(Token::Const) => {
                         self.advance();
@@ -603,7 +604,7 @@ impl Parser<'_> {
             }
             Some(Token::Machine) => {
                 self.advance();
-                Item::Machine(self.parse_machine_decl(Visibility::Private)?)
+                Item::Machine(self.parse_machine_decl(Visibility::Private, &attrs)?)
             }
             Some(Token::Extern) => {
                 self.advance();
@@ -900,7 +901,12 @@ impl Parser<'_> {
         self.expect(&Token::LeftBrace)?;
 
         let mut body = Vec::new();
+        let mut wire = Self::wire_metadata(attrs);
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
+            if let (Some(wire), Some(Token::Reserved)) = (wire.as_mut(), self.peek()) {
+                wire.reserved.push(self.parse_wire_reserved()?);
+                continue;
+            }
             if matches!(self.peek(), Some(Token::Fn | Token::Gen | Token::Pub)) {
                 self.report_type_method(name);
                 self.skip_type_method();
@@ -938,7 +944,7 @@ impl Parser<'_> {
             where_clause,
             body,
             doc_comment: None,
-            wire: None,
+            wire,
             is_indirect: false,
             resource_marker,
             is_opaque,
@@ -1059,7 +1065,11 @@ impl Parser<'_> {
             self.error("'indirect' can only be used with 'enum'".to_string());
             return None;
         }
-        let mut decl = self.parse_struct_or_enum(visibility, attrs)?;
+        let mut decl = if attrs.iter().any(|attr| attr.name == "wire") {
+            self.parse_wire_enum(attrs, visibility)?
+        } else {
+            self.parse_struct_or_enum(visibility, attrs)?
+        };
         decl.is_indirect = true;
         Some(decl)
     }
@@ -1211,9 +1221,11 @@ impl Parser<'_> {
                 // peek_span() is now the position after the trailing `,`
                 let item_end = self.peek_span().start;
                 Some(TypeBodyItem::Variant(VariantDecl {
+                    implicit_fields: Vec::new(),
                     name,
                     kind,
                     tag,
+                    tag_explicit: tag.is_some(),
                     doc_comment,
                     span: item_start..item_end,
                 }))

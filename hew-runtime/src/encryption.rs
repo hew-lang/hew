@@ -67,10 +67,9 @@ fn write_noise_key_file(path_str: &str, public: &[u8], private: &[u8]) -> io::Re
 }
 
 /// Load (or, if absent, mint-and-persist) this node's stable Noise static
-/// identity for the tcp-noise transport (issue #2652, D1). The keyfile stores
-/// `32-byte public || 32-byte private`, written owner-only. Peers pin the
-/// resulting public key via `Node::allow_peer`; persisting it keeps that key
-/// stable across restarts, which is what makes the key bindable. An existing
+/// identity for the tcp-noise transport. The keyfile stores
+/// `32-byte public || 32-byte private`, written owner-only. Cluster enrolment
+/// binds the public key; persistence preserves its identity across restarts. An existing
 /// file is loaded verbatim (never re-minted); a malformed/oversize file is
 /// rejected fail-closed rather than silently replaced.
 ///
@@ -434,7 +433,7 @@ mod tests {
     /// Issue #2652 D1: `noise_identity_load_or_create` mints a stable Noise
     /// identity on first call, persists it owner-only, and reloads the *same*
     /// public/private key on a second call — the property that makes the key
-    /// bindable via `Node::allow_peer` across restarts. A corrupt/wrong-size
+    /// stable across restarts. A corrupt/wrong-size
     /// file is rejected fail-closed rather than silently re-minted.
     #[test]
     #[expect(

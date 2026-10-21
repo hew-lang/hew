@@ -1,0 +1,198 @@
+import std.machine.history;
+
+machine Panel {
+    events {
+        Advance;
+        Pause;
+    }
+    state Outside;
+    parallel state Work {
+        seed: string;
+        Work_right: i64;
+        region left {
+            state Nested {
+                revision: i64;
+                exit {
+                    state.revision += 10;
+                }
+                state Draft { text: string; }
+                state Review {
+                    text: string;
+                    exit {
+                        state.text += ":exit";
+                    }
+                }
+                initial Draft { text: state.seed + ":draft" };
+            }
+            initial Nested { revision: 0 };
+        }
+        region right {
+            state Idle { count: i64; }
+            state Active {
+                count: i64;
+                exit {
+                    state.count += 1;
+                }
+            }
+            initial Idle { count: 0 };
+        }
+    }
+    on Advance: Draft => Review { revision: state.revision + 1, text: state.text + ":review" }
+    on Advance: Idle => Active { count: state.count + 3 }
+    on Pause: Work => Outside;
+    default { state }
+}
+
+machine Complete {
+    events {
+        Start;
+        Resume { generation: i64; saved: Option<CompleteSubtree>; }
+    }
+    emits {
+        Entered { generation: i64; text: string; }
+    }
+    state Outside;
+    state Active {
+        generation: i64;
+        state Working { text: string; }
+        final state Ready {
+            text: string;
+            entry {
+                emit Entered { generation: state.generation, text: state.text };
+            }
+            exit {
+                state.text += ":exit";
+            }
+        }
+        initial Working { text: "fresh".to_upper() };
+    }
+    on Start: Outside => Active { generation: 1 }
+    on Resume: Outside => _ {
+        match event.saved {
+            .Some(.Active { snapshot }) => snapshot.restore(event.generation),
+            .None => Active { generation: event.generation },
+        }
+    }
+    always: Working => Ready { generation: state.generation, text: state.text + ":ready" }
+    on completion: Active => Outside;
+    default { state }
+}
+
+fn check_panel(value: Panel, seed: string, sibling_named: i64, revision: i64, count: i64) {
+    match value {
+        .Work { seed: actual_seed, Work_right, left: .Review { revision: actual_revision, text }, right: .Active { count: actual_count } } => {
+            assert(actual_seed == seed && actual_revision == revision && Work_right == sibling_named);
+            assert(text == "draft:review:exit" && actual_count == count);
+        }
+        _ => panic("restored parallel configuration"),
+    }
+}
+
+fn check_complete_saved(value: CompleteSubtree, text: string) {
+    match value {
+        .Active { snapshot: .Ready { text: actual } } => assert(actual == text),
+        _ => panic("completion lost the intermediate final-state payload"),
+    }
+}
+
+machine NestedRegions {
+    events {
+        Pause;
+    }
+    state Outside;
+    parallel state Outer {
+        x: i64;
+        region left {
+            parallel state Inner {
+                region x {
+                    state Remembered { text: string; }
+                    initial Remembered { text: "initial" };
+                }
+                region other {
+                    state InnerOther { count: i64; }
+                    initial InnerOther { count: 1 };
+                }
+            }
+            initial Inner;
+        }
+        region other {
+            initial state OuterOther;
+        }
+    }
+    on Pause: Outer => Outside;
+    default { state }
+}
+
+fn nested_region_names() {
+    var value: NestedRegions = .Outer { x: 7, left: .Inner { x: .Remembered { text: "retained".to_upper() }, other: .InnerOther { count: 9 } }, other: .OuterOther };
+    let departed = value.step_observed_with_limit(.Pause, 1, [.Inner]).expect("inner departure");
+    match departed.departures[0].subtree {
+        .Inner { snapshot } => {
+            let restored = snapshot.restore(8, .OuterOther);
+            match restored {
+                .Outer { x, left: .Inner { x: .Remembered { text }, other: .InnerOther { count } } } => {
+                    assert(x == 8 && text == "RETAINED" && count == 9);
+                }
+                _ => panic("ancestor payload name hid a saved region"),
+            }
+        }
+        _ => panic("nested parallel departure"),
+    }
+}
+
+fn main() {
+    nested_region_names();
+    var panel: Panel = .Work { seed: "original", Work_right: 5, left: .Draft { revision: 6, text: "draft" }, right: .Idle { count: 1 } };
+    let _advance = panel.step(.Advance);
+    let departed = panel.step_observed_with_limit(.Pause, 1, [.Work, .Nested, .Work, .Nested]).expect("parallel departure");
+    assert(panel.state_name() == "Outside");
+    assert(departed.departures.len() == 2);
+    assert(departed.departures[0].target == .Nested);
+    assert(departed.departures[1].target == .Work);
+    match departed.departures[0].subtree {
+        .Nested { snapshot } => {
+            match snapshot {
+                .Review { text } => assert(text == "draft:review:exit"),
+                _ => panic("nested descendant payload"),
+            }
+            let restored = snapshot.restore("nested fresh", 6, .Active { count: 99 }, 42);
+            check_panel(restored, "nested fresh", 6, 42, 99);
+        }
+        _ => panic("nested departure order"),
+    }
+    match departed.departures[1].subtree {
+        .Work { snapshot } => {
+            match snapshot {
+                .Work { left: .Review { revision, text }, right: .Active { count } } => {
+                    assert(revision == 17 && text == "draft:review:exit" && count == 5);
+                }
+                _ => panic("complete parallel subtree"),
+            }
+            check_panel(snapshot.restore("work fresh", 7), "work fresh", 7, 17, 5);
+        }
+        _ => panic("work departure order"),
+    }
+    var unobserved: Complete = .Outside;
+    let omitted = unobserved.step_observed_with_limit(.Start, 3, []).expect("no requested captures");
+    assert(omitted.departures.is_empty());
+    var complete: Complete = .Outside;
+    let observed = complete.step_observed_with_limit(.Start, 3, [.Active]).expect("complete stabilization");
+    assert(complete.state_name() == "Outside");
+    assert(observed.report.rules == [0, 2, 3]);
+    assert(observed.departures.len() == 1 && observed.departures[0].target == .Active);
+    check_complete_saved(observed.departures[0].subtree, "FRESH:ready:exit");
+    let initial: Complete = .Outside;
+    var owner = history.track(initial, [CompleteScope.Active]);
+    let _started = owner.step(.Start);
+    let saved = owner.saved(.Active).expect("completed Active subtree");
+    check_complete_saved(saved, "FRESH:ready:exit");
+    let before = owner;
+    assert(owner.step_with_limit(.Resume { generation: 7, saved: .Some(saved) }, 1) == .Err(.LimitExceeded));
+    assert(owner == before);
+    let resumed = owner.step_with_limit(.Resume { generation: 8, saved: owner.saved(.Active) }, 2).expect("resume and complete");
+    assert(owner.state().state_name() == "Outside");
+    assert(resumed.outputs == [.Entered { generation: 8, text: "FRESH:ready:exit" }]);
+    check_complete_saved(owner.saved(.Active).expect("updated completion subtree"), "FRESH:ready:exit:exit");
+    check_complete_saved(saved, "FRESH:ready:exit");
+    println("parallel and intermediate deep history passed");
+}

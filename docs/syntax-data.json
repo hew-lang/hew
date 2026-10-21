@@ -76,10 +76,12 @@
     "line": "//"
   },
   "contextual_identifiers": {
+    "always": "Machine eventless transition trigger (contextual before a transition source).",
     "block": "Overflow policy: block sender",
     "capture": "Private capture prefix capture(var name, ...) before closure or actor literal pipe parameters; an ordinary identifier outside that prefix.",
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "coalesce": "Mailbox overflow policy",
+    "completion": "Machine completion transition trigger (contextual after on).",
     "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "count": "Supervisor pool arity clause (pool ws: Worker { .. } count: N)",
     "default": "Machine fallback transition marker (contextual inside a machine body)",
@@ -94,8 +96,10 @@
     "fail": "Overflow policy: reject the send with Full",
     "fails": "Function return clause: -> Success fails Error; the call returns Result<Success, Error>.",
     "fallback": "Mailbox overflow fallback",
+    "final": "Machine final-state declaration modifier (contextual before state).",
     "handle": "Expression-local Result recovery: operand handle error { block }; an ordinary identifier elsewhere.",
-    "initial": "Machine composite-state initial-substate marker (contextual before nested state decl)",
+    "history": "Machine shallow-history destination modifier (contextual after the target state).",
+    "initial": "Machine initial child declaration or constructor (contextual inside a compound or region).",
     "intensity": "Supervisor restart-budget field (intensity: N within <duration>)",
     "json": "Wire serialization format",
     "linear": "Type-decl ownership attribute — must be consumed exactly once",
@@ -103,8 +107,10 @@
     "once": "Consuming invocation capability inside written function type qualifiers: fn[once](...) -> T.",
     "opaque": "Type-decl attribute — pointer-width opaque runtime handle (empty-body struct only)",
     "overflow": "Mailbox overflow policy",
+    "parallel": "Machine parallel-state declaration modifier (contextual before state).",
     "pool": "Supervisor child-pool declaration marker (contextual inside a supervisor body)",
     "reenter": "Machine transition self-re-entry modifier (contextual after target state name)",
+    "region": "Machine region declaration (contextual inside a parallel state).",
     "repeated": "Wire field qualifier",
     "resource": "Type-decl ownership attribute — move-only, non-duplicable value",
     "self": "Selects the imported module itself inside a dotted import selection (import path.{self as alias}).",
@@ -345,5 +351,5 @@
       "timestamp"
     ]
   },
-  "version": "0.6.3"
+  "version": "0.6.4"
 }

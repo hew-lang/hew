@@ -25,7 +25,7 @@ use super::reader::reader_loop;
 use super::reconnect::next_publication_token;
 use super::{
     ConnectionActor, ConnectionInstallError, ConnectionInstallPublication, HewConnMgr,
-    ReconnectOwner, SendConnMgr, SendTransport, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
+    ReconnectOwner, SendConnMgr, CONN_STATE_ACTIVE, CONN_STATE_CLOSED,
 };
 
 pub(super) fn install_connection_actor(
@@ -64,7 +64,7 @@ pub(super) fn install_connection_actor(
             Some(ref uninstalled) => {
                 if uninstalled.transport_close.claim() {
                     // SAFETY: mgr.transport is valid per caller contract of hew_connmgr_add.
-                    unsafe { close_transport_conn(mgr.transport, conn_id) };
+                    unsafe { close_transport_conn(uninstalled.transport.as_ptr(), conn_id) };
                     uninstalled.transport_close.finish();
                 }
             }
@@ -102,16 +102,43 @@ pub(super) unsafe fn add_connection(
 
 /// Return the exact admitted publication even if its reader retires before
 /// admission returns. Looking up a recycled transport id afterwards is unsound.
-#[expect(
-    clippy::too_many_lines,
-    reason = "authenticated admission is one transaction"
-)]
 pub(super) unsafe fn add_connection_recording_owner(
     mgr: *mut HewConnMgr,
     conn_id: c_int,
     predecessor: Option<&ReconnectOwner>,
     admitted_owner: &mut Option<ReconnectOwner>,
 ) -> c_int {
+    // SAFETY: the caller pins a live manager, or supplies null.
+    let Some(manager) = (unsafe { mgr.as_ref() }) else {
+        set_last_error("hew_connmgr_add: manager is null");
+        return -1;
+    };
+    // SAFETY: the caller owns the connection and pins the node transport.
+    unsafe {
+        add_connection_on_transport(
+            mgr,
+            conn_id,
+            super::ConnectionTransport::borrowed(manager.transport),
+            None,
+            predecessor,
+            admitted_owner,
+        )
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "authenticated admission is one transaction"
+)]
+pub(super) unsafe fn add_connection_on_transport(
+    mgr: *mut HewConnMgr,
+    conn_id: c_int,
+    transport: super::ConnectionTransport,
+    expected: Option<crate::envelope::NodeSessionIdentity>,
+    predecessor: Option<&ReconnectOwner>,
+    admitted_owner: &mut Option<ReconnectOwner>,
+) -> c_int {
+    let transport_ptr = transport.as_ptr();
     if mgr.is_null() {
         // Cannot close conn_id: no transport pointer available.  This is API
         // misuse; the caller retains ownership of conn_id in this case only.
@@ -134,7 +161,7 @@ pub(super) unsafe fn add_connection_recording_owner(
 
     if mgr.reconnect_shutdown.load(Ordering::Acquire) {
         // SAFETY: conn_id came from the transport and is not yet tracked by the manager.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error("hew_connmgr_add: manager is shutting down");
         return -1;
     }
@@ -146,7 +173,7 @@ pub(super) unsafe fn add_connection_recording_owner(
         if already_exists {
             // SAFETY: conn_id is a new transport handle that cannot be installed;
             // close it so the caller does not need to clean up on failure.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
             set_last_error(format!(
                 "hew_connmgr_add: connection {conn_id} already exists"
             ));
@@ -158,13 +185,13 @@ pub(super) unsafe fn add_connection_recording_owner(
     // Noise-protected, quic-mesh is TLS-protected, and any other transport
     // carries no node traffic. Nothing the peer sends can select plaintext.
     let refuse_channel = |refusal: ChannelRefusal| {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract of hew_connmgr_add.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!("hew_connmgr_add: {refusal} (conn {conn_id})"));
         -1
     };
-    // SAFETY: mgr.transport is valid while the connection manager is alive.
-    let Some(channel) = (unsafe { channel_kind(mgr.transport) }) else {
+    // SAFETY: transport_ptr is valid while the connection manager is alive.
+    let Some(channel) = (unsafe { channel_kind(transport_ptr) }) else {
         return refuse_channel(ChannelRefusal::UnprotectedTransport);
     };
     // A stable per-node key (issue #2652, D1) so peers can pin it.
@@ -176,27 +203,41 @@ pub(super) unsafe fn add_connection_recording_owner(
     let (Some(local_identity), Some(local_session_incarnation)) =
         (mgr.local_identity, mgr.local_session_incarnation)
     else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(
             "hew_connmgr_add: v2 distributed handshake requires a loaded authenticated local identity and durable session",
         );
         return -1;
     };
-    let local_hs = local_handshake(
+    let mut local_hs = local_handshake(
         local_identity,
         local_session_incarnation,
         local_noise_pubkey,
     );
-    // SAFETY: mgr.transport and conn_id are valid per caller contract; local_hs is stack-local.
-    let Some(peer_hs) = (unsafe { handshake_exchange(mgr.transport, conn_id, local_hs) }) else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract of hew_connmgr_add.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+    if let Some(admission) = mgr.auth.admission() {
+        local_hs.enrollment = admission.bundle().to_vec();
+    }
+    // SAFETY: transport_ptr and conn_id are valid per caller contract; local_hs is stack-local.
+    let Some(peer_hs) = (unsafe { handshake_exchange(transport_ptr, conn_id, &local_hs) }) else {
+        // SAFETY: transport_ptr and conn_id are valid per caller contract of hew_connmgr_add.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         return -1;
     };
+    if expected.is_some_and(|expected| {
+        expected.node_id != peer_hs.node_id
+            || expected.session_incarnation != peer_hs.session_incarnation
+    }) {
+        // SAFETY: admission owns this unpublished connection.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
+        set_last_error(
+            "hew_connmgr_add: origin identity or session differs from the selected peer",
+        );
+        return -1;
+    }
     if !peer_identity_compatible(local_identity, peer_hs.node_id) {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: peer NodeId {} collides with local NodeId for conn {conn_id}",
             peer_hs.node_id
@@ -214,28 +255,29 @@ pub(super) unsafe fn add_connection_recording_owner(
     // an unconfigured node (no peer bindings or stable credential) has no way
     // to authenticate the peer, so the strict connection is rejected rather
     // than silently admitted. A transport with no channel was refused above.
-    // SAFETY: mgr.transport is valid while the manager is alive; conn_id is the
+    // SAFETY: transport_ptr is valid while the manager is alive; conn_id is the
     // live handle being admitted.
     let remote_ip_class =
-        unsafe { crate::transport::hew_transport_conn_remote_ip_class(mgr.transport, conn_id) };
+        unsafe { crate::transport::hew_transport_conn_remote_ip_class(transport_ptr, conn_id) };
     let posture = mgr.auth.posture_for(remote_ip_class);
     if posture != Posture::Strict {
         // v2 identity-bearing traffic is never admitted through the diagnostic
         // unverified posture.
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: v2 identity traffic requires authenticated strict posture (conn {conn_id})"
         ));
         return -1;
     }
     if posture == Posture::Strict {
-        let unconfigured = !mgr.auth.has_bindings();
+        let unconfigured =
+            mgr.auth.admission().is_none() && !(cfg!(test) && mgr.auth.has_bindings());
         if unconfigured {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            // SAFETY: transport_ptr and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
             set_last_error(format!(
-                "hew_connmgr_add: strict connection requires configured peer credentials (conn {conn_id})"
+                "hew_connmgr_add: strict connection requires an installed cluster enrolment (conn {conn_id})"
             ));
             return -1;
         }
@@ -244,12 +286,12 @@ pub(super) unsafe fn add_connection_recording_owner(
     // Establish the channel and recover the authenticated peer credential
     // (issue #2652, D2/D6): the Noise static key on TCP, the pinned leaf SPKI on
     // quic-mesh. Claim reservation below binds it to the claimed NodeId.
-    // SAFETY: mgr.transport and conn_id are valid per caller contract; the
+    // SAFETY: transport_ptr and conn_id are valid per caller contract; the
     // records and the private key are stack-local.
     let (protection, peer_credential) = match unsafe {
         establish_channel(
             channel,
-            mgr.transport,
+            transport_ptr,
             conn_id,
             &mgr.auth,
             &local_hs,
@@ -260,39 +302,38 @@ pub(super) unsafe fn add_connection_recording_owner(
         Ok(established) => established,
         Err(refusal) => return refuse_channel(refusal),
     };
+    if let Some(admission) = mgr.auth.admission() {
+        if let Err(error) = admission.verify_peer(&peer_hs.enrollment, &peer_credential) {
+            // SAFETY: admission still owns this unpublished transport handle.
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
+            set_last_error(format!(
+                "hew_connmgr_add: cluster admission refused: {error}"
+            ));
+            return -1;
+        }
+    }
     let derived_peer_identity = peer_credential.node_id();
     if derived_peer_identity != peer_hs.node_id {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: authenticated credential derives NodeId {derived_peer_identity}, not advertised {} (conn {conn_id})",
             peer_hs.node_id
         ));
         return -1;
     }
-    let Some(peer_route_slot) = mgr.auth.route_slot_for_credential(&peer_credential) else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: authenticated credential has no configured route slot (conn {conn_id})"
-        ));
-        return -1;
+    let requested_route_slot = if cfg!(test) {
+        mgr.auth
+            .route_slot_for_credential(&peer_credential)
+            .unwrap_or(0)
+    } else {
+        0
     };
-    if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
-        set_last_error(format!(
-            "hew_connmgr_add: peer route slot {peer_route_slot} does not match expected node id {} for conn {conn_id}",
-            expected_peer_node_id.unwrap_or_default()
-        ));
-        return -1;
-    }
-
     // Reserve the authenticated NodeId/session claim before any route, cluster,
     // registry, SWIM, monitor, link, or reply-table publication.
     let Some(claim_token) = next_publication_token(mgr) else {
-        // SAFETY: mgr.transport and conn_id are valid per caller contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        // SAFETY: transport_ptr and conn_id are valid per caller contract.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
         set_last_error(format!(
             "hew_connmgr_add: publication token space is exhausted (conn {conn_id})"
         ));
@@ -301,7 +342,7 @@ pub(super) unsafe fn add_connection_recording_owner(
     let superseded_claim: Option<LiveClaim> = match reserve_identity_claim(
         mgr,
         peer_hs.node_id,
-        peer_route_slot,
+        requested_route_slot,
         peer_hs.session_incarnation,
         Some(&peer_credential),
         conn_id,
@@ -310,15 +351,37 @@ pub(super) unsafe fn add_connection_recording_owner(
     ) {
         ClaimReservation::Reserved { superseded } => superseded,
         ClaimReservation::Rejected(detail) => {
-            // SAFETY: mgr.transport and conn_id are valid per caller contract.
-            unsafe { close_transport_conn(mgr.transport, conn_id) };
+            // SAFETY: transport_ptr and conn_id are valid per caller contract.
+            unsafe { close_transport_conn(transport_ptr, conn_id) };
             set_last_error(format!("hew_connmgr_add: {detail}"));
             return -1;
         }
     };
 
+    let reserved_route_slot = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .get(&peer_hs.node_id)
+        .filter(|claim| claim.conn_id == conn_id && claim.publication_token == claim_token)
+        .map(|claim| claim.route_slot);
+    let Some(peer_route_slot) = reserved_route_slot else {
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        // SAFETY: this failed admission still owns its unpublished handle.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
+        set_last_error("hew_connmgr_add: reserved identity lost its route assignment");
+        return -1;
+    };
+    if expected_peer_node_id.is_some_and(|expected| expected != peer_route_slot) {
+        abort_identity_claim(mgr, peer_hs.node_id, conn_id, claim_token, superseded_claim);
+        // SAFETY: admission owns the unpublished transport handle.
+        unsafe { close_transport_conn(transport_ptr, conn_id) };
+        set_last_error("hew_connmgr_add: peer route slot does not match selected target");
+        return -1;
+    }
+
     let mut actor = ConnectionActor::new(conn_id, Arc::new(protection));
-    actor.transport = mgr.transport;
+    actor.transport = transport.clone();
     actor.publication_token = claim_token;
     // Stash the superseded claim on the actor so hew_connmgr_remove can
     // restore it if removal wins the race against publication (the local
@@ -346,7 +409,7 @@ pub(super) unsafe fn add_connection_recording_owner(
 
     // Spawn reader thread.
     let stop = Arc::clone(&actor.reader_stop);
-    let transport_send = SendTransport(mgr.transport);
+    let transport_send = transport;
     let router = mgr.inbound_router;
     let activity_send = Arc::clone(&actor.last_activity_ms);
     let mgr_send = SendConnMgr(mgr_ptr);
@@ -607,6 +670,8 @@ pub(super) fn remove_connection(
         }
     }
 
+    super::relay::carrier_lost(mgr, conn_id, publication_token);
+
     // Step 2b: close the transport while the actor remains in the list. That
     // keeps a new admission from reusing this numeric slot until every claimed
     // deferred send has observed the close and released its lifecycle guard.
@@ -624,14 +689,15 @@ pub(super) fn remove_connection(
         Some((
             connection.transport_close.claim(),
             Arc::clone(&connection.transport_close),
+            connection.transport.clone(),
         ))
     });
-    let Some((owns_close, transport_close)) = claim else {
+    let Some((owns_close, transport_close, transport)) = claim else {
         return 0;
     };
     if owns_close {
         // SAFETY: transport is valid per manager contract.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(transport.as_ptr(), conn_id) };
         transport_close.finish();
     } else {
         transport_close.wait_closed();

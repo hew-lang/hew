@@ -613,3 +613,386 @@ impl SwimControl {
         })
     }
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClusterMember {
+    pub(crate) transport: u8,
+    pub(crate) credential: Vec<u8>,
+}
+impl ClusterMember {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("transport", 1, 0),
+        Member::new("credential", 2, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.transport;
+        sink.u64(u64::from(*value));
+        sink.field(1);
+        let value = &self.credential;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut transport = None;
+        let mut credential = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    transport = Some(
+                        u8::try_from(source.read_u64(u64::from(u8::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    credential = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            transport: transport.expect("checked required field"),
+            credential: credential.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ClusterEnrollment {
+    pub(crate) authority: Vec<u8>,
+    pub(crate) member: Vec<u8>,
+    pub(crate) signature: Vec<u8>,
+}
+impl ClusterEnrollment {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("authority", 1, 0),
+        Member::new("member", 2, 0),
+        Member::new("signature", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.authority;
+        sink.bytes(value);
+        sink.field(1);
+        let value = &self.member;
+        sink.bytes(value);
+        sink.field(2);
+        let value = &self.signature;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut authority = None;
+        let mut member = None;
+        let mut signature = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    authority = Some(source.read_bytes()?);
+                }
+                1 => {
+                    member = Some(source.read_bytes()?);
+                }
+                2 => {
+                    signature = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            authority: authority.expect("checked required field"),
+            member: member.expect("checked required field"),
+            signature: signature.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NodeHandshake {
+    pub(crate) protocol_version: u16,
+    pub(crate) schema_hash: u32,
+    pub(crate) feature_flags: u32,
+    pub(crate) node: Vec<u8>,
+    pub(crate) incarnation: u32,
+    pub(crate) noise_key: Vec<u8>,
+    pub(crate) enrollment: Vec<u8>,
+}
+impl NodeHandshake {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("protocol_version", 1, 0),
+        Member::new("schema_hash", 2, 0),
+        Member::new("feature_flags", 3, 0),
+        Member::new("node", 4, 0),
+        Member::new("incarnation", 5, 0),
+        Member::new("noise_key", 6, 0),
+        Member::new("enrollment", 7, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.protocol_version;
+        sink.u64(u64::from(*value));
+        sink.field(1);
+        let value = &self.schema_hash;
+        sink.u64(u64::from(*value));
+        sink.field(2);
+        let value = &self.feature_flags;
+        sink.u64(u64::from(*value));
+        sink.field(3);
+        let value = &self.node;
+        sink.bytes(value);
+        sink.field(4);
+        let value = &self.incarnation;
+        sink.u64(u64::from(*value));
+        sink.field(5);
+        let value = &self.noise_key;
+        sink.bytes(value);
+        sink.field(6);
+        let value = &self.enrollment;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut protocol_version = None;
+        let mut schema_hash = None;
+        let mut feature_flags = None;
+        let mut node = None;
+        let mut incarnation = None;
+        let mut noise_key = None;
+        let mut enrollment = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    protocol_version = Some(
+                        u16::try_from(source.read_u64(u64::from(u16::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                1 => {
+                    schema_hash = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                2 => {
+                    feature_flags = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                3 => {
+                    node = Some(source.read_bytes()?);
+                }
+                4 => {
+                    incarnation = Some(
+                        u32::try_from(source.read_u64(u64::from(u32::MAX))?)
+                            .expect("checked integer width"),
+                    );
+                }
+                5 => {
+                    noise_key = Some(source.read_bytes()?);
+                }
+                6 => {
+                    enrollment = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            protocol_version: protocol_version.expect("checked required field"),
+            schema_hash: schema_hash.expect("checked required field"),
+            feature_flags: feature_flags.expect("checked required field"),
+            node: node.expect("checked required field"),
+            incarnation: incarnation.expect("checked required field"),
+            noise_key: noise_key.expect("checked required field"),
+            enrollment: enrollment.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayOpen {
+    pub(crate) circuit: u64,
+    pub(crate) origin: WireSession,
+    pub(crate) target: WireSession,
+}
+impl RelayOpen {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("circuit", 1, 0),
+        Member::new("origin", 2, 0),
+        Member::new("target", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.circuit;
+        sink.u64(*value);
+        sink.field(1);
+        let value = &self.origin;
+        (value).write(sink);
+        sink.field(2);
+        let value = &self.target;
+        (value).write(sink);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut circuit = None;
+        let mut origin = None;
+        let mut target = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    circuit = Some(source.read_u64(u64::MAX)?);
+                }
+                1 => {
+                    origin = Some(WireSession::read(source)?);
+                }
+                2 => {
+                    target = Some(WireSession::read(source)?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            circuit: circuit.expect("checked required field"),
+            origin: origin.expect("checked required field"),
+            target: target.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayChunk {
+    pub(crate) circuit: u64,
+    pub(crate) offset: u64,
+    pub(crate) body: Vec<u8>,
+}
+impl RelayChunk {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[
+        Member::new("circuit", 1, 0),
+        Member::new("offset", 2, 0),
+        Member::new("body", 3, 0),
+    ];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.circuit;
+        sink.u64(*value);
+        sink.field(1);
+        let value = &self.offset;
+        sink.u64(*value);
+        sink.field(2);
+        let value = &self.body;
+        sink.bytes(value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut circuit = None;
+        let mut offset = None;
+        let mut body = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    circuit = Some(source.read_u64(u64::MAX)?);
+                }
+                1 => {
+                    offset = Some(source.read_u64(u64::MAX)?);
+                }
+                2 => {
+                    body = Some(source.read_bytes()?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            circuit: circuit.expect("checked required field"),
+            offset: offset.expect("checked required field"),
+            body: body.expect("checked required field"),
+        })
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RelayClose {
+    pub(crate) circuit: u64,
+}
+impl RelayClose {
+    pub(crate) fn encode(&self, format: Format) -> Vec<u8> {
+        let mut sink = Sink::new(format);
+        self.write(&mut sink);
+        sink.finish()
+    }
+    pub(crate) fn decode(format: Format, bytes: &[u8]) -> Result<Self, DecodeError> {
+        let mut source = Source::new(format, bytes)?.reject_unknown_fields();
+        Self::read(&mut source)
+    }
+    const MEMBERS: &'static [Member<'static>] = &[Member::new("circuit", 1, 0)];
+    fn write(&self, sink: &mut Sink<'_>) {
+        sink.record_begin(Table::new(Self::MEMBERS, true));
+        sink.field(0);
+        let value = &self.circuit;
+        sink.u64(*value);
+        sink.record_end();
+    }
+    fn read(source: &mut Source<'_>) -> Result<Self, DecodeError> {
+        source.record_begin(Table::new(Self::MEMBERS, true))?;
+        let mut circuit = None;
+        while let Some(index) = source.record_next()? {
+            match index {
+                0 => {
+                    circuit = Some(source.read_u64(u64::MAX)?);
+                }
+                _ => unreachable!("checked record index"),
+            }
+        }
+        Ok(Self {
+            circuit: circuit.expect("checked required field"),
+        })
+    }
+}

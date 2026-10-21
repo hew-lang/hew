@@ -11,14 +11,14 @@ pub(crate) use crate::ast::{
     ConstParamTy, ContextVariantExpr, ContextVariantPattern, ContextVariantRecord, ElseBlock, Expr,
     ExternBlock, ExternFnDecl, FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImplTypeAlias,
     ImportDecl, ImportName, ImportSpec, IntRadix, Intensity, Item, LambdaParam, Literal,
-    MachineDecl, MachineEvent, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MatchArm, NamingCase, NominalPatternPayload, OverflowFallback, OverflowPolicy, Param, Path,
-    Pattern, PatternField, Program, QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl,
-    RecordDecl, RecordKind, ResourceMarker, RestartPolicy, SelectArm, Span, Spanned, Stmt,
-    StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl,
-    TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr,
-    TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause, WherePredicate,
-    WireFieldMeta, WireMetadata, WireReserved,
+    MachineDecl, MachineEvent, MachineRegion, MachineState, MachineTransition,
+    MachineTransitionBodyForm, MachineTrigger, MatchArm, NamingCase, NominalPatternPayload,
+    OverflowFallback, OverflowPolicy, Param, Path, Pattern, PatternField, Program,
+    QualifiedAssocExpr, QualifiedAssocPath, ReceiveFnDecl, RecordDecl, RecordKind, ResourceMarker,
+    RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy,
+    TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem,
+    TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility,
+    WhereClause, WherePredicate, WireFieldMeta, WireMetadata, WireReserved,
 };
 pub(crate) use hew_lexer::{sym, Token};
 use serde::Serialize;
@@ -886,8 +886,6 @@ pub enum ParseDiagnosticKind {
     /// wire modifier; `#[serial(..)]` replaces them.
     LegacySerialSpelling,
     LegacyRaceBraces,
-    /// A `#[wire]` enum variant without its stable `@N` tag.
-    WireVariantTagMissing,
     /// `spawn A { k: v }`: spawn keys are written in braces.
     LegacySpawnArgs,
     /// `child c: A(k: v)`: supervisor child keys are written in braces.
@@ -949,7 +947,6 @@ impl ParseDiagnosticKind {
             Self::UnitFailsArrow => "E_FAILS_UNIT_ARROW",
             Self::LegacySerialSpelling => "E_SERIAL_LEGACY_SPELLING",
             Self::LegacyRaceBraces => "E_RACE_LEGACY_BRACES",
-            Self::WireVariantTagMissing => "E_WIRE_VARIANT_TAG",
             Self::LegacySpawnArgs => "E_SPAWN_PAREN_ARGS",
             Self::LegacyChildArgs => "E_CHILD_PAREN_ARGS",
             Self::LegacyEventHead => "E_EVENT_HEAD_PARENS",

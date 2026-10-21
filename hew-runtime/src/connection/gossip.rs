@@ -10,7 +10,7 @@ use crate::set_last_error;
 use super::control::encode_registry_gossip_control;
 use super::handshake::supports_gossip;
 use super::peer::authenticated_peer_node_id_for_conn;
-use super::send::send_preencoded_on_manager;
+use super::send::claim_send;
 use super::{
     HewConnMgr, PendingRegistryFlush, CONN_STATE_ACTIVE, MAX_REGISTRY_FLUSH_RETRY_ATTEMPTS,
     MAX_REGISTRY_GOSSIP_FLUSH_EVENTS,
@@ -52,28 +52,46 @@ pub(super) fn flush_registry_gossip_to_connection(
     // issue #2652 (D9, outbound): never flush registry gossip onto an
     // `Unverified` (delivery-only) or superseded connection — it carries no
     // control-plane authority in either direction. Only the exact authenticated
-    // owner of a published claim receives cluster state. This gate runs BEFORE
-    // the drain, so a denial retains the events for other connections.
+    // owner of a published claim receives cluster state. Standalone native
+    // managers retain their queued events when this gate denies the flush.
     if authenticated_peer_node_id_for_conn(mgr, conn_id) == 0 {
         return;
     }
 
-    // SAFETY: cluster pointer belongs to this live connection manager.
-    let events = unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) };
-    let frames: Vec<Vec<u8>> = events
-        .into_iter()
-        .filter_map(|event| {
-            encode_registry_gossip_control(&event.name, event.location, event.is_add)
-        })
-        .collect();
+    // A publication snapshots the canonical local map, including names whose
+    // transition gossip has already aged out. It never forwards another origin.
+    // SAFETY: the node pins its registry through every manager owner.
+    let frames: Vec<Vec<u8>> = if let (Some(registry), Some(identity), Some(session)) = (
+        unsafe { mgr.registry.as_ref() },
+        mgr.local_identity,
+        mgr.local_session_incarnation,
+    ) {
+        registry
+            .local_names(crate::envelope::NodeSessionIdentity {
+                node_id: identity,
+                session_incarnation: session,
+            })
+            .into_iter()
+            .filter_map(|(name, location)| encode_registry_gossip_control(&name, location, true))
+            .collect()
+    } else {
+        // Standalone native managers have only their explicit cluster event queue.
+        // SAFETY: the manager pins its cluster.
+        unsafe { (&*mgr.cluster).take_registry_gossip(MAX_REGISTRY_GOSSIP_FLUSH_EVENTS) }
+            .into_iter()
+            .filter_map(|event| {
+                encode_registry_gossip_control(&event.name, event.location, event.is_add)
+            })
+            .collect()
+    };
     send_registry_flush_frames(mgr, conn_id, publication_token, frames, 0);
 }
 
 /// Send encoded registry-gossip flush frames in order. On a failed send, park
 /// the unsent remainder (including the failed frame) for retry on the
-/// connection's next inbound frame — the flush is one-shot at the cluster
-/// level (drained events age out of the queue), so dropping here would leave
-/// the peer permanently without those names.
+/// connection's next inbound frame. A successor admission takes a fresh
+/// canonical snapshot. Parked frames are name intents: the send gate reads
+/// current local state so a delayed snapshot cannot resurrect an old name.
 fn send_registry_flush_frames(
     mgr: &HewConnMgr,
     conn_id: c_int,
@@ -84,10 +102,7 @@ fn send_registry_flush_frames(
     let mut sent = 0;
     while let Some(bytes) = frames.get(sent) {
         // SAFETY: mgr is live and `bytes` is a complete encoded control frame.
-        if unsafe {
-            send_preencoded_on_manager(mgr, conn_id, publication_token, bytes.as_ptr(), bytes.len())
-        } != 0
-        {
+        if send_registry_frame(mgr, conn_id, publication_token, bytes) != 0 {
             set_last_error(format!(
                 "registry gossip flush send failed for conn {conn_id}; \
                  parking {} frame(s) for retry",
@@ -154,6 +169,39 @@ fn park_pending_registry_flush(
         mgr.pending_registry_flush_count
             .store(map.len(), Ordering::Release);
     });
+}
+
+fn send_registry_frame(manager: &HewConnMgr, conn: c_int, publication: u64, bytes: &[u8]) -> c_int {
+    let Some(claim) = claim_send(manager, conn, Some(publication)) else {
+        return -1;
+    };
+    claim.send_prepared(|| {
+        // SAFETY: the claimed connection pins the manager and its borrowed node map.
+        let Some(registry) = (unsafe { manager.registry.as_ref() }) else {
+            return Some(bytes.to_vec());
+        };
+        let crate::envelope::WireFrame::Control(control) =
+            crate::envelope::decode_wire_frame(bytes).ok()?
+        else {
+            return None;
+        };
+        let payload = crate::envelope::decode_registry_gossip_payload(&control.payload).ok()?;
+        let session = crate::envelope::NodeSessionIdentity {
+            node_id: manager.local_identity?,
+            session_incarnation: manager.local_session_incarnation?,
+        };
+        if payload.location.node() != session.node_id
+            || payload.location.incarnation() != session.session_incarnation
+        {
+            return None;
+        }
+        let latest = registry.current_local_name(session, &payload.name);
+        encode_registry_gossip_control(
+            &payload.name,
+            latest.unwrap_or(payload.location),
+            latest.is_some(),
+        )
+    })
 }
 
 /// Retry a parked registry-gossip flush on inbound traffic from `conn_id`.
@@ -255,10 +303,7 @@ pub(crate) unsafe fn hew_connmgr_broadcast_registry_gossip(
             continue;
         }
         // SAFETY: manager is live and bytes is a complete encoded control frame.
-        if unsafe {
-            send_preencoded_on_manager(mgr_ref, conn_id, token, bytes.as_ptr(), bytes.len())
-        } == 0
-        {
+        if send_registry_frame(mgr_ref, conn_id, token, &bytes) == 0 {
             success_count += 1;
         } else {
             set_last_error(format!(

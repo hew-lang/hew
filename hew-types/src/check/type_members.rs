@@ -257,7 +257,8 @@ impl Checker {
         let variant = type_def.variants.get(member)?;
         match usage {
             DottedTypeMemberUse::Reference { span }
-                if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_)) =>
+                if matches!(variant, VariantDef::Unit | VariantDef::Tuple(_))
+                    || Self::variant_is_source_unit(type_def, member) =>
             {
                 let constructor = format!("{}::{member}", head.canonical_type);
                 Some(self.synthesize_identifier(&constructor, span))

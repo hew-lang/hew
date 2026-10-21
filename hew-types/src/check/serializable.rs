@@ -82,6 +82,12 @@ impl Checker {
     ) {
         for (member, ty, span) in members {
             let ty = self.normalize_for_use(&ty);
+            // A declaration fixes member identities; its concrete instantiation
+            // fixes payload encodability. Codec calls and actor boundaries check
+            // the substituted shape through the same data admission service.
+            if ty.has_type_parameters() {
+                continue;
+            }
             let Ok(ty) = ResolvedTy::from_ty(&ty) else {
                 continue;
             };

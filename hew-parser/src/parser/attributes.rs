@@ -21,6 +21,8 @@ pub(crate) enum AttrPosition {
     TraitMethod,
     /// An `actor Name { .. }` declaration itself.
     ActorDecl,
+    /// A `machine Name { .. }` declaration.
+    MachineDecl,
     /// A plain `fn` inside an actor body (lifecycle hooks).
     ActorMemberFn,
     /// An interceptor function inside a supervisor body.
@@ -32,7 +34,7 @@ pub(crate) enum AttrPosition {
     /// A `fn` inside an `extern "C" { .. }` block.
     ExternFn,
     /// A position no attribute is legal in (`const`, `import`, `supervisor`,
-    /// `machine`, a type alias, a tuple-form record, an `impl`/`extern`
+    /// a type alias, a tuple-form record, an `impl`/`extern`
     /// block's own header, an actor `init`/`let`/`var` field).
     /// No table entry ever names this
     /// variant, so every attribute found here is unconditionally
@@ -44,7 +46,7 @@ pub(crate) enum AttrPosition {
 /// recognised attribute at all.
 fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
     use AttrPosition::{
-        ActorDecl, ActorMemberFn, ActorReceiveFn, ExternFn, Field, FreeFn, ImplMethod,
+        ActorDecl, ActorMemberFn, ActorReceiveFn, ExternFn, Field, FreeFn, ImplMethod, MachineDecl,
         SupervisorMemberFn, TraitDecl, TraitMethod, TypeDecl,
     };
 
@@ -63,7 +65,7 @@ fn legal_positions(name: &str) -> Option<&'static [AttrPosition]> {
 
     Some(match name {
         "resource" | "linear" | "opaque" | "json" | "yaml" | "deprecated" => &[TypeDecl],
-        "wire" => &[TypeDecl, Field, ActorReceiveFn],
+        "wire" => &[TypeDecl, MachineDecl, Field, ActorReceiveFn],
         // `#[ignore]`/`#[should_panic]`/`#[serial]`/`#[real_time]` sit at
         // `FreeFn` like `#[test]` and `#[export]`; the co-occurrence half of
         // their `#[test]`-only rule is enforced by

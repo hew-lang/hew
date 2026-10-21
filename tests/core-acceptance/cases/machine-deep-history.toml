@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-deep-history"
+intent = "The history owner retains nested descendant payload after exits, restores with fresh enclosing payload, uses initial constructors before the first departure, and keeps owner and returned subtree copies independent."
+source = "cases/machine-deep-history.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "deep history values passed\n"
+stderr = ""
+exit = 0

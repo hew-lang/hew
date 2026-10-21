@@ -163,19 +163,19 @@ fn supplied_sum(service: ServiceFacade) -> i64 {
     service.add(right: 5, left: 37).expect("supplied add")
 }
 
-fn authenticated_peer(credential: string) -> net.PeerSession {
-    var attempts: i64 = 0;
+fn authenticated_peer() -> net.PeerSession {
+    let local = Node.id().expect("local identity");
+    let observation = cluster.watch().expect("watch authenticated peers");
     loop {
-        match Node.peer(credential) {
-            .Ok(peer) => return peer,
-            .Err(_) => {
-                attempts += 1;
-                if attempts >= 100 {
-                    panic("authenticated peer unavailable");
+        for member in observation.snapshot().expect("peer snapshot").members {
+            if member.id != local && member.state == cluster.State.Alive {
+                match Node.peer(member.id) {
+                    .Ok(peer) => return peer,
+                    .Err(_) => {}
                 }
-                sleep(20ms);
             }
         }
+        assert(observation.changes.recv().is_some());
     }
 }
 
@@ -188,7 +188,7 @@ fn new_service_facade(path: string) -> ServiceFacade {
 fn connect_service_peer(port: string) {
     var attempts: i64 = 0;
     loop {
-        match Node.connect(f"1@127.0.0.1:{port}") {
+        match Node.connect(f"127.0.0.1:{port}") {
             .Ok(_) => return,
             .Err(_) => {
                 attempts += 1;
@@ -209,8 +209,7 @@ fn scenario_server_service_grants(kx: string) {
     let facade = spawn ServiceFacade { file: fs.open_read(path).expect("file"), started: started, gate: gate };
     assert(supplied_sum(facade) == 42);
     Node.register("service-facade", facade);
-    let credential = wait_for_file(f"{kx}/client.pub");
-    let peer = authenticated_peer(credential);
+    let peer = authenticated_peer();
     let generic = spawn GenericEcho<i64>;
     let generic_export = peer.export(generic).expect("generic offer admission");
     let export = peer.export(facade).expect("offer admission");
@@ -244,17 +243,16 @@ fn scenario_server_service_grants(kx: string) {
     stop(replacement);
     stopped(replacement);
     let port = wait_for_server_listening(kx);
-    Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp, key: f"{kx}/server.key", peers: [credential], seeds: [] }).expect("restart node");
+    Node.start(NodeConfig { bind: f"127.0.0.1:{port}", transport: NodeTransport.Tcp, key: f"{kx}/server.key", cluster: f"{kx}/server.enrollment", seeds: [] }).expect("restart node");
     publish_atomic(kx, "service.node-restarted", "1");
-    let restarted_peer = authenticated_peer(credential);
+    let restarted_peer = authenticated_peer();
     let restarted = new_service_facade(path);
     let restarted_export = restarted_peer.export(restarted).expect("restarted node offer");
     let _ = wait_for_file(f"{kx}/service.done");
 }
 
 fn scenario_service_grants(kx: string, port: string) -> i64 {
-    let credential = wait_for_file(f"{kx}/server.pub");
-    let peer = authenticated_peer(credential);
+    let peer = authenticated_peer();
     let _ = wait_for_file(f"{kx}/service.admitted");
     match peer.receive_service<GenericEcho<string>>() {
         .Err(ActorError.RoutingFailed) => {}
@@ -375,7 +373,7 @@ fn scenario_service_grants(kx: string, port: string) -> i64 {
         .Err(ActorError.Dead) => {}
         _ => panic("stale peer session imported service"),
     }
-    let restarted = authenticated_peer(credential).receive_service<ServiceFacade>().expect("restarted service");
+    let restarted = authenticated_peer().receive_service<ServiceFacade>().expect("restarted service");
     assert(supplied_sum(restarted) == 42);
     publish_atomic(kx, "service.done", "1");
     println("PASS service_grants file=supplied-file sum=42 unit declared-failure incompatible generic-incompatible cancelled raw-metadata mailbox-acked-before-completion reconnect no-replay disconnected-revoke actor-restart node-restart");
@@ -944,6 +942,24 @@ fn scenario_server_message_size(peer: net.PeerSession, kx: string) {
     export.close();
     stop(service);
     stopped(service);
+}
+
+fn scenario_mesh_large(kx: string) -> i64 {
+    let peer = fixture_peer();
+    let service: SizeProbe = peer.receive_service<SizeProbe>().expect("mesh size service");
+    assert(service.accept("x".repeat(131072)).expect("large mesh request") == 131072);
+    assert(service.accept("after").expect("following request") == 5);
+    assert(service.reply(131072).expect("large mesh reply") == "r".repeat(131072));
+    assert(service.reply(5).expect("following reply") == "rrrrr");
+    match service.decline(131072) {
+        .Err(ActorError.Failed(value)) => assert(value == "e".repeat(131072)),
+        _ => panic("large mesh declared error changed"),
+    }
+    assert(service.accept("final").expect("following declared error") == 5);
+    assert(service.count().expect("each handler ran once") == 6);
+    publish_atomic(kx, "size.done", "1");
+    println("PASS mesh_large request reply declared-error following-frame no-replay");
+    0
 }
 
 fn scenario_message_size(kx: string) -> i64 {
@@ -1737,45 +1753,39 @@ fn wait_for_file(path: string) -> string {
     }
 }
 
-// Start this node pinned to its peer. The mutual exchange is two-phase: each
-// node mints its durable identity with a first start, publishes it and stops,
-// then waits for the peer's published credential and starts again pinned to it
-// as route slot 1.
-fn start_pinned(kx: string, my_role: string, peer_role: string, bind: string) {
+// Load this node's identity and its operator-issued cluster enrolment.
+fn start_admitted(kx: string, my_role: string, peer_role: string, bind: string) {
     let key = f"{kx}/{my_role}.key";
-    let mint = NodeConfig { bind: "127.0.0.1:0", transport: NodeTransport.Tcp, key: key, peers: [], seeds: [] };
-    match Node.start(mint) {
-        Result.Ok(_) => {}
-        Result.Err(_) => {
-            println(f"FAIL {my_role} identity-mint");
-            exit(2);
-        }
-    }
-    let me = Node.identity_key();
-    Node.shutdown();
-    publish_atomic(kx, f"{my_role}.pub", me);
-    let peer_key = wait_for_file(f"{kx}/{peer_role}.pub");
-    let configured_peer_key = if (os.env("HEW_DIST_BAD_PEER_PIN") ?? "") == "1" {
-        "0000000000000000000000000000000000000000000000000000000000000000"
+    let _ = wait_for_file(f"{kx}/{peer_role}.pub");
+    let cluster = if (os.env("HEW_DIST_FOREIGN_CLUSTER") ?? "") == "1" {
+        f"{kx}/{my_role}.foreign.enrollment"
     } else {
-        peer_key
+        f"{kx}/{my_role}.enrollment"
     };
     let active_scenario = os.env("HEW_DIST_SCENARIO") ?? "";
     let seed_scenario = active_scenario == "persistent_seed" || active_scenario == "persistent_seed_stop";
     if seed_scenario && my_role == "server" {
         let _ = wait_for_file(f"{kx}/seed.start-server");
     }
-    let seeds = if seed_scenario && my_role == "client" {
+    let seeds = if active_scenario == "transitive_restart" && my_role == "relay" {
+        let port = os.env("HEW_DIST_ORIGIN_PORT").expect("origin seed");
+        [f"127.0.0.1:{port}"]
+    } else if seed_scenario && my_role == "client" {
         let port = os.env("HEW_DIST_SEED_PORT") ?? "";
-        [f"1@127.0.0.1:{port}"]
+        [f"127.0.0.1:{port}"]
     } else {
         Vec.new()
     };
-    let config = NodeConfig { bind: bind, transport: NodeTransport.Tcp, key: key, peers: [configured_peer_key], seeds: seeds };
+    let transport = if (os.env("HEW_DIST_TRANSPORT") ?? "tcp") == "quic-mesh" {
+        NodeTransport.QuicMesh
+    } else {
+        NodeTransport.Tcp
+    };
+    let config = NodeConfig { bind: bind, transport: transport, key: key, cluster: cluster, seeds: seeds };
     match Node.start(config) {
         Result.Ok(_) => {}
         Result.Err(_) => {
-            println(f"FAIL {my_role} pinned-start");
+            println(f"FAIL {my_role} admitted-start");
             exit(2);
         }
     }
@@ -1794,14 +1804,7 @@ fn wait_for_server_listening(kx: string) -> string {
 }
 
 fn fixture_peer() -> net.PeerSession {
-    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
-    let role = os.env("HEW_DIST_ROLE") ?? "";
-    let other = if role == "client" {
-        "server"
-    } else {
-        "client"
-    };
-    authenticated_peer(wait_for_file(f"{kx}/{other}.pub"))
+    authenticated_peer()
 }
 
 fn discover_with_retry(name: string) -> Result<Location, LookupError> {
@@ -1828,7 +1831,7 @@ fn run_server(scenario: string) {
     } else {
         base_addr
     };
-    start_pinned(kx, "server", "client", addr);
+    start_admitted(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue { store: s };
     Node.register("kv", kv);
@@ -1857,7 +1860,7 @@ fn run_server(scenario: string) {
         Node.shutdown();
         return;
     }
-    if scenario == "message_size" {
+    if scenario == "message_size" || scenario == "mesh_large" {
         scenario_server_message_size(peer, kx);
         Node.shutdown();
         return;
@@ -3172,7 +3175,7 @@ fn scenario_stale_incarnation_restart(old: KeyValue, kx: string, port: string) -
     let old_incarnation = old_location.incarnation();
     println(f"READY_STALE_CAPTURED node={old_node.display()} incarnation={old_incarnation}");
     let _ = wait_for_file(f"{kx}/server.restarted");
-    let _ = Node.connect(f"1@127.0.0.1:{port}");
+    let _ = Node.connect(f"127.0.0.1:{port}");
     let fresh_peer = fixture_peer();
     let fresh = fresh_peer.receive_service<KeyValue>().expect("fresh kv grant");
     let _wire = fresh_peer.receive_service<WireProbe>().expect("fresh wire grant");
@@ -3281,7 +3284,7 @@ fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
 
 fn run_client(scenario: string) -> i64 {
     let kx = os.env("HEW_DIST_KX_DIR") ?? "";
-    start_pinned(kx, "client", "server", "127.0.0.1:0");
+    start_admitted(kx, "client", "server", "127.0.0.1:0");
     if scenario == "persistent_seed" || scenario == "persistent_seed_stop" {
         println("READY_SEED_STARTED");
         if scenario == "persistent_seed_stop" {
@@ -3294,7 +3297,7 @@ fn run_client(scenario: string) -> i64 {
     let bound_port = wait_for_server_listening(kx);
     let port = os.env("HEW_DIST_PROXY_PORT") ?? bound_port;
     if scenario != "persistent_seed" {
-        let _ = Node.connect(f"1@127.0.0.1:{port}");
+        let _ = Node.connect(f"127.0.0.1:{port}");
     }
     let status = if scenario == "handshake_reject" {
         scenario_handshake_reject()
@@ -3302,6 +3305,8 @@ fn run_client(scenario: string) -> i64 {
         scenario_quarantine_rejoin()
     } else if scenario == "remote_stopped_crash" || scenario == "remote_stopped_cleanup_fault" {
         scenario_remote_stopped(kx, scenario == "remote_stopped_cleanup_fault")
+    } else if scenario == "mesh_large" {
+        scenario_mesh_large(kx)
     } else if scenario == "message_size" {
         scenario_message_size(kx)
     } else if scenario == "stable_role" {
@@ -3378,11 +3383,279 @@ fn run_client(scenario: string) -> i64 {
     status
 }
 
+#[wire]
+machine TransitHistory<T> {
+    events {
+        Resume { seed: T; }
+        Advance;
+        Leave;
+    }
+    emits {
+        Changed { value: T; }
+        Counted { value: i64; }
+    }
+    state Off;
+    parallel state On {
+        seed: T;
+        region left {
+            state L0 { value: T; }
+            state L1 { value: T; }
+            initial L0 { value: state.seed };
+        }
+        region right {
+            state InnerRight {
+                count: i64;
+                state R0 { child: i64; }
+                state R1 { child: i64; }
+                initial R0 { child: 4 };
+            }
+            initial InnerRight { count: 7 };
+        }
+    }
+    on Resume: Off => On history { seed: event.seed }
+    on Advance: L0 => L1 {
+        emit Changed { value: state.value };
+        L1 { value: state.value }
+    }
+    on Advance: R0 => R1 {
+        emit Counted { value: state.count + 1 };
+        R1 { count: state.count + 1, child: 99 }
+    }
+    on Leave: On => Off;
+    default { state }
+}
+
+#[wire]
+type TransitMachineReply {
+    state: TransitHistory<string> @1;
+    report: TransitHistoryStep<string> @2;
+    retained: TransitHistoryStep<string> @3;
+}
+
+fn check_transit_machine(service: TransitCounter) {
+    var current_machine: TransitHistory<string> = .Off;
+    let _initial = current_machine.step(.Resume { seed: "saved".to_upper() });
+    let advanced = current_machine.step(.Advance);
+    assert(advanced.rules == [1, 2]);
+    assert(advanced.outputs == [.Changed { value: "SAVED" }, .Counted { value: 8 }]);
+    let _leave = current_machine.step(.Leave);
+    let paused = current_machine;
+    let reply = service.machine_step(paused, .Resume { seed: "fresh" }, advanced).expect("relayed history resume");
+    assert(reply.retained == advanced);
+    assert(reply.report.rules == [0] && reply.report.outputs.is_empty());
+    assert(reply.report.input == "Resume" && reply.report.disposition == .Taken);
+    match reply.state {
+        .On { seed, left: .L1 { value }, right: .R0 { count, child } } => {
+            assert(seed == "fresh" && value == "SAVED" && count == 8 && child == 4);
+        }
+        _ => panic("relayed shallow parallel history"),
+    }
+    let next = service.machine_step(reply.state, .Advance, reply.report).expect("relayed parallel continuation");
+    assert(next.report.rules == [2]);
+    assert(next.report.outputs == [.Counted { value: 9 }]);
+    assert(next.retained == reply.report);
+    match next.state {
+        .On { seed, left: .L1 { value }, right: .R1 { count, child } } => {
+            assert(seed == "fresh" && value == "SAVED" && count == 9 && child == 99);
+        }
+        _ => panic("relayed next exact machine state"),
+    }
+    assert(current_machine == paused && advanced.outputs == [.Changed { value: "SAVED" }, .Counted { value: 8 }]);
+}
+
+actor TransitCounter {
+    var machine_calls: i64 = 0;
+    #[wire]
+    receive fn machine_step(value: TransitHistory<string>, event: TransitHistory.Event<string>, retained: TransitHistoryStep<string>) -> TransitMachineReply {
+        machine_calls += 1;
+        var current = value;
+        let report = current.step(event);
+        TransitMachineReply { state: current, report, retained }
+    }
+    #[wire]
+    receive fn machine_count() -> i64 {
+        machine_calls
+    }
+    var total: i64 = 0;
+    var stalled: i64 = 0;
+    #[wire]
+    receive fn add(amount: i64) -> i64 {
+        total += amount;
+        total
+    }
+    #[wire]
+    receive fn read() -> i64 {
+        total
+    }
+    #[wire]
+    receive fn held(kx: string) -> i64 {
+        stalled += 1;
+        publish_atomic(kx, "transit.inflight", "1");
+        let _ = wait_for_file(f"{kx}/transit.release");
+        stalled
+    }
+    #[wire]
+    receive fn held_count() -> i64 {
+        stalled
+    }
+    #[wire]
+    receive fn echo(value: string) -> string {
+        value
+    }
+    #[wire]
+    receive fn location() -> string {
+        let location = Node.lookup("transit-server").expect("origin name");
+        f"{location}"
+    }
+}
+
+fn run_transitive(role: string) -> i64 {
+    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+    start_admitted(kx, role, "server", "127.0.0.1:0");
+    let counter = spawn TransitCounter;
+    Node.register(f"transit-{role}", counter);
+    if role == "server" {
+        let _ = signal_server_listening(kx);
+        println(f"READY {unsafe { hew_dist_bound_port() }}");
+        let client = cluster.wait_registered("transit-client").expect("authenticated client origin");
+        let peer = Node.peer(client.node_id()).expect("authenticated client session");
+        let export = peer.export(counter).expect("offer origin actor");
+        let _ = wait_for_file(f"{kx}/transit.revoke");
+        export.close();
+        publish_atomic(kx, "transit.revoked", "1");
+        let replacement = peer.export(counter).expect("fresh grant");
+        let _ = wait_for_file(f"{kx}/transit.done");
+        assert(counter.read().expect("one accepted mutation") == 42);
+        assert(counter.machine_count().expect("two accepted machine steps") == 2);
+        replacement.close();
+    } else if role == "relay" {
+        let port = os.env("HEW_DIST_ORIGIN_PORT").expect("origin address");
+        Node.connect(f"127.0.0.1:{port}").expect("relay admits origin");
+        let own_port = f"{unsafe { hew_dist_bound_port() }}";
+        publish_atomic(kx, "relay.ready", own_port);
+        println(f"READY {own_port}");
+        let _ = wait_for_file(f"{kx}/transit.done");
+    } else {
+        let port = os.env("HEW_DIST_RELAY_PORT").expect("relay address");
+        Node.connect(f"127.0.0.1:{port}").expect("client admits relay");
+        let origin = cluster.wait_registered("transit-server").expect("transitive origin discovery");
+        let relay = cluster.wait_registered("transit-relay").expect("relay discovery");
+        assert(origin.node_id() != relay.node_id());
+        let peer = Node.peer(origin.node_id()).expect("end-to-end origin session");
+        let service: TransitCounter = peer.receive_service<TransitCounter>().expect("origin grant");
+        assert(service.location().expect("authenticated origin location") == f"{origin}");
+        assert(service.add(42).expect("transitive actor call") == 42);
+        check_transit_machine(service);
+        if os.env("HEW_DIST_TRANSPORT") == .Some("quic-mesh") {
+            let large = "relay".repeat(32768);
+            assert(service.echo(large).expect("large relayed TLS request and reply") == large);
+            assert(service.echo("after").expect("following relayed TLS frame") == "after");
+        }
+        publish_atomic(kx, "transit.revoke", "1");
+        let _ = wait_for_file(f"{kx}/transit.revoked");
+        match service.add(100) {
+            .Err(ActorError.RoutingFailed) => {}
+            .Err(error) => panic(f"unexpected revoked grant failure: {error}"),
+            .Ok(_) => panic("revoked origin grant retained authority"),
+        }
+        var refused: TransitHistory<string> = .Off;
+        let retained = refused.step(.Resume { seed: "refused" });
+        match service.machine_step(refused, .Advance, retained) {
+            .Err(ActorError.RoutingFailed) => {}
+            .Err(error) => panic(f"unexpected revoked machine grant failure: {error}"),
+            .Ok(_) => panic("revoked machine call executed"),
+        }
+        let fresh: TransitCounter = peer.receive_service<TransitCounter>().expect("fresh origin grant");
+        assert(fresh.read().expect("refused request did not execute") == 42);
+        assert(fresh.machine_count().expect("refused machine call did not execute") == 2);
+        println("PASS relayed machine history state fresh/SAVED/8/4 next fresh/SAVED/9/99 rules 1,2/0/2 retained output SAVED no-replay");
+        publish_atomic(kx, "transit.done", "1");
+        println("PASS transitive origin-session discovery grant call revoke no-replay");
+    }
+    Node.shutdown();
+    0
+}
+
+fn wait_transit_successor(previous: Location) -> Location {
+    let observation = cluster.watch().expect("successor observation");
+    loop {
+        let current = observation.snapshot().expect("successor snapshot");
+        for item in current.registrations {
+            if item.name == "transit-server" && item.location.node_id() == previous.node_id() && item.location.incarnation() > previous.incarnation() {
+                return item.location;
+            }
+        }
+        assert(observation.changes.recv().is_some());
+    }
+}
+
+fn run_transitive_restart(role: string) -> i64 {
+    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+    let port = if role == "server" {
+        os.env("HEW_DIST_ORIGIN_BIND_PORT") ?? "0"
+    } else {
+        "0"
+    };
+    start_admitted(kx, role, "server", f"127.0.0.1:{port}");
+    let counter = spawn TransitCounter;
+    Node.register(f"transit-{role}", counter);
+    if role == "server" {
+        let _ = signal_server_listening(kx);
+        println(f"READY {unsafe { hew_dist_bound_port() }}");
+        let client = cluster.wait_registered("transit-client").expect("authenticated client origin");
+        let peer = Node.peer(client.node_id()).expect("authenticated client peer");
+        let export = peer.export(counter).expect("restart origin grant");
+        let _ = wait_for_file(f"{kx}/transit.done");
+        export.close();
+    } else if role == "relay" {
+        let own_port = f"{unsafe { hew_dist_bound_port() }}";
+        publish_atomic(kx, "relay.ready", own_port);
+        println(f"READY {own_port}");
+        let _ = wait_for_file(f"{kx}/transit.done");
+    } else {
+        let relay_port = os.env("HEW_DIST_RELAY_PORT").expect("relay address");
+        Node.connect(f"127.0.0.1:{relay_port}").expect("client admits relay");
+        let old_location = cluster.wait_registered("transit-server").expect("first origin");
+        let peer = Node.peer(old_location.node_id()).expect("first end-to-end peer");
+        let old: TransitCounter = peer.receive_service<TransitCounter>().expect("first grant");
+        assert(old.add(42).expect("initial mutation") == 42);
+        scope {
+            let interrupted = fork old.held(kx);
+            let _ = wait_for_file(f"{kx}/transit.inflight");
+            println("READY_TRANSIT_RESTART");
+            match await interrupted {
+                .Err(ActorError.ConnectionDropped) => {}
+                _ => panic("carrier loss did not fail its one admitted call"),
+            }
+        };
+        let fresh_location = wait_transit_successor(old_location);
+        let fresh_peer = Node.peer(fresh_location.node_id()).expect("higher origin session");
+        let fresh: TransitCounter = fresh_peer.receive_service<TransitCounter>().expect("fresh origin grant");
+        assert(fresh.read().expect("fresh state") == 0);
+        assert(fresh.held_count().expect("no replay") == 0);
+        match old.read() {
+            .Err(ActorError.Dead) => {}
+            _ => panic("old origin session regained authority"),
+        }
+        assert(fresh.add(7).expect("fresh call") == 7);
+        publish_atomic(kx, "transit.done", "1");
+        println("PASS transitive carrier-loss higher-session old-grant-fenced no-replay fresh-call");
+    }
+    Node.shutdown();
+    0
+}
+
 fn main() -> i64 {
     let role = os.env("HEW_DIST_ROLE") ?? "";
     var scenario = os.env("HEW_DIST_SCENARIO") ?? "";
     if scenario == "" {
         scenario = "remote_ask";
+    }
+    if scenario == "transitive_restart" {
+        return run_transitive_restart(role);
+    }
+    if scenario == "transitive" {
+        return run_transitive(role);
     }
     if role == "server" {
         run_server(scenario);

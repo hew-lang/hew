@@ -2230,8 +2230,7 @@ const HANDWRITTEN_CATALOG: &[BuiltinEntry] = &[
         },
     ),
     // `Node::connect(addr: String) -> Result<(), NodeError>` — dial a peer at
-    // `slot@host:port`, where the slot is the peer's position in this node's
-    // own `NodeConfig.peers`.
+    // `host:port`, authenticating its identity under the installed cluster root.
     direct(
         "Node::connect",
         BuiltinClass::ClassB,

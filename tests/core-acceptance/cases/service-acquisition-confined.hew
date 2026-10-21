@@ -1,4 +1,4 @@
 import std.net;
 #[confined]
-fn acquire() { let peer = Node.peer("00"); }
-fn main() { acquire(); }
+fn acquire(id: NodeId) { let peer = Node.peer(id); }
+fn main() { acquire(Node.id().expect("node")); }

@@ -47,6 +47,8 @@ fn reconnect_plan_threads_expected_peer_identity() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        relay: relay::RelayHub::default(),
+        registry: std::ptr::null(),
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -397,12 +399,20 @@ fn stale_reconnect_cannot_replace_newer_publication() {
 
 #[test]
 fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
+    struct ManagerGuard(*mut HewConnMgr);
+    impl Drop for ManagerGuard {
+        fn drop(&mut self) {
+            // SAFETY: this guard drops before the stack-owned transport and sender.
+            unsafe { hew_connmgr_free(self.0) };
+        }
+    }
     unsafe extern "C" fn absent(implementation: *mut std::ffi::c_void, _: *const c_char) -> c_int {
         // SAFETY: the sender remains live until the manager joins its worker.
         let attempts = unsafe { &*implementation.cast::<std::sync::mpsc::Sender<()>>() };
         attempts.send(()).unwrap();
         crate::transport::HEW_CONN_INVALID
     }
+    let _clock = crate::deterministic::TEST_LOCK.lock_or_recover();
     crate::deterministic::hew_simtime_enable(1_000);
     let (attempts, observed) = std::sync::mpsc::channel::<()>();
     let ops = crate::transport::HewTransportOps {
@@ -427,6 +437,7 @@ fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
             std::ptr::null_mut(),
             1,
         );
+        let manager = ManagerGuard(mgr);
         let seed = SeedTarget {
             target_addr: "127.0.0.1:1".into(),
             expected_node_id: Some(7),
@@ -460,7 +471,7 @@ fn configured_seed_retries_absence_once_per_target_and_joins_on_stop() {
             }
         }
         assert_eq!((*mgr).reconnect_workers.access(|workers| workers.len()), 1);
-        hew_connmgr_free(mgr);
+        drop(manager);
         // An attempt may have completed immediately before stop, but no
         // sender remains alive after the registered supervisor is joined.
         while observed.try_recv().is_ok() {}
@@ -535,6 +546,7 @@ fn configured_seed_follows_successor_but_never_arms_transient_reconnect() {
 fn connection_attempt_budget_uses_simulated_time_and_nested_scope_restores_it() {
     use crate::deterministic::{hew_simtime_advance_ms, hew_simtime_disable, hew_simtime_enable};
     use crate::transport::{connection_attempt_remaining, with_connection_attempt_deadline};
+    let _clock = crate::deterministic::TEST_LOCK.lock_or_recover();
     hew_simtime_enable(1_000);
     assert_eq!(connection_attempt_remaining(), None);
     with_connection_attempt_deadline(|| {

@@ -3,6 +3,75 @@
 use super::*;
 
 impl LowerCtx {
+    /// Consume complete checker-authored physical payload initialization.
+    pub(super) fn lower_planned_variant_constructor(
+        &mut self,
+        expr: &Spanned<Expr>,
+        intent: IntentKind,
+        plan: hew_types::VariantConstructorPlan,
+    ) -> HirExpr {
+        let span = &expr.1;
+        let source = match &expr.0 {
+            Expr::StructInit { fields, .. } => fields.as_slice(),
+            Expr::ContextVariant(context) => context
+                .record
+                .as_ref()
+                .map_or(&[][..], |record| record.fields.as_slice()),
+            _ => &[],
+        };
+        let Some(result_ty) = self.checker_expr_resolved_ty(span, "planned variant constructor")
+        else {
+            return self.unsupported_expr(span.clone(), "planned variant type missing");
+        };
+        let qualified = format!("{}::{}", plan.variant.type_name, plan.variant.variant_name);
+        let Some((owner, index, _)) = self.lookup_variant_ctor(&qualified, Some(&result_ty)) else {
+            return self.unsupported_expr(span.clone(), "planned variant declaration missing");
+        };
+        let owner = owner.clone();
+        let mut payload = Vec::with_capacity(plan.fields.len());
+        for field in plan.fields {
+            let value = match field.value {
+                hew_types::VariantConstructorValue::Source(index) => {
+                    let Some((_, value)) = source.get(index) else {
+                        return self.unsupported_expr(
+                            span.clone(),
+                            "planned variant source field missing",
+                        );
+                    };
+                    self.lower_expr(value, IntentKind::Read)
+                }
+                hew_types::VariantConstructorValue::EmptyOption => {
+                    let Ok(ty) = ResolvedTy::from_ty(&field.ty) else {
+                        return self.unsupported_expr(
+                            span.clone(),
+                            "planned variant field type unresolved",
+                        );
+                    };
+                    let Some((_, none_index)) =
+                        self.builtin_variant_predicate(BuiltinType::Option, "None", span)
+                    else {
+                        return self
+                            .unsupported_expr(span.clone(), "planned option identity missing");
+                    };
+                    self.synthetic_variant_ctor("Option", none_index, None, ty, span)
+                }
+            };
+            payload.push((field.name, value));
+        }
+        HirExpr {
+            node: self.ids.node(),
+            site: self.source_site(span),
+            ty: result_ty,
+            intent,
+            span: span.clone(),
+            kind: HirExprKind::MachineVariantCtor {
+                machine_name: owner,
+                state_idx: index,
+                payload: Some(payload),
+            },
+        }
+    }
+
     /// Consume the checked source contract and concrete callback identities.
     /// The runtime status is discarded, so SIR receives one raw invocation and
     /// owns the same cleanup paths as any other call.

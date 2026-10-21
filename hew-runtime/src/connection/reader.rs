@@ -16,7 +16,7 @@ use super::control::{
 use super::gossip::retry_pending_registry_flush;
 use super::peer::deposit_reply_envelope;
 use super::reconnect::{reconnect_plan, spawn_reconnect_worker};
-use super::{HewConnMgr, InboundRouter, SendConnMgr, SendTransport};
+use super::{ConnectionTransport, HewConnMgr, InboundRouter, SendConnMgr};
 
 // ── Reader thread ──────────────────────────────────────────────────────
 
@@ -51,7 +51,7 @@ pub(super) fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &A
 
 #[expect(
     clippy::needless_pass_by_value,
-    reason = "SendTransport and Arc values are moved into this thread from spawn closure"
+    reason = "ConnectionTransport and Arc values are moved into this thread from spawn closure"
 )]
 #[expect(
     clippy::too_many_arguments,
@@ -64,7 +64,7 @@ pub(super) fn reader_cleanup(mgr: *mut HewConnMgr, conn_id: c_int, stop_flag: &A
 )]
 pub(super) fn reader_loop(
     mgr: SendConnMgr,
-    transport: SendTransport,
+    transport: ConnectionTransport,
     conn_id: c_int,
     claim_token: u64,
     stop_flag: Arc<AtomicI32>,
@@ -74,14 +74,14 @@ pub(super) fn reader_loop(
     channel: Arc<ChannelProtection>,
 ) {
     let mgr = mgr.0;
-    let transport = transport.0;
+    let transport_ptr = transport.as_ptr();
     let mut buf = vec![0u8; 65536]; // 64KiB read buffer (heap-allocated)
 
     while stop_flag.load(Ordering::Acquire) == 0 {
         // SAFETY: transport is valid for the manager's lifetime; conn_id
         // is valid for this connection's lifetime.
         let bytes_read = unsafe {
-            let t = &*transport;
+            let t = &*transport_ptr;
             if let Some(ops) = t.ops.as_ref() {
                 if let Some(recv_fn) = ops.recv {
                     recv_fn(t.r#impl, conn_id, buf.as_mut_ptr().cast(), buf.len())
@@ -100,6 +100,17 @@ pub(super) fn reader_loop(
 
         #[expect(clippy::cast_sign_loss, reason = "bytes_read > 0 checked above")]
         let read_len = bytes_read as usize;
+        if read_len > buf.len() {
+            if read_len > crate::transport::MAX_FRAME_SIZE {
+                set_last_error(
+                    "connection reader: requested frame capacity exceeds transport limit",
+                );
+                reader_cleanup(mgr, conn_id, &stop_flag);
+                break;
+            }
+            buf.resize(read_len, 0);
+            continue;
+        }
 
         // Every frame passes through the connection's channel; a message that
         // fails authentication ends the connection, never a plaintext retry.

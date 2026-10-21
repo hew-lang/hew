@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-parallel-regions"
+intent = "One input advances disjoint regions together while configuration copies and retained reports remain independent."
+source = "cases/machine-parallel-regions.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "both regions advanced\n"
+stderr = ""
+exit = 0

@@ -209,7 +209,6 @@ impl RuntimeCallFamily {
         matches!(
             self,
             Self::Service(super::ServiceOp::Peer)
-                | Self::NodeAllowPeer
                 | Self::NodeConnect
                 | Self::NodeId
                 | Self::NodeIdentityKey
@@ -813,7 +812,6 @@ impl RuntimeCallFamily {
             | F::MetricHistogramRecord
             | F::MetricVecRegister
             | F::MetricVecWith
-            | F::NodeAllowPeer
             | F::NodeConnect
             | F::NodeId
             | F::NodeIdDisplay

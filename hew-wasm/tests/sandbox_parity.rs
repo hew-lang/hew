@@ -881,6 +881,117 @@ fn supervisor_wiring_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn machine_parallel_regions_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-parallel-regions",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-regions.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-hooks",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-hooks.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-nested",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-nested.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-computed",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-computed.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_initial_constructors_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-initial-constructors",
+            source_rel: "tests/core-acceptance/cases/machine-initial-constructors.hew",
+        },
+        ParityCase {
+            test_name: "machine-initial-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-initial-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_shallow_history_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-history-nested-regions",
+            source_rel: "tests/core-acceptance/cases/machine-history-nested-regions.hew",
+        },
+        ParityCase {
+            test_name: "machine-history-capture-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-history-capture-rollback.hew",
+        },
+        ParityCase {
+            test_name: "machine-history-entry-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-history-entry-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_shallow_history_codecs_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "machine-shallow-history",
+            source_rel: "tests/core-acceptance/cases/machine-shallow-history.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ordinary_and_machine_wire_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "wire-generic-values",
+            source_rel: "tests/core-acceptance/cases/wire-generic-values.hew",
+        },
+        ParityCase {
+            test_name: "machine-wire-values",
+            source_rel: "tests/core-acceptance/cases/machine-wire-values.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn lexical_path_helpers_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1442,6 +1553,8 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         "pointer_width_native64" => Some("4294967296\n4294967296\n"),
         "sort_values" | "float_sort_values" => Some("sort-authority=0\n"),
         "user_codec_stream" => Some("user codec frames\n"),
+        "wire-generic-values" => Some("generic wire values passed\n"),
+        "machine-wire-values" => Some("machine wire checkpoints passed\n"),
         "recursive_structural_equality" => Some("json true false true\nvec true false true\nnode true false\nrecursive keys ok\nlist true false\n"),
         "lambda_actor_private_capture" => Some("501\n1202\n2303\nouter 0 0\n2\n"),
         "dyn_subtrait_display" => Some("point at 1\n(1, 2)\npoint at 3 / (3, 4)\n"),
@@ -1731,5 +1844,53 @@ fn doc_fence_imports_its_package_outside_the_working_directory() {
         let events = String::from_utf8_lossy(&output.stdout);
         assert!(events.contains("\"passed\":1"), "{engine}: {events}");
         assert!(events.contains("hello, Hew\\n"), "{engine}: {events}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_internal_reactions_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-internal-reactions",
+            source_rel: "tests/core-acceptance/cases/machine-internal-reactions.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-fault-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-internal-fault-rollback.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-default-limit",
+            source_rel: "tests/core-acceptance/cases/machine-internal-default-limit.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn machine_deep_history_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-deep-history",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history.hew",
+        },
+        ParityCase {
+            test_name: "machine-deep-history-parallel",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history-parallel.hew",
+        },
+        ParityCase {
+            test_name: "machine-deep-history-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-deep-history-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
     }
 }

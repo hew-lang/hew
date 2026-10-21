@@ -2260,36 +2260,30 @@ impl Checker {
                     };
                     resolution
                 }
-                Some(hew_parser::ast::NominalPatternPayload::Record { .. }) => {
-                    let payload_bindings = self
-                        .pending_pattern_plans
-                        .get(&key)
-                        .map(|plan| {
-                            plan.fields
-                                .iter()
-                                .filter_map(|field| {
-                                    let PlanSub::Binding(binding_name) = &field.sub else {
-                                        return None;
-                                    };
-                                    Some(PayloadBinding {
-                                        field_idx: field.decl_idx as usize,
-                                        binding_name: binding_name.to_string(),
-                                        def_span: self
-                                            .env
-                                            .lookup_ref(binding_name)
-                                            .and_then(|binding| binding.def_span.clone()),
-                                        ty: self.project_assoc_types(&field.ty),
-                                    })
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }) => {
+                    let Some(variant_match) =
+                        self.resolve_variant_match(context.name.name.as_str(), scrutinee_ty)
+                    else {
+                        return;
+                    };
+                    // The same checked record plan owns bindings and nested
+                    // predicates whether this constructor is an arm root or a
+                    // payload field. Retain both when publishing the root.
+                    let Some(payload) = self.build_record_payload_variant_pattern(
+                        None,
+                        scrutinee_ty.clone(),
+                        variant_match,
+                        fields,
+                        pattern_span,
+                        pattern_span,
+                    ) else {
+                        return;
+                    };
                     ArmResolution {
                         pattern_kind: PatternKind::VariantCtor,
-                        variant_match: self
-                            .resolve_variant_match(context.name.name.as_str(), scrutinee_ty),
-                        payload_bindings,
-                        payload_variant_patterns: Vec::new(),
+                        variant_match: Some(payload.variant_match),
+                        payload_bindings: payload.bindings,
+                        payload_variant_patterns: payload.nested,
                     }
                 }
             },
@@ -2496,7 +2490,7 @@ impl Checker {
             NestedConstructorPayload::Tuple(patterns) => patterns,
             NestedConstructorPayload::Record(fields) => {
                 return self.build_record_payload_variant_pattern(
-                    field_idx,
+                    Some(field_idx),
                     resolved_payload_ty,
                     variant_match,
                     fields,
@@ -2607,7 +2601,7 @@ impl Checker {
 
     fn build_record_payload_variant_pattern(
         &mut self,
-        field_idx: usize,
+        payload_slot: Option<usize>,
         payload_ty: Ty,
         variant_match: VariantMatch,
         fields: &[hew_parser::ast::PatternField],
@@ -2643,6 +2637,9 @@ impl Checker {
                         .iter()
                         .find(|source| source.name.name.as_str() == field.name)
                         .and_then(|source| source.pattern.as_ref())?;
+                    // Root aggregates already have a checked PatternPlan and
+                    // HIR's typed destructure prelude. Recursive constructor
+                    // predicates have no aggregate projection contract yet.
                     if let Some((name, payload)) = self.nested_constructor_parts(pattern, &ty) {
                         nested.push(self.build_payload_variant_pattern(
                             field_idx,
@@ -2652,7 +2649,9 @@ impl Checker {
                             span,
                             pattern_span,
                         )?);
-                    } else {
+                    } else if payload_slot.is_some()
+                        || unsupported_payload_subpattern_label(pattern).is_some()
+                    {
                         self.report_error(
                             TypeErrorKind::UnsupportedPayloadSubpattern {
                                 variant_name: variant_match.variant_name.clone(),
@@ -2667,7 +2666,9 @@ impl Checker {
             }
         }
         Some(PayloadVariantPattern {
-            field_idx,
+            // An arm root has no enclosing payload slot; its caller publishes
+            // the bindings and predicates directly from this checked record.
+            field_idx: payload_slot.unwrap_or_default(),
             payload_ty,
             variant_match,
             bindings,
@@ -2799,6 +2800,9 @@ impl Checker {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
                         VariantDef::Tuple(fields) => Some(subst_fields(fields)),
+                        VariantDef::Struct(_) if Self::variant_is_source_unit(&td, short_name) => {
+                            Some(vec![])
+                        }
                         VariantDef::Struct(_) => None,
                     };
                 }
@@ -2806,6 +2810,11 @@ impl Checker {
                     return match v {
                         VariantDef::Unit => Some(vec![]),
                         VariantDef::Tuple(fields) => Some(subst_fields(fields)),
+                        VariantDef::Struct(_)
+                            if Self::variant_is_source_unit(&td, variant_name) =>
+                        {
+                            Some(vec![])
+                        }
                         VariantDef::Struct(_) => None,
                     };
                 }

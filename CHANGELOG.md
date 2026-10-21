@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-10-21
+
+- Authenticate discovered nodes through Noise or TLS relays under one cluster
+  admission authority; select peers by typed `NodeId` and retain revocable actor
+  service grants.
+- Add parallel machine regions, owned child initializers, shallow history and
+  typed deep snapshots with atomic observed departures.
+- Stabilize completion and eventless machine transitions with bounded evaluation
+  and rollback; report every selected rule in `rules`.
+- Share ordinary wire schemas across generic records, enums and annotated
+  machine families, including saved history and step reports.
+- Export authored machine diagrams as Mermaid, Graphviz/DOT and JSON.
+- Remove dead coroutine cleanup helpers at O0 while preserving dynamic and
+  exported roots.
+
+See the [release notes](docs/releases/v0.6.4.md) for examples and upgrade steps.
+
+## [0.6.3] - 2026-10-21
+
+- Add typed wall-clock timestamps with calendar, formatting, codec and cron
+  operations, plus lazy Map updates and per-child process environments.
+- Execute actor supervision, links and monitors through the shared WASI
+  lifecycle implementation, including startup failure and cancellation cleanup.
+- Return typed errors for oversized remote requests and replies while keeping
+  unrelated calls and the connection alive.
+- Generate membership, registry, service-offer and terminal controls from Hew
+  wire types through the shared codec, with publication-bound cleanup.
+- Expose the shared multi-file browser project compiler and structured
+  diagnostic fixes across CLI, editor and browser consumers.
+- Preserve package publication provenance and resume against exact artifacts;
+  require Linux and browser products for patch releases.
+
+See the [release notes](docs/releases/v0.6.3.md) for upgrade details.
+
 ## [0.6.2] - 2026-10-19
 
 - Give `std.encoding.toml` values the checked owning model used by JSON and

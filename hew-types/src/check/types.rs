@@ -974,6 +974,7 @@ pub struct TypeCheckOutput {
     /// pattern. Omitted fields under `..` are materialised as wildcard entries,
     /// so downstream consumers never need to distinguish rest syntax from `_`.
     pub pattern_plans: HashMap<SpanKey, PatternPlan>,
+    pub variant_constructor_plans: HashMap<SpanKey, VariantConstructorPlan>,
     /// Compiler-recognised lang-item registry built from `#[lang_item("…")]`
     /// attributes on traits and trait methods during trait registration.
     /// HIR lowering consults this table to discover the trait/method names
@@ -1476,6 +1477,27 @@ pub struct PlanField {
 #[derive(Debug, Clone, PartialEq)]
 pub struct PatternPlan {
     pub fields: Vec<PlanField>,
+}
+
+/// A complete declaration-order constructor plan for a variant with internal fields.
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantConstructorPlan {
+    pub variant: VariantMatch,
+    pub fields: Vec<VariantConstructorField>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VariantConstructorField {
+    pub name: String,
+    pub ty: Ty,
+    pub value: VariantConstructorValue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VariantConstructorValue {
+    /// Index into the initializer's authored field expressions.
+    Source(usize),
+    EmptyOption,
 }
 
 /// Checker-resolved identity of the matched enum variant.
@@ -2719,6 +2741,8 @@ pub struct TypeDef {
     /// machine types, etc.) and for `TypeDef`s whose field set is already empty.
     pub field_order: Vec<String>,
     pub variants: HashMap<String, VariantDef>,
+    /// Indexed internal payload initializers, retained with their variant owner.
+    pub implicit_variant_fields: HashMap<String, Vec<hew_parser::ast::ImplicitVariantField>>,
     pub methods: HashMap<String, FnSig>,
     pub doc_comment: Option<String>,
     pub is_indirect: bool,
@@ -4269,6 +4293,7 @@ pub struct Checker {
     /// time; `Substitution::resolve` is applied at the `check_program` output
     /// boundary before the map is moved into `TypeCheckOutput`.
     pub(super) pending_pattern_resolutions: HashMap<SpanKey, ArmResolution>,
+    pub(super) variant_constructor_plans: HashMap<SpanKey, VariantConstructorPlan>,
     /// Lang-item registry accumulated during trait registration.
     ///
     /// Mirrors [`TypeCheckOutput::lang_items`]. Populated in the
@@ -4682,6 +4707,7 @@ impl Checker {
             intrinsic_declarations: HashMap::new(),
             pending_let_closure_name: None,
             pending_pattern_resolutions: HashMap::new(),
+            variant_constructor_plans: HashMap::new(),
             lang_items: crate::LangItemRegistry::new(),
             lang_item_spans: HashMap::new(),
             builtin_result_option_method_sigs: HashMap::new(),

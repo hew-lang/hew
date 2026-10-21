@@ -4,6 +4,172 @@ use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
 #[test]
+fn declaration_binders_cover_generated_nested_field_annotations() {
+    let source = r"
+enum Saved<T> { Item { value: T; } }
+enum Carrier<T> { Value { history: Option<Saved<T>>; } }
+impl<T> Carrier<T> {
+    fn rebuild(self) -> Carrier<T> {
+        match self { .Value { history } => Carrier.Value { history } }
+    }
+}
+";
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::TypeDecl(declaration) = &mut parsed.program.items[1].0 else {
+        panic!("enum");
+    };
+    let TypeBodyItem::Variant(variant) = &mut declaration.body[0] else {
+        panic!("variant");
+    };
+    let hew_parser::ast::VariantKind::Struct(fields) = &mut variant.kind else {
+        panic!("fields");
+    };
+    // Normalization retains the source declaration but gives added field
+    // annotations independent synthetic occurrences outside its source range.
+    let outer = &mut fields[0].1;
+    outer.1 = 10000..10001;
+    let hew_parser::ast::TypeExpr::Named {
+        path,
+        type_args: Some(args),
+    } = &mut outer.0
+    else {
+        panic!("Option");
+    };
+    path.segments[0].1 = outer.1.clone();
+    let saved = &mut args[0];
+    saved.1 = 10002..10003;
+    let hew_parser::ast::TypeExpr::Named {
+        path,
+        type_args: Some(args),
+    } = &mut saved.0
+    else {
+        panic!("Saved<T>");
+    };
+    path.segments[0].1 = saved.1.clone();
+    args[0].1 = 10004..10005;
+    let hew_parser::ast::TypeExpr::Named { path, .. } = &mut args[0].0 else {
+        panic!("T");
+    };
+    path.segments[0].1 = 10006..10007;
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+}
+
+#[test]
+fn enum_record_constructors_infer_nested_generic_parameters() {
+    let source = r"
+enum Saved<T> { Item { value: T; } }
+enum Carrier<T> { Value { history: Option<Saved<T>>; } }
+fn retain<T>(consume history: Option<Saved<T>>) -> Carrier<T> {
+    let value = Carrier.Value { history };
+    value
+}
+impl<T> Carrier<T> {
+    fn rebuild(self) -> Carrier<T> {
+        match self { .Value { history } => Carrier.Value { history } }
+    }
+}
+";
+    let (_, _, lowered) = parse_typecheck_and_lower(source);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+}
+
+#[test]
+fn implicit_enum_fields_have_complete_checked_constructor_plans() {
+    use hew_parser::ast::{ImplicitVariantField, ImplicitVariantFieldInitialization};
+    let source = r"
+enum State<T> {
+    Idle { history: Option<T>; }
+    Active { value: T; history: Option<T>; }
+}
+fn idle() -> State<i64> { .Idle }
+fn active() -> State<i64> { .Active { value: 7 } }
+fn retained() -> State<i64> { .Active { value: 8, history: .Some(3) } }
+fn read(state: State<i64>) -> i64 {
+    match state { .Idle => 0, .Active { value } => value }
+}
+fn saved(state: State<i64>) -> Option<i64> {
+    match state { .Idle { history } => history, .Active { history } => history }
+}
+";
+    let mut parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let unmarked = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(
+        !unmarked.errors.is_empty(),
+        "ordinary fields still require initialization"
+    );
+    let Item::TypeDecl(declaration) = &mut parsed.program.items[0].0 else {
+        panic!("enum");
+    };
+    for member in &mut declaration.body {
+        if let TypeBodyItem::Variant(variant) = member {
+            let hew_parser::ast::VariantKind::Struct(fields) = &variant.kind else {
+                panic!("payload");
+            };
+            variant.implicit_fields.push(ImplicitVariantField {
+                field_index: fields.len() - 1,
+                initialization: ImplicitVariantFieldInitialization::EmptyOption,
+            });
+        }
+    }
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let plans: Vec<_> = output.variant_constructor_plans.values().collect();
+    assert_eq!(plans.len(), 3);
+    assert_eq!(
+        plans
+            .iter()
+            .filter(|plan| plan
+                .fields
+                .iter()
+                .any(|field| field.value == hew_types::VariantConstructorValue::EmptyOption))
+            .count(),
+        2
+    );
+    assert!(plans.iter().all(|plan| plan
+        .fields
+        .last()
+        .is_some_and(|field| field.ty == Ty::option(Ty::I64))));
+    let lowered = lower_program(&parsed.program, &output, &ResolutionCtx, TargetArch::host());
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+    for (name, expected_fields) in [("idle", 1), ("active", 2), ("retained", 2)] {
+        let function = function_named(&lowered, name);
+        let expression = function.body.tail.as_ref().expect("constructor tail");
+        let HirExprKind::MachineVariantCtor {
+            payload: Some(fields),
+            ..
+        } = &expression.kind
+        else {
+            panic!("complete physical constructor: {:?}", expression.kind);
+        };
+        assert_eq!(fields.len(), expected_fields);
+    }
+}
+
+#[test]
+fn nested_enum_record_patterns_preserve_outer_checked_bindings() {
+    let source = r"
+enum A { A0; A1; }
+enum B { B0 { value: i64; } B1; }
+enum Inner { Inner { a: A; b: B; } }
+enum Other { R0; R1; }
+enum Tree { Outer { number: i64; tree: Inner; other: Other; } Outside; }
+fn compare(tree: Tree) -> bool {
+    match tree {
+        .Outer { number, tree: .Inner { a: .A0, b: .B0 { value } }, other: .R0 } => value == number,
+        _ => false,
+    }
+}
+";
+    let (_, _, lowered) = parse_typecheck_and_lower(source);
+    assert!(lowered.diagnostics.is_empty(), "{:#?}", lowered.diagnostics);
+}
+
+#[test]
 fn source_annotations_keep_user_nominals_with_builtin_spellings() {
     for name in ["Task", "Unit", "Stream", "Sink", "Connection"] {
         let source = format!(

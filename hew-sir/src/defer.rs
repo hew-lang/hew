@@ -321,6 +321,7 @@ pub(crate) fn verify_calls(
         }
         Ok(())
     }
+
     fn inspect(
         module: &crate::SemModule,
         term: &SemTerminator,
@@ -328,6 +329,13 @@ pub(crate) fn verify_calls(
     ) -> Result<(), &'static str> {
         match term {
             SemTerminator::Call { callee, .. } => callee_body(module, *callee, seen)?,
+            SemTerminator::ValueCall { ty, capability, .. } => {
+                for callee in crate::value_capability_callees(module, ty, *capability)
+                    .map_err(|_| "defer value call has no proven selected capability")?
+                {
+                    callee_body(module, callee, seen)?;
+                }
+            }
             // The module's tables are the closed set of erasures a trait
             // object can hold, so a dispatch is proven by every body that
             // fills its slot.
@@ -343,9 +351,7 @@ pub(crate) fn verify_calls(
                     callee_body(module, callee, seen)?;
                 }
             }
-            SemTerminator::Suspend { .. }
-            | SemTerminator::IndirectCall { .. }
-            | SemTerminator::ValueCall { .. } => {
+            SemTerminator::Suspend { .. } | SemTerminator::IndirectCall { .. } => {
                 return Err("defer call has unproven or suspending effects");
             }
             SemTerminator::RtCall { family, .. }

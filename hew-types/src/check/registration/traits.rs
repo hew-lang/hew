@@ -58,6 +58,7 @@ impl Checker {
                     .map(|param| param.name.to_string())
                     .collect(),
                 variants: HashMap::new(),
+                implicit_variant_fields: HashMap::default(),
                 methods: HashMap::new(),
                 doc_comment: None,
                 is_indirect: false,
@@ -161,6 +162,7 @@ impl Checker {
             fields,
             field_order,
             variants: HashMap::new(),
+            implicit_variant_fields: HashMap::default(),
             methods: HashMap::new(),
             doc_comment: ad.doc_comment.clone(),
             is_indirect: false,

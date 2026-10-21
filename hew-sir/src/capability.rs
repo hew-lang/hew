@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use hew_types::{
     ResolvedTy, TypeInstanceKey, ValueCapability, ValueMethodPlan, ValueMethodSelection,
 };
@@ -11,6 +13,49 @@ pub struct SemValueMethodPlan {
     pub selection: ValueMethodSelection,
     /// Executable body demanded for a user selection; absent for structural operations.
     pub callable: Option<CallableId>,
+}
+
+/// Executable user bodies reached by an exact selected value operation.
+/// Structural operations compose their separately selected component methods.
+///
+/// # Errors
+/// Refuses missing selections, missing user callables or unknown structural recipes.
+pub fn value_capability_callees(
+    module: &SemModule,
+    ty: &ResolvedTy,
+    capability: ValueCapability,
+) -> Result<BTreeSet<CallableId>, String> {
+    let mut pending = vec![(ty.clone(), capability)];
+    let mut seen = BTreeSet::new();
+    let mut callees = BTreeSet::new();
+    while let Some(key) = pending.pop() {
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let plan = module
+            .value_capabilities
+            .get(&key)
+            .ok_or_else(|| "value operation lacks its selected capability".to_string())?;
+        match plan.selection.plan() {
+            ValueMethodPlan::User { .. } => {
+                callees.insert(plan.callable.ok_or_else(|| {
+                    "selected user operation lacks its executable callable".to_string()
+                })?);
+            }
+            ValueMethodPlan::Derived => {
+                for component in derived_capability_components(
+                    &key.0,
+                    &module.aggregate_shapes,
+                    &module.variant_shapes,
+                )? {
+                    for capability in key.1.component_capabilities() {
+                        pending.push((component.clone(), *capability));
+                    }
+                }
+            }
+        }
+    }
+    Ok(callees)
 }
 
 /// Components traversed by a checker-authorized structural operation.

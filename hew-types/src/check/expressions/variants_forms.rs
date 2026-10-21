@@ -495,8 +495,8 @@ else needs `impl Display for {rendered}`)"
             {
                 continue;
             }
-            if let Some(variant) = td.variants.get(name) {
-                if matches!(variant, VariantDef::Unit) {
+            if let Some(_variant) = td.variants.get(name) {
+                if Self::variant_is_source_unit(td, name.rsplit("::").next().unwrap_or(name)) {
                     let ty = self.instantiated_unit_variant_ty(type_name, td);
                     found = Some(ty);
                     break;
@@ -516,8 +516,8 @@ else needs `impl Display for {rendered}`)"
                 {
                     continue; // already scanned in pass 1
                 }
-                if let Some(variant) = td.variants.get(name) {
-                    if matches!(variant, VariantDef::Unit) {
+                if let Some(_variant) = td.variants.get(name) {
+                    if Self::variant_is_source_unit(td, name.rsplit("::").next().unwrap_or(name)) {
                         let ty = self.instantiated_unit_variant_ty(type_name, td);
                         found = Some(ty);
                         break;
@@ -550,8 +550,11 @@ else needs `impl Display for {rendered}`)"
                         .unwrap_or_else(|| type_prefix.to_string())
                 };
                 if let Some(td) = self.type_def_at(&canonical_type_prefix) {
-                    if let Some(variant) = td.variants.get(variant_name) {
-                        if matches!(variant, VariantDef::Unit) {
+                    if let Some(_variant) = td.variants.get(variant_name) {
+                        if Self::variant_is_source_unit(
+                            td,
+                            name.rsplit("::").next().unwrap_or(name),
+                        ) {
                             // Instantiate type params with fresh inference variables
                             // so that `Option::None` in `let x: Option<i64> = Option::None`
                             // unifies correctly with the annotation.  Bare `Named { "Option",
@@ -594,8 +597,11 @@ else needs `impl Display for {rendered}`)"
                         .cloned()
                     {
                         if let Some(td) = self.type_def_at(canonical.as_str()) {
-                            if let Some(variant) = td.variants.get(variant_name) {
-                                if matches!(variant, VariantDef::Unit) {
+                            if let Some(_variant) = td.variants.get(variant_name) {
+                                if Self::variant_is_source_unit(
+                                    td,
+                                    name.rsplit("::").next().unwrap_or(name),
+                                ) {
                                     let ty = self.instantiated_unit_variant_ty(&canonical, td);
                                     found = Some(ty);
                                 }
@@ -606,6 +612,15 @@ else needs `impl Display for {rendered}`)"
             }
         }
         if let Some(ty) = found {
+            if let Some(owner) = ty.type_name() {
+                self.record_variant_constructor_plan(
+                    owner,
+                    name.rsplit("::").next().unwrap_or(name),
+                    &ty,
+                    &[],
+                    span,
+                );
+            }
             if !name.contains("::") {
                 let replacement = ty.type_name().map_or_else(
                     || format!(".{name}"),
@@ -867,6 +882,10 @@ else needs `impl Display for {rendered}`)"
     /// — never falls through to the leaky "undefined variable" /
     /// "undefined type" surface.  Called only from the
     /// `check_field_access` pre-dispatch arm.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "module-qualified variant references retain import provenance, diagnostics and constructor plans together"
+    )]
     pub(in crate::check) fn check_module_qualified_variant_ref(
         &mut self,
         module_short: &str,
@@ -927,6 +946,16 @@ else needs `impl Display for {rendered}`)"
                     self.canonical_module_import_owner(module_short)
                 )
             });
+        if Self::variant_is_source_unit(&td, variant_name) {
+            let args = td
+                .type_params
+                .iter()
+                .map(|_| Ty::Var(TypeVar::fresh()))
+                .collect();
+            let result = self.named_ty_for_key(&qualified_type, args);
+            self.record_variant_constructor_plan(&qualified_type, variant_name, &result, &[], span);
+            return result;
+        }
         match variant {
             VariantDef::Unit => {
                 // Instantiate type params with fresh inference vars so generic

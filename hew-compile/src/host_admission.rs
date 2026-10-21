@@ -3112,9 +3112,9 @@ fn main() { launch(); }
         let declaration =
             "import std.net;\nactor Worker { #[wire] receive fn ping() -> i64 { 21 } }\n";
         for (setup, call, operation) in [
-            ("", "Node.peer(\"credential\")", "Node.peer"),
+            ("", "Node.peer(Node.id().expect(\"node\"))", "Node.peer"),
             (
-                "let peer = Node.peer(\"credential\").expect(\"peer\");",
+                "let peer = Node.peer(Node.id().expect(\"node\")).expect(\"peer\");",
                 "peer.receive_service<Worker>()",
                 "receive_service",
             ),

@@ -1,0 +1,123 @@
+import std.machine.history;
+
+machine Editor {
+    events {
+        Resume { title: string; saved: Option<EditorSubtree>; }
+        Review;
+        Edit { suffix: string; }
+        Pause;
+    }
+    emits {
+        Entered { title: string; text: string; }
+    }
+    state Outside;
+    state Editing {
+        title: string;
+        state Working {
+            revision: i64;
+            state Draft { text: string; }
+            state Reviewing {
+                text: string;
+                entry {
+                    emit Entered { title: state.title, text: state.text };
+                }
+                exit {
+                    state.text += ":saved";
+                }
+            }
+            initial Draft { text: state.title + ":draft" };
+        }
+        initial Working { revision: 10 };
+    }
+    on Resume: Outside => _ {
+        match event.saved {
+            .Some(.Editing { snapshot }) => snapshot.restore(event.title),
+            .None => Editing { title: event.title },
+            _ => panic("wrong saved scope"),
+        }
+    }
+    on Review: Draft => Reviewing { title: state.title, revision: state.revision + 1, text: state.text + ":review" }
+    on Edit: Reviewing => Reviewing {
+        state.text += event.suffix;
+        state
+    }
+    on Pause: Editing => Outside;
+    default { state }
+}
+
+fn check_review(editor: Editor, title: string, text: string) {
+    match editor {
+        .Reviewing { title: actual_title, revision, text: actual_text } => {
+            assert(actual_title == title && revision == 11 && actual_text == text);
+        }
+        _ => panic("deep history lost the active descendant"),
+    }
+}
+
+machine Generic<T> {
+    events {
+        Pause;
+        Resume { saved: Option<GenericSubtree<T>>; initial_value: T; }
+    }
+    state Outside;
+    state Active {
+        initial_value: T;
+        state Child { value: T; }
+        initial Child { value: state.initial_value };
+    }
+    on Pause: Active => Outside;
+    on Resume: Outside => _ {
+        match event.saved {
+            .Some(.Active { snapshot }) => snapshot.restore(event.initial_value),
+            .None => Active { initial_value: event.initial_value },
+        }
+    }
+    default { state }
+}
+
+fn generic_history() {
+    let initial: Generic<string> = .Outside;
+    var owner = history.track(initial, [GenericScope.Active]);
+    let _first = owner.step(.Resume { saved: .None, initial_value: "owned".to_upper() });
+    let _pause = owner.step(.Pause);
+    let _resume = owner.step(.Resume { saved: owner.saved(.Active), initial_value: "fresh" });
+    match owner.state() {
+        .Child { initial_value, value } => assert(initial_value == "fresh" && value == "OWNED"),
+        _ => panic("generic deep history lost its payload"),
+    }
+}
+
+fn main() {
+    generic_history();
+    let initial: Editor = .Outside;
+    var owner = history.track(initial, [EditorScope.Editing]);
+    assert(owner.saved(.Editing).is_none());
+    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) });
+    match owner.state() {
+        .Draft { title, revision, text } => {
+            assert(title == "first" && revision == 10 && text == "first:draft");
+        }
+        _ => panic("first resume did not use nested initial constructors"),
+    }
+    let _review = owner.step(.Review);
+    assert(owner.saved(.Editing).is_none());
+    let _pause = owner.step(.Pause);
+    assert(owner.saved(.Working).is_none());
+    let retained = owner.saved(.Editing).expect("saved Editing subtree");
+    var copied = owner;
+    let resumed = owner.step(.Resume { title: "resumed", saved: owner.saved(.Editing) });
+    assert(resumed.outputs == [.Entered { title: "resumed", text: "first:draft:review:saved" }]);
+    check_review(owner.state(), "resumed", "first:draft:review:saved");
+    assert(copied.state().state_name() == "Outside");
+    let _edited = owner.step(.Edit { suffix: "!" });
+    let _paused_again = owner.step(.Pause);
+    let _resumed_again = owner.step(.Resume { title: "latest", saved: owner.saved(.Editing) });
+    check_review(owner.state(), "latest", "first:draft:review:saved!:saved");
+    let _copied_resume = copied.step(.Resume { title: "copy", saved: copied.saved(.Editing) });
+    check_review(copied.state(), "copy", "first:draft:review:saved");
+    match retained {
+        .Editing { snapshot } => check_review(snapshot.restore("detached"), "detached", "first:draft:review:saved"),
+        _ => panic("saved subtree changed scope"),
+    }
+    println("deep history values passed");
+}

@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-internal-default-limit"
+intent = "The default stabilization bound turns an internal cycle into an ordinary fault and preserves the original owning state."
+source = "cases/machine-internal-default-limit.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "true\n"
+stderr = "hew: failure: UserPanic (212): machine stabilization limit exceeded\n"
+exit = 1

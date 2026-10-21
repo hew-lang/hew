@@ -64,7 +64,7 @@ CDDL integer keys are mirrored as field-doc comments on each Rust mirror field.
 
 ### Handler identity and reply status
 
-Wire version 10 carries a service-request map in envelope key 5. Its key 1 is
+Wire version 11 carries a service-request map in envelope key 5. Its key 1 is
 the canonical dotted handler declaration (`package.module.Actor.handler`);
 keys 2 and 3 carry the recipient-bound export grant and request kind. The checker renders this
 from declaration ownership; import aliases, local dispatch indices and
@@ -117,8 +117,8 @@ The body shapes (the `wire-body` rule and its parts):
 - A **`#[wire]` enum** encodes as either a **bare unsigned tag `N`** (a unit
   variant) or a **single-entry map from `N` to its payload** (the
   "map-of-one"): the value itself for one positional field, an array for
-  several, a map keyed by text key for named fields. Every variant declares
-  its stable tag (`Joined(string) @1;`). The reader accepts exactly these
+  several, a map keyed by text key for named fields. Each variant has a stable tag, assigned automatically or explicitly
+  (`Joined(string) @1;`). The reader accepts exactly these
   shapes and fails closed on an unknown tag, a multi-entry map, or a payload
   of the wrong shape.
 - The **leaf floor** is scalars (CBOR int / uint / bool / float), `string`
@@ -143,25 +143,25 @@ remote actor message or reply must be a scalar, a collection of portable
 values, or a `#[wire]` type, and the checker refuses anything else at the
 remote call.
 
-### Tag-stability asymmetry — explicit `@N` vs ordinal
+### Stable member numbers
 
-Type fields and enum variants carry their wire tag differently, and this
-creates an **important stability asymmetry**:
+Records and enums share one numbering policy. Explicit `@N` numbers are
+preserved. Missing numbers are assigned in declaration order, beginning at 1
+for record fields and 0 for enum variants, skipping all explicit and reserved
+numbers, including numbers declared later. `reserved @N;` prevents reuse.
 
-- **`#[wire]` type fields** use the **explicit `@N` tag** from the wire
-  layout (`cbor_field_key` picks the declared tag, not the field's
-  declaration position). Reordering type fields in source is
-  **wire-safe**: the tag is the `@N` annotation, not the position.
-- **`#[wire]` enum variants** use the **declaration ordinal** as their tag
-  (`cbor_variant_tag` falls back to `variant_idx` when no explicit tag is
-  present). Reordering enum variants in source **changes their ordinals**
-  and is a **breaking wire change**: a sender's `Ping` at ordinal 0 is
-  no longer the receiver's `Ping` at ordinal 1.
+Automatic numbers are convenient for a new schema. Reordering automatically
+numbered members can change their identities and break compatibility; use
+explicit numbers when evolving a published record or enum. Reordering
+explicitly numbered members preserves their numeric identities. Text formats
+also use member names, so renaming remains a compatibility change.
 
-In short: reordering `#[wire]` type fields is safe; reordering `#[wire]`
-enum variants is a breaking change. If you need reorder-stable enum variants,
-assign an explicit tag annotation — the `@N` mechanism is available on enum
-variants for exactly this reason.
+Generic wire declarations are schema families. Renaming a type parameter
+preserves its position; rebinding a member to another parameter changes its
+schema. Concrete arguments must satisfy the ordinary data rules at codec and
+remote-actor use sites. `#[wire] machine` applies these same rules to the
+machine's generated ordinary state, event, report and snapshot declarations.
+`hew wire check` compares those expanded declarations as well.
 
 The CDDL is an **additive description**, not a second decoder: a body that
 does not match `wire-body.cddl` still fails closed at the runtime reader

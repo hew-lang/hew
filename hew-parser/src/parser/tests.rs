@@ -3084,8 +3084,7 @@ type Msg {
 
 /// `#[wire] enum E { A; B; C; }` — unit-only variants attach wire metadata
 /// at the type level (version / naming-cases) and produce
-/// `Item::TypeDecl { kind: Enum, wire: Some(_) }`.  Variants carry no
-/// per-field tag numbers (variants are tagged by index, not `@N`).
+/// `Item::TypeDecl { kind: Enum, wire: Some(_) }` with assigned variant tags.
 #[test]
 fn parse_wire_enum_unit_variants() {
     let source = "\
@@ -3105,7 +3104,10 @@ enum Command {
     assert_eq!(decl.kind, TypeDeclKind::Enum);
     assert_eq!(decl.name, Ident::new("Command"));
     let wire = decl.wire.as_ref().expect("expected wire metadata on enum");
-    assert!(wire.field_meta.is_empty(), "enum variants have no @N tags");
+    assert!(
+        wire.field_meta.is_empty(),
+        "variant tags live on the variants"
+    );
     assert!(wire.reserved.is_empty());
     assert_eq!(decl.body.len(), 3);
     for item in &decl.body {
@@ -3233,10 +3235,10 @@ enum Command {
     assert_eq!(tags, [3, 7, 9]);
 }
 
-/// Retired spellings and a missing variant tag are refused with the kinds
-/// `hew fmt --migrate` rewrites; the parse still records what they meant.
+/// Retired serial spellings are refused with the kinds `hew fmt --migrate`
+/// rewrites; untagged wire variants receive ordinary automatic tags.
 #[test]
-fn legacy_serial_spellings_and_missing_variant_tags_are_refused() {
+fn legacy_serial_spellings_are_refused_and_implicit_tags_are_assigned() {
     let source = "\
 #[wire]
 #[yaml(\"kebab-case\")]
@@ -3264,8 +3266,6 @@ enum Command {
             ParseDiagnosticKind::LegacySerialSpelling,
             ParseDiagnosticKind::LegacySerialSpelling,
             ParseDiagnosticKind::LegacySerialSpelling,
-            ParseDiagnosticKind::WireVariantTagMissing,
-            ParseDiagnosticKind::WireVariantTagMissing,
         ],
         "{:?}",
         result.errors
@@ -3292,14 +3292,27 @@ enum Command {
         "{migrated}"
     );
     assert!(
-        migrated.contains("Start @0;") && migrated.contains("Stop @1;"),
+        migrated.contains("Start;") && migrated.contains("Stop;"),
         "{migrated}"
     );
-    assert!(parse(&migrated).errors.is_empty());
+    let reparsed = parse(&migrated);
+    assert!(reparsed.errors.is_empty());
+    let Item::TypeDecl(command) = &reparsed.program.items[1].0 else {
+        panic!("expected command enum");
+    };
+    let tags: Vec<_> = command
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Variant(variant) => Some((variant.tag, variant.tag_explicit)),
+            TypeBodyItem::Field { .. } => None,
+        })
+        .collect();
+    assert_eq!(tags, [(Some(0), false), (Some(1), false)]);
 }
 
 #[test]
-fn serial_arguments_and_generic_wire_types_are_refused() {
+fn invalid_serial_arguments_are_refused() {
     for source in [
         "#[serial(case = \"camel\")] type A { x: i64; }",
         "#[serial(rename = \"x\")] type A { x: i64; }",
@@ -3316,25 +3329,146 @@ fn serial_arguments_and_generic_wire_types_are_refused() {
             result.errors
         );
     }
-    for source in [
-        "#[wire] type P<T> { x: T @1; }",
-        "#[wire] enum E<T> { A(T) @1; }",
-    ] {
-        let result = parse(source);
-        assert!(
-            result
-                .errors
-                .iter()
-                .any(|error| error.message.contains("E_WIRE_GENERIC")),
-            "{source}: {:?}",
-            result.errors
-        );
-    }
     assert!(parse(
         "type A { #[serial(key = \"type\")] kind: string; #[serial(skip)] cached: Option<i64>; }"
     )
     .errors
     .is_empty());
+}
+
+#[test]
+fn generic_wire_declarations_preserve_bounds_and_where_clauses() {
+    for source in [
+        "#[wire] type Box<T: Clone> where T: Serializable { value: T; }",
+        "#[wire] enum Choice<T: Clone> where T: Serializable { Empty; Value(T); }",
+    ] {
+        let result = parse(source);
+        assert!(result.errors.is_empty(), "{source}: {:?}", result.errors);
+        let Item::TypeDecl(decl) = &result.program.items[0].0 else {
+            panic!("expected wire declaration");
+        };
+        let params = decl.type_params.as_ref().expect("generic parameters");
+        assert_eq!(params.len(), 1);
+        assert_eq!(params[0].name, Ident::new("T"));
+        assert_eq!(params[0].bounds.len(), 1);
+        assert_eq!(
+            decl.where_clause
+                .as_ref()
+                .expect("where clause")
+                .predicates
+                .len(),
+            1
+        );
+        assert!(decl.wire.is_some());
+    }
+}
+
+#[test]
+fn wire_numbers_skip_explicit_and_reserved_members_regardless_of_order() {
+    let result = parse(
+        "\
+#[wire]
+type Packet<T> {
+    first: T;
+    fixed: i64 @1;
+    last: T;
+    reserved @2;
+}
+#[wire]
+enum Command<T> {
+    Start;
+    Fixed @0;
+    reserved @2, @4;
+    Value(T);
+    Named { value: T; }
+}
+",
+    );
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let Item::TypeDecl(record) = &result.program.items[0].0 else {
+        panic!("expected record");
+    };
+    let numbers = record
+        .wire
+        .as_ref()
+        .expect("wire record")
+        .field_meta
+        .iter()
+        .map(|field| field.field_number)
+        .collect::<Vec<_>>();
+    assert_eq!(numbers, [3, 1, 4]);
+    let Item::TypeDecl(enumeration) = &result.program.items[1].0 else {
+        panic!("expected enum");
+    };
+    let tags = enumeration
+        .body
+        .iter()
+        .filter_map(|item| match item {
+            TypeBodyItem::Variant(variant) => variant.tag,
+            TypeBodyItem::Field { .. } => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(tags, [1, 0, 3, 5]);
+    assert_eq!(
+        enumeration.wire.as_ref().expect("wire enum").reserved[0].numbers,
+        [2, 4]
+    );
+}
+
+#[test]
+fn wire_number_conflicts_are_refused_even_when_reservation_follows_member() {
+    for (source, message) in [
+        (
+            "#[wire] type Packet { a: i64 @3; b: i64 @3; }",
+            "duplicate wire field number @3",
+        ),
+        (
+            "#[wire] enum Command { A @3; B @3; }",
+            "duplicate wire variant tag @3",
+        ),
+        (
+            "#[wire] type Packet { a: i64 @3; reserved @3; }",
+            "wire field number @3 is reserved",
+        ),
+        (
+            "#[wire] enum Command { A @3; reserved @3; }",
+            "wire variant tag @3 is reserved",
+        ),
+    ] {
+        let result = parse(source);
+        assert!(
+            result.errors.iter().any(|error| error.message == message),
+            "{source}: {:?}",
+            result.errors
+        );
+    }
+}
+
+#[test]
+fn wire_machine_preserves_schema_versions_without_state_or_event_tags() {
+    let result = parse(
+        "\
+#[wire(version = 4, min_version = 2)]
+pub machine Cache<T> where T: Serializable {
+    events { Store { value: T; } Clear; }
+    state Empty;
+    state Full { value: T; }
+    on Store: _ => Full { value: event.value }
+    on Clear: _ => Empty;
+}
+",
+    );
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let Item::Machine(machine) = &result.program.items[0].0 else {
+        panic!("expected machine");
+    };
+    assert_eq!(machine.visibility, Visibility::Pub);
+    assert_eq!(machine.type_params.len(), 1);
+    assert!(machine.where_clause.is_some());
+    let wire = machine.wire.as_ref().expect("wire machine");
+    assert_eq!(wire.version, Some(4));
+    assert_eq!(wire.min_version, Some(2));
+    assert!(wire.field_meta.is_empty() && wire.reserved.is_empty());
 }
 
 /// `pub #[wire] enum E { ... }` — the visibility-prefixed dispatch arm

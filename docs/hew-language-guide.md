@@ -2931,10 +2931,19 @@ leaves the whole active branch and re-enters the result, so `on Stay: Active =>
 _ { Active }` runs `Live.exit` and `Live.entry`. Name the target when the group's
 hooks must not run.
 
-The composite is a grouping, not a live state: `state_name()` always reports a
-substate, and the machine flattens before it is checked. `hew machine diagram`
-draws the flat machine; its `--format json` output keeps the grouping in a
-`composites` array.
+`hew machine diagram file.hew` shows the authored hierarchy, parallel regions,
+initial child descent and scoped transition rules in Mermaid. Use
+`--format dot` for Graphviz, or `--format json` for structured states, regions,
+guards, actions and hooks. Parent and wildcard rules appear once at their
+declared scope. The caller chooses the root state; arrows into initial children
+represent the explicit `initial` declarations.
+
+To export an SVG:
+
+```sh
+hew machine diagram file.hew --format dot > machine.dot
+dot -Tsvg machine.dot -o machine.svg
+```
 
 ### Fixed numbers in a machine: const parameters
 
@@ -4711,8 +4720,31 @@ fn main() {
 }
 ```
 
-Each field carries a `@N` tag — a stable wire identifier that must never be
-reused, even if the field is later removed (HEW-SPEC-2026.md §7.2). A field
+Fields and enum variants have numeric wire identities. Explicit `@N` tags
+are preserved; omitted tags are assigned in declaration order, starting at 1
+for fields and 0 for variants and skipping every explicit or reserved number.
+Use `reserved @N;` for a removed identity. Reordering automatically numbered
+members can break compatibility; pin the numbers when evolving a published
+schema (HEW-SPEC-2026.md §7.2).
+
+Generic wire declarations use the same rules:
+
+```hew
+#[wire]
+type Envelope<T> { value: T; }
+
+#[wire]
+enum Outcome<T> { Ready(T); Missing; }
+```
+
+`Envelope<string>` and `Outcome<i64>` can be encoded and decoded. Concrete
+arguments must be data: actor handles, resources, callables and ambiguous
+nested options are refused at the codec or remote-actor boundary. Renaming
+`T` preserves the schema; changing a field to another parameter does not.
+`hew wire check` compares generic parameter positions and expanded declarations
+from `#[wire] machine` using the same compatibility rules.
+
+A field
 marked `optional` must have type `Option<T>`; the marker admits only a value
 that can represent absence. Presence and value shape are separate contracts:
 
@@ -4733,9 +4765,11 @@ same pair, and `decode` returns `Result<T, wire.DecodeError>` whose error names
 the path of the value that did not fit; the type is named at the call, and an
 unannotated `json.decode(text)` is `E_TYPE_ANNOTATION_NEEDED`. Bare values that
 implement `Serializable`, including admitted `HashMap` and `HashSet` shapes, use
-the same functions. A value is `Serializable` when it is a scalar, a `#[wire]`
-type, or a `Vec`, `HashMap`, `HashSet` or `Option` of serializable values; a
-plain type, a tuple or a resource is refused where the codec is called:
+the same functions. Ordinary records, enums and tuples are also data when
+their members are data, as are admitted `Vec`, `HashMap`, `HashSet`, `Option`
+and `Result` shapes. Resources, actor handles and callables are refused where
+the codec is called. Remote actors additionally require wire schemas for
+named records and enums:
 
 ```hew
 import std.encoding.cbor;
@@ -5175,7 +5209,7 @@ return `Result`.
 
 `Node.lookup(name)` returns `Result<Location, LookupError>` for discovery. A
 `Location` describes identity but cannot authorize an actor call. Obtain call
-authority from an authenticated `Node.peer(credential)` session and an explicit
+authority from an authenticated `Node.peer(node_id)` session and an explicit
 service offer. All receive handlers of an exported actor must be `#[wire]`, and an imported
 service cannot be exported onward.
 
@@ -5212,11 +5246,9 @@ credential-kind byte is `1` for a TCP Noise static key and `2` for a canonical
 TLS leaf SPKI. Keeping the key preserves the `NodeId`; rotating the key rotates
 the identity.
 
-`NodeConfig.peers` lists the peer credentials this node will accept, and a
-peer's receiver-local non-zero `u16` route slot is its one-based position in
-that list, so the first entry is slot `1`. Slot `0` is reserved for local
-dispatch. A route slot is only a compact alias inside the configuring process:
-it never becomes the peer's identity and may differ on every node.
+`NodeConfig.cluster` names this node's enrolment under an operator-installed
+cluster authority. Enrolled peers prove possession of their transport keys.
+Receiver-local route slots are internal compact aliases allocated at admission.
 
 Starting a node is one call, and it returns `Result<(), NodeError>`, so a
 refused start stops the program instead of printing and carrying on:
@@ -5226,17 +5258,19 @@ fn main() {
     var config = NodeConfig.at("127.0.0.1:9000");
     config.transport = NodeTransport.Tcp;
     config.key = "node.key";
+    config.cluster = "node.enrollment";
     Node.start(config).expect("node starts");
-    println(f"pin this credential on peers: {Node.identity_key()}");
+    println(f"node credential: {Node.identity_key()}");
     Node.shutdown();
 }
 ```
 
-Set `config.peers` to the full credentials exchanged out of band before
-starting communicating nodes. Use `NodeTransport.QuicMesh` for mutually
-authenticated QUIC mesh. The legacy `HEW_TRANSPORT=quic` selector is still
-recognized in v0.6.1, but cannot satisfy authenticated node startup; its removal
-is an unreleased change. `std.net.quic` is a separate socket API.
+Create one authority with `hew node authority --key authority.key`, obtain each
+node's credential with `hew node identity --key node.key`, and issue its file
+with `hew node admit --authority authority.key --credential HEX --output node.enrollment`.
+For mesh identities, add `--transport quic-mesh` to identity and admit. Install
+each enrolment alongside its matching key; keep the authority key with the operator.
+`std.net.quic` remains a separate socket API.
 
 `Node.set_transport`, `Node.load_keys`, and `Node.allow_peer` are gone: each
 carried one fact that is now a `NodeConfig` field. Set the non-empty key path
@@ -5244,33 +5278,26 @@ before calling `Node.start`: `NodeConfig.at` alone does not configure an
 identity. Keep an existing key private and retain it across upgrades rather
 than regenerating it.
 
-On TCP, the pinned credential is the peer's 32-byte Noise public key. On
-quic-mesh, it is the peer certificate's canonical SPKI. An unbound or mismatched
-credential is rejected before the peer becomes routable. Every node connection
-is encrypted: TCP runs Noise and quic-mesh runs mutually pinned TLS 1.3, and a
-peer that offers a plaintext channel is refused.
+On TCP, the credential is a 32-byte Noise public key; on quic-mesh it is the
+certificate's canonical SPKI. Membership, key possession and the claimed identity
+are checked before a peer becomes routable. TCP runs Noise and quic-mesh runs
+TLS 1.3. Actor service grants authorize calls separately from cluster membership.
 
-A client selects its local pin when connecting. The slot it names is the
-server's position in the client's own `NodeConfig.peers`, so a client that
-lists the server first dials slot `1`:
+An enrolled client dials the server's address:
 
 ```hew,ignore
-match Node.connect("1@127.0.0.1:9000") {
+match Node.connect("127.0.0.1:9000") {
     .Ok(_) => {},
     .Err(e) => println(f"dial refused: {e}"),
 }
 ```
-
-The `1@` prefix is the client's route slot for that server, and it is local to
-the client: the same server may sit at a different slot on every node. The
-authenticated key, not the numeric prefix, determines the server's `NodeId`.
 
 Each successful start also advances a durable non-zero session incarnation in
 the key's journal. A same-key restart therefore has the same `NodeId` and a
 higher session. A `Location` carries the complete identity:
 
 ```text
-{ node: NodeId, slot: u64, incarnation: u32 }
+{ node: NodeId, target: Direct(allocation) | Role(token), incarnation: u32 }
 ```
 
 The value is an allocation-free 32-byte inline identity record. It has no

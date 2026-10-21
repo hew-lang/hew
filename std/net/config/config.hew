@@ -124,7 +124,7 @@ fn read_cluster(file: string, explicit: bool) -> toml.Value fails ConfigError {
     for index in 0..keys.array_len().expect("keys array") {
         let key = keys.array_get(index).expect("array").expect("index").get_string().expect("key");
         match key {
-            "bind" | "transport" | "key" | "peers" | "seeds" => {}
+            "bind" | "transport" | "key" | "cluster" | "seeds" => {}
             _ => return error problem(file, f"cluster.{key}", "unknown field"),
         }
     }
@@ -152,7 +152,7 @@ impl NodeConfig {
         let file_bind = text_field(cluster, "bind", file)? ?? "";
         let file_key = text_field(cluster, "key", file)? ?? "";
         let file_transport = text_field(cluster, "transport", file)? ?? "tcp";
-        let file_peers = string_list(cluster, "peers", file)?;
+        let file_cluster = text_field(cluster, "cluster", file)? ?? "";
         let file_seeds = string_list(cluster, "seeds", file)?;
         let bind = os.env("HEW_NODE_BIND") ?? file_bind;
         if bind.is_empty() {
@@ -182,8 +182,15 @@ impl NodeConfig {
             .Some(text) => transport(text, "HEW_NODE_TRANSPORT")?,
             .None => file_selection,
         };
-        let peers = env_list("HEW_NODE_PEERS", file_peers, "cluster.peers")?;
+        let admission = match os.env("HEW_NODE_CLUSTER") {
+            .Some(path) => path,
+            .None => if file_cluster.is_empty() {
+                ""
+            } else {
+                path.combine(path.dirname(path.absolute(file)), file_cluster)
+            }
+        };
         let seeds = env_list("HEW_NODE_SEEDS", file_seeds, "cluster.seeds")?;
-        NodeConfig { bind: bind, transport: selection, key: key, peers: peers, seeds: seeds }
+        NodeConfig { bind: bind, transport: selection, key: key, cluster: admission, seeds: seeds }
     }
 }

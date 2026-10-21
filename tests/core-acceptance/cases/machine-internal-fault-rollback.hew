@@ -1,0 +1,26 @@
+machine Work {
+    events {
+        Start;
+    }
+    emits {
+        Pending { text: string; }
+    }
+    state Idle { text: string; }
+    state Active { text: string; }
+    state Done { count: i64; }
+    on Start: Idle => Active {
+        emit Pending { text: state.text + ":pending" };
+        Active { text: state.text + ":staged" }
+    }
+    always: Active => Done { count: 1 / 0 }
+    default { state }
+}
+
+fn main() {
+    var work: Work = .Idle { text: "original".to_upper() };
+    let before = work;
+    defer {
+        println(work == before);
+    }
+    let _result = work.step_with_limit(.Start, 8);
+}

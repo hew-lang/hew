@@ -389,3 +389,44 @@ fn fmt_check_multi_file_all_unformatted_reports_each_file() {
         "unexpected summary line in stderr: {stderr}",
     );
 }
+
+#[test]
+fn fmt_stdin_preserves_omitted_generic_wire_tags_and_reaches_a_fixed_point() {
+    let input = r"#[wire]
+type Packet<T> where T: Serializable {
+    value: T; // payload
+    fixed: i64 @1;
+    reserved @2;
+}
+#[wire]
+enum Choice<T> {
+    Empty; // inferred
+    Fixed @0;
+    reserved @2;
+    Value(T);
+}
+";
+    let output = run_fmt(&["fmt", "--stdin"], input);
+    assert!(
+        output.status.success(),
+        "hew fmt --stdin failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let formatted = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "value: T; // payload",
+        "Empty; // inferred",
+        "Value(T);",
+        "fixed: i64 @1;",
+        "Fixed @0;",
+        "reserved @2;",
+    ] {
+        assert!(formatted.contains(expected), "{formatted}");
+    }
+    let checked = run_fmt(&["fmt", "--check", "--stdin"], &formatted);
+    assert!(
+        checked.status.success(),
+        "formatted wire schema needs another pass: {}",
+        String::from_utf8_lossy(&checked.stderr),
+    );
+}

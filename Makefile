@@ -681,8 +681,9 @@ playground-check: playground-manifest-check sandbox-vm-deps ## Build: test and b
 	npm --prefix hew-sandbox-vm run build
 	$(TEST_RUN_ENV) cargo test -p hew-wasm --lib \
 		--test v05_wasm_coverage --test sandbox_actor_package \
-		--test sandbox_embedded_std --test sandbox_spread_profile
+		--test sandbox_embedded_std --test sandbox_spread_profile --test sandbox_project
 	$(MAKE) wasm
+	node --test hew-wasm/tests/project_wasm.mjs
 
 # Focused curated playground WASI runtime preflight.
 playground-wasi-check: wasm-runtime hew-native

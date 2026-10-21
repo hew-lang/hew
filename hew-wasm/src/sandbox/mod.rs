@@ -5,7 +5,9 @@
 
 pub mod bytecode;
 pub mod package;
+mod project;
 pub mod sir_emit;
+pub use project::{compile_project_to_sandbox_bytecode, ProjectCompileOutput};
 
 /// The shipped standard-library sources, as `("std/<relative path>", source)`.
 mod std_sources {

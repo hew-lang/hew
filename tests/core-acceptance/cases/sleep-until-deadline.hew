@@ -1,8 +1,8 @@
 // `sleep_until(t)` suspends on a monotonic deadline rather than a span: the
 // instant crosses to the runtime intact and the remaining wait is measured
 // when the timer is armed, so a deadline already in the past returns at once.
-// Two actor handlers napping concurrently finish in about one interval, which
-// is the observable proof that a suspended handler releases its worker.
+// The deterministic driver advances time only after runnable work suspends.
+// Both actor naps therefore share one virtual interval, without a host-speed gate.
 actor Sleeper {
     receive fn nap() -> i64 {
         sleep_until(instant.now() + 300ms);

@@ -1,9 +1,12 @@
 [[case]]
 id = "sleep-until-deadline"
-intent = "`sleep_until` lowers to its own deadline suspension: it returns after the deadline, returns immediately for a deadline already past, and two actor handlers napping concurrently finish in about one interval rather than two."
+intent = "`sleep_until` lowers to its own deadline suspension: it returns after the deadline, returns immediately for a deadline already past, and two actor handlers share one deadline interval on the deterministic monotonic clock."
 source = "cases/sleep-until-deadline.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 30
+
+[case.env]
+HEW_DETERMINISTIC = ""
 
 [case.expected]
 stdout = "true\npast deadline returned\n1\n1\ntrue\ntrue\nclosed\n"

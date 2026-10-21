@@ -3582,8 +3582,7 @@ fn selected_associated_provider_credits_direct_and_facade_imports() {
         assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
         assert!(
             unused[0].message.contains("unused"),
-            "the independent control import must remain unused: {:#?}",
-            unused
+            "the independent control import must remain unused: {unused:#?}"
         );
     }
 
@@ -3664,8 +3663,7 @@ fn public_facade_credits_external_impl_provider_without_local_call() {
     assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
     assert!(
         unused[0].message.contains("unused"),
-        "only the unrelated import should remain unused: {:#?}",
-        unused
+        "only the unrelated import should remain unused: {unused:#?}"
     );
 }
 

@@ -2516,7 +2516,7 @@ impl<'a> Formatter<'a> {
             match item {
                 MachineMember::State(state) => {
                     self.write_indent();
-                    if group.initial == Some(state.name) {
+                    if group.initial_value.is_none() && group.initial == Some(state.name) {
                         self.write("initial ");
                     }
                     let own_fields: Vec<_> = state.fields.iter().collect();
@@ -2528,7 +2528,7 @@ impl<'a> Formatter<'a> {
                         decl,
                         child,
                         span_end,
-                        group.initial == Some(child.name),
+                        group.initial_value.is_none() && group.initial == Some(child.name),
                     );
                     self.end_member(child.span.end);
                 }
@@ -2543,6 +2543,12 @@ impl<'a> Formatter<'a> {
         }
         for region in &group.regions {
             self.format_machine_region(decl, region, span_end);
+        }
+        if let Some(value) = &group.initial_value {
+            self.write_indent();
+            self.write("initial ");
+            self.format_expr(value);
+            self.write(";\n");
         }
         if self.has_comments() {
             self.flush_block_end_comments(group.span.end);

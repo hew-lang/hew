@@ -2140,6 +2140,9 @@ pub struct CompositeGroup {
     /// composite instead stores one initial child on each region.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<Ident>,
+    /// Explicit pure constructor for fresh descent into an exclusive child.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<Spanned<Expr>>,
     /// Regions make this composite a parallel configuration. Each region
     /// stores its own typed active child; no combined-state variants are
     /// generated.

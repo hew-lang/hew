@@ -1577,3 +1577,34 @@ fn parallel_payload_initializer_round_trips() {
         .initial_value
         .is_some());
 }
+
+#[test]
+fn exclusive_payload_initializer_round_trips() {
+    let source = r"machine Work {
+    events { Start; }
+    state Idle;
+    state Active {
+        count: i64;
+        state Waiting { remaining: i64; }
+        initial .Waiting { remaining: state.count };
+    }
+    on Start: Idle => Active { count: 3 }
+    default { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "{formatted}: {:?}",
+        reparsed.errors
+    );
+    let machine = first_machine_named(&reparsed.program, "Work");
+    assert!(machine.composite_groups[0].initial_value.is_some());
+    assert_eq!(
+        formatted,
+        hew_parser::fmt::format_program(&reparsed.program)
+    );
+}

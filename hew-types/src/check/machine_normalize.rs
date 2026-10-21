@@ -1558,14 +1558,22 @@ impl Builder {
                 if machine
                     .composite_groups
                     .iter()
-                    .any(|group| group.name == *name && !group.regions.is_empty()) =>
+                    .any(|group| group.name == *name) =>
             {
                 let hierarchy = self
                     .configuration_hierarchy
                     .clone()
                     .expect("machine hierarchy");
                 let node = hierarchy.resolve(*name, self.origin.clone())?;
-                *expr = self.initial_configuration(machine, &hierarchy, node)?.0;
+                if let Some(value) =
+                    self.complete_compound_constructor(machine, *name, Vec::new())?
+                {
+                    *expr = value.0;
+                } else {
+                    *expr = self
+                        .initial_configuration(machine, &hierarchy, hierarchy.leaf(node))?
+                        .0;
+                }
             }
             Expr::Ident(name) if machine.states.iter().any(|state| state.name == *name) => {
                 let name = *name;
@@ -1712,7 +1720,7 @@ impl Builder {
                     .as_ref()
                     .map_or_else(Vec::new, |record| record.fields.clone());
                 if let Some(completed) =
-                    self.complete_parallel_constructor(machine, name, fields)?
+                    self.complete_compound_constructor(machine, name, fields)?
                 {
                     *expr = completed.0;
                 }
@@ -1741,7 +1749,7 @@ impl Builder {
                 }
                 if let Some(name) = state_name {
                     if let Some(completed) =
-                        self.complete_parallel_constructor(machine, name, fields.clone())?
+                        self.complete_compound_constructor(machine, name, fields.clone())?
                     {
                         *expr = completed.0;
                     } else if machine.states.iter().any(|state| state.name == name) {

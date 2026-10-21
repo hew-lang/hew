@@ -173,8 +173,13 @@ Embedding the value in an actor does not move those effects into `step`.
 ## Hierarchy
 
 A compound state groups leaf states or other compounds. Exactly one direct
-child is marked `initial`; targeting a compound follows those markers until a
-leaf is reached. Compound fields are inherited by descendant leaves, and an
+child is chosen by `initial state Child` or an explicit `initial Child { ... };`
+constructor. Targeting a compound follows those choices until a leaf is reached.
+An explicit constructor supplies child payload using the newly supplied parent
+payload; inherited parent fields carry through automatically. Each nested initial
+constructor runs once on fresh descent, before entry hooks. Targeting a leaf
+directly bypasses initial constructors and supplies its full inherited payload.
+Compound fields are inherited by descendant leaves, and an
 inherited field name cannot be redeclared. State names remain unique within a
 machine; a qualified transition head such as `Connection.Handshake.Waiting`
 must follow the declared parentage.
@@ -282,9 +287,8 @@ The initializer runs on fresh descent inside the staged transaction. It may read
 the enclosing payload, including newly supplied parent fields, but cannot read
 an input event or another region, emit outputs, or perform effects. Explicit
 region values bypass initial construction for those fields. `initial state Name`
-remains the shorthand for a unit initial child. Separate initial constructor
-clauses currently belong to regions; exclusive compounds retain their existing
-`initial state` declarations.
+remains the shorthand for an initial child. Separate initial constructor clauses
+work in regions and exclusive compounds, including compounds nested in regions.
 
 History and internal completion reactions are not part of this surface.
 

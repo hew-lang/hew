@@ -436,3 +436,37 @@ fn main() {}
     let output = check_source(source);
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
+
+#[test]
+fn exclusive_initializers_use_parent_payload_and_reject_effects() {
+    for (value, accepted) in [
+        ("state.seed + 2", true),
+        ("event.seed", false),
+        ("state.count", false),
+        ("{ println(\"effect\"); 1 }", false),
+    ] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Start {{ seed: i64; }} }}
+    state Idle;
+    state Running {{
+        seed: i64;
+        state Ready {{ count: i64; }}
+        initial Ready {{ count: {value} }};
+    }}
+    on Start: Idle => Running {{ seed: event.seed }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert_eq!(
+            output.errors.is_empty(),
+            accepted,
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+}

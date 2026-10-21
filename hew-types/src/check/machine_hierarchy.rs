@@ -269,8 +269,8 @@ impl Hierarchy {
                 expanded.source_state = self.name(machine, leaf);
                 if let Some(target) = target {
                     let initial = self.leaf(target);
-                    expanded.target_state = self.name(machine, initial);
-                    if target != initial {
+                    if target != initial && !self.has_initial_value(machine, target) {
+                        expanded.target_state = self.name(machine, initial);
                         rewrite_target(
                             &mut expanded.body.0,
                             rule.target_state,
@@ -635,8 +635,25 @@ impl Hierarchy {
                 [region]
                 .initial_value
                 .as_ref(),
-            Declaration::Compound(_) | Declaration::Leaf(_) => None,
+            Declaration::Compound(group) => machine.composite_groups[group].initial_value.as_ref(),
+            Declaration::Leaf(_) => None,
         }
+    }
+
+    pub(super) fn has_initial_value(&self, machine: &MachineDecl, mut node: NodeId) -> bool {
+        loop {
+            if self.initial_value(machine, node).is_some() {
+                return true;
+            }
+            let Some(child) = self.nodes[node.0].initial else {
+                return false;
+            };
+            node = child;
+        }
+    }
+
+    pub(super) fn initial_child(&self, node: NodeId) -> Option<NodeId> {
+        self.nodes[node.0].initial
     }
 
     pub(super) fn leaf(&self, mut node: NodeId) -> NodeId {

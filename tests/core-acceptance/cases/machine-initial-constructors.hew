@@ -1,0 +1,83 @@
+fn keep<T>(value: T) -> T {
+    value
+}
+
+machine Counter {
+    events {
+        Start { seed: i64; }
+        Reset;
+        Direct;
+    }
+    emits {
+        Entered { count: i64; }
+    }
+    state Idle;
+    state Running {
+        seed: i64;
+        label: string;
+        state Middle {
+            offset: i64;
+            state Ready {
+                count: i64;
+                detail: string;
+                entry {
+                    emit Entered { count: state.count };
+                }
+            }
+            initial Ready { count: keep(state.seed + state.offset), detail: state.label + ":initial" };
+        }
+        initial Middle { offset: 2 };
+    }
+    on Start: Idle => Running { seed: event.seed, label: "fresh".to_upper() }
+    on Reset: Ready => Running { seed: state.seed + 10, label: state.label + "!" }
+    on Direct: Idle => Ready { seed: 5, label: "direct", offset: 7, count: 99, detail: "supplied" }
+    default { state }
+}
+
+machine Parallel {
+    events {
+        Start;
+    }
+    state Outside;
+    parallel state Active {
+        seed: i64;
+        region worker {
+            initial state Work {
+                state Waiting { count: i64; }
+                initial Waiting { count: state.seed + 3 };
+            }
+        }
+        region peer {
+            initial state Other;
+        }
+    }
+    on Start: Outside => Active { seed: 20 }
+    default { state }
+}
+
+fn main() {
+    var counter: Counter = .Idle;
+    let first = counter.step(.Start { seed: 40 });
+    let saved = counter;
+    let reset = counter.step(.Reset);
+    assert(first.outputs == [.Entered { count: 42 }]);
+    assert(reset.outputs == [.Entered { count: 52 }]);
+    match saved {
+        .Ready { seed, label, offset, count, detail } => assert(seed == 40 && label == "FRESH" && offset == 2 && count == 42 && detail == "FRESH:initial"),
+        _ => panic("initial nested payload"),
+    }
+    match counter {
+        .Ready { seed, label, offset, count, detail } => assert(seed == 50 && label == "FRESH!" && offset == 2 && count == 52 && detail == "FRESH!:initial"),
+        _ => panic("reset nested payload"),
+    }
+    var direct: Counter = .Idle;
+    let entered = direct.step(.Direct);
+    assert(entered.outputs == [.Entered { count: 99 }]);
+    var parallel: Parallel = .Outside;
+    let _started = parallel.step(.Start);
+    match parallel {
+        .Active { seed, worker: .Waiting { count }, peer: .Other } => assert(seed == 20 && count == 23),
+        _ => panic("regional exclusive initializer"),
+    }
+    println("initial constructors passed");
+}

@@ -913,6 +913,26 @@ fn machine_parallel_regions_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn machine_initial_constructors_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-initial-constructors",
+            source_rel: "tests/core-acceptance/cases/machine-initial-constructors.hew",
+        },
+        ParityCase {
+            test_name: "machine-initial-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-initial-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn lexical_path_helpers_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

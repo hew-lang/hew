@@ -485,13 +485,6 @@ impl Builder {
             let parent = hierarchy
                 .parent(region)
                 .expect("region has a compound parent");
-            let mut state = self.source_configuration(machine, hierarchy, parent)?;
-            state.fields = hierarchy.inherited_fields(machine, parent)?;
-            let event = MachineEvent {
-                name: Ident::new("initial"),
-                fields: Vec::new(),
-                span: self.origin.clone(),
-            };
             let mut value = value.clone();
             let declared = match &value.0 {
                 Expr::Ident(name) => Some(*name),
@@ -499,7 +492,14 @@ impl Builder {
                 Expr::StructInit { path, .. } => path.segments.last().map(|(name, _)| *name),
                 _ => None,
             };
-            if let Some(declared) = declared {
+            if let Some(declared) = declared.filter(|_| {
+                !hierarchy.has_initial_value(
+                    machine,
+                    hierarchy
+                        .initial_child(region)
+                        .expect("region initial child"),
+                )
+            }) {
                 let initial = hierarchy.name(machine, hierarchy.leaf(region));
                 super::super::machine_hierarchy::rewrite_target(
                     &mut value.0,
@@ -508,17 +508,25 @@ impl Builder {
                     machine.name,
                 );
             }
-            let was_initializing = self.initializing;
-            self.initializing = true;
-            let result = self.rewrite(&value, machine, &state, &event);
-            self.initializing = was_initializing;
-            result
+            self.rewrite_initializer(machine, hierarchy, parent, &value)
         } else {
-            self.initial_configuration(machine, hierarchy, hierarchy.leaf(region))
+            let child = hierarchy
+                .initial_child(region)
+                .expect("region initial child");
+            if hierarchy.has_initial_value(machine, child) {
+                self.complete_compound_constructor(
+                    machine,
+                    hierarchy.name(machine, child),
+                    Vec::new(),
+                )
+                .map(|value| value.expect("exclusive initial constructor"))
+            } else {
+                self.initial_configuration(machine, hierarchy, hierarchy.leaf(region))
+            }
         }
     }
 
-    pub(super) fn complete_parallel_constructor(
+    pub(super) fn complete_compound_constructor(
         &mut self,
         machine: &MachineDecl,
         name: Ident,
@@ -527,7 +535,7 @@ impl Builder {
         let Some(group) = machine
             .composite_groups
             .iter()
-            .find(|group| group.name == name && !group.regions.is_empty())
+            .find(|group| group.name == name)
         else {
             return Ok(None);
         };
@@ -536,6 +544,9 @@ impl Builder {
             .clone()
             .expect("machine hierarchy");
         let node = hierarchy.resolve(name, self.origin.clone())?;
+        if group.regions.is_empty() && !hierarchy.has_initial_value(machine, node) {
+            return Ok(None);
+        }
         let config = self.configuration(machine, &hierarchy, node)?;
         let mut stmts = Vec::new();
         let mut fields = Vec::new();
@@ -550,6 +561,17 @@ impl Builder {
             stmts.push(self.let_value(local.clone(), ty, value));
             fields.push((field, self.ident(local)));
         }
+        if group.regions.is_empty() {
+            for (field, _) in &config.fields {
+                if !fields.iter().any(|(supplied, _)| supplied == field) {
+                    return Err(self.error(format!(
+                        "initial state `{name}` needs an explicit value for `{field}`"
+                    )));
+                }
+            }
+            let value = self.exclusive_initial(machine, &hierarchy, node, fields)?;
+            return Ok(Some(self.block(stmts, value)));
+        }
         for region in hierarchy.group_regions(machine, node) {
             let name = hierarchy.name(machine, region);
             if !fields.iter().any(|(field, _)| *field == name) {
@@ -559,6 +581,79 @@ impl Builder {
         // Ordinary record checking diagnoses any missing explicit parent payload.
         let value = self.qualified_variant(machine, group.name, fields);
         Ok(Some(self.block(stmts, value)))
+    }
+
+    fn exclusive_initial(
+        &mut self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+        node: NodeId,
+        fields: Vec<(Ident, Spanned<Expr>)>,
+    ) -> Result<Spanned<Expr>, TypeError> {
+        let child = hierarchy
+            .initial_child(node)
+            .expect("exclusive initial child");
+        let child_name = hierarchy.name(machine, child);
+        let mut value = hierarchy
+            .initial_value(machine, node)
+            .cloned()
+            .unwrap_or_else(|| self.variant(child_name, fields.clone(), Vec::new()));
+        let child_fields = self
+            .configuration(machine, hierarchy, hierarchy.leaf(child))?
+            .fields;
+        let inherited: Vec<_> = fields
+            .into_iter()
+            .filter(|(field, _)| child_fields.iter().any(|(name, _)| name == field))
+            .collect();
+        let add_inherited = |target: &mut Vec<(Ident, Spanned<Expr>)>| {
+            for (field, value) in &inherited {
+                if !target.iter().any(|(name, _)| name == field) {
+                    target.push((*field, value.clone()));
+                }
+            }
+        };
+        match &mut value.0 {
+            Expr::Ident(_) => value = self.variant(child_name, inherited, Vec::new()),
+            Expr::ContextVariant(context) => {
+                if let Some(record) = &mut context.record {
+                    add_inherited(&mut record.fields);
+                } else {
+                    value = self.variant(child_name, inherited, Vec::new());
+                }
+            }
+            Expr::StructInit { fields, .. } => add_inherited(fields),
+            _ => unreachable!("parser requires an initial constructor"),
+        }
+        if !hierarchy.has_initial_value(machine, child) {
+            super::super::machine_hierarchy::rewrite_target(
+                &mut value.0,
+                child_name,
+                hierarchy.name(machine, hierarchy.leaf(child)),
+                machine.name,
+            );
+        }
+        self.rewrite_initializer(machine, hierarchy, node, &value)
+    }
+
+    fn rewrite_initializer(
+        &mut self,
+        machine: &MachineDecl,
+        hierarchy: &Hierarchy,
+        parent: NodeId,
+        value: &Spanned<Expr>,
+    ) -> Result<Spanned<Expr>, TypeError> {
+        let mut scope = self.source_configuration(machine, hierarchy, parent)?;
+        scope.fields = hierarchy.inherited_fields(machine, parent)?;
+        let event = MachineEvent {
+            name: Ident::new("initial"),
+            fields: Vec::new(),
+            span: self.origin.clone(),
+        };
+        let was_initializing = self.initializing;
+        self.initializing = true;
+        let result = self.rewrite(value, machine, &scope, &event);
+        self.initializing = was_initializing;
+        result
     }
 
     pub(super) fn initial_configuration(

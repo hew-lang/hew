@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-initial-constructors"
+intent = "Nested exclusive and regional initial constructors carry parent payloads, reinitialize on entry and preserve independent values."
+source = "cases/machine-initial-constructors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "initial constructors passed\n"
+stderr = ""
+exit = 0

@@ -788,6 +788,7 @@ impl Parser<'_> {
     ) -> Option<Ident> {
         let mut member_names: Vec<Ident> = Vec::new();
         let mut initial: Option<Ident> = None;
+        let mut initial_value = None;
         let mut parent_transitions: Vec<MachineTransition> = Vec::new();
 
         // ── Substate + parent-rule body of the composite block. ──────────────
@@ -818,12 +819,14 @@ impl Parser<'_> {
                 }
                 member_names.push(substate);
             } else if is_initial {
-                self.error_at(
-                    "`initial` must be followed by a substate declaration (`initial state Name`)"
-                        .to_string(),
-                    self.peek_span(),
-                );
-                break;
+                let (name, value) = self.parse_machine_initial_value()?;
+                if initial.replace(name).is_some() {
+                    self.error_at(
+                        "a compound has exactly one initial destination".to_string(),
+                        value.1.clone(),
+                    );
+                }
+                initial_value = Some(value);
             } else if self.peek() == Some(&Token::On) {
                 // `_` is scoped to this compound; checking selects its descendants.
                 parent_transitions.push(self.parse_machine_transition()?);
@@ -856,6 +859,7 @@ impl Parser<'_> {
             name: composite_name,
             members: member_names,
             initial: Some(initial_name),
+            initial_value,
             regions: Vec::new(),
             entry,
             exit,
@@ -915,6 +919,7 @@ impl Parser<'_> {
             name,
             members: Vec::new(),
             initial: None,
+            initial_value: None,
             regions,
             entry,
             exit,

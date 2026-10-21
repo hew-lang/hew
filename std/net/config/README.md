@@ -1,18 +1,22 @@
 # Node configuration
 
-Import `std.net` and call `NodeConfig.load()` to read `[cluster]` in `hew.toml`
-and apply `HEW_NODE_*` overrides. The result can be passed directly to
-`Node.start`:
+Import `std.net` and call `NodeConfig.load()` to read `[cluster]` in
+`hew.toml` and apply `HEW_NODE_*` overrides. The example uses environment-only
+configuration so it runs without an existing `hew.toml`:
 
 ```hew
 import std.net;
+import std.os;
 
 fn main() {
-    let config = NodeConfig.load().expect("load cluster configuration");
-    Node.start(config).expect("start node");
-    Node.shutdown();
+    os.set_env("HEW_NODE_BIND", "127.0.0.1:9000").expect("set node bind");
+    os.set_env("HEW_NODE_KEY", "node.key").expect("set node key");
+    let _config = NodeConfig.load().expect("load node configuration");
 }
 ```
+
+Pass the loaded configuration to `Node.start` to start networking. That call
+loads or creates the identity file named by `cluster.key` or `HEW_NODE_KEY`.
 
 Set `HEW_NODE_CONFIG` to select another file. `bind` and `key` are required;
 `transport` defaults to `tcp`, and `peers` and `seeds` default to empty lists.

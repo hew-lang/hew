@@ -3494,6 +3494,181 @@ fn imported_associated_calls_use_canonical_owner() {
     );
 }
 
+fn check_prelude_impl_import_route(root_source: &str, via_facade: bool) -> TypeCheckOutput {
+    let provider = hew_parser::parse("impl NodeConfig { pub fn load() -> i64 { 42 } }");
+    let facade = hew_parser::parse("import provider;");
+    let unused = hew_parser::parse("");
+    let mut root = hew_parser::parse(root_source);
+    for parsed in [&provider, &facade, &unused, &root] {
+        assert!(parsed.errors.is_empty(), "parse: {:?}", parsed.errors);
+    }
+
+    if via_facade {
+        for (item, _) in &mut root.program.items {
+            if let Item::Import(import) = item {
+                if import.path.to_string() == "facade" {
+                    import.resolved_items = Some(facade.program.items.clone().into());
+                }
+            }
+        }
+    }
+    for (item, _) in &mut root.program.items {
+        if let Item::Import(import) = item {
+            if import.path.to_string() == "provider" {
+                import.resolved_items = Some(provider.program.items.clone().into());
+            } else if import.path.to_string() == "unused" {
+                import.resolved_items = Some(unused.program.items.clone().into());
+            }
+        }
+    }
+    let mut facade_items = facade.program.items;
+    for (item, _) in &mut facade_items {
+        if let Item::Import(import) = item {
+            if import.path.to_string() == "provider" {
+                import.resolved_items = Some(provider.program.items.clone().into());
+            }
+        }
+    }
+
+    let root_id = ModulePath::root();
+    let provider_id = ModulePath::new(["provider"]);
+    let facade_id = ModulePath::new(["facade"]);
+    let unused_id = ModulePath::new(["unused"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    let mut modules = vec![(provider_id.clone(), provider.program.items)];
+    if via_facade {
+        modules.push((facade_id.clone(), facade_items));
+    }
+    modules.push((unused_id.clone(), unused.program.items));
+    modules.push((root_id.clone(), root.program.items.clone()));
+    for (id, items) in modules {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add import route module");
+    }
+    graph.topo_order = if via_facade {
+        vec![provider_id, facade_id, unused_id, root_id]
+    } else {
+        vec![provider_id, unused_id, root_id]
+    };
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: root.program.items,
+        module_graph: Some(graph),
+        module_doc: None,
+    })
+}
+
+#[test]
+fn selected_associated_provider_credits_direct_and_facade_imports() {
+    for (via_facade, import) in [(false, "provider"), (true, "facade")] {
+        let source = format!(
+            "import {import};\nimport unused;\nfn main() {{ assert(NodeConfig.load() == 42); }}"
+        );
+        let output = check_prelude_impl_import_route(&source, via_facade);
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+        let unused: Vec<_> = output
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+            .collect();
+        assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+        assert!(
+            unused[0].message.contains("unused"),
+            "the independent control import must remain unused: {:#?}",
+            unused
+        );
+    }
+
+    let control =
+        check_prelude_impl_import_route("import unused;\nfn main() { assert(true); }", false);
+    assert!(control.errors.is_empty(), "{:#?}", control.errors);
+    assert_eq!(
+        control
+            .warnings
+            .iter()
+            .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+            .count(),
+        1,
+        "a genuinely unused import must still be diagnosed: {:#?}",
+        control.warnings
+    );
+}
+
+#[test]
+fn public_facade_credits_external_impl_provider_without_local_call() {
+    let provider = hew_parser::parse("impl NodeConfig { pub fn load() -> i64 { 42 } }");
+    let unused = hew_parser::parse("");
+    let mut facade = hew_parser::parse("import provider;\nimport unused;");
+    assert!(provider.errors.is_empty(), "parse: {:?}", provider.errors);
+    assert!(unused.errors.is_empty(), "parse: {:?}", unused.errors);
+    assert!(facade.errors.is_empty(), "parse: {:?}", facade.errors);
+
+    for (item, _) in &mut facade.program.items {
+        if let Item::Import(import) = item {
+            match import.path.to_string().as_str() {
+                "provider" => {
+                    import.resolved_items = Some(provider.program.items.clone().into());
+                }
+                "unused" => {
+                    import.resolved_items = Some(unused.program.items.clone().into());
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let root_id = ModulePath::root();
+    let provider_id = ModulePath::new(["provider"]);
+    let facade_id = ModulePath::new(["facade"]);
+    let unused_id = ModulePath::new(["unused"]);
+    let mut graph = ModuleGraph::new(root_id.clone());
+    for (id, items) in [
+        (provider_id.clone(), provider.program.items),
+        (facade_id.clone(), facade.program.items),
+        (unused_id.clone(), unused.program.items),
+        (root_id.clone(), Vec::new()),
+    ] {
+        graph
+            .add_module(Module {
+                id,
+                items,
+                imports: vec![],
+                source_paths: vec![],
+                doc: None,
+            })
+            .expect("add import route module");
+    }
+    graph.topo_order = vec![provider_id, facade_id, unused_id, root_id];
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let output = checker.check_program(&Program {
+        expansions: hew_parser::macro_syntax::ExpansionMap::default(),
+        items: vec![],
+        module_graph: Some(graph),
+        module_doc: None,
+    });
+
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let unused: Vec<_> = output
+        .warnings
+        .iter()
+        .filter(|warning| warning.kind == TypeErrorKind::UnusedImport)
+        .collect();
+    assert_eq!(unused.len(), 1, "{:#?}", output.warnings);
+    assert!(
+        unused[0].message.contains("unused"),
+        "only the unrelated import should remain unused: {:#?}",
+        unused
+    );
+}
+
 #[test]
 fn explicit_generic_module_path_obeys_lexical_value_precedence() {
     let output = check_qualified_variant_root(

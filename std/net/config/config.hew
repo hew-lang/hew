@@ -1,7 +1,7 @@
 //! Node configuration from `[cluster]` in `hew.toml` and `HEW_NODE_*` overrides.
 //!
-//! Import `std.net` to use `NodeConfig.load()`. Configuration loading does not
-//! start a node or create identity files; `Node.start(config)` applies it.
+//! Import `std.net` to use `NodeConfig.load()`. Configuration loading
+//! does not start a node or create identity files; `Node.start(config)` applies it.
 
 import std.encoding.toml;
 

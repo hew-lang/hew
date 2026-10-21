@@ -1622,12 +1622,8 @@ impl Checker {
             return CallTarget::Runtime(family);
         }
         // Ordinary associated methods retain their selected source identity.
-        if !self.fn_def_spans.contains_key(signature_key)
-            && !self.builtin_call_targets.contains_key(signature_key)
-        {
-            if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
-                return CallTarget::ImplMethod(*declaration);
-            }
+        if let Some(declaration) = self.impl_method_declaration_ids.get(signature_key) {
+            return CallTarget::ImplMethod(*declaration);
         }
         if let Some(target) = self.user_call_target_for_declared_fn(signature_key) {
             return target;

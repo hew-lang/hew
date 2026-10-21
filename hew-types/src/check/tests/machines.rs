@@ -353,3 +353,86 @@ fn lone_shorthand_transition_body_names_the_payload_spelling() {
     let output = check(&source.replace("Busy { n }", "Busy { n: state.n }"));
     assert!(output.errors.is_empty(), "{:#?}", output.errors);
 }
+
+#[test]
+fn parallel_regions_refuse_shared_parent_mutation() {
+    for mutation in ["state.count += 1;", "state.values.push(3);"] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Tick; }}
+    parallel state Running {{
+        count: i64;
+        values: Vec<i64>;
+        region left {{ initial state L; }}
+        region right {{ initial state R; }}
+    }}
+    on Tick: L => L {{ {mutation} state }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert!(
+            !output.errors.is_empty(),
+            "regional mutation was accepted: {mutation}"
+        );
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::MutabilityError),
+            "{mutation}: {:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn parallel_initializers_read_only_enclosing_payload() {
+    for field in ["event.value", "state.left"] {
+        let source = format!(
+            r"
+machine Counter {{
+    events {{ Start {{ value: i64; }} }}
+    state Idle;
+    parallel state Running {{
+        count: i64;
+        region left {{ initial state L; }}
+        region right {{ state R {{ value: i64; }} initial R {{ value: {field} }}; }}
+    }}
+    on Start: Idle => Running {{ count: event.value }}
+    default {{ state }}
+}}
+fn main() {{}}
+"
+        );
+        let output = check_source(&source);
+        assert!(
+            !output.errors.is_empty(),
+            "initializer read was accepted: {field}"
+        );
+    }
+}
+
+#[test]
+fn exclusive_compound_hooks_only_check_reachable_inputs() {
+    let source = r"
+machine Routed {
+    events { Enter { value: i64; } Leave; }
+    emits { Value { value: i64; } }
+    state Outside;
+    state Inside {
+        entry { emit Value { value: event.value }; }
+        initial state Waiting;
+    }
+    on Enter: Outside => Inside;
+    on Leave: Waiting => Outside;
+    default { state }
+}
+fn main() {}
+";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}

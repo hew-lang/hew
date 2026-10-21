@@ -67,19 +67,19 @@ For `machine M`, the compiler supplies:
 | Item | Meaning |
 | --- | --- |
 | `M` | The state enum |
-| `MEvent` | The input enum |
+| `M.Event` | The input enum |
 | `MOutput` | The independent output enum |
 | `MStepDisposition` | `Taken` and `Ignored` variants |
-| `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rule: Option<i64>` |
-| `step(var self, event: MEvent) -> MStep` | Staged mutable evaluation |
+| `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rules: Vec<i64>` |
+| `step(var self, event: M.Event) -> MStep` | Staged mutable evaluation |
 | `state_name(self) -> string` | Current state tag |
 
 Each machine implements the compiler-generated `Machine` interface. Its
 associated `Event` and `Step` types identify the input and report types;
 `step_info(report)` returns the common `MachineStepInfo` view. Handwritten
 implementations cannot replace the checked machine evaluator. A report's
-`input` is the source event tag; `rule` is the zero-based source rule ordinal,
-or `None` when the default handles the input.
+`input` is the source event tag; `rules` contains the zero-based source rule
+ordinals in body execution order. It is empty when the default handles the input.
 
 `MStep` is must-use: discarding it as an expression produces the ordinary
 must-use diagnostic. A caller can explicitly acknowledge deliberate discard
@@ -202,8 +202,91 @@ continue to retain their shared ancestors. Code that previously used `_` for
 an intra-compound move and relied on skipped compound hooks should name the
 target instead.
 
-The hierarchy represents one active branch. Parallel regions and history
-states are not part of this surface.
+## Parallel regions
+
+A parallel state holds one active configuration per named region. Regions may
+contain exclusive compounds or further parallel states. State names remain unique
+within the machine; region names are scoped to their containing parallel state.
+
+```hew
+machine Checkout {
+    events { Advance; Cancel; }
+    parallel state Running {
+        region payment { initial state Waiting; state Paid; }
+        region stock { initial state Empty; state Reserved; }
+    }
+    state Stopped;
+    on Advance: Waiting => Paid;
+    on Advance: Empty => Reserved;
+    on Cancel: Running => Stopped;
+    default { state }
+}
+
+fn main() {
+    var checkout: Checkout = .Running { payment: .Waiting, stock: .Empty };
+    let saved = checkout;
+    let report = checkout.step(.Advance);
+    assert(report.rules == [0, 1]);
+    match checkout {
+        .Running { payment: .Paid, stock: .Reserved } => {}
+        _ => panic("both regions must advance"),
+    }
+    match saved {
+        .Running { payment: .Waiting, stock: .Empty } => {}
+        _ => panic("the saved configuration changed"),
+    }
+}
+```
+
+Each region field has an inferred closed enum type. Regional leaves are variants
+of that field's type; they are not additional root variants. Parent payload is
+stored once alongside the region fields. Ordinary constructors and destructuring
+expose this structure, and ordinary copies remain independent. Construction does
+not execute hooks.
+
+Selection observes one pre-step configuration. Deeper sources have priority,
+with source declaration order breaking ties. A shared ancestor candidate is
+considered once. Candidates conflicting with an already selected transition are
+skipped before their guards run; each eligible guard runs at most once. All
+compatible disjoint regional transitions are selected before exits or bodies.
+An enabled descendant therefore defeats a conflicting ancestor rule for the same
+input, including a parent cancellation rule.
+
+Exit hooks run deepest first, selected bodies run in source order, and entry
+hooks run outermost first. Equal-depth hooks follow region declaration order.
+Shared hooks run once. Regional rules and hooks may read shared ancestor payload
+but cannot mutate it; an ancestor-owned rule can update that ancestor's payload.
+State, outputs and the ordered report commit together after every selected body
+and entry succeeds.
+
+An in-region named destination retains its common ancestors and preserves other
+regions. A named destination in a sibling region exits and re-enters the containing
+parallel configuration, initializing its other regions. Its configuration-write
+domain conflicts with transitions below that parallel state; unrelated outer
+regions can still advance. A computed `_` destination exits the complete active
+configuration and enters the returned root value. In such a body, `state` is the
+complete staged root configuration.
+
+A transition constructing a parallel state may omit regional fields to use their
+initial configurations. A region with an initial payload can declare a separate
+constructor:
+
+```hew,ignore
+region stock {
+    state WaitingForStock { count: i64; }
+    initial WaitingForStock { count: state.initial_stock };
+}
+```
+
+The initializer runs on fresh descent inside the staged transaction. It may read
+the enclosing payload, including newly supplied parent fields, but cannot read
+an input event or another region, emit outputs, or perform effects. Explicit
+region values bypass initial construction for those fields. `initial state Name`
+remains the shorthand for a unit initial child. Separate initial constructor
+clauses currently belong to regions; exclusive compounds retain their existing
+`initial state` declarations.
+
+History and internal completion reactions are not part of this surface.
 
 ## Observed ownership
 

@@ -810,19 +810,16 @@ impl Parser<'_> {
                 member_names.push(substate);
             } else if self.peek_machine_kw("parallel") {
                 let substate = self.parse_machine_parallel(states, composite_groups)?;
-                if is_initial {
-                    if initial.replace(substate).is_some() {
-                        self.error_at(
-                            format!("composite state `{composite_name}` declares more than one initial substate"),
-                            self.peek_span(),
-                        );
-                    }
+                if is_initial && initial.replace(substate).is_some() {
+                    self.error_at(
+                        format!("composite state `{composite_name}` declares more than one initial substate"),
+                        self.peek_span(),
+                    );
                 }
                 member_names.push(substate);
             } else if is_initial {
                 self.error_at(
-                    "`initial` must be followed by a substate declaration \
-                     (`initial state Name`)"
+                    "`initial` must be followed by a substate declaration (`initial state Name`)"
                         .to_string(),
                     self.peek_span(),
                 );
@@ -872,10 +869,6 @@ impl Parser<'_> {
 
     /// Parse a parallel compound whose active configuration is represented by
     /// one typed value per region.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "parallel state fields, hooks and regions are parsed in declaration order"
-    )]
     fn parse_machine_parallel(
         &mut self,
         states: &mut Vec<MachineState>,
@@ -944,6 +937,7 @@ impl Parser<'_> {
         self.expect(&Token::LeftBrace)?;
         let mut members = Vec::new();
         let mut initial = None;
+        let mut initial_value = None;
         let mut parent_transitions = Vec::new();
         while !self.at_end() && self.peek() != Some(&Token::RightBrace) {
             let is_initial = self.eat_machine_kw("initial");
@@ -951,6 +945,16 @@ impl Parser<'_> {
                 Some(self.parse_machine_state_or_composite(states, composite_groups)?)
             } else if self.peek_machine_kw("parallel") {
                 Some(self.parse_machine_parallel(states, composite_groups)?)
+            } else if is_initial {
+                let (name, value) = self.parse_machine_initial_value()?;
+                if initial.replace(name).is_some() {
+                    self.error_at(
+                        "a region has exactly one initial destination".to_string(),
+                        value.1.clone(),
+                    );
+                }
+                initial_value = Some(value);
+                continue;
             } else if self.peek() == Some(&Token::On) && !is_initial {
                 parent_transitions.push(self.parse_machine_transition()?);
                 continue;
@@ -985,9 +989,28 @@ impl Parser<'_> {
             name,
             members,
             initial,
+            initial_value,
             parent_transitions,
             span: start..self.last_token_end,
         })
+    }
+
+    fn parse_machine_initial_value(&mut self) -> Option<(Ident, Spanned<Expr>)> {
+        let value = self.parse_expr()?;
+        let name = match &value.0 {
+            Expr::Ident(name) => *name,
+            Expr::StructInit { path, .. } => path.segments.last()?.0,
+            Expr::ContextVariant(variant) => variant.name,
+            _ => {
+                self.error_at(
+                    "an initial destination must name a state constructor".to_string(),
+                    value.1.clone(),
+                );
+                return None;
+            }
+        };
+        self.expect_member_terminator("initial destination");
+        Some((name, value))
     }
 
     /// Parse a state pattern: `_` (wildcard) or a state name, optionally a

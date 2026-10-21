@@ -22,7 +22,9 @@ use hew_parser::ast::{
     Visibility,
 };
 
-use super::machine_hierarchy::Hierarchy;
+use super::machine_hierarchy::{Hierarchy, NodeId};
+
+mod configuration;
 use crate::error::{TypeError, TypeErrorKind};
 
 /// The program the checker checks and HIR lowers when the compiler writes
@@ -147,6 +149,10 @@ impl SourceSpanOrigins {
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "normalize physical modules while preserving source and expansion provenance"
+)]
 pub(super) fn normalize(
     program: &Program,
 ) -> Result<Option<Arc<NormalizedProgram>>, Vec<TypeError>> {
@@ -175,6 +181,10 @@ pub(super) fn normalize(
         head_bindings: HashMap::new(),
         head_binding_ids: HashMap::new(),
         expansion: 0,
+        configuration_types: HashMap::new(),
+        configuration_hierarchy: None,
+        configuration_root: None,
+        initializing: false,
     };
     let mut normalized = program.clone();
     let root_sources = program
@@ -410,6 +420,10 @@ struct Builder {
     head_binding_ids: HashMap<(usize, Span), usize>,
     /// The machine expansion being built.
     expansion: usize,
+    configuration_types: HashMap<Ident, (Ident, Vec<Ident>)>,
+    configuration_hierarchy: Option<Arc<Hierarchy>>,
+    configuration_root: Option<Spanned<Expr>>,
+    initializing: bool,
 }
 
 fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
@@ -422,8 +436,12 @@ fn machine_companion(machine: &MachineDecl, suffix: &str) -> Ident {
 fn machine_region_companion(machine: &MachineDecl, group: Ident, region: Ident) -> Ident {
     Ident {
         name: hew_parser::ast::Symbol::intern(&format!(
-            "{}Region{}{}",
-            machine.name, group, region
+            "{}Region{}_{}{}_{}",
+            machine.name,
+            group.name.as_str().len(),
+            group,
+            region.name.as_str().len(),
+            region
         )),
         ctx: machine.name.ctx,
     }
@@ -552,9 +570,18 @@ impl Builder {
     /// name. A contextual `.Variant` needs an expected type, and reading
     /// `state` or `self` in an unannotated `let` supplies none.
     fn state_value(&mut self, machine: &MachineDecl, state: &MachineState) -> Spanned<Expr> {
+        let config_fields = self
+            .configuration_types
+            .get(&state.name)
+            .map(|(_, fields)| fields.clone());
         let fields: Vec<_> = state
             .fields
             .iter()
+            .filter(|(field, _)| {
+                config_fields
+                    .as_ref()
+                    .is_none_or(|fields| fields.contains(field))
+            })
             .map(|(name, _)| (*name, self.ident(format!("_$machine_state_{name}"))))
             .collect();
         self.qualified_variant(machine, state.name, fields)
@@ -566,8 +593,12 @@ impl Builder {
         name: Ident,
         fields: Vec<(Ident, Spanned<Expr>)>,
     ) -> Spanned<Expr> {
+        let owner = self
+            .configuration_types
+            .get(&name)
+            .map_or(machine.name, |(owner, _)| *owner);
         if fields.is_empty() {
-            let object = self.ident(machine.name);
+            let object = self.ident(owner);
             let field = (name, self.span());
             return self.expr(Expr::FieldAccess {
                 object: Box::new(object),
@@ -575,7 +606,7 @@ impl Builder {
             });
         }
         let path = Path {
-            segments: vec![(machine.name, self.span()), (name, self.span())],
+            segments: vec![(owner, self.span()), (name, self.span())],
         };
         self.expr(Expr::StructInit {
             path,
@@ -584,16 +615,6 @@ impl Builder {
             type_args: None,
             base: None,
         })
-    }
-    fn state_locals(&mut self, state: &MachineState) -> Vec<Spanned<Stmt>> {
-        state
-            .fields
-            .iter()
-            .map(|(name, _)| {
-                let value = self.ident(format!("_$machine_in_{name}"));
-                self.var(format!("_$machine_state_{name}"), None, value)
-            })
-            .collect()
     }
     /// Bind every const parameter as an immutable `usize` local at the top of
     /// the generated `step`, so each inlined guard, transition body and hook
@@ -764,42 +785,61 @@ impl Builder {
         } else {
             Some(machine.type_params.clone())
         };
+        self.configuration_types.clear();
+        self.configuration_hierarchy = Some(Arc::new(hierarchy.clone()));
+        for node in hierarchy.hook_nodes() {
+            if !hierarchy
+                .configurations(hierarchy.container(node))
+                .contains(&node)
+            {
+                continue;
+            }
+            let name = hierarchy.name(machine, node);
+            let config = self.configuration(machine, &hierarchy, node)?;
+            let owner = if let Some(region) = hierarchy.container(node) {
+                let group = hierarchy.parent(region).expect("region has a parent");
+                machine_region_companion(
+                    machine,
+                    hierarchy.name(machine, group),
+                    hierarchy.name(machine, region),
+                )
+            } else {
+                machine.name
+            };
+            self.configuration_types.insert(
+                name,
+                (owner, config.fields.iter().map(|(name, _)| *name).collect()),
+            );
+        }
         let parallel_groups = hierarchy.parallel_groups(machine);
         let mut region_enums = Vec::new();
-        let mut region_types = HashMap::new();
         for group in &parallel_groups {
             let group_name = hierarchy.name(machine, *group);
             for region in hierarchy.group_regions(machine, *group) {
                 let region_name = hierarchy.name(machine, region);
                 let region_type = machine_region_companion(machine, group_name, region_name);
                 let variants = hierarchy
-                    .region_leaf_states(machine, region)
+                    .configurations(Some(region))
                     .into_iter()
-                    .map(|state| (state, hierarchy.region_state_fields(state, region)))
-                    .collect::<Vec<_>>();
+                    .map(|node| {
+                        self.configuration(machine, &hierarchy, node)
+                            .map(|state| (state.name, state.fields))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
                 let mut declaration = self.enum_decl(region_type, &variants, machine.visibility);
                 declaration.type_params.clone_from(&params);
                 declaration.where_clause.clone_from(&machine.where_clause);
                 region_enums.push(declaration);
-                region_types.insert(region_name, region_type);
             }
         }
-        let mut state_variants: Vec<VariantFields> = machine
-            .states
-            .iter()
-            .filter(|state| hierarchy.state_region(state.name).is_none())
-            .map(|state| (state.name, state.fields.clone()))
-            .collect();
-        for group in &parallel_groups {
-            let group_name = hierarchy.name(machine, *group);
-            let mut fields = hierarchy.inherited_fields(machine, *group)?;
-            for region in hierarchy.group_regions(machine, *group) {
-                let region_name = hierarchy.name(machine, region);
-                let ty = self.machine_region_ty(machine, group_name, region_name);
-                fields.push((region_name, ty));
-            }
-            state_variants.push((group_name, fields));
-        }
+        let state_variants = hierarchy
+            .configurations(None)
+            .into_iter()
+            .map(|node| {
+                self.configuration(machine, &hierarchy, node)
+                    .map(|state| (state.name, state.fields))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         let mut state_enum = self.enum_decl(machine.name, &state_variants, machine.visibility);
         state_enum.origin = DeclarationOrigin::MachineState;
         state_enum.type_params.clone_from(&params);
@@ -854,7 +894,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rule: Option<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
         let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
         let machine_names = [
             machine.name,
@@ -922,7 +962,7 @@ impl Builder {
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
         step.visibility = machine.visibility;
-        step.body = self.step_body(machine, &hierarchy)?;
+        step.body = self.configuration_step(machine, &hierarchy)?;
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -1034,7 +1074,7 @@ impl Builder {
 
     fn step_info_body(&mut self) -> Block {
         let input = self.field("report", "input");
-        let rule = self.field("report", "rule");
+        let rule = self.field("report", "rules");
         let scrutinee = self.field("report", "disposition");
         let arms = ["Taken", "Ignored"]
             .into_iter()
@@ -1058,7 +1098,7 @@ impl Builder {
             path,
             fields: vec![
                 (Ident::new("input"), input),
-                (Ident::new("rule"), rule),
+                (Ident::new("rules"), rule),
                 (Ident::new("disposition"), disposition),
             ],
             field_labels: Vec::new(),
@@ -1153,15 +1193,13 @@ impl Builder {
                 .iter()
                 .any(|event| event.name == transition.event_name)
                 || (transition.source_state.name != hew_parser::ast::sym::UNDERSCORE
-                    && !machine
-                        .states
-                        .iter()
-                        .any(|state| state.name == transition.source_state))
+                    && hierarchy
+                        .resolve(transition.source_state, transition.span.clone())
+                        .is_err())
                 || (transition.target_state.name != hew_parser::ast::sym::UNDERSCORE
-                    && !machine
-                        .states
-                        .iter()
-                        .any(|state| state.name == transition.target_state))
+                    && hierarchy
+                        .resolve(transition.target_state, transition.span.clone())
+                        .is_err())
             {
                 return Err(
                     self.error("machine transition references an undeclared state or input event")
@@ -1203,15 +1241,7 @@ impl Builder {
         Ok(())
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "normalize dispatch and report construction before the single state commit"
-    )]
-    fn step_body(
-        &mut self,
-        machine: &MachineDecl,
-        hierarchy: &Hierarchy,
-    ) -> Result<Block, TypeError> {
+    fn step_body_shell(&mut self, machine: &MachineDecl) -> Block {
         let element_ty = self.machine_ty(machine, "Output");
         let outputs_span = self.span();
         let outputs_ty = (
@@ -1224,14 +1254,14 @@ impl Builder {
         let empty = self.expr(Expr::Array(Vec::new()));
         let outputs = self.var(OUTPUTS, Some(outputs_ty), empty);
         let disposition_ty = self.ty(machine_companion(machine, "StepDisposition"));
-        let taken = self.variant(Ident::new("Taken"), Vec::new(), Vec::new());
+        let taken = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
         let disposition = self.var(DISPOSITION, Some(disposition_ty), taken);
-        let none = self.variant(Ident::new("None"), Vec::new(), Vec::new());
+        let none = self.expr(Expr::Array(Vec::new()));
         let rule_ty = self.ty("i64");
         let option_span = self.span();
         let rule_ty = (
             TypeExpr::Named {
-                path: Path::single(Ident::new("Option"), option_span.clone()),
+                path: Path::single(Ident::new("Vec"), option_span.clone()),
                 type_args: Some(vec![rule_ty]),
             },
             option_span,
@@ -1240,131 +1270,15 @@ impl Builder {
         let empty = self.expr(Expr::Literal(Literal::String(String::new())));
         let input_ty = self.ty("string");
         let input_binding = self.var(INPUT, Some(input_ty), empty);
-        let mut state_arms = Vec::new();
-        for state in &machine.states {
-            if hierarchy.state_region(state.name).is_some() {
-                continue;
-            }
-            let pattern = self.pattern(state.name, &state.fields, "_$machine_in_");
-            let locals = self.state_locals(state);
-            let mut event_arms = Vec::new();
-            for event in &machine.events {
-                let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
-                let rules = hierarchy.rules_for(machine, state.name, event.name);
-                let current = self.state_value(machine, state);
-                let ignored = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
-                let target = self.ident(DISPOSITION);
-                let set_ignored = self.stmt(Stmt::Assign {
-                    target,
-                    op: None,
-                    value: ignored,
-                });
-                let mut selected = self.block(vec![set_ignored], current);
-                for index in rules.into_iter().rev() {
-                    let rule = &machine.transitions[index];
-                    let taken = self.transition(machine, state, event, rule, hierarchy, index)?;
-                    selected = if let Some(guard) = &rule.guard {
-                        let guard = self.rewrite_rule_part(guard, index, machine, state, event)?;
-                        self.expr(Expr::If {
-                            condition: Box::new(guard),
-                            then_block: Box::new(taken),
-                            else_block: Some(Box::new(selected)),
-                        })
-                    } else {
-                        taken
-                    };
-                }
-                let target = self.ident(INPUT);
-                let value = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
-                let input = self.stmt(Stmt::Assign {
-                    target,
-                    op: None,
-                    value,
-                });
-                let selected = self.block(vec![input], selected);
-                event_arms.push(MatchArm {
-                    append_separator: None,
-                    pattern: event_pattern,
-                    guard: None,
-                    body: selected,
-                });
-            }
-            let event = self.ident("event");
-            let dispatch = self.expr(Expr::Match {
-                scrutinee: Box::new(event),
-                arms: event_arms,
-            });
-            let body = self.block(locals, dispatch);
-            state_arms.push(MatchArm {
-                append_separator: None,
-                pattern,
-                guard: None,
-                body,
-            });
+        let mut stmts = self.const_param_bindings(machine);
+        stmts.extend([outputs, disposition, rule_binding, input_binding]);
+        Block {
+            stmts,
+            trailing_expr: None,
         }
-        for group in hierarchy.parallel_groups(machine) {
-            let group_name = hierarchy.name(machine, group);
-            let mut fields = hierarchy.inherited_fields(machine, group)?;
-            for region in hierarchy.group_regions(machine, group) {
-                let region_name = hierarchy.name(machine, region);
-                fields.push((
-                    region_name,
-                    self.machine_region_ty(machine, group_name, region_name),
-                ));
-            }
-            let config = MachineState {
-                name: group_name,
-                fields,
-                entry: None,
-                exit: None,
-                span: self.span(),
-            };
-            let pattern = self.pattern(group_name, &config.fields, "_$machine_in_");
-            let locals = self.state_locals(&config);
-            let mut event_arms = Vec::new();
-            for event in &machine.events {
-                let event_pattern = self.pattern(event.name, &event.fields, "_$machine_event_");
-                let ignored = self.variant(Ident::new("Ignored"), Vec::new(), Vec::new());
-                let disposition_target = self.ident(DISPOSITION);
-                let set_ignored = self.stmt(Stmt::Assign {
-                    target: disposition_target,
-                    op: None,
-                    value: ignored,
-                });
-                let current = self.state_value(machine, &config);
-                let input_target = self.ident(INPUT);
-                let input_value = self.expr(Expr::Literal(Literal::String(event.name.to_string())));
-                let input = self.stmt(Stmt::Assign {
-                    target: input_target,
-                    op: None,
-                    value: input_value,
-                });
-                let body = self.block(vec![input, set_ignored], current);
-                event_arms.push(MatchArm {
-                    append_separator: None,
-                    pattern: event_pattern,
-                    guard: None,
-                    body,
-                });
-            }
-            let event_value = self.ident("event");
-            let dispatch = self.expr(Expr::Match {
-                scrutinee: Box::new(event_value),
-                arms: event_arms,
-            });
-            let body = self.block(locals, dispatch);
-            state_arms.push(MatchArm {
-                append_separator: None,
-                pattern,
-                guard: None,
-                body,
-            });
-        }
-        let receiver = self.ident("self");
-        let dispatch = self.expr(Expr::Match {
-            scrutinee: Box::new(receiver),
-            arms: state_arms,
-        });
+    }
+
+    fn finish_step(&mut self, machine: &MachineDecl, shell: &mut Block, dispatch: Spanned<Expr>) {
         let state_ty = self.machine_ty(machine, "");
         let candidate = self.let_value(CANDIDATE, Some(state_ty), dispatch);
         // Construct the report before changing the candidate receiver, so
@@ -1380,7 +1294,7 @@ impl Builder {
                 (Ident::new("outputs"), output_value),
                 (Ident::new("disposition"), disposition_value),
                 (Ident::new("input"), input_value),
-                (Ident::new("rule"), rule_value),
+                (Ident::new("rules"), rule_value),
             ],
             field_labels: Vec::new(),
             type_args: None,
@@ -1396,113 +1310,23 @@ impl Builder {
             value: candidate_value,
         });
         let result = self.ident("_$machine_report");
-        let mut stmts = self.const_param_bindings(machine);
-        stmts.extend([
-            outputs,
-            disposition,
-            rule_binding,
-            input_binding,
-            candidate,
-            report_binding,
-            commit,
-        ]);
-        Ok(Block {
-            stmts,
-            trailing_expr: Some(Box::new(result)),
-        })
+        shell.stmts.extend([candidate, report_binding, commit]);
+        shell.trailing_expr = Some(Box::new(result));
     }
 
-    fn transition(
-        &mut self,
-        machine: &MachineDecl,
-        state: &MachineState,
-        event: &MachineEvent,
-        rule: &MachineTransition,
-        hierarchy: &Hierarchy,
-        index: usize,
-    ) -> Result<Spanned<Expr>, TypeError> {
-        // A wildcard target declares an external transition even if its body
-        // returns the source tag. This makes exit/body/entry order independent
-        // of the as-yet unevaluated body.
-        let (source, domain) = hierarchy.boundary(index);
-        let target = hierarchy.target(index).map(|node| hierarchy.leaf(node));
-        let run_hooks = rule.reenter || hierarchy.target(index) != Some(source);
-        let mut stmts = Vec::new();
-        let function = self.variant(Ident::new("Some"), Vec::new(), Vec::new());
-        let rule_index = self.expr(Expr::Literal(Literal::Integer {
+    fn record_rule(&mut self, index: usize) -> Spanned<Stmt> {
+        let receiver = self.ident(RULE);
+        let method = (Ident::new("push"), self.span());
+        let value = self.expr(Expr::Literal(Literal::Integer {
             value: i128::try_from(index).expect("checked rule index"),
             radix: IntRadix::Decimal,
         }));
-        let value = self.expr(Expr::Call {
-            function: Box::new(function),
-            type_args: None,
-            args: vec![CallArg::Positional(rule_index)],
-            is_tail_call: false,
+        let push = self.expr(Expr::MethodCall {
+            receiver: Box::new(receiver),
+            method,
+            args: vec![CallArg::Positional(value)],
         });
-        let rule_target = self.ident(RULE);
-        stmts.push(self.stmt(Stmt::Assign {
-            target: rule_target,
-            op: None,
-            value,
-        }));
-        if run_hooks {
-            let exits = hierarchy
-                .ancestors(source)
-                .into_iter()
-                .take_while(|node| Some(*node) != domain);
-            for node in exits {
-                if let Some(exit) = hierarchy.hooks(machine, node, false) {
-                    let exit = self.rewrite_block(exit, machine, state, event)?;
-                    let exit = self.expr(Expr::Block(exit));
-                    stmts.push(self.stmt(Stmt::Expression(exit)));
-                }
-            }
-        }
-        let body = self.rewrite_rule_part(&rule.body, index, machine, state, event)?;
-        if !run_hooks {
-            return Ok(self.block(stmts, body));
-        }
-        let state_ty = self.machine_ty(machine, "");
-        stmts.push(self.let_value("_$machine_next", Some(state_ty), body));
-        let mut arms = Vec::new();
-        for next in &machine.states {
-            let pattern = self.pattern(next.name, &next.fields, "_$machine_in_");
-            let mut locals = self.state_locals(next);
-            // A fixed target reaches exactly one arm, so only that arm runs its
-            // entry hook. Rewriting the others would check a hook against an
-            // input it can never observe.
-            let next_node = hierarchy.resolve(next.name, next.span.clone())?;
-            let reachable = target.is_none_or(|target| target == next_node);
-            if reachable {
-                let mut entries = hierarchy
-                    .ancestors(next_node)
-                    .into_iter()
-                    .take_while(|node| Some(*node) != domain)
-                    .collect::<Vec<_>>();
-                entries.reverse();
-                for node in entries {
-                    if let Some(entry) = hierarchy.hooks(machine, node, true) {
-                        let entry = self.rewrite_block(entry, machine, next, event)?;
-                        let entry = self.expr(Expr::Block(entry));
-                        locals.push(self.stmt(Stmt::Expression(entry)));
-                    }
-                }
-            }
-            let result = self.state_value(machine, next);
-            let body = self.block(locals, result);
-            arms.push(MatchArm {
-                append_separator: None,
-                pattern,
-                guard: None,
-                body,
-            });
-        }
-        let next = self.ident("_$machine_next");
-        let entered = self.expr(Expr::Match {
-            scrutinee: Box::new(next),
-            arms,
-        });
-        Ok(self.block(stmts, entered))
+        self.stmt(Stmt::Expression(push))
     }
 
     fn machine_ty(&mut self, machine: &MachineDecl, suffix: &str) -> Spanned<TypeExpr> {
@@ -1590,16 +1414,14 @@ impl Builder {
     /// field-access checking.
     fn expand_state_base(
         &mut self,
-        machine: &MachineDecl,
         state_name: Option<Ident>,
         fields: &mut Vec<(Ident, Spanned<Expr>)>,
         field_labels: &mut Vec<FieldLabel>,
         base: &mut Option<Box<Spanned<Expr>>>,
     ) {
-        let Some(declared) = machine
-            .states
-            .iter()
-            .find(|state| Some(state.name) == state_name)
+        let Some(declared) = state_name
+            .and_then(|name| self.configuration_types.get(&name))
+            .map(|(_, fields)| fields.clone())
         else {
             return;
         };
@@ -1607,7 +1429,7 @@ impl Builder {
             return;
         };
         let named: Vec<Ident> = fields.iter().map(|(field, _)| *field).collect();
-        for (field, _) in &declared.fields {
+        for field in &declared {
             if named.contains(field) {
                 continue;
             }
@@ -1715,11 +1537,35 @@ impl Builder {
         event: &MachineEvent,
     ) -> Result<(), TypeError> {
         match expr {
+            Expr::Ident(name)
+                if self.initializing
+                    && name.name.as_str() == "event"
+                    && name.ctx == machine.body_context =>
+            {
+                return Err(self.error("an initial constructor cannot read the input event"));
+            }
             Expr::Ident(name) if name.name.as_str() == "self" => return Err(self.self_refusal()),
             Expr::Ident(name)
                 if name.name.as_str() == "state" && name.ctx == machine.body_context =>
             {
-                *expr = self.state_value(machine, state).0;
+                *expr = self
+                    .configuration_root
+                    .clone()
+                    .unwrap_or_else(|| self.state_value(machine, state))
+                    .0;
+            }
+            Expr::Ident(name)
+                if machine
+                    .composite_groups
+                    .iter()
+                    .any(|group| group.name == *name && !group.regions.is_empty()) =>
+            {
+                let hierarchy = self
+                    .configuration_hierarchy
+                    .clone()
+                    .expect("machine hierarchy");
+                let node = hierarchy.resolve(*name, self.origin.clone())?;
+                *expr = self.initial_configuration(machine, &hierarchy, node)?.0;
             }
             Expr::Ident(name) if machine.states.iter().any(|state| state.name == *name) => {
                 let name = *name;
@@ -1751,6 +1597,9 @@ impl Builder {
                 fields,
                 field_labels,
             } => {
+                if self.initializing {
+                    return Err(self.error("an initial constructor cannot emit outputs"));
+                }
                 if !machine
                     .emits
                     .iter()
@@ -1847,7 +1696,6 @@ impl Builder {
             Expr::ContextVariant(context) => {
                 if let Some(record) = &mut context.record {
                     self.expand_state_base(
-                        machine,
                         Some(context.name),
                         &mut record.fields,
                         &mut record.field_labels,
@@ -1857,6 +1705,16 @@ impl Builder {
                     if let Some(base) = &mut record.base {
                         **base = self.rewrite(base, machine, state, event)?;
                     }
+                }
+                let name = context.name;
+                let fields = context
+                    .record
+                    .as_ref()
+                    .map_or_else(Vec::new, |record| record.fields.clone());
+                if let Some(completed) =
+                    self.complete_parallel_constructor(machine, name, fields)?
+                {
+                    *expr = completed.0;
                 }
             }
             Expr::StructInit {
@@ -1871,7 +1729,7 @@ impl Builder {
                     [(leaf, _)] => Some(*leaf),
                     _ => None,
                 };
-                self.expand_state_base(machine, state_name, fields, field_labels, base);
+                self.expand_state_base(state_name, fields, field_labels, base);
                 self.rewrite_field_inits(fields, machine, state, event)?;
                 if let Some(base) = base {
                     **base = self.rewrite(base, machine, state, event)?;
@@ -1881,9 +1739,13 @@ impl Builder {
                         self.refresh_type(ty);
                     }
                 }
-                if let Some(name) = path.as_single() {
-                    if machine.states.iter().any(|state| state.name == name) {
-                        *expr = self.variant(name, fields.clone(), field_labels.clone()).0;
+                if let Some(name) = state_name {
+                    if let Some(completed) =
+                        self.complete_parallel_constructor(machine, name, fields.clone())?
+                    {
+                        *expr = completed.0;
+                    } else if machine.states.iter().any(|state| state.name == name) {
+                        *expr = self.qualified_variant(machine, name, fields.clone()).0;
                     }
                 }
             }

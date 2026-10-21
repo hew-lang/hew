@@ -1544,3 +1544,36 @@ fn machine_default_does_not_silently_discard_computation() {
         parsed.errors
     );
 }
+
+#[test]
+fn parallel_payload_initializer_round_trips() {
+    let source = r"machine Work {
+    events { Tick; }
+    parallel state Active {
+        count: i64;
+        region worker {
+            state Waiting { count: i64; }
+            initial Waiting { count: state.count };
+        }
+    }
+    default { state }
+}
+";
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let machine = first_machine_named(&parsed.program, "Work");
+    assert!(machine.composite_groups[0].regions[0]
+        .initial_value
+        .is_some());
+    let formatted = hew_parser::fmt::format_program(&parsed.program);
+    let reparsed = hew_parser::parse(&formatted);
+    assert!(
+        reparsed.errors.is_empty(),
+        "{formatted}: {:?}",
+        reparsed.errors
+    );
+    let machine = first_machine_named(&reparsed.program, "Work");
+    assert!(machine.composite_groups[0].regions[0]
+        .initial_value
+        .is_some());
+}

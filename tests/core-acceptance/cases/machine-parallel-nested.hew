@@ -1,0 +1,54 @@
+machine Tree {
+    events {
+        Start { value: i64; }
+        Advance;
+        Cross;
+    }
+    state Outside;
+    parallel state Outer {
+        number: i64;
+        region tree {
+            initial parallel state Inner {
+                region other {
+                    initial state A0;
+                    state A1;
+                }
+                region b {
+                    state B0 { value: i64; }
+                    state B1;
+                    initial B0 { value: state.number };
+                }
+            }
+        }
+        region other {
+            state Track {
+                initial state R0;
+                state R1;
+            }
+            initial Track;
+        }
+    }
+    on Start: Outside => Outer { number: event.value }
+    on Advance: A0 => A1;
+    on Cross: A1 => B1;
+    on Cross: R0 => R1;
+    default { state }
+}
+
+fn main() {
+    var tree: Tree = .Outside;
+    let started = tree.step(.Start { value: 42 });
+    assert(started.rules == [0]);
+    match tree {
+        .Outer { number, tree: .Inner { other: .A0, b: .B0 { value } }, other: .R0 } => assert(value == number),
+        _ => panic("initial nested values"),
+    }
+    let _advance = tree.step(.Advance);
+    let crossed = tree.step(.Cross);
+    assert(crossed.rules == [2, 3]);
+    match tree {
+        .Outer { number, tree: .Inner { other: .A0, b: .B1 }, other: .R1 } => assert(number == 42),
+        _ => panic("nested cross region merge"),
+    }
+    println("nested regions and initial payload passed");
+}

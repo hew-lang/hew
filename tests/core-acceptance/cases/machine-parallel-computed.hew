@@ -1,0 +1,42 @@
+machine Pair {
+    events {
+        Stay;
+        Stop;
+    }
+    emits {
+        Trace { value: string; }
+    }
+    parallel state Running {
+        entry {
+            emit Trace { value: "enter" };
+        }
+        exit {
+            emit Trace { value: "exit" };
+        }
+        region left {
+            initial state L;
+        }
+        region right {
+            initial state R;
+        }
+    }
+    state Stopped;
+    on Stay: L => _ {
+        state
+    }
+    on Stop: R => _ {
+        Stopped
+    }
+    default { state }
+}
+
+fn main() {
+    var pair: Pair = .Running { left: .L, right: .R };
+    let kept = pair.step(.Stay);
+    assert(kept.outputs.len() == 2);
+    assert(pair.state_name() == "Running");
+    let stopped = pair.step(.Stop);
+    assert(stopped.outputs.len() == 1);
+    assert(pair.state_name() == "Stopped");
+    println("computed root contract passed");
+}

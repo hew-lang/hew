@@ -6,7 +6,7 @@
         "outputs",
         "disposition",
         "input",
-        "rule"
+        "rules"
       ],
       "id": 0,
       "name": "TrafficLightStep"
@@ -964,12 +964,12 @@
               "fields": [],
               "op": "variant.make",
               "own": "none",
-              "shape": 3,
+              "shape": 2,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 0
+              "variant": 1
             },
             {
               "dst": null,
@@ -983,19 +983,43 @@
               "place": 3,
               "span": null,
               "value": 6
-            },
+            }
+          ],
+          "params": [
             {
-              "dst": 7,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 2,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "variant": 1
+              "own": "owned",
+              "value": 4
+            }
+          ],
+          "term": {
+            "args": [],
+            "callbacks": [],
+            "family": 1,
+            "normal": {
+              "args": [
+                7
+              ],
+              "to": 5
             },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": {
+              "own": "owned",
+              "value": 7
+            },
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 5,
+          "ops": [
             {
               "dst": null,
               "op": "alloc_place",
@@ -1007,10 +1031,39 @@
               "op": "store.init",
               "place": 4,
               "span": null,
-              "value": 7
+              "value": 8
             },
             {
-              "dst": 8,
+              "dst": 9,
+              "op": "load.take",
+              "own": "owned",
+              "place": 4,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 4,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 5,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 5,
+              "span": null,
+              "value": 9
+            },
+            {
+              "dst": 10,
               "op": "const.str",
               "own": "owned",
               "span": {
@@ -1022,31 +1075,21 @@
             {
               "dst": null,
               "op": "alloc_place",
-              "place": 5,
+              "place": 6,
               "span": null
             },
             {
               "dst": null,
               "op": "store.init",
-              "place": 5,
+              "place": 6,
               "span": null,
-              "value": 8
-            },
-            {
-              "dst": 9,
-              "op": "load.copy",
-              "own": "none",
-              "place": 0,
-              "span": {
-                "end": 0,
-                "start": 0
-              }
+              "value": 10
             }
           ],
           "params": [
             {
               "own": "owned",
-              "value": 4
+              "value": 8
             }
           ],
           "term": {
@@ -1054,47 +1097,7 @@
               {
                 "edge": {
                   "args": [],
-                  "to": 5
-                },
-                "fields": [],
-                "variant": 0
-              },
-              {
-                "edge": {
-                  "args": [],
                   "to": 6
-                },
-                "fields": [],
-                "variant": 1
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 7
-                },
-                "fields": [],
-                "variant": 2
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 9,
-            "shape": 0,
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 5,
-          "ops": [],
-          "params": [],
-          "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [],
-                  "to": 8
                 },
                 "fields": [],
                 "variant": 0
@@ -1111,57 +1114,9 @@
         },
         {
           "id": 6,
-          "ops": [],
-          "params": [],
-          "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [],
-                  "to": 14
-                },
-                "fields": [],
-                "variant": 0
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 1,
-            "shape": 1,
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 7,
-          "ops": [],
-          "params": [],
-          "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [],
-                  "to": 20
-                },
-                "fields": [],
-                "variant": 0
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 1,
-            "shape": 1,
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 8,
           "ops": [
             {
-              "dst": 10,
+              "dst": 11,
               "op": "const.str",
               "own": "owned",
               "span": {
@@ -1173,59 +1128,227 @@
             {
               "dst": null,
               "op": "store.assign",
-              "place": 5,
+              "place": 6,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "value": 10
-            },
-            {
-              "dst": 11,
-              "op": "const.int",
-              "own": "none",
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "ty": "i64",
-              "value": "0"
+              "value": 11
             },
             {
               "dst": 12,
-              "fields": [
-                11
-              ],
-              "op": "variant.make",
+              "op": "load.copy",
               "own": "none",
-              "shape": 2,
+              "place": 0,
               "span": {
                 "end": 0,
                 "start": 0
-              },
-              "variant": 0
+              }
             },
             {
               "dst": null,
-              "op": "store.assign",
-              "place": 4,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
+              "op": "alloc_place",
+              "place": 7,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 7,
+              "span": null,
               "value": 12
             },
             {
               "dst": 13,
-              "fields": [],
-              "op": "variant.make",
+              "op": "const.bool",
               "own": "none",
-              "shape": 0,
               "span": {
-                "end": 128,
-                "start": 128
+                "end": 0,
+                "start": 0
               },
-              "variant": 1
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 8,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 8,
+              "span": null,
+              "value": 13
+            },
+            {
+              "dst": 14,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 9,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 9,
+              "span": null,
+              "value": 14
+            },
+            {
+              "dst": 15,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 10,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 10,
+              "span": null,
+              "value": 15
+            },
+            {
+              "dst": 16,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 11,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 11,
+              "span": null,
+              "value": 16
+            },
+            {
+              "dst": 17,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 12,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 12,
+              "span": null,
+              "value": 17
+            },
+            {
+              "dst": 18,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            },
+            {
+              "dst": null,
+              "op": "alloc_place",
+              "place": 13,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 13,
+              "span": null,
+              "value": 18
+            },
+            {
+              "dst": 19,
+              "op": "load.copy",
+              "own": "none",
+              "place": 9,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 20,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 19
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 20,
+            "else": {
+              "args": [],
+              "to": 8
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 7
+            }
+          }
+        },
+        {
+          "id": 7,
+          "ops": [
+            {
+              "dst": 21,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
             }
           ],
           "params": [],
@@ -1257,8 +1380,24 @@
               }
             ],
             "op": "switch.variant",
-            "scrutinee": 13,
+            "scrutinee": 21,
             "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 8,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 13
+            },
+            "op": "goto",
             "span": {
               "end": 0,
               "start": 0
@@ -1269,23 +1408,41 @@
           "id": 9,
           "ops": [
             {
-              "dst": 14,
-              "fields": [],
-              "op": "variant.make",
+              "dst": 22,
+              "op": "const.bool",
               "own": "none",
-              "shape": 0,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 0
+              "value": true
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 9,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 22
+            },
+            {
+              "dst": 23,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": true
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [
-                14
+                23
               ],
               "to": 12
             },
@@ -1300,23 +1457,21 @@
           "id": 10,
           "ops": [
             {
-              "dst": 15,
-              "fields": [],
-              "op": "variant.make",
+              "dst": 24,
+              "op": "const.bool",
               "own": "none",
-              "shape": 0,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 1
+              "value": false
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [
-                15
+                24
               ],
               "to": 12
             },
@@ -1331,23 +1486,21 @@
           "id": 11,
           "ops": [
             {
-              "dst": 16,
-              "fields": [],
-              "op": "variant.make",
+              "dst": 25,
+              "op": "const.bool",
               "own": "none",
-              "shape": 0,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 2
+              "value": false
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [
-                16
+                25
               ],
               "to": 12
             },
@@ -1360,18 +1513,27 @@
         },
         {
           "id": 12,
-          "ops": [],
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 8,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 26
+            }
+          ],
           "params": [
             {
               "own": "none",
-              "value": 17
+              "value": 26
             }
           ],
           "term": {
             "edge": {
-              "args": [
-                17
-              ],
+              "args": [],
               "to": 13
             },
             "op": "goto",
@@ -1383,17 +1545,425 @@
         },
         {
           "id": 13,
+          "ops": [
+            {
+              "dst": 27,
+              "op": "load.copy",
+              "own": "none",
+              "place": 11,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 28,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 27
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 28,
+            "else": {
+              "args": [],
+              "to": 15
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 14
+            }
+          }
+        },
+        {
+          "id": 14,
+          "ops": [
+            {
+              "dst": 29,
+              "op": "load.copy",
+              "own": "none",
+              "place": 8,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 30,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 29
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                30
+              ],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 15,
+          "ops": [
+            {
+              "dst": 31,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                31
+              ],
+              "to": 16
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 16,
           "ops": [],
           "params": [
             {
               "own": "none",
-              "value": 18
+              "value": 32
+            }
+          ],
+          "term": {
+            "condition": 32,
+            "else": {
+              "args": [],
+              "to": 18
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 17
+            }
+          }
+        },
+        {
+          "id": 17,
+          "ops": [
+            {
+              "dst": 33,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 19
+                },
+                "fields": [],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 20
+                },
+                "fields": [],
+                "variant": 1
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 21
+                },
+                "fields": [],
+                "variant": 2
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 33,
+            "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 18,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 23
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 19,
+          "ops": [
+            {
+              "dst": 34,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                34
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 20,
+          "ops": [
+            {
+              "dst": 35,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": true
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 11,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 35
+            },
+            {
+              "dst": 36,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": true
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                36
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 21,
+          "ops": [
+            {
+              "dst": 37,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                37
+              ],
+              "to": 22
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 22,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 10,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 38
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 38
             }
           ],
           "term": {
             "edge": {
+              "args": [],
+              "to": 23
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 23,
+          "ops": [
+            {
+              "dst": 39,
+              "op": "load.copy",
+              "own": "none",
+              "place": 13,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 40,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 39
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 40,
+            "else": {
+              "args": [],
+              "to": 25
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 24
+            }
+          }
+        },
+        {
+          "id": 24,
+          "ops": [
+            {
+              "dst": 41,
+              "op": "load.copy",
+              "own": "none",
+              "place": 8,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 42,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 41
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
               "args": [
-                18
+                42
               ],
               "to": 26
             },
@@ -1405,30 +1975,565 @@
           }
         },
         {
-          "id": 14,
+          "id": 25,
           "ops": [
             {
-              "dst": 19,
-              "op": "const.str",
-              "own": "owned",
+              "dst": 43,
+              "op": "const.bool",
+              "own": "none",
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "str": 4
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                43
+              ],
+              "to": 26
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 26,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 44
+            }
+          ],
+          "term": {
+            "condition": 44,
+            "else": {
+              "args": [],
+              "to": 28
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 27
+            }
+          }
+        },
+        {
+          "id": 27,
+          "ops": [
+            {
+              "dst": 45,
+              "op": "load.copy",
+              "own": "none",
+              "place": 10,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 46,
+              "op": "unary",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "ty": "bool",
+              "unary_op": "Not",
+              "value": 45
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                46
+              ],
+              "to": 29
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 28,
+          "ops": [
+            {
+              "dst": 47,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                47
+              ],
+              "to": 29
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 29,
+          "ops": [],
+          "params": [
+            {
+              "own": "none",
+              "value": 48
+            }
+          ],
+          "term": {
+            "condition": 48,
+            "else": {
+              "args": [],
+              "to": 31
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 30
+            }
+          }
+        },
+        {
+          "id": 30,
+          "ops": [
+            {
+              "dst": 49,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 32
+                },
+                "fields": [],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 33
+                },
+                "fields": [],
+                "variant": 1
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 34
+                },
+                "fields": [],
+                "variant": 2
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 49,
+            "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 31,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 36
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 32,
+          "ops": [
+            {
+              "dst": 50,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                50
+              ],
+              "to": 35
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 33,
+          "ops": [
+            {
+              "dst": 51,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": false
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                51
+              ],
+              "to": 35
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 34,
+          "ops": [
+            {
+              "dst": 52,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": true
             },
             {
               "dst": null,
               "op": "store.assign",
-              "place": 5,
+              "place": 13,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "value": 19
+              "value": 52
             },
             {
-              "dst": 20,
+              "dst": 53,
+              "op": "const.bool",
+              "own": "none",
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": true
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                53
+              ],
+              "to": 35
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 35,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 12,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 54
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 54
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 36
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 36,
+          "ops": [
+            {
+              "dst": 55,
+              "op": "load.copy",
+              "own": "none",
+              "place": 8,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 55,
+            "else": {
+              "args": [],
+              "to": 38
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 37
+            }
+          }
+        },
+        {
+          "id": 37,
+          "ops": [
+            {
+              "dst": 56,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 39
+                },
+                "fields": [],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 40
+                },
+                "fields": [],
+                "variant": 1
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 41
+                },
+                "fields": [],
+                "variant": 2
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 56,
+            "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 38,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 44
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 39,
+          "ops": [
+            {
+              "dst": 57,
+              "fields": [],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 0,
+              "span": {
+                "end": 128,
+                "start": 128
+              },
+              "variant": 1
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                57
+              ],
+              "to": 42
+            },
+            "op": "goto",
+            "span": {
+              "end": 128,
+              "start": 128
+            }
+          }
+        },
+        {
+          "id": 40,
+          "ops": [
+            {
+              "dst": 58,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                58
+              ],
+              "to": 42
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 41,
+          "ops": [
+            {
+              "dst": 59,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                59
+              ],
+              "to": 42
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 42,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 60
+            },
+            {
+              "dst": 61,
               "op": "const.int",
               "own": "none",
               "span": {
@@ -1436,13 +2541,86 @@
                 "start": 0
               },
               "ty": "i64",
-              "value": "1"
+              "value": "0"
             },
             {
-              "dst": 21,
-              "fields": [
-                20
+              "dst": 62,
+              "op": "load.take",
+              "own": "owned",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 63,
+              "op": "move",
+              "own": "owned",
+              "source": 62,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 60
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 63
+              },
+              {
+                "decision": "borrow",
+                "value": 61
+              }
+            ],
+            "callbacks": [],
+            "family": 2,
+            "normal": {
+              "args": [
+                64
               ],
+              "to": 43
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": {
+              "own": "owned",
+              "value": 64
+            },
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 43,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 65
+            },
+            {
+              "dst": 66,
+              "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 2,
@@ -1455,15 +2633,165 @@
             {
               "dst": null,
               "op": "store.assign",
-              "place": 4,
+              "place": 3,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "value": 21
-            },
+              "value": 66
+            }
+          ],
+          "params": [
             {
-              "dst": 22,
+              "own": "owned",
+              "value": 65
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 44
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 44,
+          "ops": [
+            {
+              "dst": 67,
+              "op": "load.copy",
+              "own": "none",
+              "place": 10,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 67,
+            "else": {
+              "args": [],
+              "to": 46
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 45
+            }
+          }
+        },
+        {
+          "id": 45,
+          "ops": [
+            {
+              "dst": 68,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 47
+                },
+                "fields": [],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 48
+                },
+                "fields": [],
+                "variant": 1
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 49
+                },
+                "fields": [],
+                "variant": 2
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 68,
+            "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 46,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 52
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 47,
+          "ops": [
+            {
+              "dst": 69,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                69
+              ],
+              "to": 50
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 48,
+          "ops": [
+            {
+              "dst": 70,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1477,64 +2805,40 @@
           ],
           "params": [],
           "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [],
-                  "to": 15
-                },
-                "fields": [],
-                "variant": 0
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 16
-                },
-                "fields": [],
-                "variant": 1
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 17
-                },
-                "fields": [],
-                "variant": 2
+            "edge": {
+              "args": [
+                70
+              ],
+              "to": 50
+            },
+            "op": "goto",
+            "span": {
+              "end": 157,
+              "start": 157
+            }
+          }
+        },
+        {
+          "id": 49,
+          "ops": [
+            {
+              "dst": 71,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
               }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 22,
-            "shape": 0,
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 15,
-          "ops": [
-            {
-              "dst": 23,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 0,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "variant": 0
             }
           ],
           "params": [],
           "term": {
             "edge": {
               "args": [
-                23
+                71
               ],
-              "to": 18
+              "to": 50
             },
             "op": "goto",
             "span": {
@@ -1544,138 +2848,20 @@
           }
         },
         {
-          "id": 16,
+          "id": 50,
           "ops": [
-            {
-              "dst": 24,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 0,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "variant": 1
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                24
-              ],
-              "to": 18
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 17,
-          "ops": [
-            {
-              "dst": 25,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 0,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "variant": 2
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                25
-              ],
-              "to": 18
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 18,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 26
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                26
-              ],
-              "to": 19
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 19,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 27
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                27
-              ],
-              "to": 26
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 20,
-          "ops": [
-            {
-              "dst": 28,
-              "op": "const.str",
-              "own": "owned",
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "str": 4
-            },
             {
               "dst": null,
               "op": "store.assign",
-              "place": 5,
+              "place": 7,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "value": 28
+              "value": 72
             },
             {
-              "dst": 29,
+              "dst": 73,
               "op": "const.int",
               "own": "none",
               "span": {
@@ -1683,13 +2869,86 @@
                 "start": 0
               },
               "ty": "i64",
-              "value": "2"
+              "value": "1"
             },
             {
-              "dst": 30,
-              "fields": [
-                29
+              "dst": 74,
+              "op": "load.take",
+              "own": "owned",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 75,
+              "op": "move",
+              "own": "owned",
+              "source": 74,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 72
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 75
+              },
+              {
+                "decision": "borrow",
+                "value": 73
+              }
+            ],
+            "callbacks": [],
+            "family": 2,
+            "normal": {
+              "args": [
+                76
               ],
+              "to": 51
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": {
+              "own": "owned",
+              "value": 76
+            },
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 51,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 77
+            },
+            {
+              "dst": 78,
+              "fields": [],
               "op": "variant.make",
               "own": "none",
               "shape": 2,
@@ -1702,15 +2961,194 @@
             {
               "dst": null,
               "op": "store.assign",
-              "place": 4,
+              "place": 3,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "value": 30
-            },
+              "value": 78
+            }
+          ],
+          "params": [
             {
-              "dst": 31,
+              "own": "owned",
+              "value": 77
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 52
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 52,
+          "ops": [
+            {
+              "dst": 79,
+              "op": "load.copy",
+              "own": "none",
+              "place": 12,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "condition": 79,
+            "else": {
+              "args": [],
+              "to": 54
+            },
+            "op": "branch",
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "then": {
+              "args": [],
+              "to": 53
+            }
+          }
+        },
+        {
+          "id": 53,
+          "ops": [
+            {
+              "dst": 80,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "arms": [
+              {
+                "edge": {
+                  "args": [],
+                  "to": 55
+                },
+                "fields": [],
+                "variant": 0
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 56
+                },
+                "fields": [],
+                "variant": 1
+              },
+              {
+                "edge": {
+                  "args": [],
+                  "to": 57
+                },
+                "fields": [],
+                "variant": 2
+              }
+            ],
+            "op": "switch.variant",
+            "scrutinee": 80,
+            "shape": 0,
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 54,
+          "ops": [],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 60
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 55,
+          "ops": [
+            {
+              "dst": 81,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                81
+              ],
+              "to": 58
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 56,
+          "ops": [
+            {
+              "dst": 82,
+              "op": "load.copy",
+              "own": "none",
+              "place": 7,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                82
+              ],
+              "to": 58
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 57,
+          "ops": [
+            {
+              "dst": 83,
               "fields": [],
               "op": "variant.make",
               "own": "none",
@@ -1724,205 +3162,45 @@
           ],
           "params": [],
           "term": {
-            "arms": [
-              {
-                "edge": {
-                  "args": [],
-                  "to": 21
-                },
-                "fields": [],
-                "variant": 0
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 22
-                },
-                "fields": [],
-                "variant": 1
-              },
-              {
-                "edge": {
-                  "args": [],
-                  "to": 23
-                },
-                "fields": [],
-                "variant": 2
-              }
-            ],
-            "op": "switch.variant",
-            "scrutinee": 31,
-            "shape": 0,
+            "edge": {
+              "args": [
+                83
+              ],
+              "to": 58
+            },
+            "op": "goto",
             "span": {
-              "end": 0,
-              "start": 0
+              "end": 188,
+              "start": 188
             }
           }
         },
         {
-          "id": 21,
+          "id": 58,
           "ops": [
             {
-              "dst": 32,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 0,
+              "dst": null,
+              "op": "store.assign",
+              "place": 7,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 0
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                32
-              ],
-              "to": 24
+              "value": 84
             },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 22,
-          "ops": [
             {
-              "dst": 33,
-              "fields": [],
-              "op": "variant.make",
+              "dst": 85,
+              "op": "const.int",
               "own": "none",
-              "shape": 0,
               "span": {
                 "end": 0,
                 "start": 0
               },
-              "variant": 1
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                33
-              ],
-              "to": 24
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 23,
-          "ops": [
-            {
-              "dst": 34,
-              "fields": [],
-              "op": "variant.make",
-              "own": "none",
-              "shape": 0,
-              "span": {
-                "end": 0,
-                "start": 0
-              },
-              "variant": 2
-            }
-          ],
-          "params": [],
-          "term": {
-            "edge": {
-              "args": [
-                34
-              ],
-              "to": 24
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 24,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 35
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                35
-              ],
-              "to": 25
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 25,
-          "ops": [],
-          "params": [
-            {
-              "own": "none",
-              "value": 36
-            }
-          ],
-          "term": {
-            "edge": {
-              "args": [
-                36
-              ],
-              "to": 26
-            },
-            "op": "goto",
-            "span": {
-              "end": 0,
-              "start": 0
-            }
-          }
-        },
-        {
-          "id": 26,
-          "ops": [
-            {
-              "dst": 38,
-              "op": "load.take",
-              "own": "owned",
-              "place": 2,
-              "span": {
-                "end": 0,
-                "start": 0
-              }
+              "ty": "i64",
+              "value": "2"
             },
             {
-              "dst": 39,
-              "op": "load.copy",
-              "own": "none",
-              "place": 3,
-              "span": {
-                "end": 0,
-                "start": 0
-              }
-            },
-            {
-              "dst": 40,
+              "dst": 86,
               "op": "load.take",
               "own": "owned",
               "place": 5,
@@ -1932,22 +3210,232 @@
               }
             },
             {
-              "dst": 41,
+              "dst": 87,
+              "op": "move",
+              "own": "owned",
+              "source": 86,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            }
+          ],
+          "params": [
+            {
+              "own": "none",
+              "value": 84
+            }
+          ],
+          "term": {
+            "args": [
+              {
+                "decision": "move",
+                "value": 87
+              },
+              {
+                "decision": "borrow",
+                "value": 85
+              }
+            ],
+            "callbacks": [],
+            "family": 2,
+            "normal": {
+              "args": [
+                88
+              ],
+              "to": 59
+            },
+            "op": "runtime.call",
+            "releases_contents": false,
+            "result": {
+              "own": "owned",
+              "value": 88
+            },
+            "result_member_shapes": [],
+            "result_shape": null,
+            "span": {
+              "end": 0,
+              "start": 0
+            },
+            "structural": null,
+            "unwind": null
+          }
+        },
+        {
+          "id": 59,
+          "ops": [
+            {
+              "dst": null,
+              "op": "store.init",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 89
+            },
+            {
+              "dst": 90,
+              "fields": [],
+              "op": "variant.make",
+              "own": "none",
+              "shape": 2,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "variant": 0
+            },
+            {
+              "dst": null,
+              "op": "store.assign",
+              "place": 3,
+              "span": {
+                "end": 0,
+                "start": 0
+              },
+              "value": 90
+            }
+          ],
+          "params": [
+            {
+              "own": "owned",
+              "value": 89
+            }
+          ],
+          "term": {
+            "edge": {
+              "args": [],
+              "to": 60
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 60,
+          "ops": [
+            {
+              "dst": 91,
               "op": "load.copy",
               "own": "none",
-              "place": 4,
+              "place": 7,
               "span": {
                 "end": 0,
                 "start": 0
               }
             },
             {
-              "dst": 42,
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 13,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 12,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 11,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 10,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 9,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 8,
+              "span": null
+            },
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 7,
+              "span": null
+            }
+          ],
+          "params": [],
+          "term": {
+            "edge": {
+              "args": [
+                91
+              ],
+              "to": 61
+            },
+            "op": "goto",
+            "span": {
+              "end": 0,
+              "start": 0
+            }
+          }
+        },
+        {
+          "id": 61,
+          "ops": [
+            {
+              "dst": 93,
+              "op": "load.take",
+              "own": "owned",
+              "place": 2,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 94,
+              "op": "load.copy",
+              "own": "none",
+              "place": 3,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 95,
+              "op": "load.take",
+              "own": "owned",
+              "place": 6,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 96,
+              "op": "load.take",
+              "own": "owned",
+              "place": 5,
+              "span": {
+                "end": 0,
+                "start": 0
+              }
+            },
+            {
+              "dst": 97,
               "fields": [
-                38,
-                39,
-                40,
-                41
+                93,
+                94,
+                95,
+                96
               ],
               "op": "aggregate.make",
               "own": "owned",
@@ -1960,15 +3448,15 @@
             {
               "dst": null,
               "op": "alloc_place",
-              "place": 6,
+              "place": 14,
               "span": null
             },
             {
               "dst": null,
               "op": "store.init",
-              "place": 6,
+              "place": 14,
               "span": null,
-              "value": 42
+              "value": 97
             },
             {
               "dst": null,
@@ -1978,20 +3466,20 @@
                 "end": 0,
                 "start": 0
               },
-              "value": 37
+              "value": 92
             },
             {
-              "dst": 43,
+              "dst": 98,
               "op": "load.take",
               "own": "owned",
-              "place": 6,
+              "place": 14,
               "span": {
                 "end": 0,
                 "start": 0
               }
             },
             {
-              "dst": 44,
+              "dst": 99,
               "op": "load.copy",
               "own": "none",
               "place": 0,
@@ -2001,10 +3489,10 @@
               }
             },
             {
-              "dst": 45,
+              "dst": 100,
               "fields": [
-                43,
-                44
+                98,
+                99
               ],
               "op": "aggregate.make",
               "own": "owned",
@@ -2018,13 +3506,13 @@
           "params": [
             {
               "own": "none",
-              "value": 37
+              "value": 92
             }
           ],
           "term": {
             "edge": {
               "args": [],
-              "to": 27
+              "to": 62
             },
             "op": "goto",
             "span": {
@@ -2034,8 +3522,14 @@
           }
         },
         {
-          "id": 27,
+          "id": 62,
           "ops": [
+            {
+              "dst": null,
+              "op": "end_lifetime",
+              "place": 14,
+              "span": null
+            },
             {
               "dst": null,
               "op": "end_lifetime",
@@ -2046,12 +3540,6 @@
               "dst": null,
               "op": "end_lifetime",
               "place": 5,
-              "span": null
-            },
-            {
-              "dst": null,
-              "op": "end_lifetime",
-              "place": 4,
               "span": null
             },
             {
@@ -2082,7 +3570,7 @@
             },
             "value": {
               "decision": "move",
-              "value": 45
+              "value": 100
             }
           }
         }
@@ -2128,6 +3616,38 @@
         {
           "id": 6,
           "origin": "local"
+        },
+        {
+          "id": 7,
+          "origin": "local"
+        },
+        {
+          "id": 8,
+          "origin": "local"
+        },
+        {
+          "id": 9,
+          "origin": "local"
+        },
+        {
+          "id": 10,
+          "origin": "local"
+        },
+        {
+          "id": 11,
+          "origin": "local"
+        },
+        {
+          "id": 12,
+          "origin": "local"
+        },
+        {
+          "id": 13,
+          "origin": "local"
+        },
+        {
+          "id": 14,
+          "origin": "local"
         }
       ]
     }
@@ -2149,6 +3669,11 @@
       "detail": "New",
       "family": "Vector",
       "id": 1
+    },
+    {
+      "detail": "Push",
+      "family": "Vector",
+      "id": 2
     }
   ],
   "schema_version": "hew.sandbox.bytecode.v1",
@@ -2199,26 +3724,6 @@
     {
       "cases": [
         {
-          "fields": [
-            "0"
-          ],
-          "name": "Some"
-        },
-        {
-          "fields": [],
-          "name": "None"
-        }
-      ],
-      "id": 2,
-      "name": "Option<i64>",
-      "runtime_tags": {
-        "OptionNone": 1,
-        "OptionSome": 0
-      }
-    },
-    {
-      "cases": [
-        {
           "fields": [],
           "name": "Taken"
         },
@@ -2227,13 +3732,13 @@
           "name": "Ignored"
         }
       ],
-      "id": 3,
+      "id": 2,
       "name": "TrafficLightStepDisposition",
       "runtime_tags": {}
     },
     {
       "cases": [],
-      "id": 4,
+      "id": 3,
       "name": "TrafficLightOutput",
       "runtime_tags": {}
     }

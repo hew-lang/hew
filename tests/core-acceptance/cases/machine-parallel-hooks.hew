@@ -1,0 +1,122 @@
+machine Pair {
+    events {
+        Advance;
+        Cross;
+        Cancel;
+        Reset;
+        UpdateOwner;
+    }
+    emits {
+        Trace { value: string; }
+    }
+    parallel state Running {
+        epoch: i64;
+        entry {
+            emit Trace { value: "parent entry" };
+        }
+        exit {
+            emit Trace { value: "parent exit" };
+        }
+        region left {
+            initial state L0 {
+                exit {
+                    emit Trace { value: "left exit" };
+                }
+            }
+            state L1 {
+                entry {
+                    emit Trace { value: "left entry" };
+                }
+                exit {
+                    emit Trace { value: "left done exit" };
+                }
+            }
+        }
+        region right {
+            initial state R0 {
+                exit {
+                    emit Trace { value: "right exit" };
+                }
+            }
+            state R1 {
+                entry {
+                    emit Trace { value: "right entry" };
+                }
+                exit {
+                    emit Trace { value: "right done exit" };
+                }
+            }
+        }
+    }
+    state Stopped;
+    on Advance: Running => Stopped when 1 / (state.epoch - 7) == 0 {
+        emit Trace { value: "wrong ancestor" };
+        Stopped
+    }
+    on Advance: L0 => L1 when state.epoch == 7 {
+        emit Trace { value: "left body" };
+        L1
+    }
+    on Advance: R0 => R1 when state.epoch == 7 {
+        emit Trace { value: "right body" };
+        R1
+    }
+    on Cross: L1 => R1 {
+        emit Trace { value: "cross body" };
+        R1
+    }
+    on Cancel: Running => Stopped {
+        emit Trace { value: "cancel body" };
+        Stopped
+    }
+    on UpdateOwner: Running => Running { ..state, epoch: state.epoch + 1 }
+    on Reset: Running => Running { epoch: state.epoch + 1 }
+    default { state }
+}
+
+fn main() {
+    var pair: Pair = .Running { epoch: 7, left: .L0, right: .R0 };
+    let first = pair.step(.Advance);
+    assert(first.rules == [1, 2]);
+    var trace = "";
+    for output in first.outputs {
+        match output {
+            .Trace { value } => {
+                trace += value + "/";
+            }
+        }
+    }
+    assert(trace == "left exit/right exit/left body/right body/left entry/right entry/");
+    let cross = pair.step(.Cross);
+    trace = "";
+    for output in cross.outputs {
+        match output {
+            .Trace { value } => {
+                trace += value + "/";
+            }
+        }
+    }
+    println(trace);
+    assert(trace == "left done exit/right done exit/parent exit/cross body/parent entry/right entry/");
+    match pair {
+        .Running { epoch, left: .L0, right: .R1 } => assert(epoch == 7),
+        _ => panic("cross target"),
+    }
+    let updated = pair.step(.UpdateOwner);
+    assert(updated.outputs.len() == 3);
+    match pair {
+        .Running { epoch, left: .L0, right: .R1 } => assert(epoch == 8),
+        _ => panic("parent spread lost a region"),
+    }
+    let reset = pair.step(.Reset);
+    assert(reset.outputs.len() == 2);
+    match pair {
+        .Running { epoch, left: .L0, right: .R0 } => assert(epoch == 9),
+        _ => panic("parent payload update"),
+    }
+    let cancelled = pair.step(.Cancel);
+    assert(cancelled.outputs.len() == 4);
+    assert(pair.state_name() == "Stopped");
+    assert(first.outputs.len() == 6);
+    println("parallel hooks and conflict passed");
+}

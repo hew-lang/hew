@@ -2867,7 +2867,7 @@ impl<'a> Formatter<'a> {
         for member in &region.members {
             if let Some(state) = decl.states.iter().find(|state| state.name == *member) {
                 self.write_indent();
-                if region.initial == state.name {
+                if region.initial_value.is_none() && region.initial == state.name {
                     self.write("initial ");
                 }
                 let own_fields: Vec<_> = state.fields.iter().collect();
@@ -2878,9 +2878,20 @@ impl<'a> Formatter<'a> {
                 .iter()
                 .find(|child| child.name == *member)
             {
-                self.format_machine_composite(decl, child, span_end, region.initial == child.name);
+                self.format_machine_composite(
+                    decl,
+                    child,
+                    span_end,
+                    region.initial_value.is_none() && region.initial == child.name,
+                );
                 self.end_member(child.span.end);
             }
+        }
+        if let Some(value) = &region.initial_value {
+            self.write_indent();
+            self.write("initial ");
+            self.format_expr(value);
+            self.write(";\n");
         }
         for rule in &region.parent_transitions {
             self.write_indent();

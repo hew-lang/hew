@@ -1,0 +1,47 @@
+machine Pair {
+    events {
+        Advance;
+    }
+    emits {
+        Trace { value: string; }
+    }
+    parallel state Running {
+        region left {
+            initial state L0 {
+                text: string;
+                exit {
+                    state.text += ":exit";
+                }
+            }
+            state L1 {
+                text: string;
+                entry {
+                    emit Trace { value: state.text };
+                }
+            }
+        }
+        region right {
+            initial state R0 { divisor: i64; }
+            state R1 {
+                divisor: i64;
+                entry {
+                    state.divisor = 10 / state.divisor;
+                }
+            }
+        }
+    }
+    on Advance: L0 => L1 { text: state.text + ":body" }
+    on Advance: R0 => R1 { divisor: state.divisor }
+    default { state }
+}
+
+fn main() {
+    var pair: Pair = .Running { left: .L0 { text: "original".to_upper() }, right: .R0 { divisor: 0 } };
+    defer {
+        match pair {
+            .Running { left: .L0 { text }, right: .R0 { divisor } } => println(f"rollback:{text}:{divisor}"),
+            _ => println("incorrect commit"),
+        }
+    }
+    let _report = pair.step(.Advance);
+}

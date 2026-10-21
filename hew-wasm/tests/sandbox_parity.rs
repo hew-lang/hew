@@ -881,6 +881,38 @@ fn supervisor_wiring_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn machine_parallel_regions_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "machine-parallel-regions",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-regions.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-hooks",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-hooks.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-nested",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-nested.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-computed",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-computed.hew",
+        },
+        ParityCase {
+            test_name: "machine-parallel-rollback",
+            source_rel: "tests/core-acceptance/cases/machine-parallel-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn lexical_path_helpers_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

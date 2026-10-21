@@ -322,7 +322,7 @@ fn main() {
     assert(feed.subscribe().is_err());
     let step = live.step(.Add { value: 4 });
     assert(step.outputs.len() == 1);
-    assert(step.rule == .Some(0));
+    assert(step.rules == [0]);
     let _ignored = live.step(.Ping);
     ordered(first);
     ordered(second);

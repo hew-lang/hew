@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-parallel-nested"
+intent = "Nested cross-region writes preserve unrelated outer siblings and fresh descent constructs typed regional payloads."
+source = "cases/machine-parallel-nested.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "nested regions and initial payload passed\n"
+stderr = ""
+exit = 0

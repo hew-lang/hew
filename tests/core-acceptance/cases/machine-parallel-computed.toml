@@ -1,0 +1,11 @@
+[[case]]
+id = "machine-parallel-computed"
+intent = "Computed regional destinations retain full-root exit/body/entry semantics, including an unchanged returned configuration."
+source = "cases/machine-parallel-computed.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "computed root contract passed\n"
+stderr = ""
+exit = 0

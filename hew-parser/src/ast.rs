@@ -2110,21 +2110,14 @@ impl MachineDecl {
                 path.push(current);
                 continue;
             }
-            if let Some(region) = self
-                .composite_groups
-                .iter()
-                .flat_map(|group| &group.regions)
-                .find(|region| region.members.contains(&current))
-            {
-                current = region.name;
-                path.push(current);
-                continue;
-            }
-            if let Some(parent) = self
-                .composite_groups
-                .iter()
-                .find(|group| group.regions.iter().any(|region| region.name == current))
-            {
+            if let Some((parent, region)) = self.composite_groups.iter().find_map(|group| {
+                group
+                    .regions
+                    .iter()
+                    .find(|region| region.members.contains(&current))
+                    .map(|region| (group, region))
+            }) {
+                path.push(region.name);
                 current = parent.name;
                 path.push(current);
                 continue;
@@ -2178,6 +2171,9 @@ pub struct MachineRegion {
     pub members: Vec<Ident>,
     /// The direct child entered when this region is initialized.
     pub initial: Ident,
+    /// An explicit pure initial constructor, evaluated on fresh descent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<Spanned<Expr>>,
     /// Region-level transitions are retained with their source scope.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parent_transitions: Vec<MachineTransition>,

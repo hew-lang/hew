@@ -1,0 +1,58 @@
+machine Checkout {
+    events {
+        Advance;
+        Cancel;
+    }
+    emits {
+        Payment { token: string; }
+        Stock;
+    }
+    parallel state Running {
+        region payment {
+            initial state Waiting { token: string; }
+            state Paid { token: string; }
+        }
+        region stock {
+            initial state Empty;
+            state Reserved;
+        }
+    }
+    state Stopped;
+    on Advance: Running.payment.Waiting => Running.payment.Paid {
+        emit Payment { token: state.token };
+        Paid { token: state.token + ":paid" }
+    }
+    on Advance: Running.stock.Empty => Running.stock.Reserved {
+        emit Stock;
+        Reserved
+    }
+    on Cancel: Running => Stopped;
+    default { state }
+}
+
+fn main() {
+    var checkout: Checkout = .Running { payment: .Waiting { token: "invoice".to_upper() }, stock: .Empty };
+    let copy = checkout;
+    let report = checkout.step(.Advance);
+    assert(report.outputs.len() == 2);
+    assert(report.rules == [0, 1]);
+    match checkout {
+        .Running { payment: .Paid { token }, stock: .Reserved } => {
+            assert(token == "INVOICE:paid");
+            println("both regions advanced");
+        }
+        _ => panic("parallel step failed"),
+    }
+    match copy {
+        .Running { payment: .Waiting { token }, stock: .Empty } => assert(token == "INVOICE"),
+        _ => panic("copy changed"),
+    }
+    let stopped = checkout.step(.Cancel);
+    assert(stopped.rules == [2]);
+    assert(checkout.state_name() == "Stopped");
+    assert(report.outputs.len() == 2);
+    match report.outputs[0] {
+        .Payment { token } => assert(token == "INVOICE"),
+        _ => panic("retained output changed"),
+    }
+}

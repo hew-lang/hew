@@ -92,3 +92,23 @@ pub type NodeHandshake {
     noise_key: bytes @6;
     enrollment: bytes @7;
 }
+
+// Relay carriage is transport: only the inner authenticated session publishes authority.
+#[wire]
+pub type RelayOpen {
+    circuit: u64 @1;
+    origin: WireSession @2;
+    target: WireSession @3;
+}
+
+#[wire]
+pub type RelayChunk {
+    circuit: u64 @1;
+    offset: u64 @2;
+    body: bytes @3;
+}
+
+#[wire]
+pub type RelayClose {
+    circuit: u64 @1;
+}

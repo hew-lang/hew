@@ -16,7 +16,7 @@ use super::{HewConnMgr, ReaderLifecycleGuard, CONN_STATE_ACTIVE, CONN_STATE_CLOS
 /// One manager-issued authority for an authenticated peer and transport slot.
 /// The lease prevents removal or reuse of the slot until the send returns.
 pub(crate) struct SendClaim {
-    transport: *mut crate::transport::HewTransport,
+    transport: super::ConnectionTransport,
     conn_id: c_int,
     identity: NodeId,
     route_slot: u16,
@@ -106,7 +106,7 @@ impl SendClaim {
         // prevents this exact connection slot from being removed or reused.
         let result = unsafe {
             self.channel
-                .send_prepared(self.transport, self.conn_id, || {
+                .send_prepared(self.transport.as_ptr(), self.conn_id, || {
                     let frame = prepare()?;
                     if crate::observe::observe_hot_tier_enabled() {
                         gossip = matches!(crate::envelope::decode_wire_frame(frame.as_ref()),
@@ -142,7 +142,7 @@ pub(crate) fn claim_send(
         })?;
         Some((
             SendClaim {
-                transport: manager.transport,
+                transport: connection.transport.clone(),
                 conn_id,
                 identity: connection.peer_identity?,
                 route_slot: connection.peer_node_id,

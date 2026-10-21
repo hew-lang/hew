@@ -88,7 +88,7 @@ fn route_slot_for_identity(mgr: &HewConnMgr, node_id: NodeId) -> Option<u16> {
 }
 
 fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossipEntry> {
-    cluster
+    let mut gossip: Vec<SwimGossipEntry> = cluster
         .take_swim_gossip(cluster.max_gossip_per_msg())
         .into_iter()
         .filter_map(|(route_slot, session, state, incarnation)| {
@@ -110,7 +110,38 @@ fn collect_swim_gossip(mgr: &HewConnMgr, cluster: &HewCluster) -> Vec<SwimGossip
                 incarnation,
             })
         })
-        .collect()
+        .collect();
+    // Current admitted origins remain discoverable after transition gossip
+    // ages out. These records are hints; the receiver authenticates each origin.
+    let mut origins = mgr
+        .claims
+        .0
+        .lock_or_recover()
+        .iter()
+        .filter(|(_, claim)| {
+            claim.state == crate::peer_binding::ClaimState::Published && claim.credential.is_some()
+        })
+        .map(|(identity, claim)| crate::envelope::NodeSessionIdentity {
+            node_id: *identity,
+            session_incarnation: claim.session_incarnation,
+        })
+        .collect::<Vec<_>>();
+    origins.sort_by_key(|origin| origin.node_id.to_bytes());
+    let room = cluster.max_gossip_per_msg().saturating_sub(gossip.len());
+    if !origins.is_empty() && room > 0 {
+        let start = mgr.relay.hint_cursor.fetch_add(room, Ordering::Relaxed) % origins.len();
+        for index in 0..room.min(origins.len()) {
+            let origin = origins[(start + index) % origins.len()];
+            if !gossip.iter().any(|entry| entry.member == origin) {
+                gossip.push(SwimGossipEntry {
+                    member: origin,
+                    state: crate::cluster::MEMBER_ALIVE,
+                    incarnation: 0,
+                });
+            }
+        }
+    }
+    gossip
 }
 
 /// Build a SWIM frame of `msg_type` to `target_node`, stamped with the local
@@ -282,9 +313,23 @@ pub(super) fn handle_swim_control_frame(
 
     let mut gossip = Vec::with_capacity(payload.gossip.len());
     for entry in &payload.gossip {
-        let Some(route_slot) = route_slot_for_identity(mgr_ref, entry.member.node_id) else {
-            set_last_error("connection reader SWIM gossip contains unknown NodeId");
-            return;
+        let route_slot = route_slot_for_identity(mgr_ref, entry.member.node_id);
+        let admitted_session = admitted_gossip_session(mgr_ref, entry.member.node_id);
+        if admitted_session != Some(entry.member.session_incarnation) {
+            if entry.state == crate::cluster::MEMBER_ALIVE {
+                super::relay::observe_hint(
+                    mgr,
+                    super::relay::Carrier {
+                        conn: conn_id,
+                        publication: claim_token,
+                    },
+                    entry.member,
+                );
+            }
+            continue;
+        }
+        let Some(route_slot) = route_slot else {
+            continue;
         };
         gossip.push((
             route_slot,
@@ -299,11 +344,7 @@ pub(super) fn handle_swim_control_frame(
                 set_last_error("connection reader SWIM target contains unknown NodeId");
                 return;
             };
-            let expected_session = if route_slot == mgr_ref.local_node_id {
-                mgr_ref.local_session_incarnation
-            } else {
-                cluster.member_session(route_slot)
-            };
+            let expected_session = admitted_gossip_session(mgr_ref, target.node_id);
             if expected_session != Some(target.session_incarnation) {
                 set_last_error("connection reader SWIM target session mismatch");
                 return;
@@ -360,5 +401,22 @@ pub(super) fn handle_swim_control_frame(
             // ACK (and any other type) requires no response; state already
             // updated via process_message above.
         }
+    }
+}
+
+fn admitted_gossip_session(
+    manager: &HewConnMgr,
+    identity: crate::node_identity::NodeId,
+) -> Option<u32> {
+    if Some(identity) == manager.local_identity {
+        manager.local_session_incarnation
+    } else {
+        manager
+            .claims
+            .0
+            .lock_or_recover()
+            .get(&identity)
+            .filter(|claim| claim.state == crate::peer_binding::ClaimState::Published)
+            .map(|claim| claim.session_incarnation)
     }
 }

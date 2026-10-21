@@ -60,9 +60,12 @@ mod manager;
 mod peer;
 mod reader;
 mod reconnect;
+mod relay;
 pub(crate) use reconnect::start_seed;
 mod send;
 mod swim;
+mod transport;
+use transport::ConnectionTransport;
 
 pub use admission::*;
 #[cfg(test)]
@@ -230,7 +233,7 @@ struct ConnectionActor {
     ///
     /// Null for test-only actors created without a manager; [`close_transport_conn`]
     /// is null-safe so drop is unconditionally safe.
-    transport: *mut HewTransport,
+    transport: ConnectionTransport,
     /// Exactly-once close ownership for this connection's transport handle.
     ///
     /// Shared by `Arc` so a caller that loses the claim can still wait for the
@@ -279,6 +282,9 @@ pub struct HewConnMgr {
     pub(crate) service_exports: Arc<crate::hew_node::service::ServiceExports>,
     /// Background reconnect worker handles.
     reconnect_workers: PoisonSafe<Vec<JoinHandle<()>>>,
+    relay: relay::RelayHub,
+    /// Canonical node name map, borrowed until every connection owner joins.
+    pub(crate) registry: *const crate::hew_node::HewRegistry,
     /// Configured seed targets have one manager-lifetime supervisor each.
     seed_targets: PoisonSafe<Vec<SeedTarget>>,
     /// Identities supervised by configured seeds cannot also arm transient retries.
@@ -610,7 +616,7 @@ impl ConnectionActor {
             reader_stop: Arc::new(AtomicI32::new(0)),
             superseded_claim: Mutex::new(None),
             reconnect: None,
-            transport: std::ptr::null_mut(),
+            transport: ConnectionTransport::borrowed(std::ptr::null_mut()),
             transport_close: Arc::new(TransportClose::default()),
         }
     }
@@ -628,7 +634,7 @@ impl ConnectionActor {
     unsafe fn close_transport(&self) {
         if self.transport_close.claim() {
             // SAFETY: caller guarantees transport pointer is valid or null.
-            unsafe { close_transport_conn(self.transport, self.conn_id) };
+            unsafe { close_transport_conn(self.transport.as_ptr(), self.conn_id) };
             self.transport_close.finish();
         } else {
             self.transport_close.wait_closed();
@@ -679,6 +685,7 @@ enum ConnectionInstallError {
 ///
 /// The transport must be valid for the entire duration it is used
 /// by the reader thread.
+#[derive(Clone, Copy, Debug)]
 struct SendTransport(*mut HewTransport);
 // SAFETY: Transport implementations use Mutex or fd-based I/O,
 // which are inherently thread-safe.

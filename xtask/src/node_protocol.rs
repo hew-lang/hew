@@ -16,6 +16,9 @@ const ROOTS: &[&str] = &[
     "ClusterEnrollment",
     "ClusterMember",
     "NodeHandshake",
+    "RelayOpen",
+    "RelayChunk",
+    "RelayClose",
 ];
 
 pub fn run(args: &[String]) -> crate::Result<()> {

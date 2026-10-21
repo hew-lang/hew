@@ -330,13 +330,17 @@ impl SecureScenario {
     }
 
     fn with_transport(mesh: bool) -> Self {
+        Self::with_roles(mesh, &["server", "client"])
+    }
+
+    fn with_roles(mesh: bool, roles: &[&str]) -> Self {
         use hew_runtime::{cluster_admission, encryption, peer_binding::PeerCredential};
         let kx_dir = tempfile::tempdir().expect("create cluster directory");
         let authority = kx_dir.path().join("authority.key");
         let foreign = kx_dir.path().join("foreign.key");
         cluster_admission::authority_identity(&authority).expect("create authority");
         cluster_admission::authority_identity(&foreign).expect("create foreign authority");
-        for role in ["server", "client"] {
+        for role in roles {
             let key = kx_dir.path().join(format!("{role}.key"));
             let credential = if mesh {
                 let identity = hew_runtime::quic_mesh::mesh_identity_load_or_create(&key)
@@ -1382,6 +1386,31 @@ fn mesh_large_requests_replies_and_declared_errors_preserve_following_frames() {
         "{stdout}"
     );
     assert!(!stdout.contains("FAIL "), "{stdout}");
+}
+
+/// A relay carries an independent authenticated origin session and its grant.
+#[test]
+fn three_enrolled_nodes_discover_call_and_revoke_through_a_relay() {
+    let scene = SecureScenario::with_roles(false, &["server", "relay", "client"]);
+    let mut origin = scene.spawn_server("transitive");
+    let _origin_stdout = wait_for_server_ready(&mut origin);
+    let origin_port = std::fs::read_to_string(scene.kx_dir.path().join("server.ready")).unwrap();
+    let mut relay = scene.spawn(
+        "relay",
+        "transitive",
+        &[("HEW_DIST_ORIGIN_PORT", &origin_port)],
+    );
+    let _relay_stdout = wait_for_server_ready(&mut relay);
+    let relay_port = std::fs::read_to_string(scene.kx_dir.path().join("relay.ready")).unwrap();
+    let client = scene.spawn_client("transitive", &[("HEW_DIST_RELAY_PORT", &relay_port)]);
+    let stdout = run_client_to_completion(client, 0, StderrExpectation::Ignore);
+    assert!(
+        stdout.contains("PASS transitive origin-session discovery grant call revoke no-replay"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("FAIL "), "{stdout}");
+    let _ = run_client_to_completion(origin, 0, StderrExpectation::Ignore);
+    let _ = run_client_to_completion(relay, 0, StderrExpectation::Ignore);
 }
 
 /// Node identity/location proof across two OS processes. The remote actor's

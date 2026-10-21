@@ -315,7 +315,10 @@ impl ChannelProtection {
 /// `transport` must be null or valid for the duration of the call.
 pub(super) unsafe fn channel_kind(transport: *const HewTransport) -> Option<ChannelKind> {
     // SAFETY: forwarded caller contract.
-    if unsafe { crate::transport::hew_transport_is_tcp(transport) } {
+    if unsafe { crate::transport::hew_transport_is_tcp(transport) }
+        // SAFETY: forwarded caller contract; the relay check is null-safe.
+        || unsafe { super::relay::transport::is_noise_transport(transport) }
+    {
         return Some(ChannelKind::TcpNoise);
     }
     #[cfg(feature = "quic")]

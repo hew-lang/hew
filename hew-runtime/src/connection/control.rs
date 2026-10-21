@@ -15,6 +15,7 @@ use crate::envelope::{
 };
 use crate::node_identity::Location;
 use crate::set_last_error;
+use crate::util::MutexExt;
 
 use super::handshake::supports_gossip;
 use super::peer::wait_authenticated_peer_node_id_for_conn;
@@ -70,6 +71,11 @@ pub(super) fn handle_control_frame(
     control: &ControlFrame,
 ) {
     match control.ctrl_kind {
+        crate::envelope::CTRL_RELAY_OPEN
+        | crate::envelope::CTRL_RELAY_CHUNK
+        | crate::envelope::CTRL_RELAY_CLOSE => {
+            super::relay::handle_control(mgr, conn_id, claim_token, control);
+        }
         crate::envelope::CTRL_SERVICE_OFFER | crate::envelope::CTRL_SERVICE_OFFER_RESULT => {
             handle_service_frame(mgr, conn_id, claim_token, control);
         }
@@ -176,10 +182,29 @@ fn handle_registry_gossip(
         return;
     }
     mgr_ref.record_gossip_received();
-    // SAFETY: cluster pointer is owned by the live node/manager and remains
-    // valid while the reader thread is running.
-    unsafe {
-        (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.location, is_add);
+    // SAFETY: a node keeps its canonical registry alive until manager teardown.
+    if let Some(registry) = unsafe { mgr_ref.registry.as_ref() } {
+        let claims = mgr_ref.claims.0.lock_or_recover();
+        let exact_origin = claims.get(&peer_identity.node_id).is_some_and(|claim| {
+            claim.state == crate::peer_binding::ClaimState::Published
+                && claim.conn_id == conn_id
+                && claim.publication_token == claim_token
+                && claim.session_incarnation == peer_identity.session_incarnation
+        });
+        if !exact_origin {
+            return;
+        }
+        let changed = registry.apply_origin_name(&payload.name, payload.location, is_add);
+        drop(claims);
+        if changed {
+            registry.notify_names();
+        }
+    } else {
+        // Standalone native cluster users retain their registered C callback.
+        // SAFETY: the manager pins its cluster for this reader's lifetime.
+        unsafe {
+            (&*mgr_ref.cluster).apply_registry_event(&payload.name, payload.location, is_add);
+        }
     }
 }
 

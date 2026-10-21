@@ -67,19 +67,17 @@ pub(crate) fn connection_attempt_remaining() -> Option<std::time::Duration> {
 /// Bound each framed syscall by the remaining absolute attempt budget, so a
 /// peer sending one byte at a time cannot extend authentication indefinitely.
 fn attempt_socket_timeout(sock: &Socket, read: bool) -> std::io::Result<()> {
-    let Some(remaining) = connection_attempt_remaining() else {
-        return Ok(());
-    };
-    if remaining.is_zero() {
+    let remaining = connection_attempt_remaining();
+    if remaining.is_some_and(|remaining| remaining.is_zero()) {
         return Err(std::io::Error::new(
             ErrorKind::TimedOut,
             "connection attempt deadline",
         ));
     }
     if read {
-        sock.set_read_timeout(Some(remaining))
+        sock.set_read_timeout(remaining)
     } else {
-        sock.set_write_timeout(Some(remaining))
+        sock.set_write_timeout(remaining)
     }
 }
 
@@ -91,7 +89,7 @@ fn attempt_socket_timeout(sock: &Socket, read: bool) -> std::io::Result<()> {
 pub const HEW_CONN_INVALID: c_int = -1;
 
 /// Maximum number of connections stored per transport.
-const MAX_CONNS: usize = 64;
+pub(crate) const MAX_CONNS: usize = 64;
 /// Maximum accepted framed payload size (16 MiB).
 ///
 /// Shared with the deterministic simulated transport.
@@ -3329,5 +3327,25 @@ mod unix_transport {
     #[no_mangle]
     pub unsafe extern "C" fn hew_transport_unix_new() -> *mut HewTransport {
         std::ptr::null_mut()
+    }
+}
+
+#[cfg(test)]
+mod attempt_deadline_tests {
+    use super::*;
+
+    #[test]
+    fn admission_socket_timeouts_do_not_escape_into_established_io() {
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP)).unwrap();
+        with_connection_attempt_deadline(|| {
+            attempt_socket_timeout(&socket, true).unwrap();
+            attempt_socket_timeout(&socket, false).unwrap();
+        });
+        assert!(socket.read_timeout().unwrap().is_some());
+        assert!(socket.write_timeout().unwrap().is_some());
+        attempt_socket_timeout(&socket, true).unwrap();
+        attempt_socket_timeout(&socket, false).unwrap();
+        assert_eq!(socket.read_timeout().unwrap(), None);
+        assert_eq!(socket.write_timeout().unwrap(), None);
     }
 }

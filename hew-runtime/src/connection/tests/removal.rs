@@ -51,7 +51,8 @@ fn connmgr_free_sets_reader_stop_before_transport_close() {
     };
     assert!(!mgr.is_null());
 
-    let actor = test_actor(55);
+    let mut actor = test_actor(55);
+    actor.transport = ConnectionTransport::borrowed(transport_ptr);
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
     // Swap the real reader_stop Arc into the callback pair so it can observe
     // the stop flag at the moment close_conn fires.
@@ -165,6 +166,7 @@ fn connmgr_remove_route_gone_before_conn_leaves_list() {
 
     // Build a real-enough actor for conn_id=77, peer_node_id=2.
     let mut actor = test_actor(77);
+    actor.transport = ConnectionTransport::borrowed(transport_ptr);
     actor.peer_node_id = 2;
     actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
     // SAFETY: mgr is live and was allocated by hew_connmgr_new above.
@@ -420,6 +422,7 @@ fn run_connmgr_publish_skips_removed_connection_test(with_routing_table: bool) {
         assert!(!mgr.is_null());
 
         let mut actor = test_actor(22);
+        actor.transport = ConnectionTransport::borrowed(transport_ptr);
         actor.publication_token = 2;
         actor.peer_node_id = 2;
         actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);

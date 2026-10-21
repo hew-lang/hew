@@ -3380,11 +3380,83 @@ fn run_client(scenario: string) -> i64 {
     status
 }
 
+actor TransitCounter {
+    var total: i64 = 0;
+    #[wire]
+    receive fn add(amount: i64) -> i64 {
+        total += amount;
+        total
+    }
+    #[wire]
+    receive fn read() -> i64 {
+        total
+    }
+    #[wire]
+    receive fn location() -> string {
+        let location = Node.lookup("transit-server").expect("origin name");
+        f"{location}"
+    }
+}
+
+fn run_transitive(role: string) -> i64 {
+    let kx = os.env("HEW_DIST_KX_DIR") ?? "";
+    start_admitted(kx, role, "server", "127.0.0.1:0");
+    let counter = spawn TransitCounter;
+    Node.register(f"transit-{role}", counter);
+    if role == "server" {
+        let _ = signal_server_listening(kx);
+        println(f"READY {unsafe { hew_dist_bound_port() }}");
+        let client = cluster.wait_registered("transit-client").expect("authenticated client origin");
+        let peer = Node.peer(client.node_id()).expect("authenticated client session");
+        let export = peer.export(counter).expect("offer origin actor");
+        let _ = wait_for_file(f"{kx}/transit.revoke");
+        export.close();
+        publish_atomic(kx, "transit.revoked", "1");
+        let replacement = peer.export(counter).expect("fresh grant");
+        let _ = wait_for_file(f"{kx}/transit.done");
+        assert(counter.read().expect("one accepted mutation") == 42);
+        replacement.close();
+    } else if role == "relay" {
+        let port = os.env("HEW_DIST_ORIGIN_PORT").expect("origin address");
+        Node.connect(f"127.0.0.1:{port}").expect("relay admits origin");
+        let own_port = f"{unsafe { hew_dist_bound_port() }}";
+        publish_atomic(kx, "relay.ready", own_port);
+        println(f"READY {own_port}");
+        let _ = wait_for_file(f"{kx}/transit.done");
+    } else {
+        let port = os.env("HEW_DIST_RELAY_PORT").expect("relay address");
+        Node.connect(f"127.0.0.1:{port}").expect("client admits relay");
+        let origin = cluster.wait_registered("transit-server").expect("transitive origin discovery");
+        let relay = cluster.wait_registered("transit-relay").expect("relay discovery");
+        assert(origin.node_id() != relay.node_id());
+        let peer = Node.peer(origin.node_id()).expect("end-to-end origin session");
+        let service: TransitCounter = peer.receive_service<TransitCounter>().expect("origin grant");
+        assert(service.location().expect("authenticated origin location") == f"{origin}");
+        assert(service.add(42).expect("transitive actor call") == 42);
+        publish_atomic(kx, "transit.revoke", "1");
+        let _ = wait_for_file(f"{kx}/transit.revoked");
+        match service.add(100) {
+            .Err(ActorError.RoutingFailed) => {}
+            .Err(error) => panic(f"unexpected revoked grant failure: {error}"),
+            .Ok(_) => panic("revoked origin grant retained authority"),
+        }
+        let fresh: TransitCounter = peer.receive_service<TransitCounter>().expect("fresh origin grant");
+        assert(fresh.read().expect("refused request did not execute") == 42);
+        publish_atomic(kx, "transit.done", "1");
+        println("PASS transitive origin-session discovery grant call revoke no-replay");
+    }
+    Node.shutdown();
+    0
+}
+
 fn main() -> i64 {
     let role = os.env("HEW_DIST_ROLE") ?? "";
     var scenario = os.env("HEW_DIST_SCENARIO") ?? "";
     if scenario == "" {
         scenario = "remote_ask";
+    }
+    if scenario == "transitive" {
+        return run_transitive(role);
     }
     if role == "server" {
         run_server(scenario);

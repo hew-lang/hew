@@ -242,6 +242,12 @@ pub(super) fn publish_identity_claim(
             && c.conn_id == conn_id
             && c.publication_token == publication_token
     });
+    // Clear predecessor discovery before exposing Published to the new reader.
+    // Holding the claim lock fences an old publication's final name mutation.
+    // SAFETY: the node retains its canonical registry through all manager users.
+    let registry = unsafe { mgr.registry.as_ref() };
+    let names_changed =
+        still_ours && registry.is_some_and(|registry| registry.forget_origin_names(node_id));
     if still_ours {
         if let Some(claim) = map.get_mut(&node_id) {
             claim.state = ClaimState::Published;
@@ -249,6 +255,9 @@ pub(super) fn publish_identity_claim(
     }
     drop(map);
     condvar.notify_all();
+    if names_changed {
+        registry.expect("changed registry").notify_names();
+    }
     still_ours
 }
 
@@ -432,6 +441,7 @@ pub(super) fn test_publish_claim(mgr: &HewConnMgr, route_slot: u16, conn_id: c_i
             conn.peer_identity = Some(node_id);
             conn.peer_session_incarnation = 1;
             conn.publication_token = token;
+            conn.transport = super::ConnectionTransport::borrowed(mgr.transport);
         }
     });
     token
@@ -727,6 +737,7 @@ fn close_superseded_connection_once(mgr: &HewConnMgr, conn_id: c_int, publicatio
                 (
                     connection.transport_close.claim(),
                     Arc::clone(&connection.transport_close),
+                    connection.transport.clone(),
                 )
             })
     });
@@ -734,9 +745,9 @@ fn close_superseded_connection_once(mgr: &HewConnMgr, conn_id: c_int, publicatio
     // `None`: the actor is gone, so its close already happened (or is happening
     // under someone else's claim) and the id may belong to a successor.
     // Neither may close here.
-    if let Some((true, transport_close)) = claim {
+    if let Some((true, transport_close, transport)) = claim {
         // SAFETY: mgr.transport is valid while the manager is alive.
-        unsafe { close_transport_conn(mgr.transport, conn_id) };
+        unsafe { close_transport_conn(transport.as_ptr(), conn_id) };
         transport_close.finish();
     }
 }

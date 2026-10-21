@@ -1223,6 +1223,63 @@ impl HewRegistry {
     fn observer(&self) -> Arc<observation::NodeObservation> {
         Arc::clone(&self.observation.lock_or_recover())
     }
+
+    pub(crate) fn local_names(
+        &self,
+        session: crate::envelope::NodeSessionIdentity,
+    ) -> Vec<(String, Location)> {
+        self.remote_names
+            .lock_or_recover()
+            .iter()
+            .filter(|(_, location)| {
+                location.node() == session.node_id
+                    && location.incarnation() == session.session_incarnation
+            })
+            .map(|(name, location)| (name.clone(), *location))
+            .collect()
+    }
+
+    pub(crate) fn current_local_name(
+        &self,
+        session: crate::envelope::NodeSessionIdentity,
+        name: &str,
+    ) -> Option<Location> {
+        self.remote_names
+            .lock_or_recover()
+            .get(name)
+            .copied()
+            .filter(|location| {
+                location.node() == session.node_id
+                    && location.incarnation() == session.session_incarnation
+            })
+    }
+
+    pub(crate) fn apply_origin_name(&self, name: &str, location: Location, is_add: bool) -> bool {
+        let mut names = self.remote_names.lock_or_recover();
+        if is_add {
+            if names.get(name) == Some(&location) {
+                return false;
+            }
+            names.insert(name.to_owned(), location);
+            true
+        } else if names.get(name) == Some(&location) {
+            names.remove(name);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn forget_origin_names(&self, identity: NodeId) -> bool {
+        let mut names = self.remote_names.lock_or_recover();
+        let previous = names.len();
+        names.retain(|_, location| location.node() != identity);
+        previous != names.len()
+    }
+
+    pub(crate) fn notify_names(&self) {
+        self.observer().notify();
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1466,6 +1523,7 @@ unsafe impl Sync for HewNode {}
 
 /// Callback invoked by the cluster when a registry gossip event arrives
 /// from a remote peer. Updates the node's `remote_names` map.
+#[cfg(test)]
 extern "C" fn node_registry_gossip_callback(
     name: *const c_char,
     location: *const HewLocation,
@@ -1487,14 +1545,9 @@ extern "C" fn node_registry_gossip_callback(
         set_last_error("registry gossip callback received an invalid Location");
         return;
     };
-    let mut map = registry.remote_names.lock_or_recover();
-    if is_add {
-        map.insert(key, location);
-    } else if map.get(&key) == Some(&location) {
-        map.remove(&key);
+    if registry.apply_origin_name(&key, location, is_add) {
+        registry.notify_names();
     }
-    drop(map);
-    registry.observer().notify();
 }
 
 unsafe fn free_transport(transport: *mut HewTransport) {
@@ -1878,11 +1931,9 @@ pub unsafe extern "C" fn hew_node_start(node: *mut HewNode) -> c_int {
                 node_membership_callback,
                 (node as *mut HewNode).cast::<c_void>(),
             );
-            cluster::hew_cluster_set_registry_callback(
-                node.cluster,
-                node_registry_gossip_callback,
-                node.registry.cast::<c_void>(),
-            );
+            // The manager borrows this canonical map until its readers, sends
+            // and admission workers have joined, before node registry teardown.
+            (*node.conn_mgr).registry = node.registry;
         }
     }
 

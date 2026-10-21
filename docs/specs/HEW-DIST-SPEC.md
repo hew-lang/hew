@@ -252,9 +252,25 @@ connection; there is no plaintext retry and no nonce reuse. One sealed TCP frame
 carries at most 65 519 bytes. A dial that is refused returns
 `Err(NodeError.Config)` from `Node.connect`.
 
-## 4. Protocol-version 11 handshake
+## 4. Protocol-version 12 handshake
 
-Version 11 carries checked handshake metadata, including cluster enrolment,
+Version 12 adds checked relay-open, byte-chunk and close controls. An admitted
+carrier may introduce another enrolled node's identity and session as a hint.
+The recipient establishes a separate end-to-end authenticated logical session
+through the carrier before accepting that origin's names, grants or calls.
+The carrier forwards opaque protected bytes; its own credential cannot attest
+to another node's identity. Circuit identifiers, ordered byte offsets and the
+carrier's exact publication fence replay and endpoint reuse. Carrier loss
+closes its dependent logical sessions and pending admission attempts.
+
+A new authenticated publication sends the origin's current local name snapshot,
+including names whose transition gossip has aged out. Name updates are accepted
+only from their exact authenticated origin session and publication. Delayed
+outbound name intents read the canonical local map under the connection send
+gate. Relay carriage preserves the selected channel's frame capacity and actor
+request semantics.
+
+Version 11 introduced checked handshake metadata, including cluster enrolment,
 through the same generated node schema and codec as other internal controls.
 It retains direct-actor and stable-role destinations and typed route-size
 failures. Upgrade communicating nodes together: earlier peers fail before route
@@ -272,7 +288,7 @@ the handshake. TLS carries the same checked metadata inside its protected sessio
 The receiver MUST reject:
 
 - oversized, malformed, duplicate, unknown, missing or trailing fields;
-- protocol version other than `11`;
+- protocol version other than `12`;
 - an all-zero `NodeId`;
 - session incarnation `0`;
 - schema incompatibility;

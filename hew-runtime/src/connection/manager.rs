@@ -108,6 +108,8 @@ pub(crate) unsafe fn connmgr_new(
         inbound_asks: Arc::default(),
         service_exports: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        relay: super::relay::RelayHub::default(),
+        registry: std::ptr::null(),
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -162,7 +164,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
         mgr.inbound_spawn_closed.store(true, Ordering::SeqCst);
         mgr.service_exports.close();
         mgr.inbound_asks.cancel_all();
-        let transport = mgr.transport;
+        super::relay::shutdown(&mgr);
 
         // Keep actors published while closing so a transport slot cannot be
         // reused by a new admission until every claimed deferred send has
@@ -183,6 +185,7 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                     connection.reader_stop.store(1, Ordering::Release);
                     (
                         connection.conn_id,
+                        connection.transport.clone(),
                         Arc::clone(&connection.claimed_send_lifecycle),
                         Arc::clone(&connection.transport_close),
                         connection.transport_close.claim(),
@@ -190,19 +193,19 @@ pub unsafe extern "C" fn hew_connmgr_free(mgr: *mut HewConnMgr) {
                 })
                 .collect::<Vec<_>>()
         });
-        for (conn_id, _, transport_close, owns_close) in &closing {
+        for (conn_id, transport, _, transport_close, owns_close) in &closing {
             if *owns_close {
                 // SAFETY: transport is valid per manager contract.
-                unsafe { close_transport_conn(transport, *conn_id) };
+                unsafe { close_transport_conn(transport.as_ptr(), *conn_id) };
                 transport_close.finish();
             }
         }
-        for (_, _, transport_close, owns_close) in &closing {
+        for (_, _, _, transport_close, owns_close) in &closing {
             if !*owns_close {
                 transport_close.wait_closed();
             }
         }
-        for (_, lifecycle, _, _) in &closing {
+        for (_, _, lifecycle, _, _) in &closing {
             lifecycle.wait_for_idle();
         }
         // The slots are now closed with no claimed sender in flight; draining

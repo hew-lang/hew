@@ -23,6 +23,8 @@ fn link_controls_from_wrong_authenticated_peer_are_rejected() {
         inbound_ask_active: Arc::new(AtomicUsize::new(0)),
         inbound_asks: Arc::default(),
         reconnect_workers: PoisonSafe::new(Vec::new()),
+        relay: relay::RelayHub::default(),
+        registry: std::ptr::null(),
         seed_targets: PoisonSafe::new(Vec::new()),
         seed_identities: PoisonSafe::new(Vec::new()),
         reader_lifecycle: Arc::new(ReaderLifecycle::default()),
@@ -366,6 +368,13 @@ fn swim_frame_imports_piggybacked_gossip() {
         // Model node 2 as the admitted, published owner of its NodeId so the
         // issue #2652 exact-owner control gate accepts its gossip.
         let conn10_token = test_publish_claim(&*mgr, 2, 10);
+        // A relay's membership allegation may update an already authenticated
+        // origin session; it cannot enrol an unknown origin by itself.
+        let mut origin = test_actor(11);
+        origin.posture = Posture::Strict;
+        origin.state.store(CONN_STATE_ACTIVE, Ordering::Release);
+        (&*mgr).connections.access(|conns| conns.push(origin));
+        test_publish_claim(&*mgr, 3, 11);
 
         // ACK from node 2 carrying DEAD-about-node-3 gossip.
         let ack = SwimControlPayload {

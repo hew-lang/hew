@@ -31,7 +31,7 @@ use crate::node_protocol_generated as protocol;
 /// Current wire protocol version.
 ///
 /// Frames carrying any other version value MUST be rejected by the decoder.
-pub const WIRE_VERSION: u8 = 11;
+pub const WIRE_VERSION: u8 = 12;
 pub use crate::request_state::RequestKind;
 
 /// Discriminant for a control frame (`frame_type` field value 0).
@@ -116,6 +116,11 @@ pub const CTRL_LINK_SETUP_RESULT: u64 = 10;
 pub const CTRL_SERVICE_OFFER: u64 = 11;
 /// Acknowledgement of recipient service-offer admission.
 pub const CTRL_SERVICE_OFFER_RESULT: u64 = 12;
+
+/// Opaque carriage for an independently authenticated origin session.
+pub const CTRL_RELAY_OPEN: u64 = 13;
+pub const CTRL_RELAY_CHUNK: u64 = 14;
+pub const CTRL_RELAY_CLOSE: u64 = 15;
 pub const MAX_SERVICE_HANDLERS: usize = 256;
 pub const MAX_SERVICE_OFFER_BYTES: usize = 65_536;
 
@@ -1973,14 +1978,14 @@ fn value_to_location_option(value: &Value, key: u64) -> Result<Option<Location>,
     }
 }
 
-fn wire_session(identity: NodeSessionIdentity) -> protocol::WireSession {
+pub(crate) fn wire_session(identity: NodeSessionIdentity) -> protocol::WireSession {
     protocol::WireSession {
         node: identity.node_id.to_bytes().to_vec(),
         incarnation: identity.session_incarnation,
     }
 }
 
-fn checked_session(
+pub(crate) fn checked_session(
     wire: &protocol::WireSession,
     key: u64,
 ) -> Result<NodeSessionIdentity, DecodeError> {

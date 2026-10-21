@@ -80,3 +80,19 @@ node-handshake = {
     7 => bstr, ; enrollment
 }
 
+relay-open = {
+    1 => uint, ; circuit
+    2 => wire-session, ; origin
+    3 => wire-session, ; target
+}
+
+relay-chunk = {
+    1 => uint, ; circuit
+    2 => uint, ; offset
+    3 => bstr, ; body
+}
+
+relay-close = {
+    1 => uint, ; circuit
+}
+

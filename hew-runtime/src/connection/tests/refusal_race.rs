@@ -194,7 +194,7 @@ impl TeardownRace {
             next_publication_token(mgr).expect("the publication token space is not exhausted");
         actor.publication_token = token;
         actor.peer_node_id = route_slot;
-        actor.transport = self.transport;
+        actor.transport = ConnectionTransport::borrowed(self.transport);
         actor.state.store(CONN_STATE_ACTIVE, Ordering::Release);
         actor.reconnect = Some(ReconnectSettings {
             target_addr: "10.0.0.2:9000".to_owned(),

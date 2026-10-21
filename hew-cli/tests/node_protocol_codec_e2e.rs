@@ -7,7 +7,8 @@ mod protocol;
 use hew_codec::Format;
 use protocol::{
     CleanupFault, ClusterEnrollment, ClusterMember, DownReason, MonitorDown, NodeHandshake,
-    RegistryGossip, ServiceOffer, SwimControl, SwimGossip, WireLocation, WireSession,
+    RegistryGossip, RelayChunk, RelayClose, RelayOpen, ServiceOffer, SwimControl, SwimGossip,
+    WireLocation, WireSession,
 };
 
 fn offer() -> ServiceOffer {
@@ -94,11 +95,36 @@ fn handshake() -> NodeHandshake {
     }
 }
 
+fn relay_open() -> RelayOpen {
+    RelayOpen {
+        circuit: 17,
+        origin: offer().recipient,
+        target: WireSession {
+            node: b"0123456789abcdef".to_vec(),
+            incarnation: 4,
+        },
+    }
+}
+
+fn relay_chunk() -> RelayChunk {
+    RelayChunk {
+        circuit: 17,
+        offset: 4,
+        body: b"relay bytes".to_vec(),
+    }
+}
+fn relay_close() -> RelayClose {
+    RelayClose { circuit: 17 }
+}
+
 fn write_admission_values(dir: &std::path::Path, format: Format, extension: &str) {
     for (name, bytes) in [
         ("member", member().encode(format)),
         ("enrollment", enrollment().encode(format)),
         ("handshake", handshake().encode(format)),
+        ("relay-open", relay_open().encode(format)),
+        ("relay-chunk", relay_chunk().encode(format)),
+        ("relay-close", relay_close().encode(format)),
     ] {
         std::fs::write(dir.join(format!("rust-{name}.{extension}")), bytes).unwrap();
     }
@@ -123,6 +149,15 @@ fn check_admission_values(dir: &std::path::Path, format: Format, extension: &str
     assert_eq!(member_bytes, member().encode(format));
     assert_eq!(enrollment_bytes, enrollment().encode(format));
     assert_eq!(handshake_bytes, handshake().encode(format));
+    let open = std::fs::read(dir.join(format!("hew-relay-open.{extension}"))).unwrap();
+    let chunk = std::fs::read(dir.join(format!("hew-relay-chunk.{extension}"))).unwrap();
+    let close = std::fs::read(dir.join(format!("hew-relay-close.{extension}"))).unwrap();
+    assert_eq!(RelayOpen::decode(format, &open).unwrap(), relay_open());
+    assert_eq!(RelayChunk::decode(format, &chunk).unwrap(), relay_chunk());
+    assert_eq!(RelayClose::decode(format, &close).unwrap(), relay_close());
+    assert_eq!(open, relay_open().encode(format));
+    assert_eq!(chunk, relay_chunk().encode(format));
+    assert_eq!(close, relay_close().encode(format));
 }
 
 #[test]

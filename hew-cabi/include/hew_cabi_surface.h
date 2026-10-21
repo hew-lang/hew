@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1642u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1654u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1642] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1654] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -4696,6 +4696,39 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1642] = {
      "-> c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_count",
+     "{\"native\": \"fn hew_node_snapshot_count( *const HewNodeSnapshot, bool, "
+     ") -> i64\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_current",
+     "{\"native\": \"fn hew_node_snapshot_current() -> *mut HewNodeSnapshot\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_free",
+     "{\"native\": \"fn hew_node_snapshot_free( *mut HewNodeSnapshot)\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_local",
+     "{\"native\": \"fn hew_node_snapshot_local( *const HewNodeSnapshot) -> "
+     "Member\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_member",
+     "{\"native\": \"fn hew_node_snapshot_member( *const HewNodeSnapshot, i64, "
+     ") -> Member\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_registration",
+     "{\"native\": \"fn hew_node_snapshot_registration( *const "
+     "HewNodeSnapshot, i64, ) -> Registration\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_snapshot_valid",
+     "{\"native\": \"fn hew_node_snapshot_valid( *const HewNodeSnapshot) -> "
+     "bool\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_node_start",
      "{\"native\": \"fn hew_node_start( *mut HewNode) -> c_int\"}", "native",
      "stable", "not-applicable", "no-in-signature-extent",
@@ -4708,6 +4741,28 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1642] = {
      "{\"native\": \"fn hew_node_unregister( *mut HewNode, *const c_char) -> "
      "c_int\"}",
      "native", "stable", "nul-terminated", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_watch_changes",
+     "{\"native\": \"fn hew_node_watch_changes( *const HewNodeWatch, ) -> *mut "
+     "HewStreamPair\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_watch_free",
+     "{\"native\": \"fn hew_node_watch_free( *mut HewNodeWatch)\"}", "native",
+     "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_watch_open",
+     "{\"native\": \"fn hew_node_watch_open() -> *mut HewNodeWatch\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_watch_snapshot",
+     "{\"native\": \"fn hew_node_watch_snapshot( *const HewNodeWatch, ) -> "
+     "*mut HewNodeSnapshot\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_node_watch_status",
+     "{\"native\": \"fn hew_node_watch_status( *const HewNodeWatch) -> i64\"}",
+     "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_noise_key_load",
      "{\"native\": \"fn hew_noise_key_load( *const c_char, *mut u8, *mut u8, ) "

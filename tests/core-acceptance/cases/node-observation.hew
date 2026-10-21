@@ -1,0 +1,101 @@
+import std.net.cluster;
+import std.os;
+
+actor Service {
+    fn ping() -> i64 {
+        42
+    }
+}
+
+fn configured() -> NodeConfig {
+    var config = NodeConfig.at("127.0.0.1:0");
+    config.key = f"{os.temp_dir()}/hew-node-observation-{os.pid()}.key";
+    config
+}
+
+fn publish(service: Service) {
+    assert(Node.register("later", service) == 0);
+}
+
+fn main() {
+    match cluster.snapshot() {
+        .Err(.NotRunning) => {}
+        _ => panic("snapshot without node"),
+    }
+    match cluster.watch() {
+        .Err(.NotRunning) => {}
+        _ => panic("watch without node"),
+    }
+    Node.start(configured()).expect("start");
+    let observation = cluster.watch().expect("watch");
+    let initial = observation.initial;
+    assert(initial.local.id == Node.id().expect("running identity"));
+    assert(initial.local.session > 0);
+    assert(initial.members.len() == 1);
+    assert(initial.registrations.is_empty());
+    scope {
+        let service = spawn Service;
+        assert(Node.register("first", service) == 0);
+        observation.changes.recv().expect("registration readiness");
+        let current = observation.snapshot().expect("snapshot after recv");
+        assert(current.registrations.len() == 1);
+        assert(current.local_registrations().len() == 1);
+        assert(current.registrations[0].name == "first");
+        assert(current.registrations[0].location == Node.lookup("first").expect("lookup"));
+        assert(cluster.wait_registered("first").expect("already registered") == current.registrations[0].location);
+        scope {
+            let publishing = fork publish(service);
+            let location = cluster.wait_registered("later").expect("registration wait");
+            assert(location == Node.lookup("later").expect("later lookup"));
+            await publishing;
+        };
+        stop(service);
+        stopped(service);
+        assert(observation.snapshot().expect("retained handle withdrawal").registrations.is_empty());
+        let predecessor = spawn Service;
+        let replacement = spawn Service;
+        assert(Node.register("repointed", predecessor) == 0);
+        assert(Node.register("repointed", replacement) == 0);
+        let repointed = Node.lookup("repointed").expect("replacement location");
+        stop(predecessor);
+        stopped(predecessor);
+        let retained = observation.snapshot().expect("predecessor cleanup");
+        assert(retained.registrations.len() == 1);
+        assert(retained.registrations[0].location == repointed);
+        assert(Node.lookup("repointed").expect("replacement survives") == repointed);
+        stop(replacement);
+        stopped(replacement);
+        assert(observation.snapshot().expect("replacement cleanup").registrations.is_empty());
+    };
+    observation.changes.recv().expect("withdrawal readiness");
+    assert(observation.snapshot().expect("withdrawal snapshot").registrations.is_empty());
+    // Scope cancellation releases the suspended stream and its subscription.
+    let cancelled = scope within 10ms {
+        cluster.wait_registered("missing").expect("wait until cancelled");
+        false
+    } handle failure {
+        match failure {
+            .Deadline { message } => true,
+            .Fault { message } => panic(message),
+        }
+    };
+    assert(cancelled);
+    Node.shutdown();
+    observation.wait_shutdown();
+    match observation.snapshot() {
+        .Err(.NotRunning) => {}
+        _ => panic("retired snapshot"),
+    }
+    Node.start(configured()).expect("restart");
+    let restarted = cluster.snapshot().expect("successor snapshot");
+    assert(restarted.local.id == initial.local.id);
+    assert(restarted.local.session > initial.local.session);
+    match observation.snapshot() {
+        .Err(.NotRunning) => {}
+        _ => panic("adopted successor"),
+    }
+    cluster.wait_departed(initial.local).expect("old session has departed");
+    let successor = cluster.watch().expect("successor watch");
+    Node.shutdown();
+    successor.wait_shutdown();
+}

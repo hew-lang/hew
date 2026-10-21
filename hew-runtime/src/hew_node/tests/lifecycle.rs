@@ -680,7 +680,11 @@ fn exact_identity_prunes_remote_names_for_departed_node() {
         map.insert("other-node".to_owned(), test_location(303, 0x20));
     }
 
-    let _ = take_registry_names_if(&registry, |location| location.node() == test_node_id(202));
+    let _ = take_registry_names_if(
+        &registry,
+        |location| location.node() == test_node_id(202),
+        |_| {},
+    );
 
     let map = registry.remote_names.lock_or_recover();
     assert!(!map.contains_key("remote-a"));

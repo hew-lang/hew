@@ -12215,6 +12215,97 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_node_snapshot_count( *const HewNodeSnapshot, bool, ) -> i64"
+      },
+      "symbol": "hew_node_snapshot_count"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_current() -> *mut HewNodeSnapshot"
+      },
+      "symbol": "hew_node_snapshot_current"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_free( *mut HewNodeSnapshot)"
+      },
+      "symbol": "hew_node_snapshot_free"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_local( *const HewNodeSnapshot) -> Member"
+      },
+      "symbol": "hew_node_snapshot_local"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_member( *const HewNodeSnapshot, i64, ) -> Member"
+      },
+      "symbol": "hew_node_snapshot_member"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_registration( *const HewNodeSnapshot, i64, ) -> Registration"
+      },
+      "symbol": "hew_node_snapshot_registration"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_snapshot_valid( *const HewNodeSnapshot) -> bool"
+      },
+      "symbol": "hew_node_snapshot_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_node_start( *mut HewNode) -> c_int"
       },
       "symbol": "hew_node_start"
@@ -12244,6 +12335,71 @@
         "native": "fn hew_node_unregister( *mut HewNode, *const c_char) -> c_int"
       },
       "symbol": "hew_node_unregister"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_watch_changes( *const HewNodeWatch, ) -> *mut HewStreamPair"
+      },
+      "symbol": "hew_node_watch_changes"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_watch_free( *mut HewNodeWatch)"
+      },
+      "symbol": "hew_node_watch_free"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_watch_open() -> *mut HewNodeWatch"
+      },
+      "symbol": "hew_node_watch_open"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_watch_snapshot( *const HewNodeWatch, ) -> *mut HewNodeSnapshot"
+      },
+      "symbol": "hew_node_watch_snapshot"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_node_watch_status( *const HewNodeWatch) -> i64"
+      },
+      "symbol": "hew_node_watch_status"
     },
     {
       "availability": [

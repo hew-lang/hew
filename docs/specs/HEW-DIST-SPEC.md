@@ -347,15 +347,16 @@ that authority.
 
 ## 7. Registry and names
 
-`Node.register(name, actor: A) -> Result<(), RegisterError>` publishes
-the actor's exact `Location` and records `A`'s declaration identity beside it.
+`Node.register(name, actor: A) -> i32` publishes
+the actor's exact `Location`; zero indicates success.
 `Node.lookup(name) -> Result<Location, LookupError>` returns discovery metadata
 from the authenticated registry. A location cannot authorize actor operations.
 Obtain an imported actor value from an authenticated export offer (§7.1).
 
-`Node.register` is the one registration verb. It registers locally whether or
-not a node has started, and publishes cluster-wide once one has.
-`Node.unregister(name)` withdraws the name. `whereis<A>(name) ->
+`Node.register` requires a running node and publishes through its registry.
+Actor teardown withdraws its names. Explicit unregister is currently a native
+runtime operation; a `Node.unregister` Hew spelling is not implemented.
+`whereis<A>(name) ->
 Result<A, LookupError>` is the local view of the same registry and
 performs the same comparison.
 
@@ -373,6 +374,37 @@ Names are discovery aliases, not identity:
 
 Registry gossip from an unauthenticated, unverified, stale, or superseded
 connection MUST be rejected.
+
+### Membership and naming observation
+
+`std.net.cluster.snapshot()` returns a copied `Snapshot` containing the local
+`Member`, known `members` and all known `registrations`. A `Member` carries the
+canonical `NodeId`, durable `session` and `State` (`Alive`, `Suspect`, `Dead` or
+`Left`). A `Registration` carries a name and exact discovery `Location`.
+`Snapshot.local_registrations()` selects registrations of the local identity.
+These are current local observations, not quorum or liveness guarantees. The
+membership and name collections do not form a cross-collection transaction.
+
+`cluster.watch()` returns an instance-bound `Subscription` with `initial`,
+`changes: Stream<()>` and `snapshot()`. Subscription precedes the initial read:
+a concurrent change is visible in that read or leaves readiness queued,
+possibly both. Readiness coalesces and consumers re-read snapshots; this is not
+a lossless departure/join event log. Each node admits at most 64 live
+subscriptions and reports `ObserveError.Limit` beyond that bound.
+
+`cluster.wait_registered(name)` waits cancellably for a current discovery
+location. `cluster.wait_departed(member)` waits until that exact identity and
+durable session is absent, dead or left; a higher-session rejoin does not hide
+the predecessor's departure. Neither operation mints actor authority. Both
+subscribe before checking, use ordinary stream waits and release their
+subscriptions on completion or scope cancellation.
+
+A subscription never adopts a replacement node instance. Snapshot reads report
+`ObserveError.NotRunning` when admission closes. The changes stream reaches EOF
+after owned network workers and teardown finish, with any queued readiness
+consumed first. `subscription.wait_shutdown()` drains that stream to completion
+and remains cancellable by its enclosing scope. It does not request shutdown.
+Global snapshot and watch creation require a running node.
 
 ## 7.1 Supplied service grants
 

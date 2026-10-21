@@ -213,6 +213,8 @@ pub(crate) fn finish_actor_terminal(actor: &HewActor, state: i32) {
             .store(record.as_raw(), Ordering::Release);
     }
     let actor_id = actor.id;
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::hew_node::retire_current_actor_names(actor_id);
     let notice = completion.terminal_notice.lock_or_recover().take();
     // Cleanup is complete, including the crash hook's decision, but close
     // observers stay pending until all terminal notifications are published.

@@ -30,7 +30,7 @@ fn poll_until(mut ready: impl FnMut(u32) -> bool) {
 /// The test runner's timeout is the hang guard.
 const NO_ASK_DEADLINE_MS: u64 = u64::MAX;
 
-fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
+pub(super) fn test_node_id(route_slot: u16) -> crate::node_identity::NodeId {
     let mut bytes = [0_u8; 16];
     bytes[14..].copy_from_slice(&route_slot.to_be_bytes());
     crate::node_identity::NodeId::from_bytes(bytes)
@@ -120,7 +120,7 @@ unsafe fn lookup_exact(node: *mut HewNode, name: *const c_char) -> Option<Locati
     }
 }
 
-unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
+pub(super) unsafe fn install_test_auth(node: *mut HewNode, route_slot: u16) {
     let snapshot = PeerAuthSnapshot::for_test(test_node_id(route_slot), []);
     // SAFETY: caller owns a stopped test node.
     assert_eq!(unsafe { hew_node_set_auth_snapshot(node, snapshot) }, 0);

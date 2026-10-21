@@ -31,6 +31,7 @@ import std.fs;
 import std.stream;
 
 import std.net;
+import std.net.cluster;
 
 import std.encoding.utf8;
 
@@ -613,14 +614,14 @@ actor RemoteClosingActor {
 }
 
 fn scenario_server_remote_stopped(kx: string, fail_close: bool) {
-    let target = spawn RemoteClosingActor {
-        state: RemoteCloseState { directory: kx, fail_close: fail_close }
-    };
+    let target = spawn RemoteClosingActor { state: RemoteCloseState { directory: kx, fail_close: fail_close } };
     let peer = fixture_peer();
     let export = peer.export(target).expect("terminal observation grant");
     assert(wait_for_file(f"{kx}/close.entered") == "1");
     var attempts = 0;
-    while (unsafe { hew_dist_monitor_remote_watcher_count() }) == 0 {
+    while (unsafe {
+        hew_dist_monitor_remote_watcher_count()
+    }) == 0 {
         attempts = attempts + 1;
         assert(attempts < 600);
         sleep(10ms);
@@ -1572,7 +1573,9 @@ fn run_server(scenario: string) {
     let addr = if scenario == "persistent_seed" {
         let port = os.env("HEW_DIST_SEED_PORT") ?? "";
         f"127.0.0.1:{port}"
-    } else { base_addr };
+    } else {
+        base_addr
+    };
     start_pinned(kx, "server", "client", addr);
     let s: HashMap<string, string> = HashMap.new();
     let kv = spawn KeyValue { store: s };
@@ -2969,7 +2972,17 @@ fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
         .Ok(KvResp.Value(value)) => assert(value == "authenticated"),
         _ => panic("initial seed call"),
     }
-    let old_location = discover_with_retry("kv").expect("seed location");
+    let old_location = cluster.wait_registered("kv").expect("seed location");
+    let before = cluster.snapshot().expect("authenticated membership");
+    assert(before.local_registrations().is_empty());
+    var predecessor = before.local;
+    for member in before.members {
+        if member.id == old_location.node_id() {
+            predecessor = member;
+        }
+    }
+    assert(predecessor.id == old_location.node_id());
+    assert(predecessor.session == old_location.incarnation());
     scope {
         let interrupted = fork old.handle(KvReq.Stall);
         let _ = wait_for_file(f"{kx}/seed.inflight");
@@ -2984,7 +2997,16 @@ fn scenario_persistent_seed(old: KeyValue, kx: string) -> i64 {
     let fresh = fresh_peer.receive_service<KeyValue>().expect("fresh seed grant");
     let _wire = fresh_peer.receive_service<WireProbe>().expect("fresh wire grant");
     let _identity = fresh_peer.receive_service<IdentityProbe>().expect("fresh identity grant");
-    let fresh_location = discover_with_retry("kv").expect("fresh seed location");
+    let fresh_location = cluster.wait_registered("kv").expect("fresh seed location");
+    cluster.wait_departed(predecessor).expect("predecessor departure despite rejoin");
+    let after = cluster.snapshot().expect("rejoined membership");
+    var rejoined = false;
+    for member in after.members {
+        if member.id == predecessor.id && member.session == fresh_location.incarnation() {
+            rejoined = true;
+        }
+    }
+    assert(rejoined);
     assert(fresh_location.incarnation() > old_location.incarnation());
     match fresh.handle(KvReq.GetKey("seed-held")) {
         .Ok(KvResp.Value(value)) => assert(value == ""),

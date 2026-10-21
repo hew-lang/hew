@@ -354,6 +354,7 @@ pub struct HewCluster {
     members: Mutex<Vec<ClusterMember>>,
     /// Durable authenticated session incarnation per receiver-local route slot.
     sessions: Mutex<HashMap<u16, u32>>,
+    observer: Mutex<std::sync::Weak<crate::hew_node::observation::NodeObservation>>,
     /// Current connection publication token per peer.
     connection_tokens: Mutex<ConnectionTokens>,
     /// Deferred membership transitions waiting to notify callbacks.
@@ -696,6 +697,7 @@ impl HewCluster {
             config,
             members: Mutex::new(Vec::with_capacity(16)),
             sessions: Mutex::new(HashMap::new()),
+            observer: Mutex::new(std::sync::Weak::new()),
             connection_tokens: Mutex::new(ConnectionTokens::default()),
             pending_member_transitions: Mutex::new(PendingMemberTransitions::default()),
             events: Mutex::new(VecDeque::with_capacity(MAX_GOSSIP_EVENTS)),
@@ -1239,6 +1241,12 @@ impl HewCluster {
             return;
         }
         Self::apply_member_transition_side_effects(transition);
+        if may_emit() {
+            let observer = self.observer.lock_or_recover().upgrade();
+            if let Some(observer) = observer {
+                observer.notify();
+            }
+        }
     }
 
     /// A stale DEAD may settle resources that still carry its exact owner, but
@@ -1430,6 +1438,38 @@ impl HewCluster {
         if self.member_incarnation(node_id).is_none() {
             self.upsert_member(node_id, MEMBER_ALIVE, 1, &[]);
         }
+    }
+
+    pub(crate) fn set_observer(
+        &self,
+        observer: std::sync::Weak<crate::hew_node::observation::NodeObservation>,
+    ) {
+        *self.observer.lock_or_recover() = observer;
+    }
+
+    /// Clone discovery metadata under the same lock order as route publication.
+    /// Pending live admissions do not become observable before publication.
+    pub(crate) fn observation_members(&self) -> Vec<(u16, u32, i32)> {
+        let sessions = self.sessions.lock_or_recover();
+        let tokens = self.connection_tokens.lock_or_recover();
+        let members = self.members.lock_or_recover();
+        members
+            .iter()
+            .filter_map(|member| {
+                let session = sessions.get(&member.node_id).copied()?;
+                if matches!(member.state, MEMBER_ALIVE | MEMBER_SUSPECT)
+                    && tokens.visible.get(&member.node_id) != tokens.current.get(&member.node_id)
+                {
+                    return None;
+                }
+                if matches!(member.state, MEMBER_ALIVE | MEMBER_SUSPECT)
+                    && !tokens.visible.contains_key(&member.node_id)
+                {
+                    return None;
+                }
+                Some((member.node_id, session, member.state))
+            })
+            .collect()
     }
 
     /// Current durable session for a receiver-local route slot.

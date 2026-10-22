@@ -1204,6 +1204,26 @@ fn associated_fields_and_index_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn json_value_collections_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "sir-json-value-collections",
+            source_rel: "tests/core-acceptance/cases/sir-json-value-collections.hew",
+        },
+        ParityCase {
+            test_name: "vec-element-json-value",
+            source_rel: "tests/core-acceptance/cases/vec-element-json-value.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn user_codec_stream_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

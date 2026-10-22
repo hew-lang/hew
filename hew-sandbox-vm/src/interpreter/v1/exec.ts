@@ -193,6 +193,8 @@ interface ActorMessage {
 }
 
 interface ActorInstance {
+  /** Native JSON error slots follow actor identity across handler turns. */
+  jsonError?: string;
   rcOwner: RcOwner;
   identity: bigint;
   id: string;
@@ -413,6 +415,7 @@ export async function runPackageV1(
 }
 
 class ExecutorV1 {
+  private jsonError = "";
   private current: Activation;
   private readonly host: ShimHost;
   private readonly scheduler: FrameScheduler;
@@ -456,6 +459,16 @@ class ExecutorV1 {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
       calendarBridge: options.calendarBridge,
+      codecBridge: options.codecBridge,
+      jsonError: (message) => {
+        const actor = this.current.context.actor;
+        if (actor) {
+          if (message !== undefined) actor.jsonError = message;
+          return actor.jsonError ?? "";
+        }
+        if (message !== undefined) this.jsonError = message;
+        return this.jsonError;
+      },
       fileError: (operation) => {
         const error = this.current.context.fileError;
         switch (operation) {
@@ -3394,6 +3407,9 @@ class ExecutorV1 {
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
+          case "json":
+            value.value = null;
+            break;
           case "string":
             value.release();
             break;
@@ -3548,6 +3564,7 @@ class ExecutorV1 {
   }
 
   private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "json") value.value = null;
     if (value.kind === "host_resource") this.closeHostResource(value);
     if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);

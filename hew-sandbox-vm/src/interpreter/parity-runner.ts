@@ -68,9 +68,15 @@ try {
   if (
     typeof bytecode === "object" &&
     bytecode !== null &&
-    "codecs" in bytecode &&
-    Array.isArray(bytecode.codecs) &&
-    bytecode.codecs.length
+    (("codecs" in bytecode &&
+      Array.isArray(bytecode.codecs) &&
+      bytecode.codecs.length) ||
+      ("runtime_families" in bytecode &&
+        Array.isArray(bytecode.runtime_families) &&
+        bytecode.runtime_families.some(
+          (entry) =>
+            entry?.family === "Encoding" && entry.detail?.format === "Json",
+        )))
   ) {
     const local = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),

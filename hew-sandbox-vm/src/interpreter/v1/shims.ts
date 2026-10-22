@@ -3,6 +3,7 @@ import {
   type DirectoryOperation,
 } from "./browser-directory.js";
 import { executeCalendar } from "./calendar.js";
+import { executeJson } from "./json-values.js";
 import { charProperty, charCase } from "../unicode.js";
 import type { Pipes } from "./pipes.js";
 /// Runtime implementations and their host execution registration. Admission and
@@ -47,6 +48,8 @@ export interface ShimHost {
     operation: "HasError" | "LastErrorKind" | "LastErrno" | "LastError",
   ): VmValue;
   calendarBridge?: (request: string) => string;
+  codecBridge?: (request: string) => string;
+  jsonError?(message?: string): string;
   pipes?: Pipes;
   newPipe?(capacity: number): VmValue;
   generatorStream?(generator: VmValue): VmValue;
@@ -224,6 +227,15 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
     case "VecSliceRange":
       return refused(`${entry.family}::${entry.detail}`);
     case "Encoding":
+      return entry.detail.format === "Json" && entry.detail.op !== "GetDatetime"
+        ? {
+            kind: "ordinary",
+            shim: (host, args) => executeJson(host, entry.detail.op, args),
+            ...(entry.detail.op === "Parse" || entry.detail.op === "Stringify"
+              ? { bridge: "codecBridge" as const }
+              : {}),
+          }
+        : refused(`Encoding::${entry.detail.format}`);
     case "VecScalar":
       return refused(entry.family);
     case "Vector":

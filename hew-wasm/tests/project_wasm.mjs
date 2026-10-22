@@ -112,3 +112,39 @@ import std.math;
   assert.equal(hostOnly.real_time, true);
   assert.equal(hostOnly.bytecode, null);
 });
+
+test('JSON Value stdlib cases execute with the real lossless Wasm bridge', async () => {
+  const source = readFileSync(new URL('../../tests/hew/json_test.hew', import.meta.url), 'utf8');
+  const output = JSON.parse(compiler.compileTestsToSandboxBytecode(source, 'json_test.hew'));
+  assert.ok(!output.diagnostics.some(d => d.severity === 'error'), JSON.stringify(output.diagnostics));
+  assert.ok(output.tests.length > 0);
+  for (const selected of output.tests) {
+    assert.ok(selected.bytecode, `${selected.identity}: ${JSON.stringify(selected.diagnostics)}`);
+    const trace = await runBytecode(selected.bytecode, {codecBridge: compiler.executeCodec});
+    assert.equal(trace.result, 'ok', `${selected.identity}: ${JSON.stringify(trace.final_state)}`);
+  }
+});
+
+test('JSON parsing errors and recovery execute in separate actors', async () => {
+  const source = `
+import std.encoding.json;
+actor Parser {
+    receive fn parse(text: string) -> string {
+        match json.parse(text) {
+            .Ok(_) => "",
+            .Err(json.ParseError.Invalid(message)) => message,
+        }
+    }
+}
+fn main() {
+    let first = spawn Parser;
+    let second = spawn Parser;
+    assert(first.parse("[").expect("first parse") == "EOF while parsing a list at line 1 column 1");
+    assert(second.parse("null").expect("second parse") == "");
+    assert(first.parse("null").expect("clear parse") == "");
+}`;
+  const output = JSON.parse(compiler.compileToSandboxBytecode(source, 'sandbox-vm-export'));
+  assert.ok(output.bytecode, JSON.stringify(output.diagnostics));
+  const trace = await runBytecode(output.bytecode, {codecBridge: compiler.executeCodec});
+  assert.equal(trace.result, 'ok', JSON.stringify(trace.final_state));
+});

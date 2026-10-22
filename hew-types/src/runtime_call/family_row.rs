@@ -7428,6 +7428,32 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Vector,
                 c_return: RuntimeCReturn::Storage,
             },
+            Self::Vector(VecValueOp::Swap) => RuntimeOpRow {
+                authority: RuntimeAuthority::Value,
+                symbol: "vec.value.swap",
+                contract: Some(RuntimeSemanticContract {
+                    arguments: &[
+                        A {
+                            ty: K::Receiver(BuiltinType::Vec),
+                            effect: E::Move,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                        A {
+                            ty: K::I64,
+                            effect: E::Copy,
+                        },
+                    ],
+                    result: R::UpdatedReceiver(K::Receiver(BuiltinType::Vec)),
+                    failures: &[RuntimeLogicalFailure::IndexOutOfBounds],
+                }),
+                staging: RuntimeStaging::Declared,
+                abi_shape: RuntimeCallAbiShape::Other,
+                physical: RuntimePhysicalForm::Vector,
+                c_return: RuntimeCReturn::Storage,
+            },
             Self::Vector(VecValueOp::Pop) => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "vec.value.pop",

@@ -236,7 +236,6 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
             family: "Vector",
             operation: entry.detail,
           });
-        case "Pop":
         case "GetBorrow":
         case "TakeFirst":
         case "TakeAll":
@@ -886,6 +885,35 @@ const UNIT_FAMILIES = {
 >;
 
 const VECTOR_SHIMS = {
+  Swap: (_host, args) => {
+    const target = vec(args, 0);
+    const left = index(args, 1);
+    const right = index(args, 2);
+    if (
+      left < 0 ||
+      left >= target.items.length ||
+      right < 0 ||
+      right >= target.items.length
+    ) {
+      throw new ShimFault("vector_bounds", "vector swap index out of bounds");
+    }
+    [target.items[left], target.items[right]] = [
+      target.items[right]!,
+      target.items[left]!,
+    ];
+    return target;
+  },
+  Pop: (_host, args) => {
+    const target = vec(args, 0);
+    if (target.items.length === 0) {
+      throw new ShimFault("vector_bounds", "pop from empty vector");
+    }
+    return {
+      kind: "record",
+      typeId: "",
+      fields: [target, target.items.pop()!],
+    };
+  },
   New: () => ({ kind: "vector", elementType: "", items: [] }),
   // The receiver arrives by `move` and leaves as the call's result, so the
   // package can store the vector back into its place. The element carries the

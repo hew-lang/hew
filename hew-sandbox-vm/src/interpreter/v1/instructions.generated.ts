@@ -1236,6 +1236,7 @@ export type VecSliceElem =
   | "Ptr"
   | "Str";
 export type VecValueOp =
+  | "Swap"
   | "New"
   | "Len"
   | "Contains"

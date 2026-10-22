@@ -1404,7 +1404,7 @@ impl Checker {
                 continue;
             };
             let (expr, arg_span) = arg.expr();
-            if matches!(method, "set" | "remove") && index == 0 {
+            if matches!(method, "set" | "remove") && index == 0 || method == "swap" {
                 let actual = self.synthesize(expr, arg_span);
                 let resolved = self.subst.resolve(&actual);
                 if Self::is_narrower_signed_int(&resolved) {

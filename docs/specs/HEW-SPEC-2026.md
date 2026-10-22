@@ -439,8 +439,6 @@ language contracts:
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
 - Resource-close checking covers inherent methods; trait-method checking has
   not yet established the same blanket close rule in every form (§3.7.8).
-- `into_iter()` consumes its vector, but the current cursor can clone
-  cloneable elements. It is not a universal clone-free drain (§3.8.1).
 
 These limitations do not establish sandbox or cross-platform execution parity.
 
@@ -3236,10 +3234,13 @@ instantiation is copyable.
 
 Ownership is obtained through `into_iter()` or an explicit `clone` under
 `T: Clone`. `into_iter()` consumes the vector and owns its remaining elements,
-including cleanup on early termination. The current clone-proven cursor path
-can still clone elements; consuming the container does not yet promise
-clone-free element extraction. A `Clone` bound also permits the current
-compiler to select copying element reads (§2.1.1).
+including cleanup on early termination. `VecIter` moves each yielded item
+from its ordered option buffer without a per-step clone; its O(n)
+construction uses O(n) additional space, and either end of an unshared
+cursor advances in O(1). A copied cursor follows the ordinary `Vec`
+copy-on-write rules, so detaching its buffer can take O(n) time.
+Untaken elements are released in their original index order. A `Clone` bound
+also permits copying element reads (§2.1.1).
 
 A copy-requiring operation on a value of a type parameter - `clone()`, `m[k]`,
 `get`, a range slice, an array repeat, a spread, or a generator frame taking

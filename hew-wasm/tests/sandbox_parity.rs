@@ -1098,6 +1098,38 @@ fn implicit_iterator_suspension_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn vec_iter_owned_slots_match_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "vec_iter_copies",
+            source_rel: "tests/core-acceptance/cases/vector-iteration-next.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_owned_cleanup",
+            source_rel: "tests/core-acceptance/cases/vector-into-iter-owning.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_borrowed_source",
+            source_rel: "tests/core-acceptance/cases/vector-borrowed-iteration.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_swap_left_fault",
+            source_rel: "tests/core-acceptance/cases/vector-swap-left-fault.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_swap_right_fault",
+            source_rel: "tests/core-acceptance/cases/vector-swap-right-fault.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn hashset_iteration_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();

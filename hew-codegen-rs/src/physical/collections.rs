@@ -425,6 +425,26 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
                 self.clear_owned(receiver)?;
                 self.store(result, vector.into())?;
             }
+            PhysicalVectorOp::Swap => {
+                let left = self.load(source(1)?, "vector.swap.left")?.into_int_value();
+                let right = self.load(source(2)?, "vector.swap.right")?.into_int_value();
+                self.emit_vector_index_guard(vector, left, failure()?)?;
+                self.emit_vector_index_guard(vector, right, failure()?)?;
+                let function = get_or_declare_external(
+                    self.llvm,
+                    "hew_vec_swap",
+                    self.ctx
+                        .void_type()
+                        .fn_type(&[pointer.into(), i64_ty.into(), i64_ty.into()], false),
+                )?;
+                self.runtime_call_void(
+                    function,
+                    &[vector.into(), left.into(), right.into()],
+                    "vector.swap",
+                )?;
+                self.clear_owned(receiver)?;
+                self.store(result, vector.into())?;
+            }
             PhysicalVectorOp::Set => {
                 let index = self.load(source(1)?, "vector.set.index")?.into_int_value();
                 self.emit_vector_index_guard(vector, index, failure()?)?;

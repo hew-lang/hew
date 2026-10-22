@@ -1737,6 +1737,7 @@ impl FunctionLowerer<'_> {
             ))
         })?;
         let operation = match op {
+            VecValueOp::Swap => PhysicalVectorOp::Swap,
             VecValueOp::New => PhysicalVectorOp::New,
             VecValueOp::Len => PhysicalVectorOp::Len,
             VecValueOp::Contains => PhysicalVectorOp::Contains,

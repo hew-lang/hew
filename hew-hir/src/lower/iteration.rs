@@ -196,32 +196,6 @@ impl LowerCtx {
         Some(result)
     }
 
-    pub(super) fn make_option_ctor(
-        &mut self,
-        variant_name: &str,
-        payload: Option<HirExpr>,
-        elem_ty: &ResolvedTy,
-        span: Span,
-    ) -> HirExpr {
-        let option_ty = Self::resolved_option_ty(elem_ty.clone());
-        let variant_idx = match variant_name {
-            "Some" => 0,
-            "None" => 1,
-            _ => unreachable!("only Option::Some/None are synthesized"),
-        };
-        let payload = payload.map(|expr| vec![("0".to_string(), expr)]);
-        self.make_expr(
-            HirExprKind::MachineVariantCtor {
-                machine_name: "Option".to_string(),
-                state_idx: variant_idx,
-                payload,
-            },
-            option_ty,
-            IntentKind::Read,
-            span,
-        )
-    }
-
     /// Whether a for-in iterable expression is a *place* — an lvalue that can be
     /// read more than once with no observable side effect and no extra
     /// evaluation cost (an identifier, or a field/index projection rooted in a

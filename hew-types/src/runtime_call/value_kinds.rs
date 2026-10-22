@@ -621,6 +621,19 @@ impl RuntimeSemanticContract {
         Ok(resolved)
     }
 
+    fn shared_constructor_receiver(self, result_hint: &ResolvedTy) -> Option<&ResolvedTy> {
+        matches!(
+            self.result,
+            RuntimeResultEffect::FreshOwned(RuntimeValueKind::Receiver(BuiltinType::Rc))
+        )
+        .then_some(result_hint)
+        .filter(|_| {
+            self.arguments
+                .first()
+                .is_some_and(|argument| argument.ty == RuntimeValueKind::SharedPayload)
+        })
+    }
+
     /// Resolve the operation's expected types before lowering argument coercions.
     /// This does not admit operands: `instantiate` checks their exact types after
     /// the producer has applied any checked source-language conversion.
@@ -645,8 +658,6 @@ impl RuntimeSemanticContract {
         // identity therefore comes from its result before any argument is
         // scanned; every other operation names its receiver in an argument or,
         // failing that, in its result.
-        let shared_constructor =
-            (runtime_receiver_builtin(result_hint) == Some(BuiltinType::Rc)).then_some(result_hint);
         let codec_source = self
             .arguments
             .iter()
@@ -659,7 +670,7 @@ impl RuntimeSemanticContract {
                 .then_some(actual)
             });
         let receiver = codec_source
-            .or(shared_constructor)
+            .or_else(|| self.shared_constructor_receiver(result_hint))
             .or_else(|| {
                 params.iter().find(|ty| {
                     runtime_receiver_builtin(ty).is_some()
@@ -924,6 +935,7 @@ pub fn sequence_element_type(ty: &ResolvedTy) -> Option<&ResolvedTy> {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash, EnumIter, Serialize, Deserialize)]
 #[cfg_attr(feature = "sandbox-schema", derive(schemars::JsonSchema, ts_rs::TS))]
 pub enum VecValueOp {
+    Swap,
     #[default]
     New,
     Len,
@@ -971,6 +983,7 @@ impl VecValueOp {
     #[must_use]
     pub const fn from_method(method: crate::VecMethod) -> Option<Self> {
         Some(match method {
+            crate::VecMethod::Swap => Self::Swap,
             crate::VecMethod::Len => Self::Len,
             crate::VecMethod::Contains => Self::Contains,
             crate::VecMethod::Get => Self::Get,

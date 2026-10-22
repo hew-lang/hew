@@ -8420,6 +8420,7 @@
       "oneOf": [
         {
           "enum": [
+            "Swap",
             "New",
             "Len",
             "Contains",

@@ -58,6 +58,11 @@ fn vector_results_are_exact_for_every_operation() {
         (VecValueOp::New, vec![], values.clone()),
         (VecValueOp::Len, vec![values.clone()], ResolvedTy::I64),
         (
+            VecValueOp::Swap,
+            vec![values.clone(), ResolvedTy::I64, ResolvedTy::I64],
+            values.clone(),
+        ),
+        (
             VecValueOp::Index,
             vec![values.clone(), ResolvedTy::I64],
             element.clone(),
@@ -123,4 +128,26 @@ fn vector_read_contracts_never_publish_an_interior_owner() {
         .unwrap()
         .failures
         .is_empty());
+}
+
+#[test]
+fn vector_pop_keeps_its_receiver_when_the_element_is_a_shared_handle() {
+    let defs = crate::DefTable::new();
+    let shared = ResolvedTy::named_builtin(BuiltinType::Rc, vec![ResolvedTy::I64]);
+    let values = vector(shared.clone());
+    let pop = RuntimeCallFamily::Vector(VecValueOp::Pop)
+        .semantic_contract()
+        .unwrap();
+    let resolved = pop
+        .resolve_types(&defs, std::slice::from_ref(&values), &shared)
+        .unwrap();
+    assert_eq!(resolved.arguments, vec![values.clone()]);
+    assert_eq!(resolved.result_ty, ResolvedTy::Tuple(vec![values, shared]));
+
+    let payload = vector(ResolvedTy::I64);
+    let result = ResolvedTy::named_builtin(BuiltinType::Rc, vec![payload.clone()]);
+    assert!(RuntimeCallFamily::RcNew
+        .semantic_contract()
+        .unwrap()
+        .matches_signature(&defs, &[payload], &result));
 }

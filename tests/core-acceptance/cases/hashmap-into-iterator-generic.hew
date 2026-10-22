@@ -21,7 +21,7 @@ type Inventory {
 impl IntoIterator for Inventory {
     type Item = (string, i64);
     type IntoIter = VecIter<(string, i64)>;
-    fn into_iter(self) -> VecIter<(string, i64)> {
+    fn into_iter(consume self) -> VecIter<(string, i64)> {
         self.rows.into_iter()
     }
 }

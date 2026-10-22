@@ -106,6 +106,7 @@ pub(crate) fn verify_vector_call(
         | PhysicalVectorOp::Index
         | PhysicalVectorOp::Push
         | PhysicalVectorOp::Set
+        | PhysicalVectorOp::Swap
         | PhysicalVectorOp::Clear
         | PhysicalVectorOp::IndexBorrow => {}
         PhysicalVectorOp::Slice | PhysicalVectorOp::SliceFrom => {

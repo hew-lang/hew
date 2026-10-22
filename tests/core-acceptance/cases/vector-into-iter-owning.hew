@@ -81,5 +81,15 @@ fn main() -> i64 {
     println("filtered stopped");
     let ids = iter.collect(iter.rev(iter.map(make("g").into_iter(), |token: Token| token.id)));
     assert(ids == [3, 2, 1]);
+    {
+        var ordered: Vec<Token> = [];
+        for id in 1..8 {
+            ordered.push(Token { label: "h", id: id });
+        }
+        var cursor = ordered.into_iter();
+        cursor.next().expect("ordered front").close();
+        cursor.next_back().expect("ordered back").close();
+    };
+    println("ordered remainder");
     0
 }

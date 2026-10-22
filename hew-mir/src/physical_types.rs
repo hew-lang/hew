@@ -575,6 +575,7 @@ pub struct PhysicalSetGlue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhysicalVectorOp {
+    Swap,
     New,
     Len,
     Contains,

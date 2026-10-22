@@ -80,3 +80,23 @@ fn test_iter_owned_elements() {
     assert(total == 9);
     assert(v.len() == 3);
 }
+
+#[test]
+fn test_iter_adapter_chain_preserves_order_and_source() {
+    var values: Vec<i64> = [];
+    for value in 0..65 {
+        values.push(value);
+    }
+    let filtered = values.iter().map(|value: i64| value * 2).filter(|value: i64| value % 3 == 0);
+    let result = iter.collect(filtered);
+    var expected: Vec<i64> = [];
+    for value in 0..65 {
+        if value % 3 == 0 {
+            expected.push(value * 2);
+        }
+    }
+    assert(result == expected);
+    assert(values.len() == 65);
+    assert(values[0] == 0);
+    assert(values[64] == 64);
+}

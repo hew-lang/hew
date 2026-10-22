@@ -6030,6 +6030,7 @@ const schema19 = {
       oneOf: [
         {
           enum: [
+            "Swap",
             "New",
             "Len",
             "Contains",
@@ -52179,6 +52180,7 @@ const schema94 = {
   oneOf: [
     {
       enum: [
+        "Swap",
         "New",
         "Len",
         "Contains",
@@ -52282,6 +52284,7 @@ function validate286(
   }
   if (
     !(
+      data === "Swap" ||
       data === "New" ||
       data === "Len" ||
       data === "Contains" ||

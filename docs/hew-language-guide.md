@@ -4135,6 +4135,13 @@ fn main() {
 
 `std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
 
+`v.iter()` creates an independent snapshot, while `v.into_iter()` owns the
+supplied vector. `VecIter` keeps untaken elements in order and releases that
+remainder in order on early drop. Its ordered option buffer costs O(n)
+additional space and construction time; either end of an unshared cursor
+advances in O(1) time. Detaching a copied cursor follows the ordinary `Vec`
+copy-on-write rules and can take O(n) time.
+
 Every adapter also carries the same method surface, so a chain reads fluently
 end to end instead of nesting free-function calls after the first `.filter`
 or `.map`:

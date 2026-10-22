@@ -40,7 +40,7 @@ pub trait IntoIterator {
     type Item;
     type IntoIter: Iterator<Item = Self.Item>;
 
-    fn into_iter(self) -> Self.IntoIter;
+    fn into_iter(consume self) -> Self.IntoIter;
 }
 ";
 

@@ -416,16 +416,6 @@ pub enum VecIterationMode {
     Borrow,
 }
 
-/// How a `VecIter<T>` cursor produces each element.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VecCursorMode {
-    /// `next()` copies the element into an independent owner.
-    Clone,
-    /// `next()` moves the element out, so the drain empties the vector. This is
-    /// the only step available to an element with no semantic clone.
-    Take,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RaceOperandKind {
     Invocation,
@@ -516,9 +506,6 @@ pub struct TypeCheckOutput {
     /// Spans of `xs[i]` reads over a `Vec<T>` whose element has no clone, so
     /// the read is a loan of the slot the vector still owns (D432).
     pub borrowed_element_index_reads: HashSet<SpanKey>,
-    /// Spans of `VecIter` cursor sites whose element has no semantic clone, so
-    /// `next()` moves each element out instead of copying it.
-    pub owning_take_vec_cursors: HashSet<SpanKey>,
     /// Spans of `get` calls whose element has no semantic clone, so `Some`
     /// carries a loan of the slot the collection still owns.
     pub borrowed_element_option_reads: HashSet<SpanKey>,
@@ -2021,16 +2008,6 @@ pub enum MethodCallRewrite {
     /// receiver type; codegen lowers it to the borrowing
     /// `hew_cancel_token_is_requested` runtime call.
     CancellationTokenIsCancelled,
-    /// Checked cursor constructor identity. The element comes from the
-    /// finalized receiver type; it must not be frozen before inference ends.
-    BuiltinVecIntoIter,
-    /// Snapshot cursor constructor, with the same ordinary value semantics.
-    BuiltinVecIter,
-    /// Builtin `VecIter<T>::next(var self)` state advance. HIR expands this at
-    /// the call site so the caller's mutable iterator binding observes the
-    /// cursor update.
-    BuiltinVecIterNext,
-    BuiltinVecIterNextBack,
     /// Builtin `Generator<Y, R>::next()` consumption. HIR emits a dedicated
     /// `HirExprKind::GeneratorNext`; MIR lowers it to `Instr::GeneratorNext`,
     /// which codegen turns into a `hew_gen_next(ctx, &out_size)` runtime call
@@ -3369,8 +3346,6 @@ pub struct Checker {
     pub(super) for_loop_plans: HashMap<SpanKey, CheckedForLoop>,
     /// See [`TypeCheckOutput::borrowed_element_index_reads`].
     pub(super) borrowed_element_index_reads: HashSet<SpanKey>,
-    /// See [`TypeCheckOutput::owning_take_vec_cursors`].
-    pub(super) owning_take_vec_cursors: HashSet<SpanKey>,
     /// See [`TypeCheckOutput::borrowed_element_option_reads`].
     pub(super) borrowed_element_option_reads: HashSet<SpanKey>,
     pub(super) is_type_patterns: HashMap<SpanKey, Ty>,
@@ -4473,7 +4448,6 @@ impl Checker {
             borrowed_element_for_loops: HashSet::new(),
             for_loop_plans: HashMap::new(),
             borrowed_element_index_reads: HashSet::new(),
-            owning_take_vec_cursors: HashSet::new(),
             borrowed_element_option_reads: HashSet::new(),
             is_type_patterns: HashMap::new(),
             expr_type_source_modules: HashMap::new(),

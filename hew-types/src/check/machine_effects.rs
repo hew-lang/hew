@@ -706,10 +706,6 @@ impl EffectVisitor<'_> {
             ) => self.target(target, span, call),
             Some(
                 MethodCallRewrite::GenericMathIntrinsic { .. }
-                | MethodCallRewrite::BuiltinVecIntoIter
-                | MethodCallRewrite::BuiltinVecIter
-                | MethodCallRewrite::BuiltinVecIterNext
-                | MethodCallRewrite::BuiltinVecIterNextBack
                 | MethodCallRewrite::VecFrom
                 | MethodCallRewrite::RecordCloneInplace { .. }
                 | MethodCallRewrite::CopyCloneNoop,

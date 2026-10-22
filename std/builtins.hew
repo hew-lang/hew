@@ -690,6 +690,13 @@ impl<T> IntoIterator for Vec<T> {
     }
 }
 
+impl<T> Vec<T> {
+    /// Create an independent cursor using the ordinary value-copy rules.
+    fn iter(self) -> VecIter<T> {
+        self.into_iter()
+    }
+}
+
 // HashSet iteration uses the ordinary IntoIterator contract and Vec cursor.
 impl<K: Hash + Eq + Clone> IntoIterator for HashSet<K> {
     type Item = K;

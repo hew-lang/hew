@@ -1482,45 +1482,6 @@ impl Checker {
             return Ty::Error;
         }
         let result = match method {
-            "into_iter" => {
-                self.check_arity(args, 0, "`Vec.into_iter`", span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
-                    return Ty::Error;
-                }
-                self.record_method_call_receiver_kind(
-                    span,
-                    MethodCallReceiverKind::PrimitiveTraitImpl {
-                        trait_name: "IntoIterator".to_string(),
-                        canonical_receiver: "Vec".to_string(),
-                    },
-                );
-                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIntoIter);
-                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
-            }
-            "iter" => {
-                // An ordinary value transfer creates the independent snapshot.
-                // Record the operation now and consume the finalized receiver
-                // type at the HIR boundary, after inference has completed.
-                self.check_arity(args, 0, "`Vec.iter`", span);
-                let resolved_elem = self.subst.resolve(&elem_ty);
-                if matches!(resolved_elem, Ty::TraitObject { .. }) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        "`Vec<dyn Trait>.iter()` is not supported because a borrowed iterator \
-                         needs an independent clone of each trait object; use `into_iter()` to \
-                         transfer the existing owners"
-                            .to_string(),
-                    );
-                    return Ty::Error;
-                }
-                if !self.record_vec_iter_element_mode(&resolved_elem, span) {
-                    return Ty::Error;
-                }
-                self.record_method_call_rewrite(span, MethodCallRewrite::BuiltinVecIter);
-                Ty::builtin_named(BuiltinType::VecIter, vec![resolved_elem])
-            }
             "get" if runtime_method_declared => {
                 // Trait-routed `Index<i64>` accessor: `<Vec<T> as Index>::get
                 // -> Option<T>`. Dispatch is marked as the `Index` primitive

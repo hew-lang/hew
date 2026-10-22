@@ -4,8 +4,6 @@
 )]
 pub(super) use super::*;
 
-use crate::check::types::VecCursorMode;
-
 fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
     let parse_result = hew_parser::parse(source);
     assert!(
@@ -1910,8 +1908,8 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     let ty = Ty::named_for_test("pkg.Wrap", vec![Ty::I64]);
 
     assert_eq!(
-        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
-        Some(VecCursorMode::Take),
+        checker.vec_iteration_element_mode(&ty, &Span::from(0..0)),
+        Some(crate::check::types::VecIterationMode::Borrow),
         "a qualified, diverging generic value cycle has no clone, so the cursor \
          moves each element out — and the walk terminates instead of overflowing"
     );
@@ -2216,29 +2214,6 @@ fn bare_vec_iter_annotation_matches_the_compiler_cursor_without_a_source_shadow(
 }
 
 #[test]
-fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
-    let output = check_source(
-        r"
-        fn consume(values: Vec<i64>) -> VecIter<i64> {
-            values.into_iter()
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "Vec::into_iter must type-check cleanly: {:#?}",
-        output.errors
-    );
-    assert!(
-        super::root_values(&output.method_call_rewrites)
-            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
-        "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
-        output.method_call_rewrites
-    );
-}
-
-#[test]
 fn vec_iter_borrows_direct_function_element() {
     // D432: a function/closure element has no semantic clone, so direct
     // `for` iteration binds it as a borrowed loan instead of refusing at a
@@ -2395,8 +2370,8 @@ fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     let ty = checker.test_named("pkg.Handle", vec![]);
 
     assert_eq!(
-        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
-        Some(VecCursorMode::Take),
+        checker.vec_iteration_element_mode(&ty, &Span::from(0..0)),
+        Some(crate::check::types::VecIterationMode::Borrow),
         "a qualified use must resolve against the declaration-local opaque name"
     );
     assert_eq!(

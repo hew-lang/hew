@@ -107,7 +107,6 @@ impl LowerCtx {
             borrowed_element_for_loops: tc_output.borrowed_element_for_loops.clone(),
             for_loop_plans: tc_output.for_loop_plans.clone(),
             borrowed_element_index_reads: tc_output.borrowed_element_index_reads.clone(),
-            owning_take_vec_cursors: tc_output.owning_take_vec_cursors.clone(),
             borrowed_element_option_reads: tc_output.borrowed_element_option_reads.clone(),
             call_type_args: tc_output.call_type_args.clone(),
             callable_value_specializations: tc_output.callable_value_specializations.clone(),

@@ -808,6 +808,28 @@ impl Checker {
                 );
                 Ty::Error
             }
+            // A borrowed trait-object snapshot has no clone operation. The
+            // authored consuming constructor remains available.
+            (
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
+                    args: type_args,
+                },
+                "iter",
+            ) if type_args
+                .first()
+                .is_some_and(|ty| matches!(self.subst.resolve(ty), Ty::TraitObject { .. })) =>
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`Vec<dyn Trait>.iter()` is not supported because a borrowed iterator \
+                     needs an independent clone of each trait object; use `into_iter()` to \
+                     transfer the existing owners"
+                        .to_string(),
+                );
+                Ty::Error
+            }
             // Vec methods
             (
                 Ty::Named {
@@ -816,7 +838,9 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span),
+            ) if !matches!(method, "iter" | "into_iter") => {
+                self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span)
+            }
             // HashMap methods
             (
                 Ty::Named {
@@ -2140,23 +2164,7 @@ impl Checker {
                         // Never retry through either the type or method leaf.
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
-                        if matches!(*builtin, Some(BuiltinType::VecIter))
-                            && matches!(method, "next" | "next_back")
-                        {
-                            if let Some(elem_ty) = type_args.first() {
-                                if !self.record_vec_iter_element_mode(elem_ty, span) {
-                                    return Ty::Error;
-                                }
-                                self.record_method_call_rewrite(
-                                    span,
-                                    if method == "next_back" {
-                                        MethodCallRewrite::BuiltinVecIterNextBack
-                                    } else {
-                                        MethodCallRewrite::BuiltinVecIterNext
-                                    },
-                                );
-                            }
-                        } else if selected_declaration.is_some()
+                        if selected_declaration.is_some()
                             || self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {

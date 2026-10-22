@@ -711,61 +711,6 @@ impl LowerCtx {
                     result_ty,
                 )
             }
-            Some(
-                rewrite @ (MethodCallRewrite::BuiltinVecIntoIter
-                | MethodCallRewrite::BuiltinVecIter
-                | MethodCallRewrite::BuiltinVecIterNext
-                | MethodCallRewrite::BuiltinVecIterNextBack),
-            ) => {
-                let expected = if matches!(
-                    rewrite,
-                    MethodCallRewrite::BuiltinVecIterNext
-                        | MethodCallRewrite::BuiltinVecIterNextBack
-                ) {
-                    BuiltinType::VecIter
-                } else {
-                    BuiltinType::Vec
-                };
-                let element = match self.checked_ty(&receiver.1) {
-                    Some(ResolvedTy::Named {
-                        head: hew_types::TypeHead::Builtin(actual),
-                        args,
-                        ..
-                    }) if *actual == expected && args.len() == 1 => args[0].clone(),
-                    _ => {
-                        self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::CheckerBoundaryViolation {
-                                name: "vector iteration".into(),
-                                reason: "cursor operation lacks its exact checked receiver type"
-                                    .into(),
-                            },
-                            span.clone(),
-                            "vector iteration requires a resolved receiver",
-                        ));
-                        return (
-                            HirExprKind::Unsupported(
-                                "vector iteration receiver is unresolved".into(),
-                            ),
-                            ResolvedTy::Unit,
-                        );
-                    }
-                };
-                match rewrite {
-                    MethodCallRewrite::BuiltinVecIntoIter => {
-                        self.lower_builtin_vec_into_iter(receiver, element, span)
-                    }
-                    MethodCallRewrite::BuiltinVecIter => {
-                        self.lower_builtin_vec_iter(receiver, element, span)
-                    }
-                    MethodCallRewrite::BuiltinVecIterNext => {
-                        self.lower_builtin_vec_iter_next(receiver, &element, false, span)
-                    }
-                    MethodCallRewrite::BuiltinVecIterNextBack => {
-                        self.lower_builtin_vec_iter_next(receiver, &element, true, span)
-                    }
-                    _ => unreachable!("matched cursor operation"),
-                }
-            }
             Some(MethodCallRewrite::BuiltinVecHigherOrder {
                 op,
                 elem_ty,

@@ -132,7 +132,7 @@ public-host-stdlib = [
   "hew_host_json_set_text",
 ]
 
-# Compiler-private native TLS request submission and result transfer.
+# Compiler-private native TLS and WebSocket request submission and result transfer.
 non-declarable-stdlib = [
   "hew_peer_session_close",
   "hew_service_close",
@@ -143,6 +143,8 @@ non-declarable-stdlib = [
   "hew_async_tls_take_read",
   "hew_async_tls_take_write",
   "hew_async_tls_write",
+  "hew_async_ws_server_accept",
+  "hew_async_ws_take_accept",
 ]
 
 # jit: stable — handle-oriented/user-visible runtime surface that JIT

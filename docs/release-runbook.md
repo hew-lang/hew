@@ -575,7 +575,7 @@ macOS release notes:
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.
 - [ ] Open the next planned development version on main in a separate PR. After
-      v0.6.5, set the base to `0.6.6`. Do not alter the qualified release commit,
+      v0.7.0, set the base to `0.7.1`. Do not alter the qualified release commit,
       move its tag, or change edition 2026.
 
 From a clean branch based on current main, run the existing bump machinery:

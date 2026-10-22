@@ -70,11 +70,15 @@ use quinn::{Endpoint, RecvStream, SendStream, VarInt};
 use rcgen::generate_simple_self_signed;
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 use crate::peer_binding::{MeshIdentityMaterial, PeerAuthSnapshot, RemoteIpClass};
 use crate::set_last_error;
 use crate::transport::{HewTransport, HewTransportOps, HEW_CONN_INVALID, MAX_FRAME_SIZE};
+
+// The system resolver cannot be cancelled. Its admission belongs to the
+// process, so destroying and recreating nodes cannot accumulate stuck lookups.
+static ADDRESS_RESOLVER_SLOT: OnceLock<Arc<Semaphore>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -763,6 +767,9 @@ impl QuicMeshConn {
 
 pub(crate) struct QuicMeshTransport {
     rt: Arc<Runtime>,
+    /// One owned system lookup may outlive its caller. Keep its admission
+    /// until it actually exits, so retries cannot accumulate blocked resolvers.
+    resolver_slot: Arc<Semaphore>,
     mesh: Option<Mesh>,
     conns: Vec<std::sync::Mutex<Option<Arc<QuicMeshConn>>>>,
     /// Per-peer connection LRU bookkeeping. Tracks occupancy + access recency
@@ -803,6 +810,9 @@ impl QuicMeshTransport {
             .collect();
         Self {
             rt,
+            resolver_slot: Arc::clone(
+                ADDRESS_RESOLVER_SLOT.get_or_init(|| Arc::new(Semaphore::new(1))),
+            ),
             mesh: None,
             conns,
             slot_lru: std::sync::Mutex::new(SlotLru::new(MAX_CONNS)),
@@ -1049,15 +1059,42 @@ impl SlotLru {
     }
 }
 
-fn parse_socket_addr(addr_str: &str) -> Result<std::net::SocketAddr, String> {
+async fn parse_socket_addr(
+    addr_str: &str,
+    resolver_slot: &Arc<Semaphore>,
+) -> Result<std::net::SocketAddr, String> {
     match addr_str.parse() {
         Ok(addr) => Ok(addr),
-        Err(_) => addr_str
-            .to_socket_addrs()
-            .map_err(|e| format!("resolve {addr_str}: {e}"))?
-            .next()
-            .ok_or_else(|| format!("resolve {addr_str}: no addresses")),
+        Err(_) => {
+            resolve_hostname(addr_str.to_owned(), resolver_slot, |address| {
+                address
+                    .to_socket_addrs()
+                    .map_err(|e| format!("resolve {address}: {e}"))?
+                    .next()
+                    .ok_or_else(|| format!("resolve {address}: no addresses"))
+            })
+            .await
+        }
     }
+}
+
+async fn resolve_hostname(
+    address: String,
+    resolver_slot: &Arc<Semaphore>,
+    resolve: impl FnOnce(String) -> Result<std::net::SocketAddr, String> + Send + 'static,
+) -> Result<std::net::SocketAddr, String> {
+    let permit = Arc::clone(resolver_slot)
+        .try_acquire_owned()
+        .map_err(|_| "address resolver is busy; retry later".to_owned())?;
+    // Dropping this future detaches the blocking job. It owns no transport,
+    // endpoint or runtime reference, and cannot publish a late connection.
+    // The permit stays with the actual lookup, including while it is queued.
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        resolve(address)
+    })
+    .await
+    .map_err(|error| format!("address resolver: {error}"))?
 }
 
 // `self_tls_allowing_own_spki` was removed in A3; identity is now minted +
@@ -1229,19 +1266,17 @@ unsafe extern "C" fn quic_mesh_connect(impl_ptr: *mut c_void, address: *const c_
         set_last_error(MeshError::InvalidAddress("connect".into()).to_string());
         return HEW_CONN_INVALID;
     };
-    let addr = match parse_socket_addr(addr_str) {
-        Ok(addr) => addr,
-        Err(e) => {
-            set_last_error(format!("quic_mesh connect: {e}"));
-            return HEW_CONN_INVALID;
-        }
-    };
-
-    let result = qmt.rt.block_on(connection_attempt(mesh.connect(addr)));
+    let result = crate::transport::with_connection_attempt_deadline(|| {
+        qmt.rt.block_on(connection_attempt(async {
+            let addr = parse_socket_addr(addr_str, &qmt.resolver_slot).await?;
+            Ok::<_, String>(mesh.connect(addr).await)
+        }))
+    })
+    .and_then(std::convert::identity);
     let result = match result {
         Ok(result) => result,
         Err(error) => {
-            set_last_error(error);
+            set_last_error(format!("quic_mesh connect: {error}"));
             return HEW_CONN_INVALID;
         }
     };
@@ -1279,7 +1314,14 @@ unsafe extern "C" fn quic_mesh_listen(impl_ptr: *mut c_void, address: *const c_c
         set_last_error(MeshError::InvalidAddress("listen".into()).to_string());
         return -1;
     };
-    let addr = match parse_socket_addr(addr_str) {
+    let addr = match crate::transport::with_connection_attempt_deadline(|| {
+        qmt.rt.block_on(connection_attempt(parse_socket_addr(
+            addr_str,
+            &qmt.resolver_slot,
+        )))
+    })
+    .and_then(std::convert::identity)
+    {
         Ok(addr) => addr,
         Err(e) => {
             set_last_error(format!("quic_mesh listen: {e}"));
@@ -2358,6 +2400,217 @@ impl PeerConn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolver_deadline_retires_the_dial_without_accumulating_retry_work() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let slots = Arc::new(Semaphore::new(1));
+        let published = AtomicBool::new(false);
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let mut dial = Box::pin(async {
+            let address = resolve_hostname("blocked:443".into(), &slots, move |_| {
+                started.send(()).unwrap();
+                // Disconnect also releases the producer if an assertion fails.
+                let _ = blocked.recv();
+                Ok("127.0.0.1:443".parse().unwrap())
+            })
+            .await?;
+            published.store(true, Ordering::Release);
+            Ok::<_, String>(address)
+        });
+        // Start the budget only after observing the actual blocking lookup;
+        // worker scheduling latency is not part of this regression's oracle.
+        rt.block_on(async {
+            tokio::select! {
+                entered = entered => entered.expect("lookup entered"),
+                result = &mut dial => panic!("lookup completed before release: {result:?}"),
+            }
+        });
+        crate::transport::with_connection_attempt_deadline(|| {
+            rt.block_on(async {
+                let result = connection_attempt(dial).await;
+                assert_eq!(result.unwrap_err(), "connection attempt deadline");
+                for _ in 0..8 {
+                    let retry = resolve_hostname("retry:443".into(), &slots, |_| {
+                        panic!("a retry must not submit another blocked resolver")
+                    })
+                    .await;
+                    assert_eq!(retry.unwrap_err(), "address resolver is busy; retry later");
+                }
+                for numeric in ["127.0.0.1:443", "[::1]:443"] {
+                    assert_eq!(
+                        parse_socket_addr(numeric, &slots).await.unwrap(),
+                        numeric.parse().unwrap()
+                    );
+                }
+                release.send(()).unwrap();
+                // Observe actual producer completion, rather than assuming that
+                // a timed-out await released its resolver admission.
+                let permit = tokio::time::timeout(Duration::from_secs(10), slots.acquire())
+                    .await
+                    .expect("resolver finishes after release")
+                    .unwrap();
+                drop(permit);
+                assert!(
+                    !published.load(Ordering::Acquire),
+                    "no late dial publication"
+                );
+                assert_eq!(
+                    resolve_hostname("retry:443".into(), &slots, |_| {
+                        Ok("127.0.0.1:443".parse().unwrap())
+                    })
+                    .await
+                    .unwrap(),
+                    "127.0.0.1:443".parse().unwrap()
+                );
+            });
+        });
+    }
+
+    #[test]
+    fn cancelled_resolver_owns_its_inputs_after_transport_shutdown() {
+        // SAFETY: the test owns the transport through the single free below.
+        let transport = unsafe { hew_transport_quic_mesh_new() };
+        assert!(!transport.is_null());
+        // SAFETY: this is the live transport implementation just constructed.
+        let qmt = unsafe { &*(*transport).r#impl.cast::<QuicMeshTransport>() };
+        let slots = Arc::clone(&qmt.resolver_slot);
+        let producer_slots = Arc::clone(&slots);
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        let (finished, completed) = std::sync::mpsc::channel();
+        let dial = qmt.rt.spawn(async move {
+            resolve_hostname("owned:443".into(), &producer_slots, move |address| {
+                started.send(()).unwrap();
+                let _ = blocked.recv();
+                assert_eq!(address, "owned:443");
+                finished.send(()).unwrap();
+                Ok("127.0.0.1:443".parse().unwrap())
+            })
+            .await
+        });
+        qmt.rt.block_on(entered).unwrap();
+        dial.abort();
+        assert!(qmt.rt.block_on(dial).unwrap_err().is_cancelled());
+        assert!(
+            slots.try_acquire().is_err(),
+            "the producer still owns admission"
+        );
+        // SAFETY: the cancelled caller is terminal; only its owned resolver
+        // job remains, with no reference into this transport or its runtime.
+        unsafe { hew_transport_quic_mesh_free(transport) };
+        assert!(matches!(
+            completed.try_recv(),
+            Err(std::sync::mpsc::TryRecvError::Empty)
+        ));
+        for _ in 0..3 {
+            // SAFETY: each successor is separately owned through its free.
+            let successor = unsafe { hew_transport_quic_mesh_new() };
+            assert!(!successor.is_null());
+            // SAFETY: successor is a live transport of this implementation.
+            let implementation = unsafe { (*successor).r#impl };
+            let hostname = std::ffi::CString::new("localhost:0").unwrap();
+            let numeric = std::ffi::CString::new("127.0.0.1:0").unwrap();
+            // SAFETY: implementation and the borrowed addresses remain live.
+            unsafe {
+                assert_eq!(quic_mesh_listen(implementation, hostname.as_ptr()), -1);
+                assert!(CStr::from_ptr(crate::hew_last_error())
+                    .to_str()
+                    .unwrap()
+                    .contains("address resolver is busy"));
+                assert_eq!(quic_mesh_listen(implementation, numeric.as_ptr()), 0);
+                hew_transport_quic_mesh_free(successor);
+            }
+        }
+        release.send(()).unwrap();
+        completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("owned producer can finish after transport destruction");
+    }
+
+    #[test]
+    fn hostname_dial_and_numeric_dial_with_busy_resolver_authenticate() {
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        let mut server = QuicMeshTransport::new(Arc::clone(&rt));
+        let mut client = QuicMeshTransport::new(rt);
+        // Isolate this handshake test from the deliberately blocked process
+        // resolver exercised concurrently by the shutdown/recreation test.
+        server.resolver_slot = Arc::new(Semaphore::new(1));
+        client.resolver_slot = Arc::clone(&server.resolver_slot);
+        let (tls_a, spki_a) = MeshTls::self_signed(vec!["a".into()]).unwrap();
+        let (tls_b, spki_b) = MeshTls::self_signed(vec!["b".into()]).unwrap();
+        let expected_server = crate::node_identity::NodeId::from_spki(&spki_a);
+        let expected_client = crate::node_identity::NodeId::from_spki(&spki_b);
+        *server.tls_override.lock().unwrap() = Some(tls_a.with_peer_spki(spki_b));
+        *client.tls_override.lock().unwrap() = Some(tls_b.with_peer_spki(spki_a));
+        let bind = std::ffi::CString::new("localhost:0").unwrap();
+        // SAFETY: both implementations and the borrowed address remain live.
+        unsafe {
+            assert_eq!(quic_mesh_listen((&raw mut server).cast(), bind.as_ptr()), 0);
+            assert_eq!(quic_mesh_listen((&raw mut client).cast(), bind.as_ptr()), 0);
+        }
+        let address = server.mesh.as_ref().unwrap().local_addr().unwrap();
+        for hostname in [true, false, true] {
+            let target = if hostname {
+                format!("localhost:{}", address.port())
+            } else {
+                address.to_string()
+            };
+            let target = std::ffi::CString::new(target).unwrap();
+            let busy = (!hostname).then(|| client.resolver_slot.try_acquire().unwrap());
+            if busy.is_some() {
+                let hostname =
+                    std::ffi::CString::new(format!("localhost:{}", address.port())).unwrap();
+                assert_eq!(
+                    // SAFETY: the implementation and hostname remain live.
+                    unsafe {
+                        quic_mesh_connect((&raw const client).cast_mut().cast(), hostname.as_ptr())
+                    },
+                    HEW_CONN_INVALID
+                );
+            }
+            // SAFETY: client and target remain live throughout the dial.
+            let connection = unsafe {
+                quic_mesh_connect((&raw const client).cast_mut().cast(), target.as_ptr())
+            };
+            assert_ne!(connection, HEW_CONN_INVALID, "dial {target:?}");
+            assert_eq!(
+                server
+                    .incoming_rx
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap()
+                    .peer
+                    .authenticated_node_id(),
+                Some(expected_client)
+            );
+            assert_eq!(
+                client.conns[usize::try_from(connection).unwrap()]
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .peer
+                    .authenticated_node_id(),
+                Some(expected_server)
+            );
+            drop(busy);
+            client.remove_conn(connection);
+        }
+    }
 
     /// Verify that webpki extracts the SPKI from a valid certificate and
     /// rejects malformed certificate bytes.

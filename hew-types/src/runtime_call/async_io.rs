@@ -16,6 +16,8 @@ pub enum IoHandleKind {
     TlsStream,
     ReadFile,
     WriteFile,
+    WebSocketServer,
+    WebSocketConnection,
 }
 
 impl IoHandleKind {
@@ -27,6 +29,8 @@ impl IoHandleKind {
             Self::TlsStream => "std.net.tls.TlsStream",
             Self::ReadFile => "std.fs.ReadFile",
             Self::WriteFile => "std.fs.WriteFile",
+            Self::WebSocketServer => "std.net.websocket.Server",
+            Self::WebSocketConnection => "std.net.websocket.Conn",
         };
         matches!(ty, ResolvedTy::Named { head, args, .. }
             if head.registry_key() == expected && args.is_empty())
@@ -40,6 +44,8 @@ impl IoHandleKind {
             Self::TlsStream,
             Self::ReadFile,
             Self::WriteFile,
+            Self::WebSocketServer,
+            Self::WebSocketConnection,
         ]
         .into_iter()
         .find(|kind| kind.matches(ty))
@@ -59,9 +65,7 @@ pub enum AsyncIoResume {
     /// Transfer an accepted connection; return the invalid handle on failure.
     Connection,
     /// The native library restores its diagnostics and writes the source result.
-    TlsConnect,
-    TlsRead,
-    TlsWrite,
+    Library(&'static str),
 }
 
 /// How long a native request needs a borrowed source argument.
@@ -102,6 +106,7 @@ pub enum AsyncIoOp {
     TlsWrite,
     FileRead,
     FileWrite,
+    WebSocketAccept,
 }
 
 impl AsyncIoOp {
@@ -118,7 +123,8 @@ impl AsyncIoOp {
             | Self::TlsRead
             | Self::TlsWrite
             | Self::FileRead
-            | Self::FileWrite => crate::runtime_call::RuntimeAuthority::Service,
+            | Self::FileWrite
+            | Self::WebSocketAccept => crate::runtime_call::RuntimeAuthority::Service,
         }
     }
 
@@ -130,7 +136,8 @@ impl AsyncIoOp {
             | Self::StdinReadLine
             | Self::TlsConnect
             | Self::TlsRead
-            | Self::TlsWrite => AsyncIoLoan::UntilSubmitReturns,
+            | Self::TlsWrite
+            | Self::WebSocketAccept => AsyncIoLoan::UntilSubmitReturns,
             Self::TcpRead
             | Self::TcpWrite
             | Self::TcpAccept
@@ -154,6 +161,7 @@ impl AsyncIoOp {
             Self::TcpConnect => "hew_tcp_connect",
             Self::TcpConnectTimeout => "hew_tcp_connect_timeout",
             Self::StdinReadLine => "hew_stdin_read_line",
+            Self::WebSocketAccept => "hew_ws_server_accept",
         }
     }
 
@@ -174,6 +182,7 @@ impl AsyncIoOp {
             Self::TcpConnect => "hew_async_tcp_connect",
             Self::TcpConnectTimeout => "hew_async_tcp_connect_timeout",
             Self::StdinReadLine => "hew_async_stdin_read_line",
+            Self::WebSocketAccept => "hew_async_ws_server_accept",
         }
     }
 
@@ -186,9 +195,10 @@ impl AsyncIoOp {
             }
             Self::TcpWrite | Self::FileWrite => AsyncIoResume::WriteCount,
             Self::SinkFinish => AsyncIoResume::Unit,
-            Self::TlsConnect => AsyncIoResume::TlsConnect,
-            Self::TlsRead => AsyncIoResume::TlsRead,
-            Self::TlsWrite => AsyncIoResume::TlsWrite,
+            Self::TlsConnect => AsyncIoResume::Library("hew_async_tls_take_connect"),
+            Self::TlsRead => AsyncIoResume::Library("hew_async_tls_take_read"),
+            Self::TlsWrite => AsyncIoResume::Library("hew_async_tls_take_write"),
+            Self::WebSocketAccept => AsyncIoResume::Library("hew_async_ws_take_accept"),
         }
     }
 
@@ -240,6 +250,14 @@ impl AsyncIoOp {
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
+            Self::WebSocketAccept => runtime_semantic_contract(
+                &[RuntimeArgumentContract {
+                    ty: IoHandle(IoHandleKind::WebSocketServer),
+                    effect: RuntimeArgumentEffect::Borrow,
+                }],
+                FreshOwned(IoHandle(IoHandleKind::WebSocketConnection)),
+                &[],
+            ),
             Self::FileRead => runtime_semantic_contract(&[READ_FILE], FreshOwned(Bytes), &[]),
             Self::FileWrite => runtime_semantic_contract(&[WRITE_FILE, DATA], BitCopy(I32), &[]),
             Self::TlsConnect => runtime_semantic_contract(
@@ -317,6 +335,7 @@ impl RuntimeCallFamily {
             AsyncIoOp::SinkFinish => "std.stream",
             AsyncIoOp::TlsConnect | AsyncIoOp::TlsRead | AsyncIoOp::TlsWrite => "std.net.tls",
             AsyncIoOp::FileRead | AsyncIoOp::FileWrite => "std.fs",
+            AsyncIoOp::WebSocketAccept => "std.net.websocket",
         };
         module == owner
             && symbol == op.c_symbol()
@@ -353,6 +372,12 @@ mod tests {
                 ResolvedTy::I32,
             ),
             (AsyncIoOp::TcpAccept, "std.net", vec![listener], connection),
+            (
+                AsyncIoOp::WebSocketAccept,
+                "std.net.websocket",
+                vec![handle("std.net.websocket.Server")],
+                handle("std.net.websocket.Conn"),
+            ),
             (
                 AsyncIoOp::StdinReadLine,
                 "std.io",

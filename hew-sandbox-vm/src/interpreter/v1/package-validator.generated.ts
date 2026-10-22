@@ -516,6 +516,7 @@ const schema19 = {
         "TlsWrite",
         "FileRead",
         "FileWrite",
+        "WebSocketAccept",
       ],
       type: "string",
     },
@@ -33202,6 +33203,7 @@ const schema70 = {
     "TlsWrite",
     "FileRead",
     "FileWrite",
+    "WebSocketAccept",
   ],
   type: "string",
 };
@@ -33249,7 +33251,8 @@ function validate230(
       data === "TlsRead" ||
       data === "TlsWrite" ||
       data === "FileRead" ||
-      data === "FileWrite"
+      data === "FileWrite" ||
+      data === "WebSocketAccept"
     )
   ) {
     validate230.errors = [

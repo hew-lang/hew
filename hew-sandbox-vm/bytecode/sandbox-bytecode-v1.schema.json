@@ -644,7 +644,8 @@
         "TlsRead",
         "TlsWrite",
         "FileRead",
-        "FileWrite"
+        "FileWrite",
+        "WebSocketAccept"
       ],
       "type": "string"
     },

@@ -549,7 +549,8 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     i32::from(write_unreported(fault, &mut report).is_err())
 }
 
-/// Report the process entry's terminal fault, including its test record.
+/// Report the process entry's terminal fault and return its process exit code.
+/// Requested shutdown cancellation exits successfully when cleanup also succeeds.
 /// Actor faults use [`hew_fault_report`] and cannot satisfy `#[should_panic]`
 /// merely because a test later exits non-zero with crash debt.
 ///
@@ -559,10 +560,14 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
     // SAFETY: the caller retains a live immutable fault through this report.
     if let Some(fault) = unsafe { fault.as_ref() } {
+        if cancelled_by_shutdown(fault.code()) && fault.secondary.is_empty() {
+            return 0;
+        }
         note_test_fault(fault);
     }
     // SAFETY: forwarded unchanged from the caller.
-    unsafe { hew_fault_report(fault) }
+    let _ = unsafe { hew_fault_report(fault) };
+    1
 }
 
 /// Raise a fault that generated drop glue has no owner to carry.

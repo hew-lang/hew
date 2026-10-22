@@ -223,8 +223,8 @@ pub type Server {
 
 /// Methods available on a WebSocket `Server`.
 trait ServerMethods {
-    /// Accept the next WebSocket connection. Blocks until a client
-    /// connects and completes the handshake.
+    /// Wait for the next client to complete a WebSocket handshake.
+    /// A scope deadline cancels this wait without closing the listener.
     fn accept(self) -> Conn;
 
     /// Get the port the server is listening on.

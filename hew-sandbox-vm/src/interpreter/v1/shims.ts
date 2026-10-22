@@ -370,6 +370,7 @@ const NATIVE_IO_ROUTES = {
   TlsConnect: refused("NativeIo::TlsConnect", true),
   TlsRead: refused("NativeIo::TlsRead", true),
   TlsWrite: refused("NativeIo::TlsWrite", true),
+  WebSocketAccept: refused("NativeIo::WebSocketAccept", true),
   FileRead: "FileRead",
   FileWrite: "FileWrite",
 } as const satisfies {

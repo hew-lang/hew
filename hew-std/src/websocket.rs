@@ -8,6 +8,7 @@
 use crate::bind_addr::normalize_bind_addr;
 use crate::tls::{self, ConnectFailure, Trust};
 use hew_cabi::string::{string_as_str, string_from_str, HewString};
+use hew_runtime::async_io::library::SocketCancellation;
 use hew_runtime::bytes::BytesTriple;
 use hew_runtime::transport::{AttachCallback, NativeActorToken, NativeAttachment};
 #[cfg(test)]
@@ -27,6 +28,8 @@ use tungstenite::client::{client_with_config, uri_mode, IntoClientRequest};
 use tungstenite::protocol::{Role, WebSocketConfig};
 use tungstenite::stream::{MaybeTlsStream, Mode};
 use tungstenite::{Message, WebSocket};
+
+mod native_io;
 
 /// Test-only drop counter for the outer `HewWsConn` Box.
 ///
@@ -1425,15 +1428,22 @@ impl Drop for HewWsServer {
     }
 }
 
-fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
+fn accept_cancelled(inner: &HewWsServerInner, request: Option<&SocketCancellation>) -> bool {
+    inner.cancel.load(Ordering::Acquire) || request.is_some_and(SocketCancellation::is_cancelled)
+}
+
+fn accept_connection(
+    inner: &Arc<HewWsServerInner>,
+    request: Option<&SocketCancellation>,
+) -> HewWsAcceptResult {
     loop {
-        if inner.cancel.load(Ordering::Acquire) {
+        if accept_cancelled(inner, request) {
             return HewWsAcceptResult::Cancelled;
         }
 
         match inner.listener.accept() {
             Ok((stream, _addr)) => {
-                if inner.cancel.load(Ordering::Acquire) {
+                if accept_cancelled(inner, request) {
                     return HewWsAcceptResult::Cancelled;
                 }
                 if let Err(err) = stream.set_nonblocking(true) {
@@ -1455,7 +1465,7 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
                         return HewWsAcceptResult::Error;
                     }
                 };
-                match accept_cancellable_handshake(inner, tls_stream, config) {
+                match accept_cancellable_handshake(inner, tls_stream, config, request) {
                     HewWsAcceptResult::Accepted(ws) => {
                         return HewWsAcceptResult::Accepted(ws);
                     }
@@ -1472,7 +1482,7 @@ fn accept_connection(inner: &Arc<HewWsServerInner>) -> HewWsAcceptResult {
             }
             Err(err) => {
                 eprintln!("[accept] listener accept failed: {err}");
-                return if inner.cancel.load(Ordering::Acquire) {
+                return if accept_cancelled(inner, request) {
                     HewWsAcceptResult::Cancelled
                 } else {
                     HewWsAcceptResult::Error
@@ -1486,6 +1496,7 @@ fn accept_cancellable_handshake(
     inner: &Arc<HewWsServerInner>,
     stream: MaybeTlsStream<DeadlineTcp>,
     config: WebSocketConfig,
+    request: Option<&SocketCancellation>,
 ) -> HewWsAcceptResult {
     use tungstenite::handshake::HandshakeError;
 
@@ -1493,7 +1504,7 @@ fn accept_cancellable_handshake(
     let deadline = Instant::now() + SERVER_HANDSHAKE_TIMEOUT;
     let mut handshake = match tungstenite::accept_with_config(stream, Some(config)) {
         Ok(mut ws) => {
-            if inner.cancel.load(Ordering::Acquire) {
+            if accept_cancelled(inner, request) {
                 return HewWsAcceptResult::Cancelled;
             }
             if let Err(err) = set_server_websocket_blocking(&mut ws) {
@@ -1510,7 +1521,7 @@ fn accept_cancellable_handshake(
     };
 
     loop {
-        if inner.cancel.load(Ordering::Acquire) {
+        if accept_cancelled(inner, request) {
             return HewWsAcceptResult::Cancelled;
         }
         if Instant::now() >= deadline {
@@ -1520,14 +1531,14 @@ fn accept_cancellable_handshake(
         std::thread::sleep(READER_WAIT_POLL);
         match handshake.handshake() {
             Ok(mut ws) => {
-                if inner.cancel.load(Ordering::Acquire) {
+                if accept_cancelled(inner, request) {
                     return HewWsAcceptResult::Cancelled;
                 }
                 if let Err(err) = set_server_websocket_blocking(&mut ws) {
                     eprintln!("[accept] failed to restore blocking mode: {err}");
                     return HewWsAcceptResult::Error;
                 }
-                if inner.cancel.load(Ordering::Acquire) {
+                if accept_cancelled(inner, request) {
                     return HewWsAcceptResult::Cancelled;
                 }
                 return HewWsAcceptResult::Accepted(Box::new(ws));
@@ -1635,7 +1646,7 @@ pub unsafe extern "C" fn hew_ws_server_accept(server: *mut HewWsServer) -> *mut 
     let Some(_accept_guard) = inner.active_accepts.begin(&inner.cancel) else {
         return std::ptr::null_mut();
     };
-    match accept_connection(&inner) {
+    match accept_connection(&inner, None) {
         HewWsAcceptResult::Accepted(ws) => inner
             .active_accepts
             .publish_if_open(&inner.cancel, || {
@@ -1671,6 +1682,7 @@ mod tests {
     use crate::net_error_slot_test_support::NetErrorSlotRuntimeGuard;
     use crate::test_string::ManagedString;
     use hew_runtime::actor;
+    use hew_runtime::async_io::AsyncIoStatus;
     use std::collections::HashMap;
     #[cfg(unix)]
     use std::os::fd::AsRawFd;
@@ -2739,6 +2751,93 @@ mod tests {
                 client_thread
                     .join()
                     .expect("cap-plus-one client thread should finish");
+            },
+        );
+    }
+
+    #[test]
+    fn async_server_accept_cancellation_preserves_listener() {
+        run_in_isolated_test_process(
+            "async_server_accept_cancellation_preserves_listener",
+            "HEW_WS_ASYNC_ACCEPT_CANCEL_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                // SAFETY: each handle and request remains owned until its worker drains.
+                unsafe {
+                    let server = hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr());
+                    assert!(!server.is_null());
+                    let inner = Arc::clone(&(*server).inner);
+                    let port = u16::try_from(hew_ws_server_port(server)).unwrap();
+                    for stalled_handshake in [false, true] {
+                        let request =
+                            native_io::hew_async_ws_server_accept(server, std::ptr::null());
+                        inner.active_accepts.wait_for_count(1);
+                        let peer = stalled_handshake.then(|| {
+                            TcpStream::connect(("127.0.0.1", port)).expect("connect stalled peer")
+                        });
+                        if stalled_handshake {
+                            wait_until(|| inner.active_handshakes.load(Ordering::Acquire) == 1);
+                        }
+                        assert_eq!(hew_runtime::async_io::hew_async_io_cancel(request), 1);
+                        wait_until(|| {
+                            hew_runtime::async_io::hew_async_io_cleanup_status(
+                                request,
+                                std::ptr::null(),
+                            ) == 1
+                        });
+                        assert_eq!(
+                            hew_runtime::async_io::hew_async_io_status(request),
+                            AsyncIoStatus::Cancelled as i32
+                        );
+                        assert_eq!(inner.active_accepts.count(), 0);
+                        assert_eq!(inner.active_handshakes.load(Ordering::Acquire), 0);
+                        assert!(!inner.cancel.load(Ordering::Acquire));
+                        hew_runtime::async_io::hew_async_io_free(request);
+                        drop(peer);
+                    }
+                    hew_ws_server_close(server);
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn async_server_accept_transfers_connection() {
+        run_in_isolated_test_process(
+            "async_server_accept_transfers_connection",
+            "HEW_WS_ASYNC_ACCEPT_SUCCESS_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                // SAFETY: this test owns the server, request and transferred connection.
+                unsafe {
+                    let server = hew_ws_server_new(ManagedString::new("127.0.0.1:0").as_ptr());
+                    assert!(!server.is_null());
+                    let port = hew_ws_server_port(server);
+                    for take_connection in [true, false] {
+                        let drops_before = OUTER_CONN_DROPS.load(Ordering::SeqCst);
+                        let request =
+                            native_io::hew_async_ws_server_accept(server, std::ptr::null());
+                        let (client, _) = tungstenite::connect(format!("ws://127.0.0.1:{port}/"))
+                            .expect("connect peer");
+                        wait_until(|| {
+                            hew_runtime::async_io::hew_async_io_status(request)
+                                != AsyncIoStatus::Pending as i32
+                        });
+                        if take_connection {
+                            let mut connection = std::ptr::null_mut();
+                            assert_eq!(
+                                native_io::hew_async_ws_take_accept(request, &raw mut connection),
+                                1
+                            );
+                            assert!(!connection.is_null());
+                            hew_ws_close(connection);
+                        }
+                        hew_runtime::async_io::hew_async_io_free(request);
+                        wait_until(|| OUTER_CONN_DROPS.load(Ordering::SeqCst) == drops_before + 1);
+                        drop(client);
+                    }
+                    hew_ws_server_close(server);
+                }
             },
         );
     }

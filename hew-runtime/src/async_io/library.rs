@@ -16,6 +16,7 @@ use crate::wake::HewWaker;
 pub struct SocketCancellation {
     cancelled: AtomicBool,
     socket: Mutex<Option<TcpStream>>,
+    listener: bool,
 }
 
 impl SocketCancellation {
@@ -27,7 +28,7 @@ impl SocketCancellation {
     pub fn bind(&self, socket: &TcpStream) -> std::io::Result<()> {
         let socket = socket.try_clone()?;
         let mut current = self.socket.lock_or_recover();
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.is_cancelled() {
             let _ = socket.shutdown(Shutdown::Both);
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Interrupted,
@@ -42,6 +43,7 @@ impl SocketCancellation {
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+            || (self.listener && crate::reactor::listener_admission_closed())
     }
 
     pub(super) fn cancel(&self) {
@@ -83,6 +85,9 @@ where
             IoFailure::invalid("native socket operation panicked")
         });
     crate::blocking_pool::job_finishing();
+    if cancel.is_cancelled() {
+        operation.cancel_and_wake();
+    }
     operation.complete(result);
 }
 
@@ -102,13 +107,47 @@ where
     F: FnOnce(&Arc<SocketCancellation>) -> T + Send + 'static,
     T: Any + Send,
 {
+    // SAFETY: this forwards the caller's borrowed waker and owned inputs.
+    unsafe { submit_job(waker, run, false) }
+}
+
+/// Submit a native accept governed by the reactor's listener admission.
+/// Closing admission cancels the wait and wakes its caller, including a process
+/// root. Existing connections continue using ordinary socket jobs.
+///
+/// # Safety
+/// `waker` is null or a live borrowed descriptor for this call.
+///
+/// # Panics
+/// Panics if a newly created, unpublished operation is already shared.
+pub unsafe fn submit_listener_job<F, T>(waker: *const HewWaker, run: F) -> *const HewAsyncIo
+where
+    F: FnOnce(&Arc<SocketCancellation>) -> T + Send + 'static,
+    T: Any + Send,
+{
+    // SAFETY: this forwards the caller's borrowed waker and owned inputs.
+    unsafe { submit_job(waker, run, true) }
+}
+
+unsafe fn submit_job<F, T>(waker: *const HewWaker, run: F, listener: bool) -> *const HewAsyncIo
+where
+    F: FnOnce(&Arc<SocketCancellation>) -> T + Send + 'static,
+    T: Any + Send,
+{
     // SAFETY: the caller lends the descriptor through submission.
     let mut operation = unsafe { HewAsyncIo::new(waker) };
-    let cancel = Arc::new(SocketCancellation::default());
+    let cancel = Arc::new(SocketCancellation {
+        listener,
+        ..SocketCancellation::default()
+    });
     // The operation has not been published or cloned yet.
     Arc::get_mut(&mut operation)
         .expect("unpublished socket operation")
         .socket_cancel = Some(Arc::clone(&cancel));
+    if cancel.is_cancelled() {
+        operation.cancel_and_wake();
+        return Arc::into_raw(operation);
+    }
     if crate::shutdown::refuses_new_root_work() {
         operation.complete(Err(IoFailure::shutting_down("native socket operation")));
         return Arc::into_raw(operation);

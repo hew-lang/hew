@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the real version build script across linked source worktrees."""
+"""Exercise version identity across source worktrees and release bumps."""
 
 from __future__ import annotations
 
@@ -242,6 +242,53 @@ class SharedTargetVersion(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(result.stdout.strip(), expected)
                 print(f"PASS embedded std {directory.name}: {expected}", flush=True)
+
+
+class VersionBump(unittest.TestCase):
+    def test_version_dots_do_not_match_integer_digits(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="hew-version-bump-") as temporary:
+            base = Path(temporary)
+            script = base / "scripts/bump-version.sh"
+            script.parent.mkdir()
+            script.write_bytes((ROOT / "scripts/bump-version.sh").read_bytes())
+            inputs = {
+                "Cargo.toml": '[workspace.package]\nversion = "0.6.5"\n',
+                "docs/syntax-data.json": '{"version": "0.6.5"}\n',
+                "hew-sandbox-vm/package.json": '{"version": "0.6.5"}\n',
+                "hew-sandbox-vm/package-lock.json": '{"version": "0.6.5"}\n',
+                "hew-sandbox-vm/bytecode/package-v1.md": "Hew 0.6.5\n",
+                "hew-sandbox-vm/test/bounds.mjs": (
+                    'const version = "0.6.5";\n'
+                    "const bounds = [-9223372036854775808n, 9223372036854775807n];\n"
+                ),
+            }
+            for name, content in inputs.items():
+                path = base / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+            # Isolate authored text edits from dependency and baseline regeneration.
+            tools = base / "bin"
+            tools.mkdir()
+            for name in ["cargo", "make"]:
+                tool = tools / name
+                tool.write_text("#!/bin/sh\nexit 0\n")
+                tool.chmod(0o755)
+            result = subprocess.run(
+                ["bash", str(script), "0.6.6"],
+                cwd=base,
+                env={
+                    **os.environ,
+                    "PATH": str(tools) + os.pathsep + os.environ["PATH"],
+                },
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name, content in inputs.items():
+                self.assertEqual(
+                    (base / name).read_text(), content.replace("0.6.5", "0.6.6"), name
+                )
 
 
 if __name__ == "__main__":

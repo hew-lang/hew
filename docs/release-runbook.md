@@ -575,14 +575,14 @@ macOS release notes:
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.
 - [ ] Open the next planned development version on main in a separate PR. After
-      v0.6.4, set the base to `0.6.5`. Do not alter the qualified release commit,
+      v0.6.5, set the base to `0.6.6`. Do not alter the qualified release commit,
       move its tag, or change edition 2026.
 
 From a clean branch based on current main, run the existing bump machinery:
 
 ```bash
-# Example closeout after publishing v0.6.4. Store the base, not a -dev suffix.
-scripts/bump-version.sh 0.6.5
+# Example closeout after publishing v0.6.5. Store the base, not a -dev suffix.
+scripts/bump-version.sh 0.6.6
 make test-build-version baselines-check
 make lint
 
@@ -592,7 +592,7 @@ git diff --stat
 
 Keep `CHANGELOG.md`'s `[Unreleased]` section for the new development cycle;
 do not create release notes or a release tag for this bump. A build from the
-resulting commit reports `0.6.3-dev.X+<commit>`, with `X` counted from v0.6.2
+resulting commit reports `0.6.6-dev.X+<commit>`, with `X` counted from v0.6.5
 when that tag and its history are present. Merge the bump PR as part of release
 closeout, rather than leaving main labelled with the version just shipped.
 

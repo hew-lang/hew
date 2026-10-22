@@ -46,7 +46,7 @@ untagged builds, where `X` counts commits since the nearest reachable Hew
 release tag. Unrelated tags do not affect that count. A dirty checkout also
 appends `.dirty`; a clean build at the matching tag reports the plain version.
 
-For the current patch sequence, main uses base `0.6.5` after v0.6.4. Keep edition
+For the current patch sequence, main uses base `0.6.6` after v0.6.5. Keep edition
 2026 unchanged. This is a main-branch closeout change, separate from the already
 qualified release commit and its tag. The
 [post-release checklist](../release-runbook.md#phase-6--post-release-verification)

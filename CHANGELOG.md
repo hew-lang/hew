@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-22
+
+- Execute JSON, TOML and YAML values in the sandbox using the native parsing and
+  formatting engines, preserving format-specific values, ownership and errors.
+- Bound QUIC hostname resolution across cancellation and node recreation while
+  retaining connection and listener deadlines.
+
+See the [release notes](docs/releases/v0.7.0.md) for browser host integration.
+
 ## [0.6.6] - 2026-10-21
 
 - Preserve ordinary value semantics through consuming parameters, receivers and

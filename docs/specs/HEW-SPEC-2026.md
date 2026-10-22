@@ -39,7 +39,7 @@ $ hew --supported-editions
 2026
 ```
 
-Edition 2026 remains under development during the 0.6 series. Compatible
+Edition 2026 remains under development during the 0.6 and 0.7 series. Compatible
 additions identify their first supported compiler version. Intentional
 incompatible changes may also ship in 0.6.x while the language converges on
 its agreed design; release notes must identify the affected versions and give

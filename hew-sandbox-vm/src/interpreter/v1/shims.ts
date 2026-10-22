@@ -389,6 +389,8 @@ const NATIVE_IO_ROUTES = {
   TlsRead: refused("NativeIo::TlsRead", true),
   TlsWrite: refused("NativeIo::TlsWrite", true),
   WebSocketAccept: refused("NativeIo::WebSocketAccept", true),
+  WebSocketSendText: refused("NativeIo::WebSocketSendText", true),
+  WebSocketSendBinary: refused("NativeIo::WebSocketSendBinary", true),
   FileRead: "FileRead",
   FileWrite: "FileWrite",
 } as const satisfies {

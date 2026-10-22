@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- Preserve ordinary value semantics through consuming parameters, receivers and
+  cloneable once-callables, while retaining affine ownership checks.
+- Implement owning vector iteration in Hew with linear total movement and
+  ordered cleanup; use ordinary snapshot semantics for cloneable actor fields.
+- Suspend WebSocket accepts through native I/O so deadlines and shutdown cancel
+  idle listeners and incomplete handshakes, preserving cleanup failures.
+- Return application fault text directly through recovery and actor crash
+  notices, and diagnose unsupported `Vec.with_capacity` calls during checking.
+
 ## [0.6.5] - 2026-10-21
 
 - Fix browser Test compilation failing with a missing `std.link_monitor` module.

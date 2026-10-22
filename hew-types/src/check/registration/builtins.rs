@@ -171,19 +171,6 @@ impl Checker {
             &["T"],
             crate::runtime_call::RuntimeCallFamily::VecNew,
         );
-        self.register_builtin_fn_with_bounds(
-            "Vec::with_capacity",
-            vec!["T".to_string()],
-            None,
-            vec![Ty::I64],
-            &Ty::Named {
-                head: crate::TypeHead::Builtin(BuiltinType::Vec),
-                args: vec![Ty::Named {
-                    head: crate::TypeHead::Unresolved(Symbol::intern("T")),
-                    args: vec![],
-                }],
-            },
-        );
         self.register_collection_constructor(
             "HashMap::new",
             BuiltinType::HashMap,

@@ -1,0 +1,44 @@
+actor Basket {
+    var items: Vec<string> = ["alpha", "beta"];
+
+    receive fn snapshot() -> i64 {
+        var total = 0;
+        for item in items.into_iter() {
+            total += item.len();
+        }
+        total
+    }
+
+    receive fn drain() -> i64 {
+        let queued = items;
+        items = Vec.new();
+        var total = 0;
+        for item in queued.into_iter() {
+            total += item.len();
+        }
+        total
+    }
+
+    receive fn count() -> i64 {
+        items.len()
+    }
+    receive fn add(label: string) {
+        items.push(label);
+    }
+}
+
+fn main() {
+    let basket = spawn Basket;
+    assert(basket.snapshot().expect("snapshot") == 9);
+    assert(basket.snapshot().expect("snapshot again") == 9);
+    assert(basket.count().expect("kept contents") == 2);
+    assert(basket.drain().expect("drain") == 9);
+    assert(basket.count().expect("empty") == 0);
+    assert(basket.snapshot().expect("empty snapshot") == 0);
+    basket.add("new").expect("refill");
+    assert(basket.snapshot().expect("refilled snapshot") == 3);
+    assert(basket.count().expect("kept refill") == 1);
+    assert(basket.drain().expect("drain refill") == 3);
+    assert(basket.count().expect("empty again") == 0);
+    println("actor collection snapshots and drains");
+}

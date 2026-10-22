@@ -1,9 +1,8 @@
 import std.failure;
 
-// A state `Vec` is mutated and drained in its own seat: the handler takes the
-// seat, the runtime call updates the receiver, and the updated receiver is
-// published back. The element type here has no copy, so a staged copy has
-// nothing to stage and the take is the only admitted shape.
+// A state `Vec` is mutated in its own seat, then explicitly replaced before
+// draining its previous contents. The erased element has no clone operation,
+// so an owning iteration must move it and restore the state for the next turn.
 
 trait Formatter {
     fn format(self, msg: string) -> string;
@@ -33,8 +32,10 @@ actor Plugins {
         plugins.len()
     }
     receive fn drain(msg: string) -> string {
+        let queued = plugins;
+        plugins = Vec.new();
         var line: string = "";
-        for p in plugins.into_iter() {
+        for p in queued.into_iter() {
             line = line + p.format(msg) + " ";
         }
         line

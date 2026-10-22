@@ -84,7 +84,7 @@ impl LowerCtx {
 
     fn checked_for_type(&mut self, ty: &Ty, role: &str, span: &Span) -> Option<ResolvedTy> {
         match ResolvedTy::from_ty(ty) {
-            Ok(resolved) => Some(resolved),
+            Ok(resolved) => Some(self.restore_type_declaration_facts(resolved)),
             Err(error) => {
                 self.diagnostics.push(HirDiagnostic::new(
                     HirDiagnosticKind::CheckerBoundaryViolation {

@@ -1098,6 +1098,26 @@ fn implicit_iterator_suspension_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn actor_state_iterator_snapshots_and_explicit_drains_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "actor_state_vec_seat",
+            source_rel: "tests/core-acceptance/cases/actor-state-vec-seat.hew",
+        },
+        ParityCase {
+            test_name: "actor_state_iterator_snapshot",
+            source_rel: "tests/core-acceptance/cases/actor-state-iterator-snapshot.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn vec_iter_owned_slots_match_native_and_vm() {
     set_test_hewpath();
     ensure_native_toolchain();

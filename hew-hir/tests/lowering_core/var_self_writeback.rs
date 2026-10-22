@@ -1,8 +1,6 @@
 use crate::support;
 
-use hew_hir::{
-    dump_hir, HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, IntentKind, ResolvedRef,
-};
+use hew_hir::{HirExpr, HirExprKind, HirFn, HirItem, HirStmtKind, IntentKind, ResolvedRef};
 use hew_types::ResolvedTy;
 
 fn assert_receiver_return(function: &HirFn, expression: &HirExpr) {
@@ -66,18 +64,25 @@ fn concrete_var_self_next_lowers_to_writeback_call() {
         "unexpected HIR diagnostics: {:?}",
         output.diagnostics
     );
-    let dump = dump_hir(&output.module);
-    assert!(
-        dump.contains("var-self-call Countdown::<impl Stepper for Countdown>::next"),
-        "concrete next() must retain its full source impl identity through the write-back node; dump:\n{dump}"
-    );
-    assert!(
-        !dump.contains("var-self-call Countdown::next"),
-        "write-back dispatch must not regress to the ambiguous leaf method identity; dump:\n{dump}"
-    );
-    assert!(
-        !dump.contains("resolved-impl-call"),
-        "user impl next() must not route through ResolvedImplCall; dump:\n{dump}"
+    let step = output
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            HirItem::Function(function) if function.name == "step" => Some(function),
+            _ => None,
+        })
+        .unwrap();
+    let HirExprKind::VarSelfMethodCall { call_target, .. } = &step.body.tail.as_ref().unwrap().kind
+    else {
+        panic!("the user method must retain receiver writeback");
+    };
+    let hew_types::CallTarget::ImplMethod(declaration) = call_target else {
+        panic!("writeback must target the checked source method: {call_target:?}");
+    };
+    assert_eq!(
+        output.module.defs.path(*declaration),
+        "Countdown::<impl Stepper for Countdown>::next"
     );
     let method = output
         .module

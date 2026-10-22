@@ -1,14 +1,8 @@
 //! Consume-receiver metadata plumbing for issue #1295.
 //!
-//! These tests exercise the `consumes_receiver` seam introduced by the
-//! Consume-receiver metadata: a per-method-signature flag that, when set,
-//! causes the type checker to mark the receiver expression moved after
-//! the call and to record a per-call-site flag in
-//! [`TypeCheckOutput::method_call_consumes_receiver`] so codegen can
-//! null the receiver's drop slot.
-//!
-//! Tests inject names directly via [`Checker::register_consume_receiver_method`]
-//! to exercise the path end to end.
+//! Consuming receiver metadata requests an owned argument. Ordinary values
+//! remain usable through copying; affine receivers move. The per-call-site
+//! flag preserves the acquisition contract for lowering.
 
 use crate::common;
 
@@ -47,26 +41,27 @@ fn run_checker(source: &str, register_consume: bool) -> hew_types::TypeCheckOutp
     checker.check_program(&program)
 }
 
-/// A method declared with `consumes_receiver = true` causes the receiver
-/// binding to be marked moved after the call, surfacing the existing
-/// `UseAfterMove` diagnostic on the second call.
 #[test]
-fn consume_receiver_marks_binding_moved() {
-    let output = run_checker(TRAIT_AND_IMPL, /*register_consume=*/ true);
+fn consume_receiver_preserves_ordinary_values() {
+    let output = run_checker(TRAIT_AND_IMPL, true);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn consume_receiver_moves_affine_values() {
+    let source = TRAIT_AND_IMPL.replace("type Bucket", "#[resource]\ntype Bucket");
+    let output = run_checker(&source, true);
     assert!(
         output
             .errors
             .iter()
-            .any(|e| e.kind == TypeErrorKind::UseAfterMove),
-        "expected UseAfterMove on second call when Sink::drain consumes its \
-         receiver; got errors: {:?}",
-        output.errors,
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "affine consuming receivers must still move: {:?}",
+        output.errors
     );
 }
 
-/// With `consumes_receiver = false` (the PR 1 default — recognised set
-/// empty), the same program type-checks cleanly: the receiver is not
-/// marked moved, and the second call is admitted.
+/// Borrowing receivers leave the caller usable without acquiring an owner.
 #[test]
 fn no_consume_receiver_does_not_mark_moved() {
     let output = run_checker(TRAIT_AND_IMPL, /*register_consume=*/ false);
@@ -80,15 +75,18 @@ fn no_consume_receiver_does_not_mark_moved() {
     );
 }
 
-/// When the consume marker fires, the per-call-site flag is recorded in
-/// the side table that codegen consults to null the receiver's drop slot.
+/// Consuming calls retain the ownership-acquisition metadata for lowering.
 #[test]
 fn consume_receiver_records_per_call_site_flag() {
     let output = run_checker(TRAIT_AND_IMPL, /*register_consume=*/ true);
     assert!(
-        !output.method_call_consumes_receiver.is_empty(),
-        "expected at least one call site flagged in \
-         method_call_consumes_receiver; got {:?}",
+        output
+            .method_call_consumes_receiver
+            .iter()
+            .filter(|key| key.module_idx == 0)
+            .count()
+            == 2,
+        "both root consuming calls must retain their acquisition metadata: {:?}",
         output.method_call_consumes_receiver,
     );
 }

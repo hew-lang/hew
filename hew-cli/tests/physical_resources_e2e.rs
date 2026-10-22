@@ -86,7 +86,7 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
         ("capture", "let input = open(); let cb = move || input.collect(); let _copy = clone cb;", 1,
             "type `fn[once]() -> string` cannot be cloned"),
         ("borrowed", "read_borrowed(open());", 3,
-            "E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value"),
+            "E_OWN_CONSUME_BORROWED"),
     ] {
         let extra_declaration = match name {
             "borrowed" => "fn read_borrowed(input: Stream<string>) { input.close(); }",
@@ -110,6 +110,10 @@ fn file_resources_refuse_copy_and_borrowed_or_repeated_consumption() {
         assert!(!binary.exists(), "emitted refused {name}");
         let diagnostic = String::from_utf8_lossy(&output.stderr);
         assert!(diagnostic.contains(expected_diagnostic), "{name}: expected {expected_diagnostic:?}, got {diagnostic}");
+        if name == "borrowed" {
+            assert!(diagnostic.contains("read_borrowed") && diagnostic.contains("input"),
+                "borrowed resource refusal must identify the affected function and binding: {diagnostic}");
+        }
     }
 
     // A field-bearing `#[resource]` record is a supported value, not a refusal:

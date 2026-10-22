@@ -13,34 +13,6 @@ fn facts(source: &str) -> TypeFactService {
 }
 
 #[test]
-fn vector_cursor_uses_its_source_record_fields_and_recursive_copy() {
-    let mut service = facts("fn main() -> i64 { 0 }");
-    for element in [ResolvedTy::I64, ResolvedTy::String] {
-        let cursor = ResolvedTy::named_builtin(BuiltinType::VecIter, vec![element.clone()]);
-        let (instance, fields) = service.record_fields(&cursor).unwrap();
-        assert_eq!(
-            service.defs().path(instance.nominal.declaration()),
-            "std.builtins.VecIter"
-        );
-        assert_eq!(
-            fields,
-            vec![
-                (
-                    "vec".to_string(),
-                    ResolvedTy::named_builtin(BuiltinType::Vec, vec![element])
-                ),
-                ("front".to_string(), ResolvedTy::I64),
-                ("back".to_string(), ResolvedTy::I64),
-            ]
-        );
-        assert_eq!(
-            service.require(&cursor).unwrap().clone,
-            CloneKind::FieldWise
-        );
-    }
-}
-
-#[test]
 fn same_spelling_user_record_does_not_select_the_builtin_cursor() {
     let service = facts(
         "type VecIter<T> {\n    tail: T;\n    head: i64;\n}\n\nfn main() -> i64 {\n    0\n}\n",

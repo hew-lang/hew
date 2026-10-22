@@ -94,6 +94,11 @@ option. The Node test host loads that package automatically; in a source
 checkout, run `make wasm` to build `hew-wasm/pkg` first. An explicit
 `HEW_WASM_MODULE` module URL can select another build of the same package.
 
+JSON, TOML and YAML values use this same bridge for parsing and formatting.
+Their ordinary value operations execute in the VM, including independent copies,
+checked access, mutation and cleanup. The bridge preserves full-width JSON
+integers, YAML mapping keys and tags, and TOML datetimes using the native engines.
+
 UTC calendar operations also require the initialized `executeCalendar`
 export as `calendarBridge`. Both hosts use the shared Chrono calendar engine;
 the bridge preserves integer seconds and nanoseconds exactly.

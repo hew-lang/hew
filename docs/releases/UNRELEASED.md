@@ -1,3 +1,3 @@
 # Unreleased
 
-Changes after [v0.6.6](v0.6.6.md) belong here.
+Changes after [v0.7.0](v0.7.0.md) belong here.

@@ -13,16 +13,30 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(root, "..");
 // A supplied build is an immutable test input. This lets the VM qualify
 // compatibility with an independently produced compiler without rebuilding it.
+const suppliedModule = process.env.HEW_WASM_MODULE;
 const reusedBindings = process.env.HEW_WASM_TEST_BINDINGS_DIR;
-const wasmDir = reusedBindings
-  ? path.resolve(reusedBindings)
-  : fs.mkdtempSync(path.join(os.tmpdir(), "hew-wasm-"));
+const ownsBindings = !suppliedModule && !reusedBindings;
+const wasmDir = suppliedModule
+  ? undefined
+  : reusedBindings
+    ? path.resolve(reusedBindings)
+    : fs.mkdtempSync(path.join(os.tmpdir(), "hew-wasm-"));
 
 process.env.HEWPATH = repoRoot;
 buildSandboxWasmBridge();
-const wasmModule = await import(
-  pathToFileURL(path.join(wasmDir, "hew_wasm.js")).href
-);
+const location =
+  suppliedModule ?? pathToFileURL(path.join(wasmDir, "hew_wasm.js")).href;
+const wasmModule = await import(location);
+if (typeof wasmModule.default === "function") {
+  const resolved = location.startsWith("file:")
+    ? location
+    : import.meta.resolve(location);
+  await wasmModule.default({
+    module_or_path: fs.readFileSync(
+      new URL(resolved.replace(/\.js$/, "_bg.wasm")),
+    ),
+  });
+}
 globalThis.__hewSandboxCompileToSandboxBytecode =
   wasmModule.compileToSandboxBytecode ??
   wasmModule.default?.compileToSandboxBytecode;
@@ -38,7 +52,7 @@ globalThis.__hewSandboxExecuteCalendar =
 test.after(() => {
   try {
     const artifactDirectory = process.env.HEW_WASM_TEST_ARTIFACT_DIR;
-    if (artifactDirectory && !reusedBindings) {
+    if (artifactDirectory && ownsBindings) {
       // Retain the tested bindings for downstream provider checks. Copy only
       // runtime artefacts; caller-owned destinations are never cleaned up.
       fs.mkdirSync(artifactDirectory, { recursive: true });
@@ -55,7 +69,7 @@ test.after(() => {
       console.log(`Retained VM bridge artefacts in ${artifactDirectory}`);
     }
   } finally {
-    if (!reusedBindings) fs.rmSync(wasmDir, { recursive: true, force: true });
+    if (ownsBindings) fs.rmSync(wasmDir, { recursive: true, force: true });
     delete globalThis.__hewSandboxCompileToSandboxBytecode;
     delete globalThis.__hewSandboxExecuteCodec;
     delete globalThis.__hewSandboxExecuteCalendar;
@@ -385,8 +399,10 @@ test("runProgram panics map to non-zero exit code and a trap diagnostic", async 
 });
 
 function buildSandboxWasmBridge() {
-  if (reusedBindings) {
-    console.log(`Using existing VM bridge bindings from ${wasmDir}`);
+  if (!ownsBindings) {
+    console.log(
+      `Using existing VM bridge bindings from ${suppliedModule ?? wasmDir}`,
+    );
     return;
   }
   const mode = process.env.HEW_WASM_PACK_MODE;
@@ -404,6 +420,7 @@ function buildSandboxWasmBridge() {
     cwd: repoRoot,
     encoding: "utf8",
   });
+  if (result.error) throw result.error;
   assert.equal(result.status, 0, result.stderr || result.stdout);
 }
 

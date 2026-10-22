@@ -1,5 +1,6 @@
 import type { JsonValue } from "./types.js";
 import { IndexedString, stringValue } from "./strings.js";
+import type { EncodingNode, EncodingFormat } from "./v1/encoding-values.js";
 export { stringValue } from "./strings.js";
 
 /** One creator-owned membership list; payload destruction uses the ordinary VM release path. */
@@ -17,6 +18,7 @@ export interface RcCell {
 }
 
 export type VmValue =
+  | { kind: "encoding"; format: EncodingFormat; value: EncodingNode | null }
   | { kind: "rc"; cell: RcCell | null; closed: boolean }
   | { kind: "weak"; cell: RcCell; closed: boolean }
   | { kind: "unit" }
@@ -96,6 +98,8 @@ const I64_LITERAL_DECIMAL = /^(?:0|-?[1-9]\d*)$/;
 
 export function cloneValue(value: VmValue): VmValue {
   switch (value.kind) {
+    case "encoding":
+      return { ...value, value: structuredClone(value.value) };
     case "rc":
       if (value.closed) throw new Error("cannot copy a released Rc");
       if (!value.cell || value.cell.dying)
@@ -285,6 +289,8 @@ export function renderF64(value: number): string {
 
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
+    case "encoding":
+      return JSON.stringify(value.value);
     case "host_resource":
       return "FilesystemOwner";
     case "timer":
@@ -345,6 +351,8 @@ export function renderStdout(value: VmValue): string {
 
 export function toJsonValue(value: VmValue): JsonValue {
   switch (value.kind) {
+    case "encoding":
+      return value.value;
     case "host_resource":
       return "FilesystemOwner";
     case "timer":

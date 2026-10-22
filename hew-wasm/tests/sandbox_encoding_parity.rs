@@ -1,5 +1,5 @@
-//! The sandbox VM implements no encoding runtime, so TOML values must meet
-//! the sandbox boundary exactly as JSON and YAML values do.
+//! Checked source contracts for encoding values. Runtime execution is covered
+//! separately: all three formats execute with their native Value semantics.
 
 fn sandbox_outcome(source: &str) -> (bool, Vec<String>) {
     let output: serde_json::Value = serde_json::from_str(
@@ -34,8 +34,9 @@ fn program(format: &str, object: &str) -> String {
 }
 
 #[test]
-fn toml_values_meet_the_sandbox_boundary_like_json_and_yaml() {
+fn encoding_values_share_checked_source_contracts() {
     let json = sandbox_outcome(&program("json", "object"));
+    assert!(json.0, "{json:?}");
     let yaml = sandbox_outcome(&program("yaml", "object"));
     let toml = sandbox_outcome(&program("toml", "table"));
     assert_eq!(toml, json);

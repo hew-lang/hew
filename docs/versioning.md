@@ -6,14 +6,14 @@ Hew is pre-1.0. The compiler version and language edition are separate:
 
 Development builds use the next planned release version followed by
 `-dev.X+<commit>`. `X` is the number of commits since the nearest reachable Hew
-release tag, such as `v0.6.5`; unrelated toolchain or backup tags do not reset it.
-For example, development after v0.6.5 identifies itself as `0.6.6-dev.X`.
-The workspace stores only the base version (`0.6.6`); the build derives the
+release tag, such as `v0.6.6`; unrelated toolchain or backup tags do not reset it.
+For example, development after v0.6.6 identifies itself as `0.7.0-dev.X`.
+The workspace stores only the base version (`0.7.0`); the build derives the
 development count and commit. A clean build at the matching release tag reports
 the plain release version. Accurate counts require the release tags and their
 history to be available in the checkout.
 
-The 0.6 series develops edition 2026 through feature and maintenance releases.
+The 0.6 and 0.7 series develop edition 2026 through feature and maintenance releases.
 A patch release can add language or standard-library features and can include
 intentional surface changes with exact migration guidance. A package using
 an addition declares its minimum compiler version, for example
@@ -25,6 +25,6 @@ owns the version and edition contract. Contributor release guidance lives in
 the [versioning policy](internal/versioning.md) and
 [release runbook](release-runbook.md).
 
-Use the [v0.6.6 release notes](releases/v0.6.6.md) when upgrading a released
+Use the [v0.7.0 release notes](releases/v0.7.0.md) when upgrading a released
 installation. Changes after that tag belong in
-[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.6.6.
+[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.7.0.

@@ -135,6 +135,13 @@ struct Driver {
     tls: Option<Mutex<tls::Tls>>,
 }
 
+#[cfg_attr(
+    not(feature = "quic"),
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "The shared connection contract is fallible with QUIC enabled."
+    )
+)]
 pub(super) fn connection(
     manager: *mut crate::connection::HewConnMgr,
     circuit: Arc<Circuit>,

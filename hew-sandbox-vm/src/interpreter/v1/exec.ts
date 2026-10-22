@@ -3,6 +3,7 @@ import {
   type BrowserIoError,
   type DirectoryOperation,
 } from "./browser-directory.js";
+import type { EncodingFormat } from "./encoding-values.js";
 /// The `hew.sandbox.bytecode.v1` executor.
 ///
 /// The package is a projection of verified ownership SIR, so this executor
@@ -193,6 +194,8 @@ interface ActorMessage {
 }
 
 interface ActorInstance {
+  /** Native encoding error slots follow actor identity across handler turns. */
+  encodingErrors?: Partial<Record<EncodingFormat, string>>;
   rcOwner: RcOwner;
   identity: bigint;
   id: string;
@@ -413,6 +416,7 @@ export async function runPackageV1(
 }
 
 class ExecutorV1 {
+  private encodingErrors: Partial<Record<EncodingFormat, string>> = {};
   private current: Activation;
   private readonly host: ShimHost;
   private readonly scheduler: FrameScheduler;
@@ -456,6 +460,15 @@ class ExecutorV1 {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
       calendarBridge: options.calendarBridge,
+      codecBridge: options.codecBridge,
+      encodingError: (format, message) => {
+        const actor = this.current.context.actor;
+        const errors = actor
+          ? (actor.encodingErrors ??= {})
+          : this.encodingErrors;
+        if (message !== undefined) errors[format] = message;
+        return errors[format] ?? "";
+      },
       fileError: (operation) => {
         const error = this.current.context.fileError;
         switch (operation) {
@@ -3394,6 +3407,9 @@ class ExecutorV1 {
       while (pending.length) {
         const value = pending.pop()!;
         switch (value.kind) {
+          case "encoding":
+            value.value = null;
+            break;
           case "string":
             value.release();
             break;
@@ -3548,6 +3564,7 @@ class ExecutorV1 {
   }
 
   private closeValue(value: VmValue, fault: string | null): void {
+    if (value.kind === "encoding") value.value = null;
     if (value.kind === "host_resource") this.closeHostResource(value);
     if (value.kind === "string") value.release();
     if (value.kind === "closure") this.closeValue(value.environment, fault);

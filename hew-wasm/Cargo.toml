@@ -40,6 +40,8 @@ wasm-bindgen = "0.2.128"
 js-sys = "0.3"
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
+toml.workspace = true
 schemars = "1.2"
 # The present-null deserializer preserves wire presence; it does not change TS types.
 ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
@@ -48,5 +50,4 @@ ts-rs = { version = "12", features = ["serde-json-impl", "no-serde-warnings"] }
 assert_cmd = "2"
 hew-testutil = { path = "../hew-testutil" }
 tempfile.workspace = true
-toml.workspace = true
 walkdir = "2"

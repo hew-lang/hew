@@ -19,7 +19,8 @@ struct Request {
     error_root: Option<usize>,
 }
 
-/// Execute the compiler's typed codec plan using the shared native engine.
+/// Execute typed codec plans and ordinary Encoding Value text operations with the
+/// corresponding native format engines.
 #[wasm_bindgen(js_name = executeCodec)]
 #[must_use]
 pub fn execute_codec(request: &str) -> String {
@@ -29,7 +30,11 @@ pub fn execute_codec(request: &str) -> String {
 }
 
 fn execute(request: &str) -> Result<Json, String> {
-    let request: Request = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    let envelope: Json = serde_json::from_str(request).map_err(|error| error.to_string())?;
+    if let Some(request) = envelope.get("encoding_value") {
+        return crate::encoding_values::execute(request);
+    }
+    let request: Request = serde_json::from_value(envelope).map_err(|error| error.to_string())?;
     let mut shape: Shape =
         serde_json::from_str(&request.shape).map_err(|error| error.to_string())?;
     let format = match request.format {

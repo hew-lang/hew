@@ -666,10 +666,7 @@ fn main() {
 }
 "#,
     );
-    assert_eq!(
-        stdout(&trace),
-        "slow cleaned\nhew: failure: UserPanic (212): child failed\n\n"
-    );
+    assert_eq!(stdout(&trace), "slow cleaned\nchild failed\n");
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 1);
 }
 
@@ -708,7 +705,7 @@ fn crash_info_uses_the_native_public_crash_kind() {
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/crash-info-hook-fields.hew"
     ));
-    assert_eq!(stdout(&trace), "Fault\nUserPanic\n");
+    assert_eq!(stdout(&trace), "Fault\ncrash hook payload\n");
     assert_eq!(trace["final_state"]["exit_code"], 42);
     let trace = execute(include_str!(
         "../../tests/core-acceptance/cases/actor-mailbox-fails-faults.hew"

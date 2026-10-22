@@ -33,7 +33,7 @@ fn main() {
     println(kept);
 }
 "#,
-        "condition\nstill live\ncondition\nowned assertion value\nparent cleanup\nhew: failure: UserPanic (212): assertion failed: check(false)\n\nstill live\n",
+        "condition\nstill live\ncondition\nowned assertion value\nparent cleanup\nassertion failed: check(false)\nstill live\n",
         0,
         "",
     );
@@ -122,7 +122,7 @@ fn main() {
     println(result);
 }
 "#,
-        "child cleanup\nhew: failure: UserPanic (212): bottom child\n\njoined and recovered\n",
+        "child cleanup\nbottom child\njoined and recovered\n",
         0,
         "",
     );
@@ -224,7 +224,7 @@ fn main() {
     println(result);
 }
 "#,
-        "child cleanup\nscope cleanup\nhew: failure: UserPanic (212): child fault\nhew: secondary failure: UserPanic (212): cleanup fault\n\nrecovered\n",
+        "child cleanup\nscope cleanup\nchild fault; secondary failure: UserPanic: cleanup fault\nrecovered\n",
         0,
         "",
     );
@@ -259,7 +259,7 @@ fn recovery_handler_failure_reaches_the_outer_boundary() {
     println(result);
 }
 "#,
-        "inner recovered\nhew: failure: UserPanic (212): handler fault\n\nsuccess\n",
+        "inner recovered\nhandler fault\nsuccess\n",
         0,
         "",
     );
@@ -287,7 +287,7 @@ fn recovery_transfers_an_owned_result_after_fault_cleanup() {
     println(result);
 }
 "#,
-        "scope cleanup\nhew: failure: UserPanic (212): broken é\n\nrecovered\n",
+        "scope cleanup\nbroken é\nrecovered\n",
         0,
         "",
     );

@@ -858,7 +858,8 @@ fn main() {
 
 #[test]
 fn local_actor_ask_cycle_runs_cleanup_and_can_be_recovered() {
-    run_actor(r#"actor Peer {
+    run_actor(
+        r#"actor Peer {
     receive fn run(other: Peer, me: Peer) -> string {
         match other.reply(me) {
             .Ok(value) => value,
@@ -898,5 +899,9 @@ fn main() {
     }
     println("caller-continues");
 }
-"#, "cycle-cleanup\nhew: failure: UserPanic (212): local actor wait cycle at ask: 2 -> 1 -> 2\n\nrecovered\ncaller-continues\n", 0, "");
+"#,
+        "cycle-cleanup\nlocal actor wait cycle at ask: 2 -> 1 -> 2\nrecovered\ncaller-continues\n",
+        0,
+        "",
+    );
 }

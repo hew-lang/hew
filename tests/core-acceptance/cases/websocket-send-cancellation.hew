@@ -1,0 +1,91 @@
+import std.net.websocket;
+
+actor Gate {
+    var released: bool = false;
+    receive fn release() {
+        released = true;
+    }
+    receive fn is_released() -> bool {
+        released
+    }
+}
+
+fn paused_peer(url: string, gate: Gate) {
+    let conn = websocket.connect(url, websocket.options()).expect("connect");
+    conn.send_text("paused").expect("announce paused reader");
+    while !gate.is_released().expect("gate") {
+        sleep(1ms);
+    }
+    conn.close();
+}
+
+fn send_loop(conn: websocket.Conn) {
+    let payload = "x".repeat(16384);
+    for index in 0..10000 {
+        if index % 2 == 0 {
+            conn.send_text(payload).expect("send text before cancellation");
+        } else {
+            conn.send_binary(payload.to_bytes()).expect("send binary before cancellation");
+        }
+    }
+    panic("paused peer unexpectedly accepted every message");
+}
+
+actor Writer {
+    let conn: websocket.Conn;
+    let gate: Gate;
+    receive fn run() {
+        gate.release().expect("announce active handler");
+        send_loop(conn);
+    }
+}
+
+fn deadline_case(child: bool) {
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
+    let gate = spawn Gate;
+    let peer = fork paused_peer(f"ws://127.0.0.1:{server.port()}", gate);
+    let conn = server.accept();
+    assert(conn.recv().expect("paused peer").is_some());
+    let cancelled = scope within 100ms {
+        if child {
+            let sender = fork send_loop(conn);
+            await sender;
+        } else {
+            send_loop(conn);
+        }
+        false
+    } handle failure { true };
+    assert(cancelled);
+    gate.release().expect("release peer");
+    await peer;
+    server.close();
+    stop(gate);
+    stopped(gate);
+}
+
+fn main() {
+    deadline_case(false);
+    deadline_case(true);
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
+    let peer_gate = spawn Gate;
+    let writer_gate = spawn Gate;
+    let peer = fork paused_peer(f"ws://127.0.0.1:{server.port()}", peer_gate);
+    let conn = server.accept();
+    assert(conn.recv().expect("paused peer").is_some());
+    let writer = spawn Writer { conn, gate: writer_gate };
+    let running = fork writer.run();
+    while !writer_gate.is_released().expect("writer gate") {
+        sleep(1ms);
+    }
+    terminate(writer);
+    stopped(writer);
+    assert((await running).is_err());
+    peer_gate.release().expect("release peer");
+    await peer;
+    server.close();
+    stop(peer_gate);
+    stopped(peer_gate);
+    stop(writer_gate);
+    stopped(writer_gate);
+    println("WebSocket writes honour lexical deadlines, parent cancellation and actor termination");
+}

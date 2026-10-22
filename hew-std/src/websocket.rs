@@ -493,8 +493,38 @@ fn send_ws_with_operation_gate(
     inner: &HewWsConnInner,
     ws: &mut HewWs,
     message: Message,
+    cancellation: Option<&SocketCancellation>,
 ) -> Result<(), tungstenite::Error> {
-    with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.send(message))
+    if cancellation.is_none() {
+        return with_write_operation_gate(inner.write_operation_gate.as_ref(), || ws.send(message));
+    }
+    let _gate = inner
+        .write_operation_gate
+        .as_ref()
+        .map(|gate| lock_for_send(inner, gate, cancellation))
+        .transpose()?;
+    ws.send(message)
+}
+
+/// Native send jobs own their inputs, but lock waits must still relinquish the
+/// producer promptly when their caller cancels. Keep the established framer →
+/// operation-gate order and serialize the complete tungstenite send.
+fn lock_for_send<'a, T>(
+    inner: &HewWsConnInner,
+    mutex: &'a PlMutex<T>,
+    cancellation: Option<&SocketCancellation>,
+) -> Result<parking_lot::MutexGuard<'a, T>, tungstenite::Error> {
+    loop {
+        if inner.closed.load(Ordering::Acquire) {
+            return Err(tungstenite::Error::AlreadyClosed);
+        }
+        if cancellation.is_some_and(SocketCancellation::is_cancelled) {
+            return Err(io::Error::from(io::ErrorKind::WouldBlock).into());
+        }
+        if let Some(guard) = mutex.try_lock_for(READER_WAIT_POLL) {
+            return Ok(guard);
+        }
+    }
 }
 
 /// Best-effort WebSocket close handshake before the transport is shut down.
@@ -681,7 +711,7 @@ fn spawn_attach_reader(conn: &HewWsConn, delivery: ActorDelivery) -> Result<(), 
                         // through `send_ws_message` so the serialized plain-TCP
                         // write half covers it. Duplicate Pong frames are
                         // protocol-valid and preferable to delayed liveness.
-                        let _ = send_ws_message(&inner, tungstenite::Message::Pong(payload));
+                        let _ = send_ws_message(&inner, tungstenite::Message::Pong(payload), None);
                     }
                 }
                 Ok(tungstenite::Message::Close(_)) => {
@@ -1038,19 +1068,56 @@ fn ws_io_errno(err: &io::Error) -> i64 {
 fn send_ws_message(
     inner: &Arc<HewWsConnInner>,
     message: Message,
+    cancellation: Option<&SocketCancellation>,
 ) -> Result<(), tungstenite::Error> {
+    if let Some(cancellation) = cancellation {
+        // A cancelled WebSocket send may already have written a frame prefix.
+        // Unlike a borrowed TLS byte operation, it forfeits connection reuse:
+        // shutdown interrupts a blocked plain or TLS write immediately and
+        // prevents another framer from flushing that abandoned frame later.
+        let socket = inner
+            .shutdown_stream
+            .as_ref()
+            .ok_or_else(|| io::Error::other("websocket send has no cancellation socket"))?;
+        cancellation.bind(socket)?;
+    }
     if let Some(write_ws_mutex) = inner.write_ws.as_ref() {
-        let mut guard = pl_lock(write_ws_mutex);
+        let mut guard = lock_for_send(inner, write_ws_mutex, cancellation)?;
         let Some(ws) = guard.as_mut() else {
             return Err(tungstenite::Error::AlreadyClosed);
         };
-        return send_ws_with_operation_gate(inner, ws, message);
+        return send_ws_with_operation_gate(inner, ws, message, cancellation);
     }
-    let mut guard = pl_lock(&inner.ws);
+    let mut guard = lock_for_send(inner, &inner.ws, cancellation)?;
     let Some(ws) = guard.as_mut() else {
         return Err(tungstenite::Error::AlreadyClosed);
     };
-    send_ws_with_operation_gate(inner, ws, message)
+    send_ws_with_operation_gate(inner, ws, message, cancellation)
+}
+
+type SendCompletion = Result<(), (i64, String)>;
+
+fn send_shared(
+    inner: &Arc<HewWsConnInner>,
+    message: Message,
+    operation: &str,
+    cancellation: Option<&SocketCancellation>,
+) -> SendCompletion {
+    match send_ws_message(inner, message, cancellation) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // A write failure can leave a partial WebSocket frame, including
+            // inside rustls. Never permit another message to reuse it.
+            inner.closed.store(true, Ordering::Release);
+            shutdown_socket(inner.shutdown_stream.as_ref(), Shutdown::Both);
+            let errno = if is_timeout_error(&error) {
+                WS_TIMED_OUT
+            } else {
+                ws_errno_of(&error)
+            };
+            Err((errno, format!("{operation}: {error}")))
+        }
+    }
 }
 
 /// Send one message, recording a failure in the error slot.
@@ -1061,18 +1128,14 @@ fn send_reporting(ws: *mut HewWsConn, message: Message, operation: &str) -> i32 
         return -1;
     };
     let inner = Arc::clone(&conn.inner);
-    let sent = if inner.closed.load(Ordering::Acquire) {
-        Err(tungstenite::Error::AlreadyClosed)
-    } else {
-        send_ws_message(&inner, message)
-    };
+    let sent = send_shared(&inner, message, operation, None);
     match sent {
         Ok(()) => {
             clear_ws_last_error();
             0
         }
-        Err(err) => {
-            set_ws_last_error(ws_errno_of(&err), format!("{operation}: {err}"));
+        Err((errno, detail)) => {
+            set_ws_last_error(errno, detail);
             -1
         }
     }
@@ -2802,6 +2865,103 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn async_send_cancellation_closes_partial_frame_and_preserves_other_connections() {
+        run_in_isolated_test_process(
+            "async_send_cancellation_closes_partial_frame_and_preserves_other_connections",
+            "HEW_WS_ASYNC_SEND_CANCEL_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                let (server, conn, mut peer) = attach_test_conn();
+                let (healthy_server, healthy_conn, mut healthy_peer) = attach_test_conn();
+                set_peer_read_timeout(&mut healthy_peer, Duration::from_secs(5));
+                set_conn_send_buffer(conn, 4096);
+                set_peer_read_timeout(&mut peer, Duration::from_secs(5));
+                let payload = vec![b'x'; 16 << 20];
+                // SAFETY: the request copies the borrowed payload at submission.
+                unsafe {
+                    let data = hew_runtime::bytes::hew_bytes_from_static(
+                        payload.as_ptr(),
+                        u32::try_from(payload.len()).unwrap(),
+                    );
+                    let request = native_io::hew_async_ws_send_binary(
+                        conn,
+                        &raw const data,
+                        std::ptr::null(),
+                    );
+                    hew_runtime::bytes::hew_bytes_drop(data.ptr);
+                    let MaybeTlsStream::Plain(socket) = peer.get_mut() else {
+                        panic!("plain peer");
+                    };
+                    let mut chunk = [0u8; 4096];
+                    let mut received = socket.read(&mut chunk).expect("a frame prefix arrives");
+                    assert!(
+                        received > 0,
+                        "send must have entered the socket before cancellation"
+                    );
+                    assert_eq!(chunk[0], 0x82, "binary frame prefix");
+                    assert_eq!(
+                        hew_runtime::async_io::hew_async_io_status(request),
+                        AsyncIoStatus::Pending as i32
+                    );
+                    assert_eq!(hew_runtime::async_io::hew_async_io_cancel(request), 1);
+                    wait_until(|| {
+                        hew_runtime::async_io::hew_async_io_cleanup_status(
+                            request,
+                            std::ptr::null(),
+                        ) == 1
+                    });
+                    assert!((&*conn).inner.closed.load(Ordering::Acquire));
+                    assert_eq!(
+                        hew_ws_send_text(
+                            conn,
+                            ManagedString::new("must not append another frame").as_ptr()
+                        ),
+                        -1
+                    );
+                    loop {
+                        let count = socket
+                            .read(&mut chunk)
+                            .expect("drain the abandoned frame to EOF");
+                        if count == 0 {
+                            break;
+                        }
+                        received += count;
+                    }
+                    assert!(
+                        received < payload.len(),
+                        "the abandoned frame must remain incomplete"
+                    );
+                    hew_runtime::async_io::hew_async_io_free(request);
+                    hew_ws_close(conn);
+                    hew_ws_server_close(server);
+
+                    let send = native_io::hew_async_ws_send_text(
+                        healthy_conn,
+                        ManagedString::new("healthy").as_ptr(),
+                        std::ptr::null(),
+                    );
+                    assert_eq!(
+                        healthy_peer.read().expect("independent frame"),
+                        Message::text("healthy")
+                    );
+                    wait_until(|| {
+                        hew_runtime::async_io::hew_async_io_status(send)
+                            == AsyncIoStatus::Success as i32
+                    });
+                    let mut result = -1;
+                    assert_eq!(native_io::hew_async_ws_take_send(send, &raw mut result), 1);
+                    assert_eq!(result, 0);
+                    assert_eq!(hew_ws_last_errno(), 0);
+                    hew_runtime::async_io::hew_async_io_free(send);
+                    hew_ws_close(healthy_conn);
+                    hew_ws_server_close(healthy_server);
+                }
+            },
+        );
+    }
+
+    #[test]
     fn async_server_accept_transfers_connection() {
         run_in_isolated_test_process(
             "async_server_accept_transfers_connection",
@@ -2838,6 +2998,80 @@ mod tests {
                     }
                     hew_ws_server_close(server);
                 }
+            },
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn async_tls_send_cancellation_closes_partial_frame() {
+        run_in_isolated_test_process(
+            "async_tls_send_cancellation_closes_partial_frame",
+            "HEW_WS_ASYNC_TLS_SEND_CANCEL_ISOLATED",
+            || {
+                let _runtime = NetErrorSlotRuntimeGuard::new();
+                let (pem, config) = crate::tls::tests::ca_and_server();
+                let listener = TcpListener::bind("127.0.0.1:0").expect("bind TLS peer");
+                let port = listener.local_addr().expect("TLS peer address").port();
+                let (prefix_tx, prefix_rx) = mpsc::channel();
+                let (release_tx, release_rx) = mpsc::channel();
+                let peer = std::thread::spawn(move || {
+                    let (socket, _) = listener.accept().expect("accept TLS writer");
+                    socket
+                        .set_read_timeout(Some(Duration::from_secs(5)))
+                        .unwrap();
+                    let tls = rustls::StreamOwned::new(
+                        rustls::ServerConnection::new(config).unwrap(),
+                        socket,
+                    );
+                    let mut ws = tungstenite::accept(tls).expect("TLS WebSocket upgrade");
+                    let mut prefix = [0u8; 16];
+                    assert!(
+                        ws.get_mut()
+                            .read(&mut prefix)
+                            .expect("decrypted frame prefix")
+                            > 0
+                    );
+                    assert_eq!(prefix[0], 0x81, "text frame prefix");
+                    prefix_tx.send(()).unwrap();
+                    release_rx.recv().unwrap();
+                });
+                let conn =
+                    connect_options(&format!("wss://localhost:{port}"), "", pem.as_bytes(), 5000);
+                assert!(!conn.is_null(), "TLS connect: {}", ws_last_error_text());
+                set_conn_send_buffer(conn, 4096);
+                // SAFETY: submission retains the connection and copies the text.
+                unsafe {
+                    let request = native_io::hew_async_ws_send_text(
+                        conn,
+                        ManagedString::new("x".repeat(16 << 20)).as_ptr(),
+                        std::ptr::null(),
+                    );
+                    prefix_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .expect("TLS send reached the paused peer");
+                    assert_eq!(
+                        hew_runtime::async_io::hew_async_io_status(request),
+                        AsyncIoStatus::Pending as i32
+                    );
+                    assert_eq!(hew_runtime::async_io::hew_async_io_cancel(request), 1);
+                    wait_until(|| {
+                        hew_runtime::async_io::hew_async_io_cleanup_status(
+                            request,
+                            std::ptr::null(),
+                        ) == 1
+                    });
+                    assert!((&*conn).inner.closed.load(Ordering::Acquire));
+                    assert_eq!(
+                        hew_ws_send_text(conn, ManagedString::new("no frame reuse").as_ptr()),
+                        -1
+                    );
+                    hew_runtime::async_io::hew_async_io_free(request);
+                    hew_ws_close(conn);
+                }
+                release_tx.send(()).unwrap();
+                peer.join()
+                    .expect("TLS peer exits after cancelled send drains");
             },
         );
     }

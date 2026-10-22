@@ -91,7 +91,9 @@ export type AsyncIoOp =
   | "TlsWrite"
   | "FileRead"
   | "FileWrite"
-  | "WebSocketAccept";
+  | "WebSocketAccept"
+  | "WebSocketSendText"
+  | "WebSocketSendBinary";
 export type BlockV1 = {
   id: number;
   params: Array<ValueDef>;

@@ -1,0 +1,10 @@
+[[case]]
+id = "websocket-send-cancellation"
+intent = "Text and binary writes to a paused loopback peer honour lexical deadlines, inherited task cancellation and actor termination."
+source = "cases/websocket-send-cancellation.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.expected]
+stdout = "WebSocket writes honour lexical deadlines, parent cancellation and actor termination\n"
+exit = 0

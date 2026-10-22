@@ -79,6 +79,13 @@ impl NativeActorCompletion {
         super::report_checked_failure(retained.as_ref().expect("retained terminal fault"))
     }
 
+    pub(crate) fn fault_message(&self) -> Option<String> {
+        self.fault
+            .lock_or_recover()
+            .as_ref()
+            .map(|fault| fault.message().to_owned())
+    }
+
     /// Retain a fault raised by terminal hooks or state release separately
     /// from the crash that caused cleanup. `stopped` observes only this fault.
     pub(crate) fn record_close_fault(&self, fault: crate::fault::HewFault) -> i32 {
@@ -566,7 +573,7 @@ mod tests {
                         let message = crate::fault::hew_fault_take_message(fault);
                         assert_eq!(
                             hew_cabi::string::string_as_str(message),
-                            "hew: failure: UserPanic (212): state close failed\n"
+                            "state close failed"
                         );
                         hew_cabi::string::string_release(message);
                     }

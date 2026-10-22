@@ -1894,3 +1894,27 @@ fn machine_deep_history_matches_native() {
         assert_case(&case, "");
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn recovered_and_actor_fault_messages_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "scope-failure-helper-match",
+            source_rel: "tests/core-acceptance/cases/scope-failure-helper-match.hew",
+        },
+        ParityCase {
+            test_name: "actor-crash-hook-live-state",
+            source_rel: "tests/core-acceptance/cases/actor-crash-hook-live-state.hew",
+        },
+        ParityCase {
+            test_name: "task-fault-cleanup-diagnostic",
+            source_rel: "tests/core-acceptance/cases/task-fault-cleanup-diagnostic.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}

@@ -32,6 +32,7 @@ actor Vault {
 
     #[on(crash)]
     fn crashed(info: CrashInfo) -> CrashAction {
+        assert(info.message == "detach failed");
         println(f"hook sees {log.label} after {turns} turns");
         CrashAction.Restart
     }
@@ -44,7 +45,7 @@ supervisor Group {
 
 fn main() {
     let group = spawn Group;
-    for _ in 0 .. 3 {
+    for _ in 0..3 {
         println(group.vault.swap(false).expect("swap"));
     }
     let _ = group.vault.swap(true);

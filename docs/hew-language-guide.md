@@ -3668,7 +3668,7 @@ fn main() {
 }
 ```
 
-Arbitrary expressions (arithmetic, no-arg method calls, field access) work inside `{}`. You cannot put a `"..."` string literal inside the `{}` of an f-string — bind it to a `let` first.
+Arbitrary expressions, including arithmetic, method calls, field access and string literals, work inside `{}`. Bind an intermediate value when that makes the expression easier to read.
 
 ### .split(sep) and reading elements
 
@@ -3740,7 +3740,7 @@ fn main() {
 }
 ```
 
-`.len()` returns `i64` (safe directly in an f-string). `.contains(sub)` returns `bool` — bind to a `let` before interpolating.
+`.len()` returns `i64` and `.contains(sub)` returns `bool`. Both can be interpolated directly in an f-string.
 
 ### std.string module functions
 

@@ -3,16 +3,17 @@
 import std.stream;
 
 fn verdict(failure: ScopeFailure) -> string {
+    let rendered = f"{failure}";
     match failure {
         .Deadline { message } => if message.contains("Deadline") {
             "deadline"
         } else {
             "bad deadline"
         }
-        .Fault { message } => if message.contains("boom") {
+        .Fault { message } => {
+            assert(message == "boom");
+            assert(rendered == "Fault: boom");
             "fault boom"
-        } else {
-            "bad fault"
         }
     }
 }
@@ -22,15 +23,11 @@ fn main() {
     let late = scope within 20ms {
         gate.recv();
         "done"
-    } handle failure {
-        verdict(failure)
-    };
+    } handle failure { verdict(failure) };
     println(late);
     let broken = scope {
         panic("boom");
         "done"
-    } handle failure {
-        verdict(failure)
-    };
+    } handle failure { verdict(failure) };
     println(broken);
 }

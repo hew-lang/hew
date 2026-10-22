@@ -31,6 +31,7 @@ actor Worker {
     }
     #[on(crash)]
     fn on_crash(info: CrashInfo) -> CrashAction {
+        assert(info.message == "boom");
         defer {
             println("hook drained");
             println(mode);

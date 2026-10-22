@@ -5481,7 +5481,9 @@ fn main() {
 ```
 
 The failure binding has type `ScopeFailure`, with `Deadline` and `Fault`
-cases. The handler runs after the scope's children and cleanup have settled
+cases. Its message preserves application text, falling back to the fault kind
+when no text was supplied. Additional cleanup failures follow in order, without
+CLI report framing or an added trailing newline. The handler runs after the scope's children and cleanup have settled
 and must produce the scope's value type or diverge. Cancellation inherited
 from a parent continues outward; an inner handler cannot clear it. It does not intercept an ordinary `Err` returned by the scope body.
 To handle that Result, first bind the scope's result and apply ordinary

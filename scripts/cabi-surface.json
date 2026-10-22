@@ -2364,6 +2364,32 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_async_ws_send_binary( *const HewWsConn, *const BytesTriple, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_ws_send_binary"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_ws_send_text( *const HewWsConn, *const HewString, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_ws_send_text"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_async_ws_server_accept( *const HewWsServer, *const HewWaker, ) -> *const HewAsyncIo"
       },
       "symbol": "hew_async_ws_server_accept"
@@ -2380,6 +2406,19 @@
         "native": "fn hew_async_ws_take_accept( *const HewAsyncIo, *mut *mut HewWsConn, ) -> i32"
       },
       "symbol": "hew_async_ws_take_accept"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_ws_take_send( *const HewAsyncIo, *mut i32, ) -> i32"
+      },
+      "symbol": "hew_async_ws_take_send"
     },
     {
       "availability": [

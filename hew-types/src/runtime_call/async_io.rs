@@ -107,6 +107,8 @@ pub enum AsyncIoOp {
     FileRead,
     FileWrite,
     WebSocketAccept,
+    WebSocketSendText,
+    WebSocketSendBinary,
 }
 
 impl AsyncIoOp {
@@ -124,7 +126,9 @@ impl AsyncIoOp {
             | Self::TlsWrite
             | Self::FileRead
             | Self::FileWrite
-            | Self::WebSocketAccept => crate::runtime_call::RuntimeAuthority::Service,
+            | Self::WebSocketAccept
+            | Self::WebSocketSendText
+            | Self::WebSocketSendBinary => crate::runtime_call::RuntimeAuthority::Service,
         }
     }
 
@@ -137,7 +141,9 @@ impl AsyncIoOp {
             | Self::TlsConnect
             | Self::TlsRead
             | Self::TlsWrite
-            | Self::WebSocketAccept => AsyncIoLoan::UntilSubmitReturns,
+            | Self::WebSocketAccept
+            | Self::WebSocketSendText
+            | Self::WebSocketSendBinary => AsyncIoLoan::UntilSubmitReturns,
             Self::TcpRead
             | Self::TcpWrite
             | Self::TcpAccept
@@ -162,6 +168,8 @@ impl AsyncIoOp {
             Self::TcpConnectTimeout => "hew_tcp_connect_timeout",
             Self::StdinReadLine => "hew_stdin_read_line",
             Self::WebSocketAccept => "hew_ws_server_accept",
+            Self::WebSocketSendText => "hew_ws_send_text",
+            Self::WebSocketSendBinary => "hew_ws_send_binary",
         }
     }
 
@@ -183,6 +191,8 @@ impl AsyncIoOp {
             Self::TcpConnectTimeout => "hew_async_tcp_connect_timeout",
             Self::StdinReadLine => "hew_async_stdin_read_line",
             Self::WebSocketAccept => "hew_async_ws_server_accept",
+            Self::WebSocketSendText => "hew_async_ws_send_text",
+            Self::WebSocketSendBinary => "hew_async_ws_send_binary",
         }
     }
 
@@ -199,6 +209,9 @@ impl AsyncIoOp {
             Self::TlsRead => AsyncIoResume::Library("hew_async_tls_take_read"),
             Self::TlsWrite => AsyncIoResume::Library("hew_async_tls_take_write"),
             Self::WebSocketAccept => AsyncIoResume::Library("hew_async_ws_take_accept"),
+            Self::WebSocketSendText | Self::WebSocketSendBinary => {
+                AsyncIoResume::Library("hew_async_ws_take_send")
+            }
         }
     }
 
@@ -208,6 +221,10 @@ impl AsyncIoOp {
     }
 
     #[must_use]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one authoritative typed contract per native I/O operation"
+    )]
     pub const fn contract(self) -> RuntimeSemanticContract {
         use RuntimeResultEffect::{BitCopy, FreshOwned};
         use RuntimeValueKind::{Bytes, IoHandle, String, I32};
@@ -235,6 +252,10 @@ impl AsyncIoOp {
             ty: IoHandle(IoHandleKind::TlsStream),
             effect: RuntimeArgumentEffect::Borrow,
         };
+        const WEBSOCKET: RuntimeArgumentContract = RuntimeArgumentContract {
+            ty: IoHandle(IoHandleKind::WebSocketConnection),
+            effect: RuntimeArgumentEffect::Borrow,
+        };
         const READ_FILE: RuntimeArgumentContract = RuntimeArgumentContract {
             ty: IoHandle(IoHandleKind::ReadFile),
             effect: RuntimeArgumentEffect::Borrow,
@@ -250,6 +271,12 @@ impl AsyncIoOp {
         // I/O errors belong to the source wrapper's Result/error channel,
         // not the logical-fault set on RuntimeSemanticContract.
         match self {
+            Self::WebSocketSendText => {
+                runtime_semantic_contract(&[WEBSOCKET, PATH], BitCopy(I32), &[])
+            }
+            Self::WebSocketSendBinary => {
+                runtime_semantic_contract(&[WEBSOCKET, DATA], BitCopy(I32), &[])
+            }
             Self::WebSocketAccept => runtime_semantic_contract(
                 &[RuntimeArgumentContract {
                     ty: IoHandle(IoHandleKind::WebSocketServer),
@@ -335,7 +362,9 @@ impl RuntimeCallFamily {
             AsyncIoOp::SinkFinish => "std.stream",
             AsyncIoOp::TlsConnect | AsyncIoOp::TlsRead | AsyncIoOp::TlsWrite => "std.net.tls",
             AsyncIoOp::FileRead | AsyncIoOp::FileWrite => "std.fs",
-            AsyncIoOp::WebSocketAccept => "std.net.websocket",
+            AsyncIoOp::WebSocketAccept
+            | AsyncIoOp::WebSocketSendText
+            | AsyncIoOp::WebSocketSendBinary => "std.net.websocket",
         };
         module == owner
             && symbol == op.c_symbol()
@@ -355,6 +384,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "all extern cases share one provenance and borrowing oracle"
+    )]
     fn native_io_externs_require_exact_owner_signature_and_borrow_contract() {
         let connection = handle("std.net.Connection");
         let listener = handle("std.net.Listener");
@@ -377,6 +410,18 @@ mod tests {
                 "std.net.websocket",
                 vec![handle("std.net.websocket.Server")],
                 handle("std.net.websocket.Conn"),
+            ),
+            (
+                AsyncIoOp::WebSocketSendText,
+                "std.net.websocket",
+                vec![handle("std.net.websocket.Conn"), ResolvedTy::String],
+                ResolvedTy::I32,
+            ),
+            (
+                AsyncIoOp::WebSocketSendBinary,
+                "std.net.websocket",
+                vec![handle("std.net.websocket.Conn"), ResolvedTy::Bytes],
+                ResolvedTy::I32,
             ),
             (
                 AsyncIoOp::StdinReadLine,

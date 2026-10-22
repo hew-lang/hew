@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-22
+
+- Suspend WebSocket text and binary writes through native I/O so scope deadlines
+  and cancellation can interrupt a backpressured peer. Close interrupted writes
+  without replaying partial messages, preserving ordering for healthy clients.
+
+See the [release notes](docs/releases/v0.7.1.md) for upgrade details.
+
 ## [0.7.0] - 2026-10-22
 
 - Execute JSON, TOML and YAML values in the sandbox using the native parsing and

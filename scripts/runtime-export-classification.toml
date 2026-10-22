@@ -143,8 +143,11 @@ non-declarable-stdlib = [
   "hew_async_tls_take_read",
   "hew_async_tls_take_write",
   "hew_async_tls_write",
+  "hew_async_ws_send_binary",
+  "hew_async_ws_send_text",
   "hew_async_ws_server_accept",
   "hew_async_ws_take_accept",
+  "hew_async_ws_take_send",
 ]
 
 # jit: stable — handle-oriented/user-visible runtime surface that JIT

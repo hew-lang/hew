@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-10-21
+
 - Preserve ordinary value semantics through consuming parameters, receivers and
   cloneable once-callables, while retaining affine ownership checks.
 - Implement owning vector iteration in Hew with linear total movement and

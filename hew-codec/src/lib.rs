@@ -35,6 +35,7 @@ mod source;
 mod table;
 pub mod typed;
 mod value;
+pub mod yaml_value;
 
 pub use error::DecodeError;
 pub use sink::Sink;

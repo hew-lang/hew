@@ -2166,6 +2166,7 @@ dependencies = [
  "flate2",
  "hew-cabi",
  "hew-calendar",
+ "hew-codec",
  "hew-runtime",
  "ipnet",
  "jsonwebtoken",

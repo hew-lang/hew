@@ -1,13 +1,11 @@
 [[case]]
 id = "consuming_self_use_after_move"
-intent = "A `consume self` inherent method moves a non-copy receiver; reusing the binding after the consuming call is rejected (`use of moved value`)."
-source = "../vertical-slice/reject/consuming_self_use_after_move.hew"
-suites = ["acceptance"]
+intent = "Calling a consuming receiver twice on an ordinary record copies its owned string and returns both values."
+source = "cases/consuming_self_use_after_move.hew"
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
-kind = "reject"
+kind = "run"
 
-[[case.expected.diagnostics]]
-code = "UseAfterMove"
-line = 12
-column = 13
-message = "use of moved value `b`"
+[case.expected]
+stdout = "hi hi\n"
+exit = 0

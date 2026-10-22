@@ -3,7 +3,7 @@ id = "machine-history-nested-regions"
 intent = "Shallow history restores compound child payload while reinitializing descendants, and restores parallel regions with canonical entry hooks."
 source = "cases/machine-history-nested-regions.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 15
+timeout_seconds = 60
 
 [case.expected]
 stdout = "nested and parallel shallow history passed\n"

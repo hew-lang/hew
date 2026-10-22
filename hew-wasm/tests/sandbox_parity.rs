@@ -1204,7 +1204,7 @@ fn associated_fields_and_index_match_native() {
 
 #[cfg(unix)]
 #[test]
-fn json_value_collections_match_native() {
+fn encoding_values_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
@@ -1216,6 +1216,27 @@ fn json_value_collections_match_native() {
         ParityCase {
             test_name: "vec-element-json-value",
             source_rel: "tests/core-acceptance/cases/vec-element-json-value.hew",
+        },
+        ParityCase {
+            test_name: "yaml-value-composition",
+            source_rel: "tests/core-acceptance/cases/yaml-value-composition.hew",
+        },
+        ParityCase {
+            test_name: "yaml-mapping-keys",
+            source_rel: "tests/core-acceptance/cases/yaml-mapping-keys.hew",
+        },
+        ParityCase {
+            test_name: "yaml-value-argument-fault",
+            source_rel: "tests/core-acceptance/cases/yaml-value-argument-fault.hew",
+        },
+        ParityCase {
+            test_name: "value-tree-resource-toml-value-tree",
+            source_rel: "tests/core-acceptance/cases/value-tree-resource-toml-value-tree.hew",
+        },
+        ParityCase {
+            test_name: "value-tree-resource-toml-parse-handled-error",
+            source_rel:
+                "tests/core-acceptance/cases/value-tree-resource-toml-parse-handled-error.hew",
         },
     ] {
         assert_case(&case, "");

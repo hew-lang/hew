@@ -167,7 +167,7 @@ pub unsafe extern "C" fn hew_yaml_parse(yaml_str: *const HewString) -> *mut HewY
             boxed_value(val)
         }
         Err(err) => {
-            set_parse_last_error(err.to_string());
+            set_parse_last_error(err);
             std::ptr::null_mut()
         }
     }
@@ -2327,10 +2327,6 @@ description: a language runtime
             "expected 'anchor limit' in error, got: {err}"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // CR-only line-ending regression tests (security fix)
-    // -----------------------------------------------------------------------
 
     #[test]
     fn get_bytes_invalid_base64_returns_null_and_sets_last_error() {

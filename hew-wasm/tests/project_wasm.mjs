@@ -113,16 +113,28 @@ import std.math;
   assert.equal(hostOnly.bytecode, null);
 });
 
-test('JSON Value stdlib cases execute with the real lossless Wasm bridge', async () => {
-  const source = readFileSync(new URL('../../tests/hew/json_test.hew', import.meta.url), 'utf8');
-  const output = JSON.parse(compiler.compileTestsToSandboxBytecode(source, 'json_test.hew'));
-  assert.ok(!output.diagnostics.some(d => d.severity === 'error'), JSON.stringify(output.diagnostics));
-  assert.ok(output.tests.length > 0);
-  for (const selected of output.tests) {
-    assert.ok(selected.bytecode, `${selected.identity}: ${JSON.stringify(selected.diagnostics)}`);
-    const trace = await runBytecode(selected.bytecode, {codecBridge: compiler.executeCodec});
-    assert.equal(trace.result, 'ok', `${selected.identity}: ${JSON.stringify(trace.final_state)}`);
-  }
+for (const format of ['json', 'yaml', 'toml']) {
+  test(`${format} Value stdlib cases execute with the native format engine`, async () => {
+    const source = readFileSync(new URL(`../../tests/hew/${format}_test.hew`, import.meta.url), 'utf8');
+    const output = JSON.parse(compiler.compileTestsToSandboxBytecode(source, `${format}_test.hew`));
+    assert.ok(!output.diagnostics.some(d => d.severity === 'error'), JSON.stringify(output.diagnostics));
+    assert.ok(output.tests.length > 0);
+    for (const selected of output.tests) {
+      assert.ok(selected.bytecode, `${selected.identity}: ${JSON.stringify(selected.diagnostics)}`);
+      const trace = await runBytecode(selected.bytecode, {codecBridge: compiler.executeCodec});
+      assert.equal(trace.result, 'ok', `${selected.identity}: ${JSON.stringify(trace.final_state)}`);
+    }
+  });
+}
+
+test('YAML Value Wasm parsing preserves native input guards', () => {
+  const parse = text => JSON.parse(compiler.executeCodec(JSON.stringify({encoding_value: {format: 'Yaml', operation: 'parse', text}})));
+  for (const [text, reason] of [
+    ['a'.repeat(2 * 1024 * 1024), 'size limit'],
+    [Array.from({length: 201}, (_, i) => `k${i}: &a${i} value`).join('\n'), 'anchor limit'],
+    ['a: &a 1\nb: [' + Array(1025).fill('*a').join(',') + ']\n', 'alias limit'],
+  ]) assert.match(parse(text).error, new RegExp(reason));
+  assert.ok(parse('title: "AT&T"\nurl: "https://example.com?a=1&b=2"').value);
 });
 
 test('JSON parsing errors and recovery execute in separate actors', async () => {

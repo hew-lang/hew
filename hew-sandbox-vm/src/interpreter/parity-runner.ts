@@ -74,8 +74,7 @@ try {
       ("runtime_families" in bytecode &&
         Array.isArray(bytecode.runtime_families) &&
         bytecode.runtime_families.some(
-          (entry) =>
-            entry?.family === "Encoding" && entry.detail?.format === "Json",
+          (entry) => entry?.family === "Encoding",
         )))
   ) {
     const local = path.resolve(

@@ -1,5 +1,5 @@
 //! Checked source contracts for encoding values. Runtime execution is covered
-//! separately: JSON runs in the VM; unsupported formats refuse at admission.
+//! separately: all three formats execute with their native Value semantics.
 
 fn sandbox_outcome(source: &str) -> (bool, Vec<String>) {
     let output: serde_json::Value = serde_json::from_str(

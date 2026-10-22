@@ -605,11 +605,6 @@ pub enum PhysicalVectorOp {
     TakeFirst {
         result: PhysicalAggregateId,
     },
-    /// The whole buffer moves out to the caller and the receiver is left a
-    /// valid empty vector with its element representation intact.
-    TakeAll {
-        result: PhysicalAggregateId,
-    },
     Slice,
     SliceFrom,
     /// Bulk add: every element of argument one joins the receiver.

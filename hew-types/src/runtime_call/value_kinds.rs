@@ -958,12 +958,6 @@ pub enum VecValueOp {
     /// the consuming iterator's step for an element with no clone: the vector
     /// shrinks by one and ends empty when the drain runs to completion.
     TakeFirst,
-    /// Move the whole buffer out and leave the receiver a valid empty vector
-    /// with its element representation intact. This is how a `Vec` living in
-    /// persistent storage - an actor state field - is drained by a consuming
-    /// iteration: the cursor owns the elements and the seat keeps a usable
-    /// vector a later dispatch can refill.
-    TakeAll,
     /// `v[a..b]` - a fresh independent `Vec<T>` over the selected range.
     Slice,
     /// `v[a..]` - the open-ended form; the runtime supplies the end bound so

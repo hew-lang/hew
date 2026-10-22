@@ -1,10 +1,6 @@
-//! Consuming iteration (`into_iter()`) over a Vec held in ACTOR STATE drains
-//! the field and leaves it a VALID empty vec: the cursor owns the moved
-//! buffer (`hew_vec_take_all`), the state slot keeps its stamped element
-//! descriptor, later dispatches may re-iterate (empty) or refill it, and
-//! actor teardown frees the slot exactly once (dogfood F3, 2026-08-13:
-//! second use panicked on a missing descriptor / freed heap, and teardown
-//! crashed after #[on(stop)]).
+//! Actor state follows ordinary value transfer. Draining an affine field
+//! explicitly replaces it before iteration; an ordinary field can instead
+//! supply a snapshot and remain usable across later actor turns.
 
 trait Formatter {
     fn format(self, msg: string) -> string;
@@ -29,7 +25,9 @@ actor DynHolder {
     var plugins: Vec<dyn Formatter> = Vec.new();
     receive fn drain_format(msg: string) -> i64 {
         var count: i64 = 0;
-        for p in plugins.into_iter() {
+        let queued = plugins;
+        plugins = [];
+        for p in queued.into_iter() {
             let _line = p.format(msg);
             count = count + 1;
         }
@@ -52,19 +50,22 @@ actor StrHolder {
     var items: Vec<string> = Vec.new();
     receive fn drain_count() -> i64 {
         var count: i64 = 0;
+        let queued = items;
+        items = [];
+        for _s in queued.into_iter() {
+            count = count + 1;
+        }
+        count
+    }
+
+    receive fn snapshot_count() -> i64 {
+        var count: i64 = 0;
         for _s in items.into_iter() {
             count = count + 1;
         }
         count
     }
 
-    // Previously: deterministic "Vec owned operation requires an element
-    // layout descriptor" panic. Now: the drained field is a valid empty vec.
-
-    // Refill after the drain: the descriptor-stamped empty vec accepts a
-    // fresh element, and a later drain yields exactly that element.
-
-    // Previously: the second dispatch iterated freed heap (a hang or crash).
     #[on(start)]
     fn boot() {
         items.push("a");
@@ -121,4 +122,13 @@ fn test_second_dispatch_after_string_state_drain_terminates() {
         .Ok(n) => assert(n == 0),
         .Err(_) => assert(0 == 2),
     }
+}
+
+#[test]
+fn test_ordinary_state_iterator_preserves_the_field_across_turns() {
+    let h = spawn StrHolder;
+    assert(h.snapshot_count().expect("first snapshot") == 2);
+    assert(h.snapshot_count().expect("second snapshot") == 2);
+    assert(h.drain_count().expect("explicit drain") == 2);
+    assert(h.snapshot_count().expect("snapshot after drain") == 0);
 }

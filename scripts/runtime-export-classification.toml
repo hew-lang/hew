@@ -878,7 +878,6 @@ stable = [
   "hew_vec_sort_i32",
   "hew_vec_sort_i64",
   "hew_vec_swap",
-  "hew_vec_take_all",
   "hew_vec_take_owned",
   "hew_vec_truncate",
   "hew_vtable_dispatch_panic_on_oob",
@@ -2659,16 +2658,6 @@ discharge-depth = "shallow"
 # while owning elements follow their immediate descriptor clone protocol.
 [[ownership.contracts]]
 symbol = "hew_vec_clone_owned"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_vec_free_owned"
-discharge-depth = "deep"
-
-# Moves the whole buffer into a fresh vec; the borrowed source stays a valid
-# empty vec with its stamped descriptor (consuming iteration over a Vec in
-# persistent actor state).
-[[ownership.contracts]]
-symbol = "hew_vec_take_all"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free_owned"

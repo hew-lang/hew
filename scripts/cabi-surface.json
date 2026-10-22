@@ -22575,21 +22575,6 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_vec_take_all( *mut HewVec) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_vec_take_all( *mut HewVec) -> *mut HewVec"
-      },
-      "symbol": "hew_vec_take_all"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
         "native": "fn hew_vec_take_owned( *mut HewVec, i64, *mut core::ffi::c_void, ) -> bool",
         "wasm32-wasip1": "fn hew_vec_take_owned( *mut HewVec, i64, *mut core::ffi::c_void, ) -> bool"
       },

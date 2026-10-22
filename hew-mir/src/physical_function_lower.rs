@@ -1761,9 +1761,6 @@ impl FunctionLowerer<'_> {
             VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
                 result: self.aggregate_id(&value.ty)?,
             },
-            VecValueOp::TakeAll => PhysicalVectorOp::TakeAll {
-                result: self.aggregate_id(&value.ty)?,
-            },
             VecValueOp::Slice => PhysicalVectorOp::Slice,
             VecValueOp::SliceFrom => PhysicalVectorOp::SliceFrom,
             VecValueOp::Append => PhysicalVectorOp::Append,

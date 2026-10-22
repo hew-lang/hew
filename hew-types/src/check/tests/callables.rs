@@ -141,36 +141,28 @@ fn nested_closure_acquisition_is_a_capture_of_the_enclosing_closure() {
 
 #[test]
 fn once_invocation_requires_an_owned_parameter() {
-    for qualifier in ["once", "once, clone"] {
-        let output = check_source(&format!(
-            "fn invoke(f: fn[{qualifier}]() -> i64) {{ f(); }}"
-        ));
-        let error = output
+    let output = check_source("fn invoke(f: fn[once]() -> i64) { f(); }");
+    let error = output
+        .errors
+        .iter()
+        .find(|error| error.message.contains("E_OWN_CONSUME_BORROWED"))
+        .expect("borrowed once diagnostic");
+    assert_eq!(error.kind, TypeErrorKind::OwnConsumeBorrowed);
+    assert!(error
+        .suggestions
+        .iter()
+        .any(|text| text.contains("consume f:")));
+    let output = check_source("fn invoke(consume f: fn[once]() -> i64) { f(); }");
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source("fn invoke(consume f: fn[once]() -> i64) { f(); f(); }");
+    assert!(
+        output
             .errors
             .iter()
-            .find(|error| error.message.contains("E_OWN_CONSUME_BORROWED"))
-            .expect("borrowed once diagnostic");
-        assert_eq!(error.kind, TypeErrorKind::OwnConsumeBorrowed);
-        assert!(error
-            .suggestions
-            .iter()
-            .any(|text| text.contains("consume f:")));
-        let output = check_source(&format!(
-            "fn invoke(consume f: fn[{qualifier}]() -> i64) {{ f(); }}"
-        ));
-        assert!(output.errors.is_empty(), "{:?}", output.errors);
-        let output = check_source(&format!(
-            "fn invoke(consume f: fn[{qualifier}]() -> i64) {{ f(); f(); }}"
-        ));
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-            "{:?}",
-            output.errors
-        );
-    }
+            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
+        "{:?}",
+        output.errors
+    );
 }
 
 #[test]
@@ -1094,7 +1086,6 @@ fn lambda_parameters_keep_the_ordinary_borrow_contract() {
     for source in [
         "fn main() { let invoke = |f: fn[once]() -> i64| f(); }",
         "fn main() { let invoke: fn(fn[once]() -> i64) -> i64 = |f| f(); }",
-        "fn main() { let invoke = move |f: fn[once, clone]() -> i64| f(); }",
     ] {
         let output = check_source(source);
         let error = output
@@ -1114,47 +1105,18 @@ fn lambda_parameters_keep_the_ordinary_borrow_contract() {
 }
 
 #[test]
-fn declared_consume_arguments_invalidate_cloneable_callables() {
-    for call in ["take(f)", "take(f: f)"] {
-        let source = format!(
-            "fn take(consume f: fn[once, clone]() -> i64) {{ f(); }} fn main() {{ let f: fn[once, clone]() -> i64 = || 7; {call}; f(); }}"
-        );
-        let output = check_source(&source);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-            "{source}: {:?}",
-            output.errors
-        );
-    }
-    let output = check_source(
+fn owning_calls_copy_cloneable_callables() {
+    for source in [
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn main() { let f: fn[once, clone]() -> i64 = || 7; take(f); f(); f(); }",
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn main() { let f: fn[once, clone]() -> i64 = || 7; take(f: f); f(); }",
         "fn take(consume f: fn[clone]() -> i64) {} fn main() { let f: fn[clone]() -> i64 = || 7; take(f); f(); }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-        "{:?}",
-        output.errors
-    );
-    let output = check_source(
-        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(f: fn[once, clone]() -> i64) { take(f); }",
-    );
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
-        "{:?}",
-        output.errors
-    );
-    let output = check_source(
-        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); } fn main() { forward(|| 7); }",
-    );
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(f: fn[once, clone]() -> i64) { take(f); f(); }",
+        "fn take(consume f: fn[once, clone]() -> i64) { f(); } fn forward(consume f: fn[once, clone]() -> i64) { take(f); f(); } fn main() { forward(|| 7); }",
+        "fn main() { let invoke = move |f: fn[once, clone]() -> i64| { f(); f() }; invoke(|| 7); }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    }
 }
 
 #[test]
@@ -1323,33 +1285,16 @@ fn borrowed_once_callable_uses_the_same_replacement_provenance() {
 }
 
 #[test]
-fn mutable_clone_parameter_owns_an_independent_once_copy() {
-    let output = check_source(
+fn cloneable_once_parameters_preserve_ordinary_value_reuse() {
+    for source in [
         "fn invoke(var cb: fn[once, clone]() -> i64) -> i64 { cb() } fn main() { let cb: fn[once, clone]() -> i64 = || 7; invoke(cb); cb(); }",
-    );
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source(
-        "fn take(consume cb: fn[once, clone]() -> i64) { cb(); } fn forward(var cb: fn[once, clone]() -> i64) { take(cb); }",
-    );
-    assert!(output.errors.is_empty(), "{:?}", output.errors);
-    let output = check_source("fn invoke(var cb: fn[once, clone]() -> i64) { cb(); cb(); }");
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::UseAfterMove),
-        "{:?}",
-        output.errors
-    );
-    let output = check_source("fn invoke(cb: fn[once, clone]() -> i64) { cb(); }");
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
-        "{:?}",
-        output.errors
-    );
+        "fn take(consume cb: fn[once, clone]() -> i64) { cb(); } fn forward(var cb: fn[once, clone]() -> i64) { take(cb); cb(); }",
+        "fn invoke(var cb: fn[once, clone]() -> i64) { cb(); cb(); }",
+        "fn invoke(cb: fn[once, clone]() -> i64) { cb(); cb(); }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+    }
 }
 
 #[test]

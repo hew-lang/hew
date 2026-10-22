@@ -814,7 +814,6 @@ export type RuntimeCallFamily =
   | "VecCloneLayout"
   | "VecCloneOwned"
   | "VecContainsLayout"
-  | "VecTakeAll"
   | "VecContainsOwned"
   | { VecContainsScalar: VecContainsScalarElem }
   | { VecGet: VecGetElem }
@@ -1250,7 +1249,6 @@ export type VecValueOp =
   | "IndexBorrow"
   | "GetBorrow"
   | "TakeFirst"
-  | "TakeAll"
   | "Slice"
   | "SliceFrom"
   | "Append"

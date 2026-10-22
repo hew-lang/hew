@@ -4343,12 +4343,6 @@ const schema19 = {
         },
         {
           properties: {
-            detail: { type: "null" },
-            family: { const: "VecTakeAll" },
-          },
-        },
-        {
-          properties: {
             detail: { $ref: "#/$defs/VecContainsScalarElem" },
             family: { const: "VecContainsScalar" },
           },
@@ -6060,12 +6054,6 @@ const schema19 = {
           const: "TakeFirst",
           description:
             "Remove the first element and hand its ownership to the caller. This is\nthe consuming iterator's step for an element with no clone: the vector\nshrinks by one and ends empty when the drain runs to completion.",
-          type: "string",
-        },
-        {
-          const: "TakeAll",
-          description:
-            "Move the whole buffer out and leave the receiver a valid empty vector\nwith its element representation intact. This is how a `Vec` living in\npersistent storage - an actor state field - is drained by a consuming\niteration: the cursor owns the elements and the seat keeps a usable\nvector a later dispatch can refill.",
           type: "string",
         },
         {
@@ -50963,9 +50951,6 @@ const schema82 = {
       required: ["detail"],
     },
     {
-      properties: { detail: { type: "null" }, family: { const: "VecTakeAll" } },
-    },
-    {
       properties: {
         detail: { $ref: "#/$defs/VecContainsScalarElem" },
         family: { const: "VecContainsScalar" },
@@ -52213,12 +52198,6 @@ const schema94 = {
       type: "string",
     },
     {
-      const: "TakeAll",
-      description:
-        "Move the whole buffer out and leave the receiver a valid empty vector\nwith its element representation intact. This is how a `Vec` living in\npersistent storage - an actor state field - is drained by a consuming\niteration: the cursor owns the elements and the seat keeps a usable\nvector a later dispatch can refill.",
-      type: "string",
-    },
-    {
       const: "Slice",
       description:
         "`v[a..b]` - a fresh independent `Vec<T>` over the selected range.",
@@ -52452,12 +52431,12 @@ function validate286(
           }
           errors++;
         }
-        if ("TakeAll" !== data) {
+        if ("Slice" !== data) {
           const err9 = {
             instancePath,
             schemaPath: "#/oneOf/4/const",
             keyword: "const",
-            params: { allowedValue: "TakeAll" },
+            params: { allowedValue: "Slice" },
             message: "must be equal to constant",
           };
           if (vErrors === null) {
@@ -52492,12 +52471,12 @@ function validate286(
             }
             errors++;
           }
-          if ("Slice" !== data) {
+          if ("SliceFrom" !== data) {
             const err11 = {
               instancePath,
               schemaPath: "#/oneOf/5/const",
               keyword: "const",
-              params: { allowedValue: "Slice" },
+              params: { allowedValue: "SliceFrom" },
               message: "must be equal to constant",
             };
             if (vErrors === null) {
@@ -52532,12 +52511,12 @@ function validate286(
               }
               errors++;
             }
-            if ("SliceFrom" !== data) {
+            if ("Append" !== data) {
               const err13 = {
                 instancePath,
                 schemaPath: "#/oneOf/6/const",
                 keyword: "const",
-                params: { allowedValue: "SliceFrom" },
+                params: { allowedValue: "Append" },
                 message: "must be equal to constant",
               };
               if (vErrors === null) {
@@ -52572,12 +52551,12 @@ function validate286(
                 }
                 errors++;
               }
-              if ("Append" !== data) {
+              if ("Join" !== data) {
                 const err15 = {
                   instancePath,
                   schemaPath: "#/oneOf/7/const",
                   keyword: "const",
-                  params: { allowedValue: "Append" },
+                  params: { allowedValue: "Join" },
                   message: "must be equal to constant",
                 };
                 if (vErrors === null) {
@@ -52596,47 +52575,6 @@ function validate286(
                   valid0 = true;
                   passing0 = 7;
                 }
-                const _errs17 = errors;
-                if (typeof data !== "string") {
-                  const err16 = {
-                    instancePath,
-                    schemaPath: "#/oneOf/8/type",
-                    keyword: "type",
-                    params: { type: "string" },
-                    message: "must be string",
-                  };
-                  if (vErrors === null) {
-                    vErrors = [err16];
-                  } else {
-                    vErrors.push(err16);
-                  }
-                  errors++;
-                }
-                if ("Join" !== data) {
-                  const err17 = {
-                    instancePath,
-                    schemaPath: "#/oneOf/8/const",
-                    keyword: "const",
-                    params: { allowedValue: "Join" },
-                    message: "must be equal to constant",
-                  };
-                  if (vErrors === null) {
-                    vErrors = [err17];
-                  } else {
-                    vErrors.push(err17);
-                  }
-                  errors++;
-                }
-                var _valid0 = _errs17 === errors;
-                if (_valid0 && valid0) {
-                  valid0 = false;
-                  passing0 = [passing0, 8];
-                } else {
-                  if (_valid0) {
-                    valid0 = true;
-                    passing0 = 8;
-                  }
-                }
               }
             }
           }
@@ -52645,7 +52583,7 @@ function validate286(
     }
   }
   if (!valid0) {
-    const err18 = {
+    const err16 = {
       instancePath,
       schemaPath: "#/oneOf",
       keyword: "oneOf",
@@ -52653,9 +52591,9 @@ function validate286(
       message: "must match exactly one schema in oneOf",
     };
     if (vErrors === null) {
-      vErrors = [err18];
+      vErrors = [err16];
     } else {
-      vErrors.push(err18);
+      vErrors.push(err16);
     }
     errors++;
     validate286.errors = vErrors;
@@ -64698,47 +64636,6 @@ function validate260(
                       }
                     }
                   }
-                } else if (tag0 === "VecTakeAll") {
-                  if (data && typeof data == "object" && !Array.isArray(data)) {
-                    if (data.detail !== undefined) {
-                      const _errs1013 = errors;
-                      if (data.detail !== null) {
-                        validate260.errors = [
-                          {
-                            instancePath: instancePath + "/detail",
-                            schemaPath: "#/oneOf/252/properties/detail/type",
-                            keyword: "type",
-                            params: { type: "null" },
-                            message: "must be null",
-                          },
-                        ];
-                        return false;
-                      }
-                      var valid511 = _errs1013 === errors;
-                    } else {
-                      var valid511 = true;
-                    }
-                    if (valid511) {
-                      if (data.family !== undefined) {
-                        const _errs1015 = errors;
-                        if ("VecTakeAll" !== data.family) {
-                          validate260.errors = [
-                            {
-                              instancePath: instancePath + "/family",
-                              schemaPath: "#/oneOf/252/properties/family/const",
-                              keyword: "const",
-                              params: { allowedValue: "VecTakeAll" },
-                              message: "must be equal to constant",
-                            },
-                          ];
-                          return false;
-                        }
-                        var valid511 = _errs1015 === errors;
-                      } else {
-                        var valid511 = true;
-                      }
-                    }
-                  }
                 } else if (tag0 === "VecContainsScalar") {
                   if (data && typeof data == "object" && !Array.isArray(data)) {
                     let missing19;
@@ -64746,7 +64643,7 @@ function validate260(
                       validate260.errors = [
                         {
                           instancePath,
-                          schemaPath: "#/oneOf/253/required",
+                          schemaPath: "#/oneOf/252/required",
                           keyword: "required",
                           params: { missingProperty: missing19 },
                           message:
@@ -64756,7 +64653,7 @@ function validate260(
                       return false;
                     } else {
                       if (data.detail !== undefined) {
-                        const _errs1017 = errors;
+                        const _errs1013 = errors;
                         if (
                           !validate296(data.detail, {
                             instancePath: instancePath + "/detail",
@@ -64772,19 +64669,19 @@ function validate260(
                               : vErrors.concat(validate296.errors);
                           errors = vErrors.length;
                         }
-                        var valid513 = _errs1017 === errors;
+                        var valid511 = _errs1013 === errors;
                       } else {
-                        var valid513 = true;
+                        var valid511 = true;
                       }
-                      if (valid513) {
+                      if (valid511) {
                         if (data.family !== undefined) {
-                          const _errs1018 = errors;
+                          const _errs1014 = errors;
                           if ("VecContainsScalar" !== data.family) {
                             validate260.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
-                                  "#/oneOf/253/properties/family/const",
+                                  "#/oneOf/252/properties/family/const",
                                 keyword: "const",
                                 params: { allowedValue: "VecContainsScalar" },
                                 message: "must be equal to constant",
@@ -64792,9 +64689,9 @@ function validate260(
                             ];
                             return false;
                           }
-                          var valid513 = _errs1018 === errors;
+                          var valid511 = _errs1014 === errors;
                         } else {
-                          var valid513 = true;
+                          var valid511 = true;
                         }
                       }
                     }
@@ -64806,7 +64703,7 @@ function validate260(
                       validate260.errors = [
                         {
                           instancePath,
-                          schemaPath: "#/oneOf/254/required",
+                          schemaPath: "#/oneOf/253/required",
                           keyword: "required",
                           params: { missingProperty: missing20 },
                           message:
@@ -64816,7 +64713,7 @@ function validate260(
                       return false;
                     } else {
                       if (data.detail !== undefined) {
-                        const _errs1020 = errors;
+                        const _errs1016 = errors;
                         if (
                           !validate298(data.detail, {
                             instancePath: instancePath + "/detail",
@@ -64832,19 +64729,19 @@ function validate260(
                               : vErrors.concat(validate298.errors);
                           errors = vErrors.length;
                         }
-                        var valid515 = _errs1020 === errors;
+                        var valid513 = _errs1016 === errors;
                       } else {
-                        var valid515 = true;
+                        var valid513 = true;
                       }
-                      if (valid515) {
+                      if (valid513) {
                         if (data.family !== undefined) {
-                          const _errs1021 = errors;
+                          const _errs1017 = errors;
                           if ("VecGet" !== data.family) {
                             validate260.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
-                                  "#/oneOf/254/properties/family/const",
+                                  "#/oneOf/253/properties/family/const",
                                 keyword: "const",
                                 params: { allowedValue: "VecGet" },
                                 message: "must be equal to constant",
@@ -64852,9 +64749,9 @@ function validate260(
                             ];
                             return false;
                           }
-                          var valid515 = _errs1021 === errors;
+                          var valid513 = _errs1017 === errors;
                         } else {
-                          var valid515 = true;
+                          var valid513 = true;
                         }
                       }
                     }
@@ -64866,7 +64763,7 @@ function validate260(
                       validate260.errors = [
                         {
                           instancePath,
-                          schemaPath: "#/oneOf/255/required",
+                          schemaPath: "#/oneOf/254/required",
                           keyword: "required",
                           params: { missingProperty: missing21 },
                           message:
@@ -64876,26 +64773,26 @@ function validate260(
                       return false;
                     } else {
                       if (data.detail !== undefined) {
-                        let data520 = data.detail;
-                        const _errs1023 = errors;
-                        if (errors === _errs1023) {
+                        let data518 = data.detail;
+                        const _errs1019 = errors;
+                        if (errors === _errs1019) {
                           if (
-                            data520 &&
-                            typeof data520 == "object" &&
-                            !Array.isArray(data520)
+                            data518 &&
+                            typeof data518 == "object" &&
+                            !Array.isArray(data518)
                           ) {
                             let missing22;
                             if (
-                              (data520.op === undefined &&
+                              (data518.op === undefined &&
                                 (missing22 = "op")) ||
-                              (data520.elem === undefined &&
+                              (data518.elem === undefined &&
                                 (missing22 = "elem"))
                             ) {
                               validate260.errors = [
                                 {
                                   instancePath: instancePath + "/detail",
                                   schemaPath:
-                                    "#/oneOf/255/properties/detail/required",
+                                    "#/oneOf/254/properties/detail/required",
                                   keyword: "required",
                                   params: { missingProperty: missing22 },
                                   message:
@@ -64906,12 +64803,12 @@ function validate260(
                               ];
                               return false;
                             } else {
-                              if (data520.elem !== undefined) {
-                                const _errs1025 = errors;
+                              if (data518.elem !== undefined) {
+                                const _errs1021 = errors;
                                 if (
-                                  !validate300(data520.elem, {
+                                  !validate300(data518.elem, {
                                     instancePath: instancePath + "/detail/elem",
-                                    parentData: data520,
+                                    parentData: data518,
                                     parentDataProperty: "elem",
                                     rootData,
                                     dynamicAnchors,
@@ -64923,17 +64820,17 @@ function validate260(
                                       : vErrors.concat(validate300.errors);
                                   errors = vErrors.length;
                                 }
-                                var valid518 = _errs1025 === errors;
+                                var valid516 = _errs1021 === errors;
                               } else {
-                                var valid518 = true;
+                                var valid516 = true;
                               }
-                              if (valid518) {
-                                if (data520.op !== undefined) {
-                                  const _errs1026 = errors;
+                              if (valid516) {
+                                if (data518.op !== undefined) {
+                                  const _errs1022 = errors;
                                   if (
-                                    !validate302(data520.op, {
+                                    !validate302(data518.op, {
                                       instancePath: instancePath + "/detail/op",
-                                      parentData: data520,
+                                      parentData: data518,
                                       parentDataProperty: "op",
                                       rootData,
                                       dynamicAnchors,
@@ -64945,9 +64842,9 @@ function validate260(
                                         : vErrors.concat(validate302.errors);
                                     errors = vErrors.length;
                                   }
-                                  var valid518 = _errs1026 === errors;
+                                  var valid516 = _errs1022 === errors;
                                 } else {
-                                  var valid518 = true;
+                                  var valid516 = true;
                                 }
                               }
                             }
@@ -64956,7 +64853,7 @@ function validate260(
                               {
                                 instancePath: instancePath + "/detail",
                                 schemaPath:
-                                  "#/oneOf/255/properties/detail/type",
+                                  "#/oneOf/254/properties/detail/type",
                                 keyword: "type",
                                 params: { type: "object" },
                                 message: "must be object",
@@ -64965,19 +64862,19 @@ function validate260(
                             return false;
                           }
                         }
-                        var valid517 = _errs1023 === errors;
+                        var valid515 = _errs1019 === errors;
                       } else {
-                        var valid517 = true;
+                        var valid515 = true;
                       }
-                      if (valid517) {
+                      if (valid515) {
                         if (data.family !== undefined) {
-                          const _errs1027 = errors;
+                          const _errs1023 = errors;
                           if ("VecScalar" !== data.family) {
                             validate260.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
-                                  "#/oneOf/255/properties/family/const",
+                                  "#/oneOf/254/properties/family/const",
                                 keyword: "const",
                                 params: { allowedValue: "VecScalar" },
                                 message: "must be equal to constant",
@@ -64985,9 +64882,9 @@ function validate260(
                             ];
                             return false;
                           }
-                          var valid517 = _errs1027 === errors;
+                          var valid515 = _errs1023 === errors;
                         } else {
-                          var valid517 = true;
+                          var valid515 = true;
                         }
                       }
                     }
@@ -64999,7 +64896,7 @@ function validate260(
                       validate260.errors = [
                         {
                           instancePath,
-                          schemaPath: "#/oneOf/256/required",
+                          schemaPath: "#/oneOf/255/required",
                           keyword: "required",
                           params: { missingProperty: missing23 },
                           message:
@@ -65009,7 +64906,7 @@ function validate260(
                       return false;
                     } else {
                       if (data.detail !== undefined) {
-                        const _errs1029 = errors;
+                        const _errs1025 = errors;
                         if (
                           !validate304(data.detail, {
                             instancePath: instancePath + "/detail",
@@ -65025,19 +64922,19 @@ function validate260(
                               : vErrors.concat(validate304.errors);
                           errors = vErrors.length;
                         }
-                        var valid520 = _errs1029 === errors;
+                        var valid518 = _errs1025 === errors;
                       } else {
-                        var valid520 = true;
+                        var valid518 = true;
                       }
-                      if (valid520) {
+                      if (valid518) {
                         if (data.family !== undefined) {
-                          const _errs1030 = errors;
+                          const _errs1026 = errors;
                           if ("VecSliceRange" !== data.family) {
                             validate260.errors = [
                               {
                                 instancePath: instancePath + "/family",
                                 schemaPath:
-                                  "#/oneOf/256/properties/family/const",
+                                  "#/oneOf/255/properties/family/const",
                                 keyword: "const",
                                 params: { allowedValue: "VecSliceRange" },
                                 message: "must be equal to constant",
@@ -65045,9 +64942,9 @@ function validate260(
                             ];
                             return false;
                           }
-                          var valid520 = _errs1030 === errors;
+                          var valid518 = _errs1026 === errors;
                         } else {
-                          var valid520 = true;
+                          var valid518 = true;
                         }
                       }
                     }

@@ -2248,7 +2248,7 @@ impl Handle {
     fn close(consume self) {}
 }
 
-fn scan(handles: Vec<Handle>) {
+fn scan(consume handles: Vec<Handle>) {
     var it = handles.into_iter();
     let taken = it.next();
     match taken {
@@ -2284,7 +2284,7 @@ type Wrap {
     token: Tok;
 }
 
-fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
+fn scan(consume xs: Vec<Tok>, consume wrapped: Vec<Wrap>) {
     for token in xs.into_iter() {
         token.close();
     }
@@ -2346,7 +2346,7 @@ fn vec_iter_drains_a_function_inside_a_positional_record() {
         r"
         type Callback(fn(i64) -> i64);
 
-        fn scan(callbacks: Vec<Callback>) {
+        fn scan(consume callbacks: Vec<Callback>) {
             for callback in callbacks.into_iter() {
                 let _ = callback;
             }
@@ -2808,22 +2808,25 @@ fn builtin_option_extractors_consume_the_receiver() {
 }
 
 #[test]
-fn builtin_option_extractors_refuse_a_borrowed_receiver() {
-    // `expect`/`ok_or` take `consume self`, so a borrowed parameter needs
-    // `consume` like any other consuming method call.
+fn builtin_option_extractors_copy_ordinary_borrowed_receivers() {
     let output = check_source(
         r#"
         fn take(value: Option<string>) -> string {
-            value.expect("the value is present")
+            let first = value.expect("the value is present");
+            value.expect(first)
         }
         "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let output = check_source(
+        "#[resource] type Token { id: i64; } impl Token { fn close(consume self) {} } fn take(value: Option<Token>) -> Token { value.expect(\"present\") }",
     );
     assert!(
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("E_OWN_CONSUME_BORROWED")),
-        "a consuming Option method on a borrowed parameter must be refused; got: {:#?}",
+            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+        "{:#?}",
         output.errors
     );
 }

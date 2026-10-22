@@ -74,13 +74,27 @@ fn race_rejects_non_send_fork_inputs() {
 }
 
 #[test]
-fn race_consumed_input_is_unusable_after_the_race() {
+fn owning_race_and_select_calls_copy_ordinary_inputs() {
     for source in [
         "fn take(consume value: string) -> string { value } fn hold() -> string { \"other\" } fn main() { let text = \"hello\"; let result = race [ take(text), hold() ]; println(text); }",
         "fn take(consume value: string) -> string { sleep(1ms); value } fn main() { let text = \"hello\"; let result = select { answer from take(text) => answer, after 1s => \"timer\" }; println(text); }",
-        "trait Finish { fn finish(consume self) -> string; } type Label { text: string; } impl Finish for Label { fn finish(consume self) -> string { self.text } } fn main() { let job: dyn (Finish + Send) = Label { text: \"hello\" }; let result = select { answer from job.finish() => answer, after 1s => \"timer\" }; println(job); }",
     ] {
         let output = check_source(source);
-        assert!(output.errors.iter().any(|error| matches!(error.kind, TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume)), "{source}: {:?}", output.errors);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
     }
+}
+
+#[test]
+fn consuming_select_still_moves_an_affine_trait_object() {
+    let source =
+"trait Finish { fn finish(consume self) -> string; } type Label { text: string; } impl Finish for Label { fn finish(consume self) -> string { self.text } } fn main() { let job: dyn (Finish + Send) = Label { text: \"hello\" }; let result = select { answer from job.finish() => answer, after 1s => \"timer\" }; println(job); }";
+    let output = check_source(source);
+    assert!(
+        output.errors.iter().any(|error| matches!(
+            error.kind,
+            TypeErrorKind::UseAfterMove | TypeErrorKind::UseAfterConsume
+        )),
+        "{source}: {:?}",
+        output.errors
+    );
 }

@@ -74,7 +74,6 @@ impl RuntimeCallFamily {
                 | Self::HashSetToVecLayout
                 | Self::VecCloneLayout
                 | Self::VecCloneOwned
-                | Self::VecTakeAll
                 | Self::VecContainsLayout
                 | Self::VecContainsOwned
                 | Self::VecContainsScalar(_)
@@ -109,7 +108,6 @@ impl RuntimeCallFamily {
                 | Self::VecClone
                 | Self::VecCloneLayout
                 | Self::VecCloneOwned
-                | Self::VecTakeAll
                 | Self::VecContainsLayout
                 | Self::VecContainsOwned
                 | Self::VecContainsScalar(_)
@@ -628,7 +626,6 @@ impl RuntimeCallFamily {
             self,
             Self::VecAppend
                 | Self::VecClear
-                | Self::VecTakeAll
                 | Self::VecPopBool
                 | Self::VecPopLayout
                 | Self::VecPopOwned
@@ -923,7 +920,6 @@ impl RuntimeCallFamily {
             | F::TaskFree
             | F::VecCloneLayout
             | F::VecCloneOwned
-            | F::VecTakeAll
             | F::VecAppend
             | F::VecClear
             | F::VecClone

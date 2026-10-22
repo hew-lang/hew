@@ -83,7 +83,7 @@ test("nested runtime identities reject unknown operations and malformed payloads
 
 test("known unavailable runtime operations retain their declared capability identities", async () => {
   for (const [identity, capability] of [
-    [{ family: "Vector", detail: "TakeAll" }, "Vector::TakeAll"],
+    [{ family: "Vector", detail: "Append" }, "Vector::Append"],
     [{ family: "Semaphore", detail: "Acquire" }, "Semaphore::Acquire"],
     [{ family: "VecGet", detail: "I32" }, "VecGet::I32"],
   ]) {

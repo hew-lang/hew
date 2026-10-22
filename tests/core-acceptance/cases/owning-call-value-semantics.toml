@@ -1,0 +1,11 @@
+[[case]]
+id = "owning-call-value-semantics"
+intent = "Owning parameters, inherent and bound consuming receivers, borrowed field forwarding and cloneable once-callables acquire independent ordinary values while preserving caller reuse and mutation isolation."
+source = "cases/owning-call-value-semantics.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "owning calls preserve values\n"
+stderr = ""
+exit = 0

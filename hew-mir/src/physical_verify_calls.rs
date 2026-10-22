@@ -9,26 +9,19 @@ use super::{
     TypeInstanceKey, ValueCapability,
 };
 
-/// A removal returns the receiver and the element it took; a whole-buffer
-/// drain returns the emptied receiver and the vector that moved out of it.
+/// A removal returns the receiver and the element it took.
 pub(crate) fn verify_vector_pair_result(
     module: &PhysicalModule,
-    operation: PhysicalVectorOp,
     tuple: PhysicalAggregateId,
     glue: &PhysicalVectorGlue,
     result: &ResolvedTy,
 ) -> Result<(), PhysicalError> {
     let tuple = aggregate_glue(module, tuple)?;
-    let value = if matches!(operation, PhysicalVectorOp::TakeAll { .. }) {
-        tuple.fields.get(1).map(|field| &field.ty) == Some(&glue.ty)
-    } else {
-        tuple.fields.get(1) == Some(&glue.element)
-    };
     if &tuple.ty != result
         || tuple.own != OwnKind::Owned
         || tuple.fields.len() != 2
         || tuple.fields[0].ty != glue.ty
-        || !value
+        || tuple.fields.get(1) != Some(&glue.element)
     {
         return Err(PhysicalError::new(
             "physical vector removal result descriptor is not its exact (Vec<T>, value) pair",
@@ -97,9 +90,8 @@ pub(crate) fn verify_vector_call(
         }
         PhysicalVectorOp::Pop { result: tuple }
         | PhysicalVectorOp::Remove { result: tuple }
-        | PhysicalVectorOp::TakeFirst { result: tuple }
-        | PhysicalVectorOp::TakeAll { result: tuple } => {
-            verify_vector_pair_result(module, operation, tuple, glue, result)?;
+        | PhysicalVectorOp::TakeFirst { result: tuple } => {
+            verify_vector_pair_result(module, tuple, glue, result)?;
         }
         PhysicalVectorOp::New
         | PhysicalVectorOp::Len

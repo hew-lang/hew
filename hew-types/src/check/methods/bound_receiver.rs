@@ -134,8 +134,7 @@ impl Checker {
             if trait_sig.consumes_receiver {
                 self.method_call_consumes_receiver
                     .insert(SpanKey::in_module(span, self.current_module_idx));
-                let resolved_ty = self.subst.resolve(receiver_ty);
-                self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
+                self.record_value_transfer(&receiver.0, &receiver.1);
             }
             self.record_bound_method_rewrite(
                 span,

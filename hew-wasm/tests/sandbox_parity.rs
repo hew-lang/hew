@@ -1104,6 +1104,10 @@ fn vec_iter_owned_slots_match_native_and_vm() {
     ensure_parity_runner_built();
     for case in [
         ParityCase {
+            test_name: "owning_call_value_semantics",
+            source_rel: "tests/core-acceptance/cases/owning-call-value-semantics.hew",
+        },
+        ParityCase {
             test_name: "vec_iter_copies",
             source_rel: "tests/core-acceptance/cases/vector-iteration-next.hew",
         },

@@ -7498,25 +7498,6 @@ impl RuntimeCallFamily {
                 physical: RuntimePhysicalForm::Vector,
                 c_return: RuntimeCReturn::Storage,
             },
-            Self::Vector(VecValueOp::TakeAll) => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "vec.value.take_all",
-                contract: Some(RuntimeSemanticContract {
-                    arguments: &[A {
-                        ty: K::Receiver(BuiltinType::Vec),
-                        effect: E::Move,
-                    }],
-                    result: R::UpdatedReceiverAndValue(K::Tuple(&[
-                        K::Receiver(BuiltinType::Vec),
-                        K::Receiver(BuiltinType::Vec),
-                    ])),
-                    failures: &[],
-                }),
-                staging: RuntimeStaging::Declared,
-                abi_shape: RuntimeCallAbiShape::Other,
-                physical: RuntimePhysicalForm::Vector,
-                c_return: RuntimeCReturn::Storage,
-            },
             Self::Vector(VecValueOp::Clear) => RuntimeOpRow {
                 authority: RuntimeAuthority::Value,
                 symbol: "vec.value.clear",
@@ -8208,15 +8189,6 @@ impl RuntimeCallFamily {
                 contract: None,
                 staging: RuntimeStaging::PreStaged,
                 abi_shape: RuntimeCallAbiShape::VecLayout,
-                physical: RuntimePhysicalForm::NotAnAction,
-                c_return: RuntimeCReturn::Storage,
-            },
-            Self::VecTakeAll => RuntimeOpRow {
-                authority: RuntimeAuthority::Value,
-                symbol: "hew_vec_take_all",
-                contract: None,
-                staging: RuntimeStaging::PreStaged,
-                abi_shape: RuntimeCallAbiShape::VecOwned,
                 physical: RuntimePhysicalForm::NotAnAction,
                 c_return: RuntimeCReturn::Storage,
             },

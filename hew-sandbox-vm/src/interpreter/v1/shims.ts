@@ -238,7 +238,6 @@ export function resolveRuntime(entry: RuntimeFamilyEntry): RuntimeRegistration {
           });
         case "GetBorrow":
         case "TakeFirst":
-        case "TakeAll":
         case "Append":
           return refused(`Vector::${entry.detail}`);
         default:
@@ -859,7 +858,6 @@ const UNIT_FAMILIES = {
   VecCloneLayout: refused("VecCloneLayout"),
   VecCloneOwned: refused("VecCloneOwned"),
   VecContainsLayout: refused("VecContainsLayout"),
-  VecTakeAll: refused("VecTakeAll"),
   VecContainsOwned: refused("VecContainsOwned"),
   VecIsEmpty: refused("VecIsEmpty"),
   VecJoinStr: refused("VecJoinStr"),

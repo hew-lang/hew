@@ -566,9 +566,6 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                                 }
                             }
                         }
-                        if let Some(drained) = self.drain_state_vec_seat(place, expr)? {
-                            return Ok(drained);
-                        }
                         take = take && !self.state_field_leaves_as_copy(place, expr)?;
                         if take && self.in_var_self_receiver(place) {
                             self.state_taken.insert(place);

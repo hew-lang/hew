@@ -4,8 +4,6 @@
 )]
 pub(super) use super::*;
 
-use crate::check::types::VecCursorMode;
-
 fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
     let parse_result = hew_parser::parse(source);
     assert!(
@@ -1910,8 +1908,8 @@ fn vec_iter_rejects_qualified_diverging_generic_value_cycle() {
     let ty = Ty::named_for_test("pkg.Wrap", vec![Ty::I64]);
 
     assert_eq!(
-        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
-        Some(VecCursorMode::Take),
+        checker.vec_iteration_element_mode(&ty, &Span::from(0..0)),
+        Some(crate::check::types::VecIterationMode::Borrow),
         "a qualified, diverging generic value cycle has no clone, so the cursor \
          moves each element out — and the walk terminates instead of overflowing"
     );
@@ -2216,29 +2214,6 @@ fn bare_vec_iter_annotation_matches_the_compiler_cursor_without_a_source_shadow(
 }
 
 #[test]
-fn vec_into_iter_publishes_its_builtin_lowering_rewrite() {
-    let output = check_source(
-        r"
-        fn consume(values: Vec<i64>) -> VecIter<i64> {
-            values.into_iter()
-        }
-        ",
-    );
-
-    assert!(
-        output.errors.is_empty(),
-        "Vec::into_iter must type-check cleanly: {:#?}",
-        output.errors
-    );
-    assert!(
-        super::root_values(&output.method_call_rewrites)
-            .any(|rewrite| matches!(rewrite, MethodCallRewrite::BuiltinVecIntoIter)),
-        "Vec::into_iter must publish its builtin lowering rewrite: {:#?}",
-        output.method_call_rewrites
-    );
-}
-
-#[test]
 fn vec_iter_borrows_direct_function_element() {
     // D432: a function/closure element has no semantic clone, so direct
     // `for` iteration binds it as a borrowed loan instead of refusing at a
@@ -2273,7 +2248,7 @@ impl Handle {
     fn close(consume self) {}
 }
 
-fn scan(handles: Vec<Handle>) {
+fn scan(consume handles: Vec<Handle>) {
     var it = handles.into_iter();
     let taken = it.next();
     match taken {
@@ -2309,7 +2284,7 @@ type Wrap {
     token: Tok;
 }
 
-fn scan(xs: Vec<Tok>, wrapped: Vec<Wrap>) {
+fn scan(consume xs: Vec<Tok>, consume wrapped: Vec<Wrap>) {
     for token in xs.into_iter() {
         token.close();
     }
@@ -2371,7 +2346,7 @@ fn vec_iter_drains_a_function_inside_a_positional_record() {
         r"
         type Callback(fn(i64) -> i64);
 
-        fn scan(callbacks: Vec<Callback>) {
+        fn scan(consume callbacks: Vec<Callback>) {
             for callback in callbacks.into_iter() {
                 let _ = callback;
             }
@@ -2395,8 +2370,8 @@ fn vec_iter_cursor_takes_a_qualified_opaque_element() {
     let ty = checker.test_named("pkg.Handle", vec![]);
 
     assert_eq!(
-        checker.vec_iter_element_mode(&ty, &Span::from(0..0)),
-        Some(VecCursorMode::Take),
+        checker.vec_iteration_element_mode(&ty, &Span::from(0..0)),
+        Some(crate::check::types::VecIterationMode::Borrow),
         "a qualified use must resolve against the declaration-local opaque name"
     );
     assert_eq!(
@@ -2833,22 +2808,25 @@ fn builtin_option_extractors_consume_the_receiver() {
 }
 
 #[test]
-fn builtin_option_extractors_refuse_a_borrowed_receiver() {
-    // `expect`/`ok_or` take `consume self`, so a borrowed parameter needs
-    // `consume` like any other consuming method call.
+fn builtin_option_extractors_copy_ordinary_borrowed_receivers() {
     let output = check_source(
         r#"
         fn take(value: Option<string>) -> string {
-            value.expect("the value is present")
+            let first = value.expect("the value is present");
+            value.expect(first)
         }
         "#,
+    );
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    let output = check_source(
+        "#[resource] type Token { id: i64; } impl Token { fn close(consume self) {} } fn take(value: Option<Token>) -> Token { value.expect(\"present\") }",
     );
     assert!(
         output
             .errors
             .iter()
-            .any(|error| error.message.contains("E_OWN_CONSUME_BORROWED")),
-        "a consuming Option method on a borrowed parameter must be refused; got: {:#?}",
+            .any(|error| error.kind == TypeErrorKind::OwnConsumeBorrowed),
+        "{:#?}",
         output.errors
     );
 }

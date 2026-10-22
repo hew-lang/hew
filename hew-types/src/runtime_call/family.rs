@@ -419,11 +419,6 @@ pub enum RuntimeCallFamily {
     VecCloneLayout,
     VecCloneOwned,
     VecContainsLayout,
-    /// Whole-buffer move: `hew_vec_take_all(v)` returns a fresh vec owning
-    /// every element (no clone/drop thunk runs) and leaves `v` a valid empty
-    /// vec with its element representation intact. The consuming-iteration
-    /// choke for a Vec living in persistent storage (an actor state field).
-    VecTakeAll,
     VecContainsOwned,
     VecContainsScalar(VecContainsScalarElem),
     VecGet(VecGetElem),

@@ -13,17 +13,6 @@ use crate::common;
 
 use common::typecheck as typecheck_inline;
 
-// NOTE on the rejection layer: a `#[resource]` struct whose fields are all
-// `Copy` (e.g. `Conn { id: i64 }`) is structurally `Copy` from the checker's
-// marker view, so the checker's `mark_expr_moved_if_non_copy` is a no-op and no
-// checker-level `UseAfterMove` fires. The ownership discipline for `#[resource]`
-// types is enforced by the MIR value-class (`AffineResource`): the consume flag
-// recorded here makes HIR lower the receiver with `IntentKind::Consume`, and the
-// MIR move-checker rejects the use-after-close with `UseAfterConsume`. The
-// end-to-end rejection + drop-suppression is proved in
-// `hew-mir/tests/vertical.rs`; these checker tests pin the side-table fact HIR
-// reads.
-
 /// The per-call-site flag in `method_call_consumes_receiver` is recorded for a
 /// `#[resource]` inherent `close()` call. HIR reads this side-table fact to
 /// lower the receiver with `IntentKind::Consume`, which suppresses the
@@ -47,7 +36,10 @@ fn main() {
 ",
     );
     assert!(
-        !output.method_call_consumes_receiver.is_empty(),
+        output
+            .method_call_consumes_receiver
+            .iter()
+            .any(|key| key.module_idx == 0),
         "expected the `#[resource]` close() call site flagged in \
          method_call_consumes_receiver; got {:?}",
         output.method_call_consumes_receiver,
@@ -81,14 +73,10 @@ fn main() {
     );
 }
 
-/// A non-`#[resource]` type's inherent `close(self)` does NOT register into the
-/// consume set keyed on the resource marker. The double-free this fix targets
-/// only manifests for the `#[resource]` implicit-drop path; an ordinary type's
-/// `close` is a plain by-value method (its receiver still moves as a call
-/// argument, but no per-call-site consume flag is recorded for the resource
-/// drop-suppression path).
+/// An ordinary borrowing method named close does not acquire ownership.
+/// Metadata from embedded standard-library bodies must not count as a root call.
 #[test]
-fn non_resource_inherent_close_not_in_resource_consume_set() {
+fn ordinary_borrowing_close_does_not_acquire_receiver() {
     let output = typecheck_inline(
         r"pub type Plain {
     id: i64;
@@ -101,11 +89,16 @@ impl Plain {
 fn main() {
     let p = Plain { id: 1 };
     p.close();
+    p.close();
 }
 ",
     );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(
-        output.method_call_consumes_receiver.is_empty(),
+        !output
+            .method_call_consumes_receiver
+            .iter()
+            .any(|key| key.module_idx == 0),
         "a non-`#[resource]` inherent close() must not record a resource \
          consume-receiver flag; got {:?}",
         output.method_call_consumes_receiver,

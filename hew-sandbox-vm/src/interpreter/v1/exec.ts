@@ -2001,7 +2001,7 @@ class ExecutorV1 {
           typeId: shape.name,
           shape: shape.id,
           tag: deadline ? term.deadline_variant : term.fault_variant,
-          payload: [stringValue(faultReport(fault))],
+          payload: [stringValue(faultRecoveryMessage(fault))],
         };
         act.fault = null;
         if (act.context.actor) act.context.actor.crashing = null;
@@ -4962,7 +4962,8 @@ class ExecutorV1 {
     };
     const runHook = () => {
       if (actor.layout.crash != null) {
-        const [code, message] = faultInfo(fault);
+        const [code, reason] = faultInfo(fault);
+        const message = faultApplicationMessage(fault) ?? reason;
         const info: VmValue = {
           kind: "record",
           typeId: this.aggregateName(actor.layout.crash_info!),
@@ -5642,16 +5643,29 @@ function faultInfo(fault: Fault): [number, string] {
   }[fault.trap] as [number, string];
 }
 
+function faultApplicationMessage(fault: Fault): string | undefined {
+  return fault.kind === "panic" &&
+    (fault.cancelled || fault.deadline || fault.timerOverdue)
+    ? undefined
+    : fault.message;
+}
+
 function faultDiagnostic(fault: Fault, secondary = false): string {
   const [code, reason] = faultInfo(fault);
   const label = secondary ? "secondary failure" : "failure";
-  const message =
-    fault.message === undefined ||
-    (fault.kind === "panic" &&
-      (fault.cancelled || fault.deadline || fault.timerOverdue))
-      ? ""
-      : `: ${fault.message}`;
-  return `hew: ${label}: ${reason} (${code})${message}\n`;
+  const message = faultApplicationMessage(fault);
+  const detail = message === undefined ? "" : `: ${message}`;
+  return `hew: ${label}: ${reason} (${code})${detail}\n`;
+}
+
+function faultRecoveryMessage(fault: Fault): string {
+  let text = faultApplicationMessage(fault) ?? faultInfo(fault)[1];
+  for (const diagnostic of fault.secondary ?? []) {
+    text += `; secondary failure: ${faultInfo(diagnostic)[1]}`;
+    const detail = faultApplicationMessage(diagnostic);
+    if (detail !== undefined) text += `: ${detail}`;
+  }
+  return text;
 }
 
 function faultReport(fault: Fault, secondary = false): string {

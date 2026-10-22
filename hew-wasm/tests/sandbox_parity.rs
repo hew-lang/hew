@@ -1098,6 +1098,62 @@ fn implicit_iterator_suspension_matches_native() {
 
 #[cfg(unix)]
 #[test]
+fn actor_state_iterator_snapshots_and_explicit_drains_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "actor_state_vec_seat",
+            source_rel: "tests/core-acceptance/cases/actor-state-vec-seat.hew",
+        },
+        ParityCase {
+            test_name: "actor_state_iterator_snapshot",
+            source_rel: "tests/core-acceptance/cases/actor-state-iterator-snapshot.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn vec_iter_owned_slots_match_native_and_vm() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "owning_call_value_semantics",
+            source_rel: "tests/core-acceptance/cases/owning-call-value-semantics.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_copies",
+            source_rel: "tests/core-acceptance/cases/vector-iteration-next.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_owned_cleanup",
+            source_rel: "tests/core-acceptance/cases/vector-into-iter-owning.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_borrowed_source",
+            source_rel: "tests/core-acceptance/cases/vector-borrowed-iteration.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_swap_left_fault",
+            source_rel: "tests/core-acceptance/cases/vector-swap-left-fault.hew",
+        },
+        ParityCase {
+            test_name: "vec_iter_swap_right_fault",
+            source_rel: "tests/core-acceptance/cases/vector-swap-right-fault.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn hashset_iteration_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -1889,6 +1945,30 @@ fn machine_deep_history_matches_native() {
         ParityCase {
             test_name: "machine-deep-history-rollback",
             source_rel: "tests/core-acceptance/cases/machine-deep-history-rollback.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn recovered_and_actor_fault_messages_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "scope-failure-helper-match",
+            source_rel: "tests/core-acceptance/cases/scope-failure-helper-match.hew",
+        },
+        ParityCase {
+            test_name: "actor-crash-hook-live-state",
+            source_rel: "tests/core-acceptance/cases/actor-crash-hook-live-state.hew",
+        },
+        ParityCase {
+            test_name: "task-fault-cleanup-diagnostic",
+            source_rel: "tests/core-acceptance/cases/task-fault-cleanup-diagnostic.hew",
         },
     ] {
         assert_case(&case, "");

@@ -788,19 +788,19 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
             .llvm_ctx("load physical entry fault")?
             .into_pointer_value();
         let report = external_fault_report_entry(self.ctx, &self.llvm)?;
-        builder
+        let failed = builder
             .build_call(report, &[fault_value.into()], "entry.fault.report")
-            .llvm_ctx("report physical entry fault")?;
+            .llvm_ctx("report physical entry fault")?
+            .try_as_basic_value()
+            .basic()
+            .ok_or_else(|| CodegenError::FailClosed("entry report returned no exit code".into()))?
+            .into_int_value();
         let drop = external_fault_drop(self.ctx, &self.llvm)?;
         builder
             .build_call(drop, &[fault_value.into()], "entry.fault.drop")
             .llvm_ctx("drop physical entry fault")?;
-        // The status the entry body returned is the fault's private tag, not a
-        // process exit code (HEW-SPEC-2026 5.8): an unrecovered trap or panic
-        // reports `1` after its typed line reaches stderr. The tag stays
-        // internal, and `hew_native_runtime_finish` keeps this `1` because a
-        // deliberate non-zero code is never overwritten.
-        let failed = self.ctx.i32_type().const_int(1, false);
+        // The runtime classifies requested shutdown cancellation and real faults.
+        // Finalization still incorporates outstanding actor failures.
         let failed = self.emit_process_runtime_finish(builder, failed)?;
         builder
             .build_return(Some(&failed))

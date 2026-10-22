@@ -112,11 +112,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
         let pointer = self.ctx.ptr_type(AddressSpace::default());
         let (symbol, output) = match operation.resume() {
             AsyncIoResume::Bytes => ("hew_async_io_take_bytes", self.slots[result.0 as usize]),
-            AsyncIoResume::TlsConnect => {
-                ("hew_async_tls_take_connect", self.slots[result.0 as usize])
-            }
-            AsyncIoResume::TlsRead => ("hew_async_tls_take_read", self.slots[result.0 as usize]),
-            AsyncIoResume::TlsWrite => ("hew_async_tls_take_write", self.slots[result.0 as usize]),
+            AsyncIoResume::Library(symbol) => (symbol, self.slots[result.0 as usize]),
             AsyncIoResume::WriteCount | AsyncIoResume::Unit => {
                 let output = self
                     .builder
@@ -321,10 +317,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             self.store_active_fault(fault, HEW_TRAP_USER_PANIC)?;
             self.free_handle("hew_async_io_free", request)?;
             self.emit_edge(unwind)?;
-        } else if matches!(
-            operation.resume(),
-            AsyncIoResume::TlsConnect | AsyncIoResume::TlsRead | AsyncIoResume::TlsWrite
-        ) {
+        } else if matches!(operation.resume(), AsyncIoResume::Library(_)) {
             self.take_native_io(operation, request, result)?;
             self.builder
                 .build_unconditional_branch(resume)
@@ -334,7 +327,7 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             let failed = match operation.resume() {
                 AsyncIoResume::Bytes => result_ty.const_zero(),
                 AsyncIoResume::Unit => unreachable!("unit finish uses its fault edge"),
-                AsyncIoResume::TlsConnect | AsyncIoResume::TlsRead | AsyncIoResume::TlsWrite => {
+                AsyncIoResume::Library(_) => {
                     unreachable!("library adapter writes its error result")
                 }
                 AsyncIoResume::WriteCount | AsyncIoResume::Connection => {

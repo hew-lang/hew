@@ -644,7 +644,8 @@
         "TlsRead",
         "TlsWrite",
         "FileRead",
-        "FileWrite"
+        "FileWrite",
+        "WebSocketAccept"
       ],
       "type": "string"
     },
@@ -5955,16 +5956,6 @@
         {
           "properties": {
             "detail": {
-              "type": "null"
-            },
-            "family": {
-              "const": "VecTakeAll"
-            }
-          }
-        },
-        {
-          "properties": {
-            "detail": {
               "$ref": "#/$defs/VecContainsScalarElem"
             },
             "family": {
@@ -8419,6 +8410,7 @@
       "oneOf": [
         {
           "enum": [
+            "Swap",
             "New",
             "Len",
             "Contains",
@@ -8445,11 +8437,6 @@
         {
           "const": "TakeFirst",
           "description": "Remove the first element and hand its ownership to the caller. This is\nthe consuming iterator's step for an element with no clone: the vector\nshrinks by one and ends empty when the drain runs to completion.",
-          "type": "string"
-        },
-        {
-          "const": "TakeAll",
-          "description": "Move the whole buffer out and leave the receiver a valid empty vector\nwith its element representation intact. This is how a `Vec` living in\npersistent storage - an actor state field - is drained by a consuming\niteration: the cursor owns the elements and the seat keeps a usable\nvector a later dispatch can refill.",
           "type": "string"
         },
         {

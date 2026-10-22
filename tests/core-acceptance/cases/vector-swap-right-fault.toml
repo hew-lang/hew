@@ -1,0 +1,11 @@
+[[case]]
+id = "vector-swap-right-fault"
+intent = "Vec.swap rejects an invalid right index through its logical fault edge before mutating the owned vector."
+source = "cases/vector-swap-right-fault.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IndexOutOfBounds (205)\n"
+exit = 1

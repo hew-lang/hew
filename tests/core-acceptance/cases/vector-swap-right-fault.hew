@@ -1,0 +1,5 @@
+fn main() {
+    var values = ["left", "right"];
+    values.swap(0, 2);
+    println("unreachable");
+}

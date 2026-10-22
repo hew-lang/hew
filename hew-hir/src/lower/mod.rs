@@ -198,7 +198,6 @@ fn literal_to_hir(lit: &Literal) -> (HirLiteral, ResolvedTy) {
 
 #[derive(Debug, Clone)]
 enum ForIterNextCall {
-    BuiltinVecIter,
     /// A checker-selected ordinary iterator call.
     Checked(Box<hew_types::CheckedForMethod>),
     /// `for x in stream` over `Stream<T>` — each iteration borrows the
@@ -1053,9 +1052,6 @@ struct LowerCtx {
     /// `get` sites whose element has no semantic clone: `Some` carries a loan
     /// of the slot the collection still owns.
     borrowed_element_option_reads: HashSet<SpanKey>,
-    /// `VecIter` cursor sites whose element has no semantic clone: `next()`
-    /// moves each element out instead of copying it.
-    owning_take_vec_cursors: HashSet<SpanKey>,
     /// Checker-resolved type arguments for generic function calls that
     /// lack explicit type annotations. Keyed by the call expression span.
     ///

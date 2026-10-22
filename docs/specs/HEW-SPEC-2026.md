@@ -439,8 +439,6 @@ language contracts:
   status. This does not change the exit-1 rule for unrecovered faults (§5.8).
 - Resource-close checking covers inherent methods; trait-method checking has
   not yet established the same blanket close rule in every form (§3.7.8).
-- `into_iter()` consumes its vector, but the current cursor can clone
-  cloneable elements. It is not a universal clone-free drain (§3.8.1).
 
 These limitations do not establish sandbox or cross-platform execution parity.
 
@@ -2303,7 +2301,7 @@ one member each:
 | --- | --- | --- |
 | `self` | borrows the receiver | stays valid and unchanged |
 | `var self` | mutates the receiver in place | must be declared `var` |
-| `consume self` | consumes the receiver | is dead after the call |
+| `consume self` | accepts an owned receiver | ordinary values stay usable; affine values move |
 
 ```hew
 type Point {
@@ -2362,11 +2360,13 @@ fn main() {
 
 A `var self` method needs a `var` binding. `let c = Counter { n: 0 }; c.bump()`
 is refused with "requires a mutable binding receiver" and the `let`→`var`
-fix-it (§3.2). A `consume self` method takes the value: any later use of the
+fix-it (§3.2). A `consume self` method accepts an owned value, using the same
+acquisition rule as a `consume` parameter (§3.7.2). An ordinary value is copied
+when the caller needs it again; an affine value moves, and a later use of its
 binding is a use-after-consume diagnostic.
 
-**Consumption is per path, and the next iteration is a path (normative).** A
-consume ends the owner on the path that runs it. Branches that each consume
+**Affine consumption is per path, and the next iteration is a path (normative).** A
+consume ends an affine owner on the path that runs it. Branches that each consume
 once are accepted; a use after a join that any reaching path consumed is
 refused. A loop body runs again from the state its end and every `continue`
 leave, so a value declared outside the loop that the body consumes is refused
@@ -2636,23 +2636,41 @@ fn process(data: Vec<u8>) {
 }
 ```
 
-A parameter declared `consume` instead accepts ownership. Non-copyable values
-can only be transferred, never implicitly duplicated.
+A parameter declared `consume` instead accepts ownership. The caller acquires
+that owner using ordinary value semantics: a non-affine value is copied when
+it is needed again, and may move at its last use. Copy-on-write may share its
+storage while preserving independent values. An affine value can only move,
+never be implicitly duplicated. This rule applies equally to `consume`
+parameters, `consume self` receivers and calls to `fn[once, clone]` values.
+A `fn[once]` without a copy operation remains affine.
 
-**Consumption is declared, never implied (normative, D450).** The checker
-never infers a consuming call from how a callee's body uses its parameter.
-Passing a value reached through a borrowed (non-`consume`) parameter of the
-current function to a callee that consumes it is `E_OWN_CONSUME_BORROWED`; the
-fix is to declare that parameter `consume` too, not a change to the callee —
-consumption then flows from whoever calls the current function, one
-`consume` declaration at a time.
+```hew
+fn append(consume values: Vec<string>, text: string) -> Vec<string> {
+    var result = values;
+    result.push(text);
+    result
+}
 
-The same rule covers every other owning sink. Storing such a value in a record
-field, capturing it in an escaping closure or a generator frame, or returning
-it hands a second owner to storage that outlives the call, so each is
-`E_OWN_CONSUME_BORROWED` with the same fix. A capture has one further answer
-for a callable: `fn[clone](..)` carries a copy operation, so the frame
-snapshots the value instead of moving it.
+fn forward(values: Vec<string>) -> Vec<string> {
+    append(values, "last") // copies the borrowed ordinary value
+}
+
+fn main() {
+    let original = ["first"];
+    let extended = forward(original);
+    assert(original == ["first"]);
+    assert(extended == ["first", "last"]);
+}
+```
+
+**Owning access is declared, never inferred (normative).** The checker never
+changes a parameter's contract because of how its body uses it. Passing an
+affine value reached through a borrowed (non-`consume`) parameter to an owning
+callee is `E_OWN_CONSUME_BORROWED`; declare the forwarding parameter `consume`
+too. Ordinary values have a copy operation, so borrowed forwarding can acquire
+an independent owner without changing the parameter's contract. The same rule
+covers record storage, escaping closure and generator captures, and returns.
+A callable's `clone` capability supplies its copy operation.
 
 #### 3.7.3 Deterministic Cleanup
 
@@ -3235,11 +3253,16 @@ the loan is live, or assume an implicit clone merely because one particular
 instantiation is copyable.
 
 Ownership is obtained through `into_iter()` or an explicit `clone` under
-`T: Clone`. `into_iter()` consumes the vector and owns its remaining elements,
-including cleanup on early termination. The current clone-proven cursor path
-can still clone elements; consuming the container does not yet promise
-clone-free element extraction. A `Clone` bound also permits the current
-compiler to select copying element reads (§2.1.1).
+`T: Clone`. `into_iter()` acquires an owned vector using ordinary value
+semantics: a copyable vector stays usable when needed again, while a vector
+of affine elements moves. The iterator owns its remaining elements, including
+cleanup on early termination. `VecIter` moves each yielded item
+from its ordered option buffer without a per-step clone; its O(n)
+construction uses O(n) additional space, and either end of an unshared
+cursor advances in O(1). A copied cursor follows the ordinary `Vec`
+copy-on-write rules, so detaching its buffer can take O(n) time.
+Untaken elements are released in their original index order. A `Clone` bound
+also permits copying element reads (§2.1.1).
 
 A copy-requiring operation on a value of a type parameter - `clone()`, `m[k]`,
 `get`, a range slice, an array repeat, a spread, or a generator frame taking
@@ -3561,15 +3584,16 @@ linear ownership duties. Unannotated expressions retain proved guarantees.
 Explicit annotations, assignments, arguments, returns and conditional joins
 use the same directional rules, including nested `Option` and `Result` types.
 
-Calling a once callable stored in an owned plain-record or tuple field consumes
-that field and preserves its siblings. The same partial transfer applies to
+Calling an affine once callable stored in an owned plain-record or tuple field
+consumes that field and preserves its siblings. A cloneable once callable
+instead supplies an independent owner when the field is reused. The same partial transfer applies to
 other non-copyable fields. Remaining fields retain their usual cleanup rules:
 automatic cleanup releases initialized contents, and linear fields retain their
 explicit-consumption duties. A consumed field cannot be read again until assigned
 a replacement through a mutable binding. Whole-value uses require every field to be initialized. Nested partial
 moves may cross plain record and tuple fields, but not resource, linear or opaque
-declaration boundaries. Borrowed aggregate parameters cannot supply a consuming
-field; use an explicit `consume` parameter to acquire the owner.
+declaration boundaries. Borrowed aggregate parameters cannot supply an affine
+consuming field; use an explicit `consume` parameter to acquire the owner.
 
 Generic function declarations can be used as values with explicit type
 arguments (`identity<i64>`) or arguments inferred from an expected function
@@ -3881,8 +3905,10 @@ libraries named by `--link-lib` are not inspected.
 An `extern` callee consumes only the parameters its declaration marks
 `consume`; every other parameter is borrowed for the call, exactly as for a
 Hew function (D450). Forwarding a value reached through one of the current
-function's own borrowed parameters into an `extern` call that consumes it is
-the same `E_OWN_CONSUME_BORROWED` diagnosis, fixed the same way.
+function's own borrowed parameters into an `extern` call that consumes it
+acquires an independent owner for an ordinary value. An affine borrowed value
+has no copy operation and produces the same `E_OWN_CONSUME_BORROWED` diagnosis,
+fixed by declaring the forwarding parameter `consume`.
 
 **Blocking calls (`#[offload]`).** A C function that can block in the
 operating system, with no readiness to wait on, is declared `#[offload]`. A
@@ -4601,8 +4627,9 @@ Important current details:
   `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`); drive a
   `Vec<T>` through it via `.iter()` or `.into_iter()`. These adapters and
   terminal helpers consume the iterator: constructors store it, and terminal
-  operations finish or release it. The iterator cannot be reused after the
-  call. Callable arguments retain their own declared consume/borrow contract.
+  operations finish or release it. Ordinary iterator values copy when reused;
+  affine iterators move and cannot be reused after the call. Callable arguments
+  retain their own declared consume/borrow contract.
   The same adapters and terminals are methods on `VecIter<T>` and on each
   adapter, available without an import:
   `v.into_iter().filter(p).map(f).collect()`
@@ -5481,7 +5508,9 @@ fn main() {
 ```
 
 The failure binding has type `ScopeFailure`, with `Deadline` and `Fault`
-cases. The handler runs after the scope's children and cleanup have settled
+cases. Its message preserves application text, falling back to the fault kind
+when no text was supplied. Additional cleanup failures follow in order, without
+CLI report framing or an added trailing newline. The handler runs after the scope's children and cleanup have settled
 and must produce the scope's value type or diverge. Cancellation inherited
 from a parent continues outward; an inner handler cannot clear it. It does not intercept an ordinary `Err` returned by the scope body.
 To handle that Result, first bind the scope's result and apply ordinary

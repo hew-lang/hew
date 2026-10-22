@@ -1131,16 +1131,17 @@ fn main() {
 ```
 
 An ordinary borrowed argument stays usable after the call. A parameter marked
-`consume` transfers ownership. Clone-free collection elements move on owning
-ingress and borrow on read; do not generalize that rule into requiring a manual
-clone for every string insertion. Follow the operation's declared contract.
+`consume` accepts ownership. Ordinary values copy when the caller needs them
+again, and may move at last use; copy-on-write preserves independent values
+without requiring an immediate storage copy. Affine values have no copy
+operation and must move. This is the same rule for parameters, consuming method
+receivers and cloneable once-callables.
 
-A borrowed parameter has no owner to give away. Storing one in a record field,
-capturing it in an escaping closure or a generator, or returning it would hand
-a second owner to storage that outlives the call, so each is refused unless the
-parameter is declared `consume`. For a callable there is a second answer: a
-`fn[clone](i64) -> i64` carries a copy operation, so the closure or generator
-frame copies it instead of moving it.
+A borrowed ordinary value can supply an independent copy to an owning call,
+record, escaping closure, generator or return. A borrowed affine value cannot:
+declare its forwarding parameter `consume` to transfer ownership. Clone-free
+collection elements move on owning ingress and borrow on read. A callable's
+`clone` capability supplies its copy operation.
 
 ### .clone() produces an independent copy
 
@@ -3480,8 +3481,9 @@ Like `.len()`, these methods need no import. `Option` has `map`,
 `and_then`, `or_else`, `ok_or` and `take`; `Result` has `map`, `map_err`,
 `and_then`, `or_else`, `ok` and `err`.
 The extracting and combining methods consume the value they are called
-on, so a borrowed parameter needs `consume` to use them; `??` supplies a
-default without consuming, and `handle` does the same for a `Result`.
+on. Ordinary values supply an independent copy when reused; a borrowed affine
+parameter needs `consume` to transfer its value. `??` supplies a default without
+taking ownership, and `handle` does the same for a `Result`.
 `ok_or` consumes its error argument as well.
 
 ### Option .take()
@@ -3668,7 +3670,7 @@ fn main() {
 }
 ```
 
-Arbitrary expressions (arithmetic, no-arg method calls, field access) work inside `{}`. You cannot put a `"..."` string literal inside the `{}` of an f-string — bind it to a `let` first.
+Arbitrary expressions, including arithmetic, method calls, field access and string literals, work inside `{}`. Bind an intermediate value when that makes the expression easier to read.
 
 ### .split(sep) and reading elements
 
@@ -3740,7 +3742,7 @@ fn main() {
 }
 ```
 
-`.len()` returns `i64` (safe directly in an f-string). `.contains(sub)` returns `bool` — bind to a `let` before interpolating.
+`.len()` returns `i64` and `.contains(sub)` returns `bool`. Both can be interpolated directly in an f-string.
 
 ### std.string module functions
 
@@ -3811,8 +3813,9 @@ fn main() {
 There are three receivers and one spelling each. `self` borrows: the caller's
 binding stays valid, so `p.greet()` twice is ordinary code. `var self` mutates
 the receiver in place and requires a `var` binding — `let p = ...; p.bump()` is
-refused with "requires a mutable binding receiver". `consume self` takes the
-value, and any later use of the binding is a use-after-consume error. Naming the
+refused with "requires a mutable binding receiver". `consume self` accepts an
+owned value. Ordinary values copy when reused; an affine receiver moves, and a
+later use of its binding is a use-after-consume error. Naming the
 first parameter after the target type (`fn greet(p: Person)`) is not a receiver
 form; the fix-it rewrites it to `self`.
 
@@ -4133,7 +4136,14 @@ fn main() {
 }
 ```
 
-`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (consumes `v`).
+`std.iter` builds lazy adapters (`map`, `filter`, `take`, `skip`) over any `Iterator`; terminal helpers (`fold`, `count`, `collect`, `any`, `all`, `sum`, `sum_f64`, `product`, `product_f64`) drive an adapter chain to completion. Drive a `Vec<T>` through the lazy surface via `v.iter()` (clones elements out, `v` stays live) or `v.into_iter()` (accepts ownership, copying an ordinary `v` if it is reused).
+
+`v.iter()` creates an independent snapshot, while `v.into_iter()` owns the
+supplied vector. `VecIter` keeps untaken elements in order and releases that
+remainder in order on early drop. Its ordered option buffer costs O(n)
+additional space and construction time; either end of an unshared cursor
+advances in O(1) time. Detaching a copied cursor follows the ordinary `Vec`
+copy-on-write rules and can take O(n) time.
 
 Every adapter also carries the same method surface, so a chain reads fluently
 end to end instead of nesting free-function calls after the first `.filter`
@@ -4155,6 +4165,12 @@ unbounded `T`, the same borrowing rule holds at every instantiation. Use
 Do not assume reads of cloneable elements are clone-free. Iterator adapters
 consume the iterator they wrap; the source collection and its iterator have
 distinct ownership obligations.
+
+Iterating an ordinary actor field supplies a snapshot, so later turns still
+see the field's contents. To drain a field explicitly, bind its current value,
+replace the field with an empty vector, then iterate over the bound value.
+An affine field moved out during a receive handler must be re-initialized
+before that handler returns.
 
 ### std.sort — sorting vectors
 

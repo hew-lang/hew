@@ -159,13 +159,15 @@ impl Checker {
         let result = self.finish_actor_receive_call(receiver, span, result);
         let key = SpanKey::in_module(span, self.current_module_idx);
         self.check_method_callable_place(receiver, method, span);
-        let runtime_rewrite_consumes_receiver = matches!(
-            self.method_call_rewrites.get(&key),
+        let (rewrite_consumes_receiver, runtime_release) = match self.method_call_rewrites.get(&key)
+        {
             Some(MethodCallRewrite::RewriteToFunction {
                 consumes_receiver: true,
+                descriptor,
                 ..
-            })
-        );
+            }) => (true, descriptor.is_some()),
+            _ => (false, false),
+        };
         let runtime_rewrite_updates_receiver = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::RewriteToFunction {
@@ -213,14 +215,18 @@ impl Checker {
             );
         }
 
-        if runtime_rewrite_consumes_receiver {
-            self.method_call_consumes_receiver.insert(key);
-            if let Expr::Ident(name) = &receiver.0 {
-                // The typed consumption decision overrides a surface Copy
-                // derivation. In particular, a lambda-actor handle is an
-                // opaque wrapper, but release still consumes its sole runtime
-                // handle and any later receiver use is invalid.
-                self.env.mark_moved(name, receiver.1.clone());
+        if rewrite_consumes_receiver {
+            let newly_recorded = self.method_call_consumes_receiver.insert(key);
+            if runtime_release {
+                if let Expr::Ident(name) = &receiver.0 {
+                    // The typed consumption decision overrides a surface Copy
+                    // derivation. In particular, a lambda-actor handle is an
+                    // opaque wrapper, but release still consumes its sole runtime
+                    // handle and any later receiver use is invalid.
+                    self.env.mark_moved(name, receiver.1.clone());
+                }
+            } else if newly_recorded {
+                self.record_value_transfer(&receiver.0, &receiver.1);
             }
         }
 
@@ -808,6 +814,28 @@ impl Checker {
                 );
                 Ty::Error
             }
+            // A borrowed trait-object snapshot has no clone operation. The
+            // authored consuming constructor remains available.
+            (
+                Ty::Named {
+                    head: crate::TypeHead::Builtin(BuiltinType::Vec),
+                    args: type_args,
+                },
+                "iter",
+            ) if type_args
+                .first()
+                .is_some_and(|ty| matches!(self.subst.resolve(ty), Ty::TraitObject { .. })) =>
+            {
+                self.report_error(
+                    TypeErrorKind::InvalidOperation,
+                    span,
+                    "`Vec<dyn Trait>.iter()` is not supported because a borrowed iterator \
+                     needs an independent clone of each trait object; use `into_iter()` to \
+                     transfer the existing owners"
+                        .to_string(),
+                );
+                Ty::Error
+            }
             // Vec methods
             (
                 Ty::Named {
@@ -816,7 +844,9 @@ impl Checker {
                     ..
                 },
                 _,
-            ) => self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span),
+            ) if !matches!(method, "iter" | "into_iter") => {
+                self.check_vec_method(type_args, &receiver_ty, &resolved, method, args, span)
+            }
             // HashMap methods
             (
                 Ty::Named {
@@ -2038,8 +2068,8 @@ impl Checker {
                             method,
                             &sig,
                         );
-                        let borrowed_refused =
-                            self.reject_borrowed_consumption(&receiver.0, &receiver.1);
+                        let borrowed_refused = discharges_resource
+                            && self.reject_borrowed_consumption(&receiver.0, &receiver.1);
                         if discharges_resource && !borrowed_refused {
                             self.method_call_discharges_receiver
                                 .insert(SpanKey::in_module(span, self.current_module_idx));
@@ -2089,12 +2119,8 @@ impl Checker {
                                     &resolved_recv,
                                 );
                             }
-                        } else if !borrowed_refused {
-                            self.mark_expr_moved_if_non_copy(
-                                &receiver.0,
-                                &receiver.1,
-                                &resolved_recv,
-                            );
+                        } else if !discharges_resource {
+                            self.record_value_transfer(&receiver.0, &receiver.1);
                         }
                     }
                     self.record_handle_method_call_rewrite_if_any(&resolved, method, args, span);
@@ -2140,23 +2166,7 @@ impl Checker {
                         // Never retry through either the type or method leaf.
                         let method_owner = canonical_receiver_name.as_str();
                         let method_key = format!("{method_owner}::{method}");
-                        if matches!(*builtin, Some(BuiltinType::VecIter))
-                            && matches!(method, "next" | "next_back")
-                        {
-                            if let Some(elem_ty) = type_args.first() {
-                                if !self.record_vec_iter_element_mode(elem_ty, span) {
-                                    return Ty::Error;
-                                }
-                                self.record_method_call_rewrite(
-                                    span,
-                                    if method == "next_back" {
-                                        MethodCallRewrite::BuiltinVecIterNextBack
-                                    } else {
-                                        MethodCallRewrite::BuiltinVecIterNext
-                                    },
-                                );
-                            }
-                        } else if selected_declaration.is_some()
+                        if selected_declaration.is_some()
                             || self.has_fn_sig(&method_key)
                             || self.impl_method_declaration_ids.contains_key(&method_key)
                             || (!type_args.is_empty() && {
@@ -2544,8 +2554,7 @@ impl Checker {
                     if sig.consumes_receiver {
                         self.method_call_consumes_receiver
                             .insert(SpanKey::in_module(span, self.current_module_idx));
-                        let resolved_ty = self.subst.resolve(&receiver_ty);
-                        self.mark_expr_moved_if_non_copy(&receiver.0, &receiver.1, &resolved_ty);
+                        self.record_value_transfer(&receiver.0, &receiver.1);
                     }
                     let applied_sig = self.apply_instantiated_call_signature_with_assoc(
                         &sig,

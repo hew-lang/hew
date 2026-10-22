@@ -6,6 +6,6 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "Fault\nUserPanic\n"
+stdout = "Fault\ncrash hook payload\n"
 stderr = "hew: failure: UserPanic (212): crash hook payload\nhew: actor crash in Worker.boom (actor 1): UserPanic\n"
 exit = 42

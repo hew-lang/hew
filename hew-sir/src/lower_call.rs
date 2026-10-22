@@ -425,39 +425,6 @@ impl Builder<'_, '_> {
         Ok(true)
     }
 
-    /// A `Vec` state seat consumed by value is drained rather than copied: the
-    /// buffer moves to the consumer and the seat keeps a valid empty vector
-    /// with its element representation intact, which a later dispatch refills.
-    pub(super) fn drain_state_vec_seat(
-        &mut self,
-        place: PlaceId,
-        expression: &HirExpr,
-    ) -> Result<Option<ValueId>, String> {
-        if expression.intent != IntentKind::Consume
-            || !matches!(
-                self.places[place.0 as usize].origin,
-                crate::PlaceOrigin::ActorState { .. }
-            )
-            || !matches!(
-                self.ty(&expression.ty),
-                ResolvedTy::Named {
-                    head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Vec),
-                    ..
-                }
-            )
-            || !self.binding_root_is_mutable(expression)?
-        {
-            return Ok(None);
-        }
-        self.lower_runtime_operation_with(
-            expression,
-            hew_types::RuntimeCallFamily::Vector(hew_types::VecValueOp::TakeAll),
-            (&[expression], &[]),
-            true,
-            &[],
-        )
-    }
-
     /// Whether a place is a `var self` method's receiver seat or lies beneath
     /// it. Its method hands that seat back when it fails, so the seat must be
     /// whole wherever the method can fail.
@@ -504,9 +471,6 @@ impl Builder<'_, '_> {
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
         if let Some(place) = self.expression_projection(expression)? {
-            if let Some(drained) = self.drain_state_vec_seat(place, expression)? {
-                return Ok(Some(drained));
-            }
             let kind = if self.state_field_leaves_as_copy(place, expression)? {
                 SemOpKind::LoadCopy { place }
             } else {
@@ -564,43 +528,28 @@ impl Builder<'_, '_> {
         Ok(Some(value))
     }
 
-    /// Transfer a receiver or argument before evaluating later arguments. Its
-    /// new owner remains live for argument-failure cleanup until the call starts.
+    /// Acquire the callee's owner before evaluating later arguments. Ordinary
+    /// values copy when needed; affine values transfer their existing owner.
+    /// The acquired value stays live for argument-failure cleanup until entry.
     pub(super) fn lower_consuming_value(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
-        self.require_consuming_capture(argument)?;
-        let mut source = argument;
-        while let HirExprKind::SubsumedValue { source: inner } = &source.kind {
-            source = inner;
-        }
-        let value = match self.lower_consuming_projection(source)? {
-            Some(value) => value,
-            None => self.lower_expr_with_binding_use(source, OwnedBindingUse::Move)?,
+        let value = if argument.intent == IntentKind::Discharge {
+            // Closing a resource releases its existing obligation rather than
+            // acquiring an ordinary value copy for a source call.
+            self.require_consuming_capture(argument)?;
+            match self.lower_consuming_projection(argument)? {
+                Some(value) => value,
+                None => self.lower_expr_with_binding_use(argument, OwnedBindingUse::Move)?,
+            }
+        } else {
+            lower_initial_value_transfer(
+                self,
+                argument,
+                "owning call argument",
+                OwnedBindingUse::Copy,
+            )?
         };
         if self.value_own_kind(value) != Some(OwnKind::Owned) {
             return Err("E_OWN_CONSUME_BORROWED: a consuming argument requires an owned value; declare the forwarding parameter consume".into());
-        }
-        self.owned_live.remove(&value);
-        self.emit(
-            argument,
-            SemOpKind::Move {
-                source: Operand { value },
-            },
-        )
-    }
-
-    /// Lower one adopted runtime operand that still has a copy recipe into the
-    /// independent owner the operation takes. The binding is read as a copy, so
-    /// the caller keeps its own value; that copy transfers rather than being
-    /// cloned again inside the operation and destroyed on the normal edge.
-    pub(super) fn lower_adopted_copy(&mut self, argument: &HirExpr) -> Result<ValueId, String> {
-        let value = lower_initial_value_transfer(
-            self,
-            argument,
-            "runtime operand adoption",
-            OwnedBindingUse::Copy,
-        )?;
-        if self.value_own_kind(value) != Some(OwnKind::Owned) {
-            return Err("an adopted runtime operand requires an owned value".into());
         }
         self.owned_live.remove(&value);
         self.emit(
@@ -1308,7 +1257,7 @@ impl Builder<'_, '_> {
                         self,
                         arg,
                         "trivial consuming argument",
-                        OwnedBindingUse::Move,
+                        OwnedBindingUse::Copy,
                     )?,
                 }
             } else if self.ty(&arg.ty) == expected.ty {
@@ -1928,19 +1877,6 @@ impl Builder<'_, '_> {
                 )
             })
             .collect::<Vec<_>>();
-        // An adopted operand that still has a copy recipe keeps the caller's
-        // own value: lowering reads the binding as an independent owner and
-        // transfers that owner, rather than consuming what the caller named.
-        let copied_ingress = contract
-            .arguments
-            .iter()
-            .zip(parameter_types)
-            .map(|(argument, ty)| {
-                argument.effect == RuntimeArgumentEffect::Value
-                    && self.service.checked_facts.rows()[&TypeInstanceKey(ty.clone())].clone
-                        != hew_types::CloneKind::None
-            })
-            .collect::<Vec<bool>>();
         let read_only = effects
             .iter()
             .all(|effect| *effect != RuntimeArgumentEffect::Move);
@@ -2024,9 +1960,6 @@ impl Builder<'_, '_> {
                         // The receiver is retaken after later arguments finish;
                         // no operand or snapshot is emitted for it here.
                         continue;
-                    }
-                    RuntimeArgumentEffect::Move if copied_ingress[index] => {
-                        (self.lower_adopted_copy(arg)?, crate::BoundaryDecision::Move)
                     }
                     RuntimeArgumentEffect::Move => (
                         self.lower_consuming_value(arg)?,
@@ -2881,7 +2814,7 @@ impl Builder<'_, '_> {
             let own = OwnKind::of_ty(&signature.params[index], self.service.checked_facts.rows())?;
             let (value, decision) = if own == OwnKind::Owned {
                 (
-                    self.lower_adopted_copy(argument)?,
+                    self.lower_consuming_value(argument)?,
                     crate::BoundaryDecision::Move,
                 )
             } else {

@@ -510,6 +510,50 @@ fn run_until_signalled(source: &str, opt_level: u8) -> (ExitStatus, Vec<String>,
     finish_fixture(fixture)
 }
 
+#[test]
+fn signal_shutdown_cancels_root_websocket_accept() {
+    require_codegen();
+    for cleanup_fails in [false, true] {
+        let source = format!(
+            r#"
+import std.net.websocket;
+
+fn main() {{
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
+    defer {{
+        println("LISTENER_RELEASED");
+        if {cleanup_fails} {{ panic("shutdown cleanup failed"); }}
+    }}
+    println("READY");
+    let connection = server.accept();
+    panic("accept completed without a peer");
+}}
+"#
+        );
+        for opt_level in [0, 2] {
+            let (status, stdout, stderr) = run_until_signalled(&source, opt_level);
+            assert_eq!(
+                status.success(),
+                !cleanup_fails,
+                "shutdown exited {status}: {stderr}"
+            );
+            assert_eq!(
+                stdout
+                    .iter()
+                    .filter(|line| *line == "LISTENER_RELEASED")
+                    .count(),
+                1,
+                "{stdout:?}"
+            );
+            if cleanup_fails {
+                assert!(stderr.contains("shutdown cleanup failed"), "{stderr}");
+            } else {
+                assert!(stderr.is_empty(), "clean shutdown diagnostics: {stderr}");
+            }
+        }
+    }
+}
+
 /// A `shutdown_signal()` subscriber receives SIGTERM as a request and keeps
 /// the runtime admitting its calls: the program finishes its own work and
 /// stops by returning from `main`.

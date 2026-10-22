@@ -2235,7 +2235,24 @@ impl Checker {
                                 Ty::Error
                             } else {
                                 match self.vec_iteration_element_mode(&elem, &iterable.1) {
-                                    Some(super::types::VecIterationMode::Clone) => elem,
+                                    Some(super::types::VecIterationMode::Clone) => {
+                                        if let Some(item_ty) =
+                                            self.iterator_trait_item_ty(&iter_ty, &iterable.1)
+                                        {
+                                            let candidates = self.callable_candidates_for_expr(
+                                                &iterable.0,
+                                                &iterable.1,
+                                            );
+                                            self.record_iteration_effect(
+                                                &iterable.1,
+                                                &iter_ty,
+                                                candidates,
+                                            );
+                                            item_ty
+                                        } else {
+                                            Ty::Error
+                                        }
+                                    }
                                     Some(super::types::VecIterationMode::Borrow) => {
                                         self.borrowed_element_for_loops.insert(SpanKey::in_module(
                                             &iterable.1,
@@ -2252,18 +2269,6 @@ impl Checker {
                                 &iterable.1,
                                 "`for` over a Vec requires a resolved element type".to_string(),
                             );
-                            Ty::Error
-                        }
-                    }
-                    Ty::Named {
-                        args,
-                        head: crate::TypeHead::Builtin(BuiltinType::VecIter),
-                        ..
-                    } if !args.is_empty() => {
-                        let elem = args[0].clone();
-                        if self.record_vec_iter_element_mode(&elem, &iterable.1) {
-                            elem
-                        } else {
                             Ty::Error
                         }
                     }

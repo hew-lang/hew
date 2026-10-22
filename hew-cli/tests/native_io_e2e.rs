@@ -36,6 +36,39 @@ fn run(binary: &Path, directory: &Path, expected: &str) {
 }
 
 #[test]
+fn websocket_accept_yields_to_a_deadline_and_preserves_the_listener() {
+    require_codegen();
+    for opt in ["0", "2"] {
+        let directory = tempdir();
+        let binary = build(
+            r#"
+import std.net.websocket;
+
+fn main() {
+    let server = websocket.listen("127.0.0.1:0").expect("listen");
+    for _ in 0..2 {
+        scope within 20ms {
+            let connection = server.accept();
+            panic("accept completed without a peer");
+        } handle failure {
+            println("accept cancelled");
+        };
+        assert(server.port() > 0);
+    }
+}
+"#,
+            directory.path(),
+            opt,
+        );
+        run(
+            &binary,
+            directory.path(),
+            "accept cancelled\naccept cancelled\n",
+        );
+    }
+}
+
+#[test]
 fn file_requests_transfer_strings_and_bytes_and_restore_each_error() {
     require_codegen();
     for opt in ["0", "2"] {

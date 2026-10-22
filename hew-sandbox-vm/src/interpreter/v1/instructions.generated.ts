@@ -90,7 +90,8 @@ export type AsyncIoOp =
   | "TlsRead"
   | "TlsWrite"
   | "FileRead"
-  | "FileWrite";
+  | "FileWrite"
+  | "WebSocketAccept";
 export type BlockV1 = {
   id: number;
   params: Array<ValueDef>;
@@ -813,7 +814,6 @@ export type RuntimeCallFamily =
   | "VecCloneLayout"
   | "VecCloneOwned"
   | "VecContainsLayout"
-  | "VecTakeAll"
   | "VecContainsOwned"
   | { VecContainsScalar: VecContainsScalarElem }
   | { VecGet: VecGetElem }
@@ -1235,6 +1235,7 @@ export type VecSliceElem =
   | "Ptr"
   | "Str";
 export type VecValueOp =
+  | "Swap"
   | "New"
   | "Len"
   | "Contains"
@@ -1248,7 +1249,6 @@ export type VecValueOp =
   | "IndexBorrow"
   | "GetBorrow"
   | "TakeFirst"
-  | "TakeAll"
   | "Slice"
   | "SliceFrom"
   | "Append"

@@ -168,7 +168,7 @@ const PAIR_LAYOUT: HewValueLayout = HewValueLayout {
 };
 
 #[test]
-fn aligned_vector_owners_survive_growth_slice_and_buffer_transfer() {
+fn aligned_vector_owners_survive_growth_slice_and_refill() {
     let _guard = TEST_LOCK.lock().unwrap();
     assert_eq!(LIVE_NUMBERS.load(Ordering::SeqCst), 0);
     // SAFETY: callbacks and descriptors match Record; every fresh collection
@@ -182,14 +182,13 @@ fn aligned_vector_owners_survive_growth_slice_and_buffer_transfer() {
         }
         let copy = vec::hew_vec_clone_owned(original);
         let slice = vec::hew_vec_slice_range_owned(original, 3, 17);
-        let moved = vec::hew_vec_take_all(original);
+        vec::hew_vec_clear(original);
         assert_eq!((*original).len, 0);
-        assert!((*original).data.is_null());
         let mut replacement = record("reused", 99);
         vec::hew_vec_push_owned(original, (&raw const replacement).cast());
         drop_record((&raw mut replacement).cast());
         vec::hew_vec_free_owned(original);
-        for (collection, first, count) in [(copy, 0, 33), (slice, 3, 14), (moved, 0, 33)] {
+        for (collection, first, count) in [(copy, 0, 33), (slice, 3, 14)] {
             assert_eq!((*collection).len, count);
             for index in 0..count {
                 let slot = vec::hew_vec_get_owned(collection, i64::try_from(index).unwrap())
@@ -548,7 +547,7 @@ fn aligned_zero_sized_vector_preserves_callback_alignment() {
     };
     let unit = AlignedUnit;
     // SAFETY: the descriptor matches the aligned logical slots and every
-    // collection owner is released once, including after buffer transfer.
+    // collection owner is released once.
     unsafe {
         let vector = vec::hew_vec_new_with_elem_layout(&raw const layout);
         for _ in 0..17 {
@@ -556,12 +555,10 @@ fn aligned_zero_sized_vector_preserves_callback_alignment() {
         }
         let copy = vec::hew_vec_clone_owned(vector);
         let slice = vec::hew_vec_slice_range_owned(vector, 2, 7);
-        let moved = vec::hew_vec_take_all(vector);
         assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 39);
         vec::hew_vec_free_owned(vector);
         vec::hew_vec_free_owned(copy);
         vec::hew_vec_free_owned(slice);
-        vec::hew_vec_free_owned(moved);
     }
     assert_eq!(ZERO_OWNERS.load(Ordering::SeqCst), 0);
 }

@@ -138,6 +138,27 @@ impl HewFault {
         fault
     }
 
+    /// Application text when supplied, otherwise the structured fault kind.
+    pub(crate) fn message(&self) -> &str {
+        self.primary
+            .message
+            .as_deref()
+            .unwrap_or_else(|| fault_reason(self.code()))
+    }
+
+    fn recovery_message(&self) -> String {
+        let mut message = self.message().to_owned();
+        for diagnostic in &self.secondary {
+            message.push_str("; secondary failure: ");
+            message.push_str(fault_reason(diagnostic.code));
+            if let Some(text) = &diagnostic.message {
+                message.push_str(": ");
+                message.push_str(text);
+            }
+        }
+        message
+    }
+
     pub(crate) fn code(&self) -> i32 {
         self.primary.code
     }
@@ -460,11 +481,7 @@ pub unsafe extern "C" fn hew_fault_into_host_error(
 pub unsafe extern "C" fn hew_fault_take_message(fault: *mut HewFault) -> *mut HewString {
     // SAFETY: the caller transfers the unique fault allocation.
     let fault = unsafe { Box::from_raw(fault) };
-    let mut diagnostic = Vec::new();
-    let _ = write_report(&fault, &mut diagnostic);
-    // SAFETY: reports consist entirely of UTF-8 strings and ASCII formatting.
-    let message = unsafe { String::from_utf8_unchecked(diagnostic) };
-    hew_cabi::string::string_from_str(&message)
+    hew_cabi::string::string_from_str(&fault.recovery_message())
 }
 
 /// Release one fault owner. Null is accepted for an empty fault output slot.
@@ -532,7 +549,8 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
     i32::from(write_unreported(fault, &mut report).is_err())
 }
 
-/// Report the process entry's terminal fault, including its test record.
+/// Report the process entry's terminal fault and return its process exit code.
+/// Requested shutdown cancellation exits successfully when cleanup also succeeds.
 /// Actor faults use [`hew_fault_report`] and cannot satisfy `#[should_panic]`
 /// merely because a test later exits non-zero with crash debt.
 ///
@@ -542,10 +560,14 @@ pub unsafe extern "C" fn hew_fault_report(fault: *const HewFault) -> i32 {
 pub unsafe extern "C" fn hew_fault_report_entry(fault: *const HewFault) -> i32 {
     // SAFETY: the caller retains a live immutable fault through this report.
     if let Some(fault) = unsafe { fault.as_ref() } {
+        if cancelled_by_shutdown(fault.code()) && fault.secondary.is_empty() {
+            return 0;
+        }
         note_test_fault(fault);
     }
     // SAFETY: forwarded unchanged from the caller.
-    unsafe { hew_fault_report(fault) }
+    let _ = unsafe { hew_fault_report(fault) };
+    1
 }
 
 /// Raise a fault that generated drop glue has no owner to carry.
@@ -763,7 +785,8 @@ mod tests {
         // SAFETY: both faults are distinct unique owners; recovery consumes them.
         let message = unsafe { hew_fault_take_message(hew_fault_combine(primary, secondary)) };
         // SAFETY: recovery returned a live managed string owned by this test.
-        assert_eq!(unsafe { string_as_str(message) }, "hew: failure: UserPanic (212): primary\0é\nhew: secondary failure: UserPanic (212): cleanup 雪\n");
+        let text = unsafe { string_as_str(message) };
+        assert_eq!(text, "primary\0é; secondary failure: UserPanic: cleanup 雪");
         // SAFETY: no borrow remains, so release the transferred owner once.
         unsafe { hew_cabi::string::string_release(message) };
     }

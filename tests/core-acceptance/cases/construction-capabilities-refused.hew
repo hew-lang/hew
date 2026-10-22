@@ -167,7 +167,6 @@ fn through_to_string() -> string {
     to_string(DisplayKey { id: 1 })
 }
 
-
 type HiddenIterator {
     cursor: i64;
 }
@@ -218,7 +217,7 @@ impl IntoIterator for HiddenIterable {
     type Item = i64;
     type IntoIter = PureIterator;
 
-    fn into_iter(self) -> PureIterator {
+    fn into_iter(consume self) -> PureIterator {
         acquire();
         PureIterator { cursor: self.end }
     }
@@ -230,7 +229,6 @@ fn through_into_iterator() {
         let _ = value;
     }
 }
-
 
 #[resource]
 type CleanupIterator {
@@ -260,7 +258,7 @@ impl IntoIterator for CleanupIterable {
     type Item = i64;
     type IntoIter = CleanupIterator;
 
-    fn into_iter(self) -> CleanupIterator {
+    fn into_iter(consume self) -> CleanupIterator {
         CleanupIterator { cursor: self.end }
     }
 }
@@ -271,7 +269,6 @@ fn through_iterator_cleanup() {
         let _ = value;
     }
 }
-
 
 gen fn hidden_producer(consume held: HiddenCleanup) -> i64 {
     yield held.tag;
@@ -285,10 +282,8 @@ fn through_generator_next(pending: Generator<i64, ()>) {
     let _ = pending.next();
 }
 
-
 #[confined]
 fn through_stream_payload(consume pending: stream.Stream<HiddenCleanup>) {}
-
 
 #[confined]
 fn through_stream_close(consume pending: stream.Stream<HiddenCleanup>) {

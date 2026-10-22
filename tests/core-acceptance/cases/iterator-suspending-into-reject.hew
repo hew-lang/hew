@@ -1,4 +1,6 @@
-type FastCursor { remaining: i64; }
+type FastCursor {
+    remaining: i64;
+}
 
 impl Iterator for FastCursor {
     type Item = i64;
@@ -13,19 +15,23 @@ impl Iterator for FastCursor {
     }
 }
 
-type SlowIterable { remaining: i64; }
+type SlowIterable {
+    remaining: i64;
+}
 
 impl IntoIterator for SlowIterable {
     type Item = i64;
     type IntoIter = FastCursor;
 
-    fn into_iter(self) -> FastCursor {
+    fn into_iter(consume self) -> FastCursor {
         sleep(1ms);
         FastCursor { remaining: self.remaining }
     }
 }
 
-fn make<T>(value: T) -> T { value }
+fn make<T>(value: T) -> T {
+    value
+}
 
 fn run() -> i64 {
     var count = 0;

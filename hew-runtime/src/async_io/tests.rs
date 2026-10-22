@@ -535,6 +535,46 @@ fn tcp_cancel_detaches_before_rearming_the_same_handle() {
 }
 
 #[test]
+fn listener_jobs_share_shutdown_admission_and_wake_their_caller() {
+    let _runtime = crate::runtime_test_guard();
+    let _reactor = StopReactor::start();
+    let ready = Arc::new(ReadySignal::default());
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    // SAFETY: the operation retains this descriptor and owns both channels.
+    let operation = unsafe {
+        library::submit_listener_job(&descriptor(&ready), move |_| {
+            started_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            7_i32
+        })
+    };
+    started_rx.recv().unwrap();
+    crate::reactor::close_listener_admission();
+    release_tx.send(()).unwrap();
+    // SAFETY: this test owns each submitted operation through its final free.
+    unsafe {
+        assert_eq!(drive(operation, &ready), AsyncIoStatus::Cancelled as i32);
+        assert!(library::take_library_result::<i32>(operation).is_none());
+        hew_async_io_free(operation);
+
+        let refused = library::submit_listener_job::<_, i32>(&descriptor(&ready), |_| {
+            panic!("closed admission must not run a new accept");
+        });
+        assert_eq!(
+            hew_async_io_status(refused),
+            AsyncIoStatus::Cancelled as i32
+        );
+        hew_async_io_free(refused);
+
+        let socket = library::submit_socket_job(&descriptor(&ready), |_| 42_i32);
+        assert_eq!(drive(socket, &ready), AsyncIoStatus::Success as i32);
+        assert_eq!(library::take_library_result::<i32>(socket), Some(42));
+        hew_async_io_free(socket);
+    }
+}
+
+#[test]
 fn tcp_accept_shutdown_cancels_before_and_after_the_syscall_attempt() {
     let _runtime = crate::runtime_test_guard();
     let _reactor = StopReactor::start();

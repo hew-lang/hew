@@ -8,6 +8,6 @@ kind = "reject"
 
 [[case.expected.diagnostics]]
 code = "InvalidOperation"
-line = 39
+line = 45
 column = 33
 message = "suspends via `IntoIterator.into_iter(...)`; `fn() -> i64` never suspends"

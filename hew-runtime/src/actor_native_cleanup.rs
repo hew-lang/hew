@@ -311,8 +311,10 @@ pub(crate) unsafe fn drive_actor_cleanup(actor: &HewActor) -> bool {
                         kind: crate::internal::types::ExitReason::from_error_code(code)
                             .to_crash_kind(),
                         message: hew_cabi::string::string_from_str(
-                            crate::internal::types::ExitReason::from_error_code(code)
-                                .trap_kind_name(),
+                            completion.fault_message().as_deref().unwrap_or_else(|| {
+                                crate::internal::types::ExitReason::from_error_code(code)
+                                    .trap_kind_name()
+                            }),
                         ),
                         stop_ns,
                         action: 0,

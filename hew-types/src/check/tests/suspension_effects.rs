@@ -599,24 +599,17 @@ fn ordinary_fork_operands_snapshot_owned_values_and_reusable_closures() {
 }
 
 #[test]
-fn consuming_fork_arguments_still_transfer_the_original_owner() {
+fn consuming_fork_arguments_snapshot_ordinary_values() {
     let source = "fn take(consume value: string) -> string { value } fn main() { let text = \"hello\"; let child = fork take(text); println(text); }";
     let output = check_source(source);
-    assert!(
-        output
-            .errors
-            .iter()
-            .any(|error| matches!(error.kind, crate::error::TypeErrorKind::UseAfterMove)),
-        "{:?}",
-        output.errors
-    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output
         .suspension_effects
         .fork_transfers
         .iter()
         .any(|(key, fact)| key.module_idx == 0
             && source[key.start..key.end].trim() == "text"
-            && fact.acquisition == crate::ClosureCaptureAcquisition::Move));
+            && fact.acquisition == crate::ClosureCaptureAcquisition::Snapshot));
 }
 
 #[test]

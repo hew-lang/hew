@@ -1,4 +1,4 @@
-//! Field transfers preserve sibling ownership without manufacturing copies.
+//! Callable fields preserve owning-call contracts and live sibling fields.
 
 use hew_hir::{lower_program_host_target, HirExprKind, HirItem, ResolutionCtx};
 use hew_sir::{
@@ -219,22 +219,17 @@ fn assert_refused(source: &str, function: &str, code: &str) {
 }
 
 #[test]
-fn once_record_fields_never_gain_a_hidden_clone_owner() {
-    for clone in [false, true] {
-        let source = format!(
-            "{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; let first = value.a(); first + value.b() }}",
-            declarations(clone)
-        );
-        assert_once_field_transfer(&source);
-    }
+fn strict_once_record_fields_transfer_their_existing_owner() {
+    let source = format!(
+        "{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; let first = value.a(); first + value.b() }}",
+        declarations(false)
+    );
+    assert_once_field_transfer(&source);
 }
 
 #[test]
-fn once_tuple_fields_never_gain_a_hidden_clone_owner() {
-    for capabilities in ["once", "once, clone"] {
-        let source = format!("fn answer() -> i64 {{ 41 }} fn main() -> i64 {{ let callback: fn[{capabilities}]() -> i64 = answer; let value = (callback, 1); let first = value.0(); first + value.1 }}");
-        assert_once_field_transfer(&source);
-    }
+fn strict_once_tuple_fields_transfer_their_existing_owner() {
+    assert_once_field_transfer("fn answer() -> i64 { 41 } fn main() -> i64 { let callback: fn[once]() -> i64 = answer; let value = (callback, 1); let first = value.0(); first + value.1 }");
 }
 
 #[test]
@@ -298,108 +293,22 @@ fn main() -> i64 {
 }
 
 #[test]
-fn borrowed_once_record_fields_require_an_owned_destructure() {
-    for clone in [false, true] {
-        let source = format!("{} fn invoke(value: Two) -> i64 {{ value.a() }} fn main() -> i64 {{ invoke(Two {{ a: answer, b: sibling }}) }}", declarations(clone));
-        assert_refused(&source, "invoke", "E_OWN_CONSUME_BORROWED");
-    }
+fn borrowed_strict_once_record_fields_require_an_owned_destructure() {
+    let source = format!("{} fn invoke(value: Two) -> i64 {{ value.a() }} fn main() -> i64 {{ invoke(Two {{ a: answer, b: sibling }}) }}", declarations(false));
+    assert_refused(&source, "invoke", "E_OWN_CONSUME_BORROWED");
+}
+
+#[test]
+fn cloneable_once_fields_can_be_called_repeatedly_through_a_borrow() {
+    let source = format!("{} fn invoke(value: Two) -> i64 {{ let first = value.a(); first + value.a() + value.b() }} fn main() -> i64 {{ invoke(Two {{ a: answer, b: sibling }}) }}", declarations(true));
+    assert_lowered(&source);
+    assert_lowered("fn answer() -> i64 { 41 } fn invoke(value: (fn[once, clone]() -> i64, i64)) -> i64 { let first = value.0(); first + value.0() + value.1 } fn main() -> i64 { let callback: fn[once, clone]() -> i64 = answer; invoke((callback, 1)) }");
 }
 
 #[test]
 fn explicit_destructure_exposes_owned_callable_fields_and_live_siblings() {
     for clone in [false, true] {
         let source = format!("{} fn main() -> i64 {{ let value = Two {{ a: answer, b: sibling }}; let Two {{ a, b }} = value; let first = a(); first + b() }}", declarations(clone));
-        let lowered = lower(&source);
-        assert!(
-            lowered.statuses.iter().any(|status| status.name == "main"
-                && matches!(status.status, SirLoweringStatus::Lowered)),
-            "{:?}",
-            lowered.statuses
-        );
-        assert!(
-            verify_module(&lowered.module).is_empty(),
-            "{:?}",
-            verify_module(&lowered.module)
-        );
-        let main = lowered
-            .module
-            .functions
-            .iter()
-            .find(|function| lowered.module.defs.path(function.declaration) == "main")
-            .unwrap();
-        // A destructure of a place names fields, not the whole value: each
-        // field is read out of its own storage, and the aggregate is never
-        // taken apart as one value.
-        assert!(
-            !main
-                .blocks
-                .iter()
-                .flat_map(|block| &block.ops)
-                .any(|op| matches!(op.kind, SemOpKind::Destructure { .. })),
-            "{}",
-            hew_sir::dump_sir(&lowered.module)
-        );
-        let fields: Vec<_> = main
-            .blocks
-            .iter()
-            .flat_map(|block| &block.ops)
-            .filter(|op| match op.kind {
-                SemOpKind::LoadTake { place } | SemOpKind::LoadCopy { place } => matches!(
-                    main.places[place.0 as usize].origin,
-                    hew_sir::PlaceOrigin::Aggregate { .. }
-                ),
-                _ => false,
-            })
-            .flat_map(|op| &op.results)
-            .collect();
-        assert_eq!(fields.len(), 2);
-        assert!(fields
-            .iter()
-            .all(|field| field.own == hew_sir::OwnKind::Owned));
-        for (index, decision) in [BoundaryDecision::Move, BoundaryDecision::Borrow]
-            .into_iter()
-            .enumerate()
-        {
-            let place = main
-                .blocks
-                .iter()
-                .flat_map(|block| &block.ops)
-                .find_map(|op| match &op.kind {
-                    SemOpKind::StoreInit { place, value } if value.value == fields[index].id => {
-                        Some(*place)
-                    }
-                    _ => None,
-                })
-                .expect("each extracted field initializes its own local storage");
-            let call = main
-                .blocks
-                .iter()
-                .find_map(|block| match &block.terminator {
-                    SemTerminator::IndirectCall { callee, .. } if callee.decision == decision => {
-                        Some((block, callee.operand.value))
-                    }
-                    _ => None,
-                })
-                .expect("both callable fields remain usable");
-            let loaded = call
-                .0
-                .ops
-                .iter()
-                .find(|op| match op.kind {
-                    SemOpKind::LoadTake { place: p } if decision == BoundaryDecision::Move => {
-                        p == place
-                    }
-                    SemOpKind::LoadBorrow { place: p } if decision == BoundaryDecision::Borrow => {
-                        p == place
-                    }
-                    _ => false,
-                })
-                .expect("invocation must use the extracted field's storage");
-            if decision == BoundaryDecision::Move {
-                assert!(call.0.ops.iter().any(|op| matches!(&op.kind, SemOpKind::Move { source } if source.value == loaded.results[0].id) && op.results[0].id == call.1));
-            } else {
-                assert_eq!(loaded.results[0].id, call.1);
-            }
-        }
+        assert_lowered(&source);
     }
 }

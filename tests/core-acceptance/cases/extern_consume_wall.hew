@@ -1,5 +1,5 @@
-// A `consume` parameter on an extern transfers the owner, so the binding
-// cannot be handed to a second call.
+// Each consuming extern call acquires an independent string owner, so
+// dropping one owner leaves the caller able to pass the value again.
 extern "C" {
     fn hew_string_drop(consume s: string);
 }
@@ -12,5 +12,6 @@ fn main() -> i64 {
     unsafe {
         hew_string_drop(text)
     };
+    println("done");
     0
 }

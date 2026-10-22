@@ -1,0 +1,11 @@
+[[case]]
+id = "actor-state-iterator-snapshot"
+intent = "Owning iteration snapshots a cloneable actor field across turns; explicit replacement drains it and permits refill."
+source = "cases/actor-state-iterator-snapshot.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "actor collection snapshots and drains\n"
+stderr = ""
+exit = 0

@@ -104,7 +104,13 @@ impl Checker {
         let Some(ty) = self.expr_types.get(&key).map(|ty| self.subst.resolve(ty)) else {
             return;
         };
-        if self.place_read_transfers_ownership(&ty) || self.reads_resource_handle_field(expr) {
+        self.record_typed_value_transfer(expr, span, &ty);
+    }
+
+    /// Projected callable receivers already have a resolved type even when
+    /// their field access was resolved directly rather than synthesized alone.
+    fn record_typed_value_transfer(&mut self, expr: &Expr, span: &Span, ty: &Ty) {
+        if self.place_read_transfers_ownership(ty) || self.reads_resource_handle_field(expr) {
             if !self.reject_borrowed_consumption(expr, span) {
                 self.mark_expr_moved(expr, span);
             }
@@ -121,12 +127,12 @@ impl Checker {
             .as_ref()
             .and_then(|owner| self.fn_sig(owner))
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
-        if Self::ty_mentions_type_params(&ty, &parameters) {
+        if Self::ty_mentions_type_params(ty, &parameters) {
             self.record_generic_requirement(
                 super::types::GenericRequirementKind::BorrowedTransfer {
                     root: root.to_string(),
                 },
-                &ty,
+                ty,
                 span,
             );
         }
@@ -726,7 +732,9 @@ impl Checker {
                     self.errors.push(error);
                 }
             }
-            CallableCallMode::Once => self.record_callable_consumption(&callee.0, &callee.1),
+            CallableCallMode::Once => {
+                self.record_typed_value_transfer(&callee.0, &callee.1, &normalized);
+            }
         }
     }
 
@@ -751,9 +759,7 @@ impl Checker {
                 "Call and Outcome cannot be consumed by another source callable".to_string(),
             );
         }
-        if !self.reject_borrowed_consumption(expr, span) {
-            self.mark_expr_moved(expr, span);
-        }
+        self.record_value_transfer(expr, span);
     }
 
     fn is_current_closure_capture(&self, root: impl crate::env::LexicalName) -> bool {
@@ -905,13 +911,6 @@ impl Checker {
             },
         );
         true
-    }
-
-    fn record_callable_consumption(&mut self, expr: &Expr, span: &Span) {
-        if self.reject_borrowed_consumption(expr, span) {
-            return;
-        }
-        self.mark_expr_moved(expr, span);
     }
 
     pub(super) fn callable_erasure_loses_obligation(&self, expected: &Ty, actual: &Ty) -> bool {

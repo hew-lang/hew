@@ -1,6 +1,6 @@
 [[case]]
 id = "ownership-balance-actor-state-vec-seat"
-intent = "An actor state `Vec` mutated and drained in its own seat. Driven 200,000 times, it releases every obligation exactly once with no leak under ASan/LSan."
+intent = "An actor state `Vec` is mutated and explicitly replaced before its contents are drained. Driven 200,000 times, it releases every obligation exactly once with no leak under ASan/LSan."
 source = "fixtures/ownership-balance/actor_state_vec_seat.hew"
 suites = ["acceptance", "safety"]
 timeout_seconds = 120

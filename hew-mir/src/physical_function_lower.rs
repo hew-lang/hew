@@ -1737,6 +1737,7 @@ impl FunctionLowerer<'_> {
             ))
         })?;
         let operation = match op {
+            VecValueOp::Swap => PhysicalVectorOp::Swap,
             VecValueOp::New => PhysicalVectorOp::New,
             VecValueOp::Len => PhysicalVectorOp::Len,
             VecValueOp::Contains => PhysicalVectorOp::Contains,
@@ -1758,9 +1759,6 @@ impl FunctionLowerer<'_> {
                 result: self.variant_id(&value.ty)?,
             },
             VecValueOp::TakeFirst => PhysicalVectorOp::TakeFirst {
-                result: self.aggregate_id(&value.ty)?,
-            },
-            VecValueOp::TakeAll => PhysicalVectorOp::TakeAll {
                 result: self.aggregate_id(&value.ty)?,
             },
             VecValueOp::Slice => PhysicalVectorOp::Slice,

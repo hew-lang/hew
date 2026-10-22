@@ -132,7 +132,7 @@ public-host-stdlib = [
   "hew_host_json_set_text",
 ]
 
-# Compiler-private native TLS request submission and result transfer.
+# Compiler-private native TLS and WebSocket request submission and result transfer.
 non-declarable-stdlib = [
   "hew_peer_session_close",
   "hew_service_close",
@@ -143,6 +143,8 @@ non-declarable-stdlib = [
   "hew_async_tls_take_read",
   "hew_async_tls_take_write",
   "hew_async_tls_write",
+  "hew_async_ws_server_accept",
+  "hew_async_ws_take_accept",
 ]
 
 # jit: stable — handle-oriented/user-visible runtime surface that JIT
@@ -878,7 +880,6 @@ stable = [
   "hew_vec_sort_i32",
   "hew_vec_sort_i64",
   "hew_vec_swap",
-  "hew_vec_take_all",
   "hew_vec_take_owned",
   "hew_vec_truncate",
   "hew_vtable_dispatch_panic_on_oob",
@@ -2659,16 +2660,6 @@ discharge-depth = "shallow"
 # while owning elements follow their immediate descriptor clone protocol.
 [[ownership.contracts]]
 symbol = "hew_vec_clone_owned"
-result = "fresh"
-params = ["borrow"]
-release-symbol = "hew_vec_free_owned"
-discharge-depth = "deep"
-
-# Moves the whole buffer into a fresh vec; the borrowed source stays a valid
-# empty vec with its stamped descriptor (consuming iteration over a Vec in
-# persistent actor state).
-[[ownership.contracts]]
-symbol = "hew_vec_take_all"
 result = "fresh"
 params = ["borrow"]
 release-symbol = "hew_vec_free_owned"

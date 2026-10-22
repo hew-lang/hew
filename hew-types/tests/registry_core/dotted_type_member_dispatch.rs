@@ -43,6 +43,10 @@ fn dotted_builtin_constructors_preserve_expected_types() {
     let output = typecheck_isolated(
         r#"
 fn main() {
+    let values: Vec<i64> = Vec.new();
+    let map: HashMap<string, i64> = HashMap.new();
+    let shared = Rc.new(1);
+    assert(values.len() + map.len() + shared.get() == 1);
     let oa: Option<i64> = Option.Some(5);
     let ob: Option<i64> = Option.Some(5);
     let oc: Option<i64> = Option.Some(6);
@@ -132,6 +136,60 @@ fn main() {
             .iter()
             .any(|error| error.message.contains("no method `Some` on `i64`")),
         "a lexical value must win over the same-spelled builtin head: {:#?}",
+        output.errors
+    );
+}
+
+#[test]
+fn unknown_builtin_associated_calls_report_undefined_functions() {
+    for (head, owner) in [
+        ("Vec", "Vec"),
+        ("Vec<i64>", "Vec"),
+        ("HashMap", "HashMap"),
+        ("HashSet", "HashSet"),
+        ("Rc", "Rc"),
+        ("Option", "Option"),
+        ("Result", "Result"),
+        ("bytes", "bytes"),
+        ("i64", "i64"),
+    ] {
+        let output = typecheck_isolated(&format!(
+            "fn main() {{ let values = {head}.with_capacity(4); }}"
+        ));
+        assert_eq!(output.errors.len(), 1, "{head}: {:#?}", output.errors);
+        let error = &output.errors[0];
+        assert_eq!(error.kind, TypeErrorKind::UndefinedFunction, "{head}");
+        assert!(
+            error.message.contains(&format!(
+                "no associated function `with_capacity` on `{owner}`"
+            )),
+            "{head}: {error:#?}"
+        );
+    }
+}
+
+#[test]
+fn associated_member_spelling_preserves_user_declarations_and_bindings() {
+    let output = typecheck_isolated(
+        r"
+        type Buffer { size: i64; }
+        impl Buffer {
+            fn with_capacity(size: i64) -> Buffer { Buffer { size: size } }
+        }
+        type Counter { value: i64; }
+        impl Counter {
+            fn with_capacity(self, extra: i64) -> i64 { self.value + extra }
+        }
+        fn main() {
+            let buffer = Buffer.with_capacity(4);
+            let Vec = Counter { value: buffer.size };
+            assert(Vec.with_capacity(3) == 7);
+        }
+        ",
+    );
+    assert!(
+        output.errors.is_empty(),
+        "declared associated functions and lexical receivers retain their own members: {:#?}",
         output.errors
     );
 }

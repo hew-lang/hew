@@ -2357,6 +2357,32 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_ws_server_accept( *const HewWsServer, *const HewWaker, ) -> *const HewAsyncIo"
+      },
+      "symbol": "hew_async_ws_server_accept"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_async_ws_take_accept( *const HewAsyncIo, *mut *mut HewWsConn, ) -> i32"
+      },
+      "symbol": "hew_async_ws_take_accept"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -22564,21 +22590,6 @@
         "wasm32-wasip1": "fn hew_vec_swap( *mut HewVec, i64, i64)"
       },
       "symbol": "hew_vec_swap"
-    },
-    {
-      "availability": [
-        "native",
-        "wasm32-wasip1"
-      ],
-      "classification": "stable",
-      "extent": "no-in-signature-extent",
-      "nul": "not-applicable",
-      "ownership": "unmeasured",
-      "signature": {
-        "native": "fn hew_vec_take_all( *mut HewVec) -> *mut HewVec",
-        "wasm32-wasip1": "fn hew_vec_take_all( *mut HewVec) -> *mut HewVec"
-      },
-      "symbol": "hew_vec_take_all"
     },
     {
       "availability": [

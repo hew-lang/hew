@@ -56,7 +56,6 @@ pub fn describe_order(id: i64) -> string {
     f"{summary:?}"
 }
 
-
 type OrderNumbers {
     end: i64;
 }
@@ -83,7 +82,7 @@ impl IntoIterator for OrderNumbers {
     type Item = i64;
     type IntoIter = OrderNumberIter;
 
-    fn into_iter(self) -> OrderNumberIter {
+    fn into_iter(consume self) -> OrderNumberIter {
         OrderNumberIter { current: 0, end: self.end }
     }
 }

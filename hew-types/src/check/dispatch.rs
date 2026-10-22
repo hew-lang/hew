@@ -358,6 +358,7 @@ pub enum HashSetMethod {
 /// `Seq for Vec<T>` impl in `collection_dispatch_registry_impl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum VecMethod {
+    Swap,
     Push,
     Pop,
     Len,

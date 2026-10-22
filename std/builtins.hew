@@ -583,13 +583,16 @@ pub trait IntoIterator {
 
     type IntoIter: Iterator<Item = Self.Item>;
 
-    fn into_iter(self) -> Self.IntoIter;
+    fn into_iter(consume self) -> Self.IntoIter;
 }
 
 // ---------------------------------------------------------------------------
 // Vec — declarative runtime-backed method surface
 // ---------------------------------------------------------------------------
 impl<T> Vec<T> {
+    /// Exchange two owned elements. Both indices must be in bounds.
+    #[extern_symbol(hew_vec_swap)]
+    fn swap(self, left: i64, right: i64) {}
     #[extern_symbol("hew_vec_push_{T}")]
     fn push(self, value: T) {}
     #[extern_symbol("hew_vec_pop_{T}")]
@@ -619,34 +622,33 @@ impl<T> Vec<T> {
 // ---------------------------------------------------------------------------
 // VecIter — concrete IntoIterator impl for Vec<T>
 // ---------------------------------------------------------------------------
-/// Cursor iterator over a `Vec<T>` produced by `vec.into_iter()`.
+/// An owned double-ended cursor backed by ordered option slots.
 ///
-/// `VecIter<T>` is the concrete `IntoIterator.IntoIter` for `Vec<T>` — it
-/// pairs the owned vector with front and exclusive back cursors so that
-/// `for x in v { ... }` (for-loop desugar) and the lazy combinators in
-/// `std/iter` can drive iteration through the trait surface rather than the
-/// per-type `*_int` / `*_str` / `*_f64` table.
+/// Construction moves the elements into an ordered `Vec<Option<T>>` and adds
+/// one empty scratch slot. Each step exchanges its selected slot with the
+/// scratch slot, pops the owned option, and restores the empty scratch slot.
+/// Untaken elements remain in logical order, so early drop releases them in
+/// that order. Exhaustion leaves a live cursor that drops at scope exit.
 ///
-/// `next` advances the front and `next_back` retreats the back. Both return
-/// `None` when the cursors meet. The receiver remains `Live` after exhaustion and
-/// drops at scope exit — see the `Iterator` trait doc-comment.
-///
-/// `Vec` is a refcounted heap handle, so the cursor carries the underlying
-/// vector storage by handle (no per-step copy).
-///
-/// In a generic body with unbounded `T`, indexing and ordinary `for` loops
-/// borrow elements consistently across instantiations. Use `into_iter()` to
-/// consume the vector and obtain owned items, or explicitly clone an item
-/// under a `T: Clone` bound. The current owned cursor may still clone elements
-/// when their type supports cloning; consuming the vector does not promise
-/// clone-free iteration.
-///
-/// Lives in `std/builtins.hew` with the built-in collection protocols.
-/// Checked method calls select the authored iterator bodies for emission.
+/// Construction takes O(n) time and an additional O(n) buffer, including one
+/// option tag per element. An unshared cursor's end steps take O(1) time
+/// without cloning elements. Detaching a copied cursor follows ordinary Vec
+/// copy-on-write rules and can take O(n) time. Value-copy rules preserve
+/// independent source and cursor copies when their elements support cloning;
+/// clone-free elements remain owned.
 pub type VecIter<T> {
-    vec: Vec<T>;
+    slots: Vec<Option<T>>;
     front: i64;
     back: i64;
+}
+
+impl<T> VecIter<T> {
+    fn take_at(var self, index: i64) -> Option<T> {
+        self.slots.swap(index, self.slots.len() - 1);
+        let item = self.slots.pop();
+        self.slots.push(.None);
+        item
+    }
 }
 
 impl<T> Iterator for VecIter<T> {
@@ -655,9 +657,9 @@ impl<T> Iterator for VecIter<T> {
         if self.front >= self.back {
             .None
         } else {
-            let v = self.vec.remove(self.front);
-            self.back = self.back - 1;
-            .Some(v)
+            let item = self.take_at(self.front);
+            self.front += 1;
+            item
         }
     }
 }
@@ -667,10 +669,8 @@ impl<T> DoubleEndedIterator for VecIter<T> {
         if self.front >= self.back {
             .None
         } else {
-            let index = self.back - 1;
-            let v = self.vec.remove(index);
-            self.back = index;
-            .Some(v)
+            self.back -= 1;
+            self.take_at(self.back)
         }
     }
 }
@@ -678,15 +678,25 @@ impl<T> DoubleEndedIterator for VecIter<T> {
 impl<T> IntoIterator for Vec<T> {
     type Item = T;
     type IntoIter = VecIter<T>;
-    /// Produce a `VecIter<T>` positioned at index `0`.
-    ///
-    /// The returned iterator shares the receiver's underlying refcounted
-    /// storage; mutating the source `Vec` while a `VecIter` is live yields
-    /// the same semantics as any other shared-handle aliasing in Hew
-    /// without an iterator-invalidation diagnostic.
-    fn into_iter(self) -> VecIter<T> {
-        let back = self.len();
-        VecIter { vec: self, front: 0, back: back }
+    fn into_iter(consume self) -> VecIter<T> {
+        var source = self;
+        let back = source.len();
+        var slots: Vec<Option<T>> = [];
+        while !source.is_empty() {
+            slots.push(.Some(source.pop()));
+        }
+        for index in 0 .. (back / 2) {
+            slots.swap(index, back - index - 1);
+        }
+        slots.push(.None);
+        VecIter { slots: slots, front: 0, back: back }
+    }
+}
+
+impl<T> Vec<T> {
+    /// Create an independent cursor using the ordinary value-copy rules.
+    fn iter(self) -> VecIter<T> {
+        self.clone().into_iter()
     }
 }
 
@@ -697,7 +707,7 @@ impl<K: Hash + Eq + Clone> IntoIterator for HashSet<K> {
 
     /// Snapshot the elements in unspecified order, leaving the set live.
     /// Later set mutations cannot change the returned cursor.
-    fn into_iter(self) -> VecIter<K> {
+    fn into_iter(consume self) -> VecIter<K> {
         self.to_vec().into_iter()
     }
 }
@@ -756,7 +766,7 @@ impl string {
 impl IntoIterator for string {
     type Item = char;
     type IntoIter = StringIter;
-    fn into_iter(self) -> StringIter {
+    fn into_iter(consume self) -> StringIter {
         self.iter()
     }
 }
@@ -826,7 +836,7 @@ impl<K: Hash + Eq + Clone, V: Clone> IntoIterator for HashMap<K, V> {
     type IntoIter = HashMapIter<K, V>;
 
     /// Snapshot both projections while leaving the source map usable.
-    fn into_iter(self) -> HashMapIter<K, V> {
+    fn into_iter(consume self) -> HashMapIter<K, V> {
         HashMapIter { ks: self.keys(), vs: self.values(), idx: 0 }
     }
 }

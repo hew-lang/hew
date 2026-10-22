@@ -299,7 +299,6 @@ fn symbol_lifting_respects_codegen_partitions_and_required_attributes() {
         F::VecClone,
         F::VecCloneLayout,
         F::VecCloneOwned,
-        F::VecTakeAll,
         F::VecContainsLayout,
         F::VecContainsOwned,
         F::VecNew,

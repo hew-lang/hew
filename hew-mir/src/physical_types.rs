@@ -575,6 +575,7 @@ pub struct PhysicalSetGlue {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PhysicalVectorOp {
+    Swap,
     New,
     Len,
     Contains,
@@ -602,11 +603,6 @@ pub enum PhysicalVectorOp {
     /// The consuming iterator's step: the first element moves out to the caller
     /// and the vector shrinks by one.
     TakeFirst {
-        result: PhysicalAggregateId,
-    },
-    /// The whole buffer moves out to the caller and the receiver is left a
-    /// valid empty vector with its element representation intact.
-    TakeAll {
         result: PhysicalAggregateId,
     },
     Slice,

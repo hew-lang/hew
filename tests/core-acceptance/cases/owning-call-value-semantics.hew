@@ -1,0 +1,96 @@
+type Batch {
+    values: Vec<string>;
+    label: string;
+}
+
+trait Finish {
+    fn finish(consume self) -> Vec<string>;
+}
+
+impl Finish for Batch {
+    fn finish(consume self) -> Vec<string> {
+        var values = self.values;
+        values.push(self.label);
+        values
+    }
+}
+
+impl Batch {
+    fn owned_label(consume self) -> string {
+        self.label
+    }
+}
+
+trait Upper {
+    fn upper(consume self) -> string;
+}
+
+impl Upper for string {
+    fn upper(consume self) -> string {
+        self.to_upper()
+    }
+}
+
+fn append(consume values: Vec<string>, suffix: string) -> Vec<string> {
+    var result = values;
+    result.push(suffix);
+    result
+}
+
+fn forward(batch: Batch) -> Vec<string> {
+    append(batch.values, batch.label)
+}
+
+fn bound_finish<T>(value: T) -> Vec<string> where T: Finish {
+    value.finish()
+}
+
+fn identity<T>(consume value: T) -> T {
+    value
+}
+
+fn main() -> i64 {
+    var batch = Batch { values: ["first", "second"], label: "last" };
+    assert(batch.owned_label() == "last");
+    assert(forward(batch) == ["first", "second", "last"]);
+    assert(batch.finish() == ["first", "second", "last"]);
+    assert(bound_finish(batch) == ["first", "second", "last"]);
+    let snapshot = identity(batch);
+    for turn in 0..2 {
+        assert(batch.finish() == ["first", "second", "last"]);
+    }
+    batch.values.push("new");
+    assert(snapshot.values == ["first", "second"]);
+    assert(batch.values == ["first", "second", "new"]);
+    let child = fork append(batch.values, "child");
+    assert(batch.values == ["first", "second", "new"]);
+    assert(await child == ["first", "second", "new", "child"]);
+    let selected = select {
+        answer from append(batch.values, "selected") => answer,
+        after 1s => [],
+    };
+    assert(selected == ["first", "second", "new", "selected"]);
+    assert(batch.values == ["first", "second", "new"]);
+    let callback: fn[once, clone]() -> string = move || snapshot.label;
+    assert(callback() == "last");
+    assert(callback() == "last");
+    let invoke = |cb: fn[once, clone]() -> string| {
+        assert(cb() == "last");
+        cb()
+    };
+    assert(invoke(callback) == "last");
+    assert(callback() == "last");
+    var counter = 0;
+    let counted: fn[once, clone]() -> i64 = move capture(var counter) || {
+        counter += 1;
+        counter
+    };
+    assert(counted() == 1);
+    assert(counted() == 1);
+    let text = "ordinary owner".to_upper();
+    assert(text.upper() == text);
+    assert(identity(text) == text);
+    assert(identity(value: text) == text);
+    println("owning calls preserve values");
+    0
+}

@@ -65,7 +65,8 @@ pub struct VecMethodSpec {
 }
 
 impl VecMethod {
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 13] = [
+        Self::Swap,
         Self::Push,
         Self::Pop,
         Self::Len,
@@ -83,6 +84,7 @@ impl VecMethod {
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
+            Self::Swap => "swap",
             Self::Push => "push",
             Self::Pop => "pop",
             Self::Len => "len",
@@ -101,6 +103,7 @@ impl VecMethod {
     #[must_use]
     pub fn from_name(name: &str) -> Option<Self> {
         Some(match name {
+            "swap" => Self::Swap,
             "push" => Self::Push,
             "pop" => Self::Pop,
             "len" => Self::Len,
@@ -120,9 +123,13 @@ impl VecMethod {
     #[must_use]
     pub const fn runtime_abi(self) -> RuntimeAbi {
         match self {
-            Self::Push | Self::Pop | Self::Set | Self::Remove | Self::Clear | Self::Append => {
-                RuntimeAbi::ByRefMut
-            }
+            Self::Swap
+            | Self::Push
+            | Self::Pop
+            | Self::Set
+            | Self::Remove
+            | Self::Clear
+            | Self::Append => RuntimeAbi::ByRefMut,
             Self::Len | Self::Get | Self::Contains | Self::IsEmpty | Self::Clone | Self::Join => {
                 RuntimeAbi::ByRef
             }
@@ -470,7 +477,7 @@ pub fn resolve_runtime_symbol(
 
     if matches!(
         method,
-        VecMethod::Len | VecMethod::IsEmpty | VecMethod::Join
+        VecMethod::Len | VecMethod::IsEmpty | VecMethod::Join | VecMethod::Swap
     ) {
         return available(spec.template.raw.clone());
     }

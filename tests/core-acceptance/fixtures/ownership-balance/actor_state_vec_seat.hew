@@ -1,9 +1,7 @@
-// An actor state `Vec` mutated and drained in its own seat. The handler takes
-// the seat, the runtime call updates the receiver and the updated receiver is
-// published back, so each turn must leave exactly one owner of the buffer and
-// of every element. A seat that kept a staged copy, or a publish that did not
-// release what it replaced, shows up here as a slope: one string and one
-// element slot per dispatch.
+// An actor state `Vec` is mutated in its own seat and explicitly replaced
+// before its previous contents are drained. Each turn must leave exactly one
+// owner of every buffer and element. A publish that did not release what it
+// replaced shows up here as a slope: one string and one element slot per turn.
 
 actor Basket {
     var items: Vec<string> = Vec.new();
@@ -11,8 +9,10 @@ actor Basket {
         items.push(label);
     }
     receive fn drain() -> i64 {
+        let queued = items;
+        items = Vec.new();
         var seen: i64 = 0;
-        for item in items.into_iter() {
+        for item in queued.into_iter() {
             seen = seen + item.len();
         }
         seen

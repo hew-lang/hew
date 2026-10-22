@@ -216,10 +216,7 @@ impl Checker {
                 | MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. },
             ) => self.target_can_fail(target, receiver_ty),
             Some(
-                MethodCallRewrite::CopyCloneNoop
-                | MethodCallRewrite::CancellationTokenIsCancelled
-                | MethodCallRewrite::BuiltinVecIter
-                | MethodCallRewrite::BuiltinVecIntoIter,
+                MethodCallRewrite::CopyCloneNoop | MethodCallRewrite::CancellationTokenIsCancelled,
             ) => false,
             _ => true,
         }

@@ -28,7 +28,58 @@ fn dynamic_back(consume input: dyn DoubleEndedIterator<Item = i64>) -> i64 {
     0
 }
 
+// Exercise alternating and biased ends across empty, odd and even lengths.
+fn mixed_ends(size: i64, mode: i64) {
+    var values: Vec<i64> = [];
+    for value in 0..size {
+        values.push(value);
+    }
+    var cursor = values.into_iter();
+    var front = 0;
+    var back = size;
+    var step = 0;
+    while front < back {
+        if (mode == 0 && step % 2 == 0) || mode == 1 || (mode == 3 && step % 5 < 4) {
+            assert(cursor.next().expect("mixed front") == front);
+            front += 1;
+        } else {
+            back -= 1;
+            assert(cursor.next_back().expect("mixed back") == back);
+        }
+        step += 1;
+    }
+    assert(cursor.next().is_none());
+    assert(cursor.next_back().is_none());
+}
+
+fn shared_handles() {
+    var source = [Rc.new(1), Rc.new(2), Rc.new(3)];
+    var cursor = source.iter();
+    source.clear();
+    assert(cursor.next().expect("shared front").get() == 1);
+    var copied = cursor;
+    assert(cursor.next_back().expect("shared back").get() == 3);
+    assert(copied.next().expect("shared copied front").get() == 2);
+    assert(cursor.next().expect("shared middle").get() == 2);
+    assert(copied.next_back().expect("shared copied back").get() == 3);
+    // A shared constructor must still bind through its result when its
+    // payload is itself a collection with a canonical receiver identity.
+    assert(Rc.new([8, 9]).is_unique());
+}
+
 fn main() -> i64 {
+    shared_handles();
+    var swapped = ["left", "middle", "right"];
+    let original = swapped;
+    swapped.swap(0, 2);
+    swapped.swap(1, 1);
+    assert(swapped == ["right", "middle", "left"]);
+    assert(original == ["left", "middle", "right"]);
+    for size in 0..34 {
+        for mode in 0..4 {
+            mixed_ends(size, mode);
+        }
+    }
     assert(dynamic_back([8, 9, 10].into_iter()) == 0);
     var source = ["first", "second", "third"];
     var cursor = source.iter();
@@ -70,6 +121,15 @@ fn main() -> i64 {
         .Some(value) => println(value),
         .None => println("empty"),
     }
+    var partial = ["zero", "one", "two", "three", "four", "five", "six"].into_iter();
+    assert(partial.next().expect("first before copy") == "zero");
+    var partial_copy = partial;
+    assert(partial.next_back().expect("original back") == "six");
+    assert(partial.next().expect("original front") == "one");
+    assert(partial_copy.next().expect("copied front") == "one");
+    assert(partial_copy.next_back().expect("copied back") == "six");
+    assert(partial_copy.next_back().expect("copied next back") == "five");
+    assert(partial.next_back().expect("original next back") == "five");
     let vacant: Vec<i64> = [];
     var empty = vacant.into_iter();
     assert(empty.next_back().is_none());

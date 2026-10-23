@@ -554,20 +554,36 @@ pub fn start(command: Command) -> Result<Child, ProcessError> {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
+    #[runtime_capability(ambient)]
     fn hew_process_start_shell(command: string) -> ChildHandle;
+    #[runtime_capability(ambient)]
     fn hew_process_start(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32) -> ChildHandle;
+    #[runtime_capability(ambient)]
     fn hew_process_start_with_options(program: string, args: Vec<string>, stdin: i32, stdout: i32, stderr: i32, inherit: bool, names: Vec<string>, values: Vec<string>, has_cwd: bool, cwd: string) -> ChildHandle;
+    #[runtime_capability(resource_operation)]
     fn hew_process_is_valid(child: ChildHandle) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_process_id(child: ChildHandle) -> i64;
+    #[runtime_capability(resource_operation)]
     fn hew_process_take_pipe(child: ChildHandle, which: i32) -> stream.StreamPair;
+    #[runtime_capability(resource_operation)]
     fn hew_process_exit_stream(child: ChildHandle) -> stream.StreamPair;
+    #[runtime_capability(resource_operation)]
     fn hew_process_wait_error(child: ChildHandle) -> i32;
+    #[runtime_capability(resource_operation)]
     fn hew_process_poll(child: ChildHandle) -> i32;
+    #[runtime_capability(resource_operation)]
     fn hew_process_signalled(child: ChildHandle) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_process_status(child: ChildHandle) -> i64;
+    #[runtime_capability(resource_operation)]
     fn hew_process_signal(child: ChildHandle, force: bool) -> i32;
+    #[runtime_capability(resource_operation)]
     fn hew_process_drop(handle: ChildHandle);
+    #[runtime_capability(value)]
     fn hew_process_last_error() -> string;
+    #[runtime_capability(value)]
     fn hew_clear_error();
+    #[runtime_capability(resource_operation)]
     fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;
 }

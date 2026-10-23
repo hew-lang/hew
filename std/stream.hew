@@ -487,8 +487,11 @@ impl StreamPair {
 }
 
 extern "C" {
+    #[runtime_capability(value)]
     fn hew_stream_channel(capacity: i64) -> StreamPair;
+    #[runtime_capability(resource_operation)]
     fn hew_stream_pair_is_valid(pair: StreamPair) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_stream_pair_free(consume pair: StreamPair);
     fn hew_stream_from_file_read(path: string) -> Stream<bytes>;
     fn hew_stream_is_valid(stream: Stream<bytes>) -> bool;

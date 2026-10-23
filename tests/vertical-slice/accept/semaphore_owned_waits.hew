@@ -38,11 +38,11 @@ fn main() {
     let sem = semaphore.new(1);
     sem.acquire();
     assert(sem.count() == 0);
-    assert(!sem.acquire_timeout(0));
-    assert(!sem.acquire_timeout(-1));
+    assert(!sem.acquire_timeout(0ms));
+    assert(!sem.acquire_timeout(-1ms));
     sem.release();
-    assert(sem.acquire_timeout(0));
-    assert(!sem.acquire_timeout(5));
+    assert(sem.acquire_timeout(0ms));
+    assert(!sem.acquire_timeout(5ms));
     var cancelled = false;
     scope within 5ms {
         sem.acquire();
@@ -57,7 +57,7 @@ fn main() {
     };
     assert(cancelled);
     sem.release();
-    assert(sem.acquire_timeout(100));
+    assert(sem.acquire_timeout(100ms));
     assert(sem.count() == 0);
     sem.close();
     println("owned semaphore ok");

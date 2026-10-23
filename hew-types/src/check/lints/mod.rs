@@ -51,6 +51,7 @@ mod needless_bool;
 mod needless_match_to_if_let;
 mod needless_range_loop;
 mod redundant_else_after_return;
+mod semaphore_progress;
 mod sleep_loop_blocks_mailbox;
 mod trojan_source;
 
@@ -91,6 +92,8 @@ pub enum LintId {
     /// exit is a sibling actor message, but the mailbox is not observed until
     /// the current handler returns.
     SleepLoopBlocksMailbox,
+    /// A fresh semaphore cannot progress or has an invalid constant capacity.
+    SemaphoreProgress,
     /// A comment contains one of Unicode's explicit bidirectional text controls,
     /// which can visually reorder source around the bytes the compiler sees.
     TextDirectionCodepointInComment,
@@ -122,6 +125,7 @@ impl LintId {
         LintId::DeadCode,
         LintId::MustUse,
         LintId::SleepLoopBlocksMailbox,
+        LintId::SemaphoreProgress,
         LintId::TextDirectionCodepointInComment,
         LintId::InvisibleCodepointInComment,
         LintId::VarParamMutationLost,
@@ -144,6 +148,7 @@ impl LintId {
             LintId::CloneOnCopy => "clone_on_copy",
             LintId::DeadCode => "dead_code",
             LintId::MustUse => "must_use",
+            LintId::SemaphoreProgress => "semaphore_progress",
             LintId::SleepLoopBlocksMailbox => "sleep_loop_blocks_mailbox",
             LintId::TextDirectionCodepointInComment => "text_direction_codepoint_in_comment",
             LintId::InvisibleCodepointInComment => "invisible_codepoint_in_comment",
@@ -174,6 +179,7 @@ impl LintId {
             | LintId::CloneOnCopy
             | LintId::DeadCode
             | LintId::MustUse
+            | LintId::SemaphoreProgress
             | LintId::SleepLoopBlocksMailbox
             | LintId::InvisibleCodepointInComment
             | LintId::VarParamMutationLost
@@ -448,6 +454,7 @@ pub(super) fn lint_block(
     len_zero_comparison::check(ctx, levels, body, out);
     needless_bool::check(ctx, levels, body, out);
     must_use::check(ctx, levels, body, out);
+    semaphore_progress::check(ctx, levels, body, out);
 }
 
 /// Run receive-handler-only lints over one actor message handler body.

@@ -10,15 +10,18 @@
 //!
 //! fn main() {
 //!     let sem = semaphore.new(3);
-//!     sem.acquire();
+//!     let lease = sem.lease();
 //!     // critical section
-//!     sem.release();
+//!     lease.close();
 //!     sem.close();
 //! }
 //! ```
 //!
 //! Call `clone()` explicitly to share one permit count. Each returned handle
 //! closes independently; assigning a semaphore does not create another owner.
+//! `lease()` returns one capacity unit automatically at scope exit. Raw
+//! `acquire()` and `release()` support cross-task signalling; closing a raw
+//! semaphore handle does not return previously acquired capacity.
 
 /// An opaque counting semaphore handle.
 ///
@@ -33,6 +36,25 @@ pub type Semaphore {
     handle: SemaphoreHandle;
 }
 
+/// Exclusive ownership of one acquired semaphore capacity unit.
+///
+/// Dropping or closing the lease returns its capacity exactly once. A lease
+/// can move to another task; it cannot be cloned. The semaphore may close
+/// while a lease remains alive.
+#[resource]
+pub type Lease {
+    semaphore: Semaphore;
+}
+
+impl Lease {
+    /// Return this lease's capacity early.
+    fn close(consume self) {
+        let Lease { semaphore } = self;
+        semaphore.release();
+        semaphore.close();
+    }
+}
+
 /// Methods available on a `Semaphore`.
 trait SemaphoreMethods {
     /// Block until a permit is available, then acquire it.
@@ -43,10 +65,10 @@ trait SemaphoreMethods {
     /// Returns `true` if a permit was acquired, `false` otherwise.
     fn try_acquire(self) -> bool;
 
-    /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
+    /// Try to acquire a permit, waiting up to `timeout`.
     ///
     /// Returns `true` if a permit was acquired before the timeout.
-    fn acquire_timeout(self, timeout_ms: i64) -> bool;
+    fn acquire_timeout(self, timeout: duration) -> bool;
 
     /// Release a previously acquired permit.
     fn release(self);
@@ -68,8 +90,9 @@ impl SemaphoreMethods for Semaphore {
             hew_semaphore_try_acquire(self.handle)
         }
     }
-    /// Try to acquire a permit, waiting up to `timeout_ms` milliseconds.
-    fn acquire_timeout(self, timeout_ms: i64) -> bool {
+    /// Try to acquire a permit, waiting up to `timeout`.
+    fn acquire_timeout(self, timeout: duration) -> bool {
+        let timeout_ms = timeout.millis_ceil();
         let timeout = if timeout_ms < 0 {
             0
         } else {
@@ -94,6 +117,17 @@ impl SemaphoreMethods for Semaphore {
 }
 
 impl Semaphore {
+    /// Acquire one capacity unit, returning an owned lease.
+    ///
+    /// Scope exit, fault and cancellation return acquired capacity. While
+    /// waiting, cancellation removes the pending acquisition. Raw `acquire`
+    /// and `release` remain available for cross-task signalling.
+    fn lease(self) -> Lease {
+        let owner = self.clone();
+        owner.acquire();
+        Lease { semaphore: owner }
+    }
+
     /// Create an independently owned handle to this semaphore.
     ///
     /// Both handles share one permit count. Close each handle separately.
@@ -134,12 +168,18 @@ pub fn new(count: i64) -> Semaphore {
 
 // ── FFI bindings ──────────────────────────────────────────────────────
 extern "C" {
+    #[runtime_capability(value)]
     fn hew_semaphore_new(initial_count: i32) -> SemaphoreHandle;
+    #[runtime_capability(resource_operation)]
     fn hew_semaphore_clone(sem: SemaphoreHandle) -> SemaphoreHandle;
     fn hew_semaphore_acquire(sem: SemaphoreHandle);
+    #[runtime_capability(resource_operation)]
     fn hew_semaphore_try_acquire(sem: SemaphoreHandle) -> bool;
     fn hew_semaphore_acquire_timeout(sem: SemaphoreHandle, timeout_ms: i64) -> bool;
+    #[runtime_capability(resource_operation)]
     fn hew_semaphore_release(sem: SemaphoreHandle);
+    #[runtime_capability(resource_operation)]
     fn hew_semaphore_count(sem: SemaphoreHandle) -> i32;
+    #[runtime_capability(resource_operation)]
     fn hew_semaphore_free(sem: SemaphoreHandle);
 }

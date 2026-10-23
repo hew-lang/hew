@@ -1,0 +1,10 @@
+[[case]]
+id = "semaphore-leases"
+intent = "Owned leases return capacity on explicit close, scope exit, faults and cancellation, survive wrapper closure, and transfer between tasks."
+source = "../vertical-slice/accept/semaphore_leases.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "semaphore leases ok\n"
+exit = 0

@@ -5801,8 +5801,9 @@ bind issuer, recipient, incarnation and rights, and define whether and how
 rights may be delegated onward or discovered through a registry. Ordinary
 `Node.lookup` returns a `Location`, which provides discovery rather than
 authorization. Authenticated service grants provide ordinary actor handles
-with narrowed rights. The current confinement slice refuses distributed
-ambient acquisition and remote calls.
+with narrowed rights. Confinement admits invocation through these supplied authenticated actor
+handles independently of their placement. Acquiring peers or discovering service
+authority through ambient registries remains unavailable inside confinement.
 
 ### 4.8 Interaction with Actor Messages
 

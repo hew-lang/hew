@@ -4641,3 +4641,79 @@ fn lambda_actor_private_capture_of_a_let_is_silent() {
     assert!(errors.is_empty(), "errors: {errors:?}");
     assert!(warnings.is_empty(), "warnings: {warnings:?}");
 }
+
+#[test]
+fn semaphore_progress_tracks_shared_counts_and_reacquisition() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r"import std.semaphore;
+fn main() {
+    let sem = semaphore.new(1);
+    let alias = sem.clone();
+    let held = sem.lease();
+    alias.acquire();
+}",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::Lint(LintId::SemaphoreProgress)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn semaphore_progress_forgets_escaped_producers_and_deadlines() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        r"import std.semaphore;
+fn produce(consume sem: semaphore.Semaphore) { sem.release(); }
+fn main() {
+    let sem = semaphore.new(0);
+    let producer = fork produce(sem.clone());
+    sem.acquire();
+    await producer;
+    scope within 1ms { sem.acquire(); } handle failure {};
+}",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        !warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::Lint(LintId::SemaphoreProgress)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn semaphore_progress_warns_for_impossible_constant_capacity() {
+    let (errors, warnings) = parse_and_check_with_stdlib(
+        "import std.semaphore; fn main() { let sem = semaphore.new(-1); }",
+    );
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|warning| warning.kind == TypeErrorKind::Lint(LintId::SemaphoreProgress)),
+        "{warnings:?}"
+    );
+}
+
+#[test]
+fn semaphore_progress_limits_proofs_to_local_straight_line_code() {
+    for (body, expected) in [
+        ("let sem = semaphore.new(0); sem.acquire();", true),
+        ("let sem = semaphore.new(1); let alias = clone sem; sem.acquire(); alias.acquire();", true),
+        ("scope { let sem = semaphore.new(1); let held = sem.lease(); sem.acquire(); };", true),
+        ("let sem = semaphore.new(1); let held = sem.lease(); { let alias = sem.clone(); alias.acquire(); };", true),
+        ("let sem = semaphore.new(0); sem.release(); sem.acquire();", false),
+        ("let sem = semaphore.new(1); sem.lease(); sem.acquire();", false),
+        ("scope within 1ms { let sem = semaphore.new(0); sem.acquire(); } handle failure {};", false),
+        ("let sem = semaphore.new(1); let held = sem.lease(); held.close(); sem.acquire();", false),
+    ] {
+        let source = format!("import std.semaphore; fn main() {{ {body} }}");
+        let (errors, warnings) = parse_and_check_with_stdlib(&source);
+        assert!(errors.is_empty(), "{source}: {errors:?}");
+        let warned = warnings.iter().any(|warning| warning.kind == TypeErrorKind::Lint(LintId::SemaphoreProgress));
+        assert_eq!(warned, expected, "{source}: {warnings:?}");
+    }
+}

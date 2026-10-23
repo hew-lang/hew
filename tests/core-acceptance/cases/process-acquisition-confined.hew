@@ -1,0 +1,10 @@
+import std.process;
+
+#[confined]
+fn launch() {
+    let child = process.start(process.command("ungranted", [])).expect("start");
+}
+
+fn main() {
+    launch();
+}

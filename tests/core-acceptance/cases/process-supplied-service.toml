@@ -1,0 +1,10 @@
+[[case]]
+id = "process-supplied-service"
+intent = "A confined function can inspect, wait for and close a child supplied by its caller."
+source = "cases/process-supplied-service.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "supplied child completed\n"
+exit = 0

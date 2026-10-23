@@ -31,6 +31,9 @@ pub enum StdlibRoot {
     Metrics,
     Net,
     NetDns,
+    Process,
+    Semaphore,
+    Stream,
     Prelude,
 }
 
@@ -49,6 +52,9 @@ impl StdlibRoot {
             Self::Metrics => "metrics",
             Self::Net => "net",
             Self::NetDns => "net::dns",
+            Self::Process => "process",
+            Self::Semaphore => "semaphore",
+            Self::Stream => "stream",
             Self::Prelude => "prelude",
         }
     }
@@ -136,6 +142,21 @@ pub const SUBSTRATE_SOURCES: &[AuthoritySource<'static>] = &[
         StdlibRoot::NetDns,
         "std/net/dns/dns.hew",
         include_str!("../../std/net/dns/dns.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::Process,
+        "std/process.hew",
+        include_str!("../../std/process.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::Semaphore,
+        "std/semaphore.hew",
+        include_str!("../../std/semaphore.hew"),
+    ),
+    AuthoritySource::embedded(
+        StdlibRoot::Stream,
+        "std/stream.hew",
+        include_str!("../../std/stream.hew"),
     ),
     AuthoritySource::embedded(
         StdlibRoot::Prelude,

@@ -1,0 +1,54 @@
+import std.semaphore;
+
+fn hold(consume lease: semaphore.Lease) {
+    sleep(1ms);
+    lease.close();
+}
+
+fn main() {
+    let sem = semaphore.new(1);
+    scope {
+        let lease = sem.lease();
+        assert(sem.count() == 0);
+    };
+    assert(sem.count() == 1);
+    scope {
+        let clone = sem.clone();
+        let lease = clone.lease();
+        clone.close();
+        assert(sem.count() == 0);
+        let child = fork hold(lease);
+        await child;
+    };
+    assert(sem.count() == 1);
+    var faulted = false;
+    scope {
+        let lease = sem.lease();
+        panic("release lease on fault");
+    } handle failure {
+        faulted = true;
+    };
+    assert(faulted);
+    assert(sem.count() == 1);
+    var cancelled = false;
+    scope within 5ms {
+        let lease = sem.lease();
+        sleep(1s);
+    } handle failure {
+        cancelled = true;
+    };
+    assert(cancelled);
+    assert(sem.count() == 1);
+    sem.acquire();
+    scope within 5ms {
+        let pending = sem.lease();
+        panic("pending lease unexpectedly acquired");
+    } handle failure {};
+    assert(sem.count() == 0);
+    sem.release();
+    assert(sem.count() == 1);
+    let lease = sem.lease();
+    sem.close();
+    lease.close();
+    println("semaphore leases ok");
+}

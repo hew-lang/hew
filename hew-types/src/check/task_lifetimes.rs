@@ -392,7 +392,7 @@ impl Checker {
             .and_then(|site| {
                 self.pending_callable_arguments
                     .get(site)
-                    .map(|pending| self.task_call_arguments(owner, site, pending, actuals))
+                    .map(|pending| self.task_call_arguments(owner, pending, actuals))
             })
             .unwrap_or_default();
         if let Some(receiver) = receiver {
@@ -1466,7 +1466,7 @@ impl Checker {
                     environments.incomplete += 1;
                     return Vec::new();
                 };
-                let arguments = self.task_call_arguments(&owner, site, pending, actuals);
+                let arguments = self.task_call_arguments(&owner, pending, actuals);
                 let call_actuals =
                     Self::task_call_context(&owner, callee.actuals, arguments, environments);
                 Self::task_value_origins(returns, call_actuals, projections, environments)
@@ -1477,7 +1477,6 @@ impl Checker {
     fn task_call_arguments(
         &self,
         owner: &EffectBody,
-        site: &SpanKey,
         pending: &super::types::PendingCallableArguments,
         actuals: usize,
     ) -> Vec<(TypeBindingId, ActualSource)> {
@@ -1496,11 +1495,7 @@ impl Checker {
                 ));
             }
             for (index, actual) in pending.arguments.iter().enumerate() {
-                let slot = self
-                    .call_argument_slots
-                    .get(site)
-                    .map_or(index, |slots| slots[index])
-                    + offset;
+                let slot = index + offset;
                 if let Some(formal) = formals.get(slot) {
                     arguments.push((
                         *formal,

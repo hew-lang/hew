@@ -785,7 +785,7 @@ impl Checker {
                 .insert(key.clone(), self.effect_graph.current_body.clone());
         }
         if matches!(expr, Expr::Spawn { .. }) {
-            self.effect_graph.construct_calls.insert(key.clone());
+            self.record_construct_call(span);
         }
         if checked_invocation
             && matches!(
@@ -831,23 +831,47 @@ impl Checker {
                 Expr::Index { .. } => (None, "Index.at".to_string()),
                 _ => (None, "send".to_string()),
             };
-            self.effect_graph.calls.insert(
-                EffectCallSite::Authored(key),
-                Invocation {
-                    owner: self.effect_graph.current_body.clone(),
-                    receiver: match expr {
-                        Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
-                        Expr::Index { object, .. } => self.callee_value_type(object),
-                        _ => None,
-                    },
-                    callee,
-                    name: format!("{name}(...)"),
-                    deferred: self.deferred_body.is_some(),
-                    source_module: self.current_module.clone(),
-                },
-            );
+            let receiver = match expr {
+                Expr::MethodCall { receiver, .. } => self.callee_value_type(receiver),
+                Expr::Index { object, .. } => self.callee_value_type(object),
+                _ => None,
+            };
+            self.record_invocation_effect(span, receiver, callee, format!("{name}(...)"));
         }
         self.record_intrinsic_suspension(expr);
+    }
+
+    /// Publish the body ownership and effect edge of a checked invocation.
+    /// Implicit calls use their own checked span and target, just like source
+    /// calls, so confinement and lifecycle summaries see the same graph.
+    pub(super) fn record_invocation_effect(
+        &mut self,
+        span: &Span,
+        receiver: Option<Ty>,
+        callee: Option<Ty>,
+        name: String,
+    ) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let owner = self.effect_graph.current_body.clone();
+        if let Some(owner) = &owner {
+            self.effect_graph
+                .expression_owners
+                .insert(key.clone(), owner.clone());
+        }
+        self.effect_graph
+            .seen_calls
+            .insert(key.clone(), owner.clone());
+        self.effect_graph.calls.insert(
+            EffectCallSite::Authored(key),
+            Invocation {
+                owner,
+                receiver,
+                callee,
+                name,
+                deferred: self.deferred_body.is_some(),
+                source_module: self.current_module.clone(),
+            },
+        );
     }
 
     fn record_receiver_release_effect(&mut self, key: &SpanKey) {
@@ -880,9 +904,16 @@ impl Checker {
     /// executable callee. Mark it at the selection site so body eligibility
     /// does not mistake it for an unresolved function call.
     pub(super) fn record_construct_call(&mut self, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        if let Some(owner) = &self.effect_graph.current_body {
+            self.effect_graph
+                .expression_owners
+                .insert(key.clone(), owner.clone());
+        }
         self.effect_graph
-            .construct_calls
-            .insert(SpanKey::in_module(span, self.current_module_idx));
+            .seen_calls
+            .insert(key.clone(), self.effect_graph.current_body.clone());
+        self.effect_graph.construct_calls.insert(key);
     }
 
     /// Task joins and structured child teardown suspend independently of the

@@ -187,6 +187,8 @@ impl Checker {
                 CallTarget::User(provider.declaration)
             };
             self.record_direct_call_target(&call_span, target.clone());
+            self.record_invocation_effect(&call_span, None, None, "default argument".to_string());
+            self.record_default_call_sources(&call_span, provider.declaration);
             self.expr_types.insert(
                 SpanKey::in_module(&call_span, self.current_module_idx),
                 result,

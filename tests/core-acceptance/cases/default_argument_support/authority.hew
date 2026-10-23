@@ -1,0 +1,19 @@
+import std.fs;
+pub fn ambient() -> i64 {
+    let _ = fs.open_read("ungranted");
+    1
+}
+pub fn take(value: i64 = ambient()) -> i64 { value }
+pub actor Counter {
+    var value: i64 = 0;
+    init(seed: i64 = ambient()) { value = seed; }
+    receive fn read(extra: i64 = ambient()) -> i64 { value + extra }
+}
+pub supervisor Group(seed: i64 = ambient()) {
+    child counter: Counter { seed };
+}
+pub supervisor ChildDefault {
+    child counter: Counter;
+}
+pub fn run(tag: i64, callback: fn() -> i64 = || 9) -> i64 { tag + callback() }
+pub fn run_ambient(callback: fn() -> i64 = || ambient()) -> i64 { callback() }

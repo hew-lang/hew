@@ -1,0 +1,30 @@
+import default_argument_support.authority as support;
+#[confined]
+fn supplied() -> i64 { support.take(9) }
+#[confined]
+fn supplied_actor() {
+    let counter = spawn support.Counter { seed: 9 };
+    assert(counter.read(1) == .Ok(10));
+    stop(counter);
+    stopped(counter);
+}
+#[confined]
+fn supplied_supervisor() {
+    let group = spawn support.Group { seed: 9 };
+    assert(group.counter.read(1) == .Ok(10));
+    stop(group);
+    stopped(group);
+}
+#[confined]
+fn known_callable_defaults() {
+    assert(support.run(0) == 9);
+    assert(support.run(callback: || 3, tag: 6) == 9);
+    assert(support.run_ambient(|| 9) == 9);
+}
+fn main() {
+    assert(supplied() == 9);
+    supplied_actor();
+    supplied_supervisor();
+    known_callable_defaults();
+    println("supplied defaults require no ambient authority");
+}

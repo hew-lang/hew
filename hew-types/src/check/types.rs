@@ -1212,6 +1212,7 @@ pub(super) enum PendingCallableTarget {
 pub(super) struct PendingCallableArguments {
     pub(super) callee: PendingCallableTarget,
     pub(super) receiver: Option<IndirectCallCandidates>,
+    /// Complete actuals in parameter order, including omitted provider results.
     pub(super) arguments: Vec<IndirectCallCandidates>,
 }
 

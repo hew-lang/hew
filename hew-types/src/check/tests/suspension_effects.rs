@@ -4,6 +4,33 @@ use super::check_source;
 use crate::check::effects::SuspensionEffect;
 
 #[test]
+fn omitted_defaults_contribute_suspension_but_supplied_arguments_do_not() {
+    let source = r"
+        fn delayed() -> i64 { sleep(1ms); 1 }
+        fn take(value: i64 = delayed()) -> i64 { value }
+        fn supplied() -> i64 { take(9) }
+        fn omitted() -> i64 { take() }
+        fn main() {
+            let explicit: fn() -> i64 = supplied;
+            let defaulted: fn[suspends]() -> i64 = omitted;
+            assert(explicit() == 9 && defaulted() == 1);
+        }
+    ";
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let synchronous = source.replace("fn[suspends]()", "fn()");
+    let output = check_source(&synchronous);
+    assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+    assert!(
+        output.errors[0]
+            .message
+            .contains("function `omitted` suspends"),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
 fn supervisor_construction_requires_a_suspending_callable_slot() {
     let source = r"
         actor Worker { receive fn ping() {} }

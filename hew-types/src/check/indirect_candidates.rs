@@ -535,8 +535,50 @@ impl Checker {
             })
     }
 
-    /// Capture authored actuals after checking selected this call's exact
-    /// declaration. Formal IDs may be registered later in source order; the
+    /// A provider invocation has no value inputs, but its result participates
+    /// in the same callable-return and task-lifetime graph as a written call.
+    pub(super) fn record_default_call_sources(&mut self, span: &Span, declaration: crate::DefId) {
+        self.pending_callable_arguments.insert(
+            SpanKey::in_module(span, self.current_module_idx),
+            PendingCallableArguments {
+                callee: PendingCallableTarget::Declaration(declaration),
+                receiver: None,
+                arguments: Vec::new(),
+            },
+        );
+    }
+
+    fn call_argument_value_sources(
+        &self,
+        args: &[CallArg],
+        site: &SpanKey,
+    ) -> Vec<CallableDispatchActual> {
+        let slots = self.call_argument_slots.get(site);
+        let mut actuals: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(index, argument)| {
+                let (value, span) = argument.expr();
+                CallableDispatchActual {
+                    slot: slots.map_or(index, |slots| slots[index]),
+                    candidates: self.callable_candidates_for_expr(value, span),
+                }
+            })
+            .collect();
+        for default in self.call_default_arguments.get(site).into_iter().flatten() {
+            actuals.push(CallableDispatchActual {
+                slot: default.slot,
+                candidates: IndirectCallCandidates::single(CallableCandidate::CallResult(
+                    SpanKey::in_module(&default.span, site.module_idx),
+                )),
+            });
+        }
+        actuals.sort_by_key(|actual| actual.slot);
+        actuals
+    }
+
+    /// Capture supplied and defaulted actuals after checking selected this
+    /// call's exact declaration. Formal IDs may be registered later; the
     /// completed table joins them at the output boundary.
     pub(super) fn record_call_argument_sources(&mut self, expr: &Expr, span: &Span) {
         let indexed_argument;
@@ -557,6 +599,7 @@ impl Checker {
                 Some(MethodCallRewrite::BinderStaticCall(_))
             )
         });
+        let arguments = self.call_argument_value_sources(args, &key);
         let generator = matches!(
             self.method_call_rewrites.get(&key),
             Some(MethodCallRewrite::GeneratorNext { .. })
@@ -588,14 +631,10 @@ impl Checker {
                     candidates: self.callable_candidates_for_expr(&receiver.0, &receiver.1),
                 });
             }
-            let slots = self.call_argument_slots.get(&key);
-            for (index, arg) in args.iter().enumerate() {
-                let (value, value_span) = arg.expr();
-                actuals.push(CallableDispatchActual {
-                    slot: slots.map_or(index, |slots| slots[index]) + receiver_offset,
-                    candidates: self.callable_candidates_for_expr(value, value_span),
-                });
-            }
+            actuals.extend(arguments.iter().map(|argument| CallableDispatchActual {
+                slot: argument.slot + receiver_offset,
+                candidates: argument.candidates.clone(),
+            }));
             self.generic_trait_call_arguments
                 .insert(key.clone(), actuals);
             if generator
@@ -617,12 +656,9 @@ impl Checker {
             return;
         };
         let receiver = receiver.map(|value| self.callable_candidates_for_expr(&value.0, &value.1));
-        let arguments = args
-            .iter()
-            .map(|arg| {
-                let (value, value_span) = arg.expr();
-                self.callable_candidates_for_expr(value, value_span)
-            })
+        let arguments = arguments
+            .into_iter()
+            .map(|argument| argument.candidates)
             .collect();
         self.pending_callable_arguments.insert(
             key,
@@ -725,9 +761,8 @@ impl Checker {
                         .expect("receiver offset requires a receiver"),
                 });
             }
-            let slots = self.call_argument_slots.get(&site);
             for (index, candidates) in pending.arguments.into_iter().enumerate() {
-                let slot = slots.map_or(index, |slots| slots[index]) + receiver_offset;
+                let slot = index + receiver_offset;
                 let Some(formal) = formals.get(slot) else {
                     actuals.clear();
                     break;

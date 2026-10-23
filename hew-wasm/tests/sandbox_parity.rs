@@ -2128,3 +2128,53 @@ fn language_cohort_default_arguments() {
         assert_case_with_inputs(&case, "", inputs);
     }
 }
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_default_argument_authority() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "default_argument_support/authority.hew",
+        include_str!("../../tests/core-acceptance/cases/default_argument_support/authority.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "default-argument-authority",
+            source_rel: "tests/core-acceptance/cases/default-argument-authority.hew",
+        },
+        "",
+        inputs.clone(),
+    );
+    let refused = compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/default-argument-authority-refused.hew"),
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("confinement diagnostics");
+    for boundary in [
+        "omitted",
+        "omitted_actor",
+        "omitted_receive",
+        "omitted_supervisor",
+        "omitted_child",
+        "omitted_callable",
+    ] {
+        assert!(
+            refused
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(&format!(
+                    "confined `{boundary}` reaches `fs.open_read`: ambient authority acquisition"
+                ))),
+            "{:?}",
+            refused.diagnostics
+        );
+    }
+    assert!(
+        refused.bytecode.is_none(),
+        "refused defaults must not produce executable bytecode"
+    );
+}

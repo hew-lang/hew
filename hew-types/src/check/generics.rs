@@ -180,6 +180,19 @@ impl Checker {
         for argument in receiver_type_args {
             collect_unresolved_inference_vars(&self.subst.resolve(argument), &mut receiver_vars);
         }
+        // A quantified callable generalizes only its own binders. Any free
+        // inference variable belongs to its captured environment or an outer
+        // monomorphic slot, and must remain shared across invocations.
+        if sig.type_params.first().is_some_and(|parameter| {
+            matches!(
+                self.defs.kind(parameter.id.owner),
+                crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
+            )
+        }) {
+            for ty in sig.params.iter().chain(std::iter::once(&sig.return_type)) {
+                collect_unresolved_inference_vars(&self.subst.resolve(ty), &mut receiver_vars);
+            }
+        }
         mapping.extend(receiver_vars.into_iter().map(|var| (var.0, Ty::Var(var))));
 
         let freshened_params = params

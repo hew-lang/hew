@@ -810,7 +810,7 @@ impl Checker {
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
-        expected: Option<(&[Ty], &Ty)>,
+        expected: Option<&Ty>,
         span: &Span,
         is_actor_body: bool,
         is_fork_body: bool,
@@ -850,7 +850,7 @@ impl Checker {
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
-        expected: Option<(&[Ty], &Ty)>,
+        expected: Option<&Ty>,
         span: &Span,
         is_actor_body: bool,
         is_fork_body: bool,
@@ -878,37 +878,57 @@ impl Checker {
         let capture_depth = self.env.depth();
         self.lambda_capture_depth = Some(capture_depth);
 
-        let generic_parameters = self.declare_callable_parameters(
-            type_params.unwrap_or_default(),
-            span,
-            crate::DeclarationKind::Closure,
-        );
+        // Contextual universal binders are fresh rigid parameters of this
+        // literal. They never alias the destination's binder identities or
+        // introduce its private parameter names into the lexical scope.
+        let contextual_parameters = match expected {
+            Some(Ty::GenericCallable { parameters, .. }) => parameters
+                .iter()
+                .enumerate()
+                .map(|(index, _)| TypeParam {
+                    name: Ident::new(&format!("T{index}")),
+                    bounds: Vec::new(),
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let written = type_params.unwrap_or(&contextual_parameters);
+        let generic_parameters =
+            self.declare_callable_parameters(written, span, crate::DeclarationKind::Closure);
         self.generic_ctx.push(
             generic_parameters
                 .iter()
+                .filter(|_| type_params.is_some())
                 .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
                 .collect(),
         );
+        let contextual = Self::contextual_closure_signature(expected, &generic_parameters);
         let written_parameters = type_params.map(<[TypeParam]>::to_vec);
-        let generic_bounds =
-            self.collect_type_param_bounds(written_parameters.as_ref(), None, &mut Vec::new());
+        let generic_bounds = if type_params.is_some() {
+            self.collect_type_param_bounds(written_parameters.as_ref(), None, &mut Vec::new())
+        } else {
+            contextual
+                .as_ref()
+                .map_or_else(ParamBounds::default, |signature| signature.bounds.clone())
+        };
+        let expected = contextual
+            .as_ref()
+            .map(|signature| (signature.params.as_slice(), &signature.return_type));
         self.current_type_param_bounds.push(generic_bounds.clone());
         let previous_function = self.current_function.clone();
-        if let Some(parameter) = generic_parameters.first() {
-            let owner = parameter.id.owner;
-            let key = self.defs.path(owner).to_string();
-            self.insert_fn_sig(
-                &key,
-                owner,
-                FnSig {
-                    type_params: generic_parameters.clone(),
-                    bounds: generic_bounds.clone(),
-                    ..FnSig::default()
-                },
-            );
-            self.record_call_edge(&key);
-            self.current_function = Some(key);
-        }
+        let owner = self.declare_callable_owner(span, crate::DeclarationKind::Closure);
+        let key = self.defs.path(owner).to_string();
+        self.insert_fn_sig(
+            &key,
+            owner,
+            FnSig {
+                type_params: generic_parameters.clone(),
+                bounds: generic_bounds.clone(),
+                ..FnSig::default()
+            },
+        );
+        self.record_call_edge(&key);
+        self.current_function = Some(key);
 
         self.env.push_scope();
         let prev_in_generator = self.in_generator;
@@ -1037,17 +1057,15 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.pop_scope_with_cleanup();
 
-        if !generic_parameters.is_empty() {
-            let key = self
-                .current_function
-                .clone()
-                .expect("generic closure owns its signature");
-            let signature = self
-                .fn_sig_mut(&key)
-                .expect("generic closure signature was registered");
-            signature.params.clone_from(&param_tys);
-            signature.return_type = ret_ty.clone();
-        }
+        let key = self
+            .current_function
+            .clone()
+            .expect("closure owns its signature");
+        let signature = self
+            .fn_sig_mut(&key)
+            .expect("closure signature was registered");
+        signature.params.clone_from(&param_tys);
+        signature.return_type = ret_ty.clone();
         self.current_function = previous_function;
         self.current_type_param_bounds.pop();
         self.generic_ctx.pop();
@@ -1068,6 +1086,16 @@ impl Checker {
             self.callable_formals.insert(owner, formals);
         }
 
+        // Rigid per-invocation parameters cannot escape into the environment's
+        // shared storage type, even when that storage started as an open hole.
+        let escaped = outer_environment.visible_bindings().any(|binding| {
+            Self::ty_mentions_type_params(&self.subst.resolve(&binding.ty), &generic_parameters)
+        });
+        if escaped {
+            self.report_error_with_suggestions(TypeErrorKind::InferenceFailed, span,
+                "a generic closure cannot store its per-invocation type in a captured binding".to_string(),
+                vec!["give the captured storage one fixed type, or create it inside the closure body".to_string()]);
+        }
         let body_environment = std::mem::replace(&mut self.env, outer_environment);
         self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);

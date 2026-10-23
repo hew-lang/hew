@@ -440,7 +440,7 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn inferred_binding_without_annotation_fails_closed() {
+    fn inferred_literal_binding_generalizes_without_annotation() {
         let source = "fn main() { let f = |x| x; }";
         let result = hew_parser::parse(source);
         assert!(
@@ -452,13 +452,7 @@ mod non_root_module_inference_scope {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
 
-        let errs = inference_failed_errors(&output);
-        assert!(
-            errs.iter()
-                .any(|err| err.message.contains("local binding `f`")),
-            "expected InferenceFailed for unresolved inferred binding `f`; got: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 
     #[test]
@@ -721,7 +715,7 @@ mod non_root_module_inference_scope {
     }
 
     #[test]
-    fn inferred_binding_does_not_duplicate_lambda_hole_error() {
+    fn inferred_binding_generalizes_an_explicit_lambda_hole() {
         let source = "fn main() { let f = |x: _| x; }";
         let result = hew_parser::parse(source);
         assert!(
@@ -733,18 +727,7 @@ mod non_root_module_inference_scope {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&result.program);
 
-        let errs = inference_failed_errors(&output);
-        assert_eq!(
-            errs.len(),
-            1,
-            "expected only the lambda hole diagnostic, got: {:?}",
-            output.errors
-        );
-        assert!(
-            errs[0].message.contains("lambda parameter `x`"),
-            "expected lambda hole diagnostic, got: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 
     #[test]
@@ -803,20 +786,14 @@ mod non_root_module_inference_scope {
         );
     }
 
-    /// A non-root module body containing a lambda with an unresolved `_`
-    /// parameter type must fail closed: the deferred hole created during
-    /// body checking must produce an `InferenceFailed` error.
-    ///
-    /// Regression: the lambda-param deferred-hole path
-    /// (`expressions.rs::synthesize_lambda`) must also drain into
-    /// `report_unresolved_inference_holes` for non-root module bodies.
+    /// Imported bodies generalize directly bound literals just like the root.
     #[test]
-    fn body_lambda_infer_param_hole_fails_closed() {
-        // fn foo() { let f = |x: _| x; }  — lambda param `_` never constrained
+    fn body_lambda_infer_param_hole_generalizes() {
+        // fn foo() { let f = |x: _| x; }
         let mod_id = ModulePath::new(["lambdamod"]);
         let root_id = ModulePath::root();
 
-        // |x: _| x  — lambda with infer-typed parameter, no call site to resolve it
+        // The parameter becomes a universal binder without a call site.
         let lambda_expr = Expr::Lambda {
             is_move: false,
             type_params: None,
@@ -876,12 +853,7 @@ mod non_root_module_inference_scope {
         let mut checker = Checker::new(ModuleRegistry::new(vec![]));
         let output = checker.check_program(&program);
 
-        let errs = inference_failed_errors(&output);
-        assert!(
-            !errs.is_empty(),
-            "expected InferenceFailed for unresolved lambda `_` param in non-root module body; got errors: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{:?}", output.errors);
     }
 }
 

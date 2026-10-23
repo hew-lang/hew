@@ -8,6 +8,10 @@ fn make_identity() -> fn<T>(T) -> T {
     }
 }
 
+fn inferred_identity() -> fn<T>(T) -> T {
+    |value| value
+}
+
 fn make_labeler() -> fn<T: Eq>(T) -> (string, bool, T) {
     var label = "captured".to_upper();
     let labeler = |<T: Eq> value: T| -> (string, bool, T) {
@@ -45,6 +49,35 @@ fn apply_twice(f: fn[clone]<T>(T) -> T) -> bool {
 }
 
 fn main() -> i64 {
+    let inferred = |value| value;
+    assert(inferred(11) == 11 && inferred("eleven") == "eleven");
+    assert(apply_twice(|value| value));
+    let returned = inferred_identity();
+    assert(returned(12) == 12 && returned("twelve") == "twelve");
+    var replaced = |value| value;
+    replaced = |other| other;
+    assert(replaced(13) == 13 && replaced("thirteen") == "thirteen");
+    let inferred_count = 0;
+    var inferred_counter = |value| { inferred_count += 1; (inferred_count, value) };
+    let (inferred_first, inferred_number) = inferred_counter(14);
+    var inferred_copy = clone inferred_counter;
+    let (inferred_second, inferred_text) = inferred_counter("fifteen".to_upper());
+    let (inferred_copied, _) = inferred_copy(true);
+    assert(inferred_first == 1 && inferred_number == 14);
+    assert(inferred_second == 2 && inferred_text == "FIFTEEN");
+    assert(inferred_copied == 2 && inferred_count == 0);
+    let inferred_same = |value| { let inner = || value == value; inner() };
+    assert(inferred_same(15) && inferred_same("fifteen"));
+    let pair_with = |label| { let pair = |value| (label, value); pair };
+    let labelled = pair_with("label".to_upper());
+    let (first_labelled, labelled_number) = labelled(18);
+    let (second_labelled, labelled_flag) = labelled(true);
+    assert(first_labelled == "LABEL" && labelled_number == 18);
+    assert(second_labelled == "LABEL" && labelled_flag);
+    let storage: Option<_> = .None;
+    var remember = |key, value| { storage = .Some(key); value };
+    assert(remember(16, "sixteen") == "sixteen" && remember(17, true));
+    assert(storage == .None);
     let direct = |<T> value: T| -> T {
         value
     };

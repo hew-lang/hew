@@ -127,7 +127,7 @@ impl Checker {
             .as_ref()
             .and_then(|owner| self.fn_sig(owner))
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
-        if Self::ty_mentions_type_params(ty, &parameters) {
+        if Self::ty_mentions_type_params(ty, &parameters) || ty.has_inference_var() {
             self.record_generic_requirement(
                 super::types::GenericRequirementKind::BorrowedTransfer {
                     root: root.to_string(),
@@ -394,9 +394,15 @@ impl Checker {
                     self.env.note_loop_use(&fact.name, &[], span, false);
                     self.env.mark_moved(&fact.name, span.clone());
                 }
-            } else if !self.capture_is_cloneable(&fact.ty)
-                && !matches!(fact.ty, Ty::Error | Ty::Var(_))
-            {
+            } else if fact.ty.has_inference_var() {
+                self.record_generic_requirement(
+                    super::types::GenericRequirementKind::CaptureSnapshot {
+                        root: fact.name.clone(),
+                    },
+                    &fact.ty,
+                    &fact.use_span,
+                );
+            } else if !self.capture_is_cloneable(&fact.ty) && !matches!(fact.ty, Ty::Error) {
                 // `move` transfers an owner into the closure, so a borrowed
                 // parameter needs one first. Name both steps rather than
                 // sending the programmer back for a second diagnostic.
@@ -601,7 +607,7 @@ impl Checker {
         );
     }
 
-    fn capture_is_cloneable(&self, ty: &Ty) -> bool {
+    pub(super) fn capture_is_cloneable(&self, ty: &Ty) -> bool {
         // An actor handle's copy proof does not depend on its state arguments.
         if matches!(
             ty,

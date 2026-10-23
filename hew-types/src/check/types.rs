@@ -2440,6 +2440,7 @@ pub(super) struct GenericRequirement {
 pub(super) enum GenericRequirementKind {
     Eq,
     BorrowedTransfer { root: String },
+    CaptureSnapshot { root: String },
     ResourceClose,
 }
 

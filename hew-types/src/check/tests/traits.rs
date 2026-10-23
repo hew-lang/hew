@@ -2992,7 +2992,7 @@ fn main() {}
 // for non-root module bodies too:
 //   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
 //   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
-//   - `body_lambda_infer_param_hole_fails_closed`: unresolvable lambda `|x: _|`
+// Directly bound closure holes generalize; see the inference tests.
 
 // ── D429: an impl block naming a trait that does not exist ────────────────────
 

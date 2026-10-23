@@ -608,11 +608,7 @@ impl Checker {
                     body,
                     ..
                 },
-                Ty::Function {
-                    params: expected_params,
-                    ret,
-                    ..
-                },
+                Ty::Function { .. } | Ty::Closure { .. } | Ty::GenericCallable { .. },
             ) => {
                 let result = self.check_lambda(
                     *is_move,
@@ -620,14 +616,7 @@ impl Checker {
                     params,
                     return_type.as_ref(),
                     body,
-                    if type_params
-                        .as_ref()
-                        .is_some_and(|parameters| !parameters.is_empty())
-                    {
-                        None
-                    } else {
-                        Some((expected_params, ret))
-                    },
+                    Some(expected),
                     span,
                     false,
                     false,

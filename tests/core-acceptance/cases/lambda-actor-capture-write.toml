@@ -8,4 +8,4 @@ timeout_seconds = 30
 
 [case.expected]
 stdout = "actor capture inference\n"
-exit_code = 0
+exit = 0

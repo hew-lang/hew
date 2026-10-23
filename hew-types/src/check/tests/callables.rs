@@ -1345,3 +1345,128 @@ type Label {
         assert!(output.errors.is_empty(), "{shape}: {:#?}", output.errors);
     }
 }
+
+#[test]
+fn directly_bound_literals_generalize_independently_of_counter_state() {
+    let output = check_source(
+        r#"
+fn main() {
+    let identity = |value| value;
+    let number: i64 = identity(42);
+    let text: string = identity("hello");
+    let count: i64 = 0;
+    var counted = |value| { count += 1; (count, value) };
+    let first: (i64, i64) = counted(1);
+    let second: (i64, string) = counted("two");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(capture(&output, "count").access, ClosureCaptureAccess::Var);
+}
+
+#[test]
+fn universal_context_checks_literals_with_fresh_rigid_parameters() {
+    let output = check_source(
+        r#"
+fn identity() -> fn<T>(T) -> T { |value| value }
+fn use_both(f: fn<T>(T) -> T) { let n: i64 = f(1); let s: string = f("two"); }
+fn equal() -> fn<T: Eq>(T, T) -> bool { |left, right| left == right }
+fn main() { use_both(|value| value); }
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for source in [
+        "fn wrong() -> fn<T>(T) -> T { |value| 1 }",
+        "fn wrong() -> fn<T>(T) -> T { |value: i64| value }",
+        "fn wrong() -> fn<T>(T) -> T { |<U> value: i64| value }",
+    ] {
+        let output = check_source(source);
+        assert!(!output.errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn inferred_universal_var_slots_do_not_specialize_on_assignment() {
+    let output = check_source(
+        r#"fn main() { var f = |value| value; f = |other| other; let n: i64 = f(1); let s: string = f("two"); }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(r"fn main() { var f = |value| value; f = |value: i64| value; }");
+    assert!(
+        !output.errors.is_empty(),
+        "a universal slot became monomorphic"
+    );
+}
+
+#[test]
+fn generic_capture_storage_cannot_change_type_between_invocations() {
+    let output = check_source(
+        r#"fn main() { let slot: Option<_> = .None; var remember = |value| { slot = .Some(value); value }; let n: i64 = remember(1); let s: string = remember("two"); }"#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "captured storage was generalized"
+    );
+    let output = check_source(
+        r"fn main() { let slot: Option<_> = .None; let remember: fn[var]<T>(T) -> T = |value| { slot = .Some(value); value }; }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("per-invocation type")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inferred_literals_keep_unambiguous_bounds_and_refuse_operator_guessing() {
+    let output = check_source(
+        r#"fn main() { let same = |value| value == value; let n = same(1); let s = same("two"); let show = |value| println(value); show(1); show("two"); }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for source in [
+        "fn main() { let add = |left, right| left + right; }",
+        "fn main() { let same = |left, right| left is right; }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("unique generic parameter type")),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn nested_literals_keep_inferred_capture_and_trait_obligations() {
+    let output = check_source(
+        r#"fn main() {
+        let same = |value| { let inner = || value == value; inner() };
+        assert(same(1)); assert(same("two"));
+    }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn generalization_keeps_environment_holes_shared_between_type_instantiations() {
+    let source = r#"fn main() {
+        let slot: Option<_> = .None;
+        var remember = |key, value| { slot = .Some(key); value };
+        let a: string = remember(1, "one");
+        let b: i64 = remember(2, 2);
+    }"#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(&source.replace("remember(2, 2)", "remember(true, 2)"));
+    assert!(
+        !output.errors.is_empty(),
+        "captured monotype was freshly instantiated"
+    );
+}

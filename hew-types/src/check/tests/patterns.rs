@@ -1925,6 +1925,36 @@ fn main() {
     );
 }
 
+fn transition_block_spans(source: &str) -> (Span, Span) {
+    let parsed = hew_parser::parse(source);
+    let body = parsed
+        .program
+        .items
+        .iter()
+        .find_map(|(item, _)| {
+            let Item::Machine(machine) = item else {
+                return None;
+            };
+            machine
+                .transitions
+                .first()
+                .map(|transition| &transition.body)
+        })
+        .expect("machine transition");
+    let Expr::Block(block) = &body.0 else {
+        panic!("transition block")
+    };
+    (
+        body.1.clone(),
+        block
+            .trailing_expr
+            .as_ref()
+            .expect("transition tail")
+            .1
+            .clone(),
+    )
+}
+
 #[test]
 fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
     // The machine-enum expectation belongs to the value the transition
@@ -1961,14 +1991,10 @@ fn machine_transition_block_body_types_let_binding_and_contextual_tail() {
         "the let initializer inside the transition body must keep its inferred type"
     );
 
-    let tail = source.find(".Busy\n").expect("tail present");
-    let tail_ty = output
-        .expr_types
-        .iter()
-        .find(|(key, _)| key.start == tail)
-        .map(|(_, ty)| ty);
+    let (_, tail_span) = transition_block_spans(source);
+    let tail_ty = output.expr_types.get(&SpanKey::from(&tail_span));
     assert!(
-        matches!(tail_ty, Some(Ty::Named { head: name_head, .. }) if name_head.spelling() == "Counter"),
+        matches!(tail_ty, Some(Ty::Named { head, .. }) if head.spelling() == "Counter"),
         "the contextual tail must resolve to the machine type, got {tail_ty:?}"
     );
 }
@@ -2016,17 +2042,9 @@ fn machine_transition_block_body_publishes_tail_type_not_error_placeholder() {
         output.errors
     );
 
-    let published = |offset: usize| {
-        output
-            .expr_types
-            .iter()
-            .find(|(key, _)| key.start == offset)
-            .map(|(_, ty)| ty.clone())
-    };
-    let block = source.find("{\n        let result").expect("block present");
-    let tail = source.find(".Busy { n: result").expect("tail present");
-    let block_ty = published(block);
-    let tail_ty = published(tail);
+    let (block_span, tail_span) = transition_block_spans(source);
+    let block_ty = output.expr_types.get(&SpanKey::from(&block_span)).cloned();
+    let tail_ty = output.expr_types.get(&SpanKey::from(&tail_span)).cloned();
     assert!(
         block_ty.is_some(),
         "the block must publish a type at its source span"

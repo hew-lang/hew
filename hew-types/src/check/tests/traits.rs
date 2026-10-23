@@ -2566,7 +2566,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
 fn structural_hardening_super_trait_generic_method_guard_propagates() {
     // If a super-trait has a generic method, the E1 guard must veto the whole
     // structural check for the child trait too.
-    use hew_parser::ast::{Param, TraitDecl, TraitItem, TraitMethod, TypeExpr, TypeParam};
+    use hew_parser::ast::{Param, Path, TraitDecl, TraitItem, TraitMethod, TypeExpr, TypeParam};
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     let generic_super = TraitDecl {
@@ -2590,10 +2590,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        path: hew_parser::ast::Path::single(
-                            hew_parser::ast::Ident::new("Self"),
-                            0..0,
-                        ),
+                        path: Path::single(Ident::new("Self"), 0..0),
                         type_args: None,
                     },
                     0..4,
@@ -2620,7 +2617,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("GenericSuper"), 0..0),
+            path: Path::single(Ident::new("GenericSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
@@ -2637,10 +2634,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        path: hew_parser::ast::Path::single(
-                            hew_parser::ast::Ident::new("Self"),
-                            0..0,
-                        ),
+                        path: Path::single(Ident::new("Self"), 0..0),
                         type_args: None,
                     },
                     0..4,

@@ -114,7 +114,7 @@ emit('color brightmagenta "\\<[0-9][0-9_]*\\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)
 
 // Duration literals
 const durationSuffixes = syntaxData.literal_suffixes?.duration || ['ns', 'us', 'ms', 's', 'm', 'h'];
-emit(`color brightmagenta "\\<[0-9][0-9_]*(${durationSuffixes.join('|')})\\>"`);
+emit(`color brightmagenta "\\<[0-9][0-9_]*(\\.[0-9][0-9_]*)?(${durationSuffixes.join('|')})\\>"`);
 emit('color brightmagenta "\\<[0-9][0-9_]*\\>"');
 blank();
 
@@ -150,10 +150,9 @@ for (const chunk of declChunks) {
 }
 blank();
 
-// Callable qualifiers and private capture prefixes remain contextual.
-emit('# Callable qualifiers and private capture prefixes');
+// Callable qualifiers remain contextual.
+emit('# Callable qualifiers');
 emit('color green "\\<fn[[:space:]]*\\[(clone|var|once)([[:space:]]*,[[:space:]]*(clone|var|once))?\\]"');
-emit('color green "\\<capture[[:space:]]*\\([[:space:]]*var\\>"');
 blank();
 
 // Actor & concurrency. Control-like actor words are emitted with the control

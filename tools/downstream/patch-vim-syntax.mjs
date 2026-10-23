@@ -85,8 +85,8 @@ const overflowKinds = Object.entries(contextual)
 // does more harm than the highlight is worth. `count` is the supervisor
 // pool-arity clause, and also a routine field name and the `.count()` method,
 // so highlighting it paints most of its real uses.
-// Capture prefixes and callable qualifiers have dedicated structural patterns.
-const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'capture', 'once', 'consume'];
+// Callable qualifiers have dedicated structural patterns.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'once', 'consume'];
 
 // Remaining contextual identifiers: soft keywords that are not reserved and
 // not overflow values (within, intensity, initial, repeated, infinity, ...).

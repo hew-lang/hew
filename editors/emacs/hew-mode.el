@@ -145,6 +145,9 @@
       ;; this — the current actor/record receiver
       ("\\<this\\>" . font-lock-variable-name-face)
 
+      ;; Unit-bearing durations, including exact decimal fractions.
+      ("\\<[0-9][0-9_]*\\(?:\\.[0-9][0-9_]*\\)?\\(?:ns\\|us\\|ms\\|s\\|m\\|h\\)\\>" . font-lock-constant-face)
+
       ;; Numeric literals
       ("\\<0[xX][0-9a-fA-F_]+\\>" . font-lock-constant-face)
       ("\\<0[bB][01_]+\\>" . font-lock-constant-face)

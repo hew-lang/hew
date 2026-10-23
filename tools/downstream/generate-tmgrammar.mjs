@@ -162,8 +162,8 @@ const ATTRIBUTE_ONLY_CONTEXTUAL = ['resource', 'linear', 'opaque', 'wire'];
 // `.count()` method, so a fallback match paints most of its real uses.
 // Same exclusion reason as ATTRIBUTE_ONLY_CONTEXTUAL, different cause: these
 // need the clause position, not an attribute, to be a keyword at all.
-// Capture prefixes and callable qualifiers have dedicated structural patterns.
-const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'capture', 'once'];
+// Callable qualifiers have dedicated structural patterns.
+const BROAD_MATCH_UNSAFE_CONTEXTUAL = ['count', 'once'];
 
 const contextualNames = Object.keys(syntaxData.contextual_identifiers)
   .filter(name => name !== 'self' && name !== 'description'

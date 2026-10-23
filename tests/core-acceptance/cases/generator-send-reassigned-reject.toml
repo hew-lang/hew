@@ -1,0 +1,13 @@
+[[case]]
+id = "generator-send-reassigned-reject"
+intent = "Reassigning an annotated generator updates the value proof; the original safe producer cannot grant Send to a later Rc-capturing producer."
+source = "cases/generator-send-reassigned-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 10
+column = 5
+message = "cannot prove `Generator<i64, ()>` is Send: its generator captures need checked transferable values"

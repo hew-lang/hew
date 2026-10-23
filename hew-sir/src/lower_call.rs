@@ -1818,7 +1818,12 @@ impl Builder<'_, '_> {
                         "runtime argument {index} cannot coerce a non-value operand"
                     ));
                 }
-                crate::verify_callable_coercion(source, target, self.service.checked_facts.rows())?;
+                let verify = if crate::generator_parts(source).is_some() {
+                    crate::verify_generator_coercion
+                } else {
+                    crate::verify_callable_coercion
+                };
+                verify(source, target, self.service.checked_facts.rows())?;
             }
         }
         if matches!(

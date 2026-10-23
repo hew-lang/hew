@@ -65,13 +65,21 @@ pub struct SemClosureEntry {
 /// Its body signature starts with this exact closure type as receiver.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemClosure {
-    /// Checked yield type for a generator body using this ordinary environment.
-    pub generator_yield: Option<ResolvedTy>,
+    /// Exact source producer refinement for generator construction.
+    pub generator_type: Option<ResolvedTy>,
+    /// Source Send demands whose retained-frame proof this instance owes.
+    pub generator_send_sites: Vec<GeneratorSendSite>,
     pub id: ClosureId,
     pub instance: ClosureInstanceKey,
     pub entries: Vec<SemClosureEntry>,
     pub ty: ResolvedTy,
     pub fields: Vec<SemCaptureField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratorSendSite {
+    pub span: std::ops::Range<usize>,
+    pub source: crate::FunctionSourceOrigin,
 }
 
 /// Read the checker-owned signature and capabilities of a callable value.
@@ -209,6 +217,22 @@ pub fn verify_generator_coercion(
     target: &ResolvedTy,
     facts: &TypeFactTable,
 ) -> Result<(), String> {
+    if let ResolvedTy::Generator {
+        producers: required,
+        ..
+    } = target
+    {
+        let ResolvedTy::Generator {
+            producers: supplied,
+            ..
+        } = source
+        else {
+            return Err("generator coercion cannot invent producer evidence".into());
+        };
+        if supplied.is_empty() || supplied.iter().any(|producer| !required.contains(producer)) {
+            return Err("generator coercion changes its possible producers".into());
+        }
+    }
     let (source_yield, source_return) =
         generator_parts(source).ok_or("generator coercion requires a source generator")?;
     let (target_yield, target_return) =
@@ -222,6 +246,15 @@ pub fn verify_generator_coercion(
 }
 
 impl SemClosure {
+    /// Checked yield type derived from the producer's generator contract.
+    #[must_use]
+    pub fn generator_yield(&self) -> Option<&ResolvedTy> {
+        self.generator_type
+            .as_ref()?
+            .generator_parts()
+            .map(|(yielded, _)| yielded)
+    }
+
     /// Derive capture ownership with the same field recipes used by aggregates.
     ///
     /// # Errors
@@ -296,7 +329,10 @@ impl SemClosure {
         {
             return Err("closure promises Clone for a non-cloneable captured owner".to_string());
         }
-        if let Some(yielded) = &self.generator_yield {
+        if self.generator_type.is_some() && self.generator_yield().is_none() {
+            return Err("generator producer contract has no generator type".into());
+        }
+        if let Some(yielded) = self.generator_yield() {
             let (params, _, capabilities) = callable_parts(&self.ty)?;
             if !params.is_empty()
                 || capabilities.call != CallableCallMode::Once
@@ -385,18 +421,7 @@ impl SemModule {
 /// Read the exact yield and return types of a checked generator value.
 #[must_use]
 pub fn generator_parts(ty: &ResolvedTy) -> Option<(&ResolvedTy, &ResolvedTy)> {
-    let ResolvedTy::Named {
-        head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
-        args,
-        ..
-    } = ty
-    else {
-        return None;
-    };
-    let [yielded, returned] = args.as_slice() else {
-        return None;
-    };
-    Some((yielded, returned))
+    ty.generator_parts()
 }
 
 #[cfg(test)]
@@ -458,7 +483,8 @@ mod tests {
             supervisors: Vec::new(),
             callables: vec![parent, body],
             closures: vec![SemClosure {
-                generator_yield: None,
+                generator_type: None,
+                generator_send_sites: Vec::new(),
                 id: ClosureId(0),
                 instance: ClosureInstanceKey {
                     enclosing: CallableId(0),
@@ -489,6 +515,11 @@ mod tests {
             "{:?}",
             crate::verify_module(&module)
         );
+        let mut wrong_generator = module.clone();
+        wrong_generator.closures[0].generator_type = Some(ResolvedTy::I64);
+        assert!(wrong_generator.closures[0]
+            .validate(&wrong_generator)
+            .is_err_and(|message| message == "generator producer contract has no generator type"));
         let mut wrong_receiver = module.clone();
         wrong_receiver.callables[1].signature.params[0].passing = SemParamPassing::Borrow;
         assert!(!crate::verify_module(&wrong_receiver).is_empty());
@@ -824,6 +855,11 @@ mod tests {
         assert!(crate::verify_module(&missing_fault)
             .iter()
             .any(|diagnostic| format!("{diagnostic:?}").contains("propagates the original fault")));
+        let mut wrong_generator = module.clone();
+        wrong_generator.closures[0].generator_type = Some(ResolvedTy::I64);
+        assert!(wrong_generator.closures[0]
+            .validate(&wrong_generator)
+            .is_err_and(|message| message == "generator producer contract has no generator type"));
         let mut wrong_receiver = module.clone();
         if let SemTerminator::IndirectCall { callee, .. } =
             &mut wrong_receiver.functions[0].blocks[0].terminator

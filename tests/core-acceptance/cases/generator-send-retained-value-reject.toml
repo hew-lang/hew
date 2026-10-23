@@ -1,0 +1,13 @@
+[[case]]
+id = "generator-send-retained-value-reject"
+intent = "A Send-bounded call whose result is assigned checks the same imported generator frame as a discarded call."
+source = "cases/generator-send-retained-value-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 6
+column = 20
+message = "generator cannot be sent: retained `Rc<i64>` is not proven Send"

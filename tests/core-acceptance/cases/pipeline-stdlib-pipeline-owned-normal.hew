@@ -1,29 +1,46 @@
 import std.pipeline;
+import std.stream;
+import std.semaphore;
 
-fn main() -> i64 {
-    var source = pipeline.run(pipeline.from(50));
-    var i: i64 = 0;
-    while i < 50 {
-        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: i, label: f"normal-owned-{i}", crash_stage: false };
-        match source.push(item) {
-            .Ok(admitted) => {
-                if !admitted {
-                    return 2;
-                }
-            }
-            .Err(_) => {
-                return 3;
-            }
-        }
-        println("normal");
-        i = i + 1;
+type Gated {
+    index: i64;
+    gate: semaphore.Semaphore;
+}
+
+fn main() {
+    let (sink, source): (Sink<string>, Stream<string>) = stream.pipe(3).expect("pipe");
+    sink.send("one").expect("send");
+    sink.send("two").expect("send");
+    sink.send("three").expect("send");
+    sink.finish();
+    let suffix = "!";
+    var values: Vec<string> = [];
+    for value in pipeline.map(source, move |value: string| value + suffix, concurrency: 2) {
+        values.push(value);
     }
-    match source.shutdown(50) {
-        .Ok(drained) => if drained {
-            0
-        } else {
-            4
+    assert(values == ["one!", "two!", "three!"]);
+    let gate = semaphore.new(0);
+    let (gated_sink, gated): (Sink<Gated>, Stream<Gated>) = stream.pipe(2).expect("pipe");
+    gated_sink.send(Gated { index: 0, gate: gate.clone() }).expect("send");
+    gated_sink.send(Gated { index: 1, gate: gate.clone() }).expect("send");
+    gated_sink.finish();
+    var completion: Vec<i64> = [];
+    for index in pipeline.map(gated, |item: Gated| {
+        if item.index == 0 {
+            item.gate.acquire();
         }
-        .Err(_) => 5,
+        item.index
+    }, concurrency: 2, order: .Completion) {
+        completion.push(index);
+        if index == 1 {
+            gate.release();
+        }
     }
+    assert(completion == [1, 0]);
+    let (empty_sink, empty): (Sink<string>, Stream<string>) = stream.pipe(0).expect("pipe");
+    empty_sink.finish();
+    for _value in pipeline.prefetch(empty) {
+        panic("empty source yielded");
+    }
+    println("pipeline normal passed");
 }

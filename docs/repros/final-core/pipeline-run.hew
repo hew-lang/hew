@@ -1,11 +1,12 @@
-// Repro: `std.pipeline.run` returns `SourceI64`, an actor handle whose
-// declaration lives in the imported module and is not pub.
+// Generic pipeline input and output types are inferred from the source and callback.
 import std.pipeline;
+import std.stream;
 
 fn main() {
-    let source = pipeline.run(pipeline.from(1));
-    match source.count() {
-        .Ok(value) => println(value),
-        .Err(_) => println(-1),
+    let (sink, source): (Sink<string>, Stream<string>) = stream.pipe(1).expect("pipe");
+    sink.send("pipeline").expect("send");
+    sink.finish();
+    for length in pipeline.map(source, |value: string| value.len()) {
+        println(length);
     }
 }

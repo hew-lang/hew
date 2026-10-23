@@ -1,0 +1,13 @@
+[[case]]
+id = "generator-send-imported-reject"
+intent = "Imported deferred Rc state remains retained across yield and is refused at the source Send boundary."
+source = "cases/generator-send-imported-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 6
+column = 5
+message = "generator cannot be sent: retained `Rc<i64>` is not proven Send"

@@ -1,0 +1,10 @@
+[[case]]
+id = "example-concurrent-pipeline"
+intent = "The public bounded pipeline example composes generator input, prefetch and parallel mapping with inferred types and stable input order."
+source = "../../examples/concurrent_pipeline.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+[case.expected]
+stdout = "alpha: 5 bytes\nbeta: 4 bytes\ngamma: 5 bytes\n"
+stderr = ""
+exit = 0

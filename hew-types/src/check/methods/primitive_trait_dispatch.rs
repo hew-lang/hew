@@ -323,6 +323,9 @@ impl Checker {
         {
             let receiver_args: Vec<Ty> = match receiver_ty {
                 Ty::Named { args, .. } => args.clone(),
+                Ty::Generator {
+                    yields, returns, ..
+                } => vec![(**yields).clone(), (**returns).clone()],
                 _ => Vec::new(),
             };
             // Arity is part of the shape: an impl whose `Self` constructor takes

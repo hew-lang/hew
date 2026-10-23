@@ -462,6 +462,7 @@ impl<'a> CallableTable<'a> {
                     symbol: symbol.clone(),
                     source_origin,
                     type_params: function.type_params.clone(),
+                    unconstrained_parameters: false,
                     signature,
                 });
                 continue;
@@ -552,6 +553,7 @@ struct InstanceService<'a> {
     statuses: Vec<Option<SirLoweringStatus>>,
     by_instance: HashMap<SirInstanceKey, CallableId>,
     closures: Vec<crate::SemClosure>,
+    generator_send_obligations: Vec<(CallableId, ResolvedTy, crate::GeneratorSendSite)>,
     actors: Vec<crate::SemActor>,
     actor_sources: HashMap<CallableId, ActorBodySource>,
     supervisors: Vec<crate::SemSupervisor>,

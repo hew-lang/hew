@@ -1003,6 +1003,8 @@ struct LowerCtx {
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
     closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    generator_capture_facts: HashMap<hew_types::ty::EffectBody, Vec<ClosureCaptureFact>>,
+    resolved_binding_types: HashMap<TypeBindingId, ResolvedTy>,
     /// Checker-authoritative escape classification keyed by closure literal
     /// span (the checker's `closure_escape_facts`). HIR threads this fact into
     /// `HirExprKind::Closure::escape_kind` so MIR's

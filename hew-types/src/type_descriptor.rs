@@ -68,6 +68,9 @@ impl ResolvedTy {
             _ => head.registry_key().to_string(),
         };
         match self {
+            ResolvedTy::Generator {
+                yields, returns, ..
+            } => format!("Generator<{},{}>", render(yields), render(returns)),
             ResolvedTy::GenericCallable {
                 parameters,
                 callable,

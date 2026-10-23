@@ -250,6 +250,22 @@ impl Checker {
     /// signature's binders, so they are instantiated with the same arguments.
     pub(super) fn enforce_signature_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
         let bounds = self.instantiate_bounds(&sig.type_params, &sig.bounds, type_args);
+        for (parameter, argument) in sig.type_params.iter().zip(type_args) {
+            if bounds
+                .of(parameter.id)
+                .any(|bound| self.trait_marker(bound.trait_id) == Some(MarkerTrait::Send))
+            {
+                self.effect_graph.conditional_send_bounds.push(
+                    super::generator_send::ConditionalSendBound {
+                        site: SpanKey::in_module(span, self.current_module_idx),
+                        parameter: *parameter,
+                        argument: argument.clone(),
+                        inputs: sig.params.clone(),
+                        source: self.current_module.clone(),
+                    },
+                );
+            }
+        }
         self.enforce_named_type_param_bounds(&sig.type_params, &bounds, type_args, span, None);
     }
 
@@ -471,7 +487,14 @@ impl Checker {
                 self.record_eq_requirement(resolved_arg, span);
                 continue;
             }
+            if marker == Some(MarkerTrait::Send) && resolved_arg.contains_generator() {
+                self.record_send_obligation(resolved_arg, span);
+                continue;
+            }
             if self.type_satisfies_bound(resolved_arg, bound) {
+                if marker == Some(MarkerTrait::Send) {
+                    self.record_send_obligation(resolved_arg, span);
+                }
                 self.report_missing_dispatchable_supertrait_impls(
                     param,
                     bound.trait_id,

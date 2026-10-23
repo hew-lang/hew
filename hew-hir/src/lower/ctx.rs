@@ -96,6 +96,8 @@ impl LowerCtx {
             associated_type_schemas: tc_output.associated_type_schemas.clone(),
             is_type_patterns: tc_output.is_type_patterns.clone(),
             closure_capture_facts: tc_output.closure_capture_facts.clone(),
+            generator_capture_facts: tc_output.generator_capture_facts.clone(),
+            resolved_binding_types: tc_output.resolved_binding_types.clone(),
             closure_escape_facts: tc_output.closure_escape_facts.clone(),
             generator_yield_tys: Vec::new(),
             scope_depth: 0,

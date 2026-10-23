@@ -810,6 +810,9 @@ impl Checker {
     /// (user structs, actors, opaque handle types).
     #[must_use]
     pub(crate) fn canonical_primitive_or_builtin_key(ty: &Ty) -> Option<String> {
+        if matches!(ty, Ty::Generator { .. }) {
+            return Some(BuiltinType::Generator.canonical_name().to_string());
+        }
         if let Some(canonical) = ty.canonical_lowering_name() {
             return Some(canonical.to_string());
         }

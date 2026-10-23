@@ -1,246 +1,150 @@
-//! A concrete two-stage `i64` actor pipeline with bounded admission.
+//! Bounded concurrent adapters for owned iterators.
+//!
+//! Adapters own their source and start work when iterated. Closing an adapter,
+//! leaving its loop early, or cancelling its consumer cancels and joins its
+//! child tasks before releasing the source and buffered values.
 
-/// Owning payload carried across the source, stage, and sink mailboxes.
-pub type PipelineItemI64 {
-    value: i64;
-    label: string;
-    crash_stage: bool;
+import std.stream;
+import std.semaphore;
+
+/// Whether map emits source order or the order in which workers finish.
+pub enum Order {
+    Input;
+    Completion;
 }
 
-/// Two-stage pipeline builder. The permit count controls sink processing and
-/// makes capacity-one admission deterministic.
-pub type PipelineI64TwoStage {
-    sink_permits: i64;
+type Job<T> {
+    index: i64;
+    value: T;
+    lease: semaphore.Lease;
 }
 
-pub actor AdmissionControlI64 {
-    var permits: i64;
-    var stage_attempts: i64;
-    var stage_post_sends: i64;
+type Inbox<T> {
+    sink: Sink<Job<T>>;
+}
 
-    mailbox 1;
+type Completed<T> {
+    index: i64;
+    value: T;
+    lease: semaphore.Lease;
+}
 
-    receive fn take_permit() -> bool {
-        if permits > 0 {
-            permits = permits - 1;
-            true
-        } else {
-            false
+fn produce<I, T>(consume source: I, consume output: Sink<T>) where I: Iterator<Item = T> {
+    for value in source {
+        if output.send(value).is_err() {
+            return;
         }
     }
-
-    receive fn release() {
-        permits = permits + 1;
-    }
-
-    receive fn mark_stage_attempt() -> i64 {
-        stage_attempts = stage_attempts + 1;
-        stage_attempts
-    }
-
-    receive fn mark_stage_post_send() -> i64 {
-        stage_post_sends = stage_post_sends + 1;
-        stage_post_sends
-    }
-
-    receive fn attempts() -> i64 {
-        stage_attempts
-    }
-
-    receive fn post_sends() -> i64 {
-        stage_post_sends
-    }
 }
 
-pub actor SinkI64 {
-    var count: i64;
-    var sum: i64;
-    var first: i64;
-    var second: i64;
-    var third: i64;
-    var last_value: i64;
-    var last_label: string;
-    let control: AdmissionControlI64;
+/// Read ahead into a bounded channel using one producer task.
+///
+/// `capacity` must be positive. The source and its items must be Send. The
+/// channel holds at most `capacity` items, with one further item in the producer.
+pub gen fn prefetch<I, T>(consume source: I, capacity: i64 = 8) -> T where I: Iterator<Item = T> + Send, T: Send {
+    assert(capacity > 0);
+    scope {
+        let (output, input): (Sink<T>, Stream<T>) = stream.pipe(capacity).expect("pipeline capacity");
+        let producer = fork produce(source, output);
+        for value in input {
+            yield value;
+        }
+        await producer;
+    };
+}
 
-    mailbox 1;
+fn dispatch<I, T, U>(consume source: I, consume inboxes: Vec<Inbox<T>>, consume ready: Stream<i64>, consume permits: semaphore.Semaphore, consume output: Sink<Result<Completed<U>, ScopeFailure>>) where I: Iterator<Item = T> {
+    scope {
+        var index = 0;
+        for value in source {
+            let lease = permits.lease();
+            let worker = match ready.recv() {
+                .Some(worker) => worker,
+                .None => return,
+            };
+            if inboxes[worker].sink.send(Job { index, value, lease }).is_err() {
+                return;
+            }
+            index = index + 1;
+        }
+    } handle failure {
+        let _ = output.send(.Err(failure));
+    };
+}
 
-    receive fn push(item: PipelineItemI64) {
-        var admitted = false;
-        while !admitted {
-            match control.take_permit() {
-                .Ok(open) => {
-                    admitted = open;
+fn work<T, U>(id: i64, consume input: Stream<Job<T>>, consume output: Sink<Result<Completed<U>, ScopeFailure>>, consume ready: Sink<i64>, transform: fn[clone, suspends](T) -> U) {
+    scope {
+        loop {
+            if ready.send(id).is_err() {
+                return;
+            }
+            let job = match input.recv() {
+                .Some(job) => job,
+                .None => return,
+            };
+            let Job { index, value, lease } = job;
+            let mapped = transform(value);
+            if output.send(.Ok(Completed { index, value: mapped, lease })).is_err() {
+                return;
+            }
+        }
+    } handle failure {
+        let _ = output.send(.Err(failure));
+    };
+}
+
+/// Transform items with at most `concurrency` workers.
+///
+/// Input order is the default; Completion emits each available result. A
+/// shared admission limit bounds active jobs and results waiting for emission.
+/// Each worker receives its own copy of the cloneable transform, whose captures
+/// must be Send. Failures propagate through the owning scope; items are not retried.
+/// The transform borrows its input; the worker releases that input after the
+/// call. Results may own resources independently of the input.
+/// `concurrency` must be positive.
+pub gen fn map<I, T, U>(consume source: I, transform: fn[clone, suspends](T) -> U, concurrency: i64 = 4, order: Order = .Input) -> U where I: Iterator<Item = T> + Send, T: Send, U: Send {
+    assert(concurrency > 0);
+    scope {
+        let (output, input): (Sink<Result<Completed<U>, ScopeFailure>>, Stream<Result<Completed<U>, ScopeFailure>>) = stream.pipe(concurrency).expect("pipeline concurrency");
+        let (ready_sink, ready): (Sink<i64>, Stream<i64>) = stream.pipe(concurrency).expect("pipeline workers");
+        var inboxes: Vec<Inbox<T>> = [];
+        var workers = [];
+        for id in 0..concurrency {
+            let (inbox, jobs): (Sink<Job<T>>, Stream<Job<T>>) = stream.pipe(1).expect("pipeline worker");
+            inboxes.push(Inbox { sink: inbox });
+            workers.push(fork work(id, jobs, output.clone(), ready_sink.clone(), transform));
+        }
+        let producer = fork dispatch(source, inboxes, ready, semaphore.new(concurrency), output);
+        ready_sink.close();
+        var next = 0;
+        var waiting: HashMap<i64, Completed<U>> = HashMap.new();
+        for event in input {
+            let completed = match event {
+                .Ok(value) => value,
+                .Err(failure) => panic(f"{failure}"),
+            };
+            match order {
+                .Completion => {
+                    let Completed { index: _, value, lease } = completed;
+                    yield value;
+                    lease.close();
                 }
-                .Err(_) => {
-                    return;
+                .Input => {
+                    waiting.insert(completed.index, completed);
+                    loop {
+                        let ordered = match waiting.remove(next) {
+                            .Some(value) => value,
+                            .None => break,
+                        };
+                        let Completed { index: _, value, lease } = ordered;
+                        yield value;
+                        lease.close();
+                        next = next + 1;
+                    }
                 }
             }
-            if !admitted {
-                sleep(1ms);
-            }
         }
-        count = count + 1;
-        sum = sum + item.value;
-        if count == 1 {
-            first = item.value;
-        } else if count == 2 {
-            second = item.value;
-        } else if count == 3 {
-            third = item.value;
-        }
-        last_value = item.value;
-        last_label = item.label;
-    }
-
-    receive fn count() -> i64 {
-        count
-    }
-
-    receive fn sum() -> i64 {
-        sum
-    }
-
-    receive fn last_value() -> i64 {
-        last_value
-    }
-
-    receive fn item(index: i64) -> i64 {
-        if index == 0 {
-            first
-        } else if index == 1 {
-            second
-        } else {
-            third
-        }
-    }
-
-    receive fn last_label() -> string {
-        last_label
-    }
-}
-
-pub actor StageI64 {
-    let next: SinkI64;
-    let control: AdmissionControlI64;
-
-    mailbox 1;
-
-    receive fn push(item: PipelineItemI64) -> bool {
-        match control.mark_stage_attempt() {
-            .Ok(_) => {}
-            .Err(_) => {
-                return false;
-            }
-        }
-        if item.crash_stage {
-            panic("pipeline S1 stage crash");
-        }
-        let transformed = PipelineItemI64 { value: item.value * 2, label: item.label + ":stage", crash_stage: false };
-        // Admission is the sink's mailbox accepting the item, not the sink
-        // finishing it: the sink may be waiting on a permit, so a completion
-        // call here would hold the stage behind it. The submission still waits
-        // for a free seat, which is the capacity-one barrier.
-        match mailbox(next, on_full: .Wait).push(transformed) {
-            .Ok(_) => {}
-            .Err(_) => {
-                return false;
-            }
-        }
-        match control.mark_stage_post_send() {
-            .Ok(_) => true,
-            .Err(_) => false,
-        }
-    }
-}
-
-pub actor SourceI64 {
-    let next: StageI64;
-    let sink: SinkI64;
-    let control: AdmissionControlI64;
-
-    mailbox 1;
-
-    receive fn push(item: PipelineItemI64) -> bool {
-        match next.push(item) {
-            .Ok(accepted) => accepted,
-            .Err(_) => false,
-        }
-    }
-
-    receive fn count() -> i64 {
-        match sink.count() {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn sum() -> i64 {
-        match sink.sum() {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn last_value() -> i64 {
-        match sink.last_value() {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn item(index: i64) -> i64 {
-        match sink.item(index) {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn last_label() -> string {
-        match sink.last_label() {
-            .Ok(value) => value,
-            .Err(_) => "",
-        }
-    }
-
-    receive fn release_sink() {
-        let _ = control.release();
-    }
-
-    receive fn control_handle() -> AdmissionControlI64 {
-        control
-    }
-
-    receive fn stage_attempts() -> i64 {
-        match control.attempts() {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn stage_post_sends() -> i64 {
-        match control.post_sends() {
-            .Ok(value) => value,
-            .Err(_) => -1,
-        }
-    }
-
-    receive fn shutdown(expected_count: i64) -> bool {
-        match sink.count() {
-            .Ok(value) => value == expected_count,
-            .Err(_) => false,
-        }
-    }
-}
-
-/// Configure a concrete two-stage pipeline.
-pub fn from(sink_permits: i64) -> PipelineI64TwoStage {
-    PipelineI64TwoStage { sink_permits: sink_permits }
-}
-
-/// Spawn and wire the source, fixed transform stage, sink, and control actor.
-pub fn run(pipeline: PipelineI64TwoStage) -> SourceI64 {
-    let control = spawn AdmissionControlI64 { permits: pipeline.sink_permits, stage_attempts: 0, stage_post_sends: 0 };
-    let sink = spawn SinkI64 { count: 0, sum: 0, first: 0, second: 0, third: 0, last_value: 0, last_label: "", control: control };
-    let stage = spawn StageI64 { next: sink, control: control };
-    spawn SourceI64 { next: stage, sink: sink, control: control }
+        await producer;
+        await workers;
+    };
 }

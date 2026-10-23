@@ -62,11 +62,11 @@ fn binding_initializer<'a>(output: &'a hew_hir::LowerOutput, name: &str) -> &'a 
 }
 
 fn assert_generator_type(ty: &ResolvedTy, yield_ty: &ResolvedTy, return_ty: &ResolvedTy) {
-    let ResolvedTy::Named { head, args, .. } = ty else {
-        panic!("expected Generator<Yield, Return>, got {ty:?}");
-    };
-    assert_eq!(head.builtin(), Some(hew_types::BuiltinType::Generator));
-    assert_eq!(args, &vec![yield_ty.clone(), return_ty.clone()]);
+    assert_eq!(ty.generator_parts(), Some((yield_ty, return_ty)));
+    assert!(
+        matches!(ty, ResolvedTy::Generator { producers, .. } if !producers.is_empty()),
+        "inferred generator must retain its checked producer: {ty:?}"
+    );
 }
 
 fn yield_values(block: &hew_hir::HirBlock) -> Vec<(&Option<Box<HirExpr>>, &ResolvedTy)> {

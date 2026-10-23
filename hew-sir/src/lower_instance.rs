@@ -26,6 +26,7 @@ impl<'a> InstanceService<'a> {
             statuses: Vec::new(),
             by_instance: HashMap::new(),
             closures: Vec::new(),
+            generator_send_obligations: Vec::new(),
             actors: Vec::new(),
             actor_sources: HashMap::new(),
             supervisors: Vec::new(),
@@ -1011,6 +1012,42 @@ impl<'a> InstanceService<'a> {
             let result = self.lower_callable(callable);
             self.record_callable_result(callable, result);
         }
+        self.finish_generator_send_obligations();
+    }
+
+    fn finish_generator_send_obligations(&mut self) {
+        for (owner, ty, site) in std::mem::take(&mut self.generator_send_obligations) {
+            let mut pending = vec![ty];
+            let mut seen = std::collections::BTreeSet::new();
+            while let Some(ty) = pending.pop() {
+                if !seen.insert(ty.clone()) {
+                    continue;
+                }
+                match ty {
+                    ResolvedTy::Generator { producers, .. } => {
+                        for producer in producers {
+                            let mut found = false;
+                            for closure in &mut self.closures {
+                                if matches!(&closure.generator_type, Some(ResolvedTy::Generator { producers, .. }) if producers.contains(&producer))
+                                {
+                                    found = true;
+                                    if !closure.generator_send_sites.contains(&site) {
+                                        closure.generator_send_sites.push(site.clone());
+                                    }
+                                }
+                            }
+                            if !found {
+                                self.record_callable_result(owner, Err("cannot prove generator Send: the producer has no checked concrete frame".into()));
+                            }
+                        }
+                    }
+                    ResolvedTy::Closure { captures, .. } => pending.extend(captures),
+                    ResolvedTy::GenericCallable { callable, .. } => pending.push(*callable),
+                    ResolvedTy::Function { .. } => {}
+                    _ => hew_types::type_facts::push_type_components(&ty, &mut pending),
+                }
+            }
+        }
     }
 
     pub(super) fn lower_callable(&mut self, callable: CallableId) -> Result<SemFunction, String> {
@@ -1401,7 +1438,8 @@ impl<'a> InstanceService<'a> {
                 .map_err(|_| "closure count exceeds u32".to_string())?,
         );
         self.closures.push(crate::SemClosure {
-            generator_yield: None,
+            generator_type: None,
+            generator_send_sites: Vec::new(),
             id,
             instance,
             entries: Vec::new(),
@@ -1775,6 +1813,7 @@ impl<'a> InstanceService<'a> {
             module,
             table,
             checked_facts,
+            callable_facts,
             test_entries,
             used_templates,
             mut functions,
@@ -1801,6 +1840,11 @@ impl<'a> InstanceService<'a> {
             .generic_templates
             .into_iter()
             .filter(|template| used_templates.contains(&template.id))
+            .map(|mut template| {
+                template.unconstrained_parameters =
+                    callable_facts.unconstrained_parameters(template.id.declaration);
+                template
+            })
             .collect();
         // Bodies are produced in demand order, which depends on the entry's
         // call graph. Publishing them in callable order instead keeps the

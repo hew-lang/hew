@@ -1223,6 +1223,102 @@ fn streams_satisfy_generic_iterator_bounds() {
 }
 
 #[test]
+fn pipelines_preserve_order_and_drain_on_every_exit() {
+    for name in [
+        "pipeline-generator-composition",
+        "example-concurrent-pipeline",
+        "pipeline-bounded-admission",
+        "pipeline-stdlib-pipeline-owned-normal",
+        "pipeline-stdlib-pipeline-owned-shutdown-drain",
+        "pipeline-stdlib-pipeline-owned-cancellation",
+        "pipeline-stdlib-pipeline-owned-crash",
+    ] {
+        let mut inputs = hew_compile::SourceSet::in_memory();
+        inputs.insert(
+            "pipeline_support/items.hew",
+            include_str!("../../tests/core-acceptance/cases/pipeline_support/items.hew"),
+        );
+        assert_native_manifest(name, inputs);
+    }
+}
+
+#[test]
+fn pipelines_close_actor_streams_before_next_turn() {
+    assert_native_manifest("pipeline-actor-stream", hew_compile::SourceSet::in_memory());
+}
+
+#[test]
+fn generator_send_local_and_imported_producers_execute() {
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "generator_send_support/safe.hew",
+        include_str!("../../tests/core-acceptance/cases/generator_send_support/safe.hew"),
+    );
+    assert_native_manifest("generator-send-local-state", inputs);
+}
+
+#[test]
+fn generator_send_refusals_match_native_source_contracts() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
+    for name in [
+        "generator-send-retained-reject",
+        "generator-send-callback-reject",
+        "generator-send-reassigned-reject",
+        "generator-send-factory-reject",
+        "generator-send-imported-reject",
+        "generator-send-retained-value-reject",
+    ] {
+        let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml"))).unwrap();
+        let manifest: toml::Value = toml::from_str(&manifest).unwrap();
+        let case = &manifest["case"][0];
+        let source = std::fs::read_to_string(root.join(case["source"].as_str().unwrap())).unwrap();
+        let mut inputs = hew_compile::SourceSet::in_memory();
+        inputs.insert(
+            "generator_send_support/retained.hew",
+            include_str!("../../tests/core-acceptance/cases/generator_send_support/retained.hew"),
+        );
+        let compiled = hew_wasm::sandbox::compile_to_sandbox_bytecode_with_inputs(
+            &source,
+            Some("sandbox-vm-export"),
+            inputs,
+        )
+        .unwrap();
+        assert!(
+            compiled.bytecode.is_none(),
+            "{name} must refuse before emitting executable bytecode"
+        );
+        let errors: Vec<_> = compiled
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == "error")
+            .collect();
+        let expected = case["expected"]["diagnostics"].as_array().unwrap();
+        assert_eq!(errors.len(), expected.len(), "{name}: {errors:?}");
+        for (error, expected) in errors.iter().zip(expected) {
+            assert_eq!(error.kind, expected["code"].as_str().unwrap(), "{name}");
+            assert_eq!(
+                error.message,
+                expected["message"].as_str().unwrap(),
+                "{name}"
+            );
+            let line = usize::try_from(expected["line"].as_integer().unwrap()).unwrap();
+            let column = usize::try_from(expected["column"].as_integer().unwrap()).unwrap();
+            let start = source
+                .split_inclusive('\n')
+                .take(line - 1)
+                .map(str::len)
+                .sum::<usize>()
+                + column
+                - 1;
+            assert_eq!(
+                error.start_offset, start,
+                "{name} attributes the refusal to its source Send call"
+            );
+        }
+    }
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",

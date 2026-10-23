@@ -595,12 +595,12 @@ impl LowerCtx {
             // `for x in <generator>`: the generator value IS the iterator. The
             // loop binds it to `__hew_for_iter_*` (consuming it) and drives one
             // `.next()` per iteration; the binding's scope-exit drop frees it.
-            ResolvedTy::Named {
-                ref args,
-                head: hew_types::TypeHead::Builtin(BuiltinType::Generator),
-                ..
-            } if !args.is_empty() => {
-                let elem_ty = args[0].clone();
+            ref generator if generator.generator_parts().is_some() => {
+                let elem_ty = generator
+                    .generator_parts()
+                    .expect("generator contract")
+                    .0
+                    .clone();
                 let gen_ty = lowered_iterable.ty.clone();
                 // Generator is a linear resource: iterating consumes it.
                 lowered_iterable.intent = IntentKind::Consume;

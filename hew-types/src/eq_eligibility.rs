@@ -178,7 +178,7 @@ fn eq_ineligibility_inner(
                 member: String::new(),
             })
         }
-        Ty::Bytes => Some(EqEligibilityFailure {
+        Ty::Generator { .. } | Ty::Bytes => Some(EqEligibilityFailure {
             reason: EqEligibility::IneligibleManaged(ty.clone()),
             member: String::new(),
         }),

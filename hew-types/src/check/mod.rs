@@ -58,6 +58,7 @@ mod expressions;
 mod generic_callables;
 mod generic_schema;
 pub use generic_schema::AssociatedTypeSchemas;
+mod generator_send;
 mod generics;
 mod items;
 mod lints;
@@ -3171,6 +3172,7 @@ impl Checker {
             from_impls: self.from_impls.clone(),
             dyn_trait_method_calls: self.dyn_trait_method_calls.clone(),
             closure_capture_facts: self.closure_capture_facts.clone(),
+            generator_capture_facts: self.generator_capture_facts.clone(),
             select_sources: self.select_sources.clone(),
             race_operands: self.race_operands.clone(),
             task_lifetimes: self.task_lifetimes.clone(),
@@ -4290,6 +4292,7 @@ impl Checker {
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,
+            generator_capture_facts: self.generator_capture_facts.clone(),
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
             lambda_actor_declarations: std::mem::take(&mut self.lambda_actor_declarations),

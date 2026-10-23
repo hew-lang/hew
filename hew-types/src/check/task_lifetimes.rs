@@ -945,22 +945,26 @@ impl Checker {
         candidates: &IndirectCallCandidates,
         marker: crate::traits::MarkerTrait,
         flows: &HashMap<SpanKey, Vec<CallableArgumentFlow>>,
-    ) -> bool {
+    ) -> (bool, Vec<crate::Ty>) {
+        let mut requirements = Vec::new();
         let mut environments = OriginEnvironments::default();
         Self::seed_value_sources(flows, &mut environments);
         let actuals = environments.intern(Actuals::new(), None);
-        self.value_marker(
+        let proven = self.value_marker(
             ty,
             candidates,
             marker,
             actuals,
             &mut HashSet::new(),
             &mut environments,
-        )
+            &mut requirements,
+        );
+        (proven, requirements)
     }
 
     #[expect(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "reuse canonical value projections and their exact call environments"
     )]
     fn value_marker(
@@ -971,16 +975,18 @@ impl Checker {
         actuals: usize,
         seen: &mut HashSet<(SpanKey, usize)>,
         environments: &mut OriginEnvironments,
+        requirements: &mut Vec<crate::Ty>,
     ) -> bool {
         let ty = self.subst.resolve(ty);
-        if self.type_has_marker(&ty, marker) {
+        if !ty.contains_inferred_generator() && self.type_has_marker(&ty, marker) {
             return true;
         }
         let captures_have_marker =
             |site: &SpanKey,
              actuals,
              seen: &mut HashSet<_>,
-             environments: &mut OriginEnvironments| {
+             environments: &mut OriginEnvironments,
+             requirements: &mut Vec<crate::Ty>| {
                 if !seen.insert((site.clone(), actuals)) {
                     return false;
                 }
@@ -996,6 +1002,7 @@ impl Checker {
                                 actuals,
                                 seen,
                                 environments,
+                                requirements,
                             )
                         })
                     });
@@ -1007,9 +1014,71 @@ impl Checker {
             ..
         } = ty.callable_body()
         {
-            return captures_have_marker(site, actuals, seen, environments);
+            return captures_have_marker(site, actuals, seen, environments, requirements);
         }
         match &ty {
+            generator
+                if generator.as_generator().is_some()
+                    && marker == crate::traits::MarkerTrait::Send =>
+            {
+                let (origins, complete) =
+                    self.resolve_callable_values(candidates, actuals, environments);
+                complete
+                    && !origins.is_empty()
+                    && origins.iter().all(|origin| {
+                        let source = match &origin.candidate {
+                            CallableCandidate::GeneratorCall(site)
+                            | CallableCandidate::GeneratorBlock(site) => self
+                                .expr_types
+                                .get(site)
+                                .map(|ty| self.normalize_for_use(ty)),
+                            CallableCandidate::Generator(_) => Some(ty.clone()),
+                            _ => None,
+                        };
+                        let Some(crate::Ty::Generator {
+                            yields,
+                            returns,
+                            producers,
+                        }) = source
+                        else {
+                            return false;
+                        };
+                        if producers.is_empty() {
+                            return false;
+                        }
+                        let proven = producers.iter().all(|producer| {
+                            let substitutions = producer.arguments.iter().cloned().collect();
+                            self.generator_capture_facts
+                                .get(&producer.body)
+                                .is_some_and(|captures| {
+                                    captures.iter().all(|capture| {
+                                        self.value_marker(
+                                            &capture
+                                                .ty
+                                                .substitute_type_params_parallel(&substitutions),
+                                            &capture.value_candidates,
+                                            marker,
+                                            origin.actuals,
+                                            seen,
+                                            environments,
+                                            requirements,
+                                        )
+                                    })
+                                })
+                        });
+                        if proven {
+                            let source = crate::Ty::Generator {
+                                yields,
+                                returns,
+                                producers,
+                            };
+                            if !requirements.contains(&source) {
+                                requirements.push(source);
+                            }
+                        }
+                        proven
+                    })
+            }
             crate::Ty::Function { .. } | crate::Ty::GenericCallable { .. } => {
                 let (origins, complete) =
                     self.resolve_callable_values(candidates, actuals, environments);
@@ -1017,9 +1086,13 @@ impl Checker {
                     && !origins.is_empty()
                     && origins.iter().all(|origin| match &origin.candidate {
                         CallableCandidate::Declaration(_) => true,
-                        CallableCandidate::Closure(site) => {
-                            captures_have_marker(site, origin.actuals, seen, environments)
-                        }
+                        CallableCandidate::Closure(site) => captures_have_marker(
+                            site,
+                            origin.actuals,
+                            seen,
+                            environments,
+                            requirements,
+                        ),
                         _ => false,
                     })
             }
@@ -1036,11 +1109,20 @@ impl Checker {
                         .collect(),
                     may_be_unknown: candidates.may_be_unknown,
                 };
-                self.value_marker(ty, &projected, marker, actuals, seen, environments)
+                self.value_marker(
+                    ty,
+                    &projected,
+                    marker,
+                    actuals,
+                    seen,
+                    environments,
+                    requirements,
+                )
             }),
-            crate::Ty::Named { head, args }
-                if args.iter().all(|ty| self.type_has_marker(ty, marker)) =>
-            {
+            crate::Ty::Named { head, args } => {
+                if self.registry.denies_marker(*head, marker) {
+                    return false;
+                }
                 let Some(owner) = head.nominal() else {
                     return false;
                 };
@@ -1080,7 +1162,15 @@ impl Checker {
                                 .collect(),
                             may_be_unknown: candidates.may_be_unknown,
                         };
-                        self.value_marker(&ty, &projected, marker, actuals, seen, environments)
+                        self.value_marker(
+                            &ty,
+                            &projected,
+                            marker,
+                            actuals,
+                            seen,
+                            environments,
+                            requirements,
+                        )
                     })
             }
             _ => false,
@@ -1415,6 +1505,8 @@ impl Checker {
             CallableCandidate::TaskProducer(_)
             | CallableCandidate::Closure(_)
             | CallableCandidate::GeneratorBlock(_)
+            | CallableCandidate::Generator(_)
+            | CallableCandidate::GeneratorCall(_)
             | CallableCandidate::Declaration(_)
                 if projections.is_empty() || descendants =>
             {
@@ -1469,6 +1561,18 @@ impl Checker {
                 let arguments = self.task_call_arguments(&owner, pending, actuals);
                 let call_actuals =
                     Self::task_call_context(&owner, callee.actuals, arguments, environments);
+                if !receiver_output
+                    && projections.is_empty()
+                    && returns
+                        .known
+                        .iter()
+                        .any(|candidate| matches!(candidate, CallableCandidate::Generator(_)))
+                {
+                    return vec![ValueOrigin {
+                        candidate: CallableCandidate::GeneratorCall(site.clone()),
+                        actuals: call_actuals,
+                    }];
+                }
                 Self::task_value_origins(returns, call_actuals, projections, environments)
             })
             .collect()

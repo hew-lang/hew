@@ -13,6 +13,11 @@ use hew_types::ResolvedTy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SirDiagnosticKind {
+    /// A demanded generator transfer retains a value that is not Send.
+    InvalidGeneratorSend {
+        message: String,
+        site: crate::GeneratorSendSite,
+    },
     /// A source linear owner remains at a normal scope exit or replacement.
     UnconsumedLinear {
         binding: Option<String>,
@@ -765,6 +770,9 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         if let Some(analysis) = analysis {
             functions.insert(function.callable, analysis);
         }
+    }
+    if diagnostics.is_empty() {
+        diagnostics.extend(crate::generator_send::verify(module, &functions));
     }
     if diagnostics.is_empty() {
         Ok(CheckedModule { module, functions })
@@ -3139,11 +3147,11 @@ fn verify_callable_operation(
                     .get(closure.0 as usize)
                     .filter(|descriptor| descriptor.id == *closure)
                     .ok_or("generator has no exact producer environment")?;
-                let (yielded, returned) = crate::generator_parts(&result.ty)
+                let (_, returned) = crate::generator_parts(&result.ty)
                     .ok_or("generator construction has no checked generator type")?;
                 let (params, output, capabilities) = crate::callable_parts(&descriptor.ty)?;
                 if types.get(&callable.value) != Some(&descriptor.ty)
-                    || descriptor.generator_yield.as_ref() != Some(yielded)
+                    || descriptor.generator_type.as_ref() != Some(&result.ty)
                     || output != returned
                     || !params.is_empty()
                     || capabilities.call != hew_types::CallableCallMode::Once
@@ -6164,7 +6172,7 @@ fn verify_terminator_shape(
                                     .any(|entry| entry.body == function.callable)
                             })
                         })
-                        .and_then(|closure| closure.generator_yield.as_ref());
+                        .and_then(|closure| closure.generator_yield());
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
                         && matches!(inputs.as_slice(), [input]

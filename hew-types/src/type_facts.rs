@@ -47,6 +47,8 @@ pub enum CloneKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SendFact {
     Known(bool),
+    /// An inferred generator requires a concrete producer-frame proof.
+    DeferredToGeneratorFacts,
     /// A `Closure` row: the fact lives in `closure_facts`, keyed per closure
     /// expression rather than per type.
     DeferredToClosureFacts,
@@ -395,7 +397,12 @@ impl ImplMethodBinders {
             .collect();
         let pattern = self.receiver.substitute_type_params_parallel(&replacements);
         let mut subst = crate::ty::Substitution::new();
-        let receiver_ty = receiver.to_ty();
+        let receiver_ty = match receiver {
+            ResolvedTy::Generator {
+                yields, returns, ..
+            } => crate::Ty::generator(yields.to_ty(), returns.to_ty()),
+            other => other.to_ty(),
+        };
         crate::unify::unify_exact(&mut subst, &pattern, &receiver_ty).map_err(|_| {
             ClassError::UnknownDeclaration {
                 name: defs.display(method).to_string(),
@@ -1876,33 +1883,58 @@ impl TypeFactService {
     }
 
     fn send_fact(&self, ty: &ResolvedTy, as_ty: &crate::Ty) -> SendFact {
+        if ty.generator_parts().is_some() {
+            return SendFact::DeferredToGeneratorFacts;
+        }
         if matches!(ty.callable_body(), ResolvedTy::Closure { .. }) {
             return SendFact::DeferredToClosureFacts;
         }
-        let component_deferred = matches!(
-            ty,
-            ResolvedTy::Tuple(_)
-                | ResolvedTy::Array(_, _)
-                | ResolvedTy::Slice(_)
-                | ResolvedTy::Task(_)
-        ) && {
-            let mut components = Vec::new();
-            push_type_components(ty, &mut components);
-            components.iter().any(|component| {
-                self.rows
-                    .get(&TypeInstanceKey(component.clone()))
-                    .is_some_and(|row| row.send == SendFact::DeferredToClosureFacts)
-            })
-        };
-        if component_deferred {
-            SendFact::DeferredToClosureFacts
-        } else {
-            SendFact::Known(
-                self.context
+        let components = match ty {
+            ResolvedTy::Named { head, .. }
+                if self
+                    .context
                     .registry
-                    .implements_marker(as_ty, MarkerTrait::Send),
-            )
+                    .denies_marker(*head, MarkerTrait::Send) =>
+            {
+                return SendFact::Known(false)
+            }
+            ResolvedTy::Named { .. } => self
+                .record_fields(ty)
+                .ok()
+                .map(|(_, fields)| fields.into_iter().map(|(_, ty)| ty).collect::<Vec<_>>()),
+            ResolvedTy::Tuple(_)
+            | ResolvedTy::Array(_, _)
+            | ResolvedTy::Slice(_)
+            | ResolvedTy::Task(_) => {
+                let mut components = Vec::new();
+                push_type_components(ty, &mut components);
+                Some(components)
+            }
+            _ => None,
+        };
+        if let Some(components) = components {
+            let facts: Vec<_> = components
+                .iter()
+                .filter_map(|component| {
+                    self.rows
+                        .get(&TypeInstanceKey(component.clone()))
+                        .map(|row| row.send)
+                })
+                .collect();
+            if facts.len() == components.len() && !facts.contains(&SendFact::Known(false)) {
+                if facts.contains(&SendFact::DeferredToGeneratorFacts) {
+                    return SendFact::DeferredToGeneratorFacts;
+                }
+                if facts.contains(&SendFact::DeferredToClosureFacts) {
+                    return SendFact::DeferredToClosureFacts;
+                }
+            }
         }
+        SendFact::Known(
+            self.context
+                .registry
+                .implements_marker(as_ty, MarkerTrait::Send),
+        )
     }
 }
 
@@ -1927,6 +1959,7 @@ impl TypeFacts {
     ) -> Result<Self, ClassError> {
         let (class, clone) = crate::value_class::classify_ty(ty, decls)?;
         let send = match ty.callable_body() {
+            ty if ty.generator_parts().is_some() => SendFact::DeferredToGeneratorFacts,
             ResolvedTy::Closure { .. } => SendFact::DeferredToClosureFacts,
             // MARKED SHORTCUT - a trait object's send fact is `false` here.
             // WHY: §6.3 makes it "the bound list contains `Send`", and that is
@@ -1956,6 +1989,20 @@ impl TypeFacts {
 /// the types its rows are built from.
 pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
     match ty {
+        ResolvedTy::Generator {
+            yields,
+            returns,
+            producers,
+        } => {
+            out.push((**yields).clone());
+            out.push((**returns).clone());
+            out.extend(
+                producers
+                    .iter()
+                    .flat_map(|producer| &producer.arguments)
+                    .map(|(_, ty)| ty.clone()),
+            );
+        }
         ResolvedTy::GenericCallable { callable, .. } => {
             if let ResolvedTy::Closure { captures, .. } = callable.callable_body() {
                 out.extend(captures.iter().cloned());
@@ -2876,7 +2923,7 @@ fn main() {}"#,
         // is an explicit match that must name the deferral arm.
         let read_as_bool = match facts.send {
             SendFact::Known(value) => Some(value),
-            SendFact::DeferredToClosureFacts => None,
+            SendFact::DeferredToClosureFacts | SendFact::DeferredToGeneratorFacts => None,
         };
         assert_eq!(None, read_as_bool);
     }

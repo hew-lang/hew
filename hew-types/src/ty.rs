@@ -474,7 +474,7 @@ pub(crate) enum HashSetLoweringTypeKey {
 }
 
 /// A callable body, independent of its linker spelling.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EffectBody {
     Declaration(crate::DefId),
     /// Deferred execution of a named generator, separate from its creator.
@@ -483,6 +483,28 @@ pub enum EffectBody {
     GeneratorBlock(crate::check::SpanKey),
     /// Also identifies the lifted body of a fork block.
     Closure(crate::check::SpanKey),
+}
+
+/// One possible producer of an inferred generator, with its complete generic
+/// environment. This evidence survives value-preserving annotations and joins;
+/// it does not certify that the producer's suspended frame is transferable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GeneratorProducer<T> {
+    pub body: EffectBody,
+    pub arguments: Vec<(ParamHead, T)>,
+}
+
+impl<T> GeneratorProducer<T> {
+    pub fn map<U>(&self, mut f: impl FnMut(&T) -> U) -> GeneratorProducer<U> {
+        GeneratorProducer {
+            body: self.body.clone(),
+            arguments: self
+                .arguments
+                .iter()
+                .map(|(parameter, ty)| (*parameter, f(ty)))
+                .collect(),
+        }
+    }
 }
 
 /// The internal representation of a type in Hew.
@@ -554,6 +576,14 @@ pub enum Ty {
         head: TypeHead,
         /// Generic type arguments
         args: Vec<Ty>,
+    },
+
+    /// A generator whose possible producers remain known. `Send` requires a
+    /// checked retained-frame obligation for every instantiated producer.
+    Generator {
+        yields: Box<Ty>,
+        returns: Box<Ty>,
+        producers: Vec<GeneratorProducer<Ty>>,
     },
 
     /// Function type: `fn(T1, T2) -> R`
@@ -1061,6 +1091,15 @@ impl Ty {
             Ty::Unit => write!(f, "()"),
             Ty::Never => write!(f, "!"),
             Ty::Var(v) => write!(f, "{v}"),
+            Ty::Generator {
+                yields, returns, ..
+            } => {
+                write!(f, "Generator<")?;
+                yields.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, ", ")?;
+                returns.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                write!(f, ">")
+            }
             Ty::Tuple(elems) => {
                 write!(f, "(")?;
                 for (i, elem) in elems.iter().enumerate() {
@@ -1683,12 +1722,41 @@ impl Ty {
     #[must_use]
     pub fn as_generator(&self) -> Option<(&Ty, &Ty)> {
         match self {
+            Ty::Generator {
+                yields, returns, ..
+            } => Some((yields, returns)),
             Ty::Named {
                 head: crate::TypeHead::Builtin(BuiltinType::Generator),
                 args,
                 ..
             } if args.len() == 2 => Some((&args[0], &args[1])),
             _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn contains_inferred_generator(&self) -> bool {
+        matches!(self, Self::Generator { .. }) || self.any_child(&Self::contains_inferred_generator)
+    }
+
+    /// Whether this value's type can carry a generator, including an erased view.
+    #[must_use]
+    pub fn contains_generator(&self) -> bool {
+        self.as_generator().is_some() || self.any_child(&Self::contains_generator)
+    }
+
+    /// Mutable storage keeps its declared generator view; construction origins
+    /// remain in the checker's value-flow facts rather than freezing the first
+    /// assignment's producer into the binding type.
+    pub(crate) fn erase_generator_producers(&self) -> Self {
+        match self {
+            Self::Generator {
+                yields, returns, ..
+            } => Self::generator(
+                yields.erase_generator_producers(),
+                returns.erase_generator_producers(),
+            ),
+            _ => self.map_children(&mut Self::erase_generator_producers),
         }
     }
 
@@ -1994,8 +2062,24 @@ impl Ty {
 
     /// Apply a function to each child type, reconstructing the composite.
     /// Leaf types (primitives, Var, Error) return `self.clone()`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one exhaustive structural traversal of type variants"
+    )]
     pub(crate) fn map_children(&self, f: &mut impl FnMut(&Ty) -> Ty) -> Ty {
         match self {
+            Ty::Generator {
+                yields,
+                returns,
+                producers,
+            } => Ty::Generator {
+                yields: Box::new(f(yields)),
+                returns: Box::new(f(returns)),
+                producers: producers
+                    .iter()
+                    .map(|producer| producer.map(&mut *f))
+                    .collect(),
+            },
             Ty::GenericCallable {
                 parameters,
                 callable,
@@ -2103,6 +2187,17 @@ impl Ty {
         f: &mut impl FnMut(&'a Ty) -> std::ops::ControlFlow<()>,
     ) -> std::ops::ControlFlow<()> {
         match self {
+            Ty::Generator {
+                yields,
+                returns,
+                producers,
+            } => {
+                f(yields)?;
+                f(returns)?;
+                for (_, ty) in producers.iter().flat_map(|producer| &producer.arguments) {
+                    f(ty)?;
+                }
+            }
             Ty::GenericCallable {
                 parameters,
                 callable,

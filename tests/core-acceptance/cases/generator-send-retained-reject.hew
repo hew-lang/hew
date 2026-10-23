@@ -1,0 +1,11 @@
+fn require_send<T: Send>(consume value: T) {}
+
+gen fn retained() -> i64 {
+    let local = Rc.new(7);
+    yield 1;
+    assert(local.get() == 7);
+}
+
+fn main() {
+    require_send(retained());
+}

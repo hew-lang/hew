@@ -1,0 +1,13 @@
+[[case]]
+id = "generator-send-factory-reject"
+intent = "A nominal Self-returning implementation cannot launder a different generator producer through a refined generic argument."
+source = "cases/generator-send-factory-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "BoundsNotSatisfied"
+line = 24
+column = 5
+message = "type `Generator<i64, ()>` does not implement trait `Factory` required by `I`"

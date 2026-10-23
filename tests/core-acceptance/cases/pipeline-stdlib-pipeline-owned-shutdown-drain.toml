@@ -1,10 +1,10 @@
 [[case]]
 id = "pipeline-stdlib-pipeline-owned-shutdown-drain"
-intent = "Ownership gates for the concrete `std::pipeline` S1 chain. Shape `pipeline_owned_shutdown_drain_high` (pipeline owned payload lifecycle edges do not double free, pipeline owned payload shutdown drain has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+intent = "Early close cancels and joins bounded prefetch and map children, releasing every queued and active affine input and constructed output exactly once."
 source = "cases/pipeline-stdlib-pipeline-owned-shutdown-drain.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 60
-
+timeout_seconds = 30
 [case.expected]
-stdout = "queued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\nqueued\n"
+stdout = "pipeline early close passed\n"
+stderr = ""
 exit = 0

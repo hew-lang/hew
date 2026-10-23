@@ -41,50 +41,51 @@ impl LowerCtx {
             .collect()
     }
 
-    /// Compute the free-variable capture set of a generator body.
-    ///
-    /// A generator body lowers into a synthesised `__hew_gen_body_*` coro ramp
-    /// whose only window onto the enclosing frame is the runtime env channel:
-    /// `Terminator::MakeGenerator` heap-copies the capture-env record and
-    /// passes it to the ramp by address. Every binding the body reads that is
-    /// NOT defined within the body itself must travel through that env:
-    ///   - for a `gen fn`, these are the generator's own formal parameters
-    ///     (the param scope is the immediate enclosing scope);
-    ///   - for a `gen { }` block, these are the captured outer locals.
-    ///
-    /// `outer_bindings` MUST be snapshotted via `visible_outer_bindings()`
-    /// BEFORE the body's own scope is pushed, so a body-local `let`/`var`
-    /// (whose binding id is minted inside `lower_block`) is correctly excluded
-    /// — only enclosing-frame bindings are candidates. The walk reuses the
-    /// general-closure capture walker; order is source order with
-    /// first-reference dedup, which fixes the env field layout that MIR's
-    /// `lower_gen_block` mirrors when it builds the env record + registers each
-    /// `capture_env_sources` entry at the matching field offset.
-    ///
-    /// This is the substrate-independent front-half: WHICH variables are free
-    /// is decided here, independent of how the MIR/codegen tail lowers the
-    /// body (the `llvm.coro` switched-resume substrate, since 5ef20d915) or
-    /// stores the env (heap-copied into the coro ramp's frame).
+    /// Materialize the checker's exact generator capture set through checked
+    /// binding identities. Send and construction consume the same facts.
     pub(super) fn collect_gen_captures(
-        body: &HirBlock,
+        &mut self,
+        producer: &hew_types::ty::EffectBody,
         outer_bindings: &HashMap<BindingId, OuterClosureBinding>,
+        span: &Span,
     ) -> Vec<HirGenCapture> {
-        let mut seen: HashSet<BindingId> = HashSet::new();
-        let mut ordered: Vec<ClosureCaptureCandidate> = Vec::new();
-        collect_general_closure_captures_walk_block(body, outer_bindings, &mut seen, &mut ordered);
-        ordered
-            .into_iter()
-            .filter_map(|(binding, name, _span)| {
+        let Some(facts) = self.generator_capture_facts.get(producer).cloned() else {
+            self.diagnostics.push(HirDiagnostic::new(
+                HirDiagnosticKind::CheckerBoundaryViolation {
+                    name: "generator".into(),
+                    reason: "missing checked capture set".into(),
+                },
+                span.clone(),
+                "generator construction requires checked captures",
+            ));
+            return Vec::new();
+        };
+        let mut captures = Vec::with_capacity(facts.len());
+        for fact in facts {
+            let binding = self.lookup_checked(fact.binding_id).and_then(|(id, ty)| {
                 outer_bindings
-                    .get(&binding)
-                    .map(|(_, ty, _, mutable)| HirGenCapture {
-                        binding,
-                        name,
-                        ty: ty.clone(),
-                        mutable: *mutable,
-                    })
-            })
-            .collect()
+                    .get(&id)
+                    .map(|(_, _, _, mutable)| (id, ty, *mutable))
+            });
+            if let Some((binding, ty, mutable)) = binding {
+                captures.push(HirGenCapture {
+                    binding,
+                    name: fact.name,
+                    ty,
+                    mutable,
+                });
+            } else {
+                self.diagnostics.push(HirDiagnostic::new(
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: fact.name,
+                        reason: "checked capture has no enclosing HIR binding".into(),
+                    },
+                    span.clone(),
+                    "generator capture lost its checked binding identity",
+                ));
+            }
+        }
+        captures
     }
 
     pub(super) fn lower_gen_block(
@@ -151,7 +152,11 @@ impl LowerCtx {
             .with_current_return_type(return_ty.clone(), |ctx| ctx.lower_block(body, &return_ty));
         self.failing_generator_item = enclosing_failing;
         self.generator_yield_tys.pop();
-        let captures = Self::collect_gen_captures(&lowered_body, &outer_bindings);
+        let captures = self.collect_gen_captures(
+            &hew_types::ty::EffectBody::GeneratorBlock(checker_key),
+            &outer_bindings,
+            &span,
+        );
 
         (
             HirExprKind::GenBlock {
@@ -167,15 +172,8 @@ impl LowerCtx {
     pub(super) fn generator_yield_return_parts(
         ty: &ResolvedTy,
     ) -> Option<(ResolvedTy, ResolvedTy)> {
-        let ResolvedTy::Named {
-            args,
-            head: hew_types::TypeHead::Builtin(BuiltinType::Generator),
-            ..
-        } = ty
-        else {
-            return None;
-        };
-        (args.len() == 2).then(|| (args[0].clone(), args[1].clone()))
+        ty.generator_parts()
+            .map(|(yields, returns)| (yields.clone(), returns.clone()))
     }
 
     pub(super) fn reject_closure_boundary(

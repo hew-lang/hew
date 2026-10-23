@@ -14,6 +14,42 @@ pub(super) struct CallableFacts<'a> {
 }
 
 impl<'a> CallableFacts<'a> {
+    pub(super) fn unconstrained_parameters(&self, declaration: DefId) -> bool {
+        self.checked
+            .fn_sigs
+            .get(&declaration)
+            .is_some_and(|signature| {
+                signature.bounds.is_empty() && signature.receiver_obligations.is_empty()
+            })
+    }
+
+    pub(super) fn send_obligations(&self, owner: &EffectBody) -> Vec<(SpanKey, hew_types::Ty)> {
+        self.checked
+            .suspension_effects
+            .send_obligations
+            .iter()
+            .filter(|(site, _)| {
+                self.checked.suspension_effects.call_owners.get(*site) == Some(owner)
+            })
+            .flat_map(|(site, types)| types.iter().cloned().map(|ty| (site.clone(), ty)))
+            .collect()
+    }
+    pub(super) fn is_iterator_next(&self, target: &hew_types::CallTarget) -> bool {
+        let hew_types::CallTarget::StaticTraitMethod {
+            declaring_trait,
+            method,
+        } = target
+        else {
+            return false;
+        };
+        self.checked
+            .lang_items
+            .get(hew_types::LangItem::IteratorNext.key())
+            .is_some_and(|binding| {
+                binding.trait_id == *declaring_trait && binding.method_id == Some(*method)
+            })
+    }
+
     pub(super) fn new(checked: &'a TypeCheckOutput) -> Self {
         Self {
             checked,
@@ -85,10 +121,18 @@ impl InstanceService<'_> {
         }
     }
 
-    fn checked_body(&self, callable: CallableId) -> Option<EffectBody> {
+    pub(super) fn checked_body(&self, callable: CallableId) -> Option<EffectBody> {
         let target = self.callable(callable)?;
         match target.instance {
             super::CallableInstance::Closure(id) => {
+                if let Some(hew_types::ResolvedTy::Generator { producers, .. }) =
+                    &self.closures.get(id.0 as usize)?.generator_type
+                {
+                    let [producer] = producers.as_slice() else {
+                        return None;
+                    };
+                    return Some(producer.body.clone());
+                }
                 let (source, _) = self.closure_sources.get(id.0 as usize)?;
                 Some(EffectBody::Closure(
                     self.module.checked_sites.get(&source.site)?.clone(),
@@ -97,7 +141,7 @@ impl InstanceService<'_> {
             super::CallableInstance::Monomorphic | super::CallableInstance::Generic(_) => {
                 Some(EffectBody::Declaration(target.declaration))
             }
-            _ => None,
+            _ => Some(EffectBody::Declaration(target.declaration)),
         }
     }
 

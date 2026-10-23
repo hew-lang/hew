@@ -1,0 +1,8 @@
+import generator_send_support.retained;
+
+fn require_send<T: Send>(consume value: T) -> bool { true }
+
+fn main() {
+    let accepted = require_send(retained.values());
+    assert(accepted);
+}

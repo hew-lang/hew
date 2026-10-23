@@ -699,7 +699,9 @@ fn classify_uncached(
         | ResolvedTy::Unit
         | ResolvedTy::Never => bits,
         ResolvedTy::String | ResolvedTy::Bytes => cow_retain,
-        ResolvedTy::CancellationToken | ResolvedTy::Task(_) => affine_none,
+        ResolvedTy::Generator { .. } | ResolvedTy::CancellationToken | ResolvedTy::Task(_) => {
+            affine_none
+        }
         ResolvedTy::Slice(_) | ResolvedTy::Pointer { .. } | ResolvedTy::Borrow { .. } => view,
         ResolvedTy::TraitObject { .. } => share_none,
         ResolvedTy::Function { capabilities, .. } => {

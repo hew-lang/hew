@@ -1,32 +1,80 @@
 import std.pipeline;
+import std.semaphore;
+import pipeline_support.items;
 
-fn main() -> i64 {
-    var i: i64 = 0;
-    while i < 50 {
-        var source = pipeline.run(pipeline.from(1));
-        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: i, label: f"crash-owned-{i}", crash_stage: true };
-        match source.push(item) {
-            .Ok(admitted) => {
-                if admitted {
-                    return 20;
-                }
-            }
-            .Err(_) => {
-                return 21;
-            }
+type BrokenSource {
+    closed: semaphore.Semaphore;
+    started: bool;
+}
+
+impl Iterator for BrokenSource {
+    type Item = items.Item;
+    fn next(var self) -> Option<items.Item> {
+        if self.started {
+            panic("pipeline source failed");
         }
-        match source.count() {
-            .Ok(count) => {
-                if count != 0 {
-                    return 22;
-                }
-            }
-            .Err(_) => {
-                return 23;
-            }
-        }
-        println("crashed");
-        i = i + 1;
+        self.started = true;
+        .Some(items.Item { index: 1, closed: self.closed.clone() })
     }
-    0
+}
+
+fn main() {
+    let closed = semaphore.new(0);
+    var failed = false;
+    scope {
+        for _index in pipeline.map(items.source(closed), |item: items.Item| {
+            if item.index == 0 {
+                panic("pipeline transform failed");
+            }
+            sleep(1h);
+            item.index
+        }, concurrency: 2) {
+            panic("failed pipeline yielded");
+        }
+    } handle failure {
+        match failure {
+            .Fault { message: _ } => {
+                failed = true;
+            }
+            .Deadline { message } => panic(message),
+        }
+    };
+    assert(failed);
+    assert(closed.count() == 6);
+    let source_closed = semaphore.new(0);
+    var source_failed = false;
+    scope {
+        for _index in pipeline.map(BrokenSource { closed: source_closed.clone(), started: false }, |item: items.Item| {
+            sleep(1h);
+            item.index
+        }, concurrency: 2) {
+            panic("failed source yielded");
+        }
+    } handle failure {
+        match failure {
+            .Fault { message: _ } => {
+                source_failed = true;
+            }
+            .Deadline { message } => panic(message),
+        }
+    };
+    assert(source_failed);
+    assert(source_closed.count() == 1);
+    let prefetched_closed = semaphore.new(0);
+    var prefetch_failed = false;
+    scope {
+        for item in pipeline.prefetch(BrokenSource { closed: prefetched_closed.clone(), started: false }, capacity: 1) {
+            assert(item.index == 1);
+        }
+    } handle failure {
+        match failure {
+            .Fault { message: _ } => {
+                prefetch_failed = true;
+            }
+            .Deadline { message } => panic(message),
+        }
+    };
+    assert(prefetch_failed);
+    assert(prefetched_closed.count() == 1);
+    println("pipeline fault cleanup passed");
 }

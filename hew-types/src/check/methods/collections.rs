@@ -476,6 +476,7 @@ impl Checker {
             | Ty::Array(_, _)
             | Ty::Slice(_)
             | Ty::Named { .. }
+            | Ty::Generator { .. }
             | Ty::GenericCallable { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }

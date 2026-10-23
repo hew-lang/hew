@@ -324,10 +324,11 @@ pub(super) fn verify_calls(
                 ));
             }
             PhysicalTerminator::RuntimeCall { action, .. }
-                if action
-                    .family
-                    .semantic_contract()
-                    .is_none_or(hew_types::RuntimeSemanticContract::propagates_fault) =>
+                if action.family.semantic_contract().is_none_or(|contract| {
+                    contract
+                        .failures
+                        .contains(&hew_types::RuntimeLogicalFailure::CallbackFault)
+                }) =>
             {
                 return Err(PhysicalError::new(
                     "physical defer call has unproven effects",

@@ -1,0 +1,14 @@
+import std.pipeline;
+
+gen fn words() -> string {
+    yield "alpha";
+    yield "beta";
+    yield "gamma";
+}
+
+fn main() {
+    let input = pipeline.prefetch(words(), capacity: 2);
+    for summary in pipeline.map(input, |word: string| f"{word}: {word.len()} bytes", concurrency: 2) {
+        println(summary);
+    }
+}

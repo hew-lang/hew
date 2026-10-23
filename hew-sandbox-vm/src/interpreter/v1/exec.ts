@@ -4893,6 +4893,30 @@ class ExecutorV1 {
     for (const timer of [...actor.timers]) timer.cancel();
   }
 
+  private bindActorStream(context: FrameContext, sink: VmValue): () => void {
+    let unwatch = () => {};
+    let active = true;
+    const detach = () => {
+      active = false;
+      unwatch();
+    };
+    const closed = () => {
+      if (!active || !this.pipes.peerClosed(sink)) return;
+      // Bind the reader to this exact producer turn, including while it waits
+      // on another operation. Later reader closes must not cancel a new turn.
+      detach();
+      context.pendingCancellation ??= {
+        kind: "panic",
+        message: "actor stream reader closed",
+        cancelled: true,
+      };
+      context.cancel?.(context.pendingCancellation);
+    };
+    unwatch = this.pipes.observe(sink, closed);
+    closed();
+    return detach;
+  }
+
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
     if (actor.disposals.length > 0) {
@@ -4966,6 +4990,7 @@ class ExecutorV1 {
         actor_id: actor.id,
         handler: message.handler.name,
       });
+      let unwatchStream = () => {};
       const frame = this.activate(
         this.functionAt(message.handler.callable),
         [actor.state, ...message.payload],
@@ -4980,6 +5005,7 @@ class ExecutorV1 {
           requestDeadline: message.requestDeadline,
           reply: message.reply,
           returned: (value) => {
+            unwatchStream();
             actor.active = null;
             const drained = (fault: Fault | null) => {
               actor.busy = false;
@@ -5015,6 +5041,7 @@ class ExecutorV1 {
             }
           },
           failed: (fault) => {
+            unwatchStream();
             actor.active = null;
             actor.busy = false;
             if (
@@ -5036,6 +5063,13 @@ class ExecutorV1 {
         },
       );
       actor.active = frame.context;
+      if (message.handler.streams) {
+        // StreamStart's checked producer protocol appends its output sink.
+        const sink = message.payload.at(-1);
+        if (sink?.kind !== "sink")
+          throw new Error("actor stream producer has no final sink");
+        unwatchStream = this.bindActorStream(frame.context, sink);
+      }
       this.runFrame(frame);
     });
   }

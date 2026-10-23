@@ -1,0 +1,3 @@
+pub gen fn values<T: Send>(consume value: T) -> T {
+    yield value;
+}

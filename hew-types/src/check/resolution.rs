@@ -2380,6 +2380,17 @@ impl Checker {
     /// and relies on the helper to drop duplicates.
     fn enforce_type_def_bounds_recursive(&mut self, ty: &Ty, span: &Span) {
         match ty {
+            Ty::Generator {
+                yields,
+                returns,
+                producers,
+            } => {
+                self.enforce_type_def_bounds_recursive(yields, span);
+                self.enforce_type_def_bounds_recursive(returns, span);
+                for (_, argument) in producers.iter().flat_map(|producer| &producer.arguments) {
+                    self.enforce_type_def_bounds_recursive(argument, span);
+                }
+            }
             Ty::GenericCallable { callable, .. } => {
                 let signature = Self::generic_callable_signature(ty)
                     .expect("checked quantified callable has its signature");

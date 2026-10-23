@@ -275,6 +275,10 @@ impl<'hir, 'service> Builder<'hir, 'service> {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "lower one checked body and publish its ownership and Send obligations"
+    )]
     pub(super) fn lower(mut self, source: BodySource) -> Result<SemFunction, String> {
         if self.callable.function != self.function.id
             || self.callable.declaration != self.function.declaration
@@ -325,6 +329,20 @@ impl<'hir, 'service> Builder<'hir, 'service> {
                 self.callable.signature.return_ty.user_facing(),
                 self.ty(&self.function.return_ty).user_facing()
             ));
+        }
+        if let Some(owner) = self.service.checked_body(self.callable.id) {
+            for (site, ty) in self.service.callable_facts.send_obligations(&owner) {
+                let ty = ResolvedTy::from_ty(&ty.materialize_literal_defaults())
+                    .map_err(|error| error.to_string())?;
+                self.service.generator_send_obligations.push((
+                    self.callable.id,
+                    self.ty(&ty),
+                    crate::GeneratorSendSite {
+                        span: site.start..site.end,
+                        source: self.callable.source_origin.clone(),
+                    },
+                ));
+            }
         }
         self.enter_task_scope()?;
         self.lower_safepoint()?;

@@ -1,0 +1,32 @@
+actor Stage {
+    receive fn transform(value: i64, label: string) -> (i64, string) {
+        (value * 2, label + ":stage")
+    }
+}
+
+pub actor Source {
+    let stage: Stage;
+    var count: i64 = 0;
+    var sum: i64 = 0;
+    var label: string = "";
+
+    receive fn push(value: i64, name: string) {
+        let (mapped, mapped_label) = stage.transform(value, name).expect("stage");
+        count = count + 1;
+        sum = sum + mapped;
+        label = mapped_label;
+    }
+
+    receive fn result() -> (i64, i64, string) {
+        (count, sum, label)
+    }
+
+    receive fn finish() {
+        stop(stage);
+        stopped(stage);
+    }
+}
+
+pub fn run() -> Source {
+    spawn Source { stage: spawn Stage }
+}

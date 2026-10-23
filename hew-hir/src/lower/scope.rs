@@ -45,6 +45,21 @@ impl LowerCtx {
     ) -> HirBinding {
         let key = self.mk_key(&span);
         let source = self.resolutions.get(&key).copied();
+        let ty = match source {
+            Some(Resolution::Local(source)) => self
+                .resolved_binding_types
+                .get(&source)
+                .filter(|checked| {
+                    if mutable {
+                        checked.to_ty().contains_generator()
+                    } else {
+                        checked.to_ty().contains_inferred_generator()
+                    }
+                })
+                .cloned()
+                .unwrap_or(ty),
+            _ => ty,
+        };
         let binding = self.bind(name.clone(), ty.clone(), mutable, span.clone());
         match source {
             Some(Resolution::Local(source)) => {

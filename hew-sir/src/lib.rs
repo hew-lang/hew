@@ -13,6 +13,7 @@ mod coverage;
 mod debug;
 mod defer;
 mod dump;
+mod generator_send;
 mod lifetime;
 mod linear;
 mod lower;
@@ -38,7 +39,7 @@ pub use analysis::{
 pub use callable::{
     callable_parts, callable_value_signature, generator_parts, verify_callable_coercion,
     verify_generator_coercion, CallableSpecializationId, CallableTargets, ClosureId,
-    ClosureInstanceKey, SemCaptureField, SemClosure, SemClosureEntry,
+    ClosureInstanceKey, GeneratorSendSite, SemCaptureField, SemClosure, SemClosureEntry,
 };
 pub use capability::{
     derived_capability_components, is_actor_reference, is_identity_carrier,

@@ -391,7 +391,8 @@ fn counter_module(
         callables: vec![parent, body],
         type_facts: facts.rows().clone(),
         closures: vec![sir::SemClosure {
-            generator_yield: None,
+            generator_type: None,
+            generator_send_sites: Vec::new(),
             id: sir::ClosureId(0),
             instance: sir::ClosureInstanceKey {
                 enclosing: CallableId(0),

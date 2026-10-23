@@ -668,17 +668,40 @@ fn non_clone_callable_can_transfer_through_either_if_arm() {
 }
 
 #[test]
-fn generator_producer_descriptor_rejects_ordinary_callable_capabilities() {
+fn generator_producer_descriptor_rejects_changed_contracts() {
     let mut module = lower_source(
         r"
         gen fn values() -> i64 { yield 1; }
         fn main() { for value in values() { println(value); } }
     ",
     );
+    for change_return in [false, true] {
+        let mut malformed = module.clone();
+        let producer = malformed
+            .closures
+            .iter_mut()
+            .find(|closure| closure.generator_yield().is_some())
+            .unwrap();
+        let Some(hew_types::ResolvedTy::Generator {
+            returns, producers, ..
+        }) = &mut producer.generator_type
+        else {
+            unreachable!()
+        };
+        if change_return {
+            **returns = hew_types::ResolvedTy::I64;
+        } else {
+            producers.clear();
+        }
+        assert!(verify_module(&malformed).iter().any(|diagnostic| {
+            format!("{diagnostic:?}")
+                .contains("generator construction changes its producer contract")
+        }));
+    }
     let producer = module
         .closures
         .iter_mut()
-        .find(|closure| closure.generator_yield.is_some())
+        .find(|closure| closure.generator_yield().is_some())
         .unwrap();
     let hew_types::ResolvedTy::Closure { capabilities, .. } = &mut producer.ty else {
         unreachable!()

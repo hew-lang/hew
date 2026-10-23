@@ -875,7 +875,15 @@ impl Checker {
     /// falls off its end returns `Ok(())`. Every other body is checked as
     /// written; a `-> Result<T, E>` return is a value the body produces.
     fn check_function_block(&mut self, fd: &FnDecl, block_expected: Option<&Ty>) -> Ty {
+        let generator_captures = fd.is_generator.then(|| self.begin_generator_captures());
         let actual = self.check_block(&fd.body, block_expected);
+        if let (Some(previous), Some(declaration)) = (generator_captures, self.checking_declaration)
+        {
+            self.finish_generator_captures(
+                super::effects::EffectBody::Generator(declaration),
+                previous,
+            );
+        }
         if self.current_failure_edge.is_some()
             && !fd.is_generator
             && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
@@ -977,7 +985,16 @@ impl Checker {
         self.check_function_body_as(fd, fn_name);
         self.checking_declaration = previous_declaration;
         if let Some(declaration) = declaration {
-            self.record_callable_body_return(declaration, &fd.body);
+            if fd.is_generator {
+                self.callable_return_candidates.insert(
+                    super::effects::EffectBody::Declaration(declaration),
+                    super::IndirectCallCandidates::single(super::CallableCandidate::Generator(
+                        declaration,
+                    )),
+                );
+            } else {
+                self.record_callable_body_return(declaration, &fd.body);
+            }
             if let Some(tail) = &fd.body.trailing_expr {
                 self.record_task_return(tail);
             }

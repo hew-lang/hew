@@ -97,6 +97,13 @@ pub enum ResolvedTy {
     Array(Box<ResolvedTy>, u64),
     /// Slice: `[T]`
     Slice(Box<ResolvedTy>),
+    /// Inferred generator producer evidence, retained through specialization.
+    /// Physical verification discharges its conditional transfer capability.
+    Generator {
+        yields: Box<ResolvedTy>,
+        returns: Box<ResolvedTy>,
+        producers: Vec<crate::ty::GeneratorProducer<ResolvedTy>>,
+    },
     /// Named types (structs, enums, actors, type params).
     Named {
         /// The identity the name resolved to: a declared nominal, an actor
@@ -494,6 +501,12 @@ impl ResolvedTy {
         };
         let primitive = |anchor: BuiltinAnchor| anchored(anchor, Vec::new());
         match self {
+            Self::Generator {
+                yields, returns, ..
+            } => anchored(
+                BuiltinAnchor::Generator,
+                vec![(**yields).clone(), (**returns).clone()],
+            ),
             Self::Named {
                 args,
                 head: crate::TypeHead::Builtin(builtin),
@@ -570,7 +583,24 @@ impl ResolvedTy {
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {
-        self.head().and_then(TypeHead::builtin) == Some(expected)
+        (expected == BuiltinType::Generator && matches!(self, Self::Generator { .. }))
+            || self.head().and_then(TypeHead::builtin) == Some(expected)
+    }
+
+    /// Yield and return types, independent of retained producer evidence.
+    #[must_use]
+    pub fn generator_parts(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Self::Generator {
+                yields, returns, ..
+            } => Some((yields, returns)),
+            Self::Named {
+                head: TypeHead::Builtin(BuiltinType::Generator),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
     }
 
     /// Returns whether this type is one of the owning encoding value carriers.
@@ -820,6 +850,27 @@ impl ResolvedTy {
     )]
     pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
         match ty {
+            Ty::Generator {
+                yields,
+                returns,
+                producers,
+            } => Ok(Self::Generator {
+                yields: Box::new(Self::from_ty(yields)?),
+                returns: Box::new(Self::from_ty(returns)?),
+                producers: producers
+                    .iter()
+                    .map(|producer| {
+                        Ok(crate::ty::GeneratorProducer {
+                            body: producer.body.clone(),
+                            arguments: producer
+                                .arguments
+                                .iter()
+                                .map(|(parameter, ty)| Ok((*parameter, Self::from_ty(ty)?)))
+                                .collect::<Result<_, BoundaryError>>()?,
+                        })
+                    })
+                    .collect::<Result<_, BoundaryError>>()?,
+            }),
             Ty::GenericCallable {
                 parameters,
                 callable,
@@ -1033,6 +1084,18 @@ impl ResolvedTy {
             ResolvedTy::Tuple(elems) => Ty::Tuple(elems.iter().map(Self::to_ty).collect()),
             ResolvedTy::Array(elem, size) => Ty::Array(Box::new(elem.to_ty()), *size),
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
+            ResolvedTy::Generator {
+                yields,
+                returns,
+                producers,
+            } => Ty::Generator {
+                yields: Box::new(yields.to_ty()),
+                returns: Box::new(returns.to_ty()),
+                producers: producers
+                    .iter()
+                    .map(|producer| producer.map(Self::to_ty))
+                    .collect(),
+            },
             ResolvedTy::Named {
                 head,
                 args,
@@ -1391,6 +1454,18 @@ pub fn substitute_type_params(
                 callable: Box::new(substitute_type_params(callable, &outer_params, &outer_args)),
             }
         }
+        ResolvedTy::Generator {
+            yields,
+            returns,
+            producers,
+        } => ResolvedTy::Generator {
+            yields: Box::new(substitute_type_params(yields, params, args)),
+            returns: Box::new(substitute_type_params(returns, params, args)),
+            producers: producers
+                .iter()
+                .map(|producer| producer.map(|ty| substitute_type_params(ty, params, args)))
+                .collect(),
+        },
         ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
             elements
                 .iter()
@@ -1512,6 +1587,34 @@ pub fn mangle_resolved_ty_segment(
     type_param_mode: TypeParamMangle,
 ) -> Option<String> {
     match ty {
+        ResolvedTy::Generator {
+            yields,
+            returns,
+            producers,
+        } => {
+            let mut origins = Vec::new();
+            for producer in producers {
+                let identity = match &producer.body {
+                    crate::ty::EffectBody::Generator(id) => format!("f{}", id.index_u32()),
+                    crate::ty::EffectBody::GeneratorBlock(site) => {
+                        format!("b{}i{}i{}", site.module_idx, site.start, site.end)
+                    }
+                    _ => return None,
+                };
+                let args = producer
+                    .arguments
+                    .iter()
+                    .map(|(_, ty)| mangle_resolved_ty_segment(ty, type_param_mode))
+                    .collect::<Option<Vec<_>>>()?;
+                origins.push(format!("{identity}x{}g", args.join("c")));
+            }
+            Some(format!(
+                "gen$x{}$c{}$p{}$g",
+                mangle_resolved_ty_segment(yields, type_param_mode)?,
+                mangle_resolved_ty_segment(returns, type_param_mode)?,
+                origins.join("c")
+            ))
+        }
         ResolvedTy::GenericCallable {
             parameters,
             callable,

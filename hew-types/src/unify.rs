@@ -234,6 +234,61 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
         // Error/Never type unifies with anything (recovery/diverging)
         (Ty::Error | Ty::Never, _) | (_, Ty::Error | Ty::Never) => Ok(()),
 
+        (
+            Ty::Generator {
+                yields: ay,
+                returns: ar,
+                producers: ap,
+            },
+            Ty::Generator {
+                yields: by,
+                returns: br,
+                producers: bp,
+            },
+        ) => {
+            if !weaken && ap.len() != bp.len() {
+                return Err(UnifyError::Mismatch {
+                    expected: a_resolved.clone(),
+                    actual: b_resolved.clone(),
+                });
+            }
+            for b in bp {
+                let matched = ap.iter().find_map(|a| {
+                    if a.body != b.body || a.arguments.len() != b.arguments.len() {
+                        return None;
+                    }
+                    let mut candidate = subst.clone();
+                    for ((pa, a), (pb, b)) in a.arguments.iter().zip(&b.arguments) {
+                        if pa != pb || unify(&mut candidate, a, b).is_err() {
+                            return None;
+                        }
+                    }
+                    Some(candidate)
+                });
+                let Some(matched) = matched else {
+                    return Err(UnifyError::Mismatch {
+                        expected: a_resolved.clone(),
+                        actual: b_resolved.clone(),
+                    });
+                };
+                *subst = matched;
+            }
+            unify(subst, ay, by)?;
+            unify(subst, ar, br)
+        }
+        (
+            Ty::Named {
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Generator),
+                args,
+            },
+            Ty::Generator {
+                yields, returns, ..
+            },
+        ) if weaken && args.len() == 2 => {
+            relate(subst, &args[0], yields)?;
+            relate(subst, &args[1], returns)
+        }
+
         // Numeric literal kinds unify with compatible concrete numeric types.
         (Ty::IntLiteral | Ty::FloatLiteral, concrete)
             if literal_kind_can_unify_with_concrete(&a_resolved, concrete) =>

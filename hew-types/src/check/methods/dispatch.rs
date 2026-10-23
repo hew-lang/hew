@@ -1596,18 +1596,8 @@ impl Checker {
             (Ty::String, _) => self.dispatch_string_method(method, args, span),
             // Generator methods route through the Iterator contract:
             // .next() returns Option<yielded type>.
-            (
-                Ty::Named {
-                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
-                    args: type_args,
-                    ..
-                },
-                "next",
-            ) => {
-                let yield_ty = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+            (generator, "next") if generator.as_generator().is_some() => {
+                let yield_ty = generator.as_generator().expect("generator guard").0.clone();
                 // Record the consumption rewrite so HIR lowering emits the
                 // dedicated `GeneratorNext` node (codegen drives `hew_gen_next`
                 // and unboxes the result into `Option<yield_ty>`). Without this

@@ -829,7 +829,10 @@ impl TraitRegistry {
             // meaningfully answered. Conservatively return `false` — callers
             // that need a marker on a projection must run projection-collapse
             // first.
-            Ty::Var(_) | Ty::AssocType { .. } => false,
+            // A producer type alone cannot certify its captured values. The
+            // checker proves each concrete Send use from value provenance and
+            // issues the corresponding retained-frame obligation.
+            Ty::Generator { .. } | Ty::Var(_) | Ty::AssocType { .. } => false,
 
             // Checker-expanded object bounds carry marker obligations directly,
             // by predicate identity; a declared trait spelled `Send` is not one.
@@ -856,6 +859,15 @@ impl TraitRegistry {
     #[must_use]
     pub fn is_send(&self, ty: &Ty) -> bool {
         self.implements_marker(ty, MarkerTrait::Send)
+    }
+
+    /// Explicit marker exclusions remain authoritative when a value carries
+    /// more precise provenance than its erased type.
+    #[must_use]
+    pub fn denies_marker(&self, head: crate::TypeHead, marker: MarkerTrait) -> bool {
+        self.negative_impls
+            .get(&head)
+            .is_some_and(|markers| markers.contains(&marker))
     }
 
     /// Check if a type is deeply immutable.

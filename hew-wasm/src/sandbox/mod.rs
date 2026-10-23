@@ -533,7 +533,22 @@ fn compile_from_semantics(
     let mut semantics = match session.lower_program(program, type_output) {
         Ok(output) => output,
         Err(error) => {
-            diagnostics.push(semantic_diagnostic(&error));
+            match error {
+                hew_compile::SessionError::Ownership(findings) => {
+                    diagnostics.extend(
+                        hew_compile::ownership_diagnostics_to_frontend(
+                            program,
+                            source,
+                            source_label,
+                            findings,
+                            &options.documents,
+                        )
+                        .iter()
+                        .map(frontend_diagnostic),
+                    );
+                }
+                error => diagnostics.push(semantic_diagnostic(&error)),
+            }
             return Ok(CompileOutput {
                 diagnostics,
                 bytecode: None,

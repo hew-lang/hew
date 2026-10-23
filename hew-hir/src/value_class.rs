@@ -343,6 +343,13 @@ pub fn named_type_components(ty: &ResolvedTy) -> Vec<NamedTypeComponent> {
 
 fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedTypeComponent>) {
     match ty {
+        ResolvedTy::Generator { yields, returns, producers } => {
+            collect_named_type_components(yields, components);
+            collect_named_type_components(returns, components);
+            for (_, argument) in producers.iter().flat_map(|producer| &producer.arguments) {
+                collect_named_type_components(argument, components);
+            }
+        }
         ResolvedTy::GenericCallable { parameters, callable } => {
             collect_named_type_components(callable, components);
             for parameter in parameters {

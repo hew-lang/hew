@@ -43,6 +43,7 @@ impl Checker {
         explored: &mut HashSet<crate::NominalId>,
     ) -> bool {
         match ty {
+            Ty::Generator { .. } => true,
             Ty::Tuple(items) => items
                 .iter()
                 .any(|item_ty| self.ty_contains_owned_handle(item_ty, explored)),

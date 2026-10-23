@@ -510,6 +510,8 @@ pub struct SemGenericTemplate {
     pub source_origin: FunctionSourceOrigin,
     /// Canonical source-semantic parameters in substitution order.
     pub type_params: Vec<hew_types::ParamHead>,
+    /// The checked declaration has no trait or receiver bounds on its parameters.
+    pub unconstrained_parameters: bool,
     /// Pre-substitution semantic callable signature.
     pub signature: SemSignature,
 }

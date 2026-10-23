@@ -282,7 +282,8 @@ impl RuntimeCallingConvention {
             | Ty::Task(_)
             | Ty::AssocType { .. }
             | Ty::Var(_)
-            | Ty::Error => Self::LayoutDescriptor,
+            | Ty::Error
+            | Ty::Generator { .. } => Self::LayoutDescriptor,
         }
     }
 

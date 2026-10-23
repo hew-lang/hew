@@ -138,13 +138,60 @@ impl Checker {
         fd: &FnDecl,
         declared_return: Ty,
         span: Option<&Span>,
+        declaration: Option<crate::DefId>,
     ) -> Ty {
         let declared_return =
             self.recover_gen_return_spelling(fd.is_generator, declared_return, span);
         if fd.is_generator {
-            Ty::generator(declared_return, Ty::Unit)
+            let declaration = declaration.or_else(|| self.named_item_declaration(fd.name));
+            if let Some(declaration) = declaration {
+                let parameters = self.source_parameter_heads(
+                    fd.type_params.as_deref().unwrap_or_default(),
+                    &fd.fn_span,
+                );
+                self.inferred_generator_type(
+                    crate::ty::EffectBody::Generator(declaration),
+                    declared_return,
+                    Ty::Unit,
+                    &parameters,
+                )
+            } else {
+                Ty::generator(declared_return, Ty::Unit)
+            }
         } else {
             declared_return
+        }
+    }
+
+    pub(super) fn inferred_generator_type(
+        &self,
+        body: crate::ty::EffectBody,
+        yields: Ty,
+        returns: Ty,
+        parameters: &[crate::ParamHead],
+    ) -> Ty {
+        let mut arguments = BTreeMap::new();
+        for ty in self.generic_ctx.iter().flat_map(HashMap::values) {
+            if let Ty::Named {
+                head: crate::TypeHead::Param(parameter),
+                args,
+            } = ty
+            {
+                if args.is_empty() {
+                    arguments.insert(*parameter, ty.clone());
+                }
+            }
+        }
+        for parameter in parameters {
+            arguments.insert(*parameter, Ty::param(*parameter));
+        }
+        Ty::Generator {
+            yields: Box::new(yields),
+            returns: Box::new(returns),
+            producers: vec![crate::ty::GeneratorProducer {
+                body,
+                arguments: arguments.into_iter().collect(),
+            }],
         }
     }
 

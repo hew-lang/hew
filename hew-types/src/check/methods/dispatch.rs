@@ -944,8 +944,8 @@ impl Checker {
                     span,
                 )
             }
-            // Duration methods are declared in `std/builtins.hew` with
-            // monomorphic `#[extern_symbol]` annotations.
+            // Duration methods use the same source-body fallback as other
+            // primitives after checking declarative runtime operations.
             (Ty::Duration, _) => {
                 if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
                     "duration",
@@ -957,16 +957,13 @@ impl Checker {
                 ) {
                     return ret_ty;
                 }
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+                self.check_primitive_receiver_method_fallback(
+                    &Ty::Duration,
+                    "`duration`",
+                    method,
+                    args,
                     span,
-                    format!("no method `{method}` on `duration`"),
-                );
-                Ty::Error
+                )
             }
             (Ty::Char, _) => {
                 if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(

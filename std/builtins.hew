@@ -1239,7 +1239,9 @@ impl duration {
         let millis = self.millis();
         if self > 0ns && self % 1ms != 0ns { millis + 1 } else { millis }
     }
+}
 
+impl duration {
     #[runtime(family = DurationNanos, authority = Value, lowering = direct, target = native, classification = stable, c_return = storage)]
     #[extern_symbol(hew_duration_nanos)]
     fn nanos(self) -> i64 {

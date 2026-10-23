@@ -8314,6 +8314,7 @@ fn main() {
     let interval = 5s;       // duration: 5_000_000_000 nanoseconds
     let period = 1m;         // duration: 60_000_000_000 nanoseconds
     let precise = 500us;     // duration: 500_000 nanoseconds
+    let fraction = 0.25s;   // duration: exactly 250_000_000 nanoseconds
 }
 ```
 
@@ -8332,6 +8333,16 @@ fn main() {
 
 `duration` is a distinct type — it does not implicitly convert to or from integers.
 
+Every literal requires a unit suffix. Decimal fractions are evaluated exactly
+at compile time, without a floating-point intermediate: `1.5ms` is `1500us`.
+The value must fit the carrier and represent a whole number of nanoseconds;
+`0.1ns` is rejected rather than rounded. Underscores may separate digits in
+either part, as in `2_000.000_001ms`.
+
+Runtime integer counts use explicit unit constructors such as
+`duration.from_millis(count)` and `timestamp.from_unix_secs(count)`.
+No bare numeric literal acquires a time unit from its expected type.
+
 Duration arithmetic operators and accessor methods are fully implemented.
 Duration literals compile to `i64` nanosecond values;
 arithmetic results are also `duration`.
@@ -8346,7 +8357,9 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
 
 **Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
-`.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
+`.secs()`, `.mins()`, `.hours()` truncate toward zero. `.millis_ceil()` rounds
+up to whole milliseconds, keeping positive sub-millisecond deadlines positive
+at millisecond-grained APIs. `duration` implements `Display` (`5s`
 prints as `5000000000ns`).
 
 **`instant`:** a monotonic timestamp in nanoseconds read with

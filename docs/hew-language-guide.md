@@ -2398,9 +2398,16 @@ fn main() {
 }
 ```
 
-**Duration literals:** `10ms`, `2s`, `500ms`, `1ns`, `1us`. These produce a
-`duration` value. `instant + duration` and `duration + instant` both produce
-a new `instant`.
+**Duration literals:** `10ms`, `2s`, `0.25s`, `1.5ms`, `1ns`, `1us`. A unit
+suffix is required. Decimal values are exact at compile time: `0.25s` equals
+`250ms`, with no floating-point rounding. A fraction smaller than a whole
+nanosecond, such as `0.1ns`, is rejected. Runtime counts use explicit
+constructors such as `duration.from_millis(count)`.
+
+These produce a `duration` value. `instant + duration` and `duration + instant`
+both produce a new `instant`. Timeouts in the networking APIs take `duration`,
+so write `connection.set_read_timeout(250ms)`. Conversion to a millisecond
+runtime deadline rounds positive fractions upward.
 
 **Timer model:** both `sleep` and `sleep_until` arm a single entry in the
 runtime's two-level hierarchical wheel (256 × 1 ms slots + 64 × 256 ms

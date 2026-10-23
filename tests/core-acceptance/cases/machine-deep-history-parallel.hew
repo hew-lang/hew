@@ -143,7 +143,7 @@ fn nested_region_names() {
 fn main() {
     nested_region_names();
     var panel: Panel = .Work { seed: "original", Work_right: 5, left: .Draft { revision: 6, text: "draft" }, right: .Idle { count: 1 } };
-    let _advance = panel.step(.Advance);
+    let _advance = panel.step(.Advance).expect("machine step failed");
     let departed = panel.step_observed_with_limit(.Pause, 1, [.Work, .Nested, .Work, .Nested]).expect("parallel departure");
     assert(panel.state_name() == "Outside");
     assert(departed.departures.len() == 2);
@@ -183,13 +183,13 @@ fn main() {
     check_complete_saved(observed.departures[0].subtree, "FRESH:ready:exit");
     let initial: Complete = .Outside;
     var owner = history.track(initial, [CompleteScope.Active]);
-    let _started = owner.step(.Start);
+    let _started = owner.step(.Start).expect("machine step failed");
     let saved = owner.saved(.Active).expect("completed Active subtree");
     check_complete_saved(saved, "FRESH:ready:exit");
     let before = owner;
-    assert(owner.step_with_limit(.Resume { generation: 7, saved: .Some(saved) }, 1) == .Err(.LimitExceeded));
+    assert(owner.step(.Resume { generation: 7, saved: .Some(saved) }, limit: 1) == .Err(.LimitExceeded));
     assert(owner == before);
-    let resumed = owner.step_with_limit(.Resume { generation: 8, saved: owner.saved(.Active) }, 2).expect("resume and complete");
+    let resumed = owner.step(.Resume { generation: 8, saved: owner.saved(.Active) }, limit: 2).expect("resume and complete");
     assert(owner.state().state_name() == "Outside");
     assert(resumed.outputs == [.Entered { generation: 8, text: "FRESH:ready:exit" }]);
     check_complete_saved(owner.saved(.Active).expect("updated completion subtree"), "FRESH:ready:exit:exit");

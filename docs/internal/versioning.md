@@ -46,9 +46,9 @@ untagged builds, where `X` counts commits since the nearest reachable Hew
 release tag. Unrelated tags do not affect that count. A dirty checkout also
 appends `.dirty`; a clean build at the matching tag reports the plain version.
 
-Development after v0.7.1 uses base `0.7.2` for maintenance of the 0.7 series.
-Keep edition 2026 unchanged. This is a main-branch closeout change, separate from
-the already qualified release commit and its tag. The
+The next language cohort uses base `0.8.0`. After publishing v0.8.0, advance
+main to `0.8.1` for subsequent development. Keep edition 2026 unchanged. The
+post-release bump is separate from the qualified release commit and its tag. The
 [post-release checklist](../release-runbook.md#phase-6--post-release-verification)
 owns the concrete steps.
 

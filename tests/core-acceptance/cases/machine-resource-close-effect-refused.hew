@@ -29,6 +29,6 @@ machine Counter {
 
 fn main() {
     var c: Counter = .Idle;
-    let _ = c.step(.Bump);
+    let _ = c.step(.Bump).expect("machine step failed");
     println(c.state_name());
 }

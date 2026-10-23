@@ -37,14 +37,14 @@ machine Tree {
 
 fn main() {
     var tree: Tree = .Outside;
-    let started = tree.step(.Start { value: 42 });
+    let started = tree.step(.Start { value: 42 }).expect("machine step failed");
     assert(started.rules == [0]);
     match tree {
         .Outer { number, tree: .Inner { other: .A0, b: .B0 { value } }, other: .R0 } => assert(value == number),
         _ => panic("initial nested values"),
     }
-    let _advance = tree.step(.Advance);
-    let crossed = tree.step(.Cross);
+    let _advance = tree.step(.Advance).expect("machine step failed");
+    let crossed = tree.step(.Cross).expect("machine step failed");
     assert(crossed.rules == [2, 3]);
     match tree {
         .Outer { number, tree: .Inner { other: .A0, b: .B1 }, other: .R1 } => assert(number == 42),

@@ -62,6 +62,7 @@ import {
   type ValueProgram,
 } from "./value-operations.js";
 import { Pipes } from "./pipes.js";
+import { Semaphores, type Acquisition } from "./semaphores.js";
 import { FrameScheduler } from "./scheduler.js";
 import { DeterministicIds } from "../../scheduler/ids.js";
 import { Mt19937 } from "./mt19937.js";
@@ -443,6 +444,7 @@ class ExecutorV1 {
 
   private readonly pkg: PackageV1;
   private readonly directories: BrowserDirectories;
+  private readonly semaphores: Semaphores;
 
   constructor(
     admission: AdmittedPackage,
@@ -455,6 +457,9 @@ class ExecutorV1 {
     this.pkg = pkg;
     this.directories = new BrowserDirectories(options.directoryRoots);
     this.scheduler = new FrameScheduler(trace, policy);
+    this.semaphores = new Semaphores((nanos, ready) =>
+      this.scheduler.after(nanos, ready),
+    );
     this.ids = new DeterministicIds(trace.replay.seed);
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
@@ -485,6 +490,7 @@ class ExecutorV1 {
         }
       },
       pipes: this.pipes,
+      semaphores: this.semaphores,
       generatorStream: (value) => {
         const id = this.ids.channel();
         this.generatorStreams.set(id, {
@@ -2944,6 +2950,35 @@ class ExecutorV1 {
         }
         return;
       }
+      case "SemaphoreAcquire": {
+        const handle = this.boundary(act, term.inputs[0]!);
+        const timeout =
+          term.detail.operation === "AcquireTimeout"
+            ? this.boundary(act, term.inputs[1]!)
+            : null;
+        if (timeout !== null && timeout.kind !== "i64")
+          throw new Error("semaphore timeout must be an integer");
+        let operation: Acquisition | undefined;
+        const wake = this.park(
+          act,
+          term,
+          () => {},
+          () => operation?.take(),
+        );
+        operation = this.semaphores.acquire(
+          handle,
+          timeout?.value ?? null,
+          (acquired) => {
+            wake(timeout === null ? UNIT : { kind: "bool", value: acquired });
+          },
+        );
+        const cancel = act.context.cancel;
+        act.context.cancel = (fault) => {
+          operation?.cancel();
+          cancel?.(fault);
+        };
+        return;
+      }
       case "Sleep": {
         const duration = term.inputs[0]
           ? this.boundary(act, term.inputs[0])
@@ -2990,6 +3025,7 @@ class ExecutorV1 {
     act: Activation,
     term: Extract<TermV1, { op: "suspend" }>,
     cleanup: () => void = () => {},
+    accepted: () => void = () => {},
   ): (value: VmValue, fault?: Fault | null, edgeIndex?: number) => boolean {
     this.running = false;
     act.context.parked = true;
@@ -3018,6 +3054,7 @@ class ExecutorV1 {
                 : term.unwind!,
             );
           } else {
+            accepted();
             if (term.result && term.result !== "never")
               this.define(act, term.result.value, outcome.value);
             const edge = term.resumes[outcome.edge];
@@ -3429,6 +3466,9 @@ class ExecutorV1 {
               value.closed = true;
               value.cell.weak -= 1;
             }
+            break;
+          case "semaphore":
+            this.semaphores.close(value);
             break;
           case "host_resource": {
             if (value.owner.closed) break;

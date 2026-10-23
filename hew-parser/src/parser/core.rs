@@ -539,6 +539,9 @@ impl<'src> Parser<'src> {
     ) {
         use crate::diagnostic::{Applicability, DiagnosticFix};
         let replacement = match kind {
+            ParseDiagnosticKind::LegacyPrivateCapture => {
+                Some(("Remove inferred capture annotation", ""))
+            }
             ParseDiagnosticKind::MemberTerminator => Some(("Insert `;` separator", ";")),
             ParseDiagnosticKind::ListSeparator => Some(("Insert `,` separator", ",")),
             ParseDiagnosticKind::SeparatorAfterBody => Some(("Remove extra separator", "")),

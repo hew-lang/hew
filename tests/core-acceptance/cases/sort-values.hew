@@ -11,7 +11,7 @@ fn check_ints() -> i64 {
         reverse.push(1023 - i);
     }
     let comparisons = 0;
-    let reverse_out = sort.sort_by(reverse, capture(var comparisons) |a: i64, b: i64| {
+    let reverse_out = sort.sort_by(reverse, |a: i64, b: i64| {
         comparisons += 1;
         assert(comparisons <= 1024 * 10);
         a < b
@@ -80,7 +80,7 @@ fn check_strings() -> i64 {
         duplicate_reverse.push(reverse_key(i));
     }
     let comparisons = 0;
-    let out = sort.sort_by(duplicate_reverse, capture(var comparisons) |a: string, b: string| {
+    let out = sort.sort_by(duplicate_reverse, |a: string, b: string| {
         comparisons += 1;
         assert(comparisons <= 256 * 8);
         a < b

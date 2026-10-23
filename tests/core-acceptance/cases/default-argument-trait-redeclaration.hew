@@ -1,0 +1,4 @@
+trait Count { fn count(self, value: i64 = 1) -> i64; }
+type Counter {}
+impl Count for Counter { fn count(self, value: i64 = 2) -> i64 { value } }
+fn main() { println(Counter {}.count(3)); }

@@ -5,7 +5,7 @@ fn forward<T>(consume value: T) -> T {
 fn main() -> i64 {
     let count = 10;
     let step = "x".to_upper();
-    var original: fn[var, clone]() -> i64 = move capture(var count) || {
+    var original: fn[var, clone]() -> i64 = move || {
         count += step.len();
         count
     };

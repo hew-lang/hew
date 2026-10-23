@@ -36,6 +36,7 @@ mod closure_inference;
 mod coerce;
 pub mod const_eval;
 mod constants;
+mod default_arguments;
 mod dependency_analysis;
 mod diagnostics;
 mod macro_templates;
@@ -95,28 +96,28 @@ mod visibility;
 #[cfg(any(test, feature = "test"))]
 pub use self::types::FnSigFixture;
 use self::types::{
-    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
-    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
-    IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
-    TraitImplArgs, TraitInfo, TraitProofKind,
+    ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredHashMapAdmission,
+    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission,
+    ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs, TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, BinderTraitCall, CallableArgumentFlow, CallableCandidate,
-    CallableDispatchActual, CallableFieldFlow, CheckedForLoop, CheckedForMethod,
-    CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion,
-    DynMethodCall, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
-    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodCallIdentity,
-    ExternMethodSignature, FnSig, FnSigView, FromImpl, ImplMethodProvenance, ImportedImplBodyFact,
-    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
-    PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
-    ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot,
-    StackHint, StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
+    CallableDispatchActual, CallableFieldFlow, CheckedDefaultArgument, CheckedForLoop,
+    CheckedForMethod, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat,
+    DefaultArgumentProvider, DynCoercion, DynMethodCall, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, FromImpl,
+    ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind,
+    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation, ReceiverUpdate,
+    RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot, StackHint,
+    StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
     TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch,
     VariantConstructorField, VariantConstructorPlan, VariantConstructorValue, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
@@ -2660,12 +2661,17 @@ impl Checker {
                 }
             };
         match item {
-            Item::Function(function) => declare(
-                Kind::Function,
-                0,
-                span,
-                function.type_params.as_deref().unwrap_or_default(),
-            ),
+            Item::Function(function) => {
+                let parameters = function.type_params.as_deref().unwrap_or_default();
+                declare(Kind::Function, 0, span, parameters);
+                if let hew_parser::ast::DeclarationOrigin::DefaultArgument {
+                    body_start,
+                    body_end,
+                } = function.origin
+                {
+                    declare(Kind::Function, 0, &(body_start..body_end), parameters);
+                }
+            }
             Item::Impl(block) => {
                 let parameters = block.type_params.as_deref().unwrap_or_default();
                 declare(Kind::ImplBlock, 0, span, parameters);
@@ -2847,6 +2853,7 @@ impl Checker {
 
     /// Check all declarations and bodies, then publish the finalized output.
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
+        let source_program = program;
         if self.has_checked_program {
             self.reset_for_program();
         } else {
@@ -2885,11 +2892,15 @@ impl Checker {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
+        self.next_default_span = normalized_program.as_ref().map_or_else(
+            || machine_normalize::next_free_span(program),
+            |normalized| normalized.next_free_span(),
+        );
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
         self.check_embedded_builtin_impl_bodies(program);
         self.check_root_bodies(program);
-        self.finish_program(program, normalized_program.as_ref())
+        self.finish_program(source_program, normalized_program)
     }
 
     fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
@@ -3072,6 +3083,8 @@ impl Checker {
             recovery_kinds: self.recovery_kinds.clone(),
             chain_values: self.chain_values.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
+            call_default_arguments: self.call_default_arguments.clone(),
+            next_default_span: self.next_default_span,
             spawn_argument_slots: self.spawn_argument_slots.clone(),
             supervisor_wiring: self.supervisor_wiring.clone(),
             supervisor_startup_order: self.supervisor_startup_order.clone(),
@@ -3162,7 +3175,7 @@ impl Checker {
             race_operands: self.race_operands.clone(),
             task_lifetimes: self.task_lifetimes.clone(),
             closure_escape_facts: self.closure_escape_facts.clone(),
-            actor_init_params: self.actor_init_params.clone(),
+            constructor_signatures: self.constructor_signatures.clone(),
             actor_spawn_args: self.actor_spawn_args.clone(),
             lambda_capture_depth: self.lambda_capture_depth.clone(),
             var_self_receiver: self.var_self_receiver.clone(),
@@ -3571,8 +3584,31 @@ impl Checker {
     fn finish_program(
         &mut self,
         program: &Program,
-        normalized_program: Option<&std::sync::Arc<machine_normalize::NormalizedProgram>>,
+        mut normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
     ) -> TypeCheckOutput {
+        if let Some(normalized) = normalized_program.as_mut() {
+            let origins = &mut std::sync::Arc::make_mut(normalized).source_origins;
+            let origins = std::sync::Arc::make_mut(origins);
+            for (call, defaults) in &self.call_default_arguments {
+                for default in defaults {
+                    origins
+                        .source_spans
+                        .insert(default.span.clone(), call.start..call.end);
+                }
+            }
+            for (spawn, slots) in &self.spawn_argument_slots {
+                for slot in slots {
+                    if let SpawnSlot::ArgumentDefault(default) = slot {
+                        origins
+                            .source_spans
+                            .insert(default.span.clone(), spawn.start..spawn.end);
+                    }
+                }
+            }
+        }
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         // Closure escape classification — runs after all bodies have
         // been type-checked. Walks each fn body (root + modules) looking
         // for closure literal sites and computes per-closure
@@ -4147,7 +4183,7 @@ impl Checker {
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
             resolved_binding_types,
-            normalized_program: normalized_program.cloned(),
+            normalized_program: normalized_program.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
             race_operands: std::mem::take(&mut self.race_operands),
             task_scope_results: std::mem::take(&mut self.task_lifetimes.scope_results),
@@ -4155,6 +4191,7 @@ impl Checker {
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),
+            call_default_arguments: std::mem::take(&mut self.call_default_arguments),
             spawn_argument_slots: std::mem::take(&mut self.spawn_argument_slots),
             supervisor_wiring: std::mem::take(&mut self.supervisor_wiring),
             supervisor_startup_order: std::mem::take(&mut self.supervisor_startup_order),
@@ -4320,7 +4357,7 @@ impl Checker {
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
-        if let Some(normalized) = normalized_program {
+        if let Some(normalized) = &normalized_program {
             normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 // Generated extents can map to a whole authored declaration,
@@ -4360,11 +4397,7 @@ impl Checker {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
         let mut ambiguous: HashSet<SpanKey> = HashSet::new();
         for (key, ty) in expr_types.iter() {
-            let Some(source) = normalized
-                .source_origins
-                .source_spans
-                .get(&(key.start..key.end))
-            else {
+            let Some(source) = normalized.source_span(&(key.start..key.end)) else {
                 continue;
             };
             let source_key = SpanKey::in_module(source, key.module_idx);

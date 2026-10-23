@@ -101,7 +101,7 @@ fn prepared_calls() {
     };
     assert(answer == 9);
     let count = 0;
-    var counter = move capture(var count) || -> i64 {
+    var counter = move || -> i64 {
         sleep(1ms);
         count += 1;
         count
@@ -216,7 +216,7 @@ fn prepared_methods() {
     } handle failure { true };
     assert(cancelled && meter.count == 3);
     let pair = (Meter { count: 0 }, 0);
-    var captured = move capture(var pair) || -> i64 {
+    var captured = move || -> i64 {
         let timed_out = select {
             result from pair.0.advance(1s) => false,
             after 1ms => true,
@@ -233,13 +233,15 @@ fn prepared_methods() {
     assert(field_timeout && field.meter.count == 1);
     var staged: Counter = .Ready { value: 0 };
     let report = select {
-        result from staged.step(.Add { value: 5 }) => result,
+        result from staged.step(.Add { value: 5 }) => result.expect("machine step failed"),
         after 1s => panic("staged step timed out"),
     };
     assert(value(staged) == 5 && report.outputs.len() == 1);
     let staged_failed = scope {
         select {
-            result from staged.step(.Add { value: -1 }) => {}
+            result from staged.step(.Add { value: -1 }) => {
+                let _ = result.expect("machine step failed");
+            }
             after 1s => {}
         };
         false

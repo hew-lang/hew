@@ -4,7 +4,7 @@ use super::{
     Checker, ClosureCaptureFact, Expr, HashMap, HashSet, MarkerTrait, ResolvedTy, Span, Spanned,
     Ty, TypeError, TypeErrorKind,
 };
-use crate::env::{TypeBindingId, TypeEnv};
+use crate::env::TypeEnv;
 use crate::{
     CallableCallMode, CallableCapabilities, ClosureCaptureAccess, ClosureCaptureAcquisition,
     ClosureCaptureConsumption,
@@ -127,7 +127,7 @@ impl Checker {
             .as_ref()
             .and_then(|owner| self.fn_sig(owner))
             .map_or_else(Vec::new, |signature| signature.type_params.clone());
-        if Self::ty_mentions_type_params(ty, &parameters) {
+        if Self::ty_mentions_type_params(ty, &parameters) || ty.has_inference_var() {
             self.record_generic_requirement(
                 super::types::GenericRequirementKind::BorrowedTransfer {
                     root: root.to_string(),
@@ -337,40 +337,9 @@ impl Checker {
         );
     }
 
-    pub(super) fn resolve_private_captures(
-        &mut self,
-        captures: &[Spanned<Ident>],
-    ) -> HashSet<TypeBindingId> {
-        let mut bindings = HashSet::new();
-        for (name, span) in captures {
-            if let Some(binding) = self.env.lookup_ref(name) {
-                let id = binding.id;
-                if binding.init_state == crate::env::InitState::Unassigned {
-                    self.report_error(TypeErrorKind::LocalUninitialized, span,
-                        format!("E_LOCAL_UNINITIALIZED: local `{name}` is captured before initialization; assign it first"));
-                }
-                if !bindings.insert(id) {
-                    self.report_error(
-                        TypeErrorKind::InvalidOperation,
-                        span,
-                        format!("duplicate private capture `{name}`"),
-                    );
-                }
-            } else {
-                self.report_error(
-                    TypeErrorKind::UndefinedVariable,
-                    span,
-                    format!("private capture `{name}` must name an existing binding"),
-                );
-            }
-        }
-        bindings
-    }
-
     pub(super) fn finish_closure_captures(
         &mut self,
         facts: Vec<ClosureCaptureFact>,
-        private: &HashSet<TypeBindingId>,
         body: &TypeEnv,
         is_move: bool,
         span: &Span,
@@ -396,7 +365,10 @@ impl Checker {
             } else {
                 ClosureCaptureAcquisition::Snapshot
             };
-            fact.access = if private.contains(&fact.binding_id) {
+            fact.access = if body
+                .binding_by_id(fact.binding_id)
+                .is_some_and(|binding| binding.mutation != crate::env::MutationState::Unwritten)
+            {
                 ClosureCaptureAccess::Var
             } else {
                 ClosureCaptureAccess::Read
@@ -422,9 +394,15 @@ impl Checker {
                     self.env.note_loop_use(&fact.name, &[], span, false);
                     self.env.mark_moved(&fact.name, span.clone());
                 }
-            } else if !self.capture_is_cloneable(&fact.ty)
-                && !matches!(fact.ty, Ty::Error | Ty::Var(_))
-            {
+            } else if fact.ty.has_inference_var() {
+                self.record_generic_requirement(
+                    super::types::GenericRequirementKind::CaptureSnapshot {
+                        root: fact.name.clone(),
+                    },
+                    &fact.ty,
+                    &fact.use_span,
+                );
+            } else if !self.capture_is_cloneable(&fact.ty) && !matches!(fact.ty, Ty::Error) {
                 // `move` transfers an owner into the closure, so a borrowed
                 // parameter needs one first. Name both steps rather than
                 // sending the programmer back for a second diagnostic.
@@ -629,7 +607,7 @@ impl Checker {
         );
     }
 
-    fn capture_is_cloneable(&self, ty: &Ty) -> bool {
+    pub(super) fn capture_is_cloneable(&self, ty: &Ty) -> bool {
         // An actor handle's copy proof does not depend on its state arguments.
         if matches!(
             ty,
@@ -653,29 +631,6 @@ impl Checker {
                 | crate::value_class::ValueClass::View)
         ) && (self.registry.implements_marker(ty, MarkerTrait::Copy)
             || self.registry.implements_marker(ty, MarkerTrait::Clone))
-    }
-
-    pub(super) fn private_capture_mutation_error(
-        &self,
-        name: impl crate::env::LexicalName,
-        span: &Span,
-    ) -> Option<TypeError> {
-        let name = name.lexical_key();
-        let depth = self.lambda_capture_depth?;
-        let (binding_depth, binding) = self.env.lookup_ref_with_depth(name)?;
-        if binding_depth >= depth || binding.is_mutable {
-            return None;
-        }
-        if self.in_lambda_actor_body {
-            let mut error = TypeError::new(TypeErrorKind::ImmutableCaptureMutation, span.clone(),
-                format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` after `actor` to give the actor a mutable state field"));
-            error.suggestions.push(format!(
-                "insert `capture(var {name}) ` before the actor's parameter list"
-            ));
-            return Some(error);
-        }
-        Some(TypeError::new(TypeErrorKind::ImmutableCaptureMutation, span.clone(),
-            format!("capture `{name}` is an immutable snapshot; add `capture(var {name})` before the lambda to mutate its private field")))
     }
 
     pub(super) fn check_callable_receiver(&mut self, ty: &Ty, callee: &Spanned<Expr>) {
@@ -726,9 +681,11 @@ impl Checker {
                         self.env.mark_written(root);
                     }
                 } else {
-                    let error = place.as_ref().and_then(|(root, _)| self.private_capture_mutation_error(root, &callee.1))
-                        .unwrap_or_else(|| TypeError::new(TypeErrorKind::MutabilityError, callee.1.clone(),
-                            "this callable requires a mutable place; bind it with `var` before calling"));
+                    let error = TypeError::new(
+                        TypeErrorKind::MutabilityError,
+                        callee.1.clone(),
+                        "this callable requires a mutable place; bind it with `var` before calling",
+                    );
                     self.errors.push(error);
                 }
             }

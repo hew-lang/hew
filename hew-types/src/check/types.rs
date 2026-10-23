@@ -71,14 +71,8 @@ impl ExecutionContextReader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SpawnKey {
     pub(super) name: Symbol,
-    /// False for a defaulted state field, which a spawn may omit.
+    /// False for a defaulted field or parameter, which a spawn may omit.
     pub(super) required: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct ActorInitParamInfo {
-    pub(super) name: String,
-    pub(super) ty: Ty,
 }
 
 /// One checker-derived lifecycle for a qualified closeable opaque nominal.
@@ -444,6 +438,7 @@ pub struct TypeCheckOutput {
     /// named arguments bind in an order other than the one written. A call
     /// absent here binds its arguments to parameters in source order.
     pub call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    pub call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
     /// Where each key of a checked `spawn` or supervisor child takes its
     /// value, keyed by the spawn expression or child declaration. One slot
     /// per key the target accepts, in declaration order: an actor's state
@@ -533,7 +528,7 @@ pub struct TypeCheckOutput {
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
-        HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
+        HashMap<crate::DefId, (crate::ModuleId, Vec<Span>, Vec<crate::ParamHead>)>,
     pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
@@ -1217,6 +1212,7 @@ pub(super) enum PendingCallableTarget {
 pub(super) struct PendingCallableArguments {
     pub(super) callee: PendingCallableTarget,
     pub(super) receiver: Option<IndirectCallCandidates>,
+    /// Complete actuals in parameter order, including omitted provider results.
     pub(super) arguments: Vec<IndirectCallCandidates>,
 }
 
@@ -1833,12 +1829,14 @@ impl SpanKey {
 }
 
 /// The value one spawn key takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum SpawnSlot {
     /// The value written at this index of the spawn's key list.
     Written(usize),
     /// The state field's declared default; the spawn omits the key.
     Default,
+    /// An omitted constructor parameter checked as an ordinary provider call.
+    ArgumentDefault(CheckedDefaultArgument),
 }
 
 #[derive(Debug, Clone)]
@@ -2440,6 +2438,7 @@ pub(super) struct GenericRequirement {
 pub(super) enum GenericRequirementKind {
     Eq,
     BorrowedTransfer { root: String },
+    CaptureSnapshot { root: String },
     ResourceClose,
 }
 
@@ -2853,6 +2852,8 @@ pub struct ImplMethodProvenance {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    /// Declaration-owned computations for omitted arguments, aligned with `params`.
+    pub param_defaults: Vec<Option<DefaultArgumentProvider>>,
     pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<crate::ParamHead>,
     /// The trait bounds on `type_params`, associated-type bindings included.
@@ -2934,6 +2935,23 @@ pub struct FnSig {
     pub is_builtin_variant: bool,
 }
 
+/// An ordinary function body checked in the parameter declaration's scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultArgumentProvider {
+    pub declaration: crate::DefId,
+    /// Arguments in the signature's binder context, not the caller's names.
+    pub type_args: Vec<Ty>,
+    pub associated: bool,
+}
+
+/// One omitted argument, checked as an ordinary call to its provider.
+#[derive(Debug, Clone)]
+pub struct CheckedDefaultArgument {
+    pub slot: usize,
+    pub target: super::CallTarget,
+    pub span: Span,
+}
+
 /// One impl-level bound on a receiver type argument: `param` of the impl is
 /// instantiated to `arg` for this receiver and must satisfy `bound`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2946,6 +2964,7 @@ pub struct ReceiverObligation {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            param_defaults: Vec::new(),
             impl_method: None,
             type_params: vec![],
             bounds: ParamBounds::default(),
@@ -3484,6 +3503,8 @@ pub struct Checker {
     pub(super) chain_values: Vec<ChainValueContext>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    pub(super) call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
+    pub(super) next_default_span: usize,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
     pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub(super) supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
@@ -3763,15 +3784,14 @@ pub struct Checker {
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
-    /// Maps actor name to its resolved `init()` parameter list.
-    ///
-    /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
-    pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
+    /// Declaration-owned actor init and supervisor constructor signatures.
+    /// Shared by keyed argument checking, defaults and supervisor wiring.
+    pub(super) constructor_signatures: HashMap<crate::DefId, FnSig>,
     /// The keys a `spawn` of each actor or supervisor accepts, keyed by the
     /// declaration identity, in slot order. An actor's keys are its state
     /// fields that `init` does not initialize, then its `init` parameters; a
-    /// defaulted field is optional and every other key is required. A
-    /// supervisor's keys are its header parameters, all required.
+    /// field or parameter with a default is optional. A supervisor's keys
+    /// are its header parameters.
     pub(super) actor_spawn_args: HashMap<String, Vec<SpawnKey>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
@@ -4500,6 +4520,8 @@ impl Checker {
             recovery_kinds: HashMap::new(),
             chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
+            call_default_arguments: HashMap::new(),
+            next_default_span: 0,
             spawn_argument_slots: HashMap::new(),
             supervisor_wiring: HashMap::new(),
             supervisor_startup_order: HashMap::new(),
@@ -4591,7 +4613,7 @@ impl Checker {
             race_operands: HashMap::new(),
             task_lifetimes: super::task_lifetimes::TaskLifetimes::default(),
             closure_escape_facts: HashMap::new(),
-            actor_init_params: HashMap::new(),
+            constructor_signatures: HashMap::new(),
             actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
             var_self_receiver: None,

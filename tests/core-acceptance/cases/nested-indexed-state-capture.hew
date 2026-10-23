@@ -46,7 +46,7 @@ supervisor Group {
 fn main() {
     let holder = Holder { rows: [Row { label: "capture".to_upper(), values: ["seed".to_upper()] }], sibling: "sibling".to_upper() };
     let original = holder;
-    var update = capture(var holder) || {
+    var update = || {
         holder.rows[0].label += "!";
         holder.rows[0].values[0] += holder.rows[0].label;
         holder.rows[0].values.push(holder.rows[0].label);

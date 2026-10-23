@@ -1,6 +1,6 @@
 ## Hew syntax highlighting for GNU nano
 ## Generated from syntax-data.json — do not edit by hand.
-## syntax-data.json version: 0.6.3
+## syntax-data.json version: 0.7.2
 
 syntax "hew" "\.hew$"
 
@@ -29,7 +29,7 @@ color brightmagenta "\<0[xX][0-9a-fA-F][0-9a-fA-F_]*\>"
 color brightmagenta "\<0[bB][01][01_]*\>"
 color brightmagenta "\<0[oO][0-7][0-7_]*\>"
 color brightmagenta "\<[0-9][0-9_]*\.[0-9][0-9_]*([eE][+-]?[0-9][0-9_]*)?\>"
-color brightmagenta "\<[0-9][0-9_]*(ns|us|ms|s|m|h)\>"
+color brightmagenta "\<[0-9][0-9_]*(\.[0-9][0-9_]*)?(ns|us|ms|s|m|h)\>"
 color brightmagenta "\<[0-9][0-9_]*\>"
 
 # Boolean & None
@@ -43,9 +43,8 @@ color brightwhite "\<(yield|defer|select|race|after|from|await|await_restart|sco
 color green "\<(let|var|const|mut|fn|macro|gen|pub|import|package)\>"
 color green "\<(extern|where|type|indirect|enum|trait|impl|as)\>"
 
-# Callable qualifiers and private capture prefixes
+# Callable qualifiers
 color green "\<fn[[:space:]]*\[(clone|var|once)([[:space:]]*,[[:space:]]*(clone|var|once))?\]"
-color green "\<capture[[:space:]]*\([[:space:]]*var\>"
 
 # Actor & concurrency
 color brightgreen "\<(actor|supervisor|spawn|receive|init|fork|move)\>"

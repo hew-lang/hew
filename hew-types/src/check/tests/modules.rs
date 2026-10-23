@@ -379,6 +379,8 @@ fn module_graph_body_local_binding_named_like_module_still_resolves_methods() {
         name: Ident::new("ok"),
         type_params: None,
         params: vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("math"),
             name_span: 0..0,
             ty: (
@@ -743,6 +745,8 @@ fn adopting_declaration_keeps_its_own_provenance() {
             attributes: Vec::new(),
             name: Ident::new(fn_name),
             params: vec![hew_parser::ast::Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("x"),
                 name_span: 0..0,
                 ty: (i64_ty.clone(), 0..3),
@@ -848,6 +852,8 @@ fn same_module_span_colliding_drifting_declarations_conflict() {
             attributes: Vec::new(),
             name: Ident::new("hew_bytes_from_str"),
             params: vec![hew_parser::ast::Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("s"),
                 name_span: 0..0,
                 ty: (param_ty, 0..6),
@@ -1376,6 +1382,8 @@ mod module_body_diagnostic_envelope {
             name: Ident::new("foo"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("x"),
                 name_span: 0..0,
                 ty: (
@@ -1445,6 +1453,8 @@ mod module_body_diagnostic_envelope {
             name: Ident::new("helper"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("v"),
                 name_span: 0..0,
                 ty: (TypeExpr::Infer, 10..11),
@@ -2171,6 +2181,8 @@ mod warning_source_attribution {
                 name: Ident::new("fake"),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("val"),
                     name_span: 0..0,
                     ty: (
@@ -2608,6 +2620,8 @@ fn bad(r: Result<i64, string>) -> i64 fails i64 {
                 attributes: Vec::new(),
                 name: Ident::new(fn_name),
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("p"),
                     name_span: 0..0,
                     ty: (TypeExpr::Infer, 20..21),

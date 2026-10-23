@@ -52,7 +52,7 @@ fn main() {
     stop(group);
     stopped(group);
     let t = Table { rows: [Row { x: 1, name: "a" }], cells: [0], tag: "captured" };
-    var step = capture(var t) || {
+    var step = || {
         t.cells[0] = t.cells[0] + 1;
         t.rows[0].x = t.rows[0].x + 10;
         t.rows.push(Row { x: 0, name: "b" });

@@ -454,7 +454,29 @@ impl Checker {
         ) {
             return None;
         }
-        let value_ty = self.synthesize(&value.0, &value.1);
+        let value_ty = if matches!(self.subst.resolve(target_ty), Ty::GenericCallable { .. }) {
+            // The environment may change, but a universally quantified slot
+            // keeps the signature established by its initializer.
+            let Ty::GenericCallable {
+                parameters,
+                callable,
+            } = self.subst.resolve(target_ty)
+            else {
+                unreachable!()
+            };
+            let (capabilities, params, ret) = callable.callable_signature().expect("callable slot");
+            let expected = Ty::GenericCallable {
+                parameters,
+                callable: Box::new(Ty::Function {
+                    capabilities,
+                    params: params.to_vec(),
+                    ret: Box::new(ret.clone()),
+                }),
+            };
+            self.check_against(&value.0, &value.1, &expected)
+        } else {
+            self.synthesize(&value.0, &value.1)
+        };
         if !matches!(
             self.subst.resolve(&value_ty).callable_body(),
             Ty::Closure { .. } | Ty::Function { .. }
@@ -1194,7 +1216,8 @@ impl Checker {
                         let actual = self.check_against(val, vs, &expected);
                         self.annotated_binding_ty(&expected, actual)
                     } else {
-                        self.synthesize(val, vs)
+                        let inferred = self.synthesize(val, vs);
+                        self.generalize_bound_closure(val, vs, inferred)
                     }
                 } else if let Some(annotation) = ty {
                     self.resolve_annotation_with_holes(annotation, binding_context.clone())
@@ -1579,7 +1602,8 @@ impl Checker {
                         let actual = self.check_against(val, vs, &expected);
                         self.annotated_binding_ty(&expected, actual)
                     } else {
-                        self.synthesize(val, vs)
+                        let inferred = self.synthesize(val, vs);
+                        self.generalize_bound_closure(val, vs, inferred)
                     }
                 } else if let Some(annotation) = ty {
                     self.resolve_annotation_with_holes(annotation, binding_context.clone())
@@ -1866,9 +1890,7 @@ impl Checker {
                             // Actor state fields get a field-specific
                             // diagnostic pointing at the declaration site;
                             // plain locals keep the variable-shaped error.
-                            if let Some(error) = self.private_capture_mutation_error(name, span) {
-                                self.errors.push(error);
-                            } else if let Some(field) = self
+                            if let Some(field) = self
                                 .current_actor_fields
                                 .iter()
                                 .find(|f| f.name == name.name.as_str())

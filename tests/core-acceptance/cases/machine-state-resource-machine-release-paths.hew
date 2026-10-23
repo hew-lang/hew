@@ -37,8 +37,8 @@ machine Plain {
 
 fn main() {
     var s: Mixed = .Idle;
-    let _ = s.step(.Open);
+    let _ = s.step(.Open).expect("machine step failed");
     var p: Plain = .Idle;
-    let _ = p.step(.Open);
-    let _ = p.step(.Shut);
+    let _ = p.step(.Open).expect("machine step failed");
+    let _ = p.step(.Shut).expect("machine step failed");
 }

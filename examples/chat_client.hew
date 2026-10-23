@@ -70,15 +70,13 @@ fn main() {
         }
     }
     let addr = f"127.0.0.1:{port}";
-    let connect_timeout_sec: i64 = 5;
-    let connect_timeout_usec: i64 = 0;
-    let conn = match net.connect_timeout(addr, connect_timeout_sec, connect_timeout_usec) {
+    let conn = match net.connect_timeout(addr, 5s) {
         .Ok(conn) => conn,
         .Err(_) => {
             panic(f"[client] connect to {addr} failed");
         }
     };
-    match conn.set_read_timeout(-1) {
+    match conn.set_read_timeout(-1ms) {
         .Ok(_) => {}
         .Err(_) => {
             let err = f"[client] failed to set read timeout on connection to {addr}";

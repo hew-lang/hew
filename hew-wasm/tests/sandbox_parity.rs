@@ -828,6 +828,66 @@ fn timestamp_values_match_native() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn language_cohort_generic_closure_defaults_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "generic_closure_defaults",
+            source_rel: "tests/core-acceptance/cases/generic-closure-composition.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_decimal_time_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "duration_decimals",
+            source_rel: "tests/core-acceptance/cases/duration-decimals.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_semaphore_leases_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "semaphore_leases",
+            source_rel: "tests/vertical-slice/accept/semaphore_leases.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_semaphore_waits_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "semaphore_owned_waits",
+            source_rel: "tests/vertical-slice/accept/semaphore_owned_waits.hew",
+        },
+        "",
+    );
+}
+
 // This integration test executes the Node sandbox VM. Windows CI covers the
 // native toolchain and WASI target separately; Linux owns this VM contract.
 #[cfg(unix)]
@@ -1344,9 +1404,13 @@ fn quoted_file_import_aliases_match_native() {
 #[test]
 fn contextual_macros_native_and_vm() {
     let source = "macro add { ($x:expr) => expr { $x + 1 } } fn main() { println(add!(2)); }";
-    let expanded = hew_wasm::expand_macro(source, source.find("add!(2)").unwrap())
+    let expanded = hew_wasm::expand_macro(source, Some(source.find("add!(2)").unwrap()))
         .expect("browser macro expansion");
     assert!(expanded.contains("2 + 1"), "{expanded}");
+    let whole = hew_wasm::expand_macro(source, None).expect("browser whole-document expansion");
+    assert!(whole.contains("fn main()"), "{whole}");
+    assert!(whole.contains("2 + 1"), "{whole}");
+    assert!(!whole.contains("add!"), "{whole}");
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();
@@ -2014,4 +2078,103 @@ fn recovered_and_actor_fault_messages_match_native() {
     ] {
         assert_case(&case, "");
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_default_arguments() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "default-argument-constructors",
+            source_rel: "tests/core-acceptance/cases/default-argument-constructors.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-actor",
+            source_rel: "tests/core-acceptance/cases/default-argument-actor.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-values",
+            source_rel: "tests/core-acceptance/cases/default-argument-values.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-imports",
+            source_rel: "tests/core-acceptance/cases/default-argument-imports.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-effects",
+            source_rel: "tests/core-acceptance/cases/default-argument-effects.hew",
+        },
+        ParityCase {
+            test_name: "machine-generic-step-limits",
+            source_rel: "tests/core-acceptance/cases/machine-generic-step-limits.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-default-limit",
+            source_rel: "tests/core-acceptance/cases/machine-internal-default-limit.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-reactions",
+            source_rel: "tests/core-acceptance/cases/machine-internal-reactions.hew",
+        },
+    ] {
+        let mut inputs = hew_compile::SourceSet::in_memory();
+        inputs.insert(
+            "default_argument_support/provider.hew",
+            include_str!("../../tests/core-acceptance/cases/default_argument_support/provider.hew"),
+        );
+        assert_case_with_inputs(&case, "", inputs);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_default_argument_authority() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    let mut inputs = hew_compile::SourceSet::in_memory();
+    inputs.insert(
+        "default_argument_support/authority.hew",
+        include_str!("../../tests/core-acceptance/cases/default_argument_support/authority.hew"),
+    );
+    assert_case_with_inputs(
+        &ParityCase {
+            test_name: "default-argument-authority",
+            source_rel: "tests/core-acceptance/cases/default-argument-authority.hew",
+        },
+        "",
+        inputs.clone(),
+    );
+    let refused = compile_to_sandbox_bytecode_with_inputs(
+        include_str!("../../tests/core-acceptance/cases/default-argument-authority-refused.hew"),
+        Some(SANDBOX_PROFILE),
+        inputs,
+    )
+    .expect("confinement diagnostics");
+    for boundary in [
+        "omitted",
+        "omitted_actor",
+        "omitted_receive",
+        "omitted_supervisor",
+        "omitted_child",
+        "omitted_callable",
+    ] {
+        assert!(
+            refused
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(&format!(
+                    "confined `{boundary}` reaches `fs.open_read`: ambient authority acquisition"
+                ))),
+            "{:?}",
+            refused.diagnostics
+        );
+    }
+    assert!(
+        refused.bytecode.is_none(),
+        "refused defaults must not produce executable bytecode"
+    );
 }

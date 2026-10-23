@@ -10,7 +10,7 @@ fn consume_advance(consume var callback: fn[var]() -> i64) -> i64 {
 
 fn main() -> i64 {
     let count = 10;
-    var counter: fn[var, clone]() -> i64 = capture(var count) || {
+    var counter: fn[var, clone]() -> i64 = || {
         count += 1;
         count
     };

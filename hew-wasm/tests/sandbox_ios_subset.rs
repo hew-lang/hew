@@ -106,9 +106,16 @@ fn ios_runnable_corpus_is_sandbox_safe() {
         "the pinned iOS core corpus contains duplicate ids"
     );
 
-    for case in &cases {
-        assert_case(case);
-    }
+    let failed = cases
+        .iter()
+        .filter(|case| std::panic::catch_unwind(|| assert_case(case)).is_err())
+        .map(|case| case.id.as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        failed.is_empty(),
+        "iOS corpus failures: {}",
+        failed.join(", ")
+    );
 }
 
 fn load_cases() -> Vec<IosCase> {

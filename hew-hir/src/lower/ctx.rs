@@ -59,6 +59,7 @@ impl LowerCtx {
             recovery_kinds: tc_output.recovery_kinds.clone(),
             chain_values: Vec::new(),
             call_argument_slots: tc_output.call_argument_slots.clone(),
+            call_default_arguments: tc_output.call_default_arguments.clone(),
             spawn_argument_slots: tc_output.spawn_argument_slots.clone(),
             supervisor_wiring: tc_output.supervisor_wiring.clone(),
             supervisor_startup_order: tc_output.supervisor_startup_order.clone(),
@@ -547,8 +548,11 @@ impl LowerCtx {
         if let Some((_, _, parameters)) = self
             .declaration_type_parameters
             .values()
+            .flat_map(|(file, regions, parameters)| {
+                regions.iter().map(move |region| (file, region, parameters))
+            })
             .filter(|(file, region, parameters)| {
-                Some(*file) == module
+                Some(**file) == module
                     && region.start <= span.start
                     && span.end <= region.end
                     && parameters.len() == count

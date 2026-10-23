@@ -44,10 +44,10 @@ machine Signal {
 fn main() {
     var s = Signal.Idle;
     println(s.state_name());
-    let started = s.step(.Start);
+    let started = s.step(.Start).expect("machine step failed");
     println(s.state_name());
     println(started.outputs.len());
-    let stopped = s.step(.Stop);
+    let stopped = s.step(.Stop).expect("machine step failed");
     println(stopped.outputs.len());
     println(s.state_name());
 }

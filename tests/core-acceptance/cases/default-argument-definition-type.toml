@@ -1,0 +1,14 @@
+[[case]]
+id = "default-argument-definition-type"
+intent = "Default expressions are checked at their declaration, including unused defaults, bounds and trait authority."
+source = "cases/default-argument-definition-type.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "Mismatch"
+line = 1
+column = 25
+message = "type mismatch: expected `i64`, found `string`"

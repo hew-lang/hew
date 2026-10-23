@@ -48,7 +48,7 @@ impl Checker {
             },
             None,
         );
-        let substitutions: HashMap<_, _> = applied
+        let mut substitutions: HashMap<_, _> = applied
             .iter()
             .flat_map(|bound| {
                 self.trait_info(bound.trait_id)
@@ -73,6 +73,29 @@ impl Checker {
             }
             sig.return_type =
                 substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
+        }
+        // Providers are ordinary generic functions with an explicit receiver
+        // type argument. Keep that substitution separate from the method's
+        // associated-type binding projection, which matches declaration Self.
+        for applied_bound in &applied {
+            substitutions.insert(
+                crate::ParamHead::receiver(applied_bound.trait_id),
+                Ty::TraitObject {
+                    traits: vec![bound.clone()],
+                },
+            );
+        }
+        for provider in sig.param_defaults.iter_mut().flatten() {
+            for argument in &mut provider.type_args {
+                for owner in self.trait_closure(trait_id) {
+                    *argument = substitute_trait_object_assoc_bindings(
+                        argument,
+                        self.defs.path(owner),
+                        bound,
+                    );
+                }
+                *argument = argument.substitute_type_params_parallel(&substitutions);
+            }
         }
     }
 
@@ -179,6 +202,19 @@ impl Checker {
         let mut receiver_vars = HashSet::new();
         for argument in receiver_type_args {
             collect_unresolved_inference_vars(&self.subst.resolve(argument), &mut receiver_vars);
+        }
+        // A quantified callable generalizes only its own binders. Any free
+        // inference variable belongs to its captured environment or an outer
+        // monomorphic slot, and must remain shared across invocations.
+        if sig.type_params.first().is_some_and(|parameter| {
+            matches!(
+                self.defs.kind(parameter.id.owner),
+                crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
+            )
+        }) {
+            for ty in sig.params.iter().chain(std::iter::once(&sig.return_type)) {
+                collect_unresolved_inference_vars(&self.subst.resolve(ty), &mut receiver_vars);
+            }
         }
         mapping.extend(receiver_vars.into_iter().map(|var| (var.0, Ty::Var(var))));
 
@@ -1392,6 +1428,22 @@ impl Checker {
                 .cloned()
         });
         if let Some(m) = found_method {
+            if let Some((_, declaration)) = self.trait_method_ids_of(trait_id, method) {
+                if let Some(mut signature) = self.fn_sigs.get(&declaration).cloned() {
+                    if !skip_receiver && m.params.first().is_some_and(|param| param.is_receiver) {
+                        signature
+                            .params
+                            .insert(0, Ty::param(crate::ParamHead::receiver(trait_id)));
+                        signature.param_names.insert(0, "self".to_string());
+                        signature.param_ownership.insert(
+                            0,
+                            crate::env::ParameterOwnership::from_consume(m.consumes_self),
+                        );
+                        signature.param_defaults.insert(0, None);
+                    }
+                    return Some((trait_id, signature));
+                }
+            }
             let skip = if skip_receiver {
                 usize::from(m.params.first().is_some_and(|p| p.is_receiver))
             } else {

@@ -23,6 +23,6 @@ machine Latch {
 
 fn main() {
     var m = Closed { code: 42 };
-    m.step(.Try);
+    m.step(.Try).expect("machine step failed");
     println(m.state_name());
 }

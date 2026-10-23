@@ -127,7 +127,7 @@ fn main() {
 
     // Machine `emit` and state payloads.
     var meter: Meter = .Watching { peak: 0, seen: 0 };
-    let report = meter.step(.Reading { value: 7 });
+    let report = meter.step(.Reading { value: 7 }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Alarm { value, peak } => println(f"alarm {value} over {peak}"),

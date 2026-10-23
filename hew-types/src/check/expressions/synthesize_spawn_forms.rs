@@ -806,12 +806,11 @@ impl Checker {
     pub(in crate::check) fn check_lambda(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
-        expected: Option<(&[Ty], &Ty)>,
+        expected: Option<&Ty>,
         span: &Span,
         is_actor_body: bool,
         is_fork_body: bool,
@@ -825,7 +824,6 @@ impl Checker {
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(
             is_move,
-            private_captures,
             type_params,
             params,
             return_type,
@@ -848,18 +846,16 @@ impl Checker {
     pub(super) fn check_lambda_body(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
         body: &Spanned<Expr>,
-        expected: Option<(&[Ty], &Ty)>,
+        expected: Option<&Ty>,
         span: &Span,
         is_actor_body: bool,
         is_fork_body: bool,
     ) -> Ty {
-        let private_bindings = self.resolve_private_captures(private_captures);
-        let body_environment = self.env.closure_environment(&private_bindings);
+        let body_environment = self.env.closure_environment();
         let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -882,37 +878,57 @@ impl Checker {
         let capture_depth = self.env.depth();
         self.lambda_capture_depth = Some(capture_depth);
 
-        let generic_parameters = self.declare_callable_parameters(
-            type_params.unwrap_or_default(),
-            span,
-            crate::DeclarationKind::Closure,
-        );
+        // Contextual universal binders are fresh rigid parameters of this
+        // literal. They never alias the destination's binder identities or
+        // introduce its private parameter names into the lexical scope.
+        let contextual_parameters = match expected {
+            Some(Ty::GenericCallable { parameters, .. }) => parameters
+                .iter()
+                .enumerate()
+                .map(|(index, _)| TypeParam {
+                    name: Ident::new(&format!("T{index}")),
+                    bounds: Vec::new(),
+                })
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        let written = type_params.unwrap_or(&contextual_parameters);
+        let generic_parameters =
+            self.declare_callable_parameters(written, span, crate::DeclarationKind::Closure);
         self.generic_ctx.push(
             generic_parameters
                 .iter()
+                .filter(|_| type_params.is_some())
                 .map(|parameter| (parameter.spelling.to_string(), Ty::param(*parameter)))
                 .collect(),
         );
+        let contextual = Self::contextual_closure_signature(expected, &generic_parameters);
         let written_parameters = type_params.map(<[TypeParam]>::to_vec);
-        let generic_bounds =
-            self.collect_type_param_bounds(written_parameters.as_ref(), None, &mut Vec::new());
+        let generic_bounds = if type_params.is_some() {
+            self.collect_type_param_bounds(written_parameters.as_ref(), None, &mut Vec::new())
+        } else {
+            contextual
+                .as_ref()
+                .map_or_else(ParamBounds::default, |signature| signature.bounds.clone())
+        };
+        let expected = contextual
+            .as_ref()
+            .map(|signature| (signature.params.as_slice(), &signature.return_type));
         self.current_type_param_bounds.push(generic_bounds.clone());
         let previous_function = self.current_function.clone();
-        if let Some(parameter) = generic_parameters.first() {
-            let owner = parameter.id.owner;
-            let key = self.defs.path(owner).to_string();
-            self.insert_fn_sig(
-                &key,
-                owner,
-                FnSig {
-                    type_params: generic_parameters.clone(),
-                    bounds: generic_bounds.clone(),
-                    ..FnSig::default()
-                },
-            );
-            self.record_call_edge(&key);
-            self.current_function = Some(key);
-        }
+        let owner = self.declare_callable_owner(span, crate::DeclarationKind::Closure);
+        let key = self.defs.path(owner).to_string();
+        self.insert_fn_sig(
+            &key,
+            owner,
+            FnSig {
+                type_params: generic_parameters.clone(),
+                bounds: generic_bounds.clone(),
+                ..FnSig::default()
+            },
+        );
+        self.record_call_edge(&key);
+        self.current_function = Some(key);
 
         self.env.push_scope();
         let prev_in_generator = self.in_generator;
@@ -1041,17 +1057,15 @@ impl Checker {
         self.in_generator = prev_in_generator;
         self.pop_scope_with_cleanup();
 
-        if !generic_parameters.is_empty() {
-            let key = self
-                .current_function
-                .clone()
-                .expect("generic closure owns its signature");
-            let signature = self
-                .fn_sig_mut(&key)
-                .expect("generic closure signature was registered");
-            signature.params.clone_from(&param_tys);
-            signature.return_type = ret_ty.clone();
-        }
+        let key = self
+            .current_function
+            .clone()
+            .expect("closure owns its signature");
+        let signature = self
+            .fn_sig_mut(&key)
+            .expect("closure signature was registered");
+        signature.params.clone_from(&param_tys);
+        signature.return_type = ret_ty.clone();
         self.current_function = previous_function;
         self.current_type_param_bounds.pop();
         self.generic_ctx.pop();
@@ -1072,6 +1086,16 @@ impl Checker {
             self.callable_formals.insert(owner, formals);
         }
 
+        // Rigid per-invocation parameters cannot escape into the environment's
+        // shared storage type, even when that storage started as an open hole.
+        let escaped = outer_environment.visible_bindings().any(|binding| {
+            Self::ty_mentions_type_params(&self.subst.resolve(&binding.ty), &generic_parameters)
+        });
+        if escaped {
+            self.report_error_with_suggestions(TypeErrorKind::InferenceFailed, span,
+                "a generic closure cannot store its per-invocation type in a captured binding".to_string(),
+                vec!["give the captured storage one fixed type, or create it inside the closure body".to_string()]);
+        }
         let body_environment = std::mem::replace(&mut self.env, outer_environment);
         self.env.merge_closure_reads(&body_environment);
         let raw_capture_facts = std::mem::take(&mut self.lambda_capture_facts);
@@ -1079,7 +1103,6 @@ impl Checker {
         self.lambda_capture_depth = prev_capture_depth;
         let capture_facts = self.finish_closure_captures(
             raw_capture_facts,
-            &private_bindings,
             &body_environment,
             is_move,
             span,
@@ -1822,10 +1845,9 @@ impl Checker {
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
         typed_arguments: &HashMap<usize, Ty>,
     ) {
-        let definition = self.lookup_type_def(actor_name);
         let registered = self.registered_spawn_identity(actor_name);
-        let actor_fields: Option<HashMap<String, Ty>> = definition.map(|td| td.fields);
-        let init_params = self.actor_init_params.get(&registered).cloned();
+        let actor_fields = self.lookup_type_def(actor_name).map(|td| td.fields);
+        let init_params = self.constructor_signature(&registered).cloned();
         let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
@@ -1884,10 +1906,13 @@ impl Checker {
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
-            let declared_init_param = init_params
-                .as_ref()
-                .and_then(|params| params.iter().find(|p| p.name == field_name.name.as_str()))
-                .map(|p| p.ty.clone());
+            let declared_init_param = init_params.as_ref().and_then(|signature| {
+                signature
+                    .param_names
+                    .iter()
+                    .position(|name| name == field_name.name.as_str())
+                    .map(|index| signature.params[index].clone())
+            });
             let declared = declared_init_param.as_ref().or_else(|| {
                 actor_fields
                     .as_ref()
@@ -1931,6 +1956,86 @@ impl Checker {
         }
     }
 
+    /// Bind written keys and checked parameter providers while retaining field
+    /// defaults as their existing, separate construction inputs.
+    fn bind_spawn_arguments(
+        &mut self,
+        name: &str,
+        args: &[(Ident, Spanned<Expr>)],
+        resolved_type_args: &[Ty],
+        type_subst: &HashMap<crate::ParamHead, Ty>,
+        span: &Span,
+    ) {
+        let registered = self.registered_spawn_identity(name);
+        let owner_kind = if self.supervisor_children.contains_key(&registered) {
+            "supervisor"
+        } else {
+            "actor"
+        };
+        let mut parameter_defaults = HashMap::new();
+        if let Some(signature) = self.constructor_signature(&registered).cloned() {
+            let supplied: Vec<_> = args
+                .iter()
+                .map(|(name, _)| {
+                    signature
+                        .param_names
+                        .iter()
+                        .position(|parameter| parameter == name.name.as_str())
+                })
+                .collect();
+            let params: Vec<_> = signature
+                .params
+                .iter()
+                .map(|ty| ty.substitute_type_params_parallel(type_subst))
+                .collect();
+            self.check_default_arguments(&signature, &supplied, resolved_type_args, &params, span);
+            for default in self
+                .call_default_arguments
+                .remove(&SpanKey::in_module(span, self.current_module_idx))
+                .unwrap_or_default()
+            {
+                parameter_defaults.insert(
+                    Symbol::intern(&signature.param_names[default.slot]),
+                    default,
+                );
+            }
+        }
+        if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
+            // Bind each key the target accepts to its written value or
+            // its default; lowering consumes this binding.
+            let mut slots = Vec::with_capacity(keys.len());
+            for key in keys {
+                match args
+                    .iter()
+                    .position(|(provided, _)| provided.name == key.name)
+                {
+                    Some(index) => slots.push(SpawnSlot::Written(index)),
+                    None if parameter_defaults.contains_key(&key.name) => {
+                        slots.push(SpawnSlot::ArgumentDefault(
+                            parameter_defaults
+                                .remove(&key.name)
+                                .expect("checked constructor default"),
+                        ));
+                    }
+                    None if key.required => {
+                        let noun = self.spawn_key_noun(&registered, key.name);
+                        self.report_error(
+                            TypeErrorKind::MissingActorSpawnArgument,
+                            span,
+                            format!(
+                                "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
+                                key.name.as_str()
+                            ),
+                        );
+                    }
+                    None => slots.push(SpawnSlot::Default),
+                }
+            }
+            self.spawn_argument_slots
+                .insert(SpanKey::in_module(span, self.current_module_idx), slots);
+        }
+    }
+
     /// The identity a spawn target's declaration was registered under. A
     /// file-imported actor answers to its bare name at the spawn site but is
     /// registered under its file's module identity.
@@ -1947,9 +2052,13 @@ impl Checker {
         if self.supervisor_children.contains_key(registered) {
             "parameter"
         } else if self
-            .actor_init_params
-            .get(registered)
-            .is_some_and(|params| params.iter().any(|param| param.name == key.as_str()))
+            .constructor_signature(registered)
+            .is_some_and(|signature| {
+                signature
+                    .param_names
+                    .iter()
+                    .any(|name| name == key.as_str())
+            })
         {
             "`init` parameter"
         } else {
@@ -1968,9 +2077,8 @@ impl Checker {
         let message = if self.supervisor_children.contains_key(registered) {
             format!("supervisor `{actor_name}` has no parameter `{key}`")
         } else if self
-            .actor_init_params
-            .get(registered)
-            .is_some_and(|params| !params.is_empty())
+            .constructor_signature(registered)
+            .is_some_and(|signature| !signature.params.is_empty())
         {
             format!("actor `{actor_name}` has no field or `init` parameter `{key}`")
         } else {
@@ -2200,34 +2308,7 @@ impl Checker {
                 Some(&type_subst),
                 typed_arguments,
             );
-            let registered = self.registered_spawn_identity(&name);
-            if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
-                // Bind each key the target accepts to its written value or
-                // its default; lowering consumes this binding.
-                let mut slots = Vec::with_capacity(keys.len());
-                for key in keys {
-                    match args
-                        .iter()
-                        .position(|(provided, _)| provided.name == key.name)
-                    {
-                        Some(index) => slots.push(SpawnSlot::Written(index)),
-                        None if key.required => {
-                            let noun = self.spawn_key_noun(&registered, key.name);
-                            self.report_error(
-                                TypeErrorKind::MissingActorSpawnArgument,
-                                span,
-                                format!(
-                                    "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
-                                    key.name.as_str()
-                                ),
-                            );
-                        }
-                        None => slots.push(SpawnSlot::Default),
-                    }
-                }
-                self.spawn_argument_slots
-                    .insert(SpanKey::in_module(span, self.current_module_idx), slots);
-            }
+            self.bind_spawn_arguments(&name, args, &resolved_type_args, &type_subst, span);
             resolved_type_args = resolved_type_args
                 .iter()
                 .map(|argument| self.subst.resolve(argument))

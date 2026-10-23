@@ -35,10 +35,10 @@ machine Handshake {
 
 fn main() {
     var first: Handshake = .Idle;
-    let opening = first.step(.Begin { nonce: 41, label: "hello".to_upper() });
+    let opening = first.step(.Begin { nonce: 41, label: "hello".to_upper() }).expect("machine step failed");
     var sibling = first;
-    let accepted = first.step(.Answer { nonce: 41 });
-    let rejected = sibling.step(.Answer { nonce: 40 });
+    let accepted = first.step(.Answer { nonce: 41 }).expect("machine step failed");
+    let rejected = sibling.step(.Answer { nonce: 40 }).expect("machine step failed");
     println(first.state_name());
     println(sibling.state_name());
     for output in opening.outputs {
@@ -61,7 +61,7 @@ fn main() {
     }
     let retained = {
         var timeout: Handshake = .Waiting { nonce: 9, label: "timeout".to_upper() };
-        timeout.step(.TimedOut)
+        timeout.step(.TimedOut).expect("machine step failed")
     };
     for output in retained.outputs {
         match output {
@@ -69,7 +69,7 @@ fn main() {
             _ => panic("wrong timeout output"),
         }
     }
-    let ignored = first.step(.TimedOut);
+    let ignored = first.step(.TimedOut).expect("machine step failed");
     println(ignored.outputs.len());
     match ignored.disposition {
         .Ignored => println("ignored"),

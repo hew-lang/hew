@@ -1049,6 +1049,9 @@ pub struct ExpandArgs {
     /// Select the innermost expansion at this one-based LINE:COL.
     #[arg(long)]
     pub at: Option<String>,
+    /// Emit inspection text and original-file byte-span provenance as JSON.
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Args)]

@@ -736,10 +736,7 @@ fn main() {
 }
 
 #[test]
-fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
-    // Negative control: an inferred operand is not itself the fault. Without
-    // this, rejecting every unresolved operand would also pass the two tests
-    // above.
+fn is_on_an_actor_ref_through_a_contextual_closure_is_accepted() {
     assert_clean(
         r"actor Worker {
     let _id: i64;
@@ -747,7 +744,7 @@ fn is_on_an_actor_ref_through_an_inferred_closure_is_accepted() {
 }
 
 fn main() {
-    let same = |a, b| a is b;
+    let same: fn(Worker, Worker) -> bool = |a, b| a is b;
     let x = spawn Worker { _id: 1 };
     let y = spawn Worker { _id: 2 };
     let _eq: bool = same(x, y);
@@ -757,10 +754,7 @@ fn main() {
 }
 
 #[test]
-fn mismatched_handle_types_through_an_inferred_closure_are_reported() {
-    // The mismatch half of the deferred decision: both operands are
-    // identity-capable, so the rejection is the cross-type `Mismatch` rather
-    // than `E_IS_VALUE_TYPE`, and it must survive the deferral too.
+fn mismatched_handle_types_through_a_contextual_closure_are_reported() {
     assert_has_mismatch(
         r"actor Worker {
     let _id: i64;
@@ -773,7 +767,7 @@ actor Other {
 }
 
 fn main() {
-    let same = |a, b| a is b;
+    let same: fn(Worker, Other) -> bool = |a, b| a is b;
     let w = spawn Worker { _id: 1 };
     let o = spawn Other { _id: 1 };
     let _eq: bool = same(w, o);

@@ -81,10 +81,10 @@ fn show(report: ConnectionLifecycleStep) {
 fn main() {
     var connection: ConnectionLifecycle = .Disconnected;
     println(connection.state_name());
-    show(connection.step(.Connect));
+    show(connection.step(.Connect).expect("machine step failed"));
     println(connection.state_name());
-    show(connection.step(.AuthOk));
+    show(connection.step(.AuthOk).expect("machine step failed"));
     println(connection.state_name());
-    show(connection.step(.Disconnect));
+    show(connection.step(.Disconnect).expect("machine step failed"));
     println(connection.state_name());
 }

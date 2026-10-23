@@ -1,0 +1,36 @@
+import default_argument_support.authority as support;
+#[confined]
+fn omitted() -> i64 { support.take() }
+#[confined]
+fn omitted_actor() {
+    let counter = spawn support.Counter;
+    stop(counter);
+    stopped(counter);
+}
+#[confined]
+fn omitted_receive(counter: support.Counter) { counter.read().expect("read"); }
+#[confined]
+fn omitted_supervisor() {
+    let group = spawn support.Group;
+    stop(group);
+    stopped(group);
+}
+#[confined]
+fn omitted_child() {
+    let group = spawn support.ChildDefault;
+    stop(group);
+    stopped(group);
+}
+#[confined]
+fn omitted_callable() -> i64 { support.run_ambient() }
+fn main() {
+    omitted();
+    omitted_actor();
+    let counter = spawn support.Counter { seed: 9 };
+    omitted_receive(counter);
+    stop(counter);
+    stopped(counter);
+    omitted_supervisor();
+    omitted_child();
+    omitted_callable();
+}

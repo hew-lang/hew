@@ -13,13 +13,14 @@ use hew_parser::ast::{
 };
 use hew_parser::module::{ModuleGraph, ModulePath};
 
-use super::{Checker, LintId, LintLevel, TypeCheckOutput};
+use super::{machine_normalize, Checker, LintId, LintLevel, TypeCheckOutput};
 
 const MAX_CHECKPOINTS: usize = 4;
 
 #[derive(Debug, PartialEq)]
 struct DependencyKey {
     program: Program,
+    next_default_span: usize,
     sources: Vec<(String, String, String)>,
     registry: (Vec<PathBuf>, Option<PathBuf>),
     lint_levels: Vec<LintLevel>,
@@ -69,15 +70,19 @@ impl DependencyAnalysisCache {
     /// Check with the same configured, fresh checker the ordinary frontend
     /// would use. `sources` is its exact non-root diagnostic/lint source map,
     /// including raw comments; AST equality alone cannot key lint directives.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "checkpoint bootstrap, root reanchoring and finalization form one request-local handoff"
+    )]
     pub fn check_program(
         &mut self,
         checker: &mut Checker,
         program: &Program,
         mut sources: Vec<(String, String, String)>,
     ) -> TypeCheckOutput {
-        let Some(dependencies) = dependency_program(program) else {
+        if dependency_program(program).is_none() {
             return checker.check_program(program);
-        };
+        }
         let Some(registry) = checker.module_registry.dependency_analysis_context() else {
             return checker.check_program(program);
         };
@@ -90,9 +95,25 @@ impl DependencyAnalysisCache {
         {
             return checker.check_program(program);
         }
+        // Checkpoints must register the same generated providers as a complete
+        // check, and publish their AST and source origins to lowering.
+        let Ok(normalized_program) = machine_normalize::normalize(program) else {
+            return checker.check_program(program);
+        };
+        let source_program = program;
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
+        let Some(dependencies) = dependency_program(program) else {
+            return checker.check_program(source_program);
+        };
         sources.sort();
         let key = DependencyKey {
             program: dependencies,
+            next_default_span: normalized_program.as_ref().map_or_else(
+                || machine_normalize::next_free_span(program),
+                |normalized| normalized.next_free_span(),
+            ),
             sources,
             registry,
             lint_levels: LintId::ALL
@@ -110,6 +131,7 @@ impl DependencyAnalysisCache {
             self.bootstraps += 1;
             dependency_checker.has_checked_program = true;
             dependency_checker.prepare_program(&key.program, true);
+            dependency_checker.next_default_span = key.next_default_span;
             dependency_checker.check_dependency_bodies(&key.program);
             dependency_checker.check_embedded_builtin_impl_bodies(&key.program);
             if self.seeds.len() == MAX_CHECKPOINTS {
@@ -130,10 +152,10 @@ impl DependencyAnalysisCache {
         };
         let seed = &self.seeds[index];
         let Some(dependency_checker) = &seed.checker else {
-            return checker.check_program(program);
+            return checker.check_program(source_program);
         };
         if !root_registration_is_independent(program, &seed.lookup_footprint, dependency_checker) {
-            return checker.check_program(program);
+            return checker.check_program(source_program);
         }
 
         let mut fork = dependency_checker.fork_dependency_state();
@@ -177,7 +199,7 @@ impl DependencyAnalysisCache {
         fork.current_module = None;
         fork.current_module_idx = 0;
         fork.check_root_bodies(program);
-        let output = fork.finish_program(program, None);
+        let output = fork.finish_program(source_program, normalized_program);
         *checker = fork;
         self.reused_roots += 1;
         if seed_index.is_some() {

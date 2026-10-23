@@ -334,8 +334,13 @@ impl Checker {
 
         // Child construction uses the ordinary spawn contract with retained
         // config parameters in scope. Each restart repeats this construction.
+        let identity = self.declaration_identity(sd.name);
+        let previous_function = self.current_function.replace(identity.clone());
+        let previous_effect_body = self.enter_named_effect_body(&identity);
         self.check_supervisor_init_args(sd, span);
         self.check_supervisor_interceptor(sd);
+        self.effect_graph.current_body = previous_effect_body;
+        self.current_function = previous_function;
         self.current_type_param_bounds.pop();
         self.exit_primary_sig_scope(scope);
     }
@@ -496,9 +501,8 @@ impl Checker {
                 .cloned()
                 .unwrap_or(Ty::Error);
             if !self
-                .actor_init_params
-                .get(identity)
-                .is_some_and(|params| params.iter().any(|param| param.name == key))
+                .constructor_signature(identity)
+                .is_some_and(|signature| signature.param_names.contains(&key))
             {
                 self.report_error(TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch }, &child.span,
                 format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: `{identity}.init` has no parameter `{key}`"));
@@ -519,6 +523,7 @@ impl Checker {
             &child.span,
             &typed_arguments,
         );
+        self.record_construct_call(&child.span);
         for error in &mut self.errors[first_error..] {
             if error.span == child.span
                 && matches!(error.kind, TypeErrorKind::Mismatch { .. })

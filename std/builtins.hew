@@ -479,7 +479,7 @@ pub trait Machine {
     type Subtree;
 
     fn step_observed_with_limit(var self, event: Self.Event, limit: i64, requested: Vec<Self.Scope>) -> Result<MachineObservedStep<Self.Step, Self.Scope, Self.Subtree>, MachineStepError>;
-    fn step(var self, event: Self.Event) -> Self.Step;
+    fn step(var self, event: Self.Event, limit: i64 = 1024) -> Result<Self.Step, MachineStepError>;
     fn step_info(self, report: Self.Step) -> MachineStepInfo;
 }
 
@@ -1230,6 +1230,18 @@ impl duration {
     }
     fn from_secs(n: i64) -> duration {
         n * 1s
+    }
+}
+
+impl duration {
+    /// Whole milliseconds rounded upward, preserving positive sub-millisecond waits.
+    fn millis_ceil(self) -> i64 {
+        let millis = self.millis();
+        if self > 0ns && self % 1ms != 0ns {
+            millis + 1
+        } else {
+            millis
+        }
     }
 }
 

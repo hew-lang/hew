@@ -21,7 +21,9 @@ fn deferred(label: string) {
 
 fn busy(started: stream.Sink<i64>) -> i64 {
     let ticket = Ticket { label: "loop" };
-    defer { deferred(ticket.label); }
+    defer {
+        deferred(ticket.label);
+    }
     started.send(1).expect("started");
     var count: i64 = 0;
     loop {
@@ -30,12 +32,18 @@ fn busy(started: stream.Sink<i64>) -> i64 {
 }
 
 fn recursive(depth: i64) -> i64 {
-    if depth == 0 { 1 } else { recursive(depth - 1) + recursive(depth - 1) }
+    if depth == 0 {
+        1
+    } else {
+        recursive(depth - 1) + recursive(depth - 1)
+    }
 }
 
 fn tree(started: stream.Sink<i64>) -> i64 {
     let ticket = Ticket { label: "recursion" };
-    defer { deferred(ticket.label); }
+    defer {
+        deferred(ticket.label);
+    }
     started.send(1).expect("started");
     let value = recursive(30);
     println("computation escaped cancellation");
@@ -58,8 +66,12 @@ fn staged_work() -> i64 {
 }
 
 machine Gate {
-    events { Open; }
-    emits { Pending { label: string; } }
+    events {
+        Open;
+    }
+    emits {
+        Pending { label: string; }
+    }
     state Closed { label: string; }
     state Opened { label: string; value: i64; }
     on Open: Closed => Opened {
@@ -77,14 +89,16 @@ fn machine_work() {
             .Opened { label, value } => println(f"committed:{label}:{value}"),
         }
     }
-    let _report = gate.step(.Open);
+    let _report = gate.step(.Open).expect("machine step failed");
 }
 
 actor Compute {
     let ready: stream.Sink<i64>;
     receive fn work() {
         let ticket = Ticket { label: "actor" };
-        defer { deferred(ticket.label); }
+        defer {
+            deferred(ticket.label);
+        }
         ready.send(1).expect("ready");
         loop {}
     }
@@ -92,9 +106,15 @@ actor Compute {
 
 fn main() {
     let (tx, rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    println(await race [busy(tx), peer(rx)]);
+    println(await race [
+        busy(tx),
+        peer(rx),
+    ]);
     let (tree_tx, tree_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
-    println(await race [tree(tree_tx), peer(tree_rx)]);
+    println(await race [
+        tree(tree_tx),
+        peer(tree_rx),
+    ]);
     let (actor_tx, actor_rx): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("pipe");
     let target = spawn Compute { ready: actor_tx };
     mailbox(target, on_full: .Wait).work().expect("submit");

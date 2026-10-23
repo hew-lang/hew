@@ -34,9 +34,9 @@ impl MachineInput {
 fn drive_machine() {
     var m: FuzzMachine = .Idle;
     let _before = m.state_name();
-    m.step(.Activate);
-    m.step(.Bump);
-    m.step(.Deactivate);
+    m.step(.Activate).expect("machine step failed");
+    m.step(.Bump).expect("machine step failed");
+    m.step(.Deactivate).expect("machine step failed");
     let _after = m.state_name();
 }
 "#

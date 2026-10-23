@@ -26,5 +26,5 @@ fn main() {
             _ => println("incorrect commit"),
         }
     }
-    let _report = counter.step(.Start);
+    let _report = counter.step(.Start).expect("machine step failed");
 }

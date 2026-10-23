@@ -25,7 +25,7 @@ actor Probe {
     var gate: Gate;
 
     receive fn open(label: string) -> string {
-        let report = gate.step(.Open { label: label });
+        let report = gate.step(.Open { label: label }).expect("machine step failed");
         var seen = "none";
         for output in report.outputs {
             match output {
@@ -39,7 +39,7 @@ actor Probe {
     }
 
     receive fn close() -> string {
-        let report = gate.step(.Close);
+        let report = gate.step(.Close).expect("machine step failed");
         var seen = "none";
         for output in report.outputs {
             match output {

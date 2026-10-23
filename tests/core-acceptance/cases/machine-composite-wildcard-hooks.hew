@@ -47,9 +47,9 @@ fn show(label: string, report: SessionStep) {
 
 fn main() {
     var session: Session = .Closed;
-    show("open", session.step(.Open));
-    show("named sibling", session.step(.Named));
-    show("wildcard same", session.step(.Stay));
-    show("wildcard sibling", session.step(.Choose));
+    show("open", session.step(.Open).expect("machine step failed"));
+    show("named sibling", session.step(.Named).expect("machine step failed"));
+    show("wildcard same", session.step(.Stay).expect("machine step failed"));
+    show("wildcard sibling", session.step(.Choose).expect("machine step failed"));
     println(session.state_name());
 }

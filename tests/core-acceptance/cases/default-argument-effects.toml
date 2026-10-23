@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-effects"
+intent = "Only omitted defaults suspend or fault; provider and caller owners close during normal and recovered exits."
+source = "cases/default-argument-effects.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "close 1\nclose 2\nclose 3\nclose 4\ndefault effects passed\n"
+exit = 0

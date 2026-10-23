@@ -39,8 +39,8 @@ fn show(report: GateStep) {
 
 fn main() {
     var gate: Gate = .Closed;
-    show(gate.step(.Decide { stay: true }));
+    show(gate.step(.Decide { stay: true }).expect("machine step failed"));
     println(gate.state_name());
-    show(gate.step(.Decide { stay: false }));
+    show(gate.step(.Decide { stay: false }).expect("machine step failed"));
     println(gate.state_name());
 }

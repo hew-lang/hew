@@ -16,8 +16,8 @@ machine Counter {
 fn main() {
     var c: Counter = .Idle;
     println(c.state_name());
-    c.step(.Tick);
+    c.step(.Tick).expect("machine step failed");
     println(c.state_name());
-    c.step(.Tick);
+    c.step(.Tick).expect("machine step failed");
     println(c.state_name());
 }

@@ -2478,6 +2478,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("val"),
                     name_span: 0..0,
                     ty: (
@@ -2522,6 +2524,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (
@@ -2562,7 +2566,7 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
 fn structural_hardening_super_trait_generic_method_guard_propagates() {
     // If a super-trait has a generic method, the E1 guard must veto the whole
     // structural check for the child trait too.
-    use hew_parser::ast::{Param, TraitDecl, TraitItem, TraitMethod, TypeExpr, TypeParam};
+    use hew_parser::ast::{Param, Path, TraitDecl, TraitItem, TraitMethod, TypeExpr, TypeParam};
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
 
     let generic_super = TraitDecl {
@@ -2580,14 +2584,13 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 bounds: vec![],
             }]),
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        path: hew_parser::ast::Path::single(
-                            hew_parser::ast::Ident::new("Self"),
-                            0..0,
-                        ),
+                        path: Path::single(Ident::new("Self"), 0..0),
                         type_args: None,
                     },
                     0..4,
@@ -2614,7 +2617,7 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
         name: Ident::new("ChildTrait"),
         type_params: None,
         super_traits: Some(vec![hew_parser::ast::TraitBound {
-            path: hew_parser::ast::Path::single(hew_parser::ast::Ident::new("GenericSuper"), 0..0),
+            path: Path::single(Ident::new("GenericSuper"), 0..0),
             type_args: None,
             assoc_type_bindings: vec![],
         }]),
@@ -2625,14 +2628,13 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (
                     TypeExpr::Named {
-                        path: hew_parser::ast::Path::single(
-                            hew_parser::ast::Ident::new("Self"),
-                            0..0,
-                        ),
+                        path: Path::single(Ident::new("Self"), 0..0),
                         type_args: None,
                     },
                     0..4,
@@ -2992,7 +2994,7 @@ fn main() {}
 // for non-root module bodies too:
 //   - `body_cast_infer_hole_fails_closed`: unresolvable `as _` cast target
 //   - `body_let_annotation_infer_resolves_cleanly`: resolvable `let y: _ = 42`
-//   - `body_lambda_infer_param_hole_fails_closed`: unresolvable lambda `|x: _|`
+// Directly bound closure holes generalize; see the inference tests.
 
 // ── D429: an impl block naming a trait that does not exist ────────────────────
 

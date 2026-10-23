@@ -25,7 +25,10 @@ import std.net.http.http_client;
 fn test_server_impl_linked_in_dual_import_unit() {
     match http.listen(":0") {
         .Ok(server) => {
-            let _prev = server.set_request_timeout_ms(1000);
+            assert(server.set_request_timeout(0ns) == -1);
+            assert(server.set_request_timeout(-1ns) == -1);
+            assert(server.set_request_timeout(1ns) == 0);
+            assert(server.set_request_timeout(1s) == 0);
             server.close();
             assert(true);
         }
@@ -44,7 +47,7 @@ fn test_server_impl_linked_in_dual_import_unit() {
 #[test]
 #[real_time]
 fn test_response_accessors_linked_in_dual_import_unit() {
-    assert(http_client.set_timeout(100).is_ok());
+    assert(http_client.set_timeout(100ms).is_ok());
     let resp = http_client.get("http://127.0.0.1:1");
     assert(resp.status() == -1);
     let _body = resp.body();

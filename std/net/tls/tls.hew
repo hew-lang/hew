@@ -208,8 +208,8 @@ const TLS_CONNECT_OS: i32 = 3;
 /// `last_error()`. Waiting suspends the caller so unrelated actors can run.
 pub fn connect(host: string, port: i64, options: TlsOptions) -> TlsStream fails net.NetError {
     let checked = net.port_arg("tls.connect", port)?;
-    let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout.millis())?;
-    let io_ms = net.duration_ms("tls.connect io_timeout", options.io_timeout.millis())?;
+    let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout)?;
+    let io_ms = net.duration_ms("tls.connect io_timeout", options.io_timeout)?;
     let (trust, pem): (i32, bytes) = match options.trust {
         Trust.Bundled => (0, bytes.new()),
         Trust.Pem(document) => (1, document),

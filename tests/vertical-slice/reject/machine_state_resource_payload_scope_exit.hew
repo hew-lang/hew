@@ -26,6 +26,6 @@ machine ConnSession {
 
 fn main() {
     var s = ConnSession.Idle;
-    let _ = s.step(ConnSession.Event.Connect { fd: 1 });
-    let _ = s.step(ConnSession.Event.Disconnect);
+    let _ = s.step(ConnSession.Event.Connect { fd: 1 }).expect("machine step failed");
+    let _ = s.step(ConnSession.Event.Disconnect).expect("machine step failed");
 }

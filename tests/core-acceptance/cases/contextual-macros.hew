@@ -1,10 +1,13 @@
 import contextual_macros_support.{answer as imported_answer};
+
 macro twice {
     ($value:expr) => expr { $value + $value }
 }
+
 macro bind {
     ($value:expr) => expr { { let value = 10; $value + value } }
 }
+
 macro create {
     ($name:ident, $value:literal) => items {
         type Hidden<T> { value: T; }
@@ -19,20 +22,29 @@ macro create {
         fn $name() -> i64 { helper() }
     }
 }
+
 create!(first, 3)
+
 create!(second, 7)
+
 macro plus { ($value:expr) => expr { $value + 1 } }
+
 macro sum {
     ($($value:expr),*) => expr { { var total = 0; $(total += $value;)* total } }
 }
+
 macro capture {
     ($value:expr) => expr { { let local = $value; let f = || local; f() } }
 }
+
 macro message { ($value:expr) => expr { f"value: {$value}" } }
+
 macro here { () => expr { location!().line } }
+
 macro under_loop {
     ($body:block) => expr { { loop { $body; break; } } }
 }
+
 macro counter {
     ($name:ident, $value:literal) => items {
         actor Hidden {
@@ -41,8 +53,11 @@ macro counter {
         fn $name() -> i64 { let counter = spawn Hidden; counter.value().expect("actor replies") }
     }
 }
+
 counter!(first_actor, 3)
+
 counter!(second_actor, 7)
+
 macro machine_value {
     ($name:ident, $value:expr) => items {
         machine Hidden {
@@ -54,14 +69,18 @@ macro machine_value {
         }
         fn $name() -> i64 {
             var current: Hidden = .Idle;
-            let _ = current.step(.Tick);
+            let _ = current.step(.Tick).expect("machine step failed");
             match current { .Done { value } => value, _ => 0 }
         }
     }
 }
+
 const state: i64 = 9;
+
 machine_value!(first_machine, 3)
+
 machine_value!(second_machine, state)
+
 fn main() {
     let value = 3;
     println(twice!(value + 1));

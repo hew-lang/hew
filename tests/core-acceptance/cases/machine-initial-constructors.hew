@@ -57,9 +57,9 @@ machine Parallel {
 
 fn main() {
     var counter: Counter = .Idle;
-    let first = counter.step(.Start { seed: 40 });
+    let first = counter.step(.Start { seed: 40 }).expect("machine step failed");
     let saved = counter;
-    let reset = counter.step(.Reset);
+    let reset = counter.step(.Reset).expect("machine step failed");
     assert(first.outputs == [.Entered { count: 42 }]);
     assert(reset.outputs == [.Entered { count: 52 }]);
     match saved {
@@ -71,10 +71,10 @@ fn main() {
         _ => panic("reset nested payload"),
     }
     var direct: Counter = .Idle;
-    let entered = direct.step(.Direct);
+    let entered = direct.step(.Direct).expect("machine step failed");
     assert(entered.outputs == [.Entered { count: 99 }]);
     var parallel: Parallel = .Outside;
-    let _started = parallel.step(.Start);
+    let _started = parallel.step(.Start).expect("machine step failed");
     match parallel {
         .Active { seed, worker: .Waiting { count }, peer: .Other } => assert(seed == 20 && count == 23),
         _ => panic("regional exclusive initializer"),

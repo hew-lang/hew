@@ -18,6 +18,7 @@ export interface RcCell {
 }
 
 export type VmValue =
+  | import("./v1/semaphores.js").SemaphoreHandle
   | { kind: "encoding"; format: EncodingFormat; value: EncodingNode | null }
   | { kind: "rc"; cell: RcCell | null; closed: boolean }
   | { kind: "weak"; cell: RcCell; closed: boolean }
@@ -112,6 +113,10 @@ export function cloneValue(value: VmValue): VmValue {
       return { kind: "weak", cell: value.cell, closed: false };
     case "host_resource":
       throw new Error("a filesystem owner cannot be copied");
+    case "semaphore":
+      // The opaque ABI pointer is copied for calls borrowing the enclosing
+      // affine Semaphore. Only its explicit clone operation creates an owner.
+      return value;
     case "timer":
       throw new Error("a timer cancellation handle cannot be copied");
     case "unit":
@@ -289,6 +294,8 @@ export function renderF64(value: number): string {
 
 export function renderStdout(value: VmValue): string {
   switch (value.kind) {
+    case "semaphore":
+      return "Semaphore";
     case "encoding":
       return JSON.stringify(value.value);
     case "host_resource":
@@ -351,6 +358,8 @@ export function renderStdout(value: VmValue): string {
 
 export function toJsonValue(value: VmValue): JsonValue {
   switch (value.kind) {
+    case "semaphore":
+      return "Semaphore";
     case "encoding":
       return value.value;
     case "host_resource":

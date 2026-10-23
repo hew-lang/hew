@@ -34,10 +34,10 @@ fn run_suite(files: &[(&str, &str)], extra_args: &[&str]) -> std::process::Outpu
 fn macro_generated_test_is_discovered_and_selected() {
     require_codegen();
     let output = run_suite(
-        &[(
-            "generated_test.hew",
-            "macro case { ($name:ident, $expected:expr) => items { #[test] fn $name() { assert($expected == 42); } } }\ncase!(generated_test, 40 + 2)\n",
-        )],
+        &[
+            ("macros.hew", "pub macro case { ($name:ident, $expected:expr) => items { #[test] fn $name() { assert($expected == 42); } } }\n"),
+            ("generated_test.hew", "import macros.{case};\ncase!(generated_test, 40 + 2)\n"),
+        ],
         &["--jobs", "1"],
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -47,6 +47,57 @@ fn macro_generated_test_is_discovered_and_selected() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(has_test_line(&stdout, "generated_test", "ok"), "{stdout}");
+}
+
+#[test]
+fn macro_inspection_reports_imported_rule_and_expanded_syntax() {
+    let dir = support::tempdir();
+    write_file(
+        dir.path(),
+        "macros.hew",
+        "pub macro add { ($x:expr) => expr { $x + 1 } }\n",
+    );
+    let source = "import macros.{add};\nfn main() { println(add!(41)); }\n";
+    write_file(dir.path(), "main.hew", source);
+    let output = run_hew_in(dir.path(), &["tool", "expand", "main.hew", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let view: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let text = view["text"].as_str().unwrap();
+    assert!(text.contains("fn main()"), "{text}");
+    assert!(text.contains("41 + 1"), "{text}");
+    assert!(!text.contains("add!"), "{text}");
+    assert_eq!(view["inspectionOnly"], true);
+    assert!(view["origins"][0]["definition"]["file"]
+        .as_str()
+        .unwrap()
+        .ends_with("macros.hew"));
+    assert_eq!(
+        view["origins"][0]["invocation"]["span"]["start"],
+        source.find("add!(41)").unwrap()
+    );
+    // This deliberately simple expansion has no generated bindings or free
+    // definition-site names. It can be parsed and checked as ordinary Hew.
+    write_file(dir.path(), "expanded.hew", text);
+    let check = run_hew_in(dir.path(), &["check", "expanded.hew"]);
+    assert!(
+        check.status.success(),
+        "{}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+    let selected = run_hew_in(dir.path(), &["tool", "expand", "main.hew", "--at", "2:21"]);
+    assert!(
+        selected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&selected.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&selected.stdout).trim(), "41 + 1");
+    let absent = run_hew_in(dir.path(), &["tool", "expand", "main.hew", "--at", "2:1"]);
+    assert!(!absent.status.success());
+    assert!(String::from_utf8_lossy(&absent.stderr).contains("no macro expansion"));
 }
 
 #[test]

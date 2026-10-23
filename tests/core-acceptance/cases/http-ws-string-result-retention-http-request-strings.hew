@@ -7,7 +7,7 @@ actor Client {
     var complete: i64;
 
     receive fn fetch(unused: i64) {
-        let _ = http_client.set_timeout(5000);
+        let _ = http_client.set_timeout(5000ms);
         let response = http_client.get(url);
         if response.status() != 200 {
             panic("HTTP request retention response failed");
@@ -28,7 +28,7 @@ fn main() {
             let client = spawn Client { url: f"http://127.0.0.1:{port}/retention", complete: 0 };
             let _ = client.fetch(0);
             let request = server.accept();
-            for _ in 0 .. 50 {
+            for _ in 0..50 {
                 let checksum = request.method().len() + request.path().len() + request.header("Host").len() + request.body("utf-8").len();
                 println(checksum);
             }

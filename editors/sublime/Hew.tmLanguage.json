@@ -172,9 +172,9 @@
     "numbers": {
       "patterns": [
         {
-          "comment": "Duration literals: 100ms, 5s, 1h",
+          "comment": "Duration literals: 100ms, 0.25s, 1.5ms",
           "name": "constant.numeric.duration.hew",
-          "match": "\\b[0-9][0-9_]*(ns|us|ms|s|m|h)\\b"
+          "match": "\\b[0-9][0-9_]*(\\.[0-9][0-9_]*)?(ns|us|ms|s|m|h)\\b"
         },
         {
           "comment": "Hex integer: 0xFF",
@@ -621,8 +621,8 @@
     "closures": {
       "patterns": [
         {
-          "comment": "Pipe closure parameters following an expression introducer, move, actor or a private capture list. Logical and bitwise operators keep their ordinary scopes.",
-          "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+|\\bcapture\\s*\\([^)]*\\)\\s*)(\\|)(?!\\|)(?=[^|]*\\|)",
+          "comment": "Pipe closure parameters following an expression introducer, move or actor. Logical and bitwise operators keep their ordinary scopes.",
+          "begin": "(?<=[=(,\\[]\\s*|=>\\s*|\\bmove\\s+|\\bactor\\s+)(\\|)(?!\\|)(?=[^|]*\\|)",
           "beginCaptures": {
             "1": {
               "name": "punctuation.definition.parameters.begin.hew"
@@ -945,39 +945,6 @@
             },
             {
               "include": "#comments"
-            },
-            {
-              "include": "#punctuation"
-            }
-          ]
-        },
-        {
-          "name": "meta.closure.capture.hew",
-          "begin": "(?<![.\\w])(capture)\\s*(\\()(?=\\s*var\\b)",
-          "beginCaptures": {
-            "1": {
-              "name": "keyword.closure.capture.hew"
-            },
-            "2": {
-              "name": "punctuation.section.parens.begin.hew"
-            }
-          },
-          "end": "(\\))",
-          "endCaptures": {
-            "1": {
-              "name": "punctuation.section.parens.end.hew"
-            }
-          },
-          "patterns": [
-            {
-              "name": "keyword.closure.capture-mutability.hew",
-              "match": "\\bvar\\b"
-            },
-            {
-              "include": "#comments"
-            },
-            {
-              "include": "#variables"
             },
             {
               "include": "#punctuation"

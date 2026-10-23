@@ -350,6 +350,8 @@ pub(super) fn make_checker_with_trait(
                 name: Ident::new(name),
                 type_params,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("val"),
                     name_span: 0..0,
                     ty: (

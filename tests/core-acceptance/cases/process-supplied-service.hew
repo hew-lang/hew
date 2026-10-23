@@ -1,0 +1,19 @@
+import std.process;
+import std.os;
+
+#[confined]
+fn complete(consume child: process.Child) -> i64 {
+    assert(child.id() > 0);
+    match child.wait().expect("child exits") {
+        .Exited(code) => code,
+        .Signalled(signal) => panic(f"unexpected signal {signal}"),
+    }
+}
+
+fn main() {
+    let args = os.args();
+    if args.len() > 1 { return; }
+    let child = process.start(process.command(args[0], ["child"])).expect("child starts");
+    assert(complete(child) == 0);
+    println("supplied child completed");
+}

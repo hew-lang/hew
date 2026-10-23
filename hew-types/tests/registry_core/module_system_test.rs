@@ -615,6 +615,8 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         name: Ident::new("take_alpha"),
         type_params: None,
         params: vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("v"),
             name_span: 0..0,
             ty: (
@@ -936,6 +938,8 @@ fn colliding_unqualified_imports_are_typed_error() {
         name: Ident::new("use_value"),
         type_params: None,
         params: vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("v"),
             name_span: 0..0,
             ty: (
@@ -1016,6 +1020,8 @@ fn unqualified_unpublished_type_is_not_in_scope_not_ambiguous() {
         name: Ident::new("use_value"),
         type_params: None,
         params: vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("v"),
             name_span: 0..0,
             ty: (
@@ -1187,6 +1193,8 @@ fn make_receive_fn(name: &str, params: &[(&str, &str)], ret: Option<&str>) -> Re
         params: params
             .iter()
             .map(|(pname, ptype)| Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new(pname),
                 name_span: 0..0,
                 ty: (

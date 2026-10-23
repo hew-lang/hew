@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-constructors"
+intent = "Constructor defaults preserve written, field and init evaluation order, including generic imported actors, supervisor parameters and child defaults."
+source = "cases/default-argument-constructors.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\n4\n5\n10\n8\n6\n4\n5\nconstructor defaults passed\n"
+exit = 0

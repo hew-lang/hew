@@ -110,6 +110,17 @@ use tower_lsp_server::ls_types::{
     WorkDoneProgressOptions, WorkspaceEdit,
 };
 
+/// Omitting position requests the complete expanded document. Existing clients
+/// receive text; metadata is opt-in to preserve the original request contract.
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpandMacroParams {
+    text_document: TextDocumentIdentifier,
+    position: Option<Position>,
+    #[serde(default)]
+    include_metadata: bool,
+}
+
 /// Parameters for the `hew/tests` editor request. Omitting the document lists
 /// tests across the open workspace.
 #[derive(Debug, serde::Deserialize)]
@@ -538,10 +549,7 @@ impl HewLanguageServer {
         clippy::unused_async,
         reason = "custom_method requires an async handler"
     )]
-    pub async fn expand_macro(
-        &self,
-        params: tower_lsp_server::ls_types::TextDocumentPositionParams,
-    ) -> Result<Option<String>> {
+    pub async fn expand_macro(&self, params: ExpandMacroParams) -> Result<Option<Value>> {
         let Some(doc) = self.documents.get(&params.text_document.uri) else {
             return Ok(None);
         };
@@ -552,12 +560,14 @@ impl HewLanguageServer {
             return Ok(None);
         };
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        let offset = position_to_offset(&doc.source, &doc.line_offsets, params.position);
-        Ok(hew_analysis::expansion::render(
-            program,
-            &path,
-            Some(offset),
-        ))
+        let offset = params
+            .position
+            .map(|position| position_to_offset(&doc.source, &doc.line_offsets, position));
+        if params.include_metadata {
+            Ok(hew_analysis::expansion::inspect(program, &path, offset).map(|view| json!(view)))
+        } else {
+            Ok(hew_analysis::expansion::render(program, &path, offset).map(Value::String))
+        }
     }
 
     /// Return stable identities and ranges from the same discovery used by

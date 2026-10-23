@@ -481,7 +481,7 @@ fn main() {
 
     #[test]
     fn typecheck_rejects_unresolved_inferred_binding_before_enrichment() {
-        let source = "fn main() {\n    let f = |x| x;\n}\n";
+        let source = "fn main() {\n    let values = HashMap.new();\n    let _ = values.len();\n}\n";
         let program = parse_source(source, "main.hew").expect("source should parse");
         let target = TargetSpec::from_requested(None).expect("host target");
 

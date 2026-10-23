@@ -16,7 +16,7 @@ fn capture(output: &TypeCheckOutput, name: &str) -> ClosureCaptureFact {
 #[test]
 fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
     let output = check_source(
-        "fn main() { let count: i64 = 0; var next = capture(var count) || { count = count + 1; count }; next(); next(); }",
+        "fn main() { let count: i64 = 0; var next = || { count = count + 1; count }; next(); next(); }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let fact = capture(&output, "count");
@@ -29,7 +29,7 @@ fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
         .any(|ty| matches!(ty, Ty::Closure { capabilities, .. }
         if capabilities.call == CallableCallMode::Var && capabilities.clone)));
     let output = check_source(
-        "fn main() { let count: i64 = 0; let next = capture(var count) || { count = count + 1; count }; next(); }",
+        "fn main() { let count: i64 = 0; let next = || { count = count + 1; count }; next(); }",
     );
     assert!(
         output
@@ -42,49 +42,22 @@ fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
 }
 
 #[test]
-fn implicit_capture_mutation_names_the_private_prefix() {
+fn private_capture_writes_are_inferred_for_values_and_actors() {
     for source in [
-        "fn main() { var n: i64 = 0; let f = || { n = n + 1; }; }",
-        "fn main() { var xs: Vec<i32> = Vec.new(); let f = || xs.push(1); }",
+        "fn main() { let n: i64 = 0; var f = || { n = n + 1; }; f(); }",
+        "fn main() { let xs: Vec<i32> = Vec.new(); var f = || xs.push(1); f(); }",
+        "fn main() { let hits: i64 = 0; let count = actor || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
     ] {
         let output = check_source(source);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.message.contains("capture(var ")),
-            "{:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+        assert!(output.closure_capture_facts.values().flatten().any(|capture| capture.access == ClosureCaptureAccess::Var));
     }
 }
 
 #[test]
-fn lambda_actor_capture_write_needs_the_private_prefix() {
-    for binding in ["var", "let"] {
-        let output = check_source(&format!(
-            "fn main() {{ {binding} hits: i64 = 0; let count = actor || -> i64 {{ hits += 1; hits }}; stop(count); stopped(count); }}"
-        ));
-        let error = output
-            .errors
-            .iter()
-            .find(|error| error.kind == TypeErrorKind::ImmutableCaptureMutation)
-            .unwrap_or_else(|| panic!("{binding}: {:?}", output.errors));
-        assert_eq!(
-            error.message,
-            "capture `hits` is an immutable snapshot; add `capture(var hits)` after `actor` to give the actor a mutable state field"
-        );
-        assert_eq!(
-            error.suggestions,
-            ["insert `capture(var hits) ` before the actor's parameter list"]
-        );
-    }
-}
-
-#[test]
-fn lambda_actor_private_prefix_publishes_a_var_capture() {
+fn lambda_actor_body_publishes_its_capture_access() {
     let output = check_source(
-        "fn main() { let hits: i64 = 0; let count = actor capture(var hits) || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
+        "fn main() { let hits: i64 = 0; let count = actor || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(capture(&output, "hits").access, ClosureCaptureAccess::Var);
@@ -96,17 +69,12 @@ fn lambda_actor_private_prefix_publishes_a_var_capture() {
 }
 
 #[test]
-fn private_prefix_resolves_existing_binding_and_respects_body_shadowing() {
+fn inferred_captures_respect_body_shadowing() {
     let output = check_source(
-        "fn main() { let count: i64 = 0; let f = capture(var count) || { var count: i64 = 2; count = 3; count }; }",
+        "fn main() { let count: i64 = 0; let f = || { var count: i64 = 2; count = 3; count }; }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.closure_capture_facts.values().all(Vec::is_empty));
-    let output = check_source("fn main() { let f = capture(var missing) || 1; }");
-    assert!(output
-        .errors
-        .iter()
-        .any(|error| error.kind == TypeErrorKind::UndefinedVariable));
 }
 
 #[test]
@@ -320,7 +288,7 @@ fn explicit_erasure_controls_later_calls_and_clone() {
 #[test]
 fn lambda_arguments_cannot_hide_private_mutation() {
     let output = check_source(
-        "fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(capture(var n) || { n = n + 1; n }); }",
+        "fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(|| { n = n + 1; n }); }",
     );
     assert!(
         !output.errors.is_empty(),
@@ -983,8 +951,8 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
 #[test]
 fn capture_syntax_composes_with_conditional_result_and_option_types() {
     for body in [
-        "if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }",
-        "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None) }",
+        "if flag { .Ok(.Some(|| { count = count + 1; count })) } else { .Ok(.None) }",
+        "match flag { true => .Ok(.Some(|| { count = count + 1; count })), false => .Ok(.None) }",
     ] {
         let source = format!(
             "fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{ let count: i64 = 0; {body} }}"
@@ -1148,7 +1116,7 @@ fn borrowed_mutable_callable_requires_clone_only_when_invoked() {
 }
 
 const FRESH_MUTABLE_CALLBACK: &str =
-    "fn fresh_owned() -> fn[var]() -> i64 { let n = 0; capture(var n) || { n += 1; n } }";
+    "fn fresh_owned() -> fn[var]() -> i64 { let n = 0; || { n += 1; n } }";
 
 #[test]
 fn borrowed_mutable_callable_accepts_definite_replacement() {
@@ -1376,4 +1344,179 @@ type Label {
         let output = check_source(&format!("{declarations} {shape} fn main() {{}}"));
         assert!(output.errors.is_empty(), "{shape}: {:#?}", output.errors);
     }
+}
+
+#[test]
+fn inferred_identity_operands_stay_monomorphic_while_other_parameters_generalize() {
+    let output = check_source(
+        r#"
+actor Worker { receive fn ping() {} }
+fn main() {
+    let worker = spawn Worker;
+    let compare = |left, right| left is right;
+    assert(compare(worker, worker));
+    let tagged = |left, right, value| (left is right, value);
+    let number: (bool, i64) = tagged(worker, worker, 42);
+    let text: (bool, string) = tagged(worker, worker, "hello");
+    stop(worker);
+    stopped(worker);
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn inferred_identity_refusals_name_the_concrete_value_type() {
+    for (declaration, value, name) in [
+        (
+            "type Record { value: i64; }",
+            "Record { value: 1 }",
+            "Record",
+        ),
+        ("enum Choice { One; }", "Choice.One", "Choice"),
+    ] {
+        let output = check_source(&format!(
+            "{declaration} fn main() {{ let compare = |left, right| left is right; \
+             let value = {value}; compare(value, value); }}"
+        ));
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        assert!(
+            output.errors[0].message.contains("E_IS_VALUE_TYPE")
+                && output.errors[0].message.contains(name),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn directly_bound_literals_generalize_independently_of_counter_state() {
+    let output = check_source(
+        r#"
+fn main() {
+    let identity = |value| value;
+    let number: i64 = identity(42);
+    let text: string = identity("hello");
+    let count: i64 = 0;
+    var counted = |value| { count += 1; (count, value) };
+    let first: (i64, i64) = counted(1);
+    let second: (i64, string) = counted("two");
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    assert_eq!(capture(&output, "count").access, ClosureCaptureAccess::Var);
+}
+
+#[test]
+fn universal_context_checks_literals_with_fresh_rigid_parameters() {
+    let output = check_source(
+        r#"
+fn identity() -> fn<T>(T) -> T { |value| value }
+fn use_both(f: fn<T>(T) -> T) { let n: i64 = f(1); let s: string = f("two"); }
+fn equal() -> fn<T: Eq>(T, T) -> bool { |left, right| left == right }
+fn main() { use_both(|value| value); }
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for source in [
+        "fn wrong() -> fn<T>(T) -> T { |value| 1 }",
+        "fn wrong() -> fn<T>(T) -> T { |value: i64| value }",
+        "fn wrong() -> fn<T>(T) -> T { |<U> value: i64| value }",
+    ] {
+        let output = check_source(source);
+        assert!(!output.errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn inferred_universal_var_slots_do_not_specialize_on_assignment() {
+    let output = check_source(
+        r#"fn main() { var f = |value| value; f = |other| other; let n: i64 = f(1); let s: string = f("two"); }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(r"fn main() { var f = |value| value; f = |value: i64| value; }");
+    assert!(
+        !output.errors.is_empty(),
+        "a universal slot became monomorphic"
+    );
+}
+
+#[test]
+fn generic_capture_storage_cannot_change_type_between_invocations() {
+    let output = check_source(
+        r#"fn main() { let slot: Option<_> = .None; var remember = |value| { slot = .Some(value); value }; let n: i64 = remember(1); let s: string = remember("two"); }"#,
+    );
+    assert!(
+        !output.errors.is_empty(),
+        "captured storage was generalized"
+    );
+    let output = check_source(
+        r"fn main() { let slot: Option<_> = .None; let remember: fn[var]<T>(T) -> T = |value| { slot = .Some(value); value }; }",
+    );
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.message.contains("per-invocation type")),
+        "{:?}",
+        output.errors
+    );
+}
+
+#[test]
+fn inferred_literals_keep_unambiguous_bounds_and_refuse_operator_guessing() {
+    let output = check_source(
+        r#"fn main() { let same = |value| value == value; let n = same(1); let s = same("two"); let show = |value| println(value); show(1); show("two"); }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    for (source, diagnostic) in [
+        (
+            "fn main() { let add = |left, right| left + right; }",
+            "unique generic parameter type",
+        ),
+        (
+            "fn main() { let same = |left, right| left is right; }",
+            "`is` operand type",
+        ),
+    ] {
+        let output = check_source(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains(diagnostic)),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
+fn nested_literals_keep_inferred_capture_and_trait_obligations() {
+    let output = check_source(
+        r#"fn main() {
+        let same = |value| { let inner = || value == value; inner() };
+        assert(same(1)); assert(same("two"));
+    }"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn generalization_keeps_environment_holes_shared_between_type_instantiations() {
+    let source = r#"fn main() {
+        let slot: Option<_> = .None;
+        var remember = |key, value| { slot = .Some(key); value };
+        let a: string = remember(1, "one");
+        let b: i64 = remember(2, 2);
+    }"#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+    let output = check_source(&source.replace("remember(2, 2)", "remember(true, 2)"));
+    assert!(
+        !output.errors.is_empty(),
+        "captured monotype was freshly instantiated"
+    );
 }

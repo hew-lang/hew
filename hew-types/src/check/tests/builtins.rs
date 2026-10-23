@@ -5,6 +5,16 @@
 pub(super) use super::*;
 
 #[test]
+fn ordinary_duration_source_method_is_available_without_an_import() {
+    let parsed = hew_parser::parse(
+        "fn main() { assert(1ns.millis_ceil() == 1); assert((-1ns).millis_ceil() == 0); }",
+    );
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
 fn retired_string_free_functions_are_not_source_builtins() {
     for expression in [
         "string_concat(\"a\", \"b\")",

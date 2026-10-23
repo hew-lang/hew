@@ -743,7 +743,7 @@ impl Parser<'_> {
                 } else {
                     self.error_invalid_literal_with_hint(
                         "invalid duration literal".to_string(),
-                        "valid formats: 100ms, 5s, 2m, 1h, 500us, 10ns",
+                        "use an explicit unit (ns, us, ms, s, m, h) and an exact whole number of nanoseconds in range, such as 0.25s or 100ms",
                     );
                     return None;
                 }
@@ -858,8 +858,8 @@ impl Parser<'_> {
                 if self.peek_at(self.pos + 1) == Some(&Token::LeftParen)
                     && self.peek_at(self.pos + 2) == Some(&Token::Var) =>
             {
-                let captures = self.parse_private_capture_prefix()?;
-                self.parse_pipe_lambda(false, start, captures)?
+                self.parse_removed_private_capture_prefix()?;
+                self.parse_pipe_lambda(false, start)?
             }
             Token::Identifier(name)
                 if *name == "bytes" && self.peek_at(self.pos + 1) == Some(&Token::LeftBracket) =>
@@ -1221,7 +1221,7 @@ impl Parser<'_> {
                 self.expect(&Token::RightBracket)?;
                 Expr::Array(elements)
             }
-            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start, Vec::new())?,
+            Token::Pipe | Token::PipePipe => self.parse_pipe_lambda(false, start)?,
             Token::LeftBrace => {
                 // Disambiguate: {"str": expr, ...} → MapLiteral, else → Block
                 // Note: bare {} remains a Block — empty HashMap coercion is
@@ -1299,17 +1299,15 @@ impl Parser<'_> {
                 self.expect(&Token::RightBrace)?;
                 Expr::Match { scrutinee, arms }
             }
-            // actor [move] [capture(var x, ..)] |params| [-> Ret] { body }
+            // actor [move] |params| [-> Ret] { body }
             // Lambda actor literal (replaces `spawn (...) => ...`).
             Token::Actor => {
                 self.advance();
 
                 let is_move = self.eat(&Token::Move);
-                let private_captures = if self.peek() == Some(&Token::Identifier("capture")) {
-                    self.parse_private_capture_prefix()?
-                } else {
-                    Vec::new()
-                };
+                if self.peek() == Some(&Token::Identifier("capture")) {
+                    self.parse_removed_private_capture_prefix()?;
+                }
 
                 let params = if self.eat(&Token::PipePipe) {
                     Vec::new()
@@ -1329,7 +1327,6 @@ impl Parser<'_> {
                     self.expect(&Token::Pipe)?;
                     params
                 };
-                self.reject_private_capture_parameter_clash(&private_captures, &params)?;
 
                 let return_type = self.parse_opt_return_type()?;
 
@@ -1350,7 +1347,6 @@ impl Parser<'_> {
                 return Some((
                     Expr::SpawnLambdaActor {
                         is_move,
-                        private_captures,
                         params,
                         return_type,
                         body,
@@ -1439,10 +1435,10 @@ impl Parser<'_> {
             Token::Move => {
                 self.advance();
                 if self.peek() == Some(&Token::Identifier("capture")) {
-                    let captures = self.parse_private_capture_prefix()?;
-                    self.parse_pipe_lambda(true, start, captures)?
+                    self.parse_removed_private_capture_prefix()?;
+                    self.parse_pipe_lambda(true, start)?
                 } else if matches!(self.peek(), Some(Token::Pipe | Token::PipePipe)) {
-                    self.parse_pipe_lambda(true, start, Vec::new())?
+                    self.parse_pipe_lambda(true, start)?
                 } else if self.peek() == Some(&Token::LeftParen) {
                     // Old `move (params) => body` form — detect and diagnose.
                     // Consume through the form for recovery, then emit a typed error.
@@ -1724,52 +1720,30 @@ impl Parser<'_> {
         Some((expr, start..end))
     }
 
-    fn parse_private_capture_prefix(&mut self) -> Option<Vec<Spanned<Ident>>> {
+    /// Consume the retired annotation for recovery and offer its exact removal.
+    /// Capture access is inferred from the checked body, never from syntax.
+    fn parse_removed_private_capture_prefix(&mut self) -> Option<()> {
+        let start = self.peek_span().start;
         self.expect(&Token::Identifier("capture"))?;
         self.expect(&Token::LeftParen)?;
-        let mut captures: Vec<Spanned<Ident>> = Vec::new();
         loop {
             self.expect(&Token::Var)?;
-            let span = self.peek_span();
-            let name = self.expect_ident()?;
-            if captures.iter().any(|(previous, _)| *previous == name) {
-                self.error_at(format!("duplicate private capture `{name}`"), span);
-                return None;
-            }
-            captures.push((name, span));
+            self.expect_ident()?;
             if !self.eat(&Token::Comma) || self.peek() == Some(&Token::RightParen) {
                 break;
             }
         }
         self.expect(&Token::RightParen)?;
-        Some(captures)
-    }
-
-    /// A private capture names an enclosing binding, so a parameter of the
-    /// same name would make the body's reference ambiguous.
-    fn reject_private_capture_parameter_clash(
-        &mut self,
-        private_captures: &[Spanned<Ident>],
-        params: &[LambdaParam],
-    ) -> Option<()> {
-        for (name, span) in private_captures {
-            if params.iter().any(|parameter| parameter.name == *name) {
-                self.error_at(
-                    format!("private capture `{name}` conflicts with a parameter"),
-                    span.clone(),
-                );
-                return None;
-            }
-        }
+        self.error_at_with_kind_and_hint(
+            "E_CAPTURE_INFERRED: capture mutability is inferred from the body".to_string(),
+            start..self.last_token_end,
+            "remove `capture(var ...)`; writes update the closure's private snapshot",
+            ParseDiagnosticKind::LegacyPrivateCapture,
+        );
         Some(())
     }
 
-    pub(crate) fn parse_pipe_lambda(
-        &mut self,
-        is_move: bool,
-        start: usize,
-        private_captures: Vec<Spanned<Ident>>,
-    ) -> Option<Expr> {
+    pub(crate) fn parse_pipe_lambda(&mut self, is_move: bool, start: usize) -> Option<Expr> {
         let (type_params, params) = if self.eat(&Token::PipePipe) {
             (None, Vec::new())
         } else {
@@ -1794,7 +1768,6 @@ impl Parser<'_> {
             (type_params, params)
         };
 
-        self.reject_private_capture_parameter_clash(&private_captures, &params)?;
         let return_type = self.parse_opt_return_type()?;
         let body = if return_type.is_some() {
             if self.peek() != Some(&Token::LeftBrace) {
@@ -1826,7 +1799,6 @@ impl Parser<'_> {
 
         Some(Expr::Lambda {
             is_move,
-            private_captures,
             type_params,
             params,
             return_type,

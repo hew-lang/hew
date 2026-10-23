@@ -1129,6 +1129,14 @@ fn http_routing_and_strict_url_decoding_use_shared_source_oracles() {
 }
 
 #[test]
+fn quantified_closures_keep_one_environment_across_instantiations() {
+    assert_native_manifest(
+        "generic-closure-composition",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",
@@ -1145,7 +1153,6 @@ fn shared_native_manifests_execute_with_matching_results() {
         "actor-reference-identity",
         "actor-call-deadline-budget",
         "generator-callable-view",
-        "generic-closure-composition",
         "float-sort-values",
         "string-ordering",
     ] {

@@ -111,7 +111,6 @@ impl Checker {
                 let synthetic_body = (Expr::Block(body.clone()), span.clone());
                 let lambda_ty = self.check_lambda(
                     true,
-                    &[],
                     None,
                     &[],
                     None,
@@ -158,7 +157,6 @@ impl Checker {
             }
             Expr::SpawnLambdaActor {
                 is_move,
-                private_captures,
                 params,
                 return_type,
                 body,
@@ -184,18 +182,8 @@ impl Checker {
                 // recursive self-sends (a Duplex capture called from within its own
                 // actor body). Nested fn-closures inside the body pass is_actor_body=false,
                 // so they correctly see in_lambda_actor_body=false.
-                let lambda_ty = self.check_lambda(
-                    *is_move,
-                    private_captures,
-                    None,
-                    params,
-                    None,
-                    body,
-                    None,
-                    span,
-                    true,
-                    false,
-                );
+                let lambda_ty =
+                    self.check_lambda(*is_move, None, params, None, body, None, span, true, false);
                 self.record_task_actor_transfer(expr, span);
                 // Check captures for Send (E_DUPLEX_NON_SEND).
                 let body_ret = match &lambda_ty {
@@ -614,34 +602,21 @@ impl Checker {
             (
                 Expr::Lambda {
                     is_move,
-                    private_captures,
                     type_params,
                     params,
                     return_type,
                     body,
                     ..
                 },
-                Ty::Function {
-                    params: expected_params,
-                    ret,
-                    ..
-                },
+                Ty::Function { .. } | Ty::Closure { .. } | Ty::GenericCallable { .. },
             ) => {
                 let result = self.check_lambda(
                     *is_move,
-                    private_captures,
                     type_params.as_deref(),
                     params,
                     return_type.as_ref(),
                     body,
-                    if type_params
-                        .as_ref()
-                        .is_some_and(|parameters| !parameters.is_empty())
-                    {
-                        None
-                    } else {
-                        Some((expected_params, ret))
-                    },
+                    Some(expected),
                     span,
                     false,
                     false,

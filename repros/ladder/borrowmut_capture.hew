@@ -1,6 +1,6 @@
 fn main() {
     var n: i64 = 0;
-    var bump = capture(var n) || {
+    var bump = || {
         n = n + 1;
     };
     bump();

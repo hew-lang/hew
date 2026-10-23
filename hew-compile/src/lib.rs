@@ -9437,7 +9437,7 @@ fn main() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join("greeting.hew"),
-            "fn hidden<T>(value: T) -> T { value } pub fn greet() -> i32 { hidden(7) }\n",
+            "fn hidden<T>(value: T) -> T { value } pub fn greet(value: i32 = 7) -> i32 { hidden(value) }\n",
         )
         .unwrap();
         let options = test_options();

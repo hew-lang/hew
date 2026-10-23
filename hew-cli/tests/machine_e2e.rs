@@ -891,14 +891,14 @@ fn imported_only_fixture() -> &'static str {
     "import std.machines.toggle.{Toggle};\n\
      fn main() {\n\
      \x20   var t: Toggle = .Off;\n\
-     \x20   t.step(Toggle.Event.Flip);\n\
+     \x20   t.step(Toggle.Event.Flip).expect(\"machine step failed\");\n\
      \x20   println(t.state_name());\n\
      }\n"
 }
 
 /// A root machine beside an imported one, so the command has to render both.
 fn local_and_imported_fixture() -> &'static str {
-    "import std.machines.toggle.{Toggle};\n\nmachine Door {\n    events {\n        Push;\n    }\n    state Closed;\n    state Open;\n    on Push: Closed => Open;\n    on Push: Open => Closed;\n}\n\nfn main() {\n    var d: Door = .Closed;\n    d.step(.Push);\n    var t: Toggle = .Off;\n    t.step(Toggle.Event.Flip);\n    println(f\"{d.state_name()} {t.state_name()}\");\n}\n"
+    "import std.machines.toggle.{Toggle};\n\nmachine Door {\n    events {\n        Push;\n    }\n    state Closed;\n    state Open;\n    on Push: Closed => Open;\n    on Push: Open => Closed;\n}\n\nfn main() {\n    var d: Door = .Closed;\n    d.step(.Push).expect(\"machine step failed\");\n    var t: Toggle = .Off;\n    t.step(Toggle.Event.Flip).expect(\"machine step failed\");\n    println(f\"{d.state_name()} {t.state_name()}\");\n}\n"
 }
 
 #[test]

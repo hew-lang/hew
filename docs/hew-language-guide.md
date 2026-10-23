@@ -1004,6 +1004,59 @@ way two bare `bool`s can. When adjacent strings travel together, gather them
 into a record; shorthand keeps the call site short, and the record's keys make
 the order irrelevant.
 
+### Closure types and inference
+
+Write a closure with `|parameters| body`. A function argument or a type
+annotation can supply its parameter types. A directly bound literal can also
+infer a generic signature and accept different types on successive calls:
+
+```hew
+fn identity_factory() -> fn<T>(T) -> T { |value| value }
+
+fn main() {
+    let identity = |value| value;
+    assert(identity(42) == 42);
+    assert(identity("hello") == "hello");
+    let returned = identity_factory();
+    assert(returned(true));
+    let same = |left, right| left == right;
+    assert(same(7, 7) && same("word", "word"));
+}
+```
+
+The body supplies unambiguous trait requirements: `same` accepts types that
+support `Eq`. You can write the contract explicitly when it helps the reader:
+`|<T: Eq> left: T, right: T| left == right`. Public parameter and return types
+spell a universal callable as `fn<T>(T) -> T`. The literal in
+`identity_factory` is checked against that signature.
+
+A generic closure keeps one private captured environment across calls. Body
+writes infer mutable captures, so only the callable binding needs `var`:
+
+```hew
+fn main() {
+    let count = 0;
+    var counted = |value| { count += 1; (count, value) };
+    let (first, number) = counted(42);
+    let (second, text) = counted("next");
+    assert(first == 1 && number == 42);
+    assert(second == 2 && text == "next");
+    assert(count == 0);
+}
+```
+
+Captured storage keeps one type. If the body stores `value` in a captured
+`Option<i64>`, that parameter must remain `i64` on every call. Annotate the
+storage when its intended type is unclear. Unrelated parameters can still be
+generic, and an inferred generic `var` keeps its signature when reassigned.
+
+Some bodies need a concrete choice. For `|left, right| left + right`, write
+`|left: i64, right: i64| left + right` or give the binding the type
+`fn(i64, i64) -> i64`. Identity comparison with `is` needs concrete actor
+reference types too, such as `fn(Worker, Worker) -> bool`. Generalization
+applies to directly bound literals; a call used as an initializer keeps the
+type returned by that call.
+
 ### A `var` parameter is the callee's own copy
 
 ```hew
@@ -1419,8 +1472,8 @@ machine Till {
 
 fn main() {
     var till = Till.Empty;
-    let _ = till.step(.Sale);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
+    let _ = till.step(.Sale).expect("machine step failed");
     println(till.state_name()); // Filled
 }
 ```
@@ -2219,17 +2272,15 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
-Captured values initialize read-only state fields: ordinary values are
-independent snapshots, and affine resources transfer their ownership. To keep
-state that changes from one message to the next, name the capture in a
-`capture(var ..)` prefix after `actor` (and after `move`, when present). The
-actor gets its own mutable field starting from the captured value; the
+Captured ordinary values are independent snapshots, and affine resources
+transfer their ownership. Assignments and mutating calls in the handler infer
+mutable state fields. The actor's field starts from the captured value; the
 enclosing binding can be `let` and never changes.
 
 ```hew
 fn main() {
     let total: i64 = 0;
-    let add = actor capture(var total) |n: i64| -> i64 {
+    let add = actor |n: i64| -> i64 {
         total += n;
         total
     };
@@ -2255,7 +2306,7 @@ enum Tally {
 
 fn main() {
     let count: i64 = 0;
-    let tally = actor capture(var count) |m: Tally| -> i64 {
+    let tally = actor |m: Tally| -> i64 {
         match m {
             .Add(n) => {
                 count += n;
@@ -2400,9 +2451,16 @@ fn main() {
 }
 ```
 
-**Duration literals:** `10ms`, `2s`, `500ms`, `1ns`, `1us`. These produce a
-`duration` value. `instant + duration` and `duration + instant` both produce
-a new `instant`.
+**Duration literals:** `10ms`, `2s`, `0.25s`, `1.5ms`, `1ns`, `1us`. A unit
+suffix is required. Decimal values are exact at compile time: `0.25s` equals
+`250ms`, with no floating-point rounding. A fraction smaller than a whole
+nanosecond, such as `0.1ns`, is rejected. Runtime counts use explicit
+constructors such as `duration.from_millis(count)`.
+
+These produce a `duration` value. `instant + duration` and `duration + instant`
+both produce a new `instant`. Timeouts in the networking APIs take `duration`,
+so write `connection.set_read_timeout(250ms)`. Conversion to a millisecond
+runtime deadline rounds positive fractions upward.
 
 **Timer model:** both `sleep` and `sleep_until` arm a single entry in the
 runtime's two-level hierarchical wheel (256 × 1 ms slots + 64 × 256 ms
@@ -2549,21 +2607,23 @@ machine Counter {
 
 fn main() {
     var counter: Counter = .Zero;
-    let _ = counter.step(.Inc);
-    let _ = counter.step(.Inc);
-    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc).expect("machine step failed");
+    let _ = counter.step(.Inc).expect("machine step failed");
+    let _ = counter.step(.Inc).expect("machine step failed");
     println(counter.state_name());            // NonZero
     match counter {
         .Zero => println("is zero"),
         .NonZero { value } => println(f"value={value}"),   // value=3
     }
-    let _ = counter.step(.Reset);
+    let _ = counter.step(.Reset).expect("machine step failed");
     println(counter.state_name());            // Zero
 }
 ```
 
 A machine is a value type, so `step()` mutates in place and its receiver must
-be a `var`. `step()` returns a must-use report, so bind it (`let report = ...`)
+be a `var`. `step(event, limit: 1024)` returns a fallible report; the limit
+defaults to 1024. Handle or propagate errors, then bind the report
+(`let report = ...`)
 or discard it deliberately (`let _ = ...`). Every `(state, event)` cell must be
 covered or it is a compile error; `default { state }` makes the uncovered ones
 a no-op stay.
@@ -2621,7 +2681,7 @@ machine Switch {
 
 fn main() {
     var switch: Switch = .Off;
-    let _ = switch.step(.Toggle);
+    let _ = switch.step(.Toggle).expect("machine step failed");
     println(switch.state_name()); // On
 }
 ```
@@ -2674,8 +2734,8 @@ fn make_add(n: i64) -> Acc.Event {
 
 fn main() {
     var acc: Acc = .Seed;
-    let _ = acc.step(make_add(5));
-    let _ = acc.step(make_add(7));
+    let _ = acc.step(make_add(5)).expect("machine step failed");
+    let _ = acc.step(make_add(7)).expect("machine step failed");
     match acc {
         .Seed => println("seed"),
         .Total { sum } => println(f"sum={sum}"), // sum=12
@@ -2718,8 +2778,8 @@ machine Log {
 
 fn main() {
     var log: Log = .Empty;
-    let _ = log.step(.Append { item: 10 });
-    let _ = log.step(.Append { item: 20 });
+    let _ = log.step(.Append { item: 10 }).expect("machine step failed");
+    let _ = log.step(.Append { item: 20 }).expect("machine step failed");
     match log {
         .Empty => println("empty"),
         .Filled { items } => {
@@ -2758,13 +2818,13 @@ machine Meter {
 
 fn main() {
     var meter: Meter = .Watching { peak: 0 };
-    let report = meter.step(.Reading { value: 7 });
+    let report = meter.step(.Reading { value: 7 }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
-    let quiet = meter.step(.Reading { value: 3 });
+    let quiet = meter.step(.Reading { value: 3 }).expect("machine step failed");
     println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
@@ -2803,11 +2863,11 @@ machine Conn {
 
 fn main() {
     var conn: Conn = .Idle;
-    let _ = conn.step(.Start);
-    let _ = conn.step(.Bump);
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Start).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Live
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Dead
 }
 ```
@@ -2839,7 +2899,7 @@ machine Door {
 
 fn drive(door: Door) -> string {
     var local = door;
-    let _ = local.step(.Open);
+    let _ = local.step(.Open).expect("machine step failed");
     local.state_name()
 }
 
@@ -2847,7 +2907,7 @@ actor Porter {
     var door: Door = .Shut;
 
     receive fn accept(event: Door.Event) {
-        let _report = door.step(event);
+        let _report = door.step(event).expect("machine step failed");
         println(door.state_name());
     }
 }
@@ -2910,11 +2970,11 @@ machine Session {
 
 fn main() {
     var session: Session = .Closed;
-    let _ = session.step(.Open);
+    let _ = session.step(.Open).expect("machine step failed");
     println(session.state_name()); // Authing
-    let _ = session.step(.Authed);
+    let _ = session.step(.Authed).expect("machine step failed");
     println(session.state_name()); // Active
-    let _ = session.step(.Close);
+    let _ = session.step(.Close).expect("machine step failed");
     println(session.state_name()); // Kicked
 }
 ```
@@ -2971,7 +3031,7 @@ machine Retry<const MAX: usize = 3> {
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
     for _ in 0 .. 3 {
-        let _ = retry.step(.Fail);
+        let _ = retry.step(.Fail).expect("machine step failed");
     }
     println(retry.state_name()); // Exhausted
 }
@@ -4200,7 +4260,7 @@ fn main() {
 and preserve the input. Sorting is stable and uses O(n log n) comparisons.
 
 `sort.sort_by(values, less)` consumes its comparator, which defines an explicit
-strict ordering and may keep private mutable state using `capture(var count)`.
+strict ordering and may keep private mutable state inferred from its body.
 For descending integer order, use `sort.sort_by(values, |a, b| a > b)`.
 
 Floats retain their ordinary partial ordering and do not satisfy `Ord`.
@@ -4497,6 +4557,12 @@ inputs stop application before writing. Each file is replaced atomically; an I/O
 failure reports which files were updated and which remain.
 
 ### Suppressing a lint
+
+`semaphore_progress` warns about locally certain semaphore progress problems,
+including exhausting a fresh semaphore through nested acquisition while its
+leases remain held. It follows clone aliases and known permit counts, and
+stops drawing conclusions when calls, escapes or control flow make them
+uncertain. It is a local diagnostic, not a whole-program deadlock detector.
 
 ```hew
 // hew:allow(dead_code)
@@ -5158,7 +5224,15 @@ call, and a deadline over it comes from one of three places:
 | ------------------------------------ | ----------------------------------------- |
 | `scope within d { .. } handle failure { .. }` | every child started in the block   |
 | `after d => ..` inside `select { }`  | the wait for the first of several sources |
-| `conn.set_read_timeout(ms)` / `set_write_timeout(ms)` | that socket's own operations |
+| `conn.set_read_timeout(timeout)` / `set_write_timeout(timeout)` | that socket's own operations |
+
+Socket and network timeouts take `duration` values such as `250ms` or `2s`.
+Use `net.connect_timeout(address, 2s)` for connection establishment,
+`http_client.set_timeout(2s)` for outbound HTTP, and
+`server.set_request_timeout(2s)` for incoming HTTP request bodies. TCP timeout
+setters accept a negative duration to clear the timeout. DNS and QUIC per-call
+timeouts disable their deadline for non-positive durations. Positive fractional
+milliseconds round upward at native APIs that use millisecond deadlines.
 
 If explicit runtime shutdown begins while a read or accept is already parked,
 it resumes as `Err(NetError.Cancelled(0))`. A socket timeout reports

@@ -87,7 +87,7 @@ fn main() {
     pool.index.insert("second", 2);
     println(f"{pool.meta.tag} {pool.meta.count} {pool.items.len()} {pool.ids[0]} {pool.index.len()}");
     let conn = Conn { fd: 1, name: "a" };
-    var step = move capture(var conn) |fd: i64| {
+    var step = move |fd: i64| {
         conn.fd = fd;
         conn.name = f"n{fd}";
         println(f"now {conn.name} {conn.fd}");

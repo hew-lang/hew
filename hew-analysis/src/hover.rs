@@ -1592,6 +1592,27 @@ mod tests {
     }
 
     #[test]
+    fn inferred_generic_closure_hover_keeps_its_universal_signature() {
+        let source = r#"fn main() {
+            let identity = |value| value;
+            let number = identity(1);
+            let text = identity("two");
+        }"#;
+        let parsed = hew_parser::parse(source);
+        let checked = type_check(&parsed);
+        assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+        for (offset, _) in source.match_indices("identity") {
+            let result = hover(source, &parsed, Some(&checked), offset)
+                .expect("an inferred callable has hover information");
+            assert!(
+                result.contents.contains("fn[clone]<T0>(T0) -> T0"),
+                "{}",
+                result.contents
+            );
+        }
+    }
+
+    #[test]
     fn format_sig_line_basic() {
         let sig = make_fn_sig(vec!["x", "y"], vec![Ty::I32, Ty::Bool], Ty::String);
         let line = format_fn_sig_line("greet", &["x: i32".into(), "y: bool".into()], &sig);

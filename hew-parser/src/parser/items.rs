@@ -695,6 +695,8 @@ impl Parser<'_> {
             params.insert(
                 0,
                 Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::from_symbol(sym::SELF_VALUE),
                     name_span: consuming_self_name_span,
                     ty: (
@@ -1419,6 +1421,8 @@ impl Parser<'_> {
             params.insert(
                 0,
                 Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::from_symbol(sym::SELF_VALUE),
                     name_span: consuming_self_name_span,
                     ty: (

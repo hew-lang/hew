@@ -1,0 +1,12 @@
+import std.semaphore;
+
+fn release(consume lease: semaphore.Lease) {
+    lease.close();
+}
+
+fn main() {
+    let sem = semaphore.new(1);
+    let lease = sem.lease();
+    release(lease);
+    lease.close();
+}

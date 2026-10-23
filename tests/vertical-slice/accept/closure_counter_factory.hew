@@ -1,6 +1,6 @@
 // Mutable capture write-back through an ESCAPING (heap-boxed) env: the classic
 // stateful counter-factory idiom. `make_counter` names `count` in a
-// `capture(var count)` prefix, so the closure owns a private mutable field in
+// `` prefix, so the closure owns a private mutable field in
 // an env it RETURNS, promoted to a heap box that outlives the factory frame.
 // Each call mutates the heap env field in place via `ClosureEnvFieldStore`,
 // accumulating across calls. Invoking a mutable closure needs a mutable
@@ -12,7 +12,7 @@
 // (the `closure-env-drop-*` safety cases: zero leaks, no double free).
 fn make_counter() -> fn[var]() -> i64 {
     let count: i64 = 0;
-    capture(var count) || {
+    || {
         count = count + 1;
         count
     }

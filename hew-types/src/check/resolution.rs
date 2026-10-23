@@ -2107,16 +2107,35 @@ impl Checker {
         if !expanding.insert(carrier.clone()) {
             return carrier;
         }
-        let binding = self
-            .active_bounds_for_type(&resolved_base)
-            .into_iter()
-            .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
-            .find_map(|bound| {
-                bound
-                    .assoc
+        let erased_binding = match &resolved_base {
+            Ty::TraitObject { traits } => traits
+                .iter()
+                .filter(|bound| {
+                    bound
+                        .trait_id
+                        .is_some_and(|owner| self.bound_provides(owner, trait_id))
+                })
+                .find_map(|bound| {
+                    bound
+                        .assoc_bindings
+                        .iter()
+                        .find(|(name, _)| name == associated.as_str())
+                        .map(|(_, ty)| ty.clone())
+                }),
+            _ => None,
+        };
+        let binding = erased_binding
+            .or_else(|| {
+                self.active_bounds_for_type(&resolved_base)
                     .into_iter()
-                    .find(|(name, _)| *name == associated)
-                    .map(|(_, ty)| ty)
+                    .filter(|bound| self.bound_provides(bound.trait_id, trait_id))
+                    .find_map(|bound| {
+                        bound
+                            .assoc
+                            .into_iter()
+                            .find(|(name, _)| *name == associated)
+                            .map(|(_, ty)| ty)
+                    })
             })
             .or_else(|| {
                 self.associated_schema_parameters.implementation(
@@ -2699,6 +2718,25 @@ impl Checker {
                     .strip_prefix("Self.")
                     .or_else(|| name.strip_prefix("Self::"))
                 {
+                    // Generated ordinary providers explicitly bind Self as a
+                    // function type parameter. Resolve that lexical binder
+                    // before the enclosing trait's implicit receiver.
+                    if self
+                        .current_declaration_module()
+                        .and_then(|module| {
+                            self.scopes
+                                .source_type_parameter(module, &te.1, Ident::new("Self"))
+                        })
+                        .is_some_and(|id| {
+                            !crate::ParamHead::new(id, Symbol::intern("Self")).is_receiver()
+                        })
+                    {
+                        if let Some(projected) =
+                            self.try_resolve_assoc_projection(Ident::new("Self"), alias_name, &te.1)
+                        {
+                            return projected;
+                        }
+                    }
                     // Resolving a trait method's declared signature: the
                     // `Self::Bar` projection must materialise as a deferred
                     // `Ty::AssocType` carrier so downstream call sites (where

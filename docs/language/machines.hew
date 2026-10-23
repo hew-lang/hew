@@ -18,8 +18,8 @@
 //!
 //! fn main() {
 //!     var counter: Counter = .Zero;
-//!     let _ = counter.step(.Inc);
-//!     let _ = counter.step(.Inc);
+//!     let _ = counter.step(.Inc).expect("machine step failed");
+//!     let _ = counter.step(.Inc).expect("machine step failed");
 //!     println(counter.state_name());
 //! }
 //! ```

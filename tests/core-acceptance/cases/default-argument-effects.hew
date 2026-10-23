@@ -1,0 +1,50 @@
+import std.stream;
+
+#[resource]
+type Ticket { id: i64; }
+impl Ticket {
+    fn close(consume self) { println(f"close {self.id}"); }
+}
+fn delayed() -> string {
+    let ticket = Ticket { id: 1 };
+    sleep(1ms);
+    "ready".to_upper()
+}
+fn fail() -> string {
+    let ticket = Ticket { id: 2 };
+    sleep(1ms);
+    panic("default failed");
+    "unreachable"
+}
+fn blocked() -> string {
+    let ticket = Ticket { id: 4 };
+    let (_sink, gate): (stream.Sink<i64>, stream.Stream<i64>) = stream.pipe(1).expect("gate");
+    gate.recv();
+    "unreachable"
+}
+fn cancelled(value: string = blocked()) -> string { value }
+fn take(value: string = delayed()) -> string { value }
+fn risky(value: string = fail()) -> string { value }
+fn main() {
+    assert(take("explicit") == "explicit");
+    assert(risky("safe") == "safe");
+    assert(take() == "READY");
+    let result = scope {
+        let held = Ticket { id: 3 };
+        risky()
+    } handle failure {
+        match failure {
+            .Fault { message } => message,
+            _ => "wrong failure",
+        }
+    };
+    assert(result == "default failed");
+    let deadline = scope within 20ms { cancelled() } handle failure {
+        match failure {
+            .Deadline { .. } => "cancelled",
+            _ => "wrong failure",
+        }
+    };
+    assert(deadline == "cancelled");
+    println("default effects passed");
+}

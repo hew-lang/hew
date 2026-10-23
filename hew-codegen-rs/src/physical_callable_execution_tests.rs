@@ -579,7 +579,7 @@ fn source_callable_values_escape_copy_and_invoke_at_o0_o2() {
     let cases = [
         ("function value", "fn add(value: i64) -> i64 { value + 1 } fn main() -> i64 { let invoke = add; invoke(41) }", 42),
         ("escaped snapshot", "fn snapshot() -> fn() -> i64 { var count: i64 = 10; let read = || count; count = 99; read } fn main() -> i64 { let read = snapshot(); read() }", 10),
-        ("copied counter", "fn counter() -> fn[var, clone]() -> i64 { let count: i64 = 0; capture(var count) || { count = count + 1; count } } fn main() -> i64 { var first = counter(); var second = first; first(); first() * 10 + second() }", 21),
+        ("copied counter", "fn counter() -> fn[var, clone]() -> i64 { let count: i64 = 0; || { count = count + 1; count } } fn main() -> i64 { var first = counter(); var second = first; first(); first() * 10 + second() }", 21),
         ("weakened once", "fn main() -> i64 { let base: i64 = 41; let invoke: fn[once]() -> i64 = || base + 1; invoke() }", 42),
     ];
     for (name, source, expected) in cases {

@@ -3,7 +3,7 @@
 fn main() {
     let total: i64 = 0;
     let names: Vec<string> = [];
-    let acc = actor capture(var total, var names) |n: i64| -> i64 {
+    let acc = actor |n: i64| -> i64 {
         total += n;
         names.push(f"n{n}");
         total * 100 + names.len()
@@ -18,7 +18,7 @@ fn main() {
     stop(acc);
     stopped(acc);
     let count: i64 = 0;
-    let counter = actor move capture(var count) || -> i64 {
+    let counter = actor move || -> i64 {
         count += 1;
         count
     };

@@ -78,7 +78,6 @@
   "contextual_identifiers": {
     "always": "Machine eventless transition trigger (contextual before a transition source).",
     "block": "Overflow policy: block sender",
-    "capture": "Private capture prefix capture(var name, ...) before closure or actor literal pipe parameters; an ordinary identifier outside that prefix.",
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "coalesce": "Mailbox overflow policy",
     "completion": "Machine completion transition trigger (contextual after on).",
@@ -351,5 +350,5 @@
       "timestamp"
     ]
   },
-  "version": "0.7.2"
+  "version": "0.8.0"
 }

@@ -470,7 +470,6 @@ impl Checker {
             // Lambda (synthesize mode — no expected type)
             Expr::Lambda {
                 is_move,
-                private_captures,
                 type_params,
                 params,
                 return_type,
@@ -478,7 +477,6 @@ impl Checker {
                 ..
             } => self.check_lambda(
                 *is_move,
-                private_captures,
                 type_params.as_deref(),
                 params,
                 return_type.as_ref(),

@@ -25,6 +25,7 @@ use hew_parser::ast::{
 use super::machine_hierarchy::{Hierarchy, NodeId};
 
 mod configuration;
+mod defaults;
 mod history;
 mod observation;
 use crate::error::{TypeError, TypeErrorKind};
@@ -53,6 +54,24 @@ pub struct NormalizedProgram {
 }
 
 impl NormalizedProgram {
+    /// Allocate checked invocations after nested generated signatures as well
+    /// as top-level declarations, preserving their distinct semantic keys.
+    pub(super) fn next_free_span(&self) -> usize {
+        self.source_origins
+            .source_spans
+            .keys()
+            .chain(
+                self.source_origins
+                    .implied_displays
+                    .iter()
+                    .map(|(span, _)| span),
+            )
+            .map(|span| span.end + 1)
+            .max()
+            .unwrap_or(0)
+            .max(next_free_span(&self.program))
+    }
+
     /// `machines` (or the source program, when no machine expanded) with the
     /// implied Display impls written in.
     pub(super) fn with_error_displays(
@@ -140,14 +159,29 @@ pub struct SourceSpanOrigins {
 
 impl SourceSpanOrigins {
     /// Resolve a generated span to its authored origin, if it has one.
+    ///
+    /// # Panics
+    /// Panics if generated source origins contain a cycle.
     #[must_use]
     pub fn source_span(&self, span: &Span) -> Option<&Span> {
-        self.source_spans.get(span).or_else(|| {
-            self.implied_displays
-                .iter()
-                .find(|(range, _)| range.start <= span.start && span.end <= range.end)
-                .map(|(_, origin)| origin)
-        })
+        let direct_origin = |span: &Span| {
+            self.source_spans.get(span).or_else(|| {
+                self.implied_displays
+                    .iter()
+                    .find(|(range, _)| range.start <= span.start && span.end <= range.end)
+                    .map(|(_, origin)| origin)
+            })
+        };
+        let mut origin = direct_origin(span)?;
+        let mut remaining = self.source_spans.len() + self.implied_displays.len();
+        // A default provider can originate in an already generated machine
+        // node. Reporting consumers need the authored endpoint of that chain.
+        while let Some(parent) = direct_origin(origin) {
+            assert!(remaining > 0, "generated source origins must be acyclic");
+            remaining -= 1;
+            origin = parent;
+        }
+        Some(origin)
     }
 }
 
@@ -176,7 +210,7 @@ pub fn normalize(program: &Program) -> Result<Option<Arc<NormalizedProgram>>, Ve
                     .any(|(item, _)| matches!(item, Item::Machine(_)))
             })
         });
-    if !contains_machine {
+    if !contains_machine && !defaults::contains_defaults(program) {
         return Ok(None);
     }
     let mut builder = Builder {
@@ -764,6 +798,13 @@ impl Builder {
             }
         }
         result.extend(companions);
+        let original_len = result.len();
+        for index in 0..original_len {
+            self.origin = result[index].1.clone();
+            let helpers = self.normalize_defaults(&mut result[index].0, &mut errors);
+            origins.extend(std::iter::repeat_n(origins[index], helpers.len()));
+            result.extend(helpers);
+        }
         if errors.is_empty() {
             Ok((result, origins))
         } else {
@@ -919,7 +960,7 @@ impl Builder {
         };
         // These shells contain only ordinary source syntax. All copied source
         // expressions are transformed below, with fresh node spans.
-        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}) -> {name}Step{generic} {{}} fn state_name(self) -> string {{}} fn step_with_limit(var self, event: {name}.Event{generic}, limit: i64) -> Result<{name}Step{generic}, MachineStepError> {{}} fn step_observed_with_limit(var self, event: {name}.Event{generic}, limit: i64, requested: Vec<{name}Scope>) -> Result<MachineObservedStep<{name}Step{generic}, {name}Scope, {name}Subtree{generic}>, MachineStepError> {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; type Scope = {name}Scope; type Subtree = {name}Subtree{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
+        let source = format!("type {name}Step{generic} {{ outputs: Vec<{name}Output{generic}>; disposition: {name}StepDisposition; input: string; rules: Vec<i64>; }} impl{generic} {name}{generic} {{ fn step(var self, event: {name}.Event{generic}, limit: i64 = 1024) -> Result<{name}Step{generic}, MachineStepError> {{}} fn state_name(self) -> string {{}} fn step_observed_with_limit(var self, event: {name}.Event{generic}, limit: i64, requested: Vec<{name}Scope>) -> Result<MachineObservedStep<{name}Step{generic}, {name}Scope, {name}Subtree{generic}>, MachineStepError> {{}} }} impl{generic} Machine for {name}{generic} {{ type Event = {name}.Event{generic}; type Step = {name}Step{generic}; type Scope = {name}Scope; type Subtree = {name}Subtree{generic}; fn step_info(self, report: {name}Step{generic}) -> MachineStepInfo {{}} }}", name = machine.name);
         let mut contexts = hew_parser::macro_syntax::TokenContexts::default();
         let machine_names = [
             machine.name,
@@ -989,7 +1030,14 @@ impl Builder {
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
         step.visibility = machine.visibility;
-        step.body = self.default_step();
+        // Shell-parser offsets are not source identities. The generated
+        // budget literal belongs to this authored machine, just like its body.
+        for param in &mut step.params {
+            if let Some(default) = &mut param.default {
+                *default = self.expr(default.0.clone());
+            }
+        }
+        step.body = self.unobserved_step();
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];
         state_name.origin = DeclarationOrigin::MachineCompanion;
@@ -1017,12 +1065,7 @@ impl Builder {
             trailing_expr: Some(Box::new(expression)),
         };
         self.refresh_signature(state_name);
-        let bounded = &mut implementation.methods[2];
-        bounded.origin = DeclarationOrigin::MachineStep;
-        bounded.visibility = machine.visibility;
-        bounded.body = self.unobserved_step();
-        self.refresh_signature(bounded);
-        let observed = &mut implementation.methods[3];
+        let observed = &mut implementation.methods[2];
         observed.origin = DeclarationOrigin::MachineStep;
         observed.visibility = machine.visibility;
         observed.params[1].name = Ident::new(configuration::EVENT);
@@ -1050,14 +1093,19 @@ impl Builder {
         info.body = self.step_info_body();
         self.refresh_signature(info);
         let mut forwarding = implementation.methods[0].clone();
+        for param in &mut forwarding.params {
+            param.default = None;
+            param.default_provider = None;
+        }
         forwarding.origin = DeclarationOrigin::MachineCompanion;
         let receiver = self.ident("self");
         let method = (Ident::new("step"), self.span());
         let event = self.ident("event");
+        let limit = self.ident("limit");
         let call = self.expr(Expr::MethodCall {
             receiver: Box::new(receiver),
             method,
-            args: vec![CallArg::Positional(event)],
+            args: vec![CallArg::Positional(event), CallArg::Positional(limit)],
         });
         forwarding.body = Block {
             stmts: Vec::new(),
@@ -1065,7 +1113,7 @@ impl Builder {
         };
         self.refresh_signature(&mut forwarding);
         contract.methods.insert(0, forwarding);
-        let mut observed = implementation.methods[3].clone();
+        let mut observed = implementation.methods[2].clone();
         observed.origin = DeclarationOrigin::MachineCompanion;
         observed.params[1].name = Ident::new("event");
         observed.body = self.observed_forwarding();

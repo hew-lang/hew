@@ -2910,7 +2910,7 @@ fn trait_bound_probe1_bounded_machine_runs() {
     let hew_src = dir.path().join("tagger.hew");
     std::fs::write(
         &hew_src,
-        "machine Tagger<T: Display> {\n    events {\n        Tag { value: T; }\n    }\n    state Empty;\n    state Tagged { value: T; }\n    on Tag: Empty => Tagged { value: event.value }\n    on Tag: Tagged => Tagged reenter { value: event.value }\n}\n\nfn main() {\n    var t: Tagger<i64> = .Empty;\n    t.step(Tag { value: 42 });\n    println(t.state_name());\n}\n",
+        "machine Tagger<T: Display> {\n    events {\n        Tag { value: T; }\n    }\n    state Empty;\n    state Tagged { value: T; }\n    on Tag: Empty => Tagged { value: event.value }\n    on Tag: Tagged => Tagged reenter { value: event.value }\n}\n\nfn main() {\n    var t: Tagger<i64> = .Empty;\n    t.step(Tag { value: 42 }).expect(\"machine step failed\");\n    println(t.state_name());\n}\n",
     )
     .unwrap();
 
@@ -2949,7 +2949,7 @@ fn trait_bound_probe2_multi_bound_machine_runs() {
     let hew_src = dir.path().join("pair_machine.hew");
     std::fs::write(
         &hew_src,
-        "machine Pair<A: Display, B: Display> {\n    events {\n        Load { first: A; second: B; }\n        Clear;\n    }\n    state Empty;\n    state Full { first: A; second: B; }\n    on Load: Empty => Full { first: event.first, second: event.second }\n    on Load: Full => Full reenter { first: event.first, second: event.second }\n    on Clear: Empty => Empty reenter;\n    on Clear: Full => Empty;\n}\n\nfn main() {\n    var p: Pair<i64, i64> = .Empty;\n    p.step(Load { first: 42, second: 99 });\n    println(p.state_name());\n}\n",
+        "machine Pair<A: Display, B: Display> {\n    events {\n        Load { first: A; second: B; }\n        Clear;\n    }\n    state Empty;\n    state Full { first: A; second: B; }\n    on Load: Empty => Full { first: event.first, second: event.second }\n    on Load: Full => Full reenter { first: event.first, second: event.second }\n    on Clear: Empty => Empty reenter;\n    on Clear: Full => Empty;\n}\n\nfn main() {\n    var p: Pair<i64, i64> = .Empty;\n    p.step(Load { first: 42, second: 99 }).expect(\"machine step failed\");\n    println(p.state_name());\n}\n",
     )
     .unwrap();
 

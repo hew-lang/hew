@@ -485,8 +485,6 @@ pub enum Expr {
     },
     Lambda {
         is_move: bool,
-        /// Existing outer names made privately mutable in this environment.
-        private_captures: Vec<Spanned<Ident>>,
         type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
@@ -508,9 +506,6 @@ pub enum Expr {
     },
     SpawnLambdaActor {
         is_move: bool,
-        /// Captures named in `capture(var ..)`: mutable state fields of the
-        /// actor, each starting from a snapshot of the enclosing binding.
-        private_captures: Vec<Spanned<Ident>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,
@@ -1156,6 +1151,12 @@ pub struct ElseBlock {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Param {
+    /// Evaluated in the declaring scope, separately for every omitted argument.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<Spanned<Expr>>,
+    /// Declaration-owned helper introduced by normalization.
+    #[serde(skip)]
+    pub default_provider: Option<(Ident, Vec<Spanned<TypeExpr>>, bool)>,
     pub name: Ident,
     /// Source span of the parameter name, including an implicit `self`.
     #[serde(skip)]
@@ -1281,6 +1282,11 @@ impl Visibility {
 pub enum DeclarationOrigin {
     #[default]
     Authored,
+    /// An ordinary helper whose body is the declaration's default expression.
+    DefaultArgument {
+        body_start: usize,
+        body_end: usize,
+    },
     MachineState,
     /// Event union owned by a machine's declaration occurrence.
     MachineEventType {

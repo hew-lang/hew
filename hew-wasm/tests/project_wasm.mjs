@@ -20,6 +20,24 @@ async function execute(output, stdin = '') {
   return {trace, stdout: trace.final_state.stdout.join('')};
 }
 
+test('language cohort executes through the browser compiler and VM', async t => {
+  const cases = [
+    ['tests/core-acceptance/cases/generic-closure-composition.hew', 'generic closure composition\n'],
+    ['tests/core-acceptance/cases/default-argument-values.hew', '1\n2\n90\n721\n80\n1206\n90\n7\n90\n7\n90\n7\n90\n7\n90\n7\n0\n'],
+    ['tests/core-acceptance/cases/duration-decimals.hew', 'exact duration decimals\n'],
+    ['tests/vertical-slice/accept/semaphore_leases.hew', 'semaphore leases ok\n'],
+    ['tests/core-acceptance/cases/machine-generic-step-limits.hew', 'generic machine rollback passed\n'],
+  ];
+  for (const [path, expected] of cases) {
+    await t.test(path, async () => {
+      const output = compile('main.hew', [source('main.hew', readFileSync(path, 'utf8'))]);
+      const {trace, stdout} = await execute(output);
+      assert.equal(stdout, expected);
+      assert.equal(trace.final_state.exit_code, 0);
+    });
+  }
+});
+
 test('named imports execute through the browser and retain the exact transitive closure', async () => {
   for (const [declaration, alias] of [['import user.nav;', 'nav'], ['import user . nav;', 'nav'], ['import user.nav as route;', 'route']]) {
     const output = compile('main.hew', [

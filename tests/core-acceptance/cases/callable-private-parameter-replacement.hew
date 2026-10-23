@@ -1,6 +1,6 @@
 fn fresh() -> fn[var]() -> i64 {
     let count = 0;
-    capture(var count) || {
+    || {
         count += 1;
         count
     }

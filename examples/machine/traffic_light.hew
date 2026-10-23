@@ -45,7 +45,7 @@ machine TrafficLight {
 fn main() {
     var light = TrafficLight.Red;
     for _ in 0..4 {
-        let report = light.step(.Tick);
+        let report = light.step(.Tick).expect("machine step failed");
         for output in report.outputs {
             match output {
                 .Signal { label } => println(label),

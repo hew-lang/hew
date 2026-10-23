@@ -24,11 +24,11 @@ fn report(current: Retry) {
 
 fn main() {
     var retry: Retry = .Idle;
-    let _ = retry.step(.Reset);
+    let _ = retry.step(.Reset).expect("machine step failed");
     report(retry);
-    let _ = retry.step(.Fail);
-    let _ = retry.step(.Fail);
+    let _ = retry.step(.Fail).expect("machine step failed");
+    let _ = retry.step(.Fail).expect("machine step failed");
     report(retry);
-    let _ = retry.step(.Reset);
+    let _ = retry.step(.Reset).expect("machine step failed");
     report(retry);
 }

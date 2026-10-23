@@ -97,7 +97,7 @@ fn test_sort_ints_comparison_bound_1024_reverse() {
         v.push(1023 - i);
     }
     let comparisons = 0;
-    let out = sort.sort_by(v, capture(var comparisons) |a: i64, b: i64| {
+    let out = sort.sort_by(v, |a: i64, b: i64| {
         comparisons += 1;
         assert(comparisons <= 1024 * 10);
         a < b
@@ -213,7 +213,7 @@ fn test_sort_strings_comparison_bound_256_duplicate_reverse() {
         v.push(key);
     }
     let comparisons = 0;
-    let out = sort.sort_by(v, capture(var comparisons) |a: string, b: string| {
+    let out = sort.sort_by(v, |a: string, b: string| {
         comparisons += 1;
         assert(comparisons <= 256 * 8);
         a < b

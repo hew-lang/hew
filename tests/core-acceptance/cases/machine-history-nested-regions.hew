@@ -1,16 +1,30 @@
 machine Nested {
-    events { Enter; Descend; Advance; Leave; Resume; }
-    emits { Trace { value: i64; } }
+    events {
+        Enter;
+        Descend;
+        Advance;
+        Leave;
+        Resume;
+    }
+    emits {
+        Trace { value: i64; }
+    }
     state Outside;
     state Active {
-        entry { emit Trace { value: 1 }; }
+        entry {
+            emit Trace { value: 1 };
+        }
         initial state Plain;
         state Inner {
             text: string;
-            entry { emit Trace { value: 2 }; }
+            entry {
+                emit Trace { value: 2 };
+            }
             state First {
                 count: i64;
-                entry { emit Trace { value: 3 }; }
+                entry {
+                    emit Trace { value: 3 };
+                }
             }
             state Second { count: i64; }
             initial First { count: 10 };
@@ -25,7 +39,11 @@ machine Nested {
 }
 
 machine Pair {
-    events { Resume; Advance; Leave; }
+    events {
+        Resume;
+        Advance;
+        Leave;
+    }
     state Off;
     parallel state On {
         region left {
@@ -51,7 +69,11 @@ machine Pair {
 }
 
 machine GenericPair<T> {
-    events { Resume { seed: T; } Advance; Leave; }
+    events {
+        Resume { seed: T; }
+        Advance;
+        Leave;
+    }
     state Off;
     parallel state On {
         seed: T;
@@ -73,31 +95,31 @@ machine GenericPair<T> {
 
 fn main() {
     var nested: Nested = .Outside;
-    let _enter = nested.step(.Enter);
-    let _descend = nested.step(.Descend);
-    let _advance = nested.step(.Advance);
-    let _leave = nested.step(.Leave);
-    let resumed = nested.step(.Resume);
+    let _enter = nested.step(.Enter).expect("machine step failed");
+    let _descend = nested.step(.Descend).expect("machine step failed");
+    let _advance = nested.step(.Advance).expect("machine step failed");
+    let _leave = nested.step(.Leave).expect("machine step failed");
+    let resumed = nested.step(.Resume).expect("machine step failed");
     assert(resumed.outputs == [.Trace { value: 1 }, .Trace { value: 2 }, .Trace { value: 3 }]);
     match nested {
         .First { text, count } => assert(text == "KEPT" && count == 10),
         _ => panic("shallow history initializes deeper children"),
     }
     var pair: Pair = .Off;
-    let _first = pair.step(.Resume);
-    let advanced = pair.step(.Advance);
+    let _first = pair.step(.Resume).expect("machine step failed");
+    let advanced = pair.step(.Advance).expect("machine step failed");
     assert(advanced.rules == [1, 2]);
-    let _pause = pair.step(.Leave);
-    let _resume = pair.step(.Resume);
+    let _pause = pair.step(.Leave).expect("machine step failed");
+    let _resume = pair.step(.Resume).expect("machine step failed");
     match pair {
         .On { left: .L1 { value }, right: .R0 { count, child } } => assert(value == "LEFT:advanced" && count == 8 && child == 4),
         _ => panic("parallel immediate children resume together"),
     }
     var generic: GenericPair<string> = .Off;
-    let _initial = generic.step(.Resume { seed: "saved".to_upper() });
-    let _advance = generic.step(.Advance);
-    let _leave = generic.step(.Leave);
-    let _resume = generic.step(.Resume { seed: "fresh" });
+    let _initial = generic.step(.Resume { seed: "saved".to_upper() }).expect("machine step failed");
+    let _advance = generic.step(.Advance).expect("machine step failed");
+    let _leave = generic.step(.Leave).expect("machine step failed");
+    let _resume = generic.step(.Resume { seed: "fresh" }).expect("machine step failed");
     match generic {
         .On { seed, left: .L1 { value: left }, right: .R0 { value: right } } => assert(seed == "fresh" && left == "SAVED" && right == "SAVED"),
         _ => panic("generic parallel payloads and shared parent fields"),

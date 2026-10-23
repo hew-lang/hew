@@ -1,11 +1,18 @@
 machine Session {
-    events { Pause { divisor: i64; } Resume; }
-    emits { Pending { label: string; } }
+    events {
+        Pause { divisor: i64; }
+        Resume;
+    }
+    emits {
+        Pending { label: string; }
+    }
     state Closed { value: i64; }
     state Active {
         state Reviewing {
             label: string;
-            exit { state.label += ":staged"; }
+            exit {
+                state.label += ":staged";
+            }
         }
         initial Reviewing { label: "fresh" };
     }
@@ -28,5 +35,5 @@ fn main() {
             _ => panic("history capture committed on failure"),
         }
     }
-    let _report = session.step(.Pause { divisor: 0 });
+    let _report = session.step(.Pause { divisor: 0 }).expect("machine step failed");
 }

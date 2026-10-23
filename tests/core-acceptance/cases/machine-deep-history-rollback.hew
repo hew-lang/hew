@@ -42,19 +42,19 @@ fn main() {
     var owner = history.track(initial, [SessionScope.Active]);
     let before_capture = owner;
     let capture_failed = scope {
-        let _report = owner.step(.Pause { divisor: 0 });
+        let _report = owner.step(.Pause { divisor: 0 }).expect("machine step failed");
         false
     } handle failure { true };
     assert(capture_failed && owner == before_capture);
     assert(owner.saved(.Active).is_none());
-    let _pause = owner.step(.Pause { divisor: 1 });
+    let _pause = owner.step(.Pause { divisor: 1 }).expect("machine step failed");
     let before_restore = owner;
     let entry_failed = scope {
-        let _report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 0 });
+        let _report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 0 }).expect("machine step failed");
         false
     } handle failure { true };
     assert(entry_failed && owner == before_restore);
-    let report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 1 });
+    let report = owner.step(.Resume { saved: owner.saved(.Active), divisor: 1 }).expect("machine step failed");
     assert(report.outputs == [.Pending { label: "ORIGINAL:exit:entry" }]);
     assert(owner.state() == .Reviewing { label: "ORIGINAL:exit" });
     println("deep history atomic rollback passed");

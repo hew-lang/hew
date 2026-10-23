@@ -3,13 +3,13 @@ import std.concurrency.lifecycle;
 fn main() {
     var service: lifecycle.Lifecycle<i64> = lifecycle.Lifecycle.Created;
     let created = service.state_name();
-    service.step(.Initialise);
+    service.step(.Initialise).expect("machine step failed");
     let initialising = service.state_name();
-    service.step(lifecycle.Lifecycle.Event.Started { handle: 42 });
+    service.step(lifecycle.Lifecycle.Event.Started { handle: 42 }).expect("machine step failed");
     let running = service.state_name();
-    service.step(.Stop);
+    service.step(.Stop).expect("machine step failed");
     let stopping = service.state_name();
-    service.step(.Stop);
+    service.step(.Stop).expect("machine step failed");
     let stopped = service.state_name();
     println(f"lifecycle:{created}:{initialising}:{running}:{stopping}:{stopped}");
 }

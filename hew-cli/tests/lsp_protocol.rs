@@ -2100,6 +2100,31 @@ fn lsp_macro_expansion_and_generated_definition() {
     let text = expansion["result"].as_str().expect("expansion text");
     assert!(text.contains("fn answer()"), "{expansion}");
     assert!(text.contains("42"), "{expansion}");
+    let whole = session.request(
+        "hew/expandMacro",
+        json!({
+            "textDocument": {"uri": file_uri(&path)}, "includeMetadata": true,
+        }),
+    );
+    assert!(whole["result"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("fn main()"));
+    assert_eq!(whole["result"]["inspectionOnly"], true);
+    let origins = whole["result"]["origins"].as_array().unwrap();
+    assert_eq!(origins.len(), 2);
+    assert_eq!(origins[0]["name"], "make");
+    assert_eq!(
+        origins[0]["invocation"]["span"]["start"],
+        source.find("make!(answer)").unwrap()
+    );
+    let absent = session.request(
+        "hew/expandMacro",
+        json!({
+            "textDocument": {"uri": file_uri(&path)}, "position": {"line": 2, "character": 0},
+        }),
+    );
+    assert!(absent["result"].is_null());
     let definition = session.request(
         "textDocument/definition",
         json!({
@@ -2143,6 +2168,49 @@ fn lsp_macro_expansion_and_generated_definition() {
             lens["command"]["title"] == "▶ Run test" && lens["range"]["start"]["line"] == 4
         }),
         "{lenses}"
+    );
+    let updated = source.replace("42", "43");
+    session.buffers.insert(file_uri(&path), (updated, 2));
+    assert_clean(&session.change(&path));
+    let refreshed = session.request(
+        "hew/expandMacro",
+        json!({
+            "textDocument": {"uri": file_uri(&path)},
+        }),
+    );
+    let text = refreshed["result"].as_str().unwrap();
+    assert!(text.contains("43"), "{text}");
+    assert!(!text.contains("42"), "{text}");
+}
+
+#[test]
+fn lsp_imported_macro_inspection_keeps_rule_source() {
+    let project = TestProject::new("imported-macro-inspection");
+    let rule = project.write(
+        "macros.hew",
+        "pub macro add { ($x:expr) => expr { $x + 1 } }\n",
+    );
+    let source = "import macros.{add};\nfn main() { println(add!(41)); }\n";
+    let path = project.write("main.hew", source);
+    let mut session = RenameSession::new(Some(&project), &[]);
+    assert_clean(&session.open(&path, source, 1));
+    let expansion = session.request(
+        "hew/expandMacro",
+        json!({
+            "textDocument": {"uri": file_uri(&path)},
+            "position": position_of(source, "add!(41)"),
+            "includeMetadata": true,
+        }),
+    );
+    let view = &expansion["result"];
+    assert_eq!(view["text"], "41 + 1");
+    assert_eq!(
+        view["origins"][0]["definition"]["file"],
+        rule.canonicalize().unwrap().to_str().unwrap()
+    );
+    assert_eq!(
+        view["origins"][0]["invocation"]["span"]["start"],
+        source.find("add!(41)").unwrap()
     );
 }
 

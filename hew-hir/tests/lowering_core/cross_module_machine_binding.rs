@@ -32,12 +32,12 @@ fn build_cross_module_program() -> Program {
     on Flip: On => Off;
 }
 ";
-    let root_src = r"
+    let root_src = r#"
 fn main() {
     var t = Toggle.Off;
-    t.step(Flip);
+    t.step(Flip).expect("machine step failed");
 }
-";
+"#;
 
     let imported = hew_parser::parse(imported_src);
     assert!(

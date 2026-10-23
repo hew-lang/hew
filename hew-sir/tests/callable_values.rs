@@ -130,7 +130,7 @@ fn copied_private_counter_uses_mutable_receiver_and_capture_storage() {
         r"
         fn make_counter(start: i64) -> fn[var, clone]() -> i64 {
             let count = start;
-            capture(var count) || { count = count + 1; count }
+            || { count = count + 1; count }
         }
         fn main() -> i64 {
             var first = make_counter(10);
@@ -234,9 +234,9 @@ fn remaining_capture_can_be_borrowed_after_another_capture_is_consumed() {
 #[test]
 fn callable_captures_compose_with_conditional_result_and_optional_payloads() {
     for body in [
-        "if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }",
-        "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None), }",
-        "match flag { selected if selected => .Ok(.Some(capture(var count) || { count = count + 1; count })), _ => .Ok(.None), }",
+        "if flag { .Ok(.Some(|| { count = count + 1; count })) } else { .Ok(.None) }",
+        "match flag { true => .Ok(.Some(|| { count = count + 1; count })), false => .Ok(.None), }",
+        "match flag { selected if selected => .Ok(.Some(|| { count = count + 1; count })), _ => .Ok(.None), }",
     ] {
         lower_source(&format!(r"
             fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{
@@ -282,7 +282,7 @@ fn mutable_callable_field_invocation_borrows_the_stored_environment() {
 
 fn main() -> i64 {
     let count = 0;
-    var holder = Holder { next: capture(var count) || {
+    var holder = Holder { next: || {
         count = count + 1;
         count
     } };
@@ -408,7 +408,7 @@ fn mutable_callable_parameters_keep_private_state_without_caller_visible_borrows
         fn consume_advance(consume var callback: fn[var]() -> i64) -> i64 { callback(); callback() }
         fn main() -> i64 {
             let count = 10;
-            var counter: fn[var, clone]() -> i64 = capture(var count) || { count += 1; count };
+            var counter: fn[var, clone]() -> i64 = || { count += 1; count };
             println(advance(counter));
             println(counter());
             consume_advance(counter)
@@ -528,7 +528,7 @@ fn mixed_borrowed_and_replaced_parameters_are_not_silently_joined() {
         for use_value in ["cb()", "observe(cb)"] {
             let source = format!(
                 r"
-                fn fresh() -> fn[var]() -> i64 {{ let count = 0; capture(var count) || {{ count += 1; count }} }}
+                fn fresh() -> fn[var]() -> i64 {{ let count = 0; || {{ count += 1; count }} }}
                 fn observe(cb: fn[var]() -> i64) -> i64 {{ 0 }}
                 fn inspect(var cb: fn[var]() -> i64, flag: bool) -> i64 {{ {body} {use_value} }}
                 fn main() -> i64 {{ inspect(fresh(), true) }}
@@ -567,7 +567,7 @@ fn mixed_borrowed_and_replaced_parameters_are_not_silently_joined() {
 fn private_replacement_keeps_pre_assignment_reads_borrowed() {
     let module = lower_source(
         r"
-        fn fresh() -> fn[var]() -> i64 { let count = 0; capture(var count) || { count += 1; count } }
+        fn fresh() -> fn[var]() -> i64 { let count = 0; || { count += 1; count } }
         fn observe(cb: fn[var]() -> i64) -> i64 { 0 }
         fn replace(var cb: fn[var]() -> i64) -> i64 {
             let before = observe(cb);
@@ -622,7 +622,7 @@ fn advance_pair(var pair: (fn[var, clone]() -> i64, string)) -> i64 {
 
 fn main() -> i64 {
     let count = 10;
-    var holder = Holder { next: capture(var count) || {
+    var holder = Holder { next: || {
         count += 1;
         count
     }, label: "private record" };
@@ -694,7 +694,7 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
         fn main() -> i64 {
             let counts: HashMap<string, i64> = HashMap.new();
             let words: Vec<string> = [];
-            var add = capture(var counts, var words) |word: string| -> i64 {
+            var add = |word: string| -> i64 {
                 counts.insert(word, 1);
                 words.push("seen");
                 counts.len() + words.len()

@@ -114,7 +114,7 @@ fn no_warn_connection_timeout_inside_receive_fn() {
 
         actor Worker {
             receive fn configure(conn: net.Connection) {
-                let _result = conn.set_read_timeout(100);
+                let _result = conn.set_read_timeout(100ms);
             }
         }
 

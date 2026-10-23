@@ -155,7 +155,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -166,7 +166,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -508,7 +508,7 @@ dependencies = [
  "maybe-owned",
  "rustix",
  "rustix-linux-procfs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
  "winx",
 ]
 
@@ -759,9 +759,9 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "clipboard-win"
-version = "5.4.1"
+version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+checksum = "052af7878466feccda12ba7a6a67d019d712f296809559b47c12c8cc196d3a9a"
 dependencies = [
  "error-code",
 ]
@@ -1095,9 +1095,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -1301,7 +1301,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1415,7 +1415,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1831,7 +1831,7 @@ checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "hew-analysis"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1843,21 +1843,21 @@ dependencies = [
 
 [[package]]
 name = "hew-cabi"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "hew-calendar"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "chrono",
 ]
 
 [[package]]
 name = "hew-capability-gen"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1867,7 +1867,7 @@ dependencies = [
 
 [[package]]
 name = "hew-cli"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "clap",
  "clap_complete",
@@ -1908,7 +1908,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codec"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "ciborium",
@@ -1923,7 +1923,7 @@ dependencies = [
 
 [[package]]
 name = "hew-codegen-rs"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "cc",
  "hew-cabi",
@@ -1944,7 +1944,7 @@ dependencies = [
 
 [[package]]
 name = "hew-compile"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-expand",
  "hew-hir",
@@ -1962,7 +1962,7 @@ dependencies = [
 
 [[package]]
 name = "hew-expand"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-lexer",
  "hew-parser",
@@ -1970,7 +1970,7 @@ dependencies = [
 
 [[package]]
 name = "hew-hir"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-parser",
  "hew-types",
@@ -1979,7 +1979,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lexer"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "logos",
  "serde",
@@ -1988,7 +1988,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lib"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-runtime",
  "hew-std",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "hew-lsp"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "clap",
  "dashmap",
@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "hew-mir"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-hir",
  "hew-parser",
@@ -2028,7 +2028,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "clap",
  "crossterm",
@@ -2045,7 +2045,7 @@ dependencies = [
 
 [[package]]
 name = "hew-observe-protocol"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "hew-parser"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "finl_unicode",
  "hew-lexer",
@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "hew-pkg"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "base64 0.22.1",
  "cargo-config2",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "bytes",
  "cap-std",
@@ -2140,7 +2140,7 @@ dependencies = [
 
 [[package]]
 name = "hew-runtime-testkit"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-runtime",
  "libc",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "hew-sir"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-codec",
  "hew-hir",
@@ -2158,7 +2158,7 @@ dependencies = [
 
 [[package]]
 name = "hew-std"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -2197,11 +2197,11 @@ dependencies = [
 
 [[package]]
 name = "hew-std-text-template"
-version = "0.7.2"
+version = "0.8.0"
 
 [[package]]
 name = "hew-testutil"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "libc",
  "tempfile",
@@ -2209,7 +2209,7 @@ dependencies = [
 
 [[package]]
 name = "hew-types"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "heck",
  "hew-cabi",
@@ -2229,7 +2229,7 @@ dependencies = [
 
 [[package]]
 name = "hew-wasm"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "assert_cmd",
  "hew-analysis",
@@ -3196,7 +3196,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3805,7 +3805,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4245,7 +4245,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4314,7 +4314,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4732,7 +4732,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4760,7 +4760,7 @@ dependencies = [
  "cfg-if",
  "libc",
  "psm",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4908,7 +4908,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4930,7 +4930,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5123,9 +5123,9 @@ checksum = "fd3ca314f692efd6c868f8408f53fe444634a845f96c028b97d35f6a1f79f0ee"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -5867,7 +5867,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6160,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.7.2"
+version = "0.8.0"
 dependencies = [
  "hew-parser",
  "hew-types",

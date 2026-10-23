@@ -645,7 +645,11 @@ impl Checker {
                                     } else {
                                         None
                                     };
-                                let sig = FnSig {
+                                if let Some(declaration) = default_body {
+                                    self.impl_method_binders
+                                        .insert(declaration, default_binders.clone());
+                                }
+                                let mut sig = FnSig {
                                     impl_method: default_body.map(|declaration| {
                                         super::types::ImplMethodProvenance {
                                             declaration,
@@ -678,6 +682,7 @@ impl Checker {
                                     returns_receiver_identity,
                                     ..FnSig::default()
                                 };
+                                self.inherit_default_parameters(&mut sig, Some(trait_id), &target);
                                 match default_body {
                                     Some(declaration) => {
                                         self.insert_fn_sig(&method_key, declaration, sig.clone());
@@ -992,7 +997,11 @@ impl Checker {
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
+        let default_owner =
+            declaration.map_or_else(|| name.to_string(), |id| self.defs.path(id).to_string());
+        let param_defaults = self.register_default_parameters(&default_owner, &fd.params, skip);
         let sig = FnSig {
+            param_defaults,
             type_params: self
                 .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
             bounds,
@@ -1587,6 +1596,7 @@ impl Checker {
                     method.decl_span.clone()
                 },
             }),
+            param_defaults: registered.param_defaults.clone(),
             param_ownership: registered.param_ownership.clone(),
             bounds: registered.bounds.clone(),
             type_params: all_type_params,
@@ -1613,6 +1623,7 @@ impl Checker {
             associated: !method.params.first().is_some_and(|p| p.is_receiver),
             ..FnSig::default()
         };
+        self.inherit_default_parameters(&mut sig, implemented_trait, &receiver);
         sig.returns_receiver_identity =
             self.validate_receiver_identity_method(type_name, method, &sig.return_type);
         // Keep the primary signature's tracked inference variables. In
@@ -1996,6 +2007,7 @@ impl Checker {
                         .iter()
                         .map(|param| param.name),
                 );
+                self.declare_default_body_parameters(module, declaration, method);
             }
             return Some(declaration);
         }
@@ -2036,6 +2048,52 @@ impl Checker {
         ty.substitute_type_params_parallel(&substitutions)
     }
 
+    fn declare_default_body_parameters(
+        &mut self,
+        module: crate::ModuleId,
+        declaration: crate::DefId,
+        method: &FnDecl,
+    ) {
+        if let hew_parser::ast::DeclarationOrigin::DefaultArgument {
+            body_start,
+            body_end,
+        } = method.origin
+        {
+            self.scopes.declare_type_parameters(
+                module,
+                declaration,
+                body_start..body_end,
+                method
+                    .type_params
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|param| param.name),
+            );
+        }
+    }
+
+    pub(super) fn register_constructor_signature(
+        &mut self,
+        owner: &str,
+        params: &[hew_parser::ast::Param],
+    ) {
+        let Some(declaration) = self.lookup_declaration(owner) else {
+            return;
+        };
+        let signature = FnSig {
+            type_params: self.declaration_parameter_heads(owner),
+            param_names: params.iter().map(|param| param.name.to_string()).collect(),
+            params: params
+                .iter()
+                .map(|param| self.resolve_registered_annotation_ty_no_holes(&param.ty))
+                .collect(),
+            param_defaults: self.register_default_parameters(owner, params, 0),
+            ..FnSig::default()
+        };
+        self.constructor_signatures.insert(declaration, signature);
+    }
+
     pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
         let mut generic_bindings = std::collections::HashMap::new();
         for parameter in
@@ -2054,6 +2112,7 @@ impl Checker {
             &mut hole_vars,
         );
         let pushed_rf_bounds = !bounds.is_empty();
+        let param_defaults = self.register_default_parameters(actor_name, &rf.params, 0);
         if pushed_rf_bounds {
             self.current_type_param_bounds.push(bounds.clone());
         }
@@ -2081,6 +2140,7 @@ impl Checker {
         }
 
         let sig = FnSig {
+            param_defaults,
             type_params: self
                 .source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span),
             bounds,
@@ -2166,7 +2226,9 @@ impl Checker {
         // E_GEN_RETURN_SPELLING recovery + generator/async-generator wrap.
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
+        let param_defaults = self.register_default_parameters(fd.name.name.as_str(), &fd.params, 0);
         FnSig {
+            param_defaults,
             type_params,
             bounds,
             param_ownership: fd

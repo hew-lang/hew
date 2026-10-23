@@ -37,7 +37,7 @@ machine Gate {
 fn main() {
     var gate: Gate = .Closed;
     let saved = gate;
-    let report = gate.step(.Open { token: "hello" });
+    let report = gate.step(.Open { token: "hello" }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Accepted { token } => println(token),
@@ -71,8 +71,7 @@ For `machine M`, the compiler supplies:
 | `MOutput` | The independent output enum |
 | `MStepDisposition` | `Taken` and `Ignored` variants |
 | `MStep` | Report with `outputs: Vec<MOutput>`, `disposition: MStepDisposition`, `input: string` and `rules: Vec<i64>` |
-| `step(var self, event: M.Event) -> MStep` | Staged evaluation with at most 1024 transition sets |
-| `step_with_limit(var self, event: M.Event, limit: i64) -> Result<MStep, MachineStepError>` | Staged evaluation with an explicit positive bound |
+| `step(var self, event: M.Event, limit: i64 = 1024) -> Result<MStep, MachineStepError>` | Staged evaluation with a default or explicit positive bound |
 | `state_name(self) -> string` | Current state tag |
 | `MScope` | Unit variants naming the machine's compound states |
 | `MSubtree` | Typed departure snapshots, one variant per compound state |
@@ -88,7 +87,7 @@ ordinals in body execution order. It is empty when no external or internal trans
 
 `MStep` is must-use: discarding it as an expression produces the ordinary
 must-use diagnostic. A caller can explicitly acknowledge deliberate discard
-with `let _report = machine.step(event);`.
+with `let _report = machine.step(event).expect("machine step failed");`.
 
 Without an output header, `MOutput` is an empty enum and every successful
 report contains an empty vector. There is no dummy output or `take_emits`
@@ -235,7 +234,7 @@ machine Checkout {
 fn main() {
     var checkout: Checkout = .Running { payment: .Waiting, stock: .Empty };
     let saved = checkout;
-    let report = checkout.step(.Advance);
+    let report = checkout.step(.Advance).expect("machine step failed");
     assert(report.rules == [0, 1]);
     match checkout {
         .Running { payment: .Paid, stock: .Reserved } => {}
@@ -326,7 +325,7 @@ machine Job {
 
 fn main() {
     var job: Job = .Idle;
-    let report = job.step_with_limit(.Start, 3).expect("stabilization fits the limit");
+    let report = job.step(.Start, limit: 3).expect("stabilization fits the limit");
     assert(job == .Finished);
     assert(report.rules == [0, 1, 2]);
 }
@@ -348,8 +347,9 @@ A nonpositive bound returns `.Err(.InvalidLimit)`. When another set is enabled
 but the bound is exhausted, the call returns `.Err(.LimitExceeded)` before that
 set's exit hooks. Both errors leave the original machine, saved history and
 outputs unchanged. Ordinary hook or helper faults propagate as usual and also
-roll back the whole call. `step(event)` uses a bound of 1024 and raises an ordinary
-fault if stabilization exceeds it.
+roll back the whole call. `step(event)` uses a bound of 1024 and returns `.Err(.LimitExceeded)` if
+stabilization exceeds it. Use `step(event, limit: n)` for an explicit bound;
+handle or propagate the result, or use `expect` when failure should fault.
 
 ## Shallow history
 
@@ -376,10 +376,10 @@ machine Editor {
 
 fn main() {
     var editor: Editor = .Closed;
-    let _opened = editor.step(.Open);
-    let _reviewing = editor.step(.Review);
-    let _paused = editor.step(.Pause);
-    let _resumed = editor.step(.Resume);
+    let _opened = editor.step(.Open).expect("machine step failed");
+    let _reviewing = editor.step(.Review).expect("machine step failed");
+    let _paused = editor.step(.Pause).expect("machine step failed");
+    let _resumed = editor.step(.Resume).expect("machine step failed");
     assert(editor.state_name() == "Reviewing");
 }
 ```
@@ -429,9 +429,9 @@ machine Document {
 fn main() {
     let initial: Document = .Closed;
     var owner = history.track(initial, [DocumentScope.Editing]);
-    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) });
-    let _pause = owner.step(.Pause);
-    let _resume = owner.step(.Resume { title: "reopened", saved: owner.saved(.Editing) });
+    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) }).expect("machine step failed");
+    let _pause = owner.step(.Pause).expect("machine step failed");
+    let _resume = owner.step(.Resume { title: "reopened", saved: owner.saved(.Editing) }).expect("machine step failed");
     assert(owner.state() == .Review { title: "reopened", text: "new draft" });
 }
 ```
@@ -462,10 +462,10 @@ within a set, deeper scopes precede ancestors, with source declaration order
 breaking ties. Duplicate requests capture a scope once. Internal completion
 and `always` sets use the same boundary, so a subtree entered and exited during
 one call is observable even when absent from the final machine. Unrequested
-subtrees are not captured. Ordinary `step` and `step_with_limit` request none.
+subtrees are not captured. Ordinary `step` requests none.
 
 The library stages its current machine and retained entries together. Its
-`step_with_limit(event, limit)` returns the ordinary typed bound errors; its
+`step(event, limit: n)` returns the ordinary typed bound errors;
 `step(event)` uses the default bound of 1024 transition sets. A bound error or
 an ordinary guard, exit, body or entry fault commits neither machine nor saved
 subtrees. Saved values returned earlier remain independent of later departures.

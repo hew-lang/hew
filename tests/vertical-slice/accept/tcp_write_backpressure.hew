@@ -31,7 +31,7 @@ fn main() {
     };
     let peer = listener.accept().expect("accept");
     // Bound the wait so a full send buffer fails fast instead of blocking.
-    let _ = conn.set_write_timeout(100);
+    let _ = conn.set_write_timeout(100ms);
     // A small write fits in the send buffer and succeeds immediately.
     let small_ok = match conn.send("ping".to_bytes()) {
         .Ok(_) => true,

@@ -25,13 +25,8 @@ impl<M: Machine> Owner<M> where M.Scope: Eq {
         .None
     }
 
-    /// Commit a step and its departures with the ordinary stabilization bound.
-    fn step(var self, event: M.Event) -> M.Step {
-        self.step_with_limit(event, 1024).expect("machine history step failed")
-    }
-
     /// Commit the machine and saved subtrees together after a successful step.
-    fn step_with_limit(var self, event: M.Event, limit: i64) -> Result<M.Step, MachineStepError> {
+    fn step(var self, event: M.Event, limit: i64 = 1024) -> Result<M.Step, MachineStepError> {
         var staged = self;
         let observed = match staged.current.step_observed_with_limit(event, limit, staged.requested) {
             .Ok(value) => value,

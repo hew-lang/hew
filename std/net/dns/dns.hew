@@ -66,7 +66,7 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 
 /// Resolve a hostname to all associated IP addresses with a deadline.
 ///
-/// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
+/// `timeout <= 0ns` disables the deadline. On deadline expiry or resolution
 /// failure returns an empty vector. The resolver keeps running after the
 /// deadline; its late answer is discarded.
 ///
@@ -76,19 +76,19 @@ pub fn lookup_host(hostname: string) -> Result<string, net.NetError> {
 /// import std.net.dns;
 ///
 /// fn main() {
-///     let addrs = dns.resolve_timed("slow.example.com", 500);
+///     let addrs = dns.resolve_timed("slow.example.com", 500ms);
 ///     for addr in addrs {
 ///         println(addr);
 ///     }
 /// }
 /// ```
-pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
-    if deadline_ms <= 0 {
+pub fn resolve_timed(hostname: string, timeout: duration) -> Vec<string> {
+    if timeout <= 0ns {
         return unsafe {
             hew_dns_resolve(hostname)
         };
     }
-    scope within duration.from_millis(deadline_ms) {
+    scope within timeout {
         unsafe {
             hew_dns_resolve(hostname)
         }
@@ -100,15 +100,15 @@ pub fn resolve_timed(hostname: string, deadline_ms: i64) -> Vec<string> {
 
 /// Resolve a hostname to its first IP address with a deadline.
 ///
-/// `deadline_ms <= 0` disables the deadline. On deadline expiry or resolution
+/// `timeout <= 0ns` disables the deadline. On deadline expiry or resolution
 /// failure returns an empty string.
-pub fn lookup_host_timed(hostname: string, deadline_ms: i64) -> string {
-    if deadline_ms <= 0 {
+pub fn lookup_host_timed(hostname: string, timeout: duration) -> string {
+    if timeout <= 0ns {
         return unsafe {
             hew_dns_lookup_host(hostname)
         };
     }
-    scope within duration.from_millis(deadline_ms) {
+    scope within timeout {
         unsafe {
             hew_dns_lookup_host(hostname)
         }

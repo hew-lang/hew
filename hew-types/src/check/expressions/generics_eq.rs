@@ -695,7 +695,11 @@ impl Checker {
                     "declare the parameter `consume {root}: ...` before consuming it"
                 ))
             }
-            GenericRequirementKind::Eq | GenericRequirementKind::BorrowedTransfer { .. } | GenericRequirementKind::ResourceClose => return None,
+            GenericRequirementKind::CaptureSnapshot { root } if !self.capture_is_cloneable(concrete) => {
+                TypeError::new(TypeErrorKind::ClosureExplicitMoveRequired { name: root.clone(), ty: concrete.user_facing().to_string() }, span.clone(),
+                    format!("capture `{root}` has no independent snapshot operation; use `move` to transfer it into the closure"))
+            }
+            GenericRequirementKind::Eq | GenericRequirementKind::BorrowedTransfer { .. } | GenericRequirementKind::CaptureSnapshot { .. } | GenericRequirementKind::ResourceClose => return None,
         };
         error.source_module.clone_from(module);
         Some(error)
@@ -814,6 +818,9 @@ impl Checker {
                                 GenericRequirementKind::Eq => true,
                                 GenericRequirementKind::BorrowedTransfer { .. } => {
                                     self.place_read_transfers_ownership(&concrete)
+                                }
+                                GenericRequirementKind::CaptureSnapshot { .. } => {
+                                    !self.capture_is_cloneable(&concrete)
                                 }
                                 GenericRequirementKind::ResourceClose => {
                                     !self.resource_close_instances(&concrete).is_empty()

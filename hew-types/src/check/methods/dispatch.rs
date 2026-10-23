@@ -82,12 +82,6 @@ impl Checker {
             .and_then(|root| self.env.lookup_ref(root))
             .is_some_and(|binding| binding.is_mutable)
         {
-            if let Some(error) =
-                root.and_then(|root| self.private_capture_mutation_error(root, span))
-            {
-                self.errors.push(error);
-                return;
-            }
             let label =
                 root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
             let declaration = root
@@ -950,8 +944,8 @@ impl Checker {
                     span,
                 )
             }
-            // Duration methods are declared in `std/builtins.hew` with
-            // monomorphic `#[extern_symbol]` annotations.
+            // Duration methods use the same source-body fallback as other
+            // primitives after checking declarative runtime operations.
             (Ty::Duration, _) => {
                 if let Some(ret_ty) = self.dispatch_monomorphic_extern_symbol_method(
                     "duration",
@@ -963,16 +957,13 @@ impl Checker {
                 ) {
                     return ret_ty;
                 }
-                for arg in args {
-                    let (expr, sp) = arg.expr();
-                    self.synthesize(expr, sp);
-                }
-                self.report_error(
-                    TypeErrorKind::UndefinedMethod,
+                self.check_primitive_receiver_method_fallback(
+                    &Ty::Duration,
+                    "`duration`",
+                    method,
+                    args,
                     span,
-                    format!("no method `{method}` on `duration`"),
-                );
-                Ty::Error
+                )
             }
             (Ty::Char, _) => {
                 if let Some(result) = self.dispatch_monomorphic_extern_symbol_method(
@@ -3019,6 +3010,11 @@ impl Checker {
                 .collect(),
         };
         substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
+        for provider in sig.param_defaults.iter_mut().flatten() {
+            for argument in &mut provider.type_args {
+                *argument = argument.substitute_type_params_parallel(&substitution);
+            }
+        }
         sig.params = sig
             .params
             .iter()

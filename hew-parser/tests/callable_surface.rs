@@ -1,117 +1,23 @@
-use hew_parser::ast::Ident;
-use hew_parser::ast::{CallableCallMode, Expr, Item, Stmt, TypeExpr};
+use hew_parser::ast::{CallableCallMode, Item, TypeExpr};
 use hew_parser::{ast_eq::program_eq_ignoring_spans, fmt::format_source, parse};
 
 #[test]
-fn private_capture_prefix_preserves_pipe_forms_and_round_trips() {
+fn closure_snapshots_preserve_pipe_forms_and_round_trip() {
     let source = r"
 fn main() {
     let count = 0;
-    var next = capture(var count) || { count = count + 1; count };
-    var add = move capture(var count) |x: i64| -> i64 { count = count + x; count };
-    let values = [1, 2];
+    var next = || { count = count + 1; count };
+    var add = move |x: i64| -> i64 { count = count + x; count };
+    let actor_counter = actor || -> i64 { count += 1; count };
+    let actor_value = actor move |n: i64| { count += n; count };
     let ordinary = |x| x;
     let other = capture(3);
 }
 fn capture(value: i64) -> i64 { value }
-fn compose(flag: bool, left: fn[clone]() -> Option<i64>, right: fn[once, clone]() -> Result<Option<i64>, string>) {
-    let chosen: Option<fn[clone]() -> Option<i64>> = if flag { .Some(left) } else { .None };
-}
 ";
     let parsed = parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let Item::Function(main) = &parsed.program.items[0].0 else {
-        panic!("function")
-    };
-    let Stmt::Var {
-        value:
-            Some((
-                Expr::Lambda {
-                    private_captures,
-                    is_move,
-                    ..
-                },
-                _,
-            )),
-        ..
-    } = &main.body.stmts[1].0
-    else {
-        panic!("private closure")
-    };
-    assert!(!is_move);
-    assert_eq!(private_captures[0].0, Ident::new("count"));
     let formatted = format_source(source, &parsed.program);
-    assert!(formatted.contains("move capture(var count) |x: i64| -> i64"));
-    let reparsed = parse(&formatted);
-    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
-    assert!(program_eq_ignoring_spans(
-        &parsed.program,
-        &reparsed.program
-    ));
-}
-
-#[test]
-fn lambda_actor_capture_prefix_parses_and_round_trips() {
-    let source = r"
-fn main() {
-    let total = 0;
-    let seen: Vec<string> = [];
-    let add = actor capture(var total) |n: i64| -> i64 { total += n; total };
-    let collect = actor move capture(var seen, var total) |line: string| { seen.push(line); };
-    let tick = actor capture(var total) || -> i64 { total };
-    let capture = actor |x: i64| -> i64 { x };
-}
-";
-    let parsed = parse(source);
-    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
-    let Item::Function(main) = &parsed.program.items[0].0 else {
-        panic!("function")
-    };
-    let prefixes: Vec<(bool, Vec<String>)> = main.body.stmts[2..]
-        .iter()
-        .map(|(stmt, _)| {
-            let Stmt::Let {
-                value:
-                    Some((
-                        Expr::SpawnLambdaActor {
-                            is_move,
-                            private_captures,
-                            ..
-                        },
-                        _,
-                    )),
-                ..
-            } = stmt
-            else {
-                panic!("lambda actor binding: {stmt:?}")
-            };
-            (
-                *is_move,
-                private_captures
-                    .iter()
-                    .map(|(name, _)| name.to_string())
-                    .collect(),
-            )
-        })
-        .collect();
-    assert_eq!(
-        prefixes,
-        [
-            (false, vec!["total".to_string()]),
-            (true, vec!["seen".to_string(), "total".to_string()]),
-            (false, vec!["total".to_string()]),
-            (false, Vec::new()),
-        ]
-    );
-    let formatted = format_source(source, &parsed.program);
-    assert!(
-        formatted.contains("actor move capture(var seen, var total) |line: string| {"),
-        "{formatted}"
-    );
-    assert!(
-        formatted.contains("actor capture(var total) || -> i64 {"),
-        "{formatted}"
-    );
     let reparsed = parse(&formatted);
     assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
     assert!(program_eq_ignoring_spans(
@@ -122,30 +28,30 @@ fn main() {
 }
 
 #[test]
-fn malformed_lambda_actor_capture_prefixes_are_rejected() {
-    for (expression, expected) in [
-        (
-            "actor capture(var count, var count) || {}",
-            "duplicate private capture `count`",
-        ),
-        (
-            "actor capture(var count) |count: i64| {}",
-            "private capture `count` conflicts with a parameter",
-        ),
-        ("actor capture(count) || {}", "expected `var`"),
-        ("actor capture(var count = 1) || {}", "expected `)`"),
-        ("capture(var count) actor || {}", ""),
-        ("actor capture() || {}", "expected `var`"),
+fn retired_capture_prefix_has_an_exact_migration_fix() {
+    for expression in [
+        "capture(var count) || { count += 1; count }",
+        "move capture(var count) || { count += 1; count }",
+        "actor capture(var count) || { count += 1; count }",
+        "actor move capture(var count) || { count += 1; count }",
     ] {
-        let source = format!("fn main() {{ let count = 0; let f = {expression}; }}");
-        let errors = parse(&source).errors;
-        assert!(!errors.is_empty(), "accepted {source}");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.message.to_lowercase().contains(expected)),
-            "{source}: {errors:?}"
+        let source = format!("fn main() {{ let count = 0; var f = {expression}; }}");
+        let parsed = parse(&source);
+        let [error] = parsed.errors.as_slice() else {
+            panic!("{:?}", parsed.errors)
+        };
+        assert_eq!(
+            error.kind,
+            hew_parser::ParseDiagnosticKind::LegacyPrivateCapture
         );
+        let edit = &error.fixes[0].edits[0];
+        assert_eq!(
+            &source[edit.span.start..edit.span.end],
+            "capture(var count)"
+        );
+        let mut migrated = source.clone();
+        migrated.replace_range(edit.span.start..edit.span.end, &edit.new_text);
+        assert!(parse(&migrated).errors.is_empty(), "{migrated}");
     }
 }
 

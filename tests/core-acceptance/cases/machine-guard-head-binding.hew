@@ -80,34 +80,34 @@ fn show(report: MeterStep) {
 
 fn main() {
     var meter: Meter = .Idle;
-    show(meter.step(.Add { n: 0, cap: 10 }));
+    show(meter.step(.Add { n: 0, cap: 10 }).expect("machine step failed"));
     println(meter.state_name());
-    show(meter.step(.Add { n: 4, cap: 10 }));
-    show(meter.step(.Add { n: 5, cap: 10 }));
-    show(meter.step(.Add { n: 2, cap: 10 }));
+    show(meter.step(.Add { n: 4, cap: 10 }).expect("machine step failed"));
+    show(meter.step(.Add { n: 5, cap: 10 }).expect("machine step failed"));
+    show(meter.step(.Add { n: 2, cap: 10 }).expect("machine step failed"));
     match meter {
         .Acc { sum } => println(f"sum={sum}"),
         _ => println("not accumulating"),
     }
     var held: Box<string> = .Empty;
-    let _ = held.step(.Put { item: "skip", keep: false });
+    let _ = held.step(.Put { item: "skip", keep: false }).expect("machine step failed");
     println(held.state_name());
-    let _ = held.step(.Put { item: "kept", keep: true });
+    let _ = held.step(.Put { item: "kept", keep: true }).expect("machine step failed");
     match held {
         .Full { item } => println(f"item={item}"),
         _ => println("empty"),
     }
     var link: Link = .Up;
-    let _ = link.step(.Drop { code: 404 });
+    let _ = link.step(.Drop { code: 404 }).expect("machine step failed");
     println(link.state_name());
-    let _ = link.step(.Drop { code: 503 });
+    let _ = link.step(.Drop { code: 503 }).expect("machine step failed");
     println(link.state_name());
     var bag: Bag = .Empty;
-    let _ = bag.step(.Put { items: ["a", "b"], keep: false });
+    let _ = bag.step(.Put { items: ["a", "b"], keep: false }).expect("machine step failed");
     println(bag.state_name());
-    let _ = bag.step(.Put { items: ["a", "b"], keep: true });
-    let _ = bag.step(.Put { items: ["c"], keep: true });
-    let _ = bag.step(.Put { items: ["d", "e", "f"], keep: true });
+    let _ = bag.step(.Put { items: ["a", "b"], keep: true }).expect("machine step failed");
+    let _ = bag.step(.Put { items: ["c"], keep: true }).expect("machine step failed");
+    let _ = bag.step(.Put { items: ["d", "e", "f"], keep: true }).expect("machine step failed");
     match bag {
         .Full { items } => println(f"bag={items.len()} {items[0]}"),
         _ => println("empty"),

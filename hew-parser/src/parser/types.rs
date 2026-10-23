@@ -742,6 +742,19 @@ impl Parser<'_> {
         )
     }
 
+    fn parse_parameter_default(&mut self, context: TypeParseContext) -> Option<Spanned<Expr>> {
+        if !self.eat(&Token::Equal) {
+            return None;
+        }
+        if context == TypeParseContext::ExternSignature {
+            self.error(
+                "default arguments belong to Hew-authored declarations, not extern declarations"
+                    .to_string(),
+            );
+        }
+        self.parse_expr()
+    }
+
     fn parse_params_with_implicit_self_and_context(
         &mut self,
         allow_implicit_self: bool,
@@ -788,6 +801,8 @@ impl Parser<'_> {
                         });
                     }
                     params.push(Param {
+                        default: None,
+                        default_provider: None,
                         name,
                         name_span: name_span.clone(),
                         ty: (
@@ -839,7 +854,10 @@ impl Parser<'_> {
             }
 
             if let Some(ty) = self.parse_type_with_context(context) {
+                let default = self.parse_parameter_default(context);
                 params.push(Param {
+                    default,
+                    default_provider: None,
                     name,
                     name_span,
                     ty,

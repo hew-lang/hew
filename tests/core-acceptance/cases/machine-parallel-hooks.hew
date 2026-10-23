@@ -76,7 +76,7 @@ machine Pair {
 
 fn main() {
     var pair: Pair = .Running { epoch: 7, left: .L0, right: .R0 };
-    let first = pair.step(.Advance);
+    let first = pair.step(.Advance).expect("machine step failed");
     assert(first.rules == [1, 2]);
     var trace = "";
     for output in first.outputs {
@@ -87,7 +87,7 @@ fn main() {
         }
     }
     assert(trace == "left exit/right exit/left body/right body/left entry/right entry/");
-    let cross = pair.step(.Cross);
+    let cross = pair.step(.Cross).expect("machine step failed");
     trace = "";
     for output in cross.outputs {
         match output {
@@ -102,19 +102,19 @@ fn main() {
         .Running { epoch, left: .L0, right: .R1 } => assert(epoch == 7),
         _ => panic("cross target"),
     }
-    let updated = pair.step(.UpdateOwner);
+    let updated = pair.step(.UpdateOwner).expect("machine step failed");
     assert(updated.outputs.len() == 3);
     match pair {
         .Running { epoch, left: .L0, right: .R1 } => assert(epoch == 8),
         _ => panic("parent spread lost a region"),
     }
-    let reset = pair.step(.Reset);
+    let reset = pair.step(.Reset).expect("machine step failed");
     assert(reset.outputs.len() == 2);
     match pair {
         .Running { epoch, left: .L0, right: .R0 } => assert(epoch == 9),
         _ => panic("parent payload update"),
     }
-    let cancelled = pair.step(.Cancel);
+    let cancelled = pair.step(.Cancel).expect("machine step failed");
     assert(cancelled.outputs.len() == 4);
     assert(pair.state_name() == "Stopped");
     assert(first.outputs.len() == 6);

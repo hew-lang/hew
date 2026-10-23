@@ -36,15 +36,15 @@ fn show(till: Till) {
 fn main() {
     var till = Till.Empty;
     show(till);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
     show(till);
-    let _ = till.step(.Sale);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
+    let _ = till.step(.Sale).expect("machine step failed");
     show(till);
-    let _ = till.step(.Void);
+    let _ = till.step(.Void).expect("machine step failed");
     show(till);
-    let _ = till.step(.Rename);
+    let _ = till.step(.Rename).expect("machine step failed");
     show(till);
-    let _ = till.step(.Close);
+    let _ = till.step(.Close).expect("machine step failed");
     show(till);
 }

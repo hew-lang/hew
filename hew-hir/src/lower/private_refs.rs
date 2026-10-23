@@ -81,6 +81,32 @@ fn close_private_fn_uses<'a>(
     mut roots: Vec<(u32, &'a Span)>,
     mut reachable: HashSet<usize>,
 ) -> HashSet<usize> {
+    // Omitted arguments are checked calls even though their provider does not
+    // occur as an identifier in source. Seed the same declaration-use closure
+    // from the checker's explicit provider targets.
+    let constructor_defaults = ctx
+        .spawn_argument_slots
+        .values()
+        .flatten()
+        .filter_map(|slot| match slot {
+            hew_types::check::SpawnSlot::ArgumentDefault(default) => Some(default),
+            _ => None,
+        });
+    for default in ctx
+        .call_default_arguments
+        .values()
+        .flatten()
+        .chain(constructor_defaults)
+    {
+        let CallTarget::User(declaration) = default.target else {
+            continue;
+        };
+        if let Some((ordinal, index, span)) = private.get(&declaration) {
+            if reachable.insert(*ordinal) {
+                roots.push((*index, *span));
+            }
+        }
+    }
     while let Some((index, span)) = roots.pop() {
         for (site, resolution) in &ctx.resolutions {
             if site.module_idx != index || site.start < span.start || site.end > span.end {

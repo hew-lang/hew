@@ -103,8 +103,8 @@ fn check_deep(value: TransitHistory<string>, expected_seed: string) {
 
 fn main() {
     var transit: TransitHistory<string> = .Off;
-    let _initial = transit.step(.Resume { seed: "original".to_upper() });
-    let advanced = transit.step(.Advance);
+    let _initial = transit.step(.Resume { seed: "original".to_upper() }).expect("machine step failed");
+    let advanced = transit.step(.Advance).expect("machine step failed");
     let departed = transit.step_observed_with_limit(.Pause, 1, [.Active, .Inner]).expect("departures");
     assert(departed.departures.len() == 2);
     assert(departed.departures[0].target == .Inner && departed.departures[1].target == .Active);
@@ -127,11 +127,11 @@ fn main() {
         assert(retained.report.outputs == [.Left { value: "ORIGINAL" }, .Right { value: "ORIGINAL", count: 99 }]);
         assert(retained.output == retained.report.outputs[0]);
         var shallow = retained.current;
-        let resumed = shallow.step(retained.event);
+        let resumed = shallow.step(retained.event).expect("machine step failed");
         check_shallow(shallow);
         assert(resumed.outputs == [.Left { value: "ORIGINAL" }, .Right { value: "ORIGINAL", count: 4 }]);
         var deep = retained.current;
-        let restored = deep.step(.Restore { seed: "deep fresh", saved: retained.subtree });
+        let restored = deep.step(.Restore { seed: "deep fresh", saved: retained.subtree }).expect("machine step failed");
         check_deep(deep, "deep fresh");
         assert(restored.outputs == retained.report.outputs);
         check_deep(retained.snapshot.restore("snapshot fresh"), "snapshot fresh");

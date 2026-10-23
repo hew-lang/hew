@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-authority"
+intent = "Supplying ordinary, receive, init and supervisor arguments avoids their ambient default providers in confined callers."
+source = "cases/default-argument-authority.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "supplied defaults require no ambient authority\n"
+exit = 0

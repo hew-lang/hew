@@ -660,16 +660,11 @@ Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
 
-Every capture initializes a private, read-only state field using those value
-and transfer rules. Naming a capture in a `capture(var name, ...)` prefix makes its
-state field mutable: the handler may assign it or call mutating methods on it,
-and each message observes the writes of earlier ones. The prefix follows
-`actor` and any `move`, with the closure rules of §3.8.6: duplicate names,
-names that clash with a parameter, and initializers are errors. The enclosing
+Every capture initializes a private state field using those value and transfer
+rules. The checker infers mutable fields from assignments and mutating calls in
+the handler; each message observes the writes of earlier ones. The enclosing
 binding is a separate value. It may be `let`, it is never changed, and the
-handler's state is read back only through replies. Writing a capture that the
-prefix does not name is an error whether the enclosing binding is `let` or
-`var`.
+handler's state is read back only through replies (§3.8.6).
 
 ```hew
 enum Tally {
@@ -679,7 +674,7 @@ enum Tally {
 
 fn main() {
     let count: i64 = 0;
-    let tally = actor capture(var count) |m: Tally| -> i64 {
+    let tally = actor |m: Tally| -> i64 {
         match m {
             .Add(n) => {
                 count += n;
@@ -1787,9 +1782,8 @@ fn main() {
 ```
 
 Captured types must satisfy the actor boundary's sendability rules. A borrowed
-view cannot outlive its owner by being captured. A capture is read-only state
-unless `capture(var name)` names it, which makes it a mutable state field of the
-actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
+view cannot outlive its owner by being captured. Writes to a capture make it a
+mutable state field of the actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
 ordinary closure capabilities and private mutable captures.
 
 #### 3.4.6 What IS Allowed (Within an Actor)
@@ -2544,14 +2538,11 @@ fn main() {
 
 **Trait objects (`dyn Trait`):**
 
-> `dyn Trait` in type position is admitted by the parser and grammar.
-> The syntax `dyn TraitBound` is valid and parses without error.
-> Type-checking and codegen for trait objects are partial: basic
-> dispatch through a `dyn` reference works for simple cases, but
-> object-safety enforcement, associated-type bounds, and higher-ranked
-> trait bounds remain incomplete. See HEW-FUTURE.md §2.2 for the
-> full object-type roadmap. This status note is specific to trait objects;
-> machine codegen is live as described in §3.11.
+`dyn Trait` supports checked instance-method dispatch, associated-type
+bindings such as `dyn Iterator<Item = i64>`, and combined bounds such as
+`dyn (Gauge + Send + Sync)`. The checker validates dynamic method eligibility
+and requires associated types to be bound. See §3.8.2 for ownership and
+dispatch rules.
 
 ---
 
@@ -3297,9 +3288,13 @@ may suspend, or yield during computation, through a trait object just as it
 does through a concrete receiver. Mutable receiver handback remains intact on
 success, failure and cancellation.
 
-The current subset does not yet fully enforce object-safety rules or support
-associated-type bounds and higher-ranked trait bounds in `dyn` position. See
-[HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
+Associated types are specified at the object boundary, for example
+`dyn Index<string, Output = i64>`. Combined bounds use parentheses:
+`dyn (Alpha + Beta + Scaled)`. Dispatch includes inherited methods and shares
+their canonical trait slots across a diamond of supertraits. Dynamic methods
+must have an instance receiver and cannot introduce their own type parameters
+or return an unconstrained `Self`. Higher-ranked trait bounds are outside
+this supported surface.
 
 `dyn Trait` works as a function parameter and as a `Vec` element. A
 `Vec<dyn Trait>` type-checks, accepts `push` of any concrete implementor
@@ -3528,26 +3523,25 @@ fn main() {
 }
 ```
 
-Captured values are independent immutable snapshots. To mutate private capture
-state, name existing bindings in a `capture(var name, ...)` prefix:
+Captured values are independent snapshots. Assignments and mutating calls in
+the body infer mutable private capture state:
 
 ```hew
 fn main() {
     let count: i64 = 0;
-    var next = capture(var count) || { count = count + 1; count };
+    var next = || { count = count + 1; count };
     var independent = next;
     println(f"{next()} {independent()}");
 }
 ```
 
-The original binding may be immutable. The prefix grants mutation only to the
-closure's private field; invoking a mutable closure requires a mutable callable
-place. Duplicate capture names, capture initializers, aliases and names that
-conflict with lambda parameters are errors. `capture` remains an ordinary
-identifier outside this prefix.
+The original binding may be immutable. Mutation affects only the closure's
+private field; invoking a mutable closure requires a mutable callable place.
+Copies have independent logical state. The retired `capture(var ...)` prefix
+is rejected with a diagnostic that removes it.
 
-`move` precedes the capture prefix (`move capture(var count) || ...`) and
-transfers captured ownership. It does not itself grant mutation or require
+`move` precedes the opening pipe (`move || ...`) and transfers captured
+ownership. It does not itself require mutation or
 call-once invocation. A capture without an independent snapshot operation
 requires `move`. Consuming a captured owner during invocation, including
 returning it or transferring it into another value, requires call-once.
@@ -3650,52 +3644,79 @@ fn main() {
 
 **Generic closures:**
 
-A closure declares type parameters immediately after its opening pipe. Bounds
-use the same syntax as named functions. A quantified function type places the
-same binders after any callable qualifiers and before its parameter list:
+A closure literal bound directly by an unannotated `let` or `var` can infer a
+generic signature. After checking its body, unresolved parameter and result
+types become type parameters when they do not belong to an outer binding.
+Each call chooses its own concrete types:
 
 ```hew
 fn make_identity() -> fn<T>(T) -> T {
-    |<T> value: T| -> T { value }
+    |value| value
 }
 
 fn main() {
-    let identity = make_identity();
+    let identity = |value| value;
     assert(identity(41) == 41);
-    assert(identity<string>("hello") == "hello");
-    let equal = |<T: Eq> left: T, right: T| -> bool { left == right };
-    assert(equal(7, 7));
+    assert(identity("hello") == "hello");
+    let returned = make_identity();
+    assert(returned(true));
+    let equal = |left, right| left == right;
+    assert(equal(7, 7) && equal("same", "same"));
     let pair: fn[clone]<T, U>(T, U) -> (T, U) =
-        |<T, U> first: T, second: U| -> (T, U) { (first, second) };
+        |first, second| (first, second);
     assert(pair(1, "one") == (1, "one"));
 }
 ```
 
-Each call chooses concrete type arguments, either from its arguments or from
-an explicit list such as `identity<string>(...)`. A quantified value can be
-stored, passed and returned without fixing those arguments in advance. Its
-body must be valid under the declared bounds.
+An expected quantified function type also supplies fresh type parameters to a
+literal, as in `make_identity` and `pair`. The body must work for every type
+permitted by that signature. A literal that only accepts `i64` cannot fill a
+`fn<T>(T) -> T` slot. Reassigning an inferred generic `var` preserves its
+universal signature.
 
-Capture prefixes stay before the opening pipe:
-`move capture(var count) |<T> value: T| -> T { ... }`. Type instantiation
-preserves the closure's captured state and invocation capabilities: calling a
-mutable generic closure requires a mutable callable place, and calling a
-`fn[once]<T>(T) -> T` consumes that value across all type instantiations.
-Ordinary closures continue to infer parameter types from context. The retired
-`<T>(params) => body` spelling remains invalid.
+Inference carries unambiguous trait requirements from the body: `equal`
+requires `Eq`, and passing a parameter to a function requiring `Display`
+adds that requirement. A parameter or result written as `_` follows the same
+inference rules. Calls and other arbitrary initializer expressions do not
+introduce new type parameters through this literal-generalization rule.
+
+Explicit type parameters remain useful when a signature needs named types or
+bounds. They go immediately after the opening pipe:
+`|<T: Eq> left: T, right: T| -> bool { left == right }`.
+A quantified function type writes its binders after the callable qualifiers:
+`fn[clone]<T: Eq>(T, T) -> bool`. Such values can be stored, passed and returned.
+Calls may supply explicit arguments, as in `identity<string>("hello")`.
+
+All instantiations use the same captured environment. A mutable generic
+closure requires a mutable callable place, and calling a
+`fn[once]<T>(T) -> T` consumes that value across all instantiations. `move`
+precedes the pipe, including an explicitly generic literal:
+`move |<T> value: T| -> T { value }`.
+
+Captured storage keeps one type across calls. Type variables belonging to an
+outer binding are excluded from generalization; a fresh type parameter cannot
+escape into that storage. For example, assigning an argument into a captured
+`Option<i64>` constrains that argument to `i64`, even when unrelated arguments
+remain generic. Give shared storage a concrete annotation when its intended
+type is unclear.
 
 **Ambiguous cases require annotations:**
 
-```hew,ignore
-// ERROR: Cannot infer types for lambda parameters
-let f = |x, y| x + y;  // No context to determine x, y types
+Arithmetic with two unconstrained operands does not select one generic
+operation. Choose a concrete parameter type or provide a callable context:
 
-// Solution 1: Annotate the variable
-let f: fn(i64, i64) -> i64 = |x, y| x + y;
-
-// Solution 2: Annotate parameters
-let f = |x: i64, y: i64| x + y;
+```hew
+fn main() {
+    let add: fn(i64, i64) -> i64 = |left, right| left + right;
+    let subtract = |left: i64, right: i64| left - right;
+    assert(add(8, 3) == 11 && subtract(8, 3) == 5);
+}
 ```
+
+Similarly, `let same = |left, right| left is right;` needs a concrete actor
+reference type: identity comparison has no universal value-type contract.
+A context such as `fn(Worker, Worker) -> bool` lets the literal infer its
+parameters. The retired `<T>(params) => body` spelling remains invalid.
 
 **Constraint solving for complex bounds:**
 
@@ -4782,7 +4803,7 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(timeout)`, `.set_write_timeout(timeout)`, `.close()` |
 | `process.Child`  | `process.start(command) -> Result<Child, ProcessError>` | `.id()`, `.stdin()` → `Result<Sink<bytes>, ProcessError>`, `.stdout()`/`.stderr()` → `Result<Stream<bytes>, ProcessError>`, `.wait()` → `Result<ExitStatus, ProcessError>`, `.try_wait()` → `Result<Option<ExitStatus>, ProcessError>`, `.terminate()`, `.kill()` → `Result<(), ProcessError>`, `.close()` (§6.4.7) |
 
 Handle types are opaque — their internal representation is not accessible.
@@ -4886,7 +4907,7 @@ machine Door {
 
 fn main() {
     var door: Door = .Shut;
-    let report = door.step(.Open { by: "sam" });
+    let report = door.step(.Open { by: "sam" }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Announce { text } => println(text),   // opened by sam
@@ -5029,7 +5050,7 @@ machine Switch {
 
 fn main() {
     var switch: Switch = .Off;
-    let _ = switch.step(.Toggle);
+    let _ = switch.step(.Toggle).expect("machine step failed");
     println(switch.state_name()); // On
 }
 ```
@@ -5055,9 +5076,9 @@ machine Elevator {
 
 fn main() {
     var lift: Elevator = .Stopped { floor: 1 };
-    let _ = lift.step(.GoTo { floor: 4 });
+    let _ = lift.step(.GoTo { floor: 4 }).expect("machine step failed");
     println(lift.state_name()); // Moving
-    let _ = lift.step(.Arrive);
+    let _ = lift.step(.Arrive).expect("machine step failed");
     match lift {
         .Stopped { floor } => println(f"stopped at {floor}"), // stopped at 4
         _ => println("moving"),
@@ -5085,8 +5106,8 @@ machine Till {
 
 fn main() {
     var till: Till = .Empty;
-    let _ = till.step(.Sale);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
+    let _ = till.step(.Sale).expect("machine step failed");
     match till {
         .Filled { count, label } => println(f"{label}={count}"), // open=2
         .Empty => println("empty"),
@@ -5122,13 +5143,13 @@ machine Meter {
 
 fn main() {
     var meter: Meter = .Watching { peak: 0 };
-    let report = meter.step(.Reading { value: 7 });
+    let report = meter.step(.Reading { value: 7 }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
-    let quiet = meter.step(.Reading { value: 3 });
+    let quiet = meter.step(.Reading { value: 3 }).expect("machine step failed");
     println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
@@ -5183,11 +5204,11 @@ machine Conn {
 
 fn main() {
     var conn: Conn = .Idle;
-    let _ = conn.step(.Start);
-    let _ = conn.step(.Bump);
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Start).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Live
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Dead
 }
 ```
@@ -5229,7 +5250,7 @@ companion types:
 | `NameOutput`          | Separate typed output variants from `emits`                          |
 | `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
 | `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |
-| `m.step(event)`       | Stages evaluation and returns `NameStep`, committing `m` on success  |
+| `m.step(event, limit: 1024)` | Returns `Result<NameStep, MachineStepError>`, committing `m` on success; `limit` defaults to 1024 |
 | `m.state_name()`      | Returns the current state tag as a string                            |
 
 `emit` appends output data in evaluation order; it never feeds an input event
@@ -5297,7 +5318,7 @@ actor ConnectionManager {
     var tcp: Tcp = .Closed;
 
     receive fn handle(event: Tcp.Event) {
-        let _report = tcp.step(event);
+        let _report = tcp.step(event).expect("machine step failed");
         match tcp {
             .Established { port } => println(f"established on {port}"),
             .Closed => println("closed"),
@@ -5807,8 +5828,9 @@ bind issuer, recipient, incarnation and rights, and define whether and how
 rights may be delegated onward or discovered through a registry. Ordinary
 `Node.lookup` returns a `Location`, which provides discovery rather than
 authorization. Authenticated service grants provide ordinary actor handles
-with narrowed rights. The current confinement slice refuses distributed
-ambient acquisition and remote calls.
+with narrowed rights. Confinement admits invocation through these supplied authenticated actor
+handles independently of their placement. Acquiring peers or discovering service
+authority through ambient registries remains unavailable inside confinement.
 
 ### 4.8 Interaction with Actor Messages
 
@@ -8077,7 +8099,7 @@ The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
 extra terminator. Supervisor child clauses such as `restart:` and
 `stop:` remain parts of one child member, which ends with `;`.
 
-Type-parameterized closures use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
+Directly bound closure literals can infer generic signatures, as in `let identity = |value| value;`. Explicit type parameters use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
 
 ### Keywords
 
@@ -8319,6 +8341,7 @@ fn main() {
     let interval = 5s;       // duration: 5_000_000_000 nanoseconds
     let period = 1m;         // duration: 60_000_000_000 nanoseconds
     let precise = 500us;     // duration: 500_000 nanoseconds
+    let fraction = 0.25s;   // duration: exactly 250_000_000 nanoseconds
 }
 ```
 
@@ -8337,6 +8360,16 @@ fn main() {
 
 `duration` is a distinct type — it does not implicitly convert to or from integers.
 
+Every literal requires a unit suffix. Decimal fractions are evaluated exactly
+at compile time, without a floating-point intermediate: `1.5ms` is `1500us`.
+The value must fit the carrier and represent a whole number of nanoseconds;
+`0.1ns` is rejected rather than rounded. Underscores may separate digits in
+either part, as in `2_000.000_001ms`.
+
+Runtime integer counts use explicit unit constructors such as
+`duration.from_millis(count)` and `timestamp.from_unix_secs(count)`.
+No bare numeric literal acquires a time unit from its expected type.
+
 Duration arithmetic operators and accessor methods are fully implemented.
 Duration literals compile to `i64` nanosecond values;
 arithmetic results are also `duration`.
@@ -8351,7 +8384,9 @@ duration + i64      → COMPILE ERROR (type mismatch — enforced)
 ```
 
 **Accessor methods** (return `i64`): `.nanos()`, `.micros()`, `.millis()`,
-`.secs()`, `.mins()`, `.hours()`. `duration` implements `Display` (`5s`
+`.secs()`, `.mins()`, `.hours()` truncate toward zero. `.millis_ceil()` rounds
+up to whole milliseconds, keeping positive sub-millisecond deadlines positive
+at millisecond-grained APIs. `duration` implements `Display` (`5s`
 prints as `5000000000ns`).
 
 **`instant`:** a monotonic timestamp in nanoseconds read with
@@ -8669,15 +8704,39 @@ it names; a positional argument binds to the parameter at its position. The
 arguments are evaluated left to right as written, after the receiver of a
 method call, and then passed in parameter order. When a later argument
 faults, the owners that earlier arguments produced are released. Every
-parameter must be supplied exactly once: a name is a label and never makes a
-parameter optional.
+parameter without a default must be supplied exactly once. A parameter with
+`= expression` may be omitted; a name alone does not make it optional.
+
+```hew
+fn connect(host: string, port: i64 = 5432) -> string {
+    f"{host}:{port}"
+}
+```
+
+Default expressions are checked in their declaration's scope, including its
+imports and generic bounds. They cannot refer to value parameters or `self`.
+At each call, written arguments evaluate first in source order, followed by
+omitted defaults in parameter order. A supplied argument prevents its default
+from running. Defaults may allocate, suspend, fail or perform effects under the
+ordinary rules for calls; their values have ordinary ownership and cleanup.
+Actor receive defaults run in the caller before mailbox submission. Actor
+`init` and supervisor header parameters may also declare defaults. Construction
+evaluates written keys in source order, then omitted state-field defaults in
+field order, then omitted `init` parameters in parameter order, before starting
+the actor. Supervisor defaults follow written header arguments in parameter
+order. Foreign `extern` declarations reject source defaults.
+
+The trait declaration owns a trait method's defaults. Implementations inherit
+them and cannot redeclare them. Concrete, bound and dynamic calls use the same
+trait defaults; inherent methods own their independent defaults. Function
+values and closures carry no default-argument contract.
 
 | Refusal | Code |
 | --- | --- |
 | A positional argument after a named one | parse error |
 | A name that matches no parameter | `E_NAMED_ARG_UNKNOWN` |
 | A parameter supplied twice, by name or by name after position | `E_NAMED_ARG_DUPLICATE` |
-| A call that names arguments and leaves parameters unsupplied | `E_NAMED_ARG_MISSING` |
+| A call that names arguments and leaves required parameters unsupplied | `E_NAMED_ARG_MISSING` |
 | A name on a callee whose parameters carry none | `E_NAMED_ARG_UNNAMED_CALLEE` |
 
 **Callees.** Free and module functions, generic functions, `extern` functions

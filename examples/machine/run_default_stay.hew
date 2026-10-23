@@ -28,12 +28,12 @@ fn main() {
     var t = Tank.Filling;
     println(t.state_name());
     // Unhandled (Filling, Fill): stays in Filling.
-    t.step(.Fill);
+    t.step(.Fill).expect("machine step failed");
     println(t.state_name());
     // Handled (Filling, Drain): transitions to Draining.
-    t.step(.Drain);
+    t.step(.Drain).expect("machine step failed");
     println(t.state_name());
     // Unhandled (Draining, Drain): stays in Draining.
-    t.step(.Drain);
+    t.step(.Drain).expect("machine step failed");
     println(t.state_name());
 }

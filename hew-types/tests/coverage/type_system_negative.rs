@@ -1618,7 +1618,7 @@ fn explicit_hole_nonitem_const_annotation_is_resolved_from_later_use() {
 }
 
 #[test]
-fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
+fn explicit_hole_nonitem_lambda_param_annotation_generalizes() {
     let output = typecheck(
         r"
         fn main() {
@@ -1627,11 +1627,8 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_rejected() {
     ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
-        "Expected InferenceFailed, got errors: {:?}",
+        output.errors.is_empty(),
+        "Expected a universal parameter, got errors: {:?}",
         output.errors
     );
 }
@@ -1656,7 +1653,7 @@ fn explicit_hole_nonitem_lambda_param_annotation_is_inferred_from_expected_type(
 }
 
 #[test]
-fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
+fn explicit_hole_nonitem_lambda_return_annotation_generalizes() {
     let output = typecheck(
         r"
         fn main() {
@@ -1665,11 +1662,8 @@ fn explicit_hole_nonitem_lambda_return_annotation_is_rejected() {
     ",
     );
     assert!(
-        output
-            .errors
-            .iter()
-            .any(|e| e.kind == TypeErrorKind::InferenceFailed),
-        "Expected InferenceFailed, got errors: {:?}",
+        output.errors.is_empty(),
+        "Expected a universal result parameter, got errors: {:?}",
         output.errors
     );
 }

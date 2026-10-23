@@ -41,13 +41,14 @@ pub use codec::execute_codec;
 
 use wasm_bindgen::prelude::*;
 
-/// Render the macro expansion at a byte offset using the shared frontend.
+/// Render an expansion at a UTF-8 byte offset, or the complete expanded document
+/// when the offset is omitted, using the shared frontend.
 ///
 /// # Errors
 ///
 /// Returns an error when loading or expansion fails, or no expansion covers the offset.
 #[wasm_bindgen]
-pub fn expand_macro(source: &str, offset: usize) -> Result<String, JsValue> {
+pub fn expand_macro(source: &str, offset: Option<usize>) -> Result<String, JsValue> {
     let mut options = hew_compile::FrontendOptions {
         documents: hew_compile::SourceSet::in_memory(),
         project_dir: Some(".".into()),
@@ -62,7 +63,7 @@ pub fn expand_macro(source: &str, offset: usize) -> Result<String, JsValue> {
     hew_analysis::expansion::render(
         &state.program,
         std::path::Path::new("playground.hew"),
-        Some(offset),
+        offset,
     )
     .ok_or_else(|| JsValue::from_str("no macro expansion at this position"))
 }

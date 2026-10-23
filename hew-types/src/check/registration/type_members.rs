@@ -595,13 +595,10 @@ impl Checker {
             let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
             fields.insert(field.name.to_string(), field_ty);
         }
-        let init_params: Vec<ActorInitParamInfo> = ad.init.as_ref().map_or_else(Vec::new, |init| {
+        let init_params: Vec<Ty> = ad.init.as_ref().map_or_else(Vec::new, |init| {
             init.params
                 .iter()
-                .map(|p| ActorInitParamInfo {
-                    name: p.name.to_string(),
-                    ty: self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars),
-                })
+                .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
                 .collect()
         });
         if has_type_params {
@@ -616,9 +613,12 @@ impl Checker {
                 changed = true;
             }
         }
-        if let Some(stored) = self.actor_init_params.get_mut(&identity) {
-            if *stored != init_params {
-                *stored = init_params;
+        if let Some(stored) = self
+            .lookup_declaration(&identity)
+            .and_then(|declaration| self.constructor_signatures.get_mut(&declaration))
+        {
+            if stored.params != init_params {
+                stored.params = init_params;
                 changed = true;
             }
         }

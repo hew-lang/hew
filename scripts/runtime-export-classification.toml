@@ -1922,6 +1922,15 @@ non-declarable = [
   "hew_host_value_storage",
   "hew_host_value_forget",
   "hew_host_value_release",
+  # Generated asynchronous calls use checked carriers and their existing root.
+  "hew_host_call_new",
+  "hew_host_call_start",
+  "hew_host_call_poll",
+  "hew_host_call_cancel",
+  "hew_host_call_result_begin",
+  "hew_host_call_arguments",
+  "hew_host_call_status",
+  "hew_host_call_release",
 ]
 
 [ownership]

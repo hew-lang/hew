@@ -445,6 +445,7 @@ mod tests {
             target: None,
             emit_obj: false,
             export_c: Vec::new(),
+            export_c_async: Vec::new(),
             emit_llvm: false,
             release: false,
             trim_paths: false,

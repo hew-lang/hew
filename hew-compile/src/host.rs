@@ -1,4 +1,4 @@
-//! Explicit source selection for the experimental synchronous C host boundary.
+//! Explicit source selection for the experimental C host boundary.
 
 use crate::{Session, SessionError, SessionOutput};
 use hew_parser::ast::Ident;

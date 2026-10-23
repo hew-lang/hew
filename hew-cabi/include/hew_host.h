@@ -1,4 +1,4 @@
-/* Experimental synchronous Hew host API: same-build static linkage only.
+/* Experimental Hew host API: same-build linkage only.
  * This deliberate public surface is separate from the runtime export census.
  */
 #ifndef HEW_HOST_H
@@ -16,6 +16,19 @@ typedef struct HewJson HewJson;
 typedef struct HewError HewError;
 typedef struct HewRuntime HewRuntime;
 
+/* Retained readiness only: all callbacks are thread-safe and never unwind.
+ * wake schedules a future host-thread poll; it must not resume/release inline.
+ * retain/release own one context reference, including late wake races. */
+typedef struct HewWaker {
+  void *context;
+  void (*wake)(void *);
+  void (*retain)(void *);
+  void (*release)(void *);
+} HewWaker;
+
+#define HEW_CALL_PENDING INT32_C(0)
+#define HEW_CALL_READY INT32_C(1)
+
 /* One process-default runtime, shared by all handles from new/retain.
  * Hosted work and opaque values must finish before explicit shutdown or the
  * final release. No independent-runtime isolation is promised. */
@@ -32,9 +45,10 @@ void hew_runtime_release(HewRuntime *runtime);
 #define HEW_WRONG_KIND INT32_C(4)
 #define HEW_ENCODE_ERROR INT32_C(5)
 #define HEW_LOGICAL_FAULT INT32_C(6)
+#define HEW_INVALID_STATE INT32_C(7)
 
 /* Ownership and validity:
- * - One host thread; exported calls complete before returning, including any
+ * - One host thread; synchronous exports complete before returning, including
  *   cooperative suspension. Actor/I/O components require an owned runtime.
  *   Release all owners before shutdown or unloading descriptor code. No
  *   cross-version ABI promise.
@@ -56,6 +70,19 @@ void hew_runtime_release(HewRuntime *runtime);
  *   set_text copies its borrowed text. SDK calls consume input owners only on
  *   release; generated consuming arguments and typed release functions also
  *   transfer ownership. Generated scalar outputs are written only on success.
+ * - Asynchronous exports retain their process runtime and wake target. Keep
+ *   borrowed owners and mutable input slots live and exclusively accessible as
+ *   declared until poll reports HEW_CALL_READY. Only wake callbacks may run on
+ *   other threads; start/poll/cancel/result/release stay on the owning host
+ *   thread and must not overlap or re-enter each other.
+ * - poll is nonblocking and resumes work only after readiness. cancel requests
+ *   cancellation; continue polling until mandatory cleanup completes. A
+ * terminal result wins a late cancel. result transfers the terminal value/error
+ * once.
+ * - Early or repeated result and early release return HEW_INVALID_STATE with
+ *   an owned error. Refusal preserves the call owner and result storage. Take
+ *   the terminal result before release, including after cancellation.
+ * Successful release clears the call slot; releasing a null call slot succeeds.
  * - Release accepts null; otherwise discharge each returned owner exactly once,
  *   after all borrowed views end. Invalid handles/aliasing violate
  * preconditions.

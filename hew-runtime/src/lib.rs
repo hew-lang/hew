@@ -614,6 +614,8 @@ pub mod deque;
 pub mod fault;
 pub mod host_api;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod host_call;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod host_value;
 pub mod mailbox;
 /// Mailbox envelope payload classification and cross-node send guards.

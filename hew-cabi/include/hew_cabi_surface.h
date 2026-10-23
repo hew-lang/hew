@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1656u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1664u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1656] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -3472,6 +3472,44 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1656] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_home_dir", "{\"native\": \"fn hew_home_dir() -> *mut HewString\"}",
      "native", "stable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_arguments",
+     "{\"native\": \"fn hew_host_call_arguments( *const HewHostCall) -> *mut "
+     "c_void\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_cancel",
+     "{\"native\": \"fn hew_host_call_cancel( *mut HewHostCall)\"}", "native",
+     "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_new",
+     "{\"native\": \"fn hew_host_call_new( *mut HewRuntime, *const HewWaker, "
+     "*mut *mut HewError, ) -> *mut HewHostCall\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_poll",
+     "{\"native\": \"fn hew_host_call_poll( *mut HewHostCall) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_release",
+     "{\"native\": \"fn hew_host_call_release( *mut *mut HewHostCall, *mut "
+     "*mut HewError, ) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_result_begin",
+     "{\"native\": \"fn hew_host_call_result_begin( *mut HewHostCall, *mut "
+     "*mut HewError, ) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_start",
+     "{\"native\": \"fn hew_host_call_start( *mut HewHostCall, HewRootStart, "
+     "*mut c_void, *mut c_void, *mut *mut HewFault, HewHostCallFinish, "
+     "HewHostCallFree, )\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_host_call_status",
+     "{\"native\": \"fn hew_host_call_status( *const HewHostCall) -> i32\"}",
+     "native", "non-declarable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_host_error_code",
      "{\"native\": \"fn hew_host_error_code( *const HewError) -> i32\", "

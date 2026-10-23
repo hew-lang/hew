@@ -7711,12 +7711,12 @@ ordinary confinement, effects, ownership and cleanup checks still apply.
 Fixed-width scalars cross directly; `bool` is a `uint8_t` zero or one, and unit
 needs no C slot. Other concrete values use typed opaque owners. An opaque
 consuming parameter takes an owner-slot pointer and clears it at handoff, even
-when the checked call subsequently faults. Borrowed parameters pin their owners
+when the checked call subsequently faults. The host keeps borrowed owners alive
 until the call completes; mutable borrows require exclusive host access. Text
 inputs preserve the public text API's borrowed-copy contract. Results and errors
 are independent owners. Scalar result slots are written only on success.
 
-Calls and generated typed release functions complete before returning, including
+Synchronous calls and generated typed release functions complete before returning, including
 suspension and mandatory cleanup. Cleanup uses the compiler's existing value
 descriptors and combines cleanup faults with the primary fault. Actor and I/O
 components require the process-default runtime. All owners must be released
@@ -7724,6 +7724,26 @@ before runtime shutdown or unloading their descriptor code. This experimental
 boundary requires one host thread and matching compiler/runtime builds; it adds
 no cross-version or independent-runtime isolation guarantee. The C preconditions
 and an executable supplied-directory component are documented in `tests/host`.
+
+An explicit `--export-c-async SOURCE=SYMBOL` selection generates a typed opaque
+call owner and `SYMBOL_start`, `_poll`, `_cancel`, `_result` and `_release`
+operations. Start requires the existing process runtime and a retained wake
+descriptor. Start and poll run the checked callable cooperatively on the host
+thread; poll returns pending without waiting for readiness. Wake callbacks may
+arrive from runtime threads and schedule a future host poll. Operations on a
+call must remain on its owning host thread and must not overlap or re-enter.
+
+Consuming inputs hand off at successful start admission. Borrowed inputs and
+mutable slots must remain valid until poll reports ready, after all mandatory
+cleanup. Cancel requests cancellation; the host continues polling to completion.
+A terminal result wins late cancellation. Result transfers the value or fault
+once, including combined body and cleanup faults. Early or repeated result and
+release before result transfer return `HEW_INVALID_STATE`, preserving the call
+owner and result storage. Successful release clears the call slot; releasing a
+null slot succeeds. The call keeps its runtime and wake target alive through
+completion, and late operation callbacks keep only the wake target alive.
+Explicit runtime shutdown and code unloading still require all calls and values
+to have finished. Async selection preserves the synchronous C signatures.
 
 ### 8.4 Runtime contract
 

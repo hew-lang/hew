@@ -1,4 +1,4 @@
-//! Shared error owners for the experimental, synchronous public host API.
+//! Shared error owners for the experimental public host API.
 //! The public header exposes neither this representation nor private trap codes.
 
 use crate::string::HewString;
@@ -24,6 +24,8 @@ pub enum HostStatus {
     EncodeError = 5,
     /// A compiled Hew call failed logically, without a foreign unwind.
     LogicalFault = 6,
+    /// An asynchronous call is pending, already taken, or not releasable yet.
+    InvalidState = 7,
 }
 
 /// An opaque, independent error owner. Release with the host API, never `free`.

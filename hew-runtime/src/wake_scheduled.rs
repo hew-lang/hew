@@ -14,9 +14,14 @@ pub(crate) trait ReadyWork: Send + Sync {
 }
 
 /// A wake during a poll is retained until that poll has relinquished its state.
+#[derive(Debug)]
 pub(crate) struct ReadyState(AtomicU8);
 
 impl ReadyState {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn idle() -> Self {
+        Self(AtomicU8::new(IDLE))
+    }
     pub(crate) fn queued() -> Self {
         Self(AtomicU8::new(QUEUED))
     }
@@ -42,7 +47,14 @@ impl ReadyState {
     }
 
     pub(crate) fn begin(&self) {
-        assert_eq!(self.0.swap(RUNNING, Ordering::AcqRel), QUEUED);
+        assert!(self.try_begin());
+    }
+
+    /// Claim a queued notification without polling idle or running work.
+    pub(crate) fn try_begin(&self) -> bool {
+        self.0
+            .compare_exchange(QUEUED, RUNNING, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     /// Return whether a notification received during this poll needs a queue entry.

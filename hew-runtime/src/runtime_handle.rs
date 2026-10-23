@@ -216,6 +216,21 @@ fn default_handle_ptr() -> *mut HewRuntime {
     std::ptr::addr_of!(DEFAULT_HANDLE).cast_mut()
 }
 
+/// Retain the existing process owner for a generated asynchronous invocation.
+/// Invalid or explicitly shut-down handles cannot acquire new hosted work.
+pub(crate) fn retain_active_host_runtime(handle: *mut HewRuntime) -> bool {
+    let _guard = lifecycle_lock();
+    if handle != default_handle_ptr()
+        || DEFAULT_HANDLE.strong.load(Ordering::Acquire) == 0
+        || DEFAULT_HANDLE.shut.load(Ordering::Acquire)
+    {
+        return false;
+    }
+    // SAFETY: the lifecycle guard proved the caller's process owner is live.
+    unsafe { hew_runtime_retain(handle) };
+    true
+}
+
 /// Run the runtime teardown exactly once for this handle.
 ///
 /// Idempotent: the first caller to flip `shut` false→true runs the

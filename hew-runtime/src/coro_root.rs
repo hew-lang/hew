@@ -53,6 +53,7 @@ pub type HewRootStart = unsafe extern "C" fn(
 
 /// Stable execution storage for a root or host invocation. Each entry restores
 /// the surrounding thread context before returning to its driver.
+#[derive(Debug)]
 pub(crate) struct RootExecution {
     context: HewExecutionContext,
     state: *mut HewCoroState,
@@ -112,6 +113,27 @@ impl RootExecution {
         drop(restore);
         self.context.prev_context = std::ptr::null_mut();
         result
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn pending(&self) -> bool {
+        // SAFETY: this execution owns its live invocation record.
+        (unsafe { hew_coro_state_status(self.state) }) == CoroStatus::Pending as i32
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn cancel(&self) {
+        if self.pending() {
+            // SAFETY: this execution owns the ancestor token and its child state.
+            // Cancelling the ancestor also covers work launched from its carrier.
+            unsafe {
+                crate::cancel_token::hew_cancel_token_cancel(
+                    self.token,
+                    crate::fault::HEW_FAULT_CANCELLED,
+                );
+                crate::coro_state::hew_coro_state_cancel(self.state);
+            }
+        }
     }
 }
 

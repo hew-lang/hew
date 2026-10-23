@@ -55,8 +55,8 @@ trait ServerMethods {
     /// Block until a client connects and return the next `Request`.
     fn accept(self) -> Request;
 
-    /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(self, timeout_ms: i64) -> i64;
+    /// Set the per-request body read deadline. Returns 0 on success, -1 for non-positive timeouts.
+    fn set_request_timeout(self, timeout: duration) -> i64;
 }
 
 impl ServerMethods for Server {
@@ -66,10 +66,13 @@ impl ServerMethods for Server {
             hew_http_server_recv(self)
         }
     }
-    /// Set the per-request body read deadline in milliseconds.
-    fn set_request_timeout_ms(self, timeout_ms: i64) -> i64 {
+    /// Set the per-request body read deadline. Returns 0 on success, -1 for non-positive timeouts.
+    fn set_request_timeout(self, timeout: duration) -> i64 {
+        if timeout <= 0ns {
+            return -1;
+        }
         unsafe {
-            hew_http_server_set_request_timeout_ms(self, timeout_ms as i64) as i64
+            hew_http_server_set_request_timeout_ms(self, timeout.millis_ceil()) as i64
         } // INTERNAL-ABI: C ABI timeout is i64
     }
 }

@@ -30,26 +30,33 @@ fn expect_invalid(label: string, result: Result<i64, net.NetError>) -> string {
 
 #[test]
 fn test_duration_above_abi_range_is_rejected_not_narrowed() {
-    let message = expect_invalid("try_duration_ms", net.duration_ms("net.probe", wrapped_to_500()));
+    let message = expect_invalid("try_duration_ms", net.duration_ms("net.probe", duration.from_millis(wrapped_to_500())));
     assert(message == "InvalidArgument(net.probe: invalid duration 4294967796 ms (must be <= 2147483647))");
-    let negative = expect_invalid("try_duration_ms", net.duration_ms("net.probe", -1));
-    assert(negative == "InvalidArgument(net.probe: invalid duration -1 ms (must be >= 0))");
+    let negative = expect_invalid("try_duration_ms", net.duration_ms("net.probe", -1ns));
+    assert(negative == "InvalidArgument(net.probe: invalid negative duration (must be >= 0ns))");
 }
 
 #[test]
 fn test_duration_within_abi_range_is_preserved() {
-    match net.duration_ms("net.probe", 500) {
+    match net.duration_ms("net.probe", 500ms) {
         .Ok(ms) => assert(ms == 500),
         .Err(_) => panic("expected 500 ms to be accepted"),
     }
-    match net.duration_ms("net.probe", 0) {
+    match net.duration_ms("net.probe", 0ns) {
         .Ok(ms) => assert(ms == 0),
         .Err(_) => panic("expected 0 ms to be accepted"),
     }
-    match net.duration_ms("net.probe", net.abi_i32_max()) {
+    match net.duration_ms("net.probe", duration.from_millis(net.abi_i32_max())) {
         .Ok(ms) => assert(ms == net.abi_i32_max()),
         .Err(_) => panic("expected the ABI ceiling to be accepted"),
     }
+}
+
+#[test]
+fn test_positive_submillisecond_duration_rounds_up() {
+    assert(net.duration_ms("net.probe", 1ns) == .Ok(1));
+    assert(net.duration_ms("net.probe", 1000001ns) == .Ok(2));
+    assert(net.duration_ms("net.probe", duration.from_millis(net.abi_i32_max()) + 1ns).is_err());
 }
 
 #[test]
@@ -128,24 +135,19 @@ fn test_valid_endpoints_are_preserved_exactly() {
 #[test]
 #[real_time]
 fn test_connect_timeout_deadline_overflow_is_rejected() {
-    match net.connect_timeout("127.0.0.1:9", 4294967, 0) {
-        .Ok(_) => panic("expected an out-of-range deadline to be rejected"),
-        .Err(err) => assert(to_string(err) == "InvalidArgument(net.connect_timeout: invalid timeout_sec 4294967 (deadline exceeds 2147483647 ms))"),
-    }
-    match net.connect_timeout("127.0.0.1:9", 2147483, 648000) {
-        .Ok(_) => panic("expected an accumulated deadline overflow to be rejected"),
-        .Err(err) => assert(to_string(err) == "InvalidArgument(net.connect_timeout: invalid deadline (timeout_sec 2147483 + timeout_usec 648000 exceeds 2147483647 ms))"),
-    }
-    match net.connect_timeout("127.0.0.1:9", -1, 0) {
-        .Ok(_) => panic("expected a negative timeout_sec to be rejected"),
-        .Err(err) => assert(to_string(err) == "InvalidArgument(net.connect_timeout: invalid timeout_sec -1 (must be >= 0))"),
+    for timeout in [duration.from_millis(4294967000), duration.from_millis(2147483647) + 1ns, -1ns] {
+        match net.connect_timeout("127.0.0.1:9", timeout) {
+            .Ok(_) => panic("expected an invalid deadline to be rejected"),
+            .Err(net.NetError.InvalidArgument(_)) => {}
+            .Err(err) => panic(f"invalid deadline reached the network: {err}"),
+        }
     }
 }
 
 #[test]
 #[real_time]
 fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
-    match net.connect_timeout("::1:9000", 1, 0) {
+    match net.connect_timeout("::1:9000", 1s) {
         .Ok(_) => panic("expected an unbracketed IPv6 address to be rejected"),
         .Err(err) => assert(to_string(err) == "InvalidArgument(net.connect_timeout: invalid endpoint '::1:9000' (unbracketed IPv6 literal; write [address]:port))"),
     }
@@ -153,13 +155,13 @@ fn test_connect_timeout_rejects_a_malformed_address_before_connecting() {
 
 #[test]
 fn test_http_client_timeout_above_abi_range_is_rejected() {
-    match http_client.set_timeout(wrapped_to_500()) {
+    match http_client.set_timeout(duration.from_millis(wrapped_to_500())) {
         .Ok(_) => panic("expected a wrapped HTTP timeout to be rejected"),
         .Err(err) => assert(to_string(err) == "InvalidArgument(http_client.set_timeout: invalid duration 4294967796 ms (must be <= 2147483647))"),
     }
-    match http_client.set_timeout(1000) {
+    match http_client.set_timeout(1000ms) {
         .Ok(_) => {}
         .Err(_) => panic("expected a 1000 ms HTTP timeout to be accepted"),
     }
-    assert(http_client.set_timeout(0).is_ok());
+    assert(http_client.set_timeout(0ms).is_ok());
 }

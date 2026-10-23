@@ -29,7 +29,7 @@ actor Client {
     var body: string;
 
     receive fn fetch(unused: i64) {
-        assert(http_client.set_timeout(3000).is_ok());
+        assert(http_client.set_timeout(3000ms).is_ok());
         let resp = http_client.get(url);
         status = resp.status();
         body = resp.body();

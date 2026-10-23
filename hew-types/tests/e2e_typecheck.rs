@@ -2311,7 +2311,7 @@ fn wasm_tcp_networking_surface_rejected_before_codegen() {
 
         fn tune(listener: net.Listener, conn: net.Connection) -> i64 {
             let _accepted = listener.accept();
-            conn.set_read_timeout(10);
+            conn.set_read_timeout(10ms);
             conn.close()
         }
 
@@ -2618,7 +2618,7 @@ fn http_client_module_helpers_typecheck_natively() {
 
         fn main() {
             let headers: Vec<(string, string)> = Vec.new();
-            let _ = http_client.set_timeout(250);
+            let _ = http_client.set_timeout(250ms);
             let _body = http_client.request_string("GET", "https://example.com", "", headers);
         }
         "#,
@@ -2641,7 +2641,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
             import {import};
             fn main() {{
                 let headers: Vec<(string, string)> = Vec.new();
-                let _ = {module}.set_timeout(250);
+                let _ = {module}.set_timeout(250ms);
                 let _body = {module}.request_string("GET", "https://example.com", "", headers);
                 let _request = {module}.request;
             }}
@@ -2655,7 +2655,7 @@ fn http_client_module_helpers_rejected_on_wasm() {
         import std.net.http.http_client.{request_string, set_timeout};
         fn main() {
             let headers: Vec<(string, string)> = Vec.new();
-            let _ = set_timeout(250);
+            let _ = set_timeout(250ms);
             let _body = request_string("GET", "https://example.com", "", headers);
             let _request = request_string;
         }

@@ -139,7 +139,7 @@ fn main() {
     match net.listen("127.0.0.1:0") {
         .Ok(listener) => {
             let address = f"127.0.0.1:{listener.local_port()}";
-            match net.connect_timeout(address, 1, 0) {
+            match net.connect_timeout(address, 1s) {
                 .Ok(connection) => { connection.close(); println("timed connect"); }
                 .Err(_) => panic("timed connect failed"),
             }
@@ -175,4 +175,61 @@ fn main() {
 "#,
         "5\nabsent\n0\nélan\ntrue\ntrue\ntrue\nfalse\n雪ÉLAN:Ω\n-9223372036854775808\noverflow\nnondigit\n",
     );
+}
+
+#[test]
+fn network_timeouts_require_explicit_duration_units() {
+    for call in [
+        "net.connect_timeout(\"127.0.0.1:9\", TIME)",
+        "conn.set_read_timeout(TIME)",
+        "conn.set_write_timeout(TIME)",
+        "dns.resolve_timed(\"localhost\", TIME)",
+        "dns.lookup_host_timed(\"localhost\", TIME)",
+        "http_client.set_timeout(TIME)",
+        "server.set_request_timeout(TIME)",
+        "stream.recv_timeout(TIME)",
+        "stream.send_timeout(b\"data\", TIME)",
+        "quic.stream_recv_timeout(stream, TIME)",
+        "quic.stream_send_timeout(stream, b\"data\", TIME)",
+    ] {
+        let source = format!(
+            r#"
+            import std.net;
+            import std.net.dns;
+            import std.net.http;
+            import std.net.http.http_client;
+            import std.net.quic;
+            fn probe(conn: net.Connection, server: http.Server, stream: quic.QUICStream) {{
+                let _ = {call};
+            }}
+        "#
+        );
+        let dir = tempdir();
+        let input = dir.path().join("timeouts.hew");
+        for (timeout, valid) in [("250ms", true), ("250", false)] {
+            std::fs::write(&input, source.replace("TIME", timeout)).unwrap();
+            let mut command = Command::new(hew_binary());
+            command.arg("check").arg(&input);
+            let output = run_bounded_command(command, "check network timeout units");
+            assert_eq!(
+                output.status.success(),
+                valid,
+                "{call}: {}",
+                describe_output(&output)
+            );
+            if !valid {
+                assert_eq!(
+                    output.status.code(),
+                    Some(1),
+                    "{}",
+                    describe_output(&output)
+                );
+                assert!(
+                    String::from_utf8_lossy(&output.stderr).contains("duration"),
+                    "{}",
+                    describe_output(&output)
+                );
+            }
+        }
+    }
 }

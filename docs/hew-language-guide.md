@@ -5169,7 +5169,15 @@ call, and a deadline over it comes from one of three places:
 | ------------------------------------ | ----------------------------------------- |
 | `scope within d { .. } handle failure { .. }` | every child started in the block   |
 | `after d => ..` inside `select { }`  | the wait for the first of several sources |
-| `conn.set_read_timeout(ms)` / `set_write_timeout(ms)` | that socket's own operations |
+| `conn.set_read_timeout(timeout)` / `set_write_timeout(timeout)` | that socket's own operations |
+
+Socket and network timeouts take `duration` values such as `250ms` or `2s`.
+Use `net.connect_timeout(address, 2s)` for connection establishment,
+`http_client.set_timeout(2s)` for outbound HTTP, and
+`server.set_request_timeout(2s)` for incoming HTTP request bodies. TCP timeout
+setters accept a negative duration to clear the timeout. DNS and QUIC per-call
+timeouts disable their deadline for non-positive durations. Positive fractional
+milliseconds round upward at native APIs that use millisecond deadlines.
 
 If explicit runtime shutdown begins while a read or accept is already parked,
 it resumes as `Err(NetError.Cancelled(0))`. A socket timeout reports

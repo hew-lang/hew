@@ -228,20 +228,20 @@ fn test_connection_timeouts_accept_every_negative_clear_sentinel_without_narrowi
         .Err(error) => panic("network operation failed"),
     };
     let server = listener.accept().expect("accept");
-    match client.set_read_timeout(-9223372036854775807) {
+    match client.set_read_timeout(duration.from_nanos(-9223372036854775807 - 1)) {
         .Ok(()) => {}
         .Err(_) => panic(f"negative read-timeout clear failed"),
     }
-    match client.set_write_timeout(-4294967296) {
+    match client.set_write_timeout(duration.from_millis(-4294967296)) {
         .Ok(()) => {}
         .Err(_) => panic(f"negative write-timeout clear failed"),
     }
-    match client.set_read_timeout(2147483648) {
+    match client.set_read_timeout(duration.from_millis(2147483648)) {
         .Ok(()) => panic("unrepresentable read timeout reached the i32 runtime ABI"),
         .Err(NetError.InvalidArgument(_)) => {}
         .Err(err) => panic(f"unexpected read-timeout error: {err}"),
     }
-    match client.set_write_timeout(4294967796) {
+    match client.set_write_timeout(duration.from_millis(4294967796)) {
         .Ok(()) => panic("wrapped write timeout reached the i32 runtime ABI"),
         .Err(NetError.InvalidArgument(_)) => {}
         .Err(err) => panic(f"unexpected write-timeout error: {err}"),

@@ -16,10 +16,22 @@ fn main() {
     let stream = connection.open_stream();
     let absent = "this QUIC stream was never opened";
     require_absent(stream.send_string("unreachable"), absent);
-    require_absent(stream.send_timeout(b"unreachable", 10), absent);
-    match stream.recv_timeout(10) {
+    require_absent(stream.send_timeout(b"unreachable", 10ms), absent);
+    match stream.recv_timeout(10ms) {
         .Err(.InvalidArgument(reason)) => assert(reason == absent),
         _ => panic("an absent QUIC stream must not read as EOF or timeout"),
+    }
+    // Non-positive typed deadlines disable the timer before ABI narrowing.
+    for timeout in [0ns, -1ns, duration.from_nanos(-9223372036854775807 - 1)] {
+        require_absent(stream.send_timeout(b"unreachable", timeout), absent);
+        match stream.recv_timeout(timeout) {
+            .Err(.InvalidArgument(reason)) => assert(reason == absent),
+            _ => panic("disabled deadline must preserve absent-handle reporting"),
+        }
+    }
+    match stream.recv_timeout(duration.from_millis(2147483647) + 1ns) {
+        .Err(.InvalidArgument(reason)) => assert(reason.contains("invalid duration")),
+        _ => panic("rounded deadline must fit the native millisecond range"),
     }
     require_absent(stream.finish(), absent);
     require_absent(stream.stop(0), absent);

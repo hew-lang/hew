@@ -8,9 +8,9 @@ actor Client {
     var complete: i64;
 
     receive fn fetch(unused: i64) {
-        let _ = http_client.set_timeout(5000);
+        let _ = http_client.set_timeout(5000ms);
         let response = http_client.get(url);
-        for _ in 0 .. frames {
+        for _ in 0..frames {
             let checksum = response.body().len() + response.content_type().len() + response.header("Content-Type").len();
             println(checksum);
         }

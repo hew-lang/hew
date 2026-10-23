@@ -50,7 +50,7 @@ fn retained_prefix_deadline() {
     let listener = net.listen("127.0.0.1:0").expect("prefix listen");
     let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("prefix connect");
     let peer = listener.accept().expect("prefix accept");
-    connection.set_write_timeout(30).expect("prefix write timeout");
+    connection.set_write_timeout(30ms).expect("prefix write timeout");
     let (input, output) = connection.split();
     let block = "a".repeat(8 * 1024 * 1024).to_bytes();
     var full = false;
@@ -82,7 +82,7 @@ fn main() {
     let listener = net.listen("127.0.0.1:0").expect("listen");
     let connection = net.connect(f"127.0.0.1:{listener.local_port()}").expect("connect");
     let peer = listener.accept().expect("accept");
-    connection.set_write_timeout(30).expect("write timeout");
+    connection.set_write_timeout(30ms).expect("write timeout");
     let (input, output) = connection.split();
     let writer = spawn Writer { output: output };
     let healthy = spawn Healthy;

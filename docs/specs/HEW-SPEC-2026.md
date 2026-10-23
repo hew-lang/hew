@@ -4776,7 +4776,7 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
 | `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
-| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(ms)`, `.set_write_timeout(ms)`, `.close()` |
+| `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(timeout)`, `.set_write_timeout(timeout)`, `.close()` |
 | `process.Child`  | `process.start(command) -> Result<Child, ProcessError>` | `.id()`, `.stdin()` → `Result<Sink<bytes>, ProcessError>`, `.stdout()`/`.stderr()` → `Result<Stream<bytes>, ProcessError>`, `.wait()` → `Result<ExitStatus, ProcessError>`, `.try_wait()` → `Result<Option<ExitStatus>, ProcessError>`, `.terminate()`, `.kill()` → `Result<(), ProcessError>`, `.close()` (§6.4.7) |
 
 Handle types are opaque — their internal representation is not accessible.

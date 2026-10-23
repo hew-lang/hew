@@ -155,13 +155,14 @@ pub fn abi_i32_max() -> i64 {
     2147483647
 }
 
-/// Validate a millisecond duration that the C ABI carries as an `i32`.
+/// Round a non-negative duration up to milliseconds and validate the `i32` C ABI range.
 ///
 /// `context` names the calling API so the rejection identifies its origin.
-pub fn duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
-    if ms < 0 {
-        return .Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be >= 0)"));
+pub fn duration_ms(context: string, timeout: duration) -> Result<i64, NetError> {
+    if timeout < 0ns {
+        return .Err(NetError.InvalidArgument(f"{context}: invalid negative duration (must be >= 0ns)"));
     }
+    let ms = timeout.millis_ceil();
     if ms > abi_i32_max() {
         return .Err(NetError.InvalidArgument(f"{context}: invalid duration {ms} ms (must be <= {abi_i32_max()})"));
     }
@@ -170,14 +171,14 @@ pub fn duration_ms(context: string, ms: i64) -> Result<i64, NetError> {
 
 /// Validate a TCP connection timeout, preserving its negative "clear" sentinel.
 ///
-/// The public API deliberately accepts any negative `i64` to clear an existing
+/// The public API deliberately accepts any negative duration to clear an existing
 /// timeout. Normalize that whole domain to `-1` before narrowing to the runtime
 /// ABI, so values such as `i64::MIN` cannot wrap to a non-negative timeout.
-fn try_connection_timeout_ms(context: string, ms: i64) -> Result<i64, NetError> {
-    if ms < 0 {
+fn try_connection_timeout_ms(context: string, timeout: duration) -> Result<i64, NetError> {
+    if timeout < 0ns {
         return .Ok(-1);
     }
-    duration_ms(context, ms)
+    duration_ms(context, timeout)
 }
 
 /// Validate a byte count that the C ABI carries as an `i32`.
@@ -468,15 +469,15 @@ trait ConnectionMethods {
     /// Half-close: send FIN to the peer while this side keeps reading.
     fn finish(self);
 
-    /// Set the read timeout in milliseconds.
+    /// Set the read timeout.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_read_timeout(self, ms: i64) -> Result<(), NetError>;
+    fn set_read_timeout(self, timeout: duration) -> Result<(), NetError>;
 
-    /// Set the write timeout in milliseconds.
+    /// Set the write timeout.
     ///
     /// Pass a negative value to clear the timeout.
-    fn set_write_timeout(self, ms: i64) -> Result<(), NetError>;
+    fn set_write_timeout(self, timeout: duration) -> Result<(), NetError>;
 }
 
 impl ConnectionMethods for Connection {
@@ -546,16 +547,16 @@ impl ConnectionMethods for Connection {
             panic(f"net.Connection.finish: {to_string(net_error_from_errno(errno))}: {detail}");
         }
     }
-    /// Set the read timeout in milliseconds.
-    fn set_read_timeout(self, ms: i64) fails NetError {
-        let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", ms)?;
+    /// Set the read timeout.
+    fn set_read_timeout(self, timeout: duration) fails NetError {
+        let checked = try_connection_timeout_ms("net.Connection.set_read_timeout", timeout)?;
         net_result_from_status(unsafe {
             hew_tcp_set_read_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
         })?
     }
-    /// Set the write timeout in milliseconds.
-    fn set_write_timeout(self, ms: i64) fails NetError {
-        let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", ms)?;
+    /// Set the write timeout.
+    fn set_write_timeout(self, timeout: duration) fails NetError {
+        let checked = try_connection_timeout_ms("net.Connection.set_write_timeout", timeout)?;
         net_result_from_status(unsafe {
             hew_tcp_set_write_timeout(self, checked as i32) // INTERNAL-ABI: range-checked above
         })?
@@ -654,11 +655,11 @@ pub fn connect(addr: string) -> Result<Connection, NetError> {
 /// The address is parsed by the shared endpoint authority, so an unbracketed
 /// IPv6 literal, a non-numeric port, and a missing port are all rejected
 /// before the native connect rather than becoming host `127.0.0.1` port `0`.
-/// The deadline is accumulated with overflow checks and validated against the
+/// The deadline rounds up to milliseconds and is validated against the
 /// `i32` the C ABI carries.
-pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Connection fails NetError {
+pub fn connect_timeout(addr: string, timeout: duration) -> Connection fails NetError {
     let Endpoint { host, port } = parse_endpoint("net.connect_timeout", addr)?;
-    let timeout_ms = try_connect_timeout_ms(timeout_sec, timeout_usec)?;
+    let timeout_ms = duration_ms("net.connect_timeout", timeout)?;
     unsafe {
         let conn = hew_tcp_connect_timeout(host, port as i32, timeout_ms as i32); // INTERNAL-ABI: both values are range-checked above
         if hew_connection_is_valid(conn) {
@@ -669,30 +670,6 @@ pub fn connect_timeout(addr: string, timeout_sec: i64, timeout_usec: i64) -> Con
             return error net_error_from_errno(errno as i64);
         }
     }
-}
-
-/// Accumulate `timeout_sec` + `timeout_usec` into milliseconds with the
-/// overflow checks the plain `sec * 1000 + usec / 1000` form did not have.
-fn try_connect_timeout_ms(timeout_sec: i64, timeout_usec: i64) -> Result<i64, NetError> {
-    let millis_per_second: i64 = 1000;
-    let micros_per_millisecond: i64 = 1000;
-    if timeout_sec < 0 {
-        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (must be >= 0)"));
-    }
-    if timeout_usec < 0 {
-        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_usec {timeout_usec} (must be >= 0)"));
-    }
-    // Bound each term against the ABI ceiling before multiplying or adding, so
-    // the accumulation itself can never wrap.
-    if timeout_sec > abi_i32_max() / millis_per_second {
-        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid timeout_sec {timeout_sec} (deadline exceeds {abi_i32_max()} ms)"));
-    }
-    let seconds_ms = timeout_sec * millis_per_second;
-    let micros_ms = timeout_usec / micros_per_millisecond;
-    if micros_ms > abi_i32_max() - seconds_ms {
-        return .Err(NetError.InvalidArgument(f"net.connect_timeout: invalid deadline (timeout_sec {timeout_sec} + timeout_usec {timeout_usec} exceeds {abi_i32_max()} ms)"));
-    }
-    duration_ms("net.connect_timeout", seconds_ms + micros_ms)
 }
 
 /// Broadcast a message to all connections except the sender.

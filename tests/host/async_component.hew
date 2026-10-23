@@ -1,0 +1,45 @@
+import std.fs;
+
+#[resource]
+pub type Marker {
+    file: fs.WriteFile;
+    fail_close: bool;
+}
+
+impl Marker {
+    fn close(consume self) {
+        let Marker { file, fail_close } = self;
+        file.write("closed once".to_bytes()).expect("write cleanup marker");
+        file.close();
+        if fail_close {
+            panic("host cleanup failed");
+        }
+    }
+}
+
+pub fn open_marker(path: string, fail_close: bool) -> Marker {
+    Marker { file: fs.open_write(path).expect("open cleanup marker"), fail_close: fail_close }
+}
+
+pub fn wait_for_cancel(consume marker: Marker) -> string {
+    sleep(1h);
+    if marker.fail_close {
+        "unexpected failed cleanup"
+    } else {
+        "completed"
+    }
+}
+
+pub fn body_and_cleanup_fail(consume marker: Marker) -> string {
+    assert(marker.fail_close);
+    panic("host body failed");
+}
+
+pub fn add(a: i64, b: i64) -> i64 {
+    a + b
+}
+
+pub fn echo(value: string) -> string {
+    sleep(0ns);
+    value
+}

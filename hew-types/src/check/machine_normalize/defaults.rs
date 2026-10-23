@@ -1,5 +1,9 @@
 //! Declaration-site default expressions become ordinary checked function bodies.
 
+#[allow(
+    clippy::wildcard_imports,
+    reason = "normalization helpers share their parent AST construction context"
+)]
 use super::*;
 use hew_parser::ast::{Param, TraitItem, TypeParam};
 
@@ -9,6 +13,18 @@ pub(super) fn contains_defaults(program: &Program) -> bool {
         match item {
             Item::Function(function) => params(&function.params),
             Item::Impl(implementation) => implementation.methods.iter().any(|f| params(&f.params)),
+            Item::Actor(actor) => {
+                actor.init.as_ref().is_some_and(|init| params(&init.params))
+                    || actor.receive_fns.iter().any(|f| params(&f.params))
+                    || actor.methods.iter().any(|f| params(&f.params))
+            }
+            Item::Supervisor(supervisor) => {
+                params(&supervisor.params)
+                    || supervisor
+                        .methods
+                        .iter()
+                        .any(|method| params(&method.params))
+            }
             Item::Trait(declaration) => declaration
                 .items
                 .iter()
@@ -61,6 +77,10 @@ impl Builder {
                     }
                 }
                 implementation.methods.splice(0..0, associated);
+            }
+            Item::Actor(actor) => free.extend(self.actor_default_helpers(actor)),
+            Item::Supervisor(supervisor) => {
+                free.extend(self.supervisor_default_helpers(supervisor));
             }
             Item::Trait(declaration) => {
                 let mut enclosing = declaration.type_params.clone().unwrap_or_default();
@@ -115,6 +135,117 @@ impl Builder {
         free
     }
 
+    fn supervisor_default_helpers(
+        &mut self,
+        supervisor: &mut hew_parser::ast::SupervisorDecl,
+    ) -> Vec<Spanned<Item>> {
+        let mut free = Vec::new();
+        let span = supervisor
+            .params
+            .first()
+            .map_or(0..0, |param| param.name_span.clone());
+        free.extend(self.constructor_default_helpers(
+            supervisor.name,
+            &mut supervisor.params,
+            &supervisor.type_params,
+            &span,
+        ));
+        for method in &mut supervisor.methods {
+            for helper in self.default_helpers(method, &supervisor.type_params, false) {
+                let span = helper.fn_span.clone();
+                free.push((Item::Function(helper), span));
+            }
+        }
+        free
+    }
+
+    fn actor_default_helpers(
+        &mut self,
+        actor: &mut hew_parser::ast::ActorDecl,
+    ) -> Vec<Spanned<Item>> {
+        let mut free = Vec::new();
+        if let Some(init) = &mut actor.init {
+            free.extend(self.constructor_default_helpers(
+                actor.name,
+                &mut init.params,
+                &actor.type_params,
+                &init.span,
+            ));
+        }
+        for receive in &mut actor.receive_fns {
+            let mut function = FnDecl {
+                origin: DeclarationOrigin::Authored,
+                attributes: Vec::new(),
+                is_generator: false,
+                visibility: Visibility::Private,
+                name: receive.name,
+                type_params: receive.type_params.clone(),
+                params: receive.params.clone(),
+                return_type: receive.return_type.clone(),
+                where_clause: receive.where_clause.clone(),
+                body: Block {
+                    stmts: Vec::new(),
+                    trailing_expr: None,
+                },
+                doc_comment: None,
+                decl_span: receive.span.clone(),
+                fn_span: receive.span.clone(),
+                intrinsic: None,
+                consumes_self: false,
+            };
+            for helper in self.default_helpers(&mut function, &actor.type_params, false) {
+                let span = helper.fn_span.clone();
+                free.push((Item::Function(helper), span));
+            }
+            receive.params = function.params;
+        }
+        for method in &mut actor.methods {
+            for helper in self.default_helpers(method, &actor.type_params, false) {
+                let span = helper.fn_span.clone();
+                free.push((Item::Function(helper), span));
+            }
+        }
+        free
+    }
+
+    fn constructor_default_helpers(
+        &mut self,
+        name: Ident,
+        params: &mut Vec<Param>,
+        type_params: &[TypeParam],
+        span: &Span,
+    ) -> Vec<Spanned<Item>> {
+        let mut function = FnDecl {
+            origin: DeclarationOrigin::Authored,
+            attributes: Vec::new(),
+            is_generator: false,
+            visibility: Visibility::Private,
+            name,
+            type_params: None,
+            params: std::mem::take(params),
+            return_type: None,
+            where_clause: None,
+            body: Block {
+                stmts: Vec::new(),
+                trailing_expr: None,
+            },
+            doc_comment: None,
+            decl_span: span.clone(),
+            fn_span: span.clone(),
+            intrinsic: None,
+            consumes_self: false,
+        };
+        let helpers = self.default_helpers(&mut function, type_params, false);
+        *params = function.params;
+        helpers
+            .into_iter()
+            .map(|helper| {
+                let span = helper.fn_span.clone();
+                (Item::Function(helper), span)
+            })
+            .collect()
+    }
+
     fn default_type(&mut self, name: Ident) -> Spanned<TypeExpr> {
         (
             TypeExpr::Named {
@@ -148,6 +279,7 @@ impl Builder {
             };
             helper.params.clear();
             helper.attributes.clear();
+            helper.visibility = Visibility::Private;
             helper.intrinsic = None;
             helper.is_generator = false;
             helper.consumes_self = false;

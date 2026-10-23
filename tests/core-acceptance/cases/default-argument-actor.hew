@@ -1,0 +1,27 @@
+import default_argument_support.provider as remote;
+
+fn mark(n: i64) -> i64 { println(n); n }
+actor Counter {
+    receive fn read(a: i64 = mark(7), b: i64 = mark(8)) -> i64 { a * 10 + b }
+}
+actor Box<T> {
+    receive fn count(value: Vec<T> = Vec.new()) -> i64 { value.len() }
+}
+fn supplied(service: remote.Service) -> string { service.label().expect("service") }
+fn main() {
+    let counter = spawn Counter;
+    assert(counter.read(b: mark(2)) == .Ok(72));
+    assert(counter.read(3, 4) == .Ok(34));
+    let box = spawn Box<string>;
+    assert(box.count() == .Ok(0));
+    assert(box.count(["owned".to_upper()]) == .Ok(1));
+    let service = spawn remote.Service;
+    assert(supplied(service) == "DEFINITION");
+    stop(service);
+    stopped(service);
+    stop(counter);
+    stop(box);
+    stopped(counter);
+    stopped(box);
+    println("actor defaults passed");
+}

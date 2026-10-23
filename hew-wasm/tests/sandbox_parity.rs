@@ -830,6 +830,21 @@ fn timestamp_values_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn language_cohort_generic_closure_defaults_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "generic_closure_defaults",
+            source_rel: "tests/core-acceptance/cases/generic-closure-composition.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
 fn language_cohort_decimal_time_matches_native() {
     set_test_hewpath();
     ensure_native_toolchain();
@@ -2062,5 +2077,54 @@ fn recovered_and_actor_fault_messages_match_native() {
         },
     ] {
         assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_default_arguments() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "default-argument-constructors",
+            source_rel: "tests/core-acceptance/cases/default-argument-constructors.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-actor",
+            source_rel: "tests/core-acceptance/cases/default-argument-actor.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-values",
+            source_rel: "tests/core-acceptance/cases/default-argument-values.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-imports",
+            source_rel: "tests/core-acceptance/cases/default-argument-imports.hew",
+        },
+        ParityCase {
+            test_name: "default-argument-effects",
+            source_rel: "tests/core-acceptance/cases/default-argument-effects.hew",
+        },
+        ParityCase {
+            test_name: "machine-generic-step-limits",
+            source_rel: "tests/core-acceptance/cases/machine-generic-step-limits.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-default-limit",
+            source_rel: "tests/core-acceptance/cases/machine-internal-default-limit.hew",
+        },
+        ParityCase {
+            test_name: "machine-internal-reactions",
+            source_rel: "tests/core-acceptance/cases/machine-internal-reactions.hew",
+        },
+    ] {
+        let mut inputs = hew_compile::SourceSet::in_memory();
+        inputs.insert(
+            "default_argument_support/provider.hew",
+            include_str!("../../tests/core-acceptance/cases/default_argument_support/provider.hew"),
+        );
+        assert_case_with_inputs(&case, "", inputs);
     }
 }

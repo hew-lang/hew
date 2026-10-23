@@ -1,9 +1,18 @@
 //! Checked default providers share ordinary call identity, effects and generics.
 
 use super::types::GenericCallee;
+#[allow(
+    clippy::wildcard_imports,
+    reason = "checker helpers share their parent semantic context"
+)]
 use super::*;
 
 impl Checker {
+    pub(super) fn constructor_signature(&self, owner: &str) -> Option<&FnSig> {
+        self.lookup_declaration(owner)
+            .and_then(|declaration| self.constructor_signatures.get(&declaration))
+    }
+
     pub(super) fn register_default_parameters(
         &mut self,
         owner: &str,

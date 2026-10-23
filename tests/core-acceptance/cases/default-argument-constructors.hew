@@ -1,0 +1,37 @@
+import default_argument_support.provider as remote;
+fn mark(value: i64) -> i64 { println(value); value }
+fn delayed() -> i64 { sleep(1ms); mark(4) }
+actor Ordered {
+    let first: i64 = mark(2);
+    let second: i64 = mark(3);
+    var total: i64;
+    init(a: i64 = delayed(), b: i64 = mark(5)) { total = first + second + a + b; }
+    receive fn sum() -> i64 { total }
+}
+supervisor Branch(a: i64 = mark(6), b: i64 = mark(7)) {
+    child worker: Ordered { first: a, second: b };
+}
+fn main() {
+    let ordered = spawn Ordered { second: mark(1) };
+    assert(ordered.sum() == .Ok(12));
+    stop(ordered);
+    stopped(ordered);
+    let override = spawn Ordered { b: mark(10), first: 20, second: 30, a: 40 };
+    assert(override.sum() == .Ok(100));
+    stop(override);
+    stopped(override);
+    let branch = spawn Branch { b: mark(8) };
+    assert(branch.worker.sum() == .Ok(23));
+    stop(branch);
+    let empty = spawn remote.Configured<string>;
+    assert(empty.count() == .Ok(0));
+    stop(empty);
+    stopped(empty);
+    let group = spawn remote.Group<string>;
+    assert(group.worker.count() == .Ok(0));
+    stop(group);
+    let supplied = spawn remote.Group<string> { data: ["owned".to_upper()] };
+    assert(supplied.worker.count() == .Ok(1));
+    stop(supplied);
+    println("constructor defaults passed");
+}

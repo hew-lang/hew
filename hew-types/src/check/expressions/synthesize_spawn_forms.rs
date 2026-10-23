@@ -1845,10 +1845,9 @@ impl Checker {
         type_subst: Option<&HashMap<crate::ParamHead, Ty>>,
         typed_arguments: &HashMap<usize, Ty>,
     ) {
-        let definition = self.lookup_type_def(actor_name);
         let registered = self.registered_spawn_identity(actor_name);
-        let actor_fields: Option<HashMap<String, Ty>> = definition.map(|td| td.fields);
-        let init_params = self.actor_init_params.get(&registered).cloned();
+        let actor_fields = self.lookup_type_def(actor_name).map(|td| td.fields);
+        let init_params = self.constructor_signature(&registered).cloned();
         let keys = self.actor_spawn_args.get(&registered).cloned();
         let mut seen: Vec<Symbol> = Vec::with_capacity(args.len());
         for (index, (field_name, (arg, as_))) in args.iter().enumerate() {
@@ -1907,10 +1906,13 @@ impl Checker {
                 self.enforce_actor_boundary_send(arg, as_, as_, &ty_raw);
                 continue;
             }
-            let declared_init_param = init_params
-                .as_ref()
-                .and_then(|params| params.iter().find(|p| p.name == field_name.name.as_str()))
-                .map(|p| p.ty.clone());
+            let declared_init_param = init_params.as_ref().and_then(|signature| {
+                signature
+                    .param_names
+                    .iter()
+                    .position(|name| name == field_name.name.as_str())
+                    .map(|index| signature.params[index].clone())
+            });
             let declared = declared_init_param.as_ref().or_else(|| {
                 actor_fields
                     .as_ref()
@@ -1954,6 +1956,86 @@ impl Checker {
         }
     }
 
+    /// Bind written keys and checked parameter providers while retaining field
+    /// defaults as their existing, separate construction inputs.
+    fn bind_spawn_arguments(
+        &mut self,
+        name: &str,
+        args: &[(Ident, Spanned<Expr>)],
+        resolved_type_args: &[Ty],
+        type_subst: &HashMap<crate::ParamHead, Ty>,
+        span: &Span,
+    ) {
+        let registered = self.registered_spawn_identity(name);
+        let owner_kind = if self.supervisor_children.contains_key(&registered) {
+            "supervisor"
+        } else {
+            "actor"
+        };
+        let mut parameter_defaults = HashMap::new();
+        if let Some(signature) = self.constructor_signature(&registered).cloned() {
+            let supplied: Vec<_> = args
+                .iter()
+                .map(|(name, _)| {
+                    signature
+                        .param_names
+                        .iter()
+                        .position(|parameter| parameter == name.name.as_str())
+                })
+                .collect();
+            let params: Vec<_> = signature
+                .params
+                .iter()
+                .map(|ty| ty.substitute_type_params_parallel(type_subst))
+                .collect();
+            self.check_default_arguments(&signature, &supplied, resolved_type_args, &params, span);
+            for default in self
+                .call_default_arguments
+                .remove(&SpanKey::in_module(span, self.current_module_idx))
+                .unwrap_or_default()
+            {
+                parameter_defaults.insert(
+                    Symbol::intern(&signature.param_names[default.slot]),
+                    default,
+                );
+            }
+        }
+        if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
+            // Bind each key the target accepts to its written value or
+            // its default; lowering consumes this binding.
+            let mut slots = Vec::with_capacity(keys.len());
+            for key in keys {
+                match args
+                    .iter()
+                    .position(|(provided, _)| provided.name == key.name)
+                {
+                    Some(index) => slots.push(SpawnSlot::Written(index)),
+                    None if parameter_defaults.contains_key(&key.name) => {
+                        slots.push(SpawnSlot::ArgumentDefault(
+                            parameter_defaults
+                                .remove(&key.name)
+                                .expect("checked constructor default"),
+                        ));
+                    }
+                    None if key.required => {
+                        let noun = self.spawn_key_noun(&registered, key.name);
+                        self.report_error(
+                            TypeErrorKind::MissingActorSpawnArgument,
+                            span,
+                            format!(
+                                "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
+                                key.name.as_str()
+                            ),
+                        );
+                    }
+                    None => slots.push(SpawnSlot::Default),
+                }
+            }
+            self.spawn_argument_slots
+                .insert(SpanKey::in_module(span, self.current_module_idx), slots);
+        }
+    }
+
     /// The identity a spawn target's declaration was registered under. A
     /// file-imported actor answers to its bare name at the spawn site but is
     /// registered under its file's module identity.
@@ -1970,9 +2052,13 @@ impl Checker {
         if self.supervisor_children.contains_key(registered) {
             "parameter"
         } else if self
-            .actor_init_params
-            .get(registered)
-            .is_some_and(|params| params.iter().any(|param| param.name == key.as_str()))
+            .constructor_signature(registered)
+            .is_some_and(|signature| {
+                signature
+                    .param_names
+                    .iter()
+                    .any(|name| name == key.as_str())
+            })
         {
             "`init` parameter"
         } else {
@@ -1991,9 +2077,8 @@ impl Checker {
         let message = if self.supervisor_children.contains_key(registered) {
             format!("supervisor `{actor_name}` has no parameter `{key}`")
         } else if self
-            .actor_init_params
-            .get(registered)
-            .is_some_and(|params| !params.is_empty())
+            .constructor_signature(registered)
+            .is_some_and(|signature| !signature.params.is_empty())
         {
             format!("actor `{actor_name}` has no field or `init` parameter `{key}`")
         } else {
@@ -2223,34 +2308,7 @@ impl Checker {
                 Some(&type_subst),
                 typed_arguments,
             );
-            let registered = self.registered_spawn_identity(&name);
-            if let Some(keys) = self.actor_spawn_args.get(&registered).cloned() {
-                // Bind each key the target accepts to its written value or
-                // its default; lowering consumes this binding.
-                let mut slots = Vec::with_capacity(keys.len());
-                for key in keys {
-                    match args
-                        .iter()
-                        .position(|(provided, _)| provided.name == key.name)
-                    {
-                        Some(index) => slots.push(SpawnSlot::Written(index)),
-                        None if key.required => {
-                            let noun = self.spawn_key_noun(&registered, key.name);
-                            self.report_error(
-                                TypeErrorKind::MissingActorSpawnArgument,
-                                span,
-                                format!(
-                                    "missing {noun} `{}` in spawn of {owner_kind} `{name}`",
-                                    key.name.as_str()
-                                ),
-                            );
-                        }
-                        None => slots.push(SpawnSlot::Default),
-                    }
-                }
-                self.spawn_argument_slots
-                    .insert(SpanKey::in_module(span, self.current_module_idx), slots);
-            }
+            self.bind_spawn_arguments(&name, args, &resolved_type_args, &type_subst, span);
             resolved_type_args = resolved_type_args
                 .iter()
                 .map(|argument| self.subst.resolve(argument))

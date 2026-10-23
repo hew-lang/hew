@@ -100,10 +100,11 @@ impl Checker {
                 .iter()
                 .map(|param| SpawnKey {
                     name: param.name.name,
-                    required: true,
+                    required: param.default.is_none(),
                 })
                 .collect(),
         );
+        self.register_constructor_signature(identity, &sd.params);
         self.exit_primary_sig_scope(scope);
         self.known_types.insert(identity.to_string());
     }
@@ -191,26 +192,13 @@ impl Checker {
         // `wired_to:` reference to such an actor correctly fires
         // "no parameter named X" (`E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH`) rather
         // than silently passing through the "unknown actor" early-return.
-        let params: Vec<ActorInitParamInfo> = if let Some(init) = &ad.init {
-            init.params
-                .iter()
-                .map(|p| {
-                    let mut init_param_hole_vars = Vec::new();
-                    let ty =
-                        self.resolve_registered_annotation_ty(&p.ty, &mut init_param_hole_vars);
-                    ActorInitParamInfo {
-                        name: p.name.to_string(),
-                        ty,
-                    }
-                })
-                .collect()
-        } else {
-            vec![]
-        };
+        self.register_constructor_signature(
+            identity,
+            ad.init.as_ref().map_or(&[], |init| init.params.as_slice()),
+        );
         if has_type_params {
             self.current_type_param_bounds.pop();
         }
-        self.actor_init_params.insert(identity.to_string(), params);
         // A field without a default that init assigns is init's to
         // initialize (D447). An init parameter sharing a field's name is
         // refused outright (D458), so it never reaches this computation as
@@ -237,7 +225,7 @@ impl Checker {
         if let Some(init) = &ad.init {
             spawn_args.extend(init.params.iter().map(|parameter| SpawnKey {
                 name: parameter.name.name,
-                required: true,
+                required: parameter.default.is_none(),
             }));
         }
         self.actor_spawn_args

@@ -997,8 +997,9 @@ impl Builder<'_, '_> {
                 let argument_order = slots
                     .iter()
                     .map(|slot| match slot {
-                        hew_types::check::SpawnSlot::Written(index) => Ok(*index),
-                        hew_types::check::SpawnSlot::Default => {
+                        hew_hir::node::HirSpawnSlot::Written(index)
+                        | hew_hir::node::HirSpawnSlot::ArgumentDefault(index) => Ok(*index),
+                        hew_hir::node::HirSpawnSlot::Default => {
                             Err("a supervisor parameter has no default".to_string())
                         }
                     })
@@ -1047,14 +1048,28 @@ impl Builder<'_, '_> {
                 if slots.len() != fields.clone().count() + parameters.count() {
                     return Err("spawn binding does not cover the actor's keys".into());
                 }
-                let mut values: Vec<_> = args.iter().map(|(_, value)| value.clone()).collect();
+                // HIR appends provider calls after all written operands. Keep
+                // them out of the initial evaluation prefix so field defaults
+                // still run before omitted init parameters.
+                let default_count = slots
+                    .iter()
+                    .filter(|slot| matches!(slot, hew_hir::node::HirSpawnSlot::ArgumentDefault(_)))
+                    .count();
+                let mut values: Vec<_> = args[..args.len() - default_count]
+                    .iter()
+                    .map(|(_, value)| value.clone())
+                    .collect();
                 let mut argument_order = Vec::with_capacity(slots.len());
                 let mut fields = fields;
                 for slot in slots {
                     let field = fields.next();
                     match slot {
-                        hew_types::check::SpawnSlot::Written(index) => argument_order.push(*index),
-                        hew_types::check::SpawnSlot::Default => {
+                        hew_hir::node::HirSpawnSlot::Written(index) => argument_order.push(*index),
+                        hew_hir::node::HirSpawnSlot::ArgumentDefault(index) => {
+                            argument_order.push(values.len());
+                            values.push(args[*index].1.clone());
+                        }
+                        hew_hir::node::HirSpawnSlot::Default => {
                             let default = field
                                 .and_then(|field| field.default.as_ref())
                                 .ok_or("a spawn default names a key with no default")?;
@@ -1107,12 +1122,16 @@ impl Builder<'_, '_> {
         &mut self,
         expression: &HirExpr,
     ) -> Result<Option<ValueId>, String> {
-        if let HirExprKind::Spawn { args, .. } = &expression.kind {
+        if let HirExprKind::Spawn { args, slots, .. } = &expression.kind {
             if !matches!(self.callable.instance, CallableInstance::ActorConstruction { site, .. } if site == expression.node)
                 && super::supervisor::declaration(self.service.module, &self.ty(&expression.ty))
                     .is_none()
             {
-                return self.lower_actor_construction(expression, args);
+                let defaults = slots
+                    .iter()
+                    .filter(|slot| matches!(slot, hew_hir::node::HirSpawnSlot::ArgumentDefault(_)))
+                    .count();
+                return self.lower_actor_construction(expression, &args[..args.len() - defaults]);
             }
         }
         let retained = self.owned_live.clone();
@@ -1123,8 +1142,21 @@ impl Builder<'_, '_> {
         // completed values are rearranged into state and init parameter order.
         for (index, source) in sources.iter().enumerate() {
             let owner_substitution = match (&operation, &expression.kind) {
-                (crate::ActorOperation::Spawn(actor), HirExprKind::Spawn { args, .. })
-                    if index >= args.len() =>
+                (crate::ActorOperation::Spawn(actor), HirExprKind::Spawn { args, slots, .. })
+                    if {
+                        let parameter_defaults = slots
+                            .iter()
+                            .filter(|slot| {
+                                matches!(slot, hew_hir::node::HirSpawnSlot::ArgumentDefault(_))
+                            })
+                            .count();
+                        let field_defaults = slots
+                            .iter()
+                            .filter(|slot| matches!(slot, hew_hir::node::HirSpawnSlot::Default))
+                            .count();
+                        let start = args.len() - parameter_defaults;
+                        (start..start + field_defaults).contains(&index)
+                    } =>
                 {
                     let actor = &self.service.actors[actor.0 as usize];
                     let declaration = declaration(self.service.module, &actor.handle_ty)

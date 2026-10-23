@@ -1,0 +1,21 @@
+machine Cycle {
+    events { Tick; }
+    state A { text: string; }
+    state B { text: string; }
+    always: A => B { text: state.text }
+    always: B => A { text: state.text }
+    default { state }
+}
+fn verify<M: Machine>(var value: M, event: M.Event) {
+    let before = value;
+    assert(value.step(event, limit: 0) == .Err(.InvalidLimit));
+    assert(value == before);
+    assert(value.step(event, limit: 3) == .Err(.LimitExceeded));
+    assert(value == before);
+    assert(value.step(event) == .Err(.LimitExceeded));
+    assert(value == before);
+}
+fn main() {
+    verify(Cycle.A { text: "original".to_upper() }, Cycle.Event.Tick);
+    println("generic machine rollback passed");
+}

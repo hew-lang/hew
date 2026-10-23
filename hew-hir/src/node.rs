@@ -15,6 +15,16 @@ use crate::ids::{BindingId, HirNodeId, ItemId, ResolvedRef, ScopeId, SiteId};
 use crate::value_class::{ResourceMarker, TypeClassTable};
 use crate::IntentKind;
 
+/// Checked spawn input binding after default provider calls have been lowered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HirSpawnSlot {
+    Written(usize),
+    Default,
+    /// Index in the operand list, evaluated after field defaults, not with
+    /// written inputs. The expression is an ordinary checked provider call.
+    ArgumentDefault(usize),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct HirModule {
     /// Authored origins of generated spans, shared with checker diagnostics.
@@ -699,7 +709,7 @@ pub struct HirSupervisorChild {
     pub init_args: Vec<(String, HirExpr)>,
     /// The checker's binding of the child's keys, as on
     /// [`HirExprKind::Spawn`].
-    pub init_slots: Vec<hew_types::check::SpawnSlot>,
+    pub init_slots: Vec<HirSpawnSlot>,
     /// Reserved pool-size expression, lowered from the `count:` named arg on a
     /// `pool name: Type { .. } count: N` declaration. `None` for a static child
     /// or a pool child that omitted `count:` (which the checker rejects). The
@@ -1270,7 +1280,7 @@ pub enum HirExprKind {
         args: Vec<(String, HirExpr)>,
         /// The checker's binding: one slot per key the target accepts, in
         /// declaration order, naming the written value or the default.
-        slots: Vec<hew_types::check::SpawnSlot>,
+        slots: Vec<HirSpawnSlot>,
     },
     /// Owned message construction; this does not enqueue or suspend.
     ActorMessage {

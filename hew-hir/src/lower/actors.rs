@@ -100,7 +100,6 @@ impl LowerCtx {
                     );
                     ResolvedTy::Unit
                 });
-                let init_slots = self.checked_spawn_slots(&child.span, child.name.name.as_str());
                 let mut init_args: Vec<_> = child
                     .args
                     .iter()
@@ -151,6 +150,8 @@ impl LowerCtx {
                         },
                     ));
                 }
+                let init_slots =
+                    self.checked_spawn_slots(&child.span, child.name.name.as_str(), &mut init_args);
                 Some(HirSupervisorChild {
                     name: child.name.to_string(),
                     wiring,

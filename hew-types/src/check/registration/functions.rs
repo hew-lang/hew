@@ -997,9 +997,8 @@ impl Checker {
         let return_type =
             self.wrap_fn_return_type(fd, declared_return, fd.return_type.as_ref().map(|(_, s)| s));
 
-        let default_owner = declaration
-            .map(|id| self.defs.path(id).to_string())
-            .unwrap_or_else(|| name.to_string());
+        let default_owner =
+            declaration.map_or_else(|| name.to_string(), |id| self.defs.path(id).to_string());
         let param_defaults = self.register_default_parameters(&default_owner, &fd.params, skip);
         let sig = FnSig {
             param_defaults,
@@ -2008,23 +2007,7 @@ impl Checker {
                         .iter()
                         .map(|param| param.name),
                 );
-                if let hew_parser::ast::DeclarationOrigin::DefaultArgument {
-                    body_start,
-                    body_end,
-                } = method.origin
-                {
-                    self.scopes.declare_type_parameters(
-                        module,
-                        declaration,
-                        body_start..body_end,
-                        method
-                            .type_params
-                            .as_deref()
-                            .unwrap_or_default()
-                            .iter()
-                            .map(|param| param.name),
-                    );
-                }
+                self.declare_default_body_parameters(module, declaration, method);
             }
             return Some(declaration);
         }
@@ -2065,6 +2048,52 @@ impl Checker {
         ty.substitute_type_params_parallel(&substitutions)
     }
 
+    fn declare_default_body_parameters(
+        &mut self,
+        module: crate::ModuleId,
+        declaration: crate::DefId,
+        method: &FnDecl,
+    ) {
+        if let hew_parser::ast::DeclarationOrigin::DefaultArgument {
+            body_start,
+            body_end,
+        } = method.origin
+        {
+            self.scopes.declare_type_parameters(
+                module,
+                declaration,
+                body_start..body_end,
+                method
+                    .type_params
+                    .as_deref()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|param| param.name),
+            );
+        }
+    }
+
+    pub(super) fn register_constructor_signature(
+        &mut self,
+        owner: &str,
+        params: &[hew_parser::ast::Param],
+    ) {
+        let Some(declaration) = self.lookup_declaration(owner) else {
+            return;
+        };
+        let signature = FnSig {
+            type_params: self.declaration_parameter_heads(owner),
+            param_names: params.iter().map(|param| param.name.to_string()).collect(),
+            params: params
+                .iter()
+                .map(|param| self.resolve_registered_annotation_ty_no_holes(&param.ty))
+                .collect(),
+            param_defaults: self.register_default_parameters(owner, params, 0),
+            ..FnSig::default()
+        };
+        self.constructor_signatures.insert(declaration, signature);
+    }
+
     pub(in crate::check) fn register_receive_fn(&mut self, actor_name: &str, rf: &ReceiveFnDecl) {
         let mut generic_bindings = std::collections::HashMap::new();
         for parameter in
@@ -2083,6 +2112,7 @@ impl Checker {
             &mut hole_vars,
         );
         let pushed_rf_bounds = !bounds.is_empty();
+        let param_defaults = self.register_default_parameters(actor_name, &rf.params, 0);
         if pushed_rf_bounds {
             self.current_type_param_bounds.push(bounds.clone());
         }
@@ -2110,6 +2140,7 @@ impl Checker {
         }
 
         let sig = FnSig {
+            param_defaults,
             type_params: self
                 .source_parameter_heads(rf.type_params.as_deref().unwrap_or_default(), &rf.span),
             bounds,

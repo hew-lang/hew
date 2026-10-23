@@ -1,0 +1,47 @@
+fn fresh() -> i64 { println(90); 7 }
+fn mark(n: i64) -> i64 { println(n); n }
+fn combine(a: i64 = fresh(), b: i64 = mark(80), c: i64 = 3) -> i64 { a * 100 + b * 10 + c }
+fn generic<T>(value: T, n: i64 = fresh()) -> i64 { n }
+type Box<T> { value: T; }
+impl<T> Box<T> {
+    fn run(self, n: i64 = fresh()) -> i64 { n }
+    fn make(value: T) -> Box<T> { Box { value } }
+}
+trait Count {
+    fn run(self, n: i64 = fresh()) -> i64;
+}
+type Counter { value: i64; }
+impl Count for Counter { fn run(self, n: i64) -> i64 { n } }
+fn dynamic(value: dyn Count) -> i64 { value.run() }
+fn vec_default<T>(value: Vec<T> = Vec.new()) -> Vec<T> { value }
+fn via<T: Count>(value: T) -> i64 { value.run() }
+fn fallible(value: Result<i64, string> = .Err("missing".to_upper())) -> Result<i64, string> { value }
+fn owned(value: Vec<string> = ["fresh".to_upper()]) -> Vec<string> { value }
+trait Maybe {
+    type Item;
+    fn get(self, value: Option<Self.Item> = .None) -> Option<Self.Item>;
+}
+impl Maybe for Counter {
+    type Item = i64;
+    fn get(self, value: Option<i64>) -> Option<i64> { value }
+}
+fn erased(value: dyn Maybe<Item = i64>) -> Option<i64> { value.get() }
+fn main() {
+    println(combine(c: mark(1), b: mark(2)));
+    println(combine(4, c: 6));
+    println(generic("hello"));
+    let value = Box.make("owned");
+    println(value.run());
+    let counter = Counter { value: 0 };
+    println(counter.run());
+    assert(erased(counter) == .None);
+    assert(counter.get(.Some(9)) == .Some(9));
+    println(via(counter));
+    println(dynamic(counter));
+    println(vec_default<i64>().len());
+    var first = owned();
+    first.push("changed");
+    assert(owned() == ["FRESH"] && first.len() == 2);
+    assert(fallible() == .Err("MISSING"));
+    assert(fallible(.Ok(4)) == .Ok(4));
+}

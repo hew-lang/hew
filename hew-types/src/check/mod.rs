@@ -96,11 +96,10 @@ mod visibility;
 #[cfg(any(test, feature = "test"))]
 pub use self::types::FnSigFixture;
 use self::types::{
-    ActorFieldInfo, ActorInitParamInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck,
-    DeferredHashMapAdmission, DeferredHashSetAdmission, DeferredInferenceHole,
-    DeferredMonomorphicSite, DeferredVecAdmission, ImplAliasEntry, ImplAliasScope, IndexContext,
-    IntegerTypeInfo, PendingLoweringFact, SourceExternDeclaration, TraitAssociatedTypeInfo,
-    TraitImplArgs, TraitInfo, TraitProofKind,
+    ActorFieldInfo, ConstValue, DeferredBoundCheck, DeferredCastCheck, DeferredHashMapAdmission,
+    DeferredHashSetAdmission, DeferredInferenceHole, DeferredMonomorphicSite, DeferredVecAdmission,
+    ImplAliasEntry, ImplAliasScope, IndexContext, IntegerTypeInfo, PendingLoweringFact,
+    SourceExternDeclaration, TraitAssociatedTypeInfo, TraitImplArgs, TraitInfo, TraitProofKind,
 };
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
@@ -3172,7 +3171,7 @@ impl Checker {
             race_operands: self.race_operands.clone(),
             task_lifetimes: self.task_lifetimes.clone(),
             closure_escape_facts: self.closure_escape_facts.clone(),
-            actor_init_params: self.actor_init_params.clone(),
+            constructor_signatures: self.constructor_signatures.clone(),
             actor_spawn_args: self.actor_spawn_args.clone(),
             lambda_capture_depth: self.lambda_capture_depth.clone(),
             var_self_receiver: self.var_self_receiver.clone(),

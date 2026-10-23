@@ -1,0 +1,2 @@
+fn invalid(first: i64, second: i64 = first) -> i64 { second }
+fn main() { println(invalid(1, 2)); }

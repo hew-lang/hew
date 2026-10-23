@@ -8704,15 +8704,39 @@ it names; a positional argument binds to the parameter at its position. The
 arguments are evaluated left to right as written, after the receiver of a
 method call, and then passed in parameter order. When a later argument
 faults, the owners that earlier arguments produced are released. Every
-parameter must be supplied exactly once: a name is a label and never makes a
-parameter optional.
+parameter without a default must be supplied exactly once. A parameter with
+`= expression` may be omitted; a name alone does not make it optional.
+
+```hew
+fn connect(host: string, port: i64 = 5432) -> string {
+    f"{host}:{port}"
+}
+```
+
+Default expressions are checked in their declaration's scope, including its
+imports and generic bounds. They cannot refer to value parameters or `self`.
+At each call, written arguments evaluate first in source order, followed by
+omitted defaults in parameter order. A supplied argument prevents its default
+from running. Defaults may allocate, suspend, fail or perform effects under the
+ordinary rules for calls; their values have ordinary ownership and cleanup.
+Actor receive defaults run in the caller before mailbox submission. Actor
+`init` and supervisor header parameters may also declare defaults. Construction
+evaluates written keys in source order, then omitted state-field defaults in
+field order, then omitted `init` parameters in parameter order, before starting
+the actor. Supervisor defaults follow written header arguments in parameter
+order. Foreign `extern` declarations reject source defaults.
+
+The trait declaration owns a trait method's defaults. Implementations inherit
+them and cannot redeclare them. Concrete, bound and dynamic calls use the same
+trait defaults; inherent methods own their independent defaults. Function
+values and closures carry no default-argument contract.
 
 | Refusal | Code |
 | --- | --- |
 | A positional argument after a named one | parse error |
 | A name that matches no parameter | `E_NAMED_ARG_UNKNOWN` |
 | A parameter supplied twice, by name or by name after position | `E_NAMED_ARG_DUPLICATE` |
-| A call that names arguments and leaves parameters unsupplied | `E_NAMED_ARG_MISSING` |
+| A call that names arguments and leaves required parameters unsupplied | `E_NAMED_ARG_MISSING` |
 | A name on a callee whose parameters carry none | `E_NAMED_ARG_UNNAMED_CALLEE` |
 
 **Callees.** Free and module functions, generic functions, `extern` functions

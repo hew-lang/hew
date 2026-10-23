@@ -496,9 +496,8 @@ impl Checker {
                 .cloned()
                 .unwrap_or(Ty::Error);
             if !self
-                .actor_init_params
-                .get(identity)
-                .is_some_and(|params| params.iter().any(|param| param.name == key))
+                .constructor_signature(identity)
+                .is_some_and(|signature| signature.param_names.contains(&key))
             {
                 self.report_error(TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::WiredToTypeMismatch }, &child.span,
                 format!("E_SUPERVISOR_WIRED_TO_TYPE_MISMATCH: `{identity}.init` has no parameter `{key}`"));

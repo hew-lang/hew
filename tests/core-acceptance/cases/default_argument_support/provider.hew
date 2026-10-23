@@ -1,0 +1,14 @@
+fn label() -> string { "definition".to_upper() }
+pub fn imported(value: string = label()) -> string { value }
+pub fn empty<T>(value: Vec<T> = Vec.new()) -> Vec<T> { value }
+pub actor Service {
+    receive fn label(value: string = label()) -> string { value }
+}
+pub actor Configured<T> {
+    var items: Vec<T>;
+    init(data: Vec<T> = Vec.new()) { items = data; }
+    receive fn count() -> i64 { items.len() }
+}
+pub supervisor Group<T>(data: Vec<T> = Vec.new()) {
+    child worker: Configured<T> { data };
+}

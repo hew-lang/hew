@@ -1,0 +1,4 @@
+trait Build { fn value(self) -> i64; }
+fn make<T: Build>() -> Vec<T> { Vec.new() }
+fn invalid<T>(value: Vec<T> = make<T>()) -> Vec<T> { value }
+fn main() { println(invalid<i64>([]).len()); }

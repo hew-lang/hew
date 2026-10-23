@@ -1,0 +1,9 @@
+import default_argument_support.provider as remote;
+fn label() -> string { "caller" }
+fn main() {
+    assert(label() == "caller");
+    assert(remote.imported() == "DEFINITION");
+    assert(remote.imported("explicit") == "explicit");
+    assert(remote.empty<string>().is_empty());
+    println("imported defaults passed");
+}

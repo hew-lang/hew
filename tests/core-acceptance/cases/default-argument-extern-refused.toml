@@ -1,0 +1,14 @@
+[[case]]
+id = "default-argument-extern-refused"
+intent = "Foreign ABI declarations reject source defaults instead of silently ignoring them."
+source = "cases/default-argument-extern-refused.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "Other"
+line = 1
+column = 35
+message = "default arguments belong to Hew-authored declarations, not extern declarations"

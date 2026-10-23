@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-actor"
+intent = "Actor receive defaults evaluate on the caller before submission, preserve written argument order and substitute generic actor parameters."
+source = "cases/default-argument-actor.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "2\n7\nactor defaults passed\n"
+exit = 0

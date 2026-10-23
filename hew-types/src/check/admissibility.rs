@@ -2757,11 +2757,13 @@ mod tests {
         let mut fn_sigs = HashMap::from([(
             crate::DefId::for_test("display"),
             FnSig {
+                param_defaults: Vec::new(),
                 impl_method: None,
                 type_params: vec![crate::ParamHead::for_test("T")],
                 receiver_obligations: vec![],
                 bounds: crate::check::ParamBounds::default(),
                 param_names: vec!["item".to_string()],
+                param_defaults: vec![],
                 params: vec![Ty::param(crate::ParamHead::for_test("T"))],
                 return_type: Ty::Unit,
                 doc_comment: None,

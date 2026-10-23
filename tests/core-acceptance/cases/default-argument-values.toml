@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-values"
+intent = "Written arguments evaluate first in source order, omitted defaults in parameter order, with fresh owned values and inherited concrete, generic and dynamic trait defaults."
+source = "cases/default-argument-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "1\n2\n90\n721\n80\n1206\n90\n7\n90\n7\n90\n7\n90\n7\n90\n7\n0\n"
+exit = 0

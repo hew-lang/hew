@@ -1,0 +1,10 @@
+[[case]]
+id = "default-argument-imports"
+intent = "Imported defaults retain definition scope and generic substitutions."
+source = "cases/default-argument-imports.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "imported defaults passed\n"
+exit = 0

@@ -1,0 +1,2 @@
+fn invalid(value: i64 = "wrong") -> i64 { value }
+fn main() { println(invalid(1)); }

@@ -71,14 +71,8 @@ impl ExecutionContextReader {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct SpawnKey {
     pub(super) name: Symbol,
-    /// False for a defaulted state field, which a spawn may omit.
+    /// False for a defaulted field or parameter, which a spawn may omit.
     pub(super) required: bool,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(super) struct ActorInitParamInfo {
-    pub(super) name: String,
-    pub(super) ty: Ty,
 }
 
 /// One checker-derived lifecycle for a qualified closeable opaque nominal.
@@ -1834,12 +1828,14 @@ impl SpanKey {
 }
 
 /// The value one spawn key takes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum SpawnSlot {
     /// The value written at this index of the spawn's key list.
     Written(usize),
     /// The state field's declared default; the spawn omits the key.
     Default,
+    /// An omitted constructor parameter checked as an ordinary provider call.
+    ArgumentDefault(CheckedDefaultArgument),
 }
 
 #[derive(Debug, Clone)]
@@ -3787,15 +3783,14 @@ pub struct Checker {
     /// Per-closure escape classification keyed by closure literal span.
     /// Moved into `TypeCheckOutput::closure_escape_facts` at `check_program` exit.
     pub(super) closure_escape_facts: HashMap<SpanKey, ClosureEscapeFact>,
-    /// Maps actor name to its resolved `init()` parameter list.
-    ///
-    /// Used by the supervisor checker (S-B) to validate `wired_to:` type compatibility.
-    pub(super) actor_init_params: HashMap<String, Vec<ActorInitParamInfo>>,
+    /// Declaration-owned actor init and supervisor constructor signatures.
+    /// Shared by keyed argument checking, defaults and supervisor wiring.
+    pub(super) constructor_signatures: HashMap<crate::DefId, FnSig>,
     /// The keys a `spawn` of each actor or supervisor accepts, keyed by the
     /// declaration identity, in slot order. An actor's keys are its state
     /// fields that `init` does not initialize, then its `init` parameters; a
-    /// defaulted field is optional and every other key is required. A
-    /// supervisor's keys are its header parameters, all required.
+    /// field or parameter with a default is optional. A supervisor's keys
+    /// are its header parameters.
     pub(super) actor_spawn_args: HashMap<String, Vec<SpawnKey>>,
     /// When set, records the scope depth at which a lambda was entered.
     /// Variable lookups from scopes below this depth are captures.
@@ -4617,7 +4612,7 @@ impl Checker {
             race_operands: HashMap::new(),
             task_lifetimes: super::task_lifetimes::TaskLifetimes::default(),
             closure_escape_facts: HashMap::new(),
-            actor_init_params: HashMap::new(),
+            constructor_signatures: HashMap::new(),
             actor_spawn_args: HashMap::new(),
             lambda_capture_depth: None,
             var_self_receiver: None,

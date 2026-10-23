@@ -68,6 +68,10 @@ fn selected_expansions(program: &Program, source: &Path, offset: usize) -> Optio
 #[serde(rename_all = "camelCase")]
 pub struct Inspection {
     pub text: String,
+    #[expect(
+        clippy::struct_field_names,
+        reason = "Matches the inspectionOnly marker in the editor protocol."
+    )]
     inspection_only: bool,
     pub origins: Vec<ExpansionOrigin>,
 }

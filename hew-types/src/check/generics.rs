@@ -57,19 +57,6 @@ impl Checker {
                     .zip(bound.args.iter().cloned())
             })
             .collect();
-        for applied_bound in &applied {
-            substitutions.insert(
-                crate::ParamHead::receiver(applied_bound.trait_id),
-                Ty::TraitObject {
-                    traits: vec![bound.clone()],
-                },
-            );
-        }
-        for provider in sig.param_defaults.iter_mut().flatten() {
-            for argument in &mut provider.type_args {
-                *argument = argument.substitute_type_params_parallel(&substitutions);
-            }
-        }
         for parameter in &mut sig.params {
             *parameter = parameter.substitute_type_params_parallel(&substitutions);
         }
@@ -86,6 +73,29 @@ impl Checker {
             }
             sig.return_type =
                 substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
+        }
+        // Providers are ordinary generic functions with an explicit receiver
+        // type argument. Keep that substitution separate from the method's
+        // associated-type binding projection, which matches declaration Self.
+        for applied_bound in &applied {
+            substitutions.insert(
+                crate::ParamHead::receiver(applied_bound.trait_id),
+                Ty::TraitObject {
+                    traits: vec![bound.clone()],
+                },
+            );
+        }
+        for provider in sig.param_defaults.iter_mut().flatten() {
+            for argument in &mut provider.type_args {
+                for owner in self.trait_closure(trait_id) {
+                    *argument = substitute_trait_object_assoc_bindings(
+                        argument,
+                        self.defs.path(owner),
+                        bound,
+                    );
+                }
+                *argument = argument.substitute_type_params_parallel(&substitutions);
+            }
         }
     }
 

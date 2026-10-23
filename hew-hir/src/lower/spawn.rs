@@ -41,7 +41,7 @@ impl LowerCtx {
             );
         };
 
-        let lowered_args = args
+        let mut lowered_args = args
             .iter()
             .map(|(name, expr)| (name.to_string(), self.lower_expr(expr, IntentKind::Read)))
             .collect::<Vec<_>>();
@@ -87,7 +87,7 @@ impl LowerCtx {
         {
             actor_name.clone_from(qualified);
         }
-        let slots = self.checked_spawn_slots(&span, &actor_name);
+        let slots = self.checked_spawn_slots(&span, &actor_name, &mut lowered_args);
         (
             HirExprKind::Spawn {
                 actor_name,
@@ -103,9 +103,23 @@ impl LowerCtx {
         &mut self,
         span: &Span,
         actor_name: &str,
-    ) -> Vec<hew_types::check::SpawnSlot> {
-        if let Some(slots) = self.spawn_argument_slots.get(&self.mk_key(span)) {
-            return slots.clone();
+        args: &mut Vec<(String, HirExpr)>,
+    ) -> Vec<crate::node::HirSpawnSlot> {
+        if let Some(slots) = self.spawn_argument_slots.get(&self.mk_key(span)).cloned() {
+            return slots
+                .into_iter()
+                .map(|slot| match slot {
+                    hew_types::check::SpawnSlot::Written(index) => {
+                        crate::node::HirSpawnSlot::Written(index)
+                    }
+                    hew_types::check::SpawnSlot::Default => crate::node::HirSpawnSlot::Default,
+                    hew_types::check::SpawnSlot::ArgumentDefault(default) => {
+                        let index = args.len();
+                        args.push((String::new(), self.lower_default_argument(&default)));
+                        crate::node::HirSpawnSlot::ArgumentDefault(index)
+                    }
+                })
+                .collect();
         }
         self.diagnostics.push(HirDiagnostic::new(
             HirDiagnosticKind::CheckerBoundaryViolation {
@@ -528,7 +542,7 @@ impl LowerCtx {
             .collect();
         // The captures are the synthesized actor's state fields, in order.
         let slots = (0..args.len())
-            .map(hew_types::check::SpawnSlot::Written)
+            .map(crate::node::HirSpawnSlot::Written)
             .collect();
         (
             HirExprKind::Spawn {

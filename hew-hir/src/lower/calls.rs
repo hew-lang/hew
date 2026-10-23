@@ -58,26 +58,7 @@ impl LowerCtx {
             .map(|index| slots.get(index).copied().unwrap_or(index))
             .collect();
         for default in defaults {
-            let site = self.ids.site();
-            let symbol = self.call_target_presentation_name(&default.target);
-            let (kind, ty) = self.lower_module_qualified_direct_call_lowered(
-                default.target,
-                &symbol,
-                LoweredCallArgs {
-                    args: Vec::new(),
-                    evaluation_order: Vec::new(),
-                },
-                &default.span,
-                site,
-            );
-            let value = HirExpr {
-                node: self.ids.node(),
-                site,
-                ty,
-                intent: IntentKind::Consume,
-                kind,
-                span: default.span,
-            };
+            let value = self.lower_default_argument(&default);
             placed[default.slot] = Some(value);
             evaluation_order.push(default.slot);
         }
@@ -94,6 +75,32 @@ impl LowerCtx {
                 .map(|arg| arg.expect("checker argument slots are a permutation"))
                 .collect(),
             evaluation_order,
+        }
+    }
+
+    pub(super) fn lower_default_argument(
+        &mut self,
+        default: &hew_types::check::CheckedDefaultArgument,
+    ) -> HirExpr {
+        let site = self.ids.site();
+        let symbol = self.call_target_presentation_name(&default.target);
+        let (kind, ty) = self.lower_module_qualified_direct_call_lowered(
+            default.target.clone(),
+            &symbol,
+            LoweredCallArgs {
+                args: Vec::new(),
+                evaluation_order: Vec::new(),
+            },
+            &default.span,
+            site,
+        );
+        HirExpr {
+            node: self.ids.node(),
+            site,
+            ty,
+            intent: IntentKind::Consume,
+            kind,
+            span: default.span.clone(),
         }
     }
 

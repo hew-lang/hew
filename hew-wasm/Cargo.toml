@@ -22,8 +22,9 @@ workspace = true
 # baseline.  Higher levels (-O2/-Os/-Oz) aggressively inline and restructure
 # code, breaking the LTO-laid-out locality the compressor exploits and
 # producing a net transfer-size regression.  --enable-bulk-memory is required
-# because the Rust/LLVM backend emits memory.copy/fill (bulk-memory proposal).
-wasm-opt = ["-O1", "--enable-bulk-memory"]
+# because Rust emits memory.copy/fill. Its saturating float conversions also
+# require the nontrapping-float-to-int feature during optimization.
+wasm-opt = ["-O1", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]
 
 [dependencies]
 hew-calendar = { path = "../hew-calendar" }

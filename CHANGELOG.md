@@ -17,6 +17,8 @@
   default expressions and actor construction.
 - Inspect selected or whole-file macro expansions through CLI and editor
   views, with source provenance and ordinary test discovery for generated code.
+- Update cryptographic utilities and Tokio for constant-time and I/O-safety
+  fixes, and replace the yanked Windows clipboard dependency with its patch.
 
 See the [release notes](docs/releases/v0.8.0.md) and
 [migration guide](docs/migrations/v0.8.0.md) for examples and source updates.

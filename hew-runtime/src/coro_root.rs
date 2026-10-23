@@ -1,7 +1,9 @@
 //! Drive a process root task using the shared continuation and wake substrate.
 //! Scheduler startup, actor draining and shutdown belong to the process entry.
 
-use crate::cancel_token::{hew_cancel_token_new_child, hew_cancel_token_release};
+use crate::cancel_token::{
+    hew_cancel_token_new_child, hew_cancel_token_release, HewCancellationToken,
+};
 use crate::cont::{hew_cont_destroy, hew_cont_done, hew_cont_resume};
 use crate::coro_state::{
     hew_coro_state_free, hew_coro_state_new, hew_coro_state_private_status, hew_coro_state_status,
@@ -10,6 +12,7 @@ use crate::coro_state::{
 use crate::execution_context::{current_context, set_current_context, HewExecutionContext};
 use crate::fault::HewFault;
 use crate::wake::blocking::Readiness;
+use crate::wake::HewWaker;
 use std::cell::Cell;
 use std::ffi::c_void;
 
@@ -48,6 +51,81 @@ pub type HewRootStart = unsafe extern "C" fn(
     *mut HewCoroState,
 ) -> *mut c_void;
 
+/// Stable execution storage for a root or host invocation. Each entry restores
+/// the surrounding thread context before returning to its driver.
+pub(crate) struct RootExecution {
+    context: HewExecutionContext,
+    state: *mut HewCoroState,
+    token: *mut HewCancellationToken,
+}
+
+impl RootExecution {
+    /// # Safety
+    /// The wake descriptor obeys its retained-callback lifetime contract.
+    /// Destroy every child frame and operation before dropping this execution.
+    pub(crate) unsafe fn new(waker: &HewWaker) -> Self {
+        let previous = current_context();
+        let parent_token = if previous.is_null() {
+            std::ptr::null_mut()
+        } else {
+            // SAFETY: the enclosing invocation remains live during construction.
+            unsafe { (*previous).cancel_token }
+        };
+        // SAFETY: the optional parent token is borrowed from that live context.
+        let token = unsafe { hew_cancel_token_new_child(parent_token) };
+        let context = HewExecutionContext {
+            cancel_token: token,
+            ..HewExecutionContext::default()
+        };
+        // SAFETY: this execution owns its token and retains the wake descriptor.
+        let state = unsafe { hew_coro_state_new(waker, token) };
+        Self {
+            context,
+            state,
+            token,
+        }
+    }
+
+    /// Enter for one start, resume or cleanup poll. No reference to the thread's
+    /// enclosing context is kept while control is back in the host event loop.
+    pub(crate) fn enter<R>(&mut self, run: impl FnOnce(*mut HewCoroState) -> R) -> R {
+        struct RestoreContext {
+            previous: *mut HewExecutionContext,
+            enclosing_root: *mut HewExecutionContext,
+        }
+        impl Drop for RestoreContext {
+            fn drop(&mut self) {
+                ROOT_CONTEXT.with(|root| root.set(self.enclosing_root));
+                let _installed = set_current_context(self.previous);
+            }
+        }
+        let previous = current_context();
+        self.context.prev_context = previous;
+        let context = &raw mut self.context;
+        let _previous = set_current_context(context);
+        let enclosing_root = ROOT_CONTEXT.with(|root| root.replace(context));
+        let restore = RestoreContext {
+            previous,
+            enclosing_root,
+        };
+        let result = run(self.state);
+        drop(restore);
+        self.context.prev_context = std::ptr::null_mut();
+        result
+    }
+}
+
+impl Drop for RootExecution {
+    fn drop(&mut self) {
+        // SAFETY: the driver destroys every frame and operation before dropping
+        // this execution storage, just as at the synchronous root boundary.
+        unsafe {
+            hew_coro_state_free(self.state);
+            hew_cancel_token_release(self.token);
+        }
+    }
+}
+
 /// Run one checked root task on the process thread. It installs a task context,
 /// retains the parent cancellation ancestry, and restores the previous context
 /// after typed completion and frame destruction. It never starts a scheduler.
@@ -78,34 +156,10 @@ pub unsafe extern "C" fn hew_coro_run_root(
 pub(crate) unsafe fn with_root_invocation(
     run: impl FnOnce(*mut HewCoroState, &Readiness) -> i32,
 ) -> i32 {
-    let previous = current_context();
-    let parent_token = if previous.is_null() {
-        std::ptr::null_mut()
-    } else {
-        // SAFETY: the installed previous context is live on this thread.
-        unsafe { (*previous).cancel_token }
-    };
-    // SAFETY: parent token is borrowed from the live previous context.
-    let token = unsafe { hew_cancel_token_new_child(parent_token) };
-    let mut context = HewExecutionContext {
-        cancel_token: token,
-        prev_context: previous,
-        ..HewExecutionContext::default()
-    };
     let (readiness, waker) = Readiness::new();
-    // SAFETY: descriptor and token are owned by this root invocation.
-    let state = unsafe { hew_coro_state_new(waker.descriptor(), token) };
-    let _previous = set_current_context(&raw mut context);
-    let enclosing_root = ROOT_CONTEXT.with(|root| root.replace(&raw mut context));
-    let status = run(state, &readiness);
-    ROOT_CONTEXT.with(|root| root.set(enclosing_root));
-    let _installed = set_current_context(previous);
-    // SAFETY: the operation drained every frame and subscription before return.
-    unsafe {
-        hew_coro_state_free(state);
-        hew_cancel_token_release(token);
-    }
-    status
+    // SAFETY: readiness owns the retained wake target throughout the invocation.
+    let mut execution = unsafe { RootExecution::new(waker.descriptor()) };
+    execution.enter(|state| run(state, &readiness))
 }
 
 unsafe fn drive_root(
@@ -117,17 +171,44 @@ unsafe fn drive_root(
     readiness: &Readiness,
 ) -> i32 {
     // SAFETY: caller supplies the generated adapter and correctly typed slots.
-    let frame = unsafe { start(arguments, result_out, fault_out, state) };
-    // SAFETY: this function owns both invocation state and returned frame.
-    while unsafe { hew_coro_state_status(state) } == CoroStatus::Pending as i32 {
+    let mut frame = unsafe { start(arguments, result_out, fault_out, state) };
+    let mut ready = false;
+    loop {
+        // SAFETY: this driver owns the frame/state and consumes one wake per poll.
+        if let Some(status) = unsafe { poll_root(&mut frame, state, ready) } {
+            return status;
+        }
+        readiness.wait();
+        ready = true;
+    }
+}
+
+/// Poll the existing root frame after consuming readiness. Terminal cleanup and
+/// frame destruction are shared by blocking and asynchronous hosting drivers.
+/// # Safety
+/// The driver exclusively owns `frame` and `state`, has installed their root
+/// execution context, and keeps all typed input/output storage live.
+pub(crate) unsafe fn poll_root(
+    frame: &mut *mut c_void,
+    state: *mut HewCoroState,
+    ready: bool,
+) -> Option<i32> {
+    // SAFETY: the owning driver retains its live invocation state.
+    if unsafe { hew_coro_state_status(state) } == CoroStatus::Pending as i32 {
         // SAFETY: a non-null frame is still owned by this invocation.
-        if frame.is_null() || unsafe { hew_cont_done(frame) } {
+        if frame.is_null() || unsafe { hew_cont_done(*frame) } {
             // A generated body must publish its outcome before final suspend.
             std::process::abort();
         }
-        readiness.wait();
+        if !ready {
+            return None;
+        }
         // SAFETY: frame is live, suspended and exclusively driven here.
-        unsafe { hew_cont_resume(frame) };
+        unsafe { hew_cont_resume(*frame) };
+        // SAFETY: a pending invocation retains its suspended frame and state.
+        if unsafe { hew_coro_state_status(state) } == CoroStatus::Pending as i32 {
+            return None;
+        }
     }
     // SAFETY: the state remains owned until after frame destruction below.
     if unsafe { hew_coro_state_status(state) } == CoroStatus::Yielded as i32 {
@@ -136,14 +217,15 @@ unsafe fn drive_root(
     }
     if !frame.is_null() {
         // SAFETY: the live frame is exclusively owned, including when complete.
-        if !unsafe { hew_cont_done(frame) } {
+        if !unsafe { hew_cont_done(*frame) } {
             std::process::abort();
         }
         // SAFETY: final-suspended frame has discharged its typed cleanup.
-        unsafe { hew_cont_destroy(frame) };
+        unsafe { hew_cont_destroy(*frame) };
+        *frame = std::ptr::null_mut();
     }
     // SAFETY: completion was observed above and the state is still owned here.
-    unsafe { hew_coro_state_private_status(state) }
+    Some(unsafe { hew_coro_state_private_status(state) })
 }
 
 /// Drive an erased callable at an explicit synchronous hosting boundary.
@@ -192,4 +274,39 @@ pub unsafe extern "C" fn hew_coro_run_callable(
     // SAFETY: the caller supplies the invocation contract; the bundle remains
     // on this stack until the shared driver has destroyed the finished frame.
     unsafe { hew_coro_run_root(start, (&raw mut args).cast(), result_out, fault_out.cast()) }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_execution_reenters_without_retaining_an_enclosing_host_context() {
+        let previous = current_context();
+        let mut first = HewExecutionContext::default();
+        let mut second = HewExecutionContext::default();
+        let (_, waker) = Readiness::new();
+        // SAFETY: the wake owner remains live and this test creates no frames.
+        let mut execution = unsafe { RootExecution::new(waker.descriptor()) };
+        let _ = set_current_context(&raw mut first);
+        let state = execution.enter(|state| {
+            assert!(current_context_is_process_root());
+            // SAFETY: enter installed the live, exclusively borrowed root context.
+            let enclosing = unsafe { (*current_context()).prev_context };
+            assert_eq!(enclosing, &raw mut first);
+            state
+        });
+        assert_eq!(current_context(), &raw mut first);
+        assert!(!current_context_is_process_root());
+        assert!(execution.context.prev_context.is_null());
+        let _ = set_current_context(&raw mut second);
+        execution.enter(|next| {
+            assert_eq!(state, next);
+            // SAFETY: this entry borrows the second live enclosing host context.
+            let enclosing = unsafe { (*current_context()).prev_context };
+            assert_eq!(enclosing, &raw mut second);
+        });
+        assert_eq!(current_context(), &raw mut second);
+        let _ = set_current_context(previous);
+    }
 }

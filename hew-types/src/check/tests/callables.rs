@@ -1347,6 +1347,50 @@ type Label {
 }
 
 #[test]
+fn inferred_identity_operands_stay_monomorphic_while_other_parameters_generalize() {
+    let output = check_source(
+        r#"
+actor Worker { receive fn ping() {} }
+fn main() {
+    let worker = spawn Worker;
+    let compare = |left, right| left is right;
+    assert(compare(worker, worker));
+    let tagged = |left, right, value| (left is right, value);
+    let number: (bool, i64) = tagged(worker, worker, 42);
+    let text: (bool, string) = tagged(worker, worker, "hello");
+    stop(worker);
+    stopped(worker);
+}
+"#,
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn inferred_identity_refusals_name_the_concrete_value_type() {
+    for (declaration, value, name) in [
+        (
+            "type Record { value: i64; }",
+            "Record { value: 1 }",
+            "Record",
+        ),
+        ("enum Choice { One; }", "Choice.One", "Choice"),
+    ] {
+        let output = check_source(&format!(
+            "{declaration} fn main() {{ let compare = |left, right| left is right; \
+             let value = {value}; compare(value, value); }}"
+        ));
+        assert_eq!(output.errors.len(), 1, "{:?}", output.errors);
+        assert!(
+            output.errors[0].message.contains("E_IS_VALUE_TYPE")
+                && output.errors[0].message.contains(name),
+            "{:?}",
+            output.errors
+        );
+    }
+}
+
+#[test]
 fn directly_bound_literals_generalize_independently_of_counter_state() {
     let output = check_source(
         r#"
@@ -1427,16 +1471,22 @@ fn inferred_literals_keep_unambiguous_bounds_and_refuse_operator_guessing() {
         r#"fn main() { let same = |value| value == value; let n = same(1); let s = same("two"); let show = |value| println(value); show(1); show("two"); }"#,
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
-    for source in [
-        "fn main() { let add = |left, right| left + right; }",
-        "fn main() { let same = |left, right| left is right; }",
+    for (source, diagnostic) in [
+        (
+            "fn main() { let add = |left, right| left + right; }",
+            "unique generic parameter type",
+        ),
+        (
+            "fn main() { let same = |left, right| left is right; }",
+            "`is` operand type",
+        ),
     ] {
         let output = check_source(source);
         assert!(
             output
                 .errors
                 .iter()
-                .any(|error| error.message.contains("unique generic parameter type")),
+                .any(|error| error.message.contains(diagnostic)),
             "{:?}",
             output.errors
         );

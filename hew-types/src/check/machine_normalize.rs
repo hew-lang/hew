@@ -54,6 +54,24 @@ pub struct NormalizedProgram {
 }
 
 impl NormalizedProgram {
+    /// Allocate checked invocations after nested generated signatures as well
+    /// as top-level declarations, preserving their distinct semantic keys.
+    pub(super) fn next_free_span(&self) -> usize {
+        self.source_origins
+            .source_spans
+            .keys()
+            .chain(
+                self.source_origins
+                    .implied_displays
+                    .iter()
+                    .map(|(span, _)| span),
+            )
+            .map(|span| span.end + 1)
+            .max()
+            .unwrap_or(0)
+            .max(next_free_span(&self.program))
+    }
+
     /// `machines` (or the source program, when no machine expanded) with the
     /// implied Display impls written in.
     pub(super) fn with_error_displays(
@@ -141,14 +159,29 @@ pub struct SourceSpanOrigins {
 
 impl SourceSpanOrigins {
     /// Resolve a generated span to its authored origin, if it has one.
+    ///
+    /// # Panics
+    /// Panics if generated source origins contain a cycle.
     #[must_use]
     pub fn source_span(&self, span: &Span) -> Option<&Span> {
-        self.source_spans.get(span).or_else(|| {
-            self.implied_displays
-                .iter()
-                .find(|(range, _)| range.start <= span.start && span.end <= range.end)
-                .map(|(_, origin)| origin)
-        })
+        let direct_origin = |span: &Span| {
+            self.source_spans.get(span).or_else(|| {
+                self.implied_displays
+                    .iter()
+                    .find(|(range, _)| range.start <= span.start && span.end <= range.end)
+                    .map(|(_, origin)| origin)
+            })
+        };
+        let mut origin = direct_origin(span)?;
+        let mut remaining = self.source_spans.len() + self.implied_displays.len();
+        // A default provider can originate in an already generated machine
+        // node. Reporting consumers need the authored endpoint of that chain.
+        while let Some(parent) = direct_origin(origin) {
+            assert!(remaining > 0, "generated source origins must be acyclic");
+            remaining -= 1;
+            origin = parent;
+        }
+        Some(origin)
     }
 }
 
@@ -997,6 +1030,13 @@ impl Builder {
         let step = &mut implementation.methods[0];
         step.origin = DeclarationOrigin::MachineStep;
         step.visibility = machine.visibility;
+        // Shell-parser offsets are not source identities. The generated
+        // budget literal belongs to this authored machine, just like its body.
+        for param in &mut step.params {
+            if let Some(default) = &mut param.default {
+                *default = self.expr(default.0.clone());
+            }
+        }
         step.body = self.unobserved_step();
         self.refresh_signature(step);
         let state_name = &mut implementation.methods[1];

@@ -35,6 +35,19 @@ impl Checker {
             super::collect_unresolved_inference_vars(&self.subst.resolve(&binding.ty), &mut free);
             variables.retain(|variable| !free.contains(variable));
         }
+        // Identity admission needs a concrete handle type, not an unrestricted
+        // universal binder. Keep those operands shared with later call-site
+        // inference; the deferred identity check remains their authority.
+        for check in self.deferred_is_checks.values() {
+            let mut constrained = super::HashSet::new();
+            for operand in [&check.lhs_ty, &check.rhs_ty] {
+                super::collect_unresolved_inference_vars(
+                    &self.subst.resolve(operand),
+                    &mut constrained,
+                );
+            }
+            variables.retain(|variable| !constrained.contains(variable));
+        }
         if variables.is_empty() {
             return ty;
         }

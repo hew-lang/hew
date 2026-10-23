@@ -13,6 +13,6 @@ machine SeedMachine {
 
 fn seed_machine_calls() {
     var m: SeedMachine = .Idle;
-    m.step(.Activate);
+    let _ = m.step(.Activate).expect("activate machine");
     let _name = m.state_name();
 }

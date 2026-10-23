@@ -16,7 +16,7 @@
 
 use crate::common;
 
-use common::{typecheck, typecheck_embedded_builtins_isolated, typecheck_isolated};
+use common::{typecheck, typecheck_isolated};
 use hew_types::error::TypeErrorKind;
 use hew_types::DynCoercion;
 use hew_types::Ty;
@@ -214,8 +214,8 @@ fn main() {
 
 #[test]
 fn dyn_iterator_with_item_binding_object_safe() {
-    let output = typecheck_embedded_builtins_isolated(
-        r"trait Iterator {
+    let output = typecheck_isolated(
+        r"trait ItemSource {
     type Item;
     fn next(self) -> Option<Self.Item>;
 }
@@ -224,14 +224,14 @@ type Counter {
     value: i32;
 }
 
-impl Iterator for Counter {
+impl ItemSource for Counter {
     type Item = i32;
     fn next(self) -> Option<i32> {
         .Some(self.value)
     }
 }
 
-fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+fn use_iter(iter: dyn ItemSource<Item = i32>) -> Option<i32> {
     iter.next()
 }
 
@@ -242,7 +242,7 @@ fn main() {
     );
     assert!(
         output.errors.is_empty(),
-        "expected projected dyn Iterator to type-check, got: {:#?}",
+        "expected projected dyn ItemSource to type-check, got: {:#?}",
         output.errors
     );
     let entry = output
@@ -257,8 +257,8 @@ fn main() {
 
 #[test]
 fn dyn_iterator_without_binding_rejected() {
-    let output = typecheck_embedded_builtins_isolated(
-        r"trait Iterator {
+    let output = typecheck_isolated(
+        r"trait ItemSource {
     type Item;
     fn next(self) -> Option<Self.Item>;
 }
@@ -267,14 +267,14 @@ type Counter {
     value: i32;
 }
 
-impl Iterator for Counter {
+impl ItemSource for Counter {
     type Item = i32;
     fn next(self) -> Option<i32> {
         .Some(self.value)
     }
 }
 
-fn use_iter(iter: dyn Iterator) {}
+fn use_iter(iter: dyn ItemSource) {}
 
 fn main() {
     use_iter(Counter { value: 1 });
@@ -288,7 +288,7 @@ fn main() {
             matches!(
                 &e.kind,
                 TypeErrorKind::MissingAssocTypeBinding { trait_name, missing }
-                    if trait_name == "Iterator" && missing == &vec!["Item".to_string()]
+                    if trait_name == "ItemSource" && missing == &vec!["Item".to_string()]
             ) && e.message.contains("Item")
         })
         .collect();
@@ -308,8 +308,8 @@ fn main() {
 
 #[test]
 fn dyn_iterator_failed_projection_is_diagnostic() {
-    let output = typecheck_embedded_builtins_isolated(
-        r"trait Iterator {
+    let output = typecheck_isolated(
+        r"trait ItemSource {
     type Item;
     fn next(self) -> Option<Self.Item>;
 }
@@ -318,13 +318,13 @@ type Counter {
     value: i32;
 }
 
-impl Iterator for Counter {
+impl ItemSource for Counter {
     fn next(self) -> Option<i32> {
         .Some(self.value)
     }
 }
 
-fn use_iter(iter: dyn Iterator<Item = i32>) {}
+fn use_iter(iter: dyn ItemSource<Item = i32>) {}
 
 fn main() {
     use_iter(Counter { value: 1 });
@@ -338,9 +338,9 @@ fn main() {
                 type_name,
                 trait_name,
                 assoc_name,
-            } if type_name == "Counter" && trait_name == "Iterator" && assoc_name == "Item"
-        ) && e.message.contains("<Counter as Iterator>.Item")),
-        "expected failed projection diagnostic for Counter/Iterator/Item, got: {:#?}",
+            } if type_name == "Counter" && trait_name == "ItemSource" && assoc_name == "Item"
+        ) && e.message.contains("<Counter as ItemSource>.Item")),
+        "expected failed projection diagnostic for Counter/ItemSource/Item, got: {:#?}",
         output.errors
     );
     assert!(output.dyn_trait_coercions.is_empty());
@@ -348,8 +348,8 @@ fn main() {
 
 #[test]
 fn dyn_distinct_bindings_get_distinct_vtables() {
-    let output = typecheck_embedded_builtins_isolated(
-        r#"trait Iterator {
+    let output = typecheck_isolated(
+        r#"trait ItemSource {
     type Item;
     fn next(self) -> Option<Self.Item>;
 }
@@ -362,23 +362,23 @@ type StringCounter {
     value: string;
 }
 
-impl Iterator for IntCounter {
+impl ItemSource for IntCounter {
     type Item = i32;
     fn next(self) -> Option<i32> {
         .Some(self.value)
     }
 }
 
-impl Iterator for StringCounter {
+impl ItemSource for StringCounter {
     type Item = string;
     fn next(self) -> Option<string> {
         .Some(self.value)
     }
 }
 
-fn use_int(iter: dyn Iterator<Item = i32>) {}
+fn use_int(iter: dyn ItemSource<Item = i32>) {}
 
-fn use_string(iter: dyn Iterator<Item = string>) {}
+fn use_string(iter: dyn ItemSource<Item = string>) {}
 
 fn main() {
     use_int(IntCounter { value: 1 });
@@ -408,8 +408,8 @@ fn main() {
 
 #[test]
 fn dyn_trait_method_signature_substituted() {
-    let output = typecheck_embedded_builtins_isolated(
-        r"trait Iterator {
+    let output = typecheck_isolated(
+        r"trait ItemSource {
     type Item;
     fn next(self) -> Option<Self.Item>;
 }
@@ -418,14 +418,14 @@ type Counter {
     value: i32;
 }
 
-impl Iterator for Counter {
+impl ItemSource for Counter {
     type Item = i32;
     fn next(self) -> Option<i32> {
         .Some(self.value)
     }
 }
 
-fn use_iter(iter: dyn Iterator<Item = i32>) -> Option<i32> {
+fn use_iter(iter: dyn ItemSource<Item = i32>) -> Option<i32> {
     iter.next()
 }
 

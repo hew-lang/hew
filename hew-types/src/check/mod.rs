@@ -2853,6 +2853,7 @@ impl Checker {
 
     /// Check all declarations and bodies, then publish the finalized output.
     pub fn check_program(&mut self, program: &Program) -> TypeCheckOutput {
+        let source_program = program;
         if self.has_checked_program {
             self.reset_for_program();
         } else {
@@ -2891,12 +2892,15 @@ impl Checker {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
-        self.next_default_span = machine_normalize::next_free_span(program);
+        self.next_default_span = normalized_program.as_ref().map_or_else(
+            || machine_normalize::next_free_span(program),
+            |normalized| normalized.next_free_span(),
+        );
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
         self.check_embedded_builtin_impl_bodies(program);
         self.check_root_bodies(program);
-        self.finish_program(program, normalized_program.as_ref())
+        self.finish_program(source_program, normalized_program)
     }
 
     fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {
@@ -3580,8 +3584,31 @@ impl Checker {
     fn finish_program(
         &mut self,
         program: &Program,
-        normalized_program: Option<&std::sync::Arc<machine_normalize::NormalizedProgram>>,
+        mut normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
     ) -> TypeCheckOutput {
+        if let Some(normalized) = normalized_program.as_mut() {
+            let origins = &mut std::sync::Arc::make_mut(normalized).source_origins;
+            let origins = std::sync::Arc::make_mut(origins);
+            for (call, defaults) in &self.call_default_arguments {
+                for default in defaults {
+                    origins
+                        .source_spans
+                        .insert(default.span.clone(), call.start..call.end);
+                }
+            }
+            for (spawn, slots) in &self.spawn_argument_slots {
+                for slot in slots {
+                    if let SpawnSlot::ArgumentDefault(default) = slot {
+                        origins
+                            .source_spans
+                            .insert(default.span.clone(), spawn.start..spawn.end);
+                    }
+                }
+            }
+        }
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
         // Closure escape classification — runs after all bodies have
         // been type-checked. Walks each fn body (root + modules) looking
         // for closure literal sites and computes per-closure
@@ -4156,7 +4183,7 @@ impl Checker {
             associated_type_schemas: self.associated_schema_parameters.clone(),
             resolved_annotation_types,
             resolved_binding_types,
-            normalized_program: normalized_program.cloned(),
+            normalized_program: normalized_program.clone(),
             select_sources: std::mem::take(&mut self.select_sources),
             race_operands: std::mem::take(&mut self.race_operands),
             task_scope_results: std::mem::take(&mut self.task_lifetimes.scope_results),
@@ -4330,7 +4357,7 @@ impl Checker {
                 .errors
                 .extend(machine_effects::validate(&output, &resource_closes));
         }
-        if let Some(normalized) = normalized_program {
+        if let Some(normalized) = &normalized_program {
             normalized.merge_head_binding_diagnostics(&mut output.errors, &mut output.warnings);
             for diagnostic in output.errors.iter_mut().chain(output.warnings.iter_mut()) {
                 // Generated extents can map to a whole authored declaration,
@@ -4370,11 +4397,7 @@ impl Checker {
         let mut projected: HashMap<SpanKey, Ty> = HashMap::new();
         let mut ambiguous: HashSet<SpanKey> = HashSet::new();
         for (key, ty) in expr_types.iter() {
-            let Some(source) = normalized
-                .source_origins
-                .source_spans
-                .get(&(key.start..key.end))
-            else {
+            let Some(source) = normalized.source_span(&(key.start..key.end)) else {
                 continue;
             };
             let source_key = SpanKey::in_module(source, key.module_idx);

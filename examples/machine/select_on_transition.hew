@@ -13,8 +13,8 @@ fn main() {
         after 1ms => true,
     };
     assert(timed_out);
-    let _ = lifecycle.step(.Initialise).expect("machine step failed");
-    let _ = lifecycle.step(.Started { handle: 7 }).expect("machine step failed");
+    let _ = lifecycle.step(.Initialise);
+    let _ = lifecycle.step(.Started { handle: 7 });
     lifecycle.close();
     var previous = updates.initial().state.state_name();
     loop {

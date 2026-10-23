@@ -993,12 +993,16 @@ fn main() {
 
     assert_eq!(
         machine_td.methods["step"].params,
-        vec![Ty::named_in(
-            &output.defs,
-            "Lifecycle.Event",
-            vec![Ty::param(machine_td.methods["step"].type_params[0])]
-        )]
+        vec![
+            Ty::named_in(
+                &output.defs,
+                "Lifecycle.Event",
+                vec![Ty::param(machine_td.methods["step"].type_params[0])]
+            ),
+            Ty::I64
+        ]
     );
+    assert!(machine_td.methods["step"].param_defaults[1].is_some());
 }
 
 #[test]
@@ -1158,8 +1162,15 @@ fn imported_machine_unit_state_constructor_resolves() {
     );
     assert_eq!(
         output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
-        vec![Ty::named_in(&output.defs, "lights.Traffic.Event", vec![])],
+        vec![
+            Ty::named_in(&output.defs, "lights.Traffic.Event", vec![]),
+            Ty::I64
+        ],
         "an imported step method must accept the exact companion event identity"
+    );
+    assert!(
+        output.type_def_at_path("lights.Traffic").unwrap().methods["step"].param_defaults[1]
+            .is_some()
     );
 }
 

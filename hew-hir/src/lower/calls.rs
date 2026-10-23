@@ -82,7 +82,7 @@ impl LowerCtx {
         &mut self,
         default: &hew_types::check::CheckedDefaultArgument,
     ) -> HirExpr {
-        let site = self.ids.site();
+        let site = self.source_site(&default.span);
         let symbol = self.call_target_presentation_name(&default.target);
         let (kind, ty) = self.lower_module_qualified_direct_call_lowered(
             default.target.clone(),

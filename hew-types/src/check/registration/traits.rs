@@ -867,6 +867,11 @@ impl Checker {
         };
         let prev_trait_self = self.current_trait_for_self_projection.replace(trait_id);
         self.register_fn_sig_with_name(&method_path, &decl, Some(method_id));
+        // Free-function registration has no containing-type distinction.
+        // Publish it here for every consumer of the canonical trait signature.
+        if let Some(signature) = self.fn_sigs.get_mut(&method_id) {
+            signature.associated = !method.params.first().is_some_and(|param| param.is_receiver);
+        }
         self.current_trait_for_self_projection = prev_trait_self;
     }
 

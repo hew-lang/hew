@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-23
+
+- Infer generic closure signatures and private mutable captures, including
+  contextual callable types and independent cloned environments.
+- Add declaration-scoped default arguments to functions, methods, actor calls
+  and constructors. Unify machine stepping as `step(event, limit: 1024)`,
+  returning a typed result with rollback on limit exhaustion.
+- Parse decimal duration literals exactly and use typed durations throughout
+  public timeout APIs, with explicit conversions at host boundaries.
+- Add owned semaphore leases, useful local progress diagnostics and matching
+  sandbox waiting, cancellation and deadline behaviour.
+- Enforce confined code's supplied-service boundary across transitive calls,
+  default expressions and actor construction.
+- Inspect selected or whole-file macro expansions through CLI and editor
+  views, with source provenance and ordinary test discovery for generated code.
+
+See the [release notes](docs/releases/v0.8.0.md) and
+[migration guide](docs/migrations/v0.8.0.md) for examples and source updates.
+
 ## [0.7.1] - 2026-10-22
 
 - Suspend WebSocket text and binary writes through native I/O so scope deadlines

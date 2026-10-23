@@ -1343,6 +1343,13 @@ impl<'a> Formatter<'a> {
     }
 
     fn format_import(&mut self, decl: &ImportDecl, span: Span) {
+        // Macro-only selections are consumed during expansion. Empty import
+        // selections are compiler bookkeeping, not legal source syntax.
+        if self.show_contexts
+            && matches!(&decl.spec, Some(ImportSpec::Names(names)) if names.is_empty())
+        {
+            return;
+        }
         self.write_indent();
         self.write("import ");
         if let Some(file_path) = &decl.file_path {

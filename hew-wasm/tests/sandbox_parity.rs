@@ -1344,9 +1344,13 @@ fn quoted_file_import_aliases_match_native() {
 #[test]
 fn contextual_macros_native_and_vm() {
     let source = "macro add { ($x:expr) => expr { $x + 1 } } fn main() { println(add!(2)); }";
-    let expanded = hew_wasm::expand_macro(source, source.find("add!(2)").unwrap())
+    let expanded = hew_wasm::expand_macro(source, Some(source.find("add!(2)").unwrap()))
         .expect("browser macro expansion");
     assert!(expanded.contains("2 + 1"), "{expanded}");
+    let whole = hew_wasm::expand_macro(source, None).expect("browser whole-document expansion");
+    assert!(whole.contains("fn main()"), "{whole}");
+    assert!(whole.contains("2 + 1"), "{whole}");
+    assert!(!whole.contains("add!"), "{whole}");
     set_test_hewpath();
     ensure_native_toolchain();
     ensure_parity_runner_built();

@@ -1902,11 +1902,15 @@ fn cmd_expand(args: &args::ExpandArgs) {
             });
             let path =
                 std::fs::canonicalize(&args.input).unwrap_or_else(|_| args.input.clone().into());
-            let Some(text) = hew_analysis::expansion::render(&state.program, &path, offset) else {
+            let Some(view) = hew_analysis::expansion::inspect(&state.program, &path, offset) else {
                 eprintln!("no macro expansion at this position");
                 std::process::exit(1);
             };
-            println!("{text}");
+            if args.json {
+                println!("{}", serde_json::json!(view));
+            } else {
+                println!("{}", view.text);
+            }
         }
         Err(failure) => {
             let channel = compile::render_frontend_diagnostics(&failure.diagnostics);

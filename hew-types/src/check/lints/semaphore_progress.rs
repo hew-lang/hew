@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use hew_parser::ast::{Block, Expr, Ident, Literal, Pattern, Span, Spanned, Stmt, UnaryOp};
 
-use crate::{check::dispatch::CallTarget, error::TypeError, ty::Ty};
+use crate::{error::TypeError, ty::Ty};
 
 use super::{LintCtx, LintId, LintLevels};
 
@@ -87,25 +87,8 @@ fn expression(
 ) -> Option<usize> {
     let (expr, span) = value;
     let key = super::super::types::SpanKey::in_module(span, ctx.module_idx);
-    let target = ctx
-        .checker
-        .direct_call_targets
-        .get(&key)
-        .or_else(|| {
-            ctx.checker
-                .resolved_calls
-                .get(&key)
-                .map(|call| &call.target)
-        })
-        .or_else(|| match ctx.checker.method_call_rewrites.get(&key) {
-            Some(
-                crate::MethodCallRewrite::RewriteToFunction { target, .. }
-                | crate::MethodCallRewrite::RewriteModuleQualifiedToFunction { target, .. },
-            ) => Some(target),
-            _ => None,
-        });
-    if matches!(target, Some(CallTarget::User(id)) if Some(*id) == ctx.checker.defs.lookup_path("std.semaphore.new"))
-    {
+    let constructor = ctx.checker.defs.lookup_path("std.semaphore.new");
+    if constructor.is_some() && ctx.checker.selected_callable_declaration_at(&key) == constructor {
         if let Expr::Call { args, .. } | Expr::MethodCall { args, .. } = expr {
             if let Some(count) = args.first().and_then(|arg| integer(&arg.expr().0)) {
                 if (0..=2_147_483_647).contains(&count) {

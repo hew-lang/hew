@@ -1156,10 +1156,7 @@ impl TypeEnv {
 
     /// Check a closure against independent environment fields while retaining
     /// lexical binding identities for the checker-to-HIR capture contract.
-    pub(crate) fn closure_environment(
-        &self,
-        private: &std::collections::HashSet<TypeBindingId>,
-    ) -> Self {
+    pub(crate) fn closure_environment(&self) -> Self {
         let mut environment = self.clone();
         environment.loop_scope_floors.clear();
         environment.enter_initialization_boundary();
@@ -1170,11 +1167,11 @@ impl TypeEnv {
             scope.clear();
         }
         for binding in environment.scopes.iter_mut().flat_map(HashMap::values_mut) {
-            binding.is_mutable = private.contains(&binding.id);
-            // A later invocation may observe this private field's replacement.
-            if binding.is_mutable {
-                binding.value_candidates.may_be_unknown = true;
-            }
+            // Captures are independent fields. Their access mode is inferred
+            // from writes in this body, regardless of the enclosing binding's
+            // mutability. A nested body starts its own observation window.
+            binding.is_mutable = true;
+            binding.mutation = MutationState::Unwritten;
             binding.capture_consumption = crate::ClosureCaptureConsumption::Retained;
             binding.loop_fresh.clear();
         }
@@ -1187,11 +1184,12 @@ impl TypeEnv {
         self.next_binding_id = body.next_binding_id;
         for binding in self.scopes.iter_mut().flat_map(HashMap::values_mut) {
             if let Some(checked) = body.binding_by_id(binding.id) {
+                let captured = checked.read_count > binding.read_count;
                 binding.read_count = binding.read_count.max(checked.read_count);
                 // A closure that reads the binding observes whatever the
                 // enclosing body wrote into it, whenever the closure runs.
                 binding.observing_reads = binding.observing_reads.max(checked.observing_reads);
-                if checked.mutation == MutationState::Observed
+                if (captured || checked.mutation == MutationState::Observed)
                     && binding.mutation == MutationState::Unobserved
                 {
                     binding.mutation = MutationState::Observed;

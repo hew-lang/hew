@@ -1,13 +1,7 @@
 fn main() {
-    var n = 0;
+    let n = 0;
     let f = || {
-        n = n + 1;
+        n += 1;
     };
-    let w = actor |x: i64| {
-        f();
-        println(x);
-    };
-    let _ = w.send(1);
     f();
-    println(n);
 }

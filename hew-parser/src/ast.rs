@@ -485,8 +485,6 @@ pub enum Expr {
     },
     Lambda {
         is_move: bool,
-        /// Existing outer names made privately mutable in this environment.
-        private_captures: Vec<Spanned<Ident>>,
         type_params: Option<Vec<TypeParam>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
@@ -508,9 +506,6 @@ pub enum Expr {
     },
     SpawnLambdaActor {
         is_move: bool,
-        /// Captures named in `capture(var ..)`: mutable state fields of the
-        /// actor, each starting from a snapshot of the enclosing binding.
-        private_captures: Vec<Spanned<Ident>>,
         params: Vec<LambdaParam>,
         return_type: Option<Spanned<TypeExpr>>,
         body: Box<Spanned<Expr>>,

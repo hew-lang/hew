@@ -20,7 +20,7 @@ fn main() {
     log.lines[0] = "edited";
     println(f"{log.lines[0]} {log.lines[1]}");
     let tally = Log { lines: ["start"], name: "tally" };
-    var append = move capture(var tally) |line: string| {
+    var append = move |line: string| {
         tally.lines.push(line);
         tally.name = f"tally {line}";
         println(f"{tally.name} {tally.lines.len()}");

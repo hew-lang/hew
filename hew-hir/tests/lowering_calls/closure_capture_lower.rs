@@ -375,7 +375,7 @@ fn callable_return_erasure_preserves_concrete_closure_type() {
 
 #[test]
 fn contextual_option_result_preserves_nested_callable_storage() {
-    let output = typecheck_and_lower("fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> { let count: i64 = 0; if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) } }");
+    let output = typecheck_and_lower("fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> { let count: i64 = 0; if flag { .Ok(.Some(|| { count = count + 1; count })) } else { .Ok(.None) } }");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let closure = find_closure_in_fn(&output, "choose")
         .expect("closure retained in nested constructor payloads");
@@ -477,7 +477,7 @@ fn generic_function_value_requires_complete_checker_facts() {
 
 #[test]
 fn mutable_callable_field_call_keeps_the_selected_projection() {
-    let output = typecheck_and_lower("type Holder {\n    next: fn[var, clone](i64) -> i64;\n}\n\nfn main() {\n    let count: i64 = 0;\n    var holder = Holder { next: capture(var count) |step: i64| {\n        count = count + step;\n        count\n    } };\n    holder.next(1);\n}\n");
+    let output = typecheck_and_lower("type Holder {\n    next: fn[var, clone](i64) -> i64;\n}\n\nfn main() {\n    let count: i64 = 0;\n    var holder = Holder { next: |step: i64| {\n        count = count + step;\n        count\n    } };\n    holder.next(1);\n}\n");
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let main = output
         .module
@@ -535,13 +535,19 @@ fn zero_capture_literals_keep_concrete_closure_identity() {
     for source in [
         "fn main() { let f = || 7; f(); }",
         "fn main() { let f: fn[clone]() -> i64 = || 7; f(); }",
-        "fn main() { let count = 90; let f = capture(var count) || { var count = 1; count += 1; count }; f(); }",
+        "fn main() { let count = 90; let f = || { var count = 1; count += 1; count }; f(); }",
     ] {
         let output = typecheck_and_lower(source);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let closure = find_closure_in_fn(&output, "main").expect("closure literal");
-        assert!(matches!(&closure.ty, ResolvedTy::Closure { captures, .. } if captures.is_empty()), "{:?}", closure.ty);
-        let HirExprKind::Closure { captures, .. } = &closure.kind else { unreachable!() };
+        assert!(
+            matches!(&closure.ty, ResolvedTy::Closure { captures, .. } if captures.is_empty()),
+            "{:?}",
+            closure.ty
+        );
+        let HirExprKind::Closure { captures, .. } = &closure.kind else {
+            unreachable!()
+        };
         assert!(captures.is_empty());
     }
 }

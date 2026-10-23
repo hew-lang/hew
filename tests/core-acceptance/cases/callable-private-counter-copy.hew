@@ -1,5 +1,5 @@
 fn make_counter(count: i64) -> fn[var, clone]() -> i64 {
-    move capture(var count) || {
+    move || {
         count += 1;
         count
     }

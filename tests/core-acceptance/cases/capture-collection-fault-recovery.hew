@@ -11,7 +11,7 @@ impl Hash for Key {
 
 fn main() {
     let counts: HashMap<Key, i64> = HashMap.new();
-    var add = capture(var counts) |label: string, divisor: i64| -> i64 {
+    var add = |label: string, divisor: i64| -> i64 {
         counts.insert(Key { label: label, divisor: divisor }, divisor);
         counts.len()
     };
@@ -29,7 +29,7 @@ fn main() {
     println(add("dddd", 1));
     println(counts.len());
     let names: HashSet<string> = HashSet.new();
-    var edit = move capture(var names) |name: string, keep: bool| -> i64 {
+    var edit = move |name: string, keep: bool| -> i64 {
         if keep {
             names.insert(name);
         } else {
@@ -41,7 +41,7 @@ fn main() {
     println(edit("b", true));
     println(edit("a", false));
     let totals: HashMap<string, i64> = HashMap.new();
-    var tally = capture(var totals) |word: string| -> i64 {
+    var tally = |word: string| -> i64 {
         totals.insert(word, 1);
         totals.remove("skip");
         totals.len()

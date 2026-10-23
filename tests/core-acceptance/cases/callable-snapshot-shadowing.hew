@@ -12,7 +12,7 @@ fn missing() -> Option<i64> {
 }
 
 fn changing(initial: fn[clone, suspends]() -> i64) -> fn[var, clone, suspends]() -> i64 {
-    capture(var initial) || {
+    || {
         let value = initial();
         initial = second;
         value
@@ -53,7 +53,7 @@ fn main() -> i64 {
     println(label);
     println(snapshot());
     let count = 90;
-    let shadowed = capture(var count) || {
+    let shadowed = || {
         var count = 1;
         count += 1;
         count

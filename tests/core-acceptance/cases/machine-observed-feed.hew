@@ -101,7 +101,7 @@ fn prepared_calls() {
     };
     assert(answer == 9);
     let count = 0;
-    var counter = move capture(var count) || -> i64 {
+    var counter = move || -> i64 {
         sleep(1ms);
         count += 1;
         count
@@ -216,7 +216,7 @@ fn prepared_methods() {
     } handle failure { true };
     assert(cancelled && meter.count == 3);
     let pair = (Meter { count: 0 }, 0);
-    var captured = move capture(var pair) || -> i64 {
+    var captured = move || -> i64 {
         let timed_out = select {
             result from pair.0.advance(1s) => false,
             after 1ms => true,

@@ -502,7 +502,7 @@ fn main() {
     );
     let dir = tempdir();
     let input = dir.path().join("exclusive-select.hew");
-    std::fs::write(&input, "fn main() { let n = 0; var counter = move capture(var n) || -> i64 { sleep(1ms); n += 1; n }; let result = select { a from counter() => a, b from counter() => b }; println(result); }").unwrap();
+    std::fs::write(&input, "fn main() { let n = 0; var counter = move || -> i64 { sleep(1ms); n += 1; n }; let result = select { a from counter() => a, b from counter() => b }; println(result); }").unwrap();
     let mut build = Command::new(hew_binary());
     build
         .arg("build")

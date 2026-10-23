@@ -11,7 +11,7 @@ impl Conn {
 
 fn main() {
     let conns: HashMap<string, Conn> = HashMap.new();
-    var add = move capture(var conns) |name: string, fd: i64| {
+    var add = move |name: string, fd: i64| {
         conns.insert(name, Conn { fd: fd });
         println(conns.len());
     };

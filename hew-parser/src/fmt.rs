@@ -4561,7 +4561,6 @@ impl<'a> Formatter<'a> {
             }
             Expr::Lambda {
                 is_move,
-                private_captures,
                 type_params,
                 params,
                 return_type,
@@ -4570,7 +4569,6 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
-                self.format_private_captures(private_captures);
                 self.write("|");
                 self.format_opt_type_params(type_params.as_ref());
                 if type_params.is_some() && !params.is_empty() {
@@ -4621,7 +4619,6 @@ impl<'a> Formatter<'a> {
             }
             Expr::SpawnLambdaActor {
                 is_move,
-                private_captures,
                 params,
                 return_type,
                 body,
@@ -4630,7 +4627,6 @@ impl<'a> Formatter<'a> {
                 if *is_move {
                     self.write("move ");
                 }
-                self.format_private_captures(private_captures);
                 self.write("|");
                 self.format_lambda_params(params);
                 self.write("|");
@@ -5016,20 +5012,6 @@ impl<'a> Formatter<'a> {
             }
             CallArg::Positional(e) => f.format_expr(e),
         });
-    }
-
-    /// The `capture(var a, var b) ` prefix shared by closures and lambda
-    /// actors; nothing when no capture is private.
-    fn format_private_captures(&mut self, private_captures: &[Spanned<Ident>]) {
-        if private_captures.is_empty() {
-            return;
-        }
-        self.write("capture(");
-        self.comma_sep(private_captures, |f, (name, _)| {
-            f.write("var ");
-            f.write_ident(*name);
-        });
-        self.write(") ");
     }
 
     fn format_lambda_params(&mut self, params: &[LambdaParam]) {

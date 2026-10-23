@@ -81,7 +81,7 @@ fn main() -> i64 {
     assert(invoke(callback) == "last");
     assert(callback() == "last");
     var counter = 0;
-    let counted: fn[once, clone]() -> i64 = move capture(var counter) || {
+    let counted: fn[once, clone]() -> i64 = move || {
         counter += 1;
         counter
     };

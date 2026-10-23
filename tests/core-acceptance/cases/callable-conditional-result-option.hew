@@ -2,7 +2,7 @@ fn choose(use_if: bool, enabled: bool, guarded: bool, fail: bool) -> Result<Opti
     let count = 10;
     if use_if {
         if enabled {
-            .Ok(.Some(capture(var count) || {
+            .Ok(.Some(|| {
                 count += 1;
                 count
             }))
@@ -11,11 +11,11 @@ fn choose(use_if: bool, enabled: bool, guarded: bool, fail: bool) -> Result<Opti
         }
     } else {
         match enabled {
-            true if guarded => .Ok(.Some(capture(var count) || {
+            true if guarded => .Ok(.Some(|| {
                 count += 2;
                 count
             })),
-            true => .Ok(.Some(capture(var count) || {
+            true => .Ok(.Some(|| {
                 count += 3;
                 count
             })),

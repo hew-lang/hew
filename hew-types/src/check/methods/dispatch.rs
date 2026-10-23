@@ -82,12 +82,6 @@ impl Checker {
             .and_then(|root| self.env.lookup_ref(root))
             .is_some_and(|binding| binding.is_mutable)
         {
-            if let Some(error) =
-                root.and_then(|root| self.private_capture_mutation_error(root, span))
-            {
-                self.errors.push(error);
-                return;
-            }
             let label =
                 root.map_or_else(|| "this expression".to_string(), |root| format!("`{root}`"));
             let declaration = root

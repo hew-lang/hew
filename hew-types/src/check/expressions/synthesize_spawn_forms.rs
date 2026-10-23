@@ -806,7 +806,6 @@ impl Checker {
     pub(in crate::check) fn check_lambda(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -825,7 +824,6 @@ impl Checker {
         let previous = self.effect_graph.current_body.replace(owner);
         let result = self.check_lambda_body(
             is_move,
-            private_captures,
             type_params,
             params,
             return_type,
@@ -848,7 +846,6 @@ impl Checker {
     pub(super) fn check_lambda_body(
         &mut self,
         is_move: bool,
-        private_captures: &[Spanned<Ident>],
         type_params: Option<&[TypeParam]>,
         params: &[LambdaParam],
         return_type: Option<&Spanned<TypeExpr>>,
@@ -858,8 +855,7 @@ impl Checker {
         is_actor_body: bool,
         is_fork_body: bool,
     ) -> Ty {
-        let private_bindings = self.resolve_private_captures(private_captures);
-        let body_environment = self.env.closure_environment(&private_bindings);
+        let body_environment = self.env.closure_environment();
         let outer_environment = std::mem::replace(&mut self.env, body_environment);
         // Save/restore capture tracking state for nested lambdas
         let prev_capture_depth = self.lambda_capture_depth;
@@ -1079,7 +1075,6 @@ impl Checker {
         self.lambda_capture_depth = prev_capture_depth;
         let capture_facts = self.finish_closure_captures(
             raw_capture_facts,
-            &private_bindings,
             &body_environment,
             is_move,
             span,

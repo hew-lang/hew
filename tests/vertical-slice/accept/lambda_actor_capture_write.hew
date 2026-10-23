@@ -1,0 +1,24 @@
+// Actor writes update independent snapshots of enclosing values.
+fn main() -> i64 {
+    let hits: i64 = 0;
+    let count = actor || -> i64 {
+        hits += 1;
+        hits
+    };
+    assert(count().expect("count") == 1);
+    assert(count().expect("count") == 2);
+    assert(hits == 0);
+    stop(count);
+    stopped(count);
+    let seen: Vec<i64> = [];
+    let note = actor move |n: i64| -> i64 {
+        seen.push(n);
+        seen.len()
+    };
+    assert(note(10).expect("note") == 1);
+    assert(note(20).expect("note") == 2);
+    stop(note);
+    stopped(note);
+    println("actor capture inference");
+    0
+}

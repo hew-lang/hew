@@ -8,7 +8,7 @@ enum Tally {
 
 fn main() {
     let count: i64 = 0;
-    let tally = actor capture(var count) |m: Tally| -> i64 {
+    let tally = actor |m: Tally| -> i64 {
         match m {
             .Add(n) => {
                 count += n;

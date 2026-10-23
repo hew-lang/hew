@@ -1866,9 +1866,7 @@ impl Checker {
                             // Actor state fields get a field-specific
                             // diagnostic pointing at the declaration site;
                             // plain locals keep the variable-shaped error.
-                            if let Some(error) = self.private_capture_mutation_error(name, span) {
-                                self.errors.push(error);
-                            } else if let Some(field) = self
+                            if let Some(field) = self
                                 .current_actor_fields
                                 .iter()
                                 .find(|f| f.name == name.name.as_str())

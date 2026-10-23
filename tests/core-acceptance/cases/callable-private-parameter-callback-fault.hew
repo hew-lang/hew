@@ -10,7 +10,7 @@ fn main() -> i64 {
     let caller = "caller owner".to_upper();
     let text = "captured owner".to_upper();
     let count = 10;
-    var callback: fn[var, clone](i64) -> i64 = move capture(var count) |divisor: i64| -> i64 {
+    var callback: fn[var, clone](i64) -> i64 = move |divisor: i64| -> i64 {
         count += 1;
         let local = text.to_upper();
         let bytes = local.to_bytes();

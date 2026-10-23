@@ -16,7 +16,7 @@ fn capture(output: &TypeCheckOutput, name: &str) -> ClosureCaptureFact {
 #[test]
 fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
     let output = check_source(
-        "fn main() { let count: i64 = 0; var next = capture(var count) || { count = count + 1; count }; next(); next(); }",
+        "fn main() { let count: i64 = 0; var next = || { count = count + 1; count }; next(); next(); }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     let fact = capture(&output, "count");
@@ -29,7 +29,7 @@ fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
         .any(|ty| matches!(ty, Ty::Closure { capabilities, .. }
         if capabilities.call == CallableCallMode::Var && capabilities.clone)));
     let output = check_source(
-        "fn main() { let count: i64 = 0; let next = capture(var count) || { count = count + 1; count }; next(); }",
+        "fn main() { let count: i64 = 0; let next = || { count = count + 1; count }; next(); }",
     );
     assert!(
         output
@@ -42,49 +42,22 @@ fn private_counter_accepts_immutable_source_and_requires_mutable_callee() {
 }
 
 #[test]
-fn implicit_capture_mutation_names_the_private_prefix() {
+fn private_capture_writes_are_inferred_for_values_and_actors() {
     for source in [
-        "fn main() { var n: i64 = 0; let f = || { n = n + 1; }; }",
-        "fn main() { var xs: Vec<i32> = Vec.new(); let f = || xs.push(1); }",
+        "fn main() { let n: i64 = 0; var f = || { n = n + 1; }; f(); }",
+        "fn main() { let xs: Vec<i32> = Vec.new(); var f = || xs.push(1); f(); }",
+        "fn main() { let hits: i64 = 0; let count = actor || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
     ] {
         let output = check_source(source);
-        assert!(
-            output
-                .errors
-                .iter()
-                .any(|error| error.message.contains("capture(var ")),
-            "{:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+        assert!(output.closure_capture_facts.values().flatten().any(|capture| capture.access == ClosureCaptureAccess::Var));
     }
 }
 
 #[test]
-fn lambda_actor_capture_write_needs_the_private_prefix() {
-    for binding in ["var", "let"] {
-        let output = check_source(&format!(
-            "fn main() {{ {binding} hits: i64 = 0; let count = actor || -> i64 {{ hits += 1; hits }}; stop(count); stopped(count); }}"
-        ));
-        let error = output
-            .errors
-            .iter()
-            .find(|error| error.kind == TypeErrorKind::ImmutableCaptureMutation)
-            .unwrap_or_else(|| panic!("{binding}: {:?}", output.errors));
-        assert_eq!(
-            error.message,
-            "capture `hits` is an immutable snapshot; add `capture(var hits)` after `actor` to give the actor a mutable state field"
-        );
-        assert_eq!(
-            error.suggestions,
-            ["insert `capture(var hits) ` before the actor's parameter list"]
-        );
-    }
-}
-
-#[test]
-fn lambda_actor_private_prefix_publishes_a_var_capture() {
+fn lambda_actor_body_publishes_its_capture_access() {
     let output = check_source(
-        "fn main() { let hits: i64 = 0; let count = actor capture(var hits) || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
+        "fn main() { let hits: i64 = 0; let count = actor || -> i64 { hits += 1; hits }; let _ = count(); stop(count); stopped(count); }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert_eq!(capture(&output, "hits").access, ClosureCaptureAccess::Var);
@@ -96,17 +69,12 @@ fn lambda_actor_private_prefix_publishes_a_var_capture() {
 }
 
 #[test]
-fn private_prefix_resolves_existing_binding_and_respects_body_shadowing() {
+fn inferred_captures_respect_body_shadowing() {
     let output = check_source(
-        "fn main() { let count: i64 = 0; let f = capture(var count) || { var count: i64 = 2; count = 3; count }; }",
+        "fn main() { let count: i64 = 0; let f = || { var count: i64 = 2; count = 3; count }; }",
     );
     assert!(output.errors.is_empty(), "{:?}", output.errors);
     assert!(output.closure_capture_facts.values().all(Vec::is_empty));
-    let output = check_source("fn main() { let f = capture(var missing) || 1; }");
-    assert!(output
-        .errors
-        .iter()
-        .any(|error| error.kind == TypeErrorKind::UndefinedVariable));
 }
 
 #[test]
@@ -320,7 +288,7 @@ fn explicit_erasure_controls_later_calls_and_clone() {
 #[test]
 fn lambda_arguments_cannot_hide_private_mutation() {
     let output = check_source(
-        "fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(capture(var n) || { n = n + 1; n }); }",
+        "fn accept(f: fn() -> i64) {} fn main() { let n: i64 = 0; accept(|| { n = n + 1; n }); }",
     );
     assert!(
         !output.errors.is_empty(),
@@ -983,8 +951,8 @@ fn callable_join_rejects_nested_foreign_owner_without_binding_either_order() {
 #[test]
 fn capture_syntax_composes_with_conditional_result_and_option_types() {
     for body in [
-        "if flag { .Ok(.Some(capture(var count) || { count = count + 1; count })) } else { .Ok(.None) }",
-        "match flag { true => .Ok(.Some(capture(var count) || { count = count + 1; count })), false => .Ok(.None) }",
+        "if flag { .Ok(.Some(|| { count = count + 1; count })) } else { .Ok(.None) }",
+        "match flag { true => .Ok(.Some(|| { count = count + 1; count })), false => .Ok(.None) }",
     ] {
         let source = format!(
             "fn choose(flag: bool) -> Result<Option<fn[var, clone]() -> i64>, string> {{ let count: i64 = 0; {body} }}"
@@ -1148,7 +1116,7 @@ fn borrowed_mutable_callable_requires_clone_only_when_invoked() {
 }
 
 const FRESH_MUTABLE_CALLBACK: &str =
-    "fn fresh_owned() -> fn[var]() -> i64 { let n = 0; capture(var n) || { n += 1; n } }";
+    "fn fresh_owned() -> fn[var]() -> i64 { let n = 0; || { n += 1; n } }";
 
 #[test]
 fn borrowed_mutable_callable_accepts_definite_replacement() {

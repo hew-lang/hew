@@ -40,7 +40,7 @@ fn main() {
     defer println(f"{c.label} {c.n}");
     c.bump(false);
     let shape = Shape { origin: Point { x: 10, y: 0 }, name: "shape" };
-    var step = capture(var shape) |fail: bool| {
+    var step = |fail: bool| {
         defer println(f"{shape.name} {shape.origin.x}");
         shape.origin.shift(fail);
     };

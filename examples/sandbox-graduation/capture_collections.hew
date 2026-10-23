@@ -3,7 +3,7 @@
 // sees, while the binding it was captured from keeps its snapshot.
 fn main() {
     let counts: HashMap<string, i64> = HashMap.new();
-    var tally = capture(var counts) |word: string| -> i64 {
+    var tally = |word: string| -> i64 {
         counts.insert(word, 1);
         counts.remove("skip");
         counts.len()
@@ -13,7 +13,7 @@ fn main() {
     println(tally("a"));
     println(counts.len());
     let seen: HashSet<string> = HashSet.new();
-    var mark = move capture(var seen) |name: string| -> bool {
+    var mark = move |name: string| -> bool {
         let fresh = !seen.contains(name);
         seen.insert(name);
         fresh

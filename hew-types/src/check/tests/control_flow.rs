@@ -1070,7 +1070,7 @@ fn main() {
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = capture(var xs) || xs.push(1);
+                let f = || xs.push(1);
                 let _ = f;
             }
             ",
@@ -1095,7 +1095,7 @@ fn main() {
             r"
             fn main() {
                 var xs: Vec<i32> = Vec.new();
-                let f = capture(var xs) || { xs[0] = 1; };
+                let f = || { xs[0] = 1; };
                 let _ = f;
             }
             ",

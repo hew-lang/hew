@@ -62,7 +62,7 @@ fn main() -> i64 {
     let (second_label, second_equal, second_value) = labeler<string>("labelled".to_upper());
     assert(second_label == "CAPTURED" && second_equal && second_value == "LABELLED");
     let count = 0;
-    var counted = capture(var count) |<T> value: T| -> (i64, T) {
+    var counted = |<T> value: T| -> (i64, T) {
         count += 1;
         sleep(1ms);
         (count, value)

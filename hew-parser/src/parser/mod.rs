@@ -927,6 +927,8 @@ pub enum ParseDiagnosticKind {
         /// The token (or `"end of file"`) that was encountered.
         got: String,
     },
+    /// Capture mutability is inferred; the explicit prefix has been retired.
+    LegacyPrivateCapture,
     /// Pipe-closure syntax is malformed or incomplete.
     ClosurePipeSyntax,
     /// Retired `for await` syntax; `for` waits per item on its own.
@@ -967,6 +969,7 @@ impl ParseDiagnosticKind {
             Self::InvalidLiteral => "InvalidLiteral",
             Self::MissingExpression { .. } => "MissingExpression",
             Self::InvalidPattern { .. } => "InvalidPattern",
+            Self::LegacyPrivateCapture => "E_CAPTURE_INFERRED",
             Self::ClosurePipeSyntax => "ClosurePipeSyntax",
             Self::ForAwait => "E_FOR_AWAIT",
             Self::DuplicateRecordBase => "E_RECORD_ONE_BASE",

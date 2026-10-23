@@ -12,6 +12,15 @@ fn main() {
     assert(0ns.millis_ceil() == 0);
     assert((-1ns).millis_ceil() == 0);
     assert((-1_000_001ns).millis_ceil() == -1);
+    assert((-1.5ms).micros() == -1500);
+    assert((-1.5ms).millis() == -1);
+    assert(1.5s.secs() == 1);
+    assert(1.5m.mins() == 1);
+    assert(1.5h.hours() == 1);
+    assert((-1.5ms).abs() == 1500us);
+    assert(duration.from_nanos(-9223372036854775808).abs().nanos() == 9223372036854775807);
+    assert(0ns.is_zero());
+    assert(!1ns.is_zero());
     assert(echo(0.25s) == 250ms);
     assert(1.5ms == 1500us);
     assert(0.1us == 100ns);

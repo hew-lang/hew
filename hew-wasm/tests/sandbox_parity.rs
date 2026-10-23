@@ -828,6 +828,51 @@ fn timestamp_values_match_native() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn language_cohort_decimal_time_matches_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "duration_decimals",
+            source_rel: "tests/core-acceptance/cases/duration-decimals.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_semaphore_leases_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "semaphore_leases",
+            source_rel: "tests/vertical-slice/accept/semaphore_leases.hew",
+        },
+        "",
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn language_cohort_semaphore_waits_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    assert_case(
+        &ParityCase {
+            test_name: "semaphore_owned_waits",
+            source_rel: "tests/vertical-slice/accept/semaphore_owned_waits.hew",
+        },
+        "",
+    );
+}
+
 // This integration test executes the Node sandbox VM. Windows CI covers the
 // native toolchain and WASI target separately; Linux owns this VM contract.
 #[cfg(unix)]

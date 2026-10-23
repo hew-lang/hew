@@ -51,6 +51,7 @@ export interface ShimHost {
   codecBridge?: (request: string) => string;
   encodingError?(format: EncodingFormat, message?: string): string;
   pipes?: Pipes;
+  semaphores?: import("./semaphores.js").Semaphores;
   newPipe?(capacity: number): VmValue;
   generatorStream?(generator: VmValue): VmValue;
   encoderSink?(sink: VmValue, encoder: VmValue): VmValue;
@@ -348,7 +349,7 @@ const SUSPENSION_ROUTES = {
   Accept: refused("Accept", true),
   SleepUntil: refused("SleepUntil"),
   ServiceAcquire: refused("ServiceAcquire"),
-  SemaphoreAcquire: refused("SemaphoreAcquire"),
+  SemaphoreAcquire: "SemaphoreAcquire",
   ActorSend: refused("ActorSend"),
   RestartWait: refused("RestartWait"),
   CallClosure: refused("CallClosure"),
@@ -759,14 +760,19 @@ const UNIT_FAMILIES = {
   ActorRequestRelease: refused("ActorRequestRelease"),
   ActorCallFree: refused("ActorCallFree"),
   ActorRequestTake: refused("ActorRequestTake"),
-  DurationAbs: refused("DurationAbs"),
-  DurationHours: refused("DurationHours"),
-  DurationIsZero: refused("DurationIsZero"),
-  DurationMicros: refused("DurationMicros"),
-  DurationMillis: refused("DurationMillis"),
-  DurationMins: refused("DurationMins"),
-  DurationNanos: refused("DurationNanos"),
-  DurationSecs: refused("DurationSecs"),
+  DurationAbs: (_host, args) => {
+    const nanos = integer(args, 0);
+    return int(
+      nanos === -(1n << 63n) ? (1n << 63n) - 1n : nanos < 0n ? -nanos : nanos,
+    );
+  },
+  DurationHours: (_host, args) => int(integer(args, 0) / 3_600_000_000_000n),
+  DurationIsZero: (_host, args) => bool(integer(args, 0) === 0n),
+  DurationMicros: (_host, args) => int(integer(args, 0) / 1_000n),
+  DurationMillis: (_host, args) => int(integer(args, 0) / 1_000_000n),
+  DurationMins: (_host, args) => int(integer(args, 0) / 60_000_000_000n),
+  DurationNanos: (_host, args) => int(integer(args, 0)),
+  DurationSecs: (_host, args) => int(integer(args, 0) / 1_000_000_000n),
   DynBoxAlloc: refused("DynBoxAlloc"),
   DynBoxFree: refused("DynBoxFree"),
   HashMapContainsKeyLayout: refused("HashMapContainsKeyLayout"),
@@ -1369,6 +1375,20 @@ function bigMax(left: bigint, right: bigint): bigint {
 // ── externs ─────────────────────────────────────────────────────────────────
 
 const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
+  hew_semaphore_new: (host, args) => host.semaphores!.create(integer(args, 0)),
+  hew_semaphore_clone: (host, args) => host.semaphores!.clone(arg(args, 0)),
+  hew_semaphore_try_acquire: (host, args) =>
+    bool(host.semaphores!.tryAcquire(arg(args, 0))),
+  hew_semaphore_count: (host, args) =>
+    int(host.semaphores!.count(arg(args, 0))),
+  hew_semaphore_release: (host, args) => {
+    host.semaphores!.release(arg(args, 0));
+    return UNIT;
+  },
+  hew_semaphore_free: (host, args) => {
+    host.semaphores!.close(arg(args, 0));
+    return UNIT;
+  },
   hew_path_separator: () => str("/"),
   hew_calendar_format: {
     kind: "ordinary",

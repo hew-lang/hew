@@ -561,6 +561,7 @@ impl ResolvedTy {
             Self::Char => primitive(BuiltinAnchor::Char),
             Self::String => primitive(BuiltinAnchor::String),
             Self::Bytes => primitive(BuiltinAnchor::Bytes),
+            Self::Duration => primitive(BuiltinAnchor::Duration),
             _ => None,
         }
     }

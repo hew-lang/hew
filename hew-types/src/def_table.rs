@@ -601,10 +601,11 @@ pub(crate) enum BuiltinAnchor {
     VecIter,
     NodeId,
     Location,
+    Duration,
 }
 
 impl BuiltinAnchor {
-    const ALL: [Self; 28] = [
+    const ALL: [Self; 29] = [
         Self::I8,
         Self::I16,
         Self::I32,
@@ -633,6 +634,7 @@ impl BuiltinAnchor {
         Self::VecIter,
         Self::NodeId,
         Self::Location,
+        Self::Duration,
     ];
 
     /// The render this anchor's row carries: the keyword or builtin spelling
@@ -667,6 +669,7 @@ impl BuiltinAnchor {
             Self::VecIter => "VecIter",
             Self::NodeId => "NodeId",
             Self::Location => "Location",
+            Self::Duration => "duration",
         }
     }
 }

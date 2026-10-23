@@ -51,6 +51,13 @@ import std.encoding.utf8;
 pub type Stream<T> {
 }
 
+impl<T> Iterator for Stream<T> {
+    type Item = T;
+    fn next(var self) -> Option<T> {
+        self.recv()
+    }
+}
+
 /// The write half of a pipe, parameterised by element type.
 pub type Sink<T> {
 }

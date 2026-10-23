@@ -1215,6 +1215,14 @@ fn lazy_values_preserve_single_owner_initialization_and_terminal_failure() {
 }
 
 #[test]
+fn streams_satisfy_generic_iterator_bounds() {
+    assert_native_manifest(
+        "stream-generic-iterator",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",

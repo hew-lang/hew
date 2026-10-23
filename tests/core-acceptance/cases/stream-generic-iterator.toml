@@ -1,0 +1,10 @@
+[[case]]
+id = "stream-generic-iterator"
+intent = "Streams satisfy generic Iterator bounds while preserving item order and end of stream."
+source = "cases/stream-generic-iterator.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "stream generic iterator passed\n"
+stderr = ""
+exit = 0

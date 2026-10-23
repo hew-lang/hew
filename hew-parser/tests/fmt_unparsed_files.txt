@@ -1,11 +1,6 @@
-# Workspace .hew files that do not parse, so they are not formatter input.
-# A path under a reject/ directory needs no row here (fmt_roundtrip_corpus.rs
-# exempts it automatically): it is a deliberate parse-refusal fixture. This
-# file holds only the remainder, migrated into tests/expected-failures.tsv
-# once xtask's ratchet `Expect` enum gains a `skip`/`unparsed` kind (blocked
-# on L1's ledger work); until then fmt_roundtrip_corpus.rs requires this list
-# to match exactly: remove a file when it starts to parse, and fix rather
-# than add a file that stops parsing.
+# Intentional parser-refusal fixtures outside reject/ directories.
+# Other sources must parse so formatter round-trip fidelity can be checked.
+tests/core-acceptance/cases/default-argument-extern-refused.hew
 tests/core-acceptance/cases/named-argument-after-positional-gap.hew
 tests/core-acceptance/cases/spread-parse-refusals.hew
 tests/core-acceptance/cases/spawn-keyed-reject-parens.hew

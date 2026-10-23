@@ -193,7 +193,7 @@ fn network_timeouts_require_explicit_duration_units() {
         "quic.stream_send_timeout(stream, b\"data\", TIME)",
     ] {
         let source = format!(
-            r#"
+            r"
             import std.net;
             import std.net.dns;
             import std.net.http;
@@ -202,7 +202,7 @@ fn network_timeouts_require_explicit_duration_units() {
             fn probe(conn: net.Connection, server: http.Server, stream: quic.QUICStream) {{
                 let _ = {call};
             }}
-        "#
+        "
         );
         let dir = tempdir();
         let input = dir.path().join("timeouts.hew");

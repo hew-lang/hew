@@ -60,6 +60,9 @@ remain useful for selecting among several examples in one directory.
 and a shared stdout/stderr byte budget, preserving its exit status and handling
 structured capture failures.
 
+[`lazy_values.hew`](lazy_values.hew) initializes configuration on first demand
+and shows that later reads return independent values.
+
 ## Expected Output Files
 
 Many examples — especially those under `ux/` and `progressive/` — ship with a sibling `.expected` file containing the exact stdout the program should produce. These files are used by the automated test suite, and you can use them locally to verify your build is correct:

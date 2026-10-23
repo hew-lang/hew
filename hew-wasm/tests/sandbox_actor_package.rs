@@ -1166,6 +1166,13 @@ fn once_callable_cleanup_preserves_body_and_result_faults() {
 }
 
 #[test]
+fn lazy_values_preserve_single_owner_initialization_and_terminal_failure() {
+    for name in ["lazy-values", "lazy-values-terminal"] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
+}
+
+#[test]
 fn shared_native_manifests_execute_with_matching_results() {
     for name in [
         "machine-deep-handshake",

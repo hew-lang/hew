@@ -1,0 +1,26 @@
+import std.lazy;
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {}
+}
+
+fn duplicate_owner() {
+    var original = lazy.new(|| 1);
+    let transferred = original;
+    original.value();
+    transferred.close();
+}
+
+fn cache_resource() {
+    let cached = lazy.new(|| Ticket { id: 1 });
+}
+
+fn main() {
+    duplicate_owner();
+    cache_resource();
+}

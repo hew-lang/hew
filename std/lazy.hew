@@ -1,0 +1,48 @@
+//! A single-owner value initialized on first demand.
+//!
+//! Construct with `lazy.new(|| load_config())`, then call `value()` through a
+//! `var` binding. Each read returns an independent ordinary value. The result
+//! type must support `Clone`; the initializer may suspend and is consumed once.
+//! An ordinary `Result.Err` is cached just like any other value.
+//!
+//! A fault or cancellation during initialization leaves the lazy value terminal.
+//! A later demand fails instead of retrying. Recursive demand also fails.
+
+enum State<T> {
+    Pending(fn[once, suspends]() -> T);
+    Ready(T);
+}
+
+/// A single-owner deferred value. Captured initializer resources and the cached
+/// value are released automatically when this owner leaves scope.
+#[resource]
+pub type Lazy<T> {
+    state: Option<State<T>>;
+}
+
+/// Retain an initializer without running it.
+pub fn new<T: Clone>(consume initialize: fn[once, suspends]() -> T) -> Lazy<T> {
+    Lazy { state: .Some(.Pending(initialize)) }
+}
+
+impl<T: Clone> Lazy<T> {
+    /// Initialize once, then return an independent copy of the cached value.
+    /// A recursive demand or a demand after failed initialization faults.
+    pub fn value(var self) -> T {
+        let value = match self.state.take() {
+            .Some(state) => match state {
+                .Pending(initialize) => initialize(),
+                .Ready(value) => value,
+            }
+            .None => panic("lazy.value: initialization is active or has failed"),
+        };
+        let result = value.clone();
+        self.state = .Some(.Ready(value));
+        result
+    }
+}
+
+impl<T> Lazy<T> {
+    /// Release this lazy value early without running an unused initializer.
+    pub fn close(consume self) {}
+}

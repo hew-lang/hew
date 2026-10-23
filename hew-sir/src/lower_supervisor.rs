@@ -156,9 +156,21 @@ impl InstanceService<'_> {
             strategy,
             max_restarts,
             window_secs,
+            backoff: None,
             children: Vec::new(),
             startup_order: source.startup_order.clone(),
         });
+        if let Some(expression) = &source.backoff {
+            let callable = self.register_supervisor_expression(
+                id,
+                &source,
+                expression.as_ref().clone(),
+                CallableInstance::SupervisorBackoff { supervisor: id },
+                "backoff",
+                &substitution,
+            )?;
+            self.supervisors[id.0 as usize].backoff = Some(callable);
+        }
         let mut child_chain = chain.to_vec();
         if source.interceptor.is_some() {
             child_chain.push(ty.clone());
@@ -453,20 +465,20 @@ impl Builder<'_, '_> {
             .ok_or_else(|| "supervisor pool lookup has no result".into())
     }
 
-    pub(super) fn lower_supervisor_pool_count(
+    pub(super) fn lower_supervisor_configuration(
         &mut self,
         expression: &HirExpr,
-        count: CallableId,
+        configure: CallableId,
         config: &[ValueId],
     ) -> Result<ValueId, String> {
         let signature = self
             .service
-            .callable(count)
-            .ok_or("pool count lost its callable")?
+            .callable(configure)
+            .ok_or("supervisor configuration lost its callable")?
             .signature
             .clone();
-        if signature.params.len() != config.len() || !signature.return_ty.is_integer() {
-            return Err("pool count differs from its config or integer result".into());
+        if signature.params.len() != config.len() {
+            return Err("supervisor configuration expression differs from its config".into());
         }
         let live = self.owned_live.keys().copied().collect();
         let mut loans = Vec::new();
@@ -485,27 +497,42 @@ impl Builder<'_, '_> {
                     (borrowed, crate::BoundaryDecision::Borrow)
                 }
                 SemParamPassing::ReadOnly => (*value, crate::BoundaryDecision::Copy),
-                _ => return Err("pool count must borrow its construction config".into()),
+                _ => {
+                    return Err(
+                        "supervisor configuration must borrow its construction config".into(),
+                    )
+                }
             };
             args.push(crate::BoundaryOperand {
                 operand: crate::Operand { value },
                 decision,
             });
         }
-        let value = self
-            .finish_user_call(
-                super::PreparedCallee::Direct {
-                    target: count,
-                    site: None,
-                },
-                signature,
-                args,
-                &loans,
-                &live,
-                true,
-                None,
-            )?
-            .ok_or("pool count returned no integer")?;
+        self.finish_user_call(
+            super::PreparedCallee::Direct {
+                target: configure,
+                site: None,
+            },
+            signature,
+            args,
+            &loans,
+            &live,
+            true,
+            None,
+        )?
+        .ok_or_else(|| "supervisor configuration returned no value".into())
+    }
+
+    pub(super) fn lower_supervisor_pool_count(
+        &mut self,
+        expression: &HirExpr,
+        count: CallableId,
+        config: &[ValueId],
+    ) -> Result<ValueId, String> {
+        let value = self.lower_supervisor_configuration(expression, count, config)?;
+        if !self.value_ty(value).is_some_and(|ty| ty.is_integer()) {
+            return Err("pool count returned no integer".into());
+        }
         // Widen signed counts and preserve all unsigned bits. Values above
         // i64::MAX become negative and fail the runtime's positive i32 range.
         if self.value_ty(value) == Some(ResolvedTy::I64) {

@@ -342,6 +342,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 self.visitor
                     .enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
+                if let Some(backoff) = &supervisor.backoff {
+                    self.walk_expr(&backoff.0, &backoff.1, Some(body_info));
+                }
                 for child in &supervisor.children {
                     for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));
@@ -417,6 +420,9 @@ impl<'src, 'ast, V: AstVisitor<'ast>> AstWalker<'src, 'ast, V> {
                 };
                 self.visitor.enter_body(body_info, Self::context(Some(body_info)));
                 self.push_scope(Vec::new());
+                if let Some(backoff) = &supervisor.backoff {
+                    self.walk_expr(&backoff.0, &backoff.1, Some(body_info));
+                }
                 for child in &supervisor.children {
                     for (_field_name, arg) in &child.args {
                         self.walk_expr(&arg.0, &arg.1, Some(body_info));

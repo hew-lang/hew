@@ -1,0 +1,26 @@
+import std.restart;
+
+actor Worker {
+    receive fn fail() {
+        panic("cancel restart");
+    }
+}
+
+supervisor Team {
+    backoff: restart.exponential(initial: 1h, maximum: 2h);
+    child worker: Worker;
+}
+
+fn main() {
+    let team = spawn Team;
+    let started = instant.now();
+    let _ = team.worker.fail();
+    stop(team);
+    stopped(team);
+    assert(started.elapsed() == 0ns);
+    assert(match team.worker.fail() {
+        .Err(.Dead) => true,
+        _ => false,
+    });
+    println("pending restart cancelled");
+}

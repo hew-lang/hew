@@ -246,6 +246,9 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
     config_drop: Option<unsafe extern "C" fn(*mut c_void)>,
     children: *const HewNativeChildSpec,
     child_count: usize,
+    has_backoff: c_int,
+    backoff_initial_ns: i64,
+    backoff_maximum_ns: i64,
     pool_count: i64,
     waker: *const HewWaker,
 ) -> *mut HewSupervisorConstruction {
@@ -273,12 +276,21 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
         } else {
             pool_count == 0
         };
-        if !valid_count {
+        let valid_backoff = has_backoff == 0
+            || (has_backoff == 1
+                && backoff_initial_ns > 0
+                && backoff_maximum_ns >= backoff_initial_ns);
+        if !valid_count || !valid_backoff {
             // SAFETY: the operation still owns the unadopted config.
             pool::release_unadopted_config(config, config_drop);
             op.fault = Box::into_raw(Box::new(HewFault::with_message(
                 crate::internal::types::HEW_TRAP_USER_PANIC,
-                "supervisor pool count must be between 1 and 2147483647".into(),
+                if valid_backoff {
+                    "supervisor pool count must be between 1 and 2147483647"
+                } else {
+                    "supervisor backoff requires positive initial and maximum >= initial"
+                }
+                .into(),
             )));
             op.final_state = true;
             return Box::into_raw(op);
@@ -306,6 +318,10 @@ pub unsafe extern "C" fn hew_supervisor_native_spawn_new(
         let slots = {
             // SAFETY: the operation exclusively owns this fresh parent.
             let mut roster = (*op.supervisor).roster.lock_or_recover();
+            roster.backoff = (has_backoff == 1).then_some((
+                backoff_initial_ns.cast_unsigned(),
+                backoff_maximum_ns.cast_unsigned(),
+            ));
             roster.config_buf = config;
             roster.config_drop_fn = config_drop;
             if valid_order {
@@ -621,6 +637,9 @@ impl NativePublication {
 
                     roster.child_supervisors[*index] = child;
                     roster.child_supervisor_tokens[*index] = token;
+                    if let Some(spec) = roster.child_supervisor_specs[*index].as_mut() {
+                        spec.backoff.published();
+                    }
                     true
                 }
             }
@@ -781,6 +800,9 @@ pub(crate) unsafe fn native_spawn_for_test(
             config_drop,
             children,
             child_count,
+            0,
+            0,
+            0,
             pool_count,
             waker.descriptor(),
         );
@@ -964,6 +986,9 @@ mod tests {
                     &raw const child,
                     1,
                     0,
+                    0,
+                    0,
+                    0,
                     waker.descriptor(),
                 );
                 assert_eq!(hew_supervisor_native_spawn_poll(op, 0), 0);
@@ -1038,6 +1063,9 @@ mod tests {
                     Some(drop_config),
                     &raw const child,
                     1,
+                    0,
+                    0,
+                    0,
                     0,
                     waker.descriptor(),
                 );

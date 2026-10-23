@@ -118,6 +118,9 @@ fn collect_inlay_hints_from_item(
             }
         }
         Item::Supervisor(s) => {
+            if let Some(backoff) = &s.backoff {
+                collect_inlay_hints_from_expr(source, &backoff.0, tc, hints);
+            }
             for child in &s.children {
                 for (_field_name, arg) in &child.args {
                     collect_inlay_hints_from_expr(source, &arg.0, tc, hints);

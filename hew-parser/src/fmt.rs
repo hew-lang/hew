@@ -2803,6 +2803,7 @@ impl<'a> Formatter<'a> {
         enum Member<'a> {
             Strategy,
             Intensity,
+            Backoff,
             Child(&'a ChildSpec),
             Method(&'a FnDecl),
         }
@@ -2839,6 +2840,9 @@ impl<'a> Formatter<'a> {
                 self.machine_section(span_start, span_end, "intensity"),
                 Member::Intensity,
             ));
+        }
+        if let Some(backoff) = &decl.backoff {
+            clauses.push((backoff.1.start, Member::Backoff));
         }
         clauses.extend(
             decl.children
@@ -2889,6 +2893,11 @@ impl<'a> Formatter<'a> {
                         self.write(" within ");
                         self.write(&intensity.window);
                     }
+                }
+                Member::Backoff => {
+                    self.write_indent();
+                    self.write("backoff: ");
+                    self.format_expr(decl.backoff.as_ref().expect("present backoff"));
                 }
             }
             self.write(";\n");
@@ -7252,6 +7261,12 @@ impl<T> Vec<T> {
     fn fstring_literal_readable_unicode_round_trips() {
         let src = "fn greet(name: string) -> string {\n    f\"bonjour {name} — café\"\n}\n";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn supervisor_backoff_expression_roundtrips_in_source_order() {
+        let source = "supervisor Team(config: Config) {\n    intensity: 5 within 60s;\n    backoff: restart.exponential(initial: config.initial, maximum: 5s);\n\n    child worker: Worker;\n}\n";
+        assert_eq!(roundtrip(source), source);
     }
 
     #[test]

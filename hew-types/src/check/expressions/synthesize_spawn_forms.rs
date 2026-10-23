@@ -2268,6 +2268,7 @@ impl Checker {
                 // Initial construction may await child callbacks and rollback,
                 // independently of any particular child's inferred effects.
                 self.mark_body_suspends("supervisor construction");
+                self.record_call_edge(&name);
                 "supervisor"
             } else {
                 "actor"

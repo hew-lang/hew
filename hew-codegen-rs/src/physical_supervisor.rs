@@ -500,16 +500,37 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
             .children
             .iter()
             .any(|child| child.pool_count.is_some());
-        if sources.len() != supervisor.config.len() + usize::from(is_pool) {
+        if sources.len()
+            != supervisor.config.len()
+                + 2 * usize::from(supervisor.backoff.is_some())
+                + usize::from(is_pool)
+        {
             return Err(CodegenError::FailClosed(
                 "supervisor spawn does not transfer its exact config".into(),
             ));
         }
         let pool_count = if is_pool {
-            self.load(sources[supervisor.config.len()], "supervisor.pool.count")?
+            self.load(sources[sources.len() - 1], "supervisor.pool.count")?
                 .into_int_value()
         } else {
             self.ctx.i64_type().const_zero()
+        };
+        let (backoff_initial, backoff_maximum) = if supervisor.backoff.is_some() {
+            (
+                self.load(
+                    sources[supervisor.config.len()],
+                    "supervisor.backoff.initial",
+                )?,
+                self.load(
+                    sources[supervisor.config.len() + 1],
+                    "supervisor.backoff.maximum",
+                )?,
+            )
+        } else {
+            (
+                self.ctx.i64_type().const_zero().into(),
+                self.ctx.i64_type().const_zero().into(),
+            )
         };
         let sources = &sources[..supervisor.config.len()];
         let child_count = u32::try_from(supervisor.children.len())
@@ -613,6 +634,9 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     ptr.into(),
                     ptr.into(),
                     word.into(),
+                    self.ctx.i32_type().into(),
+                    self.ctx.i64_type().into(),
+                    self.ctx.i64_type().into(),
                     self.ctx.i64_type().into(),
                     ptr.into(),
                 ],
@@ -654,6 +678,12 @@ impl<'ctx> FunctionEmitter<'_, 'ctx> {
                     drop.into(),
                     children.into(),
                     word.const_int(u64::from(child_count), false).into(),
+                    self.ctx
+                        .i32_type()
+                        .const_int(u64::from(supervisor.backoff.is_some()), false)
+                        .into(),
+                    backoff_initial.into(),
+                    backoff_maximum.into(),
                     pool_count.into(),
                     waker.into(),
                 ],

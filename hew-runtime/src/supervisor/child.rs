@@ -90,6 +90,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_supervisor_with_init(
         restart_policy: RESTART_PERMANENT,
         stop_ns: -1,
         spent: false,
+        backoff: RestartBackoff::default(),
     }));
     // SAFETY: child and parent are valid pointers per caller contract.
     unsafe {
@@ -401,7 +402,7 @@ pub(crate) fn classify_null_child_slot(s: &SupervisorRoster, i: usize) -> ChildL
     // set by restart_child_from_spec when exponential backoff is configured.
     // A non-zero value > now means the timer hasn't fired yet.
     let now_ns = monotonic_time_ns();
-    if spec.next_restart_time_ns > 0 && spec.next_restart_time_ns > now_ns {
+    if spec.backoff.next_restart_time_ns > 0 && spec.backoff.next_restart_time_ns > now_ns {
         return ChildLookupResult::transient(ChildSlotReason::BackoffDelay);
     }
 
@@ -547,9 +548,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_dynamic(
         message_drop_fn: sp.message_drop_fn,
         sys_dispatch: sp.sys_dispatch,
         native_spawn: None,
-        restart_delay_ms: 0,
-        max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
-        next_restart_time_ns: 0,
+        backoff: RestartBackoff::default(),
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,

@@ -7149,12 +7149,12 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1656] = {
     {"hew_supervisor_native_spawn_new",
      "{\"native\": \"fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, "
      "*mut c_void, Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, *const "
-     "HewNativeChildSpec, usize, i64, *const HewWaker, ) -> *mut "
-     "HewSupervisorConstruction\", \"wasm32-wasip1\": \"fn "
+     "HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, ) -> "
+     "*mut HewSupervisorConstruction\", \"wasm32-wasip1\": \"fn "
      "hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, "
      "Option<unsafe extern \\\"C\\\" fn(*mut c_void)>, *const "
-     "HewNativeChildSpec, usize, i64, *const HewWaker, ) -> *mut "
-     "HewSupervisorConstruction\"}",
+     "HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, ) -> "
+     "*mut HewSupervisorConstruction\"}",
      "native,wasm32-wasip1", "non-declarable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_supervisor_native_spawn_poll",

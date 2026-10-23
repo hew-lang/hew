@@ -950,6 +950,7 @@ export type SupervisorShape = {
   strategy: RestartStrategy;
   max_restarts: number;
   window_secs: number;
+  backoff?: boolean;
   children: Array<SupervisorChild>;
   startup_order?: Array<number>;
 };

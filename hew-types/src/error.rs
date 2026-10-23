@@ -655,6 +655,8 @@ pub enum SupervisorErrorKind {
     /// `E_SUPERVISOR_INTENSITY_WINDOW`: the `intensity:` window is zero-length or
     /// not a valid duration literal.
     IntensityWindow,
+    /// A restart delay configuration must use the ordinary stdlib policy value.
+    BackoffType,
     /// `E_SUPERVISOR_DUPLICATE_CHILD`: two children share a name.
     DuplicateChild,
     /// `E_SUPERVISOR_STRATEGY_POOL_MISMATCH`: `pool` children and the chosen
@@ -684,6 +686,7 @@ impl SupervisorErrorKind {
             Self::PoolCountNonPositive => "SupervisorPoolCountNonPositive",
             Self::IntensityRestarts => "SupervisorIntensityRestarts",
             Self::IntensityWindow => "SupervisorIntensityWindow",
+            Self::BackoffType => "SupervisorBackoffType",
             Self::DuplicateChild => "SupervisorDuplicateChild",
             Self::StrategyPoolMismatch => "SupervisorStrategyPoolMismatch",
             Self::WiredToUnknownSibling => "SupervisorWiredToUnknownSibling",
@@ -2190,6 +2193,7 @@ mod tests {
             SupervisorErrorKind::PoolCountNonPositive,
             SupervisorErrorKind::IntensityRestarts,
             SupervisorErrorKind::IntensityWindow,
+            SupervisorErrorKind::BackoffType,
             SupervisorErrorKind::DuplicateChild,
             SupervisorErrorKind::StrategyPoolMismatch,
             SupervisorErrorKind::WiredToUnknownSibling,

@@ -487,6 +487,9 @@ impl TemplateNames<'_> {
                 }
             }
             Item::Supervisor(supervisor) => {
+                if let Some(value) = &mut supervisor.backoff {
+                    self.expr(value)?;
+                }
                 self.types.define(Ident::new("Self"), Ty::Error, false);
                 self.bind(Ident::new("self"));
                 for child in &supervisor.children {

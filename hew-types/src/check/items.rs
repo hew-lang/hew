@@ -470,6 +470,17 @@ impl Checker {
         // positive literal) while config params are still in scope so a
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
+        if let Some(backoff) = &sd.backoff {
+            let ty = self.synthesize(&backoff.0, &backoff.1);
+            let ty = self.subst.resolve(&ty);
+            if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
+                    backoff.1.clone(),
+                    "supervisor `backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s)",
+                ));
+            }
+        }
         for child in &sd.children {
             if let Some(duration) = &child.stop {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);

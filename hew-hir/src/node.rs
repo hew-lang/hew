@@ -671,6 +671,8 @@ pub struct HirSupervisorDecl {
     /// Window duration as a raw string from the parser (e.g. `"60s"`).
     /// Parsed to a concrete `Duration` in S-C when wiring is lowered.
     pub window: Option<String>,
+    /// Checked policy expression, evaluated once against construction config.
+    pub backoff: Option<Box<HirExpr>>,
     pub children: Vec<HirSupervisorChild>,
     pub span: Span,
 }

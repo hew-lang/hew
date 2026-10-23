@@ -1925,6 +1925,17 @@ fn verify_callable_table<'a>(
                     }));
                 }
             }
+            CallableInstance::SupervisorBackoff { supervisor } => {
+                if module
+                    .supervisor(*supervisor)
+                    .is_none_or(|owner| owner.backoff != Some(callable.id))
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "backoff body is not its declaration's checked policy".into(),
+                    }));
+                }
+            }
             CallableInstance::EntryAdapter => {
                 if module.entry_callable != Some(callable.id)
                     && !module

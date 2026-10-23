@@ -81,6 +81,8 @@ pub struct SemSupervisor {
     pub strategy: SemRestartStrategy,
     pub max_restarts: u32,
     pub window_secs: u32,
+    /// The checked construction expression and its ordinary policy value type.
+    pub backoff: Option<CallableId>,
     pub children: Vec<SemSupervisorChild>,
     pub startup_order: Vec<usize>,
 }
@@ -195,6 +197,43 @@ impl SemSupervisor {
         Ok(())
     }
 
+    fn validate_backoff(&self, module: &SemModule) -> Result<(), String> {
+        if let Some(backoff) = self.backoff {
+            let callable = module
+                .callable(backoff)
+                .ok_or("backoff has no configuration callable")?;
+            let shape = module
+                .aggregate_shape_for_type(&callable.signature.return_ty)
+                .ok_or("backoff configuration has no ordinary record shape")?;
+            if callable.kind != crate::SemCallableKind::HewDirect
+                || callable.signature.params.len() != self.config.len()
+                || callable
+                    .signature
+                    .params
+                    .iter()
+                    .zip(&self.config)
+                    .any(|(param, ty)| {
+                        param.ty != *ty
+                            || !matches!(
+                                param.passing,
+                                crate::SemParamPassing::ReadOnly | crate::SemParamPassing::Borrow
+                            )
+                    })
+                || shape.fields.len() != 2
+                || shape
+                    .fields
+                    .iter()
+                    .any(|field| field.ty != ResolvedTy::Duration)
+            {
+                return Err(
+                    "backoff configuration differs from its checked config and duration fields"
+                        .into(),
+                );
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn validate(&self, module: &SemModule) -> Result<(), String> {
         if module.supervisor(self.id) != Some(self) {
             return Err("supervisor descriptor is not at its canonical index".into());
@@ -209,6 +248,7 @@ impl SemSupervisor {
         if self.window_secs == 0 {
             return Err("supervisor restart budget requires a positive window".into());
         }
+        self.validate_backoff(module)?;
         if self.strategy == SemRestartStrategy::SimpleOneForOne
             && (self.children.len() != 1 || self.children[0].pool_count.is_none())
         {

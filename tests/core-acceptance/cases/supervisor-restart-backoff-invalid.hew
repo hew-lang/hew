@@ -1,0 +1,29 @@
+import std.restart;
+
+actor Worker {
+    #[on(start)]
+    fn start() {
+        panic("invalid policy started a child");
+    }
+}
+
+supervisor Team(policy: restart.Backoff) {
+    backoff: policy;
+    child worker: Worker;
+}
+
+fn main() {
+    for policy in [restart.Backoff { initial: 0ns, maximum: 0ns }, restart.Backoff { initial: 0ns - 1ns, maximum: 1s }, restart.Backoff { initial: 2s, maximum: 1s }] {
+        let refused = scope {
+            let _ = spawn Team { policy: policy };
+            false
+        } handle failure {
+            match failure {
+                .Fault { message } => message == "supervisor backoff requires positive initial and maximum >= initial",
+                .Deadline { message } => panic(message),
+            }
+        };
+        assert(refused);
+    }
+    println("invalid policies refused before construction");
+}

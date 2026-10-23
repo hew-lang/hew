@@ -2168,6 +2168,43 @@ or permanently gone. The retained role handle resolves the current incarnation
 after a restart, and the replacement starts from the child declaration and
 configuration.
 
+### Restart delays
+
+Import `std.restart` and select an exponential delay on the supervisor:
+
+```hew
+import std.restart;
+
+actor Worker {
+    receive fn fail() { panic("worker failed"); }
+}
+
+supervisor App {
+    strategy: one_for_one;
+    intensity: 5 within 60s;
+    backoff: restart.exponential(initial: 100ms, maximum: 5s);
+    child worker: Worker;
+}
+
+fn main() {
+    let app = spawn App;
+    let worker = app.worker;
+    let _ = worker.fail();
+    restarted(worker);
+    stop(app);
+    stopped(app);
+}
+```
+
+The first crash waits 100 milliseconds. Repeated crashes double the delay up
+to five seconds. Each child role, nested supervisor or pool member keeps its
+own delay. After a replacement runs without failure for the existing restart
+window, its next crash starts at the initial delay again. Waiting for recovery
+does not count as healthy execution, and the restart budget still applies.
+The policy expression runs once when the supervisor is constructed and may
+use its configuration parameters. Stopping the supervisor cancels pending
+delays. Omit `backoff` to retain the established restart behaviour.
+
 ### Free functions callable from receive fns
 
 ```hew

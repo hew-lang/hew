@@ -473,12 +473,14 @@ fn register_native_child(
             restart_policy: child.restart_policy,
             stop_ns: child.stop_ns,
             spent: false,
+            backoff: RestartBackoff::configured(s.backoff),
         }));
         index
     } else {
         let index = s.children.len();
         let mut spec = InternalChildSpec::default();
         spec.identity = s.next_child_spec_identity;
+        spec.backoff = RestartBackoff::configured(s.backoff);
         spec.restart_policy = child.restart_policy;
         spec.stop_ns = child.stop_ns;
         spec.native_spawn = Some(child.spawn);

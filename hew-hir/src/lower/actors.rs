@@ -55,6 +55,10 @@ impl LowerCtx {
             .iter()
             .map(|param| self.bind_param(param))
             .collect();
+        let backoff = decl
+            .backoff
+            .as_ref()
+            .map(|value| Box::new(self.lower_expr(value, IntentKind::Read)));
 
         let owner = HirBinding {
             id: self.ids.binding(),
@@ -233,6 +237,7 @@ impl LowerCtx {
             // interprets the unit so duration parsing stays centralised there.
             max_restarts: decl.intensity.as_ref().map(|i| i.restarts),
             window: decl.intensity.as_ref().map(|i| i.window.clone()),
+            backoff,
             children,
             span,
         })

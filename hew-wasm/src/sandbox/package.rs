@@ -212,6 +212,8 @@ pub struct Supervisor {
     pub strategy: RestartStrategy,
     pub max_restarts: u32,
     pub window_secs: u32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub backoff: bool,
     pub children: Vec<SupervisorChild>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub startup_order: Vec<usize>,

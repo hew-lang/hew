@@ -1960,6 +1960,9 @@ pub struct SupervisorDecl {
     /// field so a budget can never be half-specified. `None` when the
     /// declaration omits the clause — runtime defaults apply at codegen.
     pub intensity: Option<Intensity>,
+    /// An ordinary `std.restart.Backoff` value, evaluated once at construction.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff: Option<Spanned<Expr>>,
     pub children: Vec<ChildSpec>,
     #[serde(default)]
     pub methods: Vec<FnDecl>,

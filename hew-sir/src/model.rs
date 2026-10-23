@@ -112,6 +112,10 @@ pub enum CallableInstance {
         supervisor: crate::SupervisorId,
         child: u32,
     },
+    /// Ordinary restart policy evaluated once against borrowed config.
+    SupervisorBackoff {
+        supervisor: crate::SupervisorId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -282,6 +282,48 @@ fn supervisor_children_execute_their_declared_spawn_functions() {
 }
 
 #[test]
+fn supervisor_backoff_uses_the_same_virtual_delays_and_role_semantics() {
+    let options = r#"{"replay":{"virtual_clock":{"epoch_ms":0,"current_ms":0,"tick_ms":0}}}"#;
+    for (source, expected) in [
+        (
+            include_str!("../../tests/core-acceptance/cases/supervisor-restart-backoff.hew"),
+            "configured\n100\n200\n400\n500\n500\nconfigured\nbackoff recovered\n",
+        ),
+        (
+            include_str!(
+                "../../tests/core-acceptance/cases/supervisor-restart-backoff-strategies.hew"
+            ),
+            "strategies retain their roles\n",
+        ),
+        (
+            include_str!(
+                "../../tests/core-acceptance/cases/supervisor-restart-backoff-invalid.hew"
+            ),
+            "invalid policies refused before construction\n",
+        ),
+    ] {
+        let trace = execute_options(source, "ok", options, hew_compile::SourceSet::in_memory());
+        assert_eq!(stdout(&trace), expected);
+        assert_eq!(trace["final_state"]["exit_code"], 0);
+    }
+}
+
+#[test]
+fn supervisor_backoff_cancellation_keeps_the_unrecovered_fault() {
+    let source =
+        include_str!("../../tests/core-acceptance/cases/supervisor-restart-backoff-cancel.hew");
+    let trace = execute_options(
+        source,
+        "ok",
+        r#"{"replay":{"virtual_clock":{"epoch_ms":0,"current_ms":0,"tick_ms":0}}}"#,
+        hew_compile::SourceSet::in_memory(),
+    );
+    assert_eq!(stdout(&trace), "pending restart cancelled\n");
+    assert_eq!(trace["final_state"]["exit_code"], 1);
+    assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 0);
+}
+
+#[test]
 fn a_supervised_role_resolves_the_fresh_state_after_a_fault() {
     let trace = execute(
         r#"actor Worker {

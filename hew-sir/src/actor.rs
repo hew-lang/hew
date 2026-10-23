@@ -896,6 +896,9 @@ impl ActorOperation {
         Ok(match self {
             Self::SupervisorSpawn(_) => {
                 let mut arguments = supervisor.config.clone();
+                if supervisor.backoff.is_some() {
+                    arguments.extend([ResolvedTy::Duration, ResolvedTy::Duration]);
+                }
                 if supervisor
                     .children
                     .iter()

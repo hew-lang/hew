@@ -44,6 +44,7 @@ export interface ShimHost {
   /// A snapshot of the supplied process arguments, including argv[0].
   readonly argv: readonly string[];
   unixTimeMillis(): number;
+  monotonicTimeNanos(): bigint;
   fileError(
     operation: "HasError" | "LastErrorKind" | "LastErrno" | "LastError",
   ): VmValue;
@@ -799,9 +800,15 @@ const UNIT_FAMILIES = {
   HashSetNewWithLayout: refused("HashSetNewWithLayout"),
   HashSetRemoveLayout: refused("HashSetRemoveLayout"),
   HashSetToVecLayout: refused("HashSetToVecLayout"),
-  InstantDurationSince: refused("InstantDurationSince"),
-  InstantElapsed: refused("InstantElapsed"),
-  InstantNow: refused("InstantNow"),
+  InstantDurationSince: (_host, args) =>
+    int(saturatingI64(integer(args, 0) - integer(args, 1))),
+  InstantElapsed: (host, args) =>
+    int(
+      saturatingI64(
+        saturatingI64(host.monotonicTimeNanos()) - integer(args, 0),
+      ),
+    ),
+  InstantNow: (host) => int(saturatingI64(host.monotonicTimeNanos())),
   NodeConnect: refused("NodeConnect"),
   NodeId: refused("NodeId"),
   NodeIdDisplay: refused("NodeIdDisplay"),
@@ -1370,6 +1377,10 @@ function bigMin(left: bigint, right: bigint): bigint {
 
 function bigMax(left: bigint, right: bigint): bigint {
   return right > left ? right : left;
+}
+
+function saturatingI64(value: bigint): bigint {
+  return bigMax(-(1n << 63n), bigMin((1n << 63n) - 1n, value));
 }
 
 // ── externs ─────────────────────────────────────────────────────────────────

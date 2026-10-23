@@ -782,6 +782,7 @@ impl<'m> Walker<'m> {
                     strategy,
                     max_restarts,
                     window_secs,
+                    backoff,
                     children,
                     startup_order,
                 } = supervisor;
@@ -790,6 +791,7 @@ impl<'m> Walker<'m> {
                     strategy: restart_strategy(*strategy),
                     max_restarts: *max_restarts,
                     window_secs: *window_secs,
+                    backoff: backoff.is_some(),
                     startup_order: startup_order.clone(),
                     children: children
                         .iter()

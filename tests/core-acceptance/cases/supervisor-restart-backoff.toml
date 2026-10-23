@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor-restart-backoff"
+intent = "Selected backoff delays the first crash, doubles and caps per role, preserves stable roles and resets after the existing healthy restart window."
+source = "cases/supervisor-restart-backoff.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "configured\n100\n200\n400\n500\n500\nconfigured\nbackoff recovered\n"
+stderr = "hew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 1): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 4): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 5): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 6): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 7): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 2): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 8): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 11): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 14): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 15): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 16): UserPanic\nhew: failure: UserPanic (212): restart backoff\nhew: actor crash in Worker.fail (actor 17): UserPanic\nhew: failure: UserPanic (212): slow restart backoff\nhew: actor crash in SlowWorker.fail (actor 19): UserPanic\nhew: failure: UserPanic (212): slow restart backoff\nhew: actor crash in SlowWorker.fail (actor 21): UserPanic\n"
+exit = 0

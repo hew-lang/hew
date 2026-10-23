@@ -233,6 +233,9 @@ interface SupervisorInstance {
   teardownChild: VmValue | null;
   teardownCancelTimer: (() => void) | null;
   restartTimes: number[];
+  backoff: { initial: bigint; maximum: bigint } | null;
+  restartDelays: Map<number, { delay: bigint; publishedAt: number | null }>;
+  restartTimers: Map<number, () => void>;
   specs: SupervisorShape["children"];
   offsets: number[];
   recovering: Set<number>;
@@ -467,6 +470,13 @@ class ExecutorV1 {
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
+      monotonicTimeNanos: () => {
+        const millis = this.trace.virtualTimeMs;
+        return (
+          BigInt(Math.trunc(millis)) * 1_000_000n +
+          BigInt(Math.round((millis % 1) * 1_000_000))
+        );
+      },
       calendarBridge: options.calendarBridge,
       codecBridge: options.codecBridge,
       encodingError: (format, message) => {
@@ -4305,14 +4315,33 @@ class ExecutorV1 {
         const count = isPool ? args[args.length - 1] : undefined;
         if (isPool && count?.kind !== "i64")
           throw new Error("pool construction has no count");
-        const config = isPool ? args.slice(0, -1) : args;
+        const configured = isPool ? args.slice(0, -1) : args;
+        const initial = layout.backoff
+          ? configured[configured.length - 2]
+          : undefined;
+        const maximum = layout.backoff
+          ? configured[configured.length - 1]
+          : undefined;
+        const backoff =
+          initial?.kind === "i64" && maximum?.kind === "i64"
+            ? { initial: initial.value, maximum: maximum.value }
+            : null;
+        const validBackoff =
+          !layout.backoff ||
+          (backoff !== null &&
+            backoff.initial > 0n &&
+            backoff.maximum >= backoff.initial);
+        const config = layout.backoff ? configured.slice(0, -2) : configured;
         if (
-          count?.kind === "i64" &&
-          (count.value <= 0n || count.value > 2147483647n)
+          !validBackoff ||
+          (count?.kind === "i64" &&
+            (count.value <= 0n || count.value > 2147483647n))
         ) {
           const fault: Fault = {
             kind: "panic",
-            message: "supervisor pool count must be between 1 and 2147483647",
+            message: !validBackoff
+              ? "supervisor backoff requires positive initial and maximum >= initial"
+              : "supervisor pool count must be between 1 and 2147483647",
           };
           this.running = false;
           this.closeValueAsync(
@@ -4354,6 +4383,9 @@ class ExecutorV1 {
           teardownChild: null,
           teardownCancelTimer: null,
           restartTimes: [],
+          backoff,
+          restartDelays: new Map(),
+          restartTimers: new Map(),
           closed: [],
         };
         this.supervisors.set(owner.id, owner);
@@ -5307,6 +5339,7 @@ class ExecutorV1 {
     owner: SupervisorInstance,
     child: number,
     debts: number[],
+    delayElapsed = false,
   ): void {
     if (
       !owner.alive ||
@@ -5323,6 +5356,29 @@ class ExecutorV1 {
       return;
     }
     const now = this.trace.virtualTimeMs;
+    if (owner.backoff && debts.length > 0 && !delayElapsed) {
+      const previous = owner.restartDelays.get(child);
+      const healthy =
+        previous?.publishedAt != null &&
+        now - previous.publishedAt >= owner.layout.window_secs * 1000;
+      const doubled = previous ? previous.delay * 2n : owner.backoff.initial;
+      const delay =
+        !previous || healthy
+          ? owner.backoff.initial
+          : doubled < owner.backoff.maximum
+            ? doubled
+            : owner.backoff.maximum;
+      owner.restartDelays.set(child, { delay, publishedAt: null });
+      owner.recovering.add(child);
+      owner.restartTimers.set(
+        child,
+        this.scheduler.after(delay, () => {
+          owner.restartTimers.delete(child);
+          this.restartChild(owner, child, debts, true);
+        }),
+      );
+      return;
+    }
     owner.restartTimes = owner.restartTimes.filter(
       (at) => now - at < owner.layout.window_secs * 1000,
     );
@@ -5384,10 +5440,19 @@ class ExecutorV1 {
         if (pending) this.restartChild(owner, pending.child, pending.debts);
         return;
       }
-      this.startChild(owner, index, start, () => {
-        owner.restartBusy = false;
-        this.restartChild(owner, index, debts);
-      });
+      this.startChild(
+        owner,
+        index,
+        () => {
+          const delay = owner.restartDelays.get(index);
+          if (delay) delay.publishedAt = this.trace.virtualTimeMs;
+          start();
+        },
+        () => {
+          owner.restartBusy = false;
+          this.restartChild(owner, index, debts);
+        },
+      );
     };
     stop();
   }
@@ -5464,6 +5529,8 @@ class ExecutorV1 {
     }
     if (!owner.alive) return;
     owner.alive = false;
+    for (const cancel of owner.restartTimers.values()) cancel();
+    owner.restartTimers.clear();
     if (owner.constructor) {
       owner.constructor.pendingCancellation ??= {
         kind: "panic",

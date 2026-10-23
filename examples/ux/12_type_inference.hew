@@ -1,4 +1,4 @@
-// Can the compiler infer types?
+// Infer ordinary values and a generic closure from their bodies.
 fn add(a: i64, b: i64) -> i64 {
     a + b
 }
@@ -8,4 +8,7 @@ fn main() {
     let y = 20; // infer i64
     let result = add(x, y); // infer i64
     println(result);
+    let identity = |value| value;
+    assert(identity(result) == 30);
+    assert(identity("Hew") == "Hew");
 }

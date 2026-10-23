@@ -1,7 +1,6 @@
 //! Status: runnable
-//! Description: Type inference example: bidirectional type inference for lambdas
+//! Description: Closure types from context and inferred generic signatures
 
-// Type inference example: bidirectional type inference for lambdas
 fn apply(f: fn(i32, i32) -> i32, a: i32, b: i32) -> i32 {
     f(a, b)
 }
@@ -21,8 +20,8 @@ fn main() {
     let doubled = transform(|x| x * 2, 21);
     println(doubled);
 
-    // Pipe closure with explicit types
-    let diff = apply(|x: i32, y: i32| -> i32 {
+    // The same argument context supplies types inside a block body.
+    let diff = apply(|x, y| {
         x - y
     }, 10, 3);
     println(diff);
@@ -32,4 +31,22 @@ fn main() {
         x - y * (x / y)
     }, 17, 5);
     println(modulo);
+
+    // A directly bound literal can use a different type at each call.
+    let identity = |value| value;
+    assert(identity(42) == 42 && identity("hello") == "hello");
+    let equal = |left, right| left == right;
+    assert(equal(7, 7) && equal("word", "word"));
+
+    // Different argument types share the closure's private captured counter.
+    let count = 0;
+    var counted = |value| {
+        count += 1;
+        (count, value)
+    };
+    let (first, number) = counted(42);
+    let (second, text) = counted("next");
+    assert(first == 1 && number == 42);
+    assert(second == 2 && text == "next");
+    assert(count == 0);
 }

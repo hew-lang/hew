@@ -3644,52 +3644,79 @@ fn main() {
 
 **Generic closures:**
 
-A closure declares type parameters immediately after its opening pipe. Bounds
-use the same syntax as named functions. A quantified function type places the
-same binders after any callable qualifiers and before its parameter list:
+A closure literal bound directly by an unannotated `let` or `var` can infer a
+generic signature. After checking its body, unresolved parameter and result
+types become type parameters when they do not belong to an outer binding.
+Each call chooses its own concrete types:
 
 ```hew
 fn make_identity() -> fn<T>(T) -> T {
-    |<T> value: T| -> T { value }
+    |value| value
 }
 
 fn main() {
-    let identity = make_identity();
+    let identity = |value| value;
     assert(identity(41) == 41);
-    assert(identity<string>("hello") == "hello");
-    let equal = |<T: Eq> left: T, right: T| -> bool { left == right };
-    assert(equal(7, 7));
+    assert(identity("hello") == "hello");
+    let returned = make_identity();
+    assert(returned(true));
+    let equal = |left, right| left == right;
+    assert(equal(7, 7) && equal("same", "same"));
     let pair: fn[clone]<T, U>(T, U) -> (T, U) =
-        |<T, U> first: T, second: U| -> (T, U) { (first, second) };
+        |first, second| (first, second);
     assert(pair(1, "one") == (1, "one"));
 }
 ```
 
-Each call chooses concrete type arguments, either from its arguments or from
-an explicit list such as `identity<string>(...)`. A quantified value can be
-stored, passed and returned without fixing those arguments in advance. Its
-body must be valid under the declared bounds.
+An expected quantified function type also supplies fresh type parameters to a
+literal, as in `make_identity` and `pair`. The body must work for every type
+permitted by that signature. A literal that only accepts `i64` cannot fill a
+`fn<T>(T) -> T` slot. Reassigning an inferred generic `var` preserves its
+universal signature.
 
-Explicit ownership transfer stays before the opening pipe:
-`move |<T> value: T| -> T { ... }`. Type instantiation
-preserves the closure's captured state and invocation capabilities: calling a
-mutable generic closure requires a mutable callable place, and calling a
-`fn[once]<T>(T) -> T` consumes that value across all type instantiations.
-Ordinary closures continue to infer parameter types from context. The retired
-`<T>(params) => body` spelling remains invalid.
+Inference carries unambiguous trait requirements from the body: `equal`
+requires `Eq`, and passing a parameter to a function requiring `Display`
+adds that requirement. A parameter or result written as `_` follows the same
+inference rules. Calls and other arbitrary initializer expressions do not
+introduce new type parameters through this literal-generalization rule.
+
+Explicit type parameters remain useful when a signature needs named types or
+bounds. They go immediately after the opening pipe:
+`|<T: Eq> left: T, right: T| -> bool { left == right }`.
+A quantified function type writes its binders after the callable qualifiers:
+`fn[clone]<T: Eq>(T, T) -> bool`. Such values can be stored, passed and returned.
+Calls may supply explicit arguments, as in `identity<string>("hello")`.
+
+All instantiations use the same captured environment. A mutable generic
+closure requires a mutable callable place, and calling a
+`fn[once]<T>(T) -> T` consumes that value across all instantiations. `move`
+precedes the pipe, including an explicitly generic literal:
+`move |<T> value: T| -> T { value }`.
+
+Captured storage keeps one type across calls. Type variables belonging to an
+outer binding are excluded from generalization; a fresh type parameter cannot
+escape into that storage. For example, assigning an argument into a captured
+`Option<i64>` constrains that argument to `i64`, even when unrelated arguments
+remain generic. Give shared storage a concrete annotation when its intended
+type is unclear.
 
 **Ambiguous cases require annotations:**
 
-```hew,ignore
-// ERROR: Cannot infer types for lambda parameters
-let f = |x, y| x + y;  // No context to determine x, y types
+Arithmetic with two unconstrained operands does not select one generic
+operation. Choose a concrete parameter type or provide a callable context:
 
-// Solution 1: Annotate the variable
-let f: fn(i64, i64) -> i64 = |x, y| x + y;
-
-// Solution 2: Annotate parameters
-let f = |x: i64, y: i64| x + y;
+```hew
+fn main() {
+    let add: fn(i64, i64) -> i64 = |left, right| left + right;
+    let subtract = |left: i64, right: i64| left - right;
+    assert(add(8, 3) == 11 && subtract(8, 3) == 5);
+}
 ```
+
+Similarly, `let same = |left, right| left is right;` needs a concrete actor
+reference type: identity comparison has no universal value-type contract.
+A context such as `fn(Worker, Worker) -> bool` lets the literal infer its
+parameters. The retired `<T>(params) => body` spelling remains invalid.
 
 **Constraint solving for complex bounds:**
 
@@ -8072,7 +8099,7 @@ The `events { ... }`, `emits { ... }` and `default { ... }` blocks take no
 extra terminator. Supervisor child clauses such as `restart:` and
 `stop:` remain parts of one child member, which ends with `;`.
 
-Type-parameterized closures use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
+Directly bound closure literals can infer generic signatures, as in `let identity = |value| value;`. Explicit type parameters use `|<T: Bound> value: T| -> R { body }`, and quantified function types use `fn[qualifiers]<T: Bound>(T) -> R` (see §3.8.6). The retired `<T>(params) => body` spelling remains invalid.
 
 ### Keywords
 

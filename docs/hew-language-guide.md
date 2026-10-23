@@ -1004,6 +1004,59 @@ way two bare `bool`s can. When adjacent strings travel together, gather them
 into a record; shorthand keeps the call site short, and the record's keys make
 the order irrelevant.
 
+### Closure types and inference
+
+Write a closure with `|parameters| body`. A function argument or a type
+annotation can supply its parameter types. A directly bound literal can also
+infer a generic signature and accept different types on successive calls:
+
+```hew
+fn identity_factory() -> fn<T>(T) -> T { |value| value }
+
+fn main() {
+    let identity = |value| value;
+    assert(identity(42) == 42);
+    assert(identity("hello") == "hello");
+    let returned = identity_factory();
+    assert(returned(true));
+    let same = |left, right| left == right;
+    assert(same(7, 7) && same("word", "word"));
+}
+```
+
+The body supplies unambiguous trait requirements: `same` accepts types that
+support `Eq`. You can write the contract explicitly when it helps the reader:
+`|<T: Eq> left: T, right: T| left == right`. Public parameter and return types
+spell a universal callable as `fn<T>(T) -> T`. The literal in
+`identity_factory` is checked against that signature.
+
+A generic closure keeps one private captured environment across calls. Body
+writes infer mutable captures, so only the callable binding needs `var`:
+
+```hew
+fn main() {
+    let count = 0;
+    var counted = |value| { count += 1; (count, value) };
+    let (first, number) = counted(42);
+    let (second, text) = counted("next");
+    assert(first == 1 && number == 42);
+    assert(second == 2 && text == "next");
+    assert(count == 0);
+}
+```
+
+Captured storage keeps one type. If the body stores `value` in a captured
+`Option<i64>`, that parameter must remain `i64` on every call. Annotate the
+storage when its intended type is unclear. Unrelated parameters can still be
+generic, and an inferred generic `var` keeps its signature when reassigned.
+
+Some bodies need a concrete choice. For `|left, right| left + right`, write
+`|left: i64, right: i64| left + right` or give the binding the type
+`fn(i64, i64) -> i64`. Identity comparison with `is` needs concrete actor
+reference types too, such as `fn(Worker, Worker) -> bool`. Generalization
+applies to directly bound literals; a call used as an initializer keeps the
+type returned by that call.
+
 ### A `var` parameter is the callee's own copy
 
 ```hew

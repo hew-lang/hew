@@ -89,6 +89,7 @@ def asynchronous_clients(args, root, directory, opt, env):
                     ("echo", "echo"),
                     ("wait_for_cancel", "wait"),
                     ("body_and_cleanup_fail", "fail"),
+                    ("open_marker", "marker_new"),
                 ]
                 for argument in ("--export-c-async", f"{name}=async_{alias}")
             ],
@@ -129,7 +130,7 @@ def asynchronous_clients(args, root, directory, opt, env):
                 executable,
             ]
         )
-        result = run([executable], env=env)
+        result = run([executable, directory / f"async-marker-{language}"], env=env)
         if result.stdout or result.stderr:
             raise RuntimeError(
                 f"unexpected async protocol output: {result.stdout!r}, {result.stderr!r}"

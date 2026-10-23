@@ -142,3 +142,7 @@ and runtime with the existing `core-safety-build` target. This instruments the
 generated Hew object and C/C++ client as well as the Rust archive, and enables
 unsuppressed ASan/LSan for the C/C++ clients. The Python shared-library consumer
 runs in the ordinary host target. Ordinary host-client success is not sanitizer evidence.
+The Linux async client waits on wake callbacks to cancel pending work, checks
+consumed resource inputs and owned results, and verifies cleanup faults before
+releasing the call. Callback storage stays alive through runtime shutdown and
+the last foreign wake reference.

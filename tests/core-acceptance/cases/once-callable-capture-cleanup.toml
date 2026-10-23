@@ -1,0 +1,10 @@
+[[case]]
+id = "once-callable-capture-cleanup"
+intent = "Invoked once callables release their resource capture exactly once through direct, generic and enum-extraction calls."
+source = "cases/once-callable-capture-cleanup.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "close 1\n1\nclose 2\n2\nclose 3\n3\n4\nclose 4\n"
+stderr = ""
+exit = 0

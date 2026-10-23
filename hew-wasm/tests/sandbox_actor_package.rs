@@ -695,6 +695,7 @@ fn a_crash_hook_observes_the_last_valid_state_before_restart() {
         "crash-hook-suspension",
         hew_compile::SourceSet::in_memory(),
         r#"{"stepBudget":2000000}"#,
+        "ok",
     );
     // One helper millisecond, two authored 100ms deadlines and eight 1ms releases.
     assert_eq!(trace["final_state"]["virtual_clock"]["current_ms"], 209);
@@ -1059,11 +1060,20 @@ fn seeded_driver_covers_serialized_and_lost_deposits() {
     ] {
         let options =
             serde_json::json!({"schedulerPolicy": "chaos", "replay": {"seed": seed}}).to_string();
-        let trace =
-            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &options);
+        let trace = assert_native_manifest_options(
+            name,
+            hew_compile::SourceSet::in_memory(),
+            &options,
+            "ok",
+        );
         let replay = serde_json::json!({"replay": trace["replay"]}).to_string();
         assert_eq!(
-            assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), &replay),
+            assert_native_manifest_options(
+                name,
+                hew_compile::SourceSet::in_memory(),
+                &replay,
+                "ok"
+            ),
             trace
         );
     }
@@ -1134,6 +1144,25 @@ fn quantified_closures_keep_one_environment_across_instantiations() {
         "generic-closure-composition",
         hew_compile::SourceSet::in_memory(),
     );
+}
+
+#[test]
+fn invoked_once_callables_release_their_resource_captures() {
+    assert_native_manifest(
+        "once-callable-capture-cleanup",
+        hew_compile::SourceSet::in_memory(),
+    );
+}
+
+#[test]
+fn once_callable_cleanup_preserves_body_and_result_faults() {
+    for name in [
+        "callable-once-close-body-fault",
+        "callable-once-close-result-fault",
+        "callable-once-suspending-close-fault",
+    ] {
+        assert_native_manifest_options(name, hew_compile::SourceSet::in_memory(), "{}", "panic");
+    }
 }
 
 #[test]
@@ -1259,13 +1288,14 @@ fn confined_supplied_services_keep_generic_and_erased_cleanup_authority() {
 }
 
 fn assert_native_manifest(name: &str, inputs: hew_compile::SourceSet) -> serde_json::Value {
-    assert_native_manifest_options(name, inputs, "{}")
+    assert_native_manifest_options(name, inputs, "{}", "ok")
 }
 
 fn assert_native_manifest_options(
     name: &str,
     inputs: hew_compile::SourceSet,
     options: &str,
+    status: &str,
 ) -> serde_json::Value {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/core-acceptance");
     let manifest = std::fs::read_to_string(root.join(format!("cases/{name}.toml")))
@@ -1289,7 +1319,7 @@ fn assert_native_manifest_options(
         }));
         options["argv"] = serde_json::json!(argv);
     }
-    let trace = execute_options(&source, "ok", &options.to_string(), inputs);
+    let trace = execute_options(&source, status, &options.to_string(), inputs);
     assert_eq!(
         stdout(&trace),
         case["expected"]["stdout"].as_str().unwrap(),
@@ -1310,8 +1340,9 @@ fn assert_native_manifest_options(
         "{name}"
     );
     assert_eq!(
-        trace["final_state"]["exit_code"].as_i64(),
-        case["expected"]["exit"].as_integer(),
+        // The parity runner maps a terminal fault without an explicit exit to 1.
+        trace["final_state"]["exit_code"].as_i64().unwrap_or(1),
+        case["expected"]["exit"].as_integer().unwrap(),
         "{name}"
     );
     trace

@@ -1,0 +1,39 @@
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn invoke<T>(consume initialize: fn[once, suspends]() -> T) -> T {
+    initialize()
+}
+
+enum Pending<T> {
+    Value(fn[once, suspends]() -> T);
+}
+
+fn unpack<T>(consume pending: Pending<T>) -> T {
+    match pending {
+        .Value(initialize) => initialize(),
+    }
+}
+
+fn main() {
+    let direct_ticket = Ticket { id: 1 };
+    let direct: fn[once, suspends]() -> i64 = move || direct_ticket.id;
+    println(direct());
+    let generic_ticket = Ticket { id: 2 };
+    println(invoke(move || generic_ticket.id));
+    let enum_ticket = Ticket { id: 3 };
+    println(unpack(Pending.Value(move || enum_ticket.id)));
+    let transferred_ticket = Ticket { id: 4 };
+    let transfer: fn[once]() -> Ticket = move || transferred_ticket;
+    let result = transfer();
+    println(result.id);
+    result.close();
+}

@@ -302,6 +302,9 @@ interface Activation {
   /// back on the unwind edge.
   handback?: ValueDef | null;
   erasedHandback?: Extract<VmValue, { kind: "dyn" }>;
+  /// A consuming invocation of a borrowed closure body owns this receiver
+  /// until both the body and its capture cleanup have completed.
+  consumedCallable?: Extract<VmValue, { kind: "closure" }>;
 }
 
 /// Ends the run. The status is already recorded on the trace.
@@ -1739,14 +1742,26 @@ class ExecutorV1 {
         // `self`. A plain function value carries none.
         const callee = this.boundary(act, term.callee);
         const args = term.args.map((operand) => this.boundary(act, operand));
+        const body = this.functionAt(
+          calleeFunction(callee, term.specialization),
+        );
         this.current = this.activate(
-          this.functionAt(calleeFunction(callee, term.specialization)),
+          body,
           callee.kind === "closure" ? [callee.environment, ...args] : args,
           act,
           term.result,
           term.normal,
           term.unwind,
         );
+        // SIR already distinguishes a consuming body from a borrowed body
+        // exposed through a once-callable view. Only the latter leaves its
+        // receiver cleanup to this invocation boundary.
+        if (
+          callee.kind === "closure" &&
+          term.callee.decision === "move" &&
+          body.params[0]?.own !== "owned"
+        )
+          this.current.consumedCallable = callee;
         return;
       }
       case "actor.call":
@@ -2448,6 +2463,10 @@ class ExecutorV1 {
   }
 
   private returnFrom(act: Activation, value: VmValue): void {
+    if (
+      this.finishConsumedCallable(act, value, () => this.returnFrom(act, value))
+    )
+      return;
     if (this.finishConstruction(act, () => this.returnFrom(act, value))) return;
     const caller = act.caller;
     if (!caller) {
@@ -2523,6 +2542,12 @@ class ExecutorV1 {
   }
 
   private resumeUnwind(act: Activation, handback: VmValue | null): void {
+    if (
+      this.finishConsumedCallable(act, null, () =>
+        this.resumeUnwind(act, handback),
+      )
+    )
+      return;
     if (this.finishConstruction(act, () => this.resumeUnwind(act, handback)))
       return;
     const fault = act.fault;
@@ -2556,6 +2581,49 @@ class ExecutorV1 {
     caller.fault = fault;
     this.current = caller;
     this.takeEdge(caller, act.unwind);
+  }
+
+  private finishConsumedCallable(
+    act: Activation,
+    value: VmValue | null,
+    done: () => void,
+  ): boolean {
+    const callable = act.consumedCallable;
+    if (!callable) return false;
+    act.consumedCallable = undefined;
+    this.running = false;
+    this.closeValueAsync(
+      callable,
+      this.faultText(act.fault),
+      (fault) => {
+        act.fault = combineFaults(act.fault, fault);
+        const resume = () => {
+          if (value !== null && act.fault) this.resumeUnwind(act, null);
+          else done();
+          const current = this.current;
+          this.scheduler.enqueue(current.context.id, () =>
+            this.runFrame(current),
+          );
+        };
+        // A successful body result is not observable until receiver cleanup
+        // succeeds. A cleanup fault must release that unpublished result.
+        if (value !== null && act.fault)
+          this.closeValueAsync(
+            value,
+            this.faultText(act.fault),
+            (resultFault) => {
+              act.fault = combineFaults(act.fault, resultFault);
+              resume();
+            },
+            act.context.actor,
+            act.rcOwner,
+          );
+        else resume();
+      },
+      act.context.actor,
+      act.rcOwner,
+    );
+    return true;
   }
 
   private suspend(

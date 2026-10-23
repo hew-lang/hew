@@ -44,8 +44,8 @@ capability, and it never matches a symbol prefix.
 ```jsonc
 {
   "schema_version": "hew.sandbox.bytecode.v1",
-  "hew_version": "0.8.0",
-  "compiler_version": "hew-wasm-0.8.0",
+  "hew_version": "0.9.0",
+  "compiler_version": "hew-wasm-0.9.0",
   "profile": "sandbox.sandbox-vm-export.v0",
 
   "entry": { "function": 0, "exit": "unit" },

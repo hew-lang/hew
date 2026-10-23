@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-23
+
+- Initialize deferred values once with `std.lazy`, preserving ordinary value
+  semantics, terminal faults and automatic capture cleanup.
+- Configure per-role supervisor restart delays with typed, bounded backoff.
+- Compose streams and generators with bounded generic prefetch and parallel
+  mapping, explicit ordering and cancellation that drains owned work.
+- Support consuming callable parameters, including inferred closure modes and
+  resource-preserving pipeline transforms, through shared ownership facts.
+- Generate asynchronous native call owners for host event loops, including
+  readiness notifications, cancellation and one-shot owned result transfer.
+- Reuse loaded source identities during compilation to avoid repeated path
+  resolution for the same source.
+
+See the [release notes](docs/releases/v0.9.0.md) and
+[migration guide](docs/migrations/v0.9.0.md) for examples and source updates.
+
 ## [0.8.0] - 2026-10-23
 
 - Infer generic closure signatures and private mutable captures, including

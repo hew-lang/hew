@@ -107,7 +107,7 @@ pub macro twice {
 }
 ```
 
-```hew
+```hew,ignore
 // arithmetic_test.hew
 import arithmetic.{twice};
 

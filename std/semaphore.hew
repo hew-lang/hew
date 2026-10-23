@@ -93,13 +93,13 @@ impl SemaphoreMethods for Semaphore {
     /// Try to acquire a permit, waiting up to `timeout`.
     fn acquire_timeout(self, timeout: duration) -> bool {
         let timeout_ms = timeout.millis_ceil();
-        let timeout = if timeout_ms < 0 {
+        let wait_ms = if timeout_ms < 0 {
             0
         } else {
             timeout_ms
         };
         unsafe {
-            hew_semaphore_acquire_timeout(self.handle, timeout as i64)
+            hew_semaphore_acquire_timeout(self.handle, wait_ms as i64)
         } // INTERNAL-ABI: C ABI takes i64 timeout
     }
     /// Release a previously acquired permit.

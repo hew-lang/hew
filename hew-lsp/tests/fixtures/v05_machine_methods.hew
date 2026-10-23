@@ -19,7 +19,7 @@ fn machine_methods_probe() -> i32 {
 
 fn machine_methods_use() -> i32 {
     var gate = Turnstile.Locked;
-    let _ = gate.step(.Coin);
+    let _ = gate.step(.Coin).expect("machine step failed");
     println(gate.state_name());
     machine_methods_probe()
 }

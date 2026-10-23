@@ -14,8 +14,8 @@ import std.machines.toggle.{Toggle};
 fn main() {
     var t: Toggle = .Off;
     println(t.state_name());
-    t.step(Toggle.Event.Flip);
+    t.step(Toggle.Event.Flip).expect("machine step failed");
     println(t.state_name());
-    t.step(Toggle.Event.Flip);
+    t.step(Toggle.Event.Flip).expect("machine step failed");
     println(t.state_name());
 }

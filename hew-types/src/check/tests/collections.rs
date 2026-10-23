@@ -3082,7 +3082,7 @@ supervisor App {
 #[test]
 fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
     let output = check_source_allowing_prelude_redeclaration(
-        r"machine MachineState {
+        r#"machine MachineState {
     events {
         Tick;
     }
@@ -3096,9 +3096,9 @@ fn machine_state_user_machine_stays_nominal_not_builtin_marker() {
 
 fn main() {
     var m = MachineState.Idle;
-    m.step(.Tick);
+    m.step(.Tick).expect("machine step failed");
 }
-",
+"#,
     );
 
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);

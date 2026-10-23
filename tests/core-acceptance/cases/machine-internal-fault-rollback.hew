@@ -22,5 +22,5 @@ fn main() {
     defer {
         println(work == before);
     }
-    let _result = work.step_with_limit(.Start, 8);
+    let _result = work.step(.Start, limit: 8);
 }

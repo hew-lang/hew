@@ -182,7 +182,7 @@ fn main() {
     };
     let result: Result<i64, string> = Result.Ok(5);
     var door: Door = .Shut;
-    let _ = door.step(.Open);
+    let _ = door.step(.Open).expect("machine step failed");
     println(f"{show(inferred)} {show(annotated)} {passed} {show(arm)} {show(wrap(3))}");
     println(f"{half(4).is_ok()} {half(3).is_err()} {result.is_ok()} {show(first([7]))}");
     println(door.state_name());
@@ -350,7 +350,7 @@ fn prelude_impl_diagnostics_name_the_selected_std_file() {
 /// else a state follows the variant rule (D550), with the same fix-its.
 #[test]
 fn bare_machine_state_outside_its_machine_is_rejected() {
-    const MACHINE: &str = r"machine Door {
+    const MACHINE: &str = r#"machine Door {
     events {
         Open;
     }
@@ -365,12 +365,12 @@ fn bare_machine_state_outside_its_machine_is_rejected() {
 
 fn main() {
     var first = Shut;
-    let _ = first.step(.Open);
+    let _ = first.step(.Open).expect("machine step failed");
     let second: Door = Ajar;
     println(first.state_name());
     println(second.state_name());
 }
-";
+"#;
     let dir = tempdir();
     let (ok, rendered) = check(dir.path(), "door.hew", MACHINE);
     assert!(

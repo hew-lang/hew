@@ -15,5 +15,5 @@ fn main() {
     defer {
         println(endless == before);
     }
-    let _report = endless.step(.Tick);
+    assert(endless.step(.Tick) == .Err(.LimitExceeded));
 }

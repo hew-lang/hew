@@ -36,8 +36,8 @@ machine Holder {
 
 fn main() {
     var h = Holder.Vacant;
-    h.step(.Fill);
-    h.step(.Bump);
+    h.step(.Fill).expect("machine step failed");
+    h.step(.Bump).expect("machine step failed");
     let code = match h {
         Holder.Full { item } => item.code,
         Holder.Vacant => 0,

@@ -1004,7 +1004,7 @@ fn machine_state_resource_payload_rejects() {
         "    on Shut: Opened => .Closed;\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Gate.Closed; h.step(.Open); }\n",
+        "fn main() { var h = Gate.Closed; h.step(.Open).expect(\"machine step failed\"); }\n",
     ));
     assert!(
         errors.iter().any(|e| {
@@ -1031,7 +1031,7 @@ fn machine_state_resource_payload_rejects_transitively() {
         "    on Open: Closed => .Opened { w: Wrap { t: Tok { id: 1 } } }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Gate.Closed; h.step(.Open); }\n",
+        "fn main() { var h = Gate.Closed; h.step(.Open).expect(\"machine step failed\"); }\n",
     ));
     assert!(
         errors.iter().any(|e| {
@@ -1052,7 +1052,7 @@ fn machine_state_without_resource_payload_is_admitted() {
         "    on Inc: Zero => .NonZero { value: 1 }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var x = Counter.Zero; x.step(.Inc); }\n",
+        "fn main() { var x = Counter.Zero; x.step(.Inc).expect(\"machine step failed\"); }\n",
     ));
     assert!(
         errors.is_empty(),
@@ -1077,7 +1077,7 @@ fn machine_state_phantom_generic_resource_arg_is_admitted() {
         "    on Open: Closed => .Opened { p: Phantom<Tok> { id: 1 } }\n",
         "    default { state }\n",
         "}\n",
-        "fn main() { var h = Gate.Closed; h.step(.Open); }\n",
+        "fn main() { var h = Gate.Closed; h.step(.Open).expect(\"machine step failed\"); }\n",
     ));
     assert!(
         !errors

@@ -233,13 +233,15 @@ fn prepared_methods() {
     assert(field_timeout && field.meter.count == 1);
     var staged: Counter = .Ready { value: 0 };
     let report = select {
-        result from staged.step(.Add { value: 5 }) => result,
+        result from staged.step(.Add { value: 5 }) => result.expect("machine step failed"),
         after 1s => panic("staged step timed out"),
     };
     assert(value(staged) == 5 && report.outputs.len() == 1);
     let staged_failed = scope {
         select {
-            result from staged.step(.Add { value: -1 }) => {}
+            result from staged.step(.Add { value: -1 }) => {
+                let _ = result.expect("machine step failed");
+            }
             after 1s => {}
         };
         false

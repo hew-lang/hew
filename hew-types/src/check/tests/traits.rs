@@ -2478,6 +2478,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
                 name: Ident::new("do_it"),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("val"),
                     name_span: 0..0,
                     ty: (
@@ -2522,6 +2524,8 @@ fn structural_hardening_super_trait_e1_guard_propagates() {
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (
@@ -2580,6 +2584,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
                 bounds: vec![],
             }]),
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (
@@ -2625,6 +2631,8 @@ fn structural_hardening_super_trait_generic_method_guard_propagates() {
             name: Ident::new("run"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("val"),
                 name_span: 0..0,
                 ty: (

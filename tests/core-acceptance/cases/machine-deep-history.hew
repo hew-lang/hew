@@ -78,9 +78,9 @@ machine Generic<T> {
 fn generic_history() {
     let initial: Generic<string> = .Outside;
     var owner = history.track(initial, [GenericScope.Active]);
-    let _first = owner.step(.Resume { saved: .None, initial_value: "owned".to_upper() });
-    let _pause = owner.step(.Pause);
-    let _resume = owner.step(.Resume { saved: owner.saved(.Active), initial_value: "fresh" });
+    let _first = owner.step(.Resume { saved: .None, initial_value: "owned".to_upper() }).expect("machine step failed");
+    let _pause = owner.step(.Pause).expect("machine step failed");
+    let _resume = owner.step(.Resume { saved: owner.saved(.Active), initial_value: "fresh" }).expect("machine step failed");
     match owner.state() {
         .Child { initial_value, value } => assert(initial_value == "fresh" && value == "OWNED"),
         _ => panic("generic deep history lost its payload"),
@@ -92,28 +92,28 @@ fn main() {
     let initial: Editor = .Outside;
     var owner = history.track(initial, [EditorScope.Editing]);
     assert(owner.saved(.Editing).is_none());
-    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) });
+    let _first = owner.step(.Resume { title: "first", saved: owner.saved(.Editing) }).expect("machine step failed");
     match owner.state() {
         .Draft { title, revision, text } => {
             assert(title == "first" && revision == 10 && text == "first:draft");
         }
         _ => panic("first resume did not use nested initial constructors"),
     }
-    let _review = owner.step(.Review);
+    let _review = owner.step(.Review).expect("machine step failed");
     assert(owner.saved(.Editing).is_none());
-    let _pause = owner.step(.Pause);
+    let _pause = owner.step(.Pause).expect("machine step failed");
     assert(owner.saved(.Working).is_none());
     let retained = owner.saved(.Editing).expect("saved Editing subtree");
     var copied = owner;
-    let resumed = owner.step(.Resume { title: "resumed", saved: owner.saved(.Editing) });
+    let resumed = owner.step(.Resume { title: "resumed", saved: owner.saved(.Editing) }).expect("machine step failed");
     assert(resumed.outputs == [.Entered { title: "resumed", text: "first:draft:review:saved" }]);
     check_review(owner.state(), "resumed", "first:draft:review:saved");
     assert(copied.state().state_name() == "Outside");
-    let _edited = owner.step(.Edit { suffix: "!" });
-    let _paused_again = owner.step(.Pause);
-    let _resumed_again = owner.step(.Resume { title: "latest", saved: owner.saved(.Editing) });
+    let _edited = owner.step(.Edit { suffix: "!" }).expect("machine step failed");
+    let _paused_again = owner.step(.Pause).expect("machine step failed");
+    let _resumed_again = owner.step(.Resume { title: "latest", saved: owner.saved(.Editing) }).expect("machine step failed");
     check_review(owner.state(), "latest", "first:draft:review:saved!:saved");
-    let _copied_resume = copied.step(.Resume { title: "copy", saved: copied.saved(.Editing) });
+    let _copied_resume = copied.step(.Resume { title: "copy", saved: copied.saved(.Editing) }).expect("machine step failed");
     check_review(copied.state(), "copy", "first:draft:review:saved");
     match retained {
         .Editing { snapshot } => check_review(snapshot.restore("detached"), "detached", "first:draft:review:saved"),

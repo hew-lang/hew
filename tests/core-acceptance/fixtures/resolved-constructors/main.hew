@@ -3,7 +3,7 @@ import constructors.left.shapes as west;
 import constructors.right.shapes as east;
 
 enum Parcel {
-    Full { local: i64;  }
+    Full { local: i64; }
 }
 
 type Gate {
@@ -35,8 +35,8 @@ fn main() {
     show_east(east_parcel);
     var west_gate = west.Gate.Closed { label: "left gate".to_upper() };
     var east_gate = east.Gate.Closed { count: 10, label: "right gate".to_upper() };
-    west_gate.step(.Open);
-    east_gate.step(.Open);
+    west_gate.step(.Open).expect("machine step failed");
+    east_gate.step(.Open).expect("machine step failed");
     match west_gate {
         west.Gate.Closed { label } => println("unexpected:" + label),
         west.Gate.Opened { label } => println(label),

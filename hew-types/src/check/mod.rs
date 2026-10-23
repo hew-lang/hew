@@ -36,6 +36,7 @@ mod closure_inference;
 mod coerce;
 pub mod const_eval;
 mod constants;
+mod default_arguments;
 mod dependency_analysis;
 mod diagnostics;
 mod macro_templates;
@@ -104,19 +105,20 @@ use self::types::{
 pub use self::types::{
     ActorMethodKind, ActorStateGuard, AllocationClass, ArmResolution, AssignTargetKind,
     AssignTargetShape, BinderTraitCall, CallableArgumentFlow, CallableCandidate,
-    CallableDispatchActual, CallableFieldFlow, CheckedForLoop, CheckedForMethod,
-    CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact, ClosureEscapeFact,
-    ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat, DynCoercion,
-    DynMethodCall, EntryCallableInstance, EntryDisplayTarget, EntryExitAction, EntryExitPlan,
-    EntryIntegerType, ErrorConversion, ExecutionContextReader, ExternMethodCallIdentity,
-    ExternMethodSignature, FnSig, FnSigView, FromImpl, ImplMethodProvenance, ImportedImplBodyFact,
-    IndirectCallCandidates, MachineMethodKind, MathGenericOp, MethodCallReceiverKind,
-    MethodCallRewrite, OpaqueResourceCandidateGraph, OpaqueResourceLifecycleCandidate,
-    OpaqueResourceLifecycleConflict, OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind,
-    PatternPlan, PayloadBinding, PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub,
-    PoolAccessor, PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation,
-    ReceiverUpdate, RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot,
-    StackHint, StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
+    CallableDispatchActual, CallableFieldFlow, CheckedDefaultArgument, CheckedForLoop,
+    CheckedForMethod, CheckedSelectSource, Checker, ChildKind, ChildSlot, ClosureCaptureFact,
+    ClosureEscapeFact, ClosureEscapeKind, ClosureEscapeRule, Codec, CodecDirection, CodecFormat,
+    DefaultArgumentProvider, DynCoercion, DynMethodCall, EntryCallableInstance, EntryDisplayTarget,
+    EntryExitAction, EntryExitPlan, EntryIntegerType, ErrorConversion, ExecutionContextReader,
+    ExternMethodCallIdentity, ExternMethodSignature, FnSig, FnSigView, FromImpl,
+    ImplMethodProvenance, ImportedImplBodyFact, IndirectCallCandidates, MachineMethodKind,
+    MathGenericOp, MethodCallReceiverKind, MethodCallRewrite, OpaqueResourceCandidateGraph,
+    OpaqueResourceLifecycleCandidate, OpaqueResourceLifecycleConflict,
+    OpaqueResourceLifecycleConflictKind, ParamBounds, PatternKind, PatternPlan, PayloadBinding,
+    PayloadLiteralPattern, PayloadVariantPattern, PlanField, PlanSub, PoolAccessor,
+    PoolAccessorKind, RaceOperandKind, RcIntrinsicOp, ReceiverObligation, ReceiverUpdate,
+    RecoveryKind, ResolvedTraitDefault, ResultReturnKind, SpanKey, SpawnSlot, StackHint,
+    StructuralWitness, TestEntryPlan, TraitRef, TryConversionKind, TryWidthCastLowering,
     TypeAliasDef, TypeCheckOutput, TypeDef, TypeDefKind, TypeDefView, UserComparisonDispatch,
     VariantConstructorField, VariantConstructorPlan, VariantConstructorValue, VariantDef,
     VariantMatch, VecHigherOrderOp, WidthCastKind, WidthCastLowering,
@@ -2660,12 +2662,17 @@ impl Checker {
                 }
             };
         match item {
-            Item::Function(function) => declare(
-                Kind::Function,
-                0,
-                span,
-                function.type_params.as_deref().unwrap_or_default(),
-            ),
+            Item::Function(function) => {
+                let parameters = function.type_params.as_deref().unwrap_or_default();
+                declare(Kind::Function, 0, span, parameters);
+                if let hew_parser::ast::DeclarationOrigin::DefaultArgument {
+                    body_start,
+                    body_end,
+                } = function.origin
+                {
+                    declare(Kind::Function, 0, &(body_start..body_end), parameters);
+                }
+            }
             Item::Impl(block) => {
                 let parameters = block.type_params.as_deref().unwrap_or_default();
                 declare(Kind::ImplBlock, 0, span, parameters);
@@ -2885,6 +2892,7 @@ impl Checker {
         let program = normalized_program
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
+        self.next_default_span = machine_normalize::next_free_span(program);
         self.validate_macro_templates(program);
         self.check_dependency_bodies(program);
         self.check_embedded_builtin_impl_bodies(program);
@@ -3072,6 +3080,8 @@ impl Checker {
             recovery_kinds: self.recovery_kinds.clone(),
             chain_values: self.chain_values.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
+            call_default_arguments: self.call_default_arguments.clone(),
+            next_default_span: self.next_default_span,
             spawn_argument_slots: self.spawn_argument_slots.clone(),
             supervisor_wiring: self.supervisor_wiring.clone(),
             supervisor_startup_order: self.supervisor_startup_order.clone(),
@@ -4155,6 +4165,7 @@ impl Checker {
             suspension_effects,
             recovery_kinds: std::mem::take(&mut self.recovery_kinds),
             call_argument_slots: std::mem::take(&mut self.call_argument_slots),
+            call_default_arguments: std::mem::take(&mut self.call_default_arguments),
             spawn_argument_slots: std::mem::take(&mut self.spawn_argument_slots),
             supervisor_wiring: std::mem::take(&mut self.supervisor_wiring),
             supervisor_startup_order: std::mem::take(&mut self.supervisor_startup_order),

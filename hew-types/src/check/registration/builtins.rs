@@ -49,7 +49,11 @@ impl Checker {
         std::sync::Arc::clone(self.selected_builtin_program.get_or_insert_with(|| {
             let parsed = hew_parser::parse(include_str!("../../../../std/builtins.hew"));
             assert!(parsed.errors.is_empty(), "embedded builtins must parse");
-            std::sync::Arc::new(parsed.program)
+            let normalized = super::super::machine_normalize::normalize(&parsed.program)
+                .expect("embedded builtin defaults must normalize");
+            std::sync::Arc::new(
+                normalized.map_or(parsed.program, |normalized| normalized.program.clone()),
+            )
         }))
     }
 

@@ -110,7 +110,7 @@ fn main() {
 
     // A transition head binds the event's fields in braces.
     var door: Door = .Shut;
-    let _ = door.step(.Open { by: "sam" });
+    let _ = door.step(.Open { by: "sam" }).expect("machine step failed");
     match door {
         .Ajar { by } => println(by),
         .Shut => println("shut"),

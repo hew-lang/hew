@@ -37,6 +37,11 @@ pub(crate) fn instantiate_named_method_sig(
             .zip(type_args.iter().cloned())
             .collect()
     };
+    for provider in sig.param_defaults.iter_mut().flatten() {
+        for argument in &mut provider.type_args {
+            *argument = argument.substitute_type_params_parallel(&subst_map);
+        }
+    }
     for param_ty in &mut sig.params {
         *param_ty = param_ty.substitute_type_params_parallel(&subst_map);
     }

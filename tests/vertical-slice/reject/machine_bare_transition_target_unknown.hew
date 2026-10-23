@@ -24,6 +24,6 @@ machine Light {
 
 fn main() {
     var light: Light = .Idle;
-    light.step(.Go);
+    light.step(.Go).expect("machine step failed");
     println(light.state_name());
 }

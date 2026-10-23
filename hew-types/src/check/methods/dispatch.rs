@@ -3010,6 +3010,11 @@ impl Checker {
                 .collect(),
         };
         substitution.extend(trait_params.iter().copied().zip(holes.iter().cloned()));
+        for provider in sig.param_defaults.iter_mut().flatten() {
+            for argument in &mut provider.type_args {
+                *argument = argument.substitute_type_params_parallel(&substitution);
+            }
+        }
         sig.params = sig
             .params
             .iter()

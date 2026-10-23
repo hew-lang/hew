@@ -10,6 +10,6 @@ machine Toggle {
 
 fn main() {
     var toggle: Toggle = .Off;
-    let _ = toggle.step(.Flip);
+    let _ = toggle.step(.Flip).expect("machine step failed");
     println(toggle.state_name());
 }

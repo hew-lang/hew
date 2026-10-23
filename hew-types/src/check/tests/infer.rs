@@ -22,6 +22,8 @@ mod non_root_module_inference_scope {
             name: Ident::new(fn_name),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("x"),
                 name_span: 0..0,
                 ty: (param_ty, 10..11),
@@ -166,6 +168,8 @@ mod non_root_module_inference_scope {
             name: Ident::new("root_fn"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("v"),
                 name_span: 0..0,
                 ty: (TypeExpr::Infer, 50..51),
@@ -225,6 +229,8 @@ mod non_root_module_inference_scope {
                 name: Ident::new(name),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("a"),
                     name_span: 0..0,
                     ty: (TypeExpr::Infer, span_start..span_start + 1),
@@ -308,6 +314,8 @@ mod non_root_module_inference_scope {
             name: Ident::new("foo"),
             type_params: None,
             params: vec![Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("x"),
                 name_span: 0..0,
                 ty: (
@@ -508,6 +516,8 @@ mod non_root_module_inference_scope {
                 name: Ident::new("answer"),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("value"),
                     name_span: 0..0,
                     ty: (
@@ -625,6 +635,8 @@ mod non_root_module_inference_scope {
                 name: Ident::new("answer"),
                 type_params: None,
                 params: vec![Param {
+                    default: None,
+                    default_provider: None,
                     name: Ident::new("value"),
                     name_span: 0..0,
                     ty: (

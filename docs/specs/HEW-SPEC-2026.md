@@ -4907,7 +4907,7 @@ machine Door {
 
 fn main() {
     var door: Door = .Shut;
-    let report = door.step(.Open { by: "sam" });
+    let report = door.step(.Open { by: "sam" }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Announce { text } => println(text),   // opened by sam
@@ -5050,7 +5050,7 @@ machine Switch {
 
 fn main() {
     var switch: Switch = .Off;
-    let _ = switch.step(.Toggle);
+    let _ = switch.step(.Toggle).expect("machine step failed");
     println(switch.state_name()); // On
 }
 ```
@@ -5076,9 +5076,9 @@ machine Elevator {
 
 fn main() {
     var lift: Elevator = .Stopped { floor: 1 };
-    let _ = lift.step(.GoTo { floor: 4 });
+    let _ = lift.step(.GoTo { floor: 4 }).expect("machine step failed");
     println(lift.state_name()); // Moving
-    let _ = lift.step(.Arrive);
+    let _ = lift.step(.Arrive).expect("machine step failed");
     match lift {
         .Stopped { floor } => println(f"stopped at {floor}"), // stopped at 4
         _ => println("moving"),
@@ -5106,8 +5106,8 @@ machine Till {
 
 fn main() {
     var till: Till = .Empty;
-    let _ = till.step(.Sale);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
+    let _ = till.step(.Sale).expect("machine step failed");
     match till {
         .Filled { count, label } => println(f"{label}={count}"), // open=2
         .Empty => println("empty"),
@@ -5143,13 +5143,13 @@ machine Meter {
 
 fn main() {
     var meter: Meter = .Watching { peak: 0 };
-    let report = meter.step(.Reading { value: 7 });
+    let report = meter.step(.Reading { value: 7 }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
-    let quiet = meter.step(.Reading { value: 3 });
+    let quiet = meter.step(.Reading { value: 3 }).expect("machine step failed");
     println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
@@ -5204,11 +5204,11 @@ machine Conn {
 
 fn main() {
     var conn: Conn = .Idle;
-    let _ = conn.step(.Start);
-    let _ = conn.step(.Bump);
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Start).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Live
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Dead
 }
 ```
@@ -5250,7 +5250,7 @@ companion types:
 | `NameOutput`          | Separate typed output variants from `emits`                          |
 | `NameStepDisposition` | `Taken` for an explicit rule; `Ignored` for the default fallback     |
 | `NameStep`            | Must-use report: `outputs: Vec<NameOutput>` and `disposition`        |
-| `m.step(event)`       | Stages evaluation and returns `NameStep`, committing `m` on success  |
+| `m.step(event, limit: 1024)` | Returns `Result<NameStep, MachineStepError>`, committing `m` on success; `limit` defaults to 1024 |
 | `m.state_name()`      | Returns the current state tag as a string                            |
 
 `emit` appends output data in evaluation order; it never feeds an input event
@@ -5318,7 +5318,7 @@ actor ConnectionManager {
     var tcp: Tcp = .Closed;
 
     receive fn handle(event: Tcp.Event) {
-        let _report = tcp.step(event);
+        let _report = tcp.step(event).expect("machine step failed");
         match tcp {
             .Established { port } => println(f"established on {port}"),
             .Closed => println("closed"),

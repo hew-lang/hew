@@ -7,9 +7,9 @@ import hew.qmach;
 
 fn main() {
     var light = qmach.initial();
-    light.step(qmach.Light.Event.Toggle);
+    light.step(qmach.Light.Event.Toggle).expect("machine step failed");
     println(light.state_name());
     var lit = qmach.Light.On;
-    lit.step(qmach.Light.Event.Ping);
+    lit.step(qmach.Light.Event.Ping).expect("machine step failed");
     println(lit.state_name());
 }

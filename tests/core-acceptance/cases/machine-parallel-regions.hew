@@ -33,7 +33,7 @@ machine Checkout {
 fn main() {
     var checkout: Checkout = .Running { payment: .Waiting { token: "invoice".to_upper() }, stock: .Empty };
     let copy = checkout;
-    let report = checkout.step(.Advance);
+    let report = checkout.step(.Advance).expect("machine step failed");
     assert(report.outputs.len() == 2);
     assert(report.rules == [0, 1]);
     match checkout {
@@ -47,7 +47,7 @@ fn main() {
         .Running { payment: .Waiting { token }, stock: .Empty } => assert(token == "INVOICE"),
         _ => panic("copy changed"),
     }
-    let stopped = checkout.step(.Cancel);
+    let stopped = checkout.step(.Cancel).expect("machine step failed");
     assert(stopped.rules == [2]);
     assert(checkout.state_name() == "Stopped");
     assert(report.outputs.len() == 2);

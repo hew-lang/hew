@@ -16,8 +16,8 @@ machine Name {
 
 fn main() {
     var m: Name = .StateA;
-    m.step(.EventY { payload: 3 });
+    m.step(.EventY { payload: 3 }).expect("machine step failed");
     println(m.state_name());
-    m.step(.EventY { payload: 7 });
+    m.step(.EventY { payload: 7 }).expect("machine step failed");
     println(m.state_name());
 }

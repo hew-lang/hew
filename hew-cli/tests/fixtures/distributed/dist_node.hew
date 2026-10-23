@@ -3434,11 +3434,11 @@ type TransitMachineReply {
 
 fn check_transit_machine(service: TransitCounter) {
     var current_machine: TransitHistory<string> = .Off;
-    let _initial = current_machine.step(.Resume { seed: "saved".to_upper() });
-    let advanced = current_machine.step(.Advance);
+    let _initial = current_machine.step(.Resume { seed: "saved".to_upper() }).expect("machine step failed");
+    let advanced = current_machine.step(.Advance).expect("machine step failed");
     assert(advanced.rules == [1, 2]);
     assert(advanced.outputs == [.Changed { value: "SAVED" }, .Counted { value: 8 }]);
-    let _leave = current_machine.step(.Leave);
+    let _leave = current_machine.step(.Leave).expect("machine step failed");
     let paused = current_machine;
     let reply = service.machine_step(paused, .Resume { seed: "fresh" }, advanced).expect("relayed history resume");
     assert(reply.retained == advanced);
@@ -3469,7 +3469,7 @@ actor TransitCounter {
     receive fn machine_step(value: TransitHistory<string>, event: TransitHistory.Event<string>, retained: TransitHistoryStep<string>) -> TransitMachineReply {
         machine_calls += 1;
         var current = value;
-        let report = current.step(event);
+        let report = current.step(event).expect("machine step failed");
         TransitMachineReply { state: current, report, retained }
     }
     #[wire]
@@ -3559,7 +3559,7 @@ fn run_transitive(role: string) -> i64 {
             .Ok(_) => panic("revoked origin grant retained authority"),
         }
         var refused: TransitHistory<string> = .Off;
-        let retained = refused.step(.Resume { seed: "refused" });
+        let retained = refused.step(.Resume { seed: "refused" }).expect("machine step failed");
         match service.machine_step(refused, .Advance, retained) {
             .Err(ActorError.RoutingFailed) => {}
             .Err(error) => panic(f"unexpected revoked machine grant failure: {error}"),

@@ -346,6 +346,7 @@ impl Checker {
         args: &[CallArg],
         param_names: &[String],
         param_count: usize,
+        defaults: &[Option<super::types::DefaultArgumentProvider>],
         arity_context: &str,
         span: &Span,
     ) -> Vec<Option<usize>> {
@@ -355,7 +356,7 @@ impl Checker {
                 .map(|index| (index < param_count).then_some(index))
                 .collect()
         };
-        if args.iter().all(|arg| arg.name().is_none()) {
+        if defaults.iter().all(Option::is_none) && args.iter().all(|arg| arg.name().is_none()) {
             self.check_arity(args, param_count, arity_context, span);
             return positional();
         }
@@ -425,8 +426,11 @@ impl Checker {
         let missing = param_names
             .iter()
             .zip(&supplied)
-            .filter(|(_, supplied)| !**supplied)
-            .map(|(name, _)| format!("`{name}`"))
+            .enumerate()
+            .filter(|(slot, (_, supplied))| {
+                !**supplied && defaults.get(*slot).is_none_or(Option::is_none)
+            })
+            .map(|(_, (name, _))| format!("`{name}`"))
             .collect::<Vec<_>>();
         if bound && !missing.is_empty() {
             self.report_error(
@@ -572,6 +576,7 @@ impl Checker {
                     args,
                     param_names,
                     freshened_params.len(),
+                    &sig.param_defaults,
                     &arity_context,
                     span,
                 );
@@ -587,6 +592,13 @@ impl Checker {
                         }
                     }
                 }
+                self.check_default_arguments(
+                    sig,
+                    &slots,
+                    &resolved_type_args,
+                    &freshened_params,
+                    span,
+                );
             }
         }
 

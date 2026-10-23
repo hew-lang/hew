@@ -17,7 +17,7 @@ use std::path::Path;
 
 use support::{run_hew_in, strip_ansi, tempdir};
 
-const POSITIVE: &str = r"machine TcpState {
+const POSITIVE: &str = r#"machine TcpState {
     events {
         Syn;
         Ack;
@@ -41,7 +41,7 @@ actor ConnectionManager {
     var tcp: TcpState = TcpState.Closed;
 
     receive fn handle(event: TcpState.Event) {
-        let _ = tcp.step(event);
+        let _ = tcp.step(event).expect("machine step failed");
         println(tcp.state_name());
     }
 }
@@ -51,7 +51,7 @@ fn main() {
     let _ = cm.handle(TcpState.Event.Syn);
     let _ = cm.handle(TcpState.Event.Ack);
 }
-";
+"#;
 
 const NEGATIVE: &str = r#"machine Sensor {
     events {

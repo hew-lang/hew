@@ -444,6 +444,7 @@ pub struct TypeCheckOutput {
     /// named arguments bind in an order other than the one written. A call
     /// absent here binds its arguments to parameters in source order.
     pub call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    pub call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
     /// Where each key of a checked `spawn` or supervisor child takes its
     /// value, keyed by the spawn expression or child declaration. One slot
     /// per key the target accepts, in declaration order: an actor's state
@@ -533,7 +534,7 @@ pub struct TypeCheckOutput {
     pub resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     /// Resolved source annotations, keyed by their defining file and span.
     pub declaration_type_parameters:
-        HashMap<crate::DefId, (crate::ModuleId, Span, Vec<crate::ParamHead>)>,
+        HashMap<crate::DefId, (crate::ModuleId, Vec<Span>, Vec<crate::ParamHead>)>,
     pub associated_type_schemas: super::AssociatedTypeSchemas,
     pub resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     /// The one authority for a substituted type's ownership and capability
@@ -2854,6 +2855,8 @@ pub struct ImplMethodProvenance {
               an enum would force per-flag enum-variant matches at every read site"
 )]
 pub struct FnSig {
+    /// Declaration-owned computations for omitted arguments, aligned with `params`.
+    pub param_defaults: Vec<Option<DefaultArgumentProvider>>,
     pub impl_method: Option<ImplMethodProvenance>,
     pub type_params: Vec<crate::ParamHead>,
     /// The trait bounds on `type_params`, associated-type bindings included.
@@ -2935,6 +2938,23 @@ pub struct FnSig {
     pub is_builtin_variant: bool,
 }
 
+/// An ordinary function body checked in the parameter declaration's scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultArgumentProvider {
+    pub declaration: crate::DefId,
+    /// Arguments in the signature's binder context, not the caller's names.
+    pub type_args: Vec<Ty>,
+    pub associated: bool,
+}
+
+/// One omitted argument, checked as an ordinary call to its provider.
+#[derive(Debug, Clone)]
+pub struct CheckedDefaultArgument {
+    pub slot: usize,
+    pub target: super::CallTarget,
+    pub span: Span,
+}
+
 /// One impl-level bound on a receiver type argument: `param` of the impl is
 /// instantiated to `arg` for this receiver and must satisfy `bound`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2947,6 +2967,7 @@ pub struct ReceiverObligation {
 impl Default for FnSig {
     fn default() -> Self {
         Self {
+            param_defaults: Vec::new(),
             impl_method: None,
             type_params: vec![],
             bounds: ParamBounds::default(),
@@ -3485,6 +3506,8 @@ pub struct Checker {
     pub(super) chain_values: Vec<ChainValueContext>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    pub(super) call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
+    pub(super) next_default_span: usize,
     /// See [`TypeCheckOutput::spawn_argument_slots`].
     pub(super) spawn_argument_slots: HashMap<SpanKey, Vec<SpawnSlot>>,
     pub(super) supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
@@ -4501,6 +4524,8 @@ impl Checker {
             recovery_kinds: HashMap::new(),
             chain_values: Vec::new(),
             call_argument_slots: HashMap::new(),
+            call_default_arguments: HashMap::new(),
+            next_default_span: 0,
             spawn_argument_slots: HashMap::new(),
             supervisor_wiring: HashMap::new(),
             supervisor_startup_order: HashMap::new(),

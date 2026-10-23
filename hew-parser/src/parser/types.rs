@@ -788,6 +788,8 @@ impl Parser<'_> {
                         });
                     }
                     params.push(Param {
+                        default: None,
+                        default_provider: None,
                         name,
                         name_span: name_span.clone(),
                         ty: (
@@ -839,7 +841,14 @@ impl Parser<'_> {
             }
 
             if let Some(ty) = self.parse_type_with_context(context) {
+                let default = if self.eat(&Token::Equal) {
+                    self.parse_expr()
+                } else {
+                    None
+                };
                 params.push(Param {
+                    default,
+                    default_provider: None,
                     name,
                     name_span,
                     ty,

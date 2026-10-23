@@ -30,6 +30,6 @@ machine Latch {
 
 fn main() {
     var m = Closed { code: 1 };
-    m.step(.Try);
+    m.step(.Try).expect("machine step failed");
     println(m.state_name());
 }

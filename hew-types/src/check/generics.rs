@@ -48,7 +48,7 @@ impl Checker {
             },
             None,
         );
-        let substitutions: HashMap<_, _> = applied
+        let mut substitutions: HashMap<_, _> = applied
             .iter()
             .flat_map(|bound| {
                 self.trait_info(bound.trait_id)
@@ -57,6 +57,19 @@ impl Checker {
                     .zip(bound.args.iter().cloned())
             })
             .collect();
+        for applied_bound in &applied {
+            substitutions.insert(
+                crate::ParamHead::receiver(applied_bound.trait_id),
+                Ty::TraitObject {
+                    traits: vec![bound.clone()],
+                },
+            );
+        }
+        for provider in sig.param_defaults.iter_mut().flatten() {
+            for argument in &mut provider.type_args {
+                *argument = argument.substitute_type_params_parallel(&substitutions);
+            }
+        }
         for parameter in &mut sig.params {
             *parameter = parameter.substitute_type_params_parallel(&substitutions);
         }
@@ -1405,6 +1418,22 @@ impl Checker {
                 .cloned()
         });
         if let Some(m) = found_method {
+            if let Some((_, declaration)) = self.trait_method_ids_of(trait_id, method) {
+                if let Some(mut signature) = self.fn_sigs.get(&declaration).cloned() {
+                    if !skip_receiver && m.params.first().is_some_and(|param| param.is_receiver) {
+                        signature
+                            .params
+                            .insert(0, Ty::param(crate::ParamHead::receiver(trait_id)));
+                        signature.param_names.insert(0, "self".to_string());
+                        signature.param_ownership.insert(
+                            0,
+                            crate::env::ParameterOwnership::from_consume(m.consumes_self),
+                        );
+                        signature.param_defaults.insert(0, None);
+                    }
+                    return Some((trait_id, signature));
+                }
+            }
             let skip = if skip_receiver {
                 usize::from(m.params.first().is_some_and(|p| p.is_receiver))
             } else {

@@ -18,8 +18,8 @@ machine Counter {
 
 fn main() {
     var counter: Counter = .Active { n: 0 };
-    let _ = counter.step(.Inc);
-    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc).expect("machine step failed");
+    let _ = counter.step(.Inc).expect("machine step failed");
     match counter {
         .Active { n } => println(f"n={n}"),
     }

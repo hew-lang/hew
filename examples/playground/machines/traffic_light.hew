@@ -18,10 +18,10 @@ machine TrafficLight {
 fn main() {
     var light: TrafficLight = .Red;
     println(light.state_name());
-    let _ = light.step(.Tick);
+    let _ = light.step(.Tick).expect("machine step failed");
     println(light.state_name());
-    let _ = light.step(.Tick);
+    let _ = light.step(.Tick).expect("machine step failed");
     println(light.state_name());
-    let _ = light.step(.Tick);
+    let _ = light.step(.Tick).expect("machine step failed");
     println(light.state_name());
 }

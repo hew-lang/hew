@@ -54,8 +54,8 @@ machine Beacon {
 fn main() {
     var a = Alarm.Armed;
     var b = Beacon.Idle;
-    let a_report = a.step(.Trigger);
-    let b_report = b.step(.Trigger);
+    let a_report = a.step(.Trigger).expect("machine step failed");
+    let b_report = b.step(.Trigger).expect("machine step failed");
     println(a_report.outputs.len());
     println(b_report.outputs.len());
 }

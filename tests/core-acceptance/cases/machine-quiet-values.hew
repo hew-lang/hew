@@ -17,9 +17,9 @@ fn impossible(output: QuietOutput) -> i64 {
 
 fn main() -> i64 {
     var quiet: Quiet = .Idle;
-    let opened = quiet.step(.Begin);
+    let opened = quiet.step(.Begin).expect("machine step failed");
     let retained = opened;
-    let finished = quiet.step(.Finish);
+    let finished = quiet.step(.Finish).expect("machine step failed");
     var visits = 0;
     for output in retained.outputs {
         visits = visits + impossible(output);

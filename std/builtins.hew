@@ -479,7 +479,7 @@ pub trait Machine {
     type Subtree;
 
     fn step_observed_with_limit(var self, event: Self.Event, limit: i64, requested: Vec<Self.Scope>) -> Result<MachineObservedStep<Self.Step, Self.Scope, Self.Subtree>, MachineStepError>;
-    fn step(var self, event: Self.Event) -> Self.Step;
+    fn step(var self, event: Self.Event, limit: i64 = 1024) -> Result<Self.Step, MachineStepError>;
     fn step_info(self, report: Self.Step) -> MachineStepInfo;
 }
 

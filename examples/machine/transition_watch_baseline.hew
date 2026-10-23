@@ -9,7 +9,7 @@ fn main() {
     var lifecycle = owner;
     let updates = feed.subscribe().expect("subscribe");
     let before = updates.initial().state.state_name();
-    let _ = lifecycle.step(.Initialise);
+    let _ = lifecycle.step(.Initialise).expect("machine step failed");
     let notice = updates.recv().expect("complete history").expect("initialise notice");
     println(f"{before} -> {notice.state.state_name()}");
     lifecycle.close();

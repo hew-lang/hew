@@ -589,20 +589,22 @@ impl Scopes {
     #[must_use]
     pub fn declaration_parameter_facts(
         &self,
-    ) -> HashMap<DefId, (ModuleId, Span, Vec<crate::ParamHead>)> {
-        self.source_type_params
-            .iter()
-            .map(|scope| {
+    ) -> HashMap<DefId, (ModuleId, Vec<Span>, Vec<crate::ParamHead>)> {
+        let mut facts: HashMap<DefId, (ModuleId, Vec<Span>, Vec<crate::ParamHead>)> =
+            HashMap::new();
+        for scope in &self.source_type_params {
+            let entry = facts.entry(scope.owner).or_insert_with(|| {
                 (
-                    scope.owner,
-                    (
-                        scope.file,
-                        scope.span.clone(),
-                        self.declaration_parameters(scope.owner),
-                    ),
+                    scope.file,
+                    Vec::new(),
+                    self.declaration_parameters(scope.owner),
                 )
-            })
-            .collect()
+            });
+            if !entry.1.contains(&scope.span) {
+                entry.1.push(scope.span.clone());
+            }
+        }
+        facts
     }
 
     /// Resolve a parameter inside its defining lexical region.

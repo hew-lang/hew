@@ -33,17 +33,17 @@ fn trace<T>(report: SlotStep<T>) {
 
 fn main() {
     var numbers: Slot<i64> = .Empty;
-    trace(numbers.step(.Put { value: 7 }));
+    trace(numbers.step(.Put { value: 7 }).expect("machine step failed"));
     match numbers {
         .Full { value } => println(f"number {value}"),
         .Empty => panic("number slot stayed empty"),
     }
-    trace(numbers.step(.Clear));
+    trace(numbers.step(.Clear).expect("machine step failed"));
     var words: Slot<string> = .Empty;
-    trace(words.step(.Put { value: "hew" }));
+    trace(words.step(.Put { value: "hew" }).expect("machine step failed"));
     match words {
         .Full { value } => println(f"word {value}"),
         .Empty => panic("word slot stayed empty"),
     }
-    trace(words.step(.Clear));
+    trace(words.step(.Clear).expect("machine step failed"));
 }

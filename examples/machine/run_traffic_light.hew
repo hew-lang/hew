@@ -3,7 +3,7 @@
 // Drives the user-visible machine substrate via `hew run`:
 //   1. Construct a `TrafficLight` machine at its initial state.
 //   2. Read the current state name via `m.state_name()`.
-//   3. Advance the machine with `m.step(.Tick)` and observe the next
+//   3. Advance the machine with `m.step(.Tick).expect("machine step failed")` and observe the next
 //      state name.
 //
 // Resolved by the HIR module-scope constructor-resolution pass: bare
@@ -30,10 +30,10 @@ machine TrafficLight {
 fn main() {
     var light = TrafficLight.Red;
     println(light.state_name());
-    light.step(.Tick);
+    light.step(.Tick).expect("machine step failed");
     println(light.state_name());
-    light.step(.Tick);
+    light.step(.Tick).expect("machine step failed");
     println(light.state_name());
-    light.step(.Tick);
+    light.step(.Tick).expect("machine step failed");
     println(light.state_name());
 }

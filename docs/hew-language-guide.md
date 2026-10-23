@@ -1472,8 +1472,8 @@ machine Till {
 
 fn main() {
     var till = Till.Empty;
-    let _ = till.step(.Sale);
-    let _ = till.step(.Sale);
+    let _ = till.step(.Sale).expect("machine step failed");
+    let _ = till.step(.Sale).expect("machine step failed");
     println(till.state_name()); // Filled
 }
 ```
@@ -2607,21 +2607,23 @@ machine Counter {
 
 fn main() {
     var counter: Counter = .Zero;
-    let _ = counter.step(.Inc);
-    let _ = counter.step(.Inc);
-    let _ = counter.step(.Inc);
+    let _ = counter.step(.Inc).expect("machine step failed");
+    let _ = counter.step(.Inc).expect("machine step failed");
+    let _ = counter.step(.Inc).expect("machine step failed");
     println(counter.state_name());            // NonZero
     match counter {
         .Zero => println("is zero"),
         .NonZero { value } => println(f"value={value}"),   // value=3
     }
-    let _ = counter.step(.Reset);
+    let _ = counter.step(.Reset).expect("machine step failed");
     println(counter.state_name());            // Zero
 }
 ```
 
 A machine is a value type, so `step()` mutates in place and its receiver must
-be a `var`. `step()` returns a must-use report, so bind it (`let report = ...`)
+be a `var`. `step(event, limit: 1024)` returns a fallible report; the limit
+defaults to 1024. Handle or propagate errors, then bind the report
+(`let report = ...`)
 or discard it deliberately (`let _ = ...`). Every `(state, event)` cell must be
 covered or it is a compile error; `default { state }` makes the uncovered ones
 a no-op stay.
@@ -2679,7 +2681,7 @@ machine Switch {
 
 fn main() {
     var switch: Switch = .Off;
-    let _ = switch.step(.Toggle);
+    let _ = switch.step(.Toggle).expect("machine step failed");
     println(switch.state_name()); // On
 }
 ```
@@ -2732,8 +2734,8 @@ fn make_add(n: i64) -> Acc.Event {
 
 fn main() {
     var acc: Acc = .Seed;
-    let _ = acc.step(make_add(5));
-    let _ = acc.step(make_add(7));
+    let _ = acc.step(make_add(5)).expect("machine step failed");
+    let _ = acc.step(make_add(7)).expect("machine step failed");
     match acc {
         .Seed => println("seed"),
         .Total { sum } => println(f"sum={sum}"), // sum=12
@@ -2776,8 +2778,8 @@ machine Log {
 
 fn main() {
     var log: Log = .Empty;
-    let _ = log.step(.Append { item: 10 });
-    let _ = log.step(.Append { item: 20 });
+    let _ = log.step(.Append { item: 10 }).expect("machine step failed");
+    let _ = log.step(.Append { item: 20 }).expect("machine step failed");
     match log {
         .Empty => println("empty"),
         .Filled { items } => {
@@ -2816,13 +2818,13 @@ machine Meter {
 
 fn main() {
     var meter: Meter = .Watching { peak: 0 };
-    let report = meter.step(.Reading { value: 7 });
+    let report = meter.step(.Reading { value: 7 }).expect("machine step failed");
     for output in report.outputs {
         match output {
             .Alarm { value } => println(f"alarm at {value}"), // alarm at 7
         }
     }
-    let quiet = meter.step(.Reading { value: 3 });
+    let quiet = meter.step(.Reading { value: 3 }).expect("machine step failed");
     println(f"outputs={quiet.outputs.len()}"); // outputs=0
 }
 ```
@@ -2861,11 +2863,11 @@ machine Conn {
 
 fn main() {
     var conn: Conn = .Idle;
-    let _ = conn.step(.Start);
-    let _ = conn.step(.Bump);
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Start).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Live
-    let _ = conn.step(.Bump);
+    let _ = conn.step(.Bump).expect("machine step failed");
     println(conn.state_name()); // Dead
 }
 ```
@@ -2897,7 +2899,7 @@ machine Door {
 
 fn drive(door: Door) -> string {
     var local = door;
-    let _ = local.step(.Open);
+    let _ = local.step(.Open).expect("machine step failed");
     local.state_name()
 }
 
@@ -2905,7 +2907,7 @@ actor Porter {
     var door: Door = .Shut;
 
     receive fn accept(event: Door.Event) {
-        let _report = door.step(event);
+        let _report = door.step(event).expect("machine step failed");
         println(door.state_name());
     }
 }
@@ -2968,11 +2970,11 @@ machine Session {
 
 fn main() {
     var session: Session = .Closed;
-    let _ = session.step(.Open);
+    let _ = session.step(.Open).expect("machine step failed");
     println(session.state_name()); // Authing
-    let _ = session.step(.Authed);
+    let _ = session.step(.Authed).expect("machine step failed");
     println(session.state_name()); // Active
-    let _ = session.step(.Close);
+    let _ = session.step(.Close).expect("machine step failed");
     println(session.state_name()); // Kicked
 }
 ```
@@ -3029,7 +3031,7 @@ machine Retry<const MAX: usize = 3> {
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
     for _ in 0 .. 3 {
-        let _ = retry.step(.Fail);
+        let _ = retry.step(.Fail).expect("machine step failed");
     }
     println(retry.state_name()); // Exhausted
 }

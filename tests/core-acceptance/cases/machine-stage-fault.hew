@@ -22,7 +22,7 @@ fn run(divisor: i64) {
             .Opened { label, value } => println(f"committed:{label}:{value}"),
         }
     }
-    let _report = gate.step(.Open { divisor: divisor });
+    let _report = gate.step(.Open { divisor: divisor }).expect("machine step failed");
 }
 
 fn main() {

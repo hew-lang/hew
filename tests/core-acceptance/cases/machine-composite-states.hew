@@ -75,19 +75,19 @@ fn show(report: SessionStep) {
 fn main() {
     var session: Session = .Closed;
     println(session.state_name());
-    show(session.step(.Open));
+    show(session.step(.Open).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Close));
+    show(session.step(.Close).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Open));
-    show(session.step(.Authed));
+    show(session.step(.Open).expect("machine step failed"));
+    show(session.step(.Authed).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Close));
+    show(session.step(.Close).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Open));
-    show(session.step(.Authed));
-    show(session.step(.Drain));
+    show(session.step(.Open).expect("machine step failed"));
+    show(session.step(.Authed).expect("machine step failed"));
+    show(session.step(.Drain).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Close));
+    show(session.step(.Close).expect("machine step failed"));
     println(session.state_name());
 }

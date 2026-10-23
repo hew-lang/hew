@@ -3346,6 +3346,10 @@ impl<'a> Formatter<'a> {
         self.write_ident(p.name);
         self.write(": ");
         self.format_type_expr(&p.ty.0);
+        if let Some(default) = &p.default {
+            self.write(" = ");
+            self.format_expr(default);
+        }
     }
 
     // ------------------------------------------------------------------

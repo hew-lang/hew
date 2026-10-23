@@ -43,5 +43,5 @@ fn main() {
             _ => println("incorrect commit"),
         }
     }
-    let _report = pair.step(.Advance);
+    let _report = pair.step(.Advance).expect("machine step failed");
 }

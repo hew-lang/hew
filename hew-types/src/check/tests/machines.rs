@@ -150,7 +150,7 @@ fn generated_machine_parameters_keep_distinct_binding_spans() {
 
 fn checked_machine(body: &str, helper: &str) -> TypeCheckOutput {
     let source = format!(
-        "{helper}\n machine Gate {{ events {{ Open; }} emits {{ Changed {{ label: string; }} }} state Closed {{ label: string; }} state Opened {{ label: string; }} on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open); }}"
+        "{helper}\n machine Gate {{ events {{ Open; }} emits {{ Changed {{ label: string; }} }} state Closed {{ label: string; }} state Opened {{ label: string; }} on Open: Closed => Opened {{ {body} .Opened {{ label: state.label }} }} default {{ state }} }} fn main() {{ var gate: Gate = .Closed {{ label: \"start\" }}; let _report = gate.step(.Open).expect(\"machine step failed\"); }}"
     );
     let parsed = hew_parser::parse(&source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
@@ -209,7 +209,7 @@ fn machine_requires_guard_fallback_and_target_payload() {
 
 #[test]
 fn machine_step_report_uses_normal_must_use_diagnostic() {
-    let source = "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n\nfn main() {\n    var gate: Gate = .Closed;\n    gate.step(.Open);\n}\n";
+    let source = "machine Gate {\n    events {\n        Open;\n    }\n    state Closed;\n    state Opened;\n    on Open: Closed => Opened;\n    default { state }\n}\n\nfn main() {\n    var gate: Gate = .Closed;\n    gate.step(.Open).expect(\"machine step failed\");\n}\n";
     let parsed = hew_parser::parse(source);
     assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);

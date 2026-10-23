@@ -38,14 +38,14 @@ machine Link {
 
 fn main() {
     var link: Link = .Idle;
-    let _ = link.step(.Open { id: 7 });
-    let _ = link.step(.Touch);
-    let _ = link.step(.Touch);
+    let _ = link.step(.Open { id: 7 }).expect("machine step failed");
+    let _ = link.step(.Touch).expect("machine step failed");
+    let _ = link.step(.Touch).expect("machine step failed");
     println(link.state_name());
-    let _ = link.step(.Hand);
+    let _ = link.step(.Hand).expect("machine step failed");
     println(link.state_name());
-    let _ = link.step(.Shut);
+    let _ = link.step(.Shut).expect("machine step failed");
     println(link.state_name());
-    let _ = link.step(.Open { id: 8 });
+    let _ = link.step(.Open { id: 8 }).expect("machine step failed");
     println(link.state_name());
 }

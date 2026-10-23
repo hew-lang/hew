@@ -193,6 +193,8 @@ impl Builder {
         snapshot: &Snapshot,
     ) -> Result<ImplDecl, TypeError> {
         let mut arguments = vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("self"),
             name_span: self.span(),
             ty: self.ty("Self"),
@@ -201,6 +203,8 @@ impl Builder {
             is_receiver: true,
         }];
         arguments.extend(snapshot.parameters.iter().map(|parameter| Param {
+            default: None,
+            default_provider: None,
             name: parameter.binding,
             name_span: self.span(),
             ty: parameter.ty.clone(),

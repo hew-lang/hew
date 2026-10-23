@@ -2352,6 +2352,8 @@ fn user_module_fn_sig_has_correct_types() {
         "add",
         vec![
             Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("a"),
                 name_span: 0..0,
                 ty: (
@@ -2369,6 +2371,8 @@ fn user_module_fn_sig_has_correct_types() {
                 is_receiver: false,
             },
             Param {
+                default: None,
+                default_provider: None,
                 name: Ident::new("b"),
                 name_span: 0..0,
                 ty: (

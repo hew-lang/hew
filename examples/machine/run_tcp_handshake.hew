@@ -22,10 +22,10 @@ machine TcpHandshake {
 fn main() {
     var tcp = TcpHandshake.Closed;
     println(tcp.state_name());
-    tcp.step(.Syn);
+    tcp.step(.Syn).expect("machine step failed");
     println(tcp.state_name());
-    tcp.step(.Ack);
+    tcp.step(.Ack).expect("machine step failed");
     println(tcp.state_name());
-    tcp.step(.Reset);
+    tcp.step(.Reset).expect("machine step failed");
     println(tcp.state_name());
 }

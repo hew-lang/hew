@@ -57,15 +57,15 @@ fn show(report: SessionStep) {
 
 fn main() {
     var session: Session = .Idle;
-    show(session.step(.Open { user: "ada" }));
-    show(session.step(.Touch { weight: 1 }));
+    show(session.step(.Open { user: "ada" }).expect("machine step failed"));
+    show(session.step(.Touch { weight: 1 }).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Touch { weight: 5 }));
+    show(session.step(.Touch { weight: 5 }).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Open { user: "grace" }));
+    show(session.step(.Open { user: "grace" }).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Close));
+    show(session.step(.Close).expect("machine step failed"));
     println(session.state_name());
-    show(session.step(.Touch { weight: 1 }));
+    show(session.step(.Touch { weight: 1 }).expect("machine step failed"));
     println(session.state_name());
 }

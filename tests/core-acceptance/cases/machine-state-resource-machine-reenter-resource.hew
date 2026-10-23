@@ -23,9 +23,9 @@ machine Session {
 
 fn main() {
     var s: Session = .Idle;
-    let _ = s.step(.Open);
-    for _ in 0 .. 6 {
-        let _ = s.step(.UseIt);
+    let _ = s.step(.Open).expect("machine step failed");
+    for _ in 0..6 {
+        let _ = s.step(.UseIt).expect("machine step failed");
         print("R");
     }
 }

@@ -17,22 +17,43 @@ machine Session {
     state Idle;
     state Connection {
         attempt: i64;
-        entry { emit Trace { text: "connection+" }; state.attempt = state.attempt + 1; }
-        exit { emit Trace { text: "connection-" }; }
+        entry {
+            emit Trace { text: "connection+" };
+            state.attempt = state.attempt + 1;
+        }
+        exit {
+            emit Trace { text: "connection-" };
+        }
         initial state Handshake {
             token: string;
-            entry { emit Trace { text: "handshake+" + state.token }; }
-            exit { emit Trace { text: "handshake-" + state.token }; }
+            entry {
+                emit Trace { text: "handshake+" + state.token };
+            }
+            exit {
+                emit Trace { text: "handshake-" + state.token };
+            }
             initial state Challenge {
-                entry { emit Trace { text: "challenge+" }; }
-                exit { emit Trace { text: "challenge-" }; }
+                entry {
+                    emit Trace { text: "challenge+" };
+                }
+                exit {
+                    emit Trace { text: "challenge-" };
+                }
                 initial state Waiting {
-                    entry { emit Trace { text: "waiting+" }; }
-                    exit { emit Trace { text: "waiting-" }; }
+                    entry {
+                        emit Trace { text: "waiting+" };
+                    }
+                    exit {
+                        emit Trace { text: "waiting-" };
+                    }
                 }
                 state Verifying {
-                    entry { emit Trace { text: "verifying+" }; }
-                    exit { emit Trace { text: "verifying-" }; }
+                    entry {
+                        emit Trace { text: "verifying+" };
+                    }
+                    exit {
+                        emit Trace { text: "verifying-" };
+                    }
                 }
             }
             on Probe: _ => Idle {
@@ -41,8 +62,12 @@ machine Session {
             }
         }
         state Live {
-            entry { emit Trace { text: "live+" }; }
-            exit { emit Trace { text: "live-" }; }
+            entry {
+                emit Trace { text: "live+" };
+            }
+            exit {
+                emit Trace { text: "live-" };
+            }
         }
         on Cancel: _ => Idle {
             emit Trace { text: "ancestor" };
@@ -84,45 +109,55 @@ machine Session {
     }
     default { state }
 }
+
 fn expect(report: SessionStep, expected: string) {
     var actual = "";
     for output in report.outputs {
         match output {
-            .Trace { text } => { actual = actual + text + "|"; }
+            .Trace { text } => {
+                actual = actual + text + "|";
+            }
         }
     }
     assert(actual == expected);
 }
+
 fn main() {
     var session: Session = .Idle;
-    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Open).expect("machine step failed"), "connection+|handshake+owned|challenge+|waiting+|");
     assert(session.state_name() == "Waiting");
-    expect(session.step(.Cancel), "child|");
-    expect(session.step(.Probe { allow: true }), "waiting-|guarded|verifying+|");
-    expect(session.step(.Bounce), "verifying-|bounce|verifying+|");
-    expect(session.step(.Finish), "verifying-|challenge-|handshake-owned|live+|");
-    expect(session.step(.Cancel), "live-|connection-|ancestor|");
+    expect(session.step(.Cancel).expect("machine step failed"), "child|");
+    expect(session.step(.Probe { allow: true }).expect("machine step failed"), "waiting-|guarded|verifying+|");
+    expect(session.step(.Bounce).expect("machine step failed"), "verifying-|bounce|verifying+|");
+    expect(session.step(.Finish).expect("machine step failed"), "verifying-|challenge-|handshake-owned|live+|");
+    expect(session.step(.Cancel).expect("machine step failed"), "live-|connection-|ancestor|");
     assert(session.state_name() == "Idle");
-    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
-    expect(session.step(.Probe { allow: false }), "waiting-|challenge-|handshake-owned|connection-|nearest|");
-    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
-    expect(session.step(.Advance), "waiting-|verifying+|");
-    expect(session.step(.Reset), "verifying-|challenge-|challenge+|waiting+|");
-    expect(session.step(.Reset), "waiting-|challenge-|challenge+|waiting+|");
-    expect(session.step(.Advance), "waiting-|verifying+|");
-    expect(session.step(.Restart), "verifying-|challenge-|handshake-owned|handshake+owned|challenge+|waiting+|");
-    expect(session.step(.Advance), "waiting-|verifying+|");
-    expect(session.step(.Cancel), "verifying-|challenge-|handshake-owned|connection-|ancestor|");
+    expect(session.step(.Open).expect("machine step failed"), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Probe { allow: false }).expect("machine step failed"), "waiting-|challenge-|handshake-owned|connection-|nearest|");
+    expect(session.step(.Open).expect("machine step failed"), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Advance).expect("machine step failed"), "waiting-|verifying+|");
+    expect(session.step(.Reset).expect("machine step failed"), "verifying-|challenge-|challenge+|waiting+|");
+    expect(session.step(.Reset).expect("machine step failed"), "waiting-|challenge-|challenge+|waiting+|");
+    expect(session.step(.Advance).expect("machine step failed"), "waiting-|verifying+|");
+    expect(session.step(.Restart).expect("machine step failed"), "verifying-|challenge-|handshake-owned|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Advance).expect("machine step failed"), "waiting-|verifying+|");
+    expect(session.step(.Cancel).expect("machine step failed"), "verifying-|challenge-|handshake-owned|connection-|ancestor|");
     assert(session.state_name() == "Idle");
-    expect(session.step(.Open), "connection+|handshake+owned|challenge+|waiting+|");
-    expect(session.step(.Recompute { verify: false }), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Open).expect("machine step failed"), "connection+|handshake+owned|challenge+|waiting+|");
+    expect(session.step(.Recompute { verify: false }).expect("machine step failed"), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|waiting+|");
     match session {
-        .Waiting { attempt, token } => { assert(attempt == 9); assert(token == "owned"); }
+        .Waiting { attempt, token } => {
+            assert(attempt == 9);
+            assert(token == "owned");
+        }
         _ => panic("computed same-leaf target changed state"),
     }
-    expect(session.step(.Recompute { verify: true }), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|verifying+|");
+    expect(session.step(.Recompute { verify: true }).expect("machine step failed"), "waiting-|challenge-|handshake-owned|connection-|computed|connection+|handshake+owned|challenge+|verifying+|");
     match session {
-        .Verifying { attempt, token } => { assert(attempt == 10); assert(token == "owned"); }
+        .Verifying { attempt, token } => {
+            assert(attempt == 10);
+            assert(token == "owned");
+        }
         _ => panic("computed sibling target changed state"),
     }
     println("deep handshake ok");

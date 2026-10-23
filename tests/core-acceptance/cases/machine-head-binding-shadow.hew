@@ -17,6 +17,6 @@ machine Meter {
 
 fn main() {
     var meter: Meter = .Idle;
-    let _ = meter.step(.Add { limit: 1 });
+    let _ = meter.step(.Add { limit: 1 }).expect("machine step failed");
     println(meter.state_name());
 }

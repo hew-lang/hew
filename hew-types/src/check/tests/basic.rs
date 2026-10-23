@@ -1809,6 +1809,8 @@ fn typecheck_actor_receive_fn_registered() {
         is_generator: false,
         name: Ident::new("greet"),
         params: vec![Param {
+            default: None,
+            default_provider: None,
             name: Ident::new("name"),
             name_span: 0..0,
             ty: (

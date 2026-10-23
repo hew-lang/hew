@@ -41,19 +41,59 @@ impl LowerCtx {
             .get(&self.mk_key(span))
             .cloned()
             .unwrap_or_default();
-        let mut placed: Vec<Option<HirExpr>> = args.iter().map(|_| None).collect();
+        let defaults = self
+            .call_default_arguments
+            .get(&self.mk_key(span))
+            .cloned()
+            .unwrap_or_default();
+        let count = args.len() + defaults.len();
+        let mut placed: Vec<Option<HirExpr>> = (0..count).map(|_| None).collect();
         for (index, arg) in args.iter().enumerate() {
             let slot = slots.get(index).copied().unwrap_or(index);
             let arg = arg.expr();
             let intent = intent(self, slot, arg);
             placed[slot] = Some(self.lower_expr(arg, intent));
         }
+        let mut evaluation_order: Vec<_> = (0..args.len())
+            .map(|index| slots.get(index).copied().unwrap_or(index))
+            .collect();
+        for default in defaults {
+            let site = self.ids.site();
+            let symbol = self.call_target_presentation_name(&default.target);
+            let (kind, ty) = self.lower_module_qualified_direct_call_lowered(
+                default.target,
+                &symbol,
+                LoweredCallArgs {
+                    args: Vec::new(),
+                    evaluation_order: Vec::new(),
+                },
+                &default.span,
+                site,
+            );
+            let value = HirExpr {
+                node: self.ids.node(),
+                site,
+                ty,
+                intent: IntentKind::Consume,
+                kind,
+                span: default.span,
+            };
+            placed[default.slot] = Some(value);
+            evaluation_order.push(default.slot);
+        }
+        if evaluation_order
+            .iter()
+            .enumerate()
+            .all(|(index, slot)| index == *slot)
+        {
+            evaluation_order.clear();
+        }
         LoweredCallArgs {
             args: placed
                 .into_iter()
                 .map(|arg| arg.expect("checker argument slots are a permutation"))
                 .collect(),
-            evaluation_order: slots,
+            evaluation_order,
         }
     }
 

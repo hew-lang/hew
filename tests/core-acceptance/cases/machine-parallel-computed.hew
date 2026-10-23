@@ -32,10 +32,10 @@ machine Pair {
 
 fn main() {
     var pair: Pair = .Running { left: .L, right: .R };
-    let kept = pair.step(.Stay);
+    let kept = pair.step(.Stay).expect("machine step failed");
     assert(kept.outputs.len() == 2);
     assert(pair.state_name() == "Running");
-    let stopped = pair.step(.Stop);
+    let stopped = pair.step(.Stop).expect("machine step failed");
     assert(stopped.outputs.len() == 1);
     assert(pair.state_name() == "Stopped");
     println("computed root contract passed");

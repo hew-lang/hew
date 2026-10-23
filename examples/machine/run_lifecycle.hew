@@ -4,19 +4,19 @@ import std.concurrency.lifecycle.{Lifecycle, LifecycleError};
 fn main() {
     var service: Lifecycle<i64> = .Created;
     println(service.state_name());
-    service.step(Lifecycle.Event.Initialise);
+    service.step(Lifecycle.Event.Initialise).expect("machine step failed");
     println(service.state_name());
-    service.step(Lifecycle.Event.Started { handle: 42 });
+    service.step(Lifecycle.Event.Started { handle: 42 }).expect("machine step failed");
     println(service.state_name());
-    service.step(Lifecycle.Event.Stop);
+    service.step(Lifecycle.Event.Stop).expect("machine step failed");
     println(service.state_name());
-    service.step(Lifecycle.Event.Stop);
+    service.step(Lifecycle.Event.Stop).expect("machine step failed");
     println(service.state_name());
     var crashing: Lifecycle<i64> = .Created;
     println(crashing.state_name());
-    crashing.step(Lifecycle.Event.Initialise);
+    crashing.step(Lifecycle.Event.Initialise).expect("machine step failed");
     println(crashing.state_name());
     let err = LifecycleError.StartFailed("bind refused");
-    crashing.step(Lifecycle.Event.Crashed { error: err });
+    crashing.step(Lifecycle.Event.Crashed { error: err }).expect("machine step failed");
     println(crashing.state_name());
 }

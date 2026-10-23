@@ -49,14 +49,14 @@ fn fuse_label(value: Fuse) -> string {
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
     println(retry_label(retry));
-    for _ in 0 .. 3 {
-        let _ = retry.step(.Fail);
+    for _ in 0..3 {
+        let _ = retry.step(.Fail).expect("machine step failed");
         println(retry_label(retry));
     }
-    let _ = retry.step(.Reset);
+    let _ = retry.step(.Reset).expect("machine step failed");
     println(retry_label(retry));
     var fuse: Fuse = .Whole { attempts: 0 };
     println(fuse_label(fuse));
-    let _ = fuse.step(.Fail);
+    let _ = fuse.step(.Fail).expect("machine step failed");
     println(fuse_label(fuse));
 }

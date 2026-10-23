@@ -117,7 +117,7 @@ actor Core<M: Machine<Event = E, Step = R> + Send, E: Send, R: Send> {
         }
         let result: Result<R, string> = scope {
             var candidate = committed.current;
-            let report = candidate.step(event);
+            let report = candidate.step(event).expect("machine step failed");
             let notice = Notice { state: candidate, revision: committed.revision + 1, transition: candidate.step_info(report) };
             var notices = committed.notices;
             notices.push(notice);

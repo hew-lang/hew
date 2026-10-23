@@ -18,7 +18,7 @@ type SlotEvent {
 fn main() {
     let user = SlotEvent { n: 4 };
     var slot = Slot.Idle;
-    let _ = slot.step(Slot.Event.Fill);
+    let _ = slot.step(Slot.Event.Fill).expect("machine step failed");
     println(user.n);
     println(slot.state_name());
 }

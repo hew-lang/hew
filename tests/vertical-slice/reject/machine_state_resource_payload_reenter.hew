@@ -26,8 +26,8 @@ machine Session {
 
 fn main() {
     var s = Session.Idle;
-    let _ = s.step(Session.Event.Open);
+    let _ = s.step(Session.Event.Open).expect("machine step failed");
     for i in 0 .. 3 {
-        let _ = s.step(Session.Event.UseIt);
+        let _ = s.step(Session.Event.UseIt).expect("machine step failed");
     }
 }

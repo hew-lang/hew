@@ -52,9 +52,9 @@ fn show(report: CycleStep) {
 
 fn main() {
     var cycle: Cycle = .Ready { label: "a".to_upper() };
-    show(cycle.step(.Tick));
-    show(cycle.step(.Bounce));
-    show(cycle.step(.Stop));
+    show(cycle.step(.Tick).expect("machine step failed"));
+    show(cycle.step(.Bounce).expect("machine step failed"));
+    show(cycle.step(.Stop).expect("machine step failed"));
     match cycle {
         .Done { label } => println(label),
         _ => panic("wrong final state"),

@@ -895,6 +895,7 @@ struct LowerCtx {
     /// Checker-bound parameter slot of each source argument, for calls whose
     /// named arguments bind out of source order.
     call_argument_slots: HashMap<SpanKey, Vec<usize>>,
+    call_default_arguments: HashMap<SpanKey, Vec<hew_types::check::CheckedDefaultArgument>>,
     /// Checker-bound slots of each spawn and supervisor child.
     spawn_argument_slots: HashMap<SpanKey, Vec<hew_types::check::SpawnSlot>>,
     supervisor_wiring: HashMap<SpanKey, Vec<(String, usize)>>,
@@ -991,7 +992,7 @@ struct LowerCtx {
     /// Phase 1; Phase 2 promotes this to the primary read path.
     resolved_expr_types: HashMap<SpanKey, ResolvedTy>,
     declaration_type_parameters:
-        HashMap<hew_types::DefId, (hew_types::ModuleId, Span, Vec<hew_types::ParamHead>)>,
+        HashMap<hew_types::DefId, (hew_types::ModuleId, Vec<Span>, Vec<hew_types::ParamHead>)>,
     resolved_annotation_types: HashMap<SpanKey, ResolvedTy>,
     associated_type_schemas: hew_types::AssociatedTypeSchemas,
     /// Checker-authoritative RHS spans for accepted `lhs is TypeName`

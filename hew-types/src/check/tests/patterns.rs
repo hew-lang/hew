@@ -1892,7 +1892,7 @@ fn main() {}
 #[test]
 fn generic_machine_step_bare_event_propagates_receiver_args() {
     let output = check_source(
-        r"machine Work<T> {
+        r#"machine Work<T> {
     events {
         Initialise;
         Started { handle: T; }
@@ -1913,9 +1913,9 @@ fn generic_machine_step_bare_event_propagates_receiver_args() {
 
 fn main() {
     var w: Work<i64> = .Created;
-    w.step(.Initialise);
+    w.step(.Initialise).expect("machine step failed");
 }
-",
+"#,
     );
     assert!(
         output.errors.is_empty(),

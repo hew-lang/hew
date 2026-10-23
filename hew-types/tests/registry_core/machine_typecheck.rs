@@ -779,7 +779,7 @@ fn non_generic_machine_type_params_empty() {
 #[test]
 fn machine_step_dispatch() {
     let output = typecheck_isolated(
-        r"machine Light {
+        r#"machine Light {
     events {
         Toggle;
     }
@@ -792,11 +792,11 @@ fn machine_step_dispatch() {
 
 fn main() {
     var light: Light = Light.Off;
-    let _report = light.step(Light.Event.Toggle);
+    let _report = light.step(Light.Event.Toggle).expect("machine step failed");
     let name: string = light.state_name();
     let _ = name;
 }
-",
+"#,
     );
 
     assert!(
@@ -809,7 +809,7 @@ fn main() {
 #[test]
 fn machine_step_suppresses_unused_mut_warning() {
     let output = typecheck_isolated(
-        r"machine Light {
+        r#"machine Light {
     events {
         Toggle;
     }
@@ -822,9 +822,9 @@ fn machine_step_suppresses_unused_mut_warning() {
 
 fn main() {
     var light: Light = Light.Off;
-    light.step(Light.Event.Toggle);
+    light.step(Light.Event.Toggle).expect("machine step failed");
 }
-",
+"#,
     );
 
     assert!(
@@ -845,7 +845,7 @@ fn main() {
 #[test]
 fn machine_step_on_let_receiver_is_rejected() {
     let output = typecheck_isolated(
-        r"machine Light {
+        r#"machine Light {
     events {
         Toggle;
     }
@@ -858,9 +858,9 @@ fn machine_step_on_let_receiver_is_rejected() {
 
 fn main() {
     let light: Light = Light.Off;
-    light.step(Light.Event.Toggle);
+    light.step(Light.Event.Toggle).expect("machine step failed");
 }
-",
+"#,
     );
 
     assert!(
@@ -921,7 +921,7 @@ fn seq_or_zero(state: TcpState) -> i64 {
 #[test]
 fn generic_machine_threads_type_params_into_state_event_and_step() {
     let output = typecheck_isolated(
-        r"machine Lifecycle<T> {
+        r#"machine Lifecycle<T> {
     events {
         Load { value: T; }
         Reset;
@@ -937,14 +937,14 @@ fn generic_machine_threads_type_params_into_state_event_and_step() {
 
 fn main() {
     var lifecycle: Lifecycle<i64> = Lifecycle.Loaded { value: 1 };
-    lifecycle.step(Lifecycle.Event.Load { value: 2 });
+    lifecycle.step(Lifecycle.Event.Load { value: 2 }).expect("machine step failed");
     let value: i64 = match lifecycle {
         Lifecycle.Empty => 0,
         Lifecycle.Loaded { value } => value,
     };
     let _ = value;
 }
-",
+"#,
     );
 
     assert!(
@@ -1819,7 +1819,7 @@ fn generic_machine_instantiated_with_a_value_type_is_admitted() {
     // Negative control for the refusal above: the same machine at a pure
     // argument carries no diagnostic.
     let output = typecheck_isolated(
-        r"machine Slot<T> {
+        r#"machine Slot<T> {
     events {
         Put { value: T; }
         Clear;
@@ -1833,9 +1833,9 @@ fn generic_machine_instantiated_with_a_value_type_is_admitted() {
 
 fn main() {
     var slot: Slot<i64> = .Empty;
-    let _ = slot.step(.Put { value: 3 });
+    let _ = slot.step(.Put { value: 3 }).expect("machine step failed");
 }
-",
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -1860,9 +1860,9 @@ fn machine_release_proves_the_resource_close() {
         "
         )
     };
-    let helper = "fn weigh(n: i64) -> i64 {\n    let t = Tag { id: n };\n    t.id + 1\n}\n\nmachine Counter {\n    events {\n        Bump;\n    }\n    state Idle;\n    state Live { n: i64; }\n    on Bump: Idle => Live { n: weigh(1) }\n    on Bump: Live => Live reenter { n: state.n + 1 }\n    default { state }\n}\n\nfn main() {\n    var c: Counter = .Idle;\n    let _ = c.step(.Bump);\n}\n";
-    let payload = "machine Link {\n    events {\n        Open { id: i64; }\n        Shut;\n    }\n    state Idle;\n    state Live { tag: Rc<Tag>; }\n    on Open { id }: Idle => Live { tag: Rc.new(Tag { id: id }) }\n    on Shut: Live => Idle;\n    default { state }\n}\n\nfn main() {\n    var l: Link = .Idle;\n    let _ = l.step(.Open { id: 1 });\n}\n";
-    let generic = "machine Slot<T> {\n    events {\n        Put { value: T; }\n        Clear;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put: Empty => Full { value: event.value }\n    on Clear: Full => Empty;\n    default { state }\n}\n\nfn main() {\n    var slot: Slot<Rc<Tag>> = .Empty;\n    let _ = slot.step(.Clear);\n}\n";
+    let helper = "fn weigh(n: i64) -> i64 {\n    let t = Tag { id: n };\n    t.id + 1\n}\n\nmachine Counter {\n    events {\n        Bump;\n    }\n    state Idle;\n    state Live { n: i64; }\n    on Bump: Idle => Live { n: weigh(1) }\n    on Bump: Live => Live reenter { n: state.n + 1 }\n    default { state }\n}\n\nfn main() {\n    var c: Counter = .Idle;\n    let _ = c.step(.Bump).expect(\"machine step failed\");\n}\n";
+    let payload = "machine Link {\n    events {\n        Open { id: i64; }\n        Shut;\n    }\n    state Idle;\n    state Live { tag: Rc<Tag>; }\n    on Open { id }: Idle => Live { tag: Rc.new(Tag { id: id }) }\n    on Shut: Live => Idle;\n    default { state }\n}\n\nfn main() {\n    var l: Link = .Idle;\n    let _ = l.step(.Open { id: 1 }).expect(\"machine step failed\");\n}\n";
+    let generic = "machine Slot<T> {\n    events {\n        Put { value: T; }\n        Clear;\n    }\n    state Empty;\n    state Full { value: T; }\n    on Put: Empty => Full { value: event.value }\n    on Clear: Full => Empty;\n    default { state }\n}\n\nfn main() {\n    var slot: Slot<Rc<Tag>> = .Empty;\n    let _ = slot.step(.Clear).expect(\"machine step failed\");\n}\n";
     for rest in [helper, payload, generic] {
         let refused = typecheck_isolated(&source("println(f\"close {self.id}\");", rest));
         assert!(
@@ -2872,7 +2872,7 @@ fn takes(pair: (Holder<Plain>, Holder<Plain>)) -> i64 {
 #[test]
 fn machine_const_param_is_named_in_a_guard() {
     let output = typecheck_isolated(
-        r"machine Retry<const MAX: usize = 3> {
+        r#"machine Retry<const MAX: usize = 3> {
     events {
         Fail;
     }
@@ -2887,9 +2887,9 @@ fn machine_const_param_is_named_in_a_guard() {
 
 fn main() {
     var retry: Retry = .Trying { attempts: 0 };
-    let _ = retry.step(.Fail);
+    let _ = retry.step(.Fail).expect("machine step failed");
 }
-",
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -2985,7 +2985,7 @@ fn machine_const_param_without_a_default_is_refused() {
 #[test]
 fn machine_composite_target_enters_the_initial_substate() {
     let output = typecheck_isolated(
-        r"machine Session {
+        r#"machine Session {
     events {
         Open;
         Authed;
@@ -3006,9 +3006,9 @@ fn machine_composite_target_enters_the_initial_substate() {
 
 fn main() {
     var session: Session = .Closed;
-    let _ = session.step(.Open);
+    let _ = session.step(.Open).expect("machine step failed");
 }
-",
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -3159,7 +3159,7 @@ fn machine_guarded_substate_rule_alone_is_not_coverage() {
 #[test]
 fn machine_concrete_source_rule_inside_the_block_belongs_to_that_substate() {
     let output = typecheck_isolated(
-        r"machine Session {
+        r#"machine Session {
     events {
         Close;
     }
@@ -3181,9 +3181,9 @@ fn machine_concrete_source_rule_inside_the_block_belongs_to_that_substate() {
 
 fn main() {
     var session: Session = .Closed;
-    let _ = session.step(.Close);
+    let _ = session.step(.Close).expect("machine step failed");
 }
-",
+"#,
     );
     assert!(
         output.errors.is_empty(),
@@ -3233,7 +3233,7 @@ fn machine_nested_composites_resolve_initial_descent() {
 #[test]
 fn machine_bare_transition_target_resolves_to_declared_state() {
     let output = typecheck_isolated(
-        r"machine Light {
+        r#"machine Light {
     events {
         Go;
     }
@@ -3248,10 +3248,10 @@ fn machine_bare_transition_target_resolves_to_declared_state() {
 
 fn main() {
     var light: Light = .Idle;
-    light.step(.Go);
+    light.step(.Go).expect("machine step failed");
     let _ = light.state_name();
 }
-",
+"#,
     );
 
     assert!(
@@ -3271,7 +3271,7 @@ fn main() {
 #[test]
 fn machine_bare_transition_target_unknown_state_is_rejected() {
     let output = typecheck_isolated(
-        r"machine Light {
+        r#"machine Light {
     events {
         Go;
     }
@@ -3286,10 +3286,10 @@ fn machine_bare_transition_target_unknown_state_is_rejected() {
 
 fn main() {
     var light: Light = .Idle;
-    light.step(.Go);
+    light.step(.Go).expect("machine step failed");
     let _ = light.state_name();
 }
-",
+"#,
     );
 
     assert!(

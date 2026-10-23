@@ -2219,17 +2219,15 @@ Calling the handle is the completion call: it waits for the handler and yields
 `Result<R, ActorError>`, exactly as a call on a named actor does. A
 multi-parameter lambda is called with one argument per parameter.
 
-Captured values initialize read-only state fields: ordinary values are
-independent snapshots, and affine resources transfer their ownership. To keep
-state that changes from one message to the next, name the capture in a
-`capture(var ..)` prefix after `actor` (and after `move`, when present). The
-actor gets its own mutable field starting from the captured value; the
+Captured ordinary values are independent snapshots, and affine resources
+transfer their ownership. Assignments and mutating calls in the handler infer
+mutable state fields. The actor's field starts from the captured value; the
 enclosing binding can be `let` and never changes.
 
 ```hew
 fn main() {
     let total: i64 = 0;
-    let add = actor capture(var total) |n: i64| -> i64 {
+    let add = actor |n: i64| -> i64 {
         total += n;
         total
     };
@@ -2255,7 +2253,7 @@ enum Tally {
 
 fn main() {
     let count: i64 = 0;
-    let tally = actor capture(var count) |m: Tally| -> i64 {
+    let tally = actor |m: Tally| -> i64 {
         match m {
             .Add(n) => {
                 count += n;
@@ -4200,7 +4198,7 @@ fn main() {
 and preserve the input. Sorting is stable and uses O(n log n) comparisons.
 
 `sort.sort_by(values, less)` consumes its comparator, which defines an explicit
-strict ordering and may keep private mutable state using `capture(var count)`.
+strict ordering and may keep private mutable state inferred from its body.
 For descending integer order, use `sort.sort_by(values, |a, b| a > b)`.
 
 Floats retain their ordinary partial ordering and do not satisfy `Ord`.
@@ -4497,6 +4495,12 @@ inputs stop application before writing. Each file is replaced atomically; an I/O
 failure reports which files were updated and which remain.
 
 ### Suppressing a lint
+
+`semaphore_progress` warns about locally certain semaphore progress problems,
+including exhausting a fresh semaphore through nested acquisition while its
+leases remain held. It follows clone aliases and known permit counts, and
+stops drawing conclusions when calls, escapes or control flow make them
+uncertain. It is a local diagnostic, not a whole-program deadlock detector.
 
 ```hew
 // hew:allow(dead_code)

@@ -660,16 +660,11 @@ Captured values must satisfy the actor boundary's sendability requirements.
 `move` requests transfer explicitly. It is not needed merely to capture a
 string or another ordinary value.
 
-Every capture initializes a private, read-only state field using those value
-and transfer rules. Naming a capture in a `capture(var name, ...)` prefix makes its
-state field mutable: the handler may assign it or call mutating methods on it,
-and each message observes the writes of earlier ones. The prefix follows
-`actor` and any `move`, with the closure rules of §3.8.6: duplicate names,
-names that clash with a parameter, and initializers are errors. The enclosing
+Every capture initializes a private state field using those value and transfer
+rules. The checker infers mutable fields from assignments and mutating calls in
+the handler; each message observes the writes of earlier ones. The enclosing
 binding is a separate value. It may be `let`, it is never changed, and the
-handler's state is read back only through replies. Writing a capture that the
-prefix does not name is an error whether the enclosing binding is `let` or
-`var`.
+handler's state is read back only through replies (§3.8.6).
 
 ```hew
 enum Tally {
@@ -679,7 +674,7 @@ enum Tally {
 
 fn main() {
     let count: i64 = 0;
-    let tally = actor capture(var count) |m: Tally| -> i64 {
+    let tally = actor |m: Tally| -> i64 {
         match m {
             .Add(n) => {
                 count += n;
@@ -1787,9 +1782,8 @@ fn main() {
 ```
 
 Captured types must satisfy the actor boundary's sendability rules. A borrowed
-view cannot outlive its owner by being captured. A capture is read-only state
-unless `capture(var name)` names it, which makes it a mutable state field of the
-actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
+view cannot outlive its owner by being captured. Writes to a capture make it a
+mutable state field of the actor alone (§2.1.3); the enclosing binding never changes. See §3.8.6 for
 ordinary closure capabilities and private mutable captures.
 
 #### 3.4.6 What IS Allowed (Within an Actor)
@@ -2544,14 +2538,11 @@ fn main() {
 
 **Trait objects (`dyn Trait`):**
 
-> `dyn Trait` in type position is admitted by the parser and grammar.
-> The syntax `dyn TraitBound` is valid and parses without error.
-> Type-checking and codegen for trait objects are partial: basic
-> dispatch through a `dyn` reference works for simple cases, but
-> object-safety enforcement, associated-type bounds, and higher-ranked
-> trait bounds remain incomplete. See HEW-FUTURE.md §2.2 for the
-> full object-type roadmap. This status note is specific to trait objects;
-> machine codegen is live as described in §3.11.
+`dyn Trait` supports checked instance-method dispatch, associated-type
+bindings such as `dyn Iterator<Item = i64>`, and combined bounds such as
+`dyn (Gauge + Send + Sync)`. The checker validates dynamic method eligibility
+and requires associated types to be bound. See §3.8.2 for ownership and
+dispatch rules.
 
 ---
 
@@ -3297,9 +3288,13 @@ may suspend, or yield during computation, through a trait object just as it
 does through a concrete receiver. Mutable receiver handback remains intact on
 success, failure and cancellation.
 
-The current subset does not yet fully enforce object-safety rules or support
-associated-type bounds and higher-ranked trait bounds in `dyn` position. See
-[HEW-FUTURE.md §2.2](HEW-FUTURE.md) for those remaining object-type details.
+Associated types are specified at the object boundary, for example
+`dyn Index<string, Output = i64>`. Combined bounds use parentheses:
+`dyn (Alpha + Beta + Scaled)`. Dispatch includes inherited methods and shares
+their canonical trait slots across a diamond of supertraits. Dynamic methods
+must have an instance receiver and cannot introduce their own type parameters
+or return an unconstrained `Self`. Higher-ranked trait bounds are outside
+this supported surface.
 
 `dyn Trait` works as a function parameter and as a `Vec` element. A
 `Vec<dyn Trait>` type-checks, accepts `push` of any concrete implementor
@@ -3528,26 +3523,25 @@ fn main() {
 }
 ```
 
-Captured values are independent immutable snapshots. To mutate private capture
-state, name existing bindings in a `capture(var name, ...)` prefix:
+Captured values are independent snapshots. Assignments and mutating calls in
+the body infer mutable private capture state:
 
 ```hew
 fn main() {
     let count: i64 = 0;
-    var next = capture(var count) || { count = count + 1; count };
+    var next = || { count = count + 1; count };
     var independent = next;
     println(f"{next()} {independent()}");
 }
 ```
 
-The original binding may be immutable. The prefix grants mutation only to the
-closure's private field; invoking a mutable closure requires a mutable callable
-place. Duplicate capture names, capture initializers, aliases and names that
-conflict with lambda parameters are errors. `capture` remains an ordinary
-identifier outside this prefix.
+The original binding may be immutable. Mutation affects only the closure's
+private field; invoking a mutable closure requires a mutable callable place.
+Copies have independent logical state. The retired `capture(var ...)` prefix
+is rejected with a diagnostic that removes it.
 
-`move` precedes the capture prefix (`move capture(var count) || ...`) and
-transfers captured ownership. It does not itself grant mutation or require
+`move` precedes the opening pipe (`move || ...`) and transfers captured
+ownership. It does not itself require mutation or
 call-once invocation. A capture without an independent snapshot operation
 requires `move`. Consuming a captured owner during invocation, including
 returning it or transferring it into another value, requires call-once.
@@ -3676,8 +3670,8 @@ an explicit list such as `identity<string>(...)`. A quantified value can be
 stored, passed and returned without fixing those arguments in advance. Its
 body must be valid under the declared bounds.
 
-Capture prefixes stay before the opening pipe:
-`move capture(var count) |<T> value: T| -> T { ... }`. Type instantiation
+Explicit ownership transfer stays before the opening pipe:
+`move |<T> value: T| -> T { ... }`. Type instantiation
 preserves the closure's captured state and invocation capabilities: calling a
 mutable generic closure requires a mutable callable place, and calling a
 `fn[once]<T>(T) -> T` consumes that value across all type instantiations.

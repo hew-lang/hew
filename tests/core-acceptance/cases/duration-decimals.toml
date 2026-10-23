@@ -1,0 +1,10 @@
+[[case]]
+id = "duration-decimals"
+intent = "Unit-bearing decimal literals remain exact through calls, timestamp arithmetic and periodic attributes without binary floating-point conversion."
+source = "cases/duration-decimals.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "exact duration decimals\n"
+exit = 0

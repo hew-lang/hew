@@ -2453,6 +2453,33 @@ fn parse_error_duplicate_keyword() {
 
 // Duration literal parsing
 #[test]
+fn decimal_duration_precision_and_range() {
+    for (literal, expected) in [
+        ("0.25s", Some(250_000_000)),
+        ("1.5ms", Some(1_500_000)),
+        ("0.1us", Some(100)),
+        ("0.0000000000025h", Some(9)),
+        ("2_000.000_001ms", Some(2_000_000_001)),
+        ("0.0000000000000000000000000000000000000000000s", Some(0)),
+        ("9223372036.854775807s", Some(i64::MAX)),
+        ("-9223372036.854775808s", Some(i64::MIN)),
+        ("9223372036.854775808s", None),
+        ("-9223372036.854775809s", None),
+        ("0.1ns", None),
+        ("0.0000000001s", None),
+        ("0.0000000000000000000000000000000000000000001s", None),
+        ("250", None),
+    ] {
+        assert_eq!(parse_duration_ns(literal), expected, "{literal}");
+    }
+
+    let result = parse("fn main() { let quarter = 0.25s; let negative = -1.5ms; }");
+    assert!(result.errors.is_empty(), "{:?}", result.errors);
+    let refused = parse("fn main() { let too_precise = 0.1ns; }");
+    assert!(!refused.errors.is_empty());
+}
+
+#[test]
 fn parse_duration_literals() {
     let source = "fn main() { let a = 100ms; let b = 5s; let c = 1m; let d = 2h; }";
     let result = parse(source);

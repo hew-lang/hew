@@ -126,42 +126,52 @@ pub(crate) fn parse_int_literal(s: &str) -> Result<(i128, IntRadix), std::num::P
     }
 }
 
-/// Parse a duration literal string (e.g. "100ns", "5s") into nanoseconds.
 /// Parse a duration literal source string (e.g. `"60s"`, `"5m"`, `"100ms"`)
-/// into a count of nanoseconds. Returns `None` on an unrecognised unit suffix
-/// or an out-of-range value. This is the single source of truth for duration
-/// unit interpretation; downstream stages (codegen) call it rather than
-/// reimplementing unit math, keeping one duration parser.
+/// into exact nanoseconds. Fractions below nanosecond precision and values
+/// outside the signed duration range are refused, without floating-point
+/// conversion. All consumers use this unit interpretation.
 #[must_use]
 pub fn parse_duration_ns(s: &str) -> Option<i64> {
     parse_duration_literal(s)
 }
 
 pub(crate) fn parse_duration_literal(s: &str) -> Option<i64> {
-    let s = &s.replace('_', "");
-    if let Some(num) = s.strip_suffix("ns") {
-        num.parse::<i64>().ok()
-    } else if let Some(num) = s.strip_suffix("us") {
-        num.parse::<i64>().ok().and_then(|v| v.checked_mul(1_000))
-    } else if let Some(num) = s.strip_suffix("ms") {
-        num.parse::<i64>()
-            .ok()
-            .and_then(|v| v.checked_mul(1_000_000))
-    } else if let Some(num) = s.strip_suffix('h') {
-        num.parse::<i64>()
-            .ok()
-            .and_then(|v| v.checked_mul(3_600_000_000_000))
-    } else if let Some(num) = s.strip_suffix('m') {
-        num.parse::<i64>()
-            .ok()
-            .and_then(|v| v.checked_mul(60_000_000_000))
-    } else if let Some(num) = s.strip_suffix('s') {
-        num.parse::<i64>()
-            .ok()
-            .and_then(|v| v.checked_mul(1_000_000_000))
+    let cleaned = s.replace('_', "");
+    let (number, unit) = [
+        ("ns", 1_u128),
+        ("us", 1_000),
+        ("ms", 1_000_000),
+        ("s", 1_000_000_000),
+        ("m", 60_000_000_000),
+        ("h", 3_600_000_000_000),
+    ]
+    .into_iter()
+    .find_map(|(suffix, unit)| cleaned.strip_suffix(suffix).map(|n| (n, unit)))?;
+    let (negative, number) = number
+        .strip_prefix('-')
+        .map_or((false, number), |number| (true, number));
+    let (whole, fraction) = number.split_once('.').unwrap_or((number, ""));
+    let whole = whole.parse::<u128>().ok()?.checked_mul(unit)?;
+    let fraction = fraction.trim_end_matches('0');
+    let nanos = if fraction.is_empty() {
+        whole
     } else {
-        None
-    }
+        let scale = 10_u128.checked_pow(u32::try_from(fraction.len()).ok()?)?;
+        let coefficient = fraction.parse::<u128>().ok()?;
+        // Reduce before multiplying: exact fractions must not overflow an
+        // intermediate product when their final nanosecond value fits.
+        let (mut left, mut right) = (scale, unit);
+        while right != 0 {
+            (left, right) = (right, left % right);
+        }
+        let denominator = scale / left;
+        if coefficient % denominator != 0 {
+            return None;
+        }
+        whole.checked_add((coefficient / denominator).checked_mul(unit / left)?)?
+    };
+    let nanos = i128::try_from(nanos).ok()?;
+    i64::try_from(if negative { -nanos } else { nanos }).ok()
 }
 
 /// Resolve a `#[max_heap(…)]` attribute's argument(s) to a byte count.

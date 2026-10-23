@@ -743,7 +743,7 @@ impl Parser<'_> {
                 } else {
                     self.error_invalid_literal_with_hint(
                         "invalid duration literal".to_string(),
-                        "valid formats: 100ms, 5s, 2m, 1h, 500us, 10ns",
+                        "use an explicit unit (ns, us, ms, s, m, h) and an exact whole number of nanoseconds in range, such as 0.25s or 100ms",
                     );
                     return None;
                 }

@@ -434,8 +434,8 @@ pub enum Token<'src> {
     Label(&'src str),
 
     // ── Literals ──────────────────────────────────────────────────────
-    /// Duration literal, e.g. `100ms`, `5s`. Matched before plain integers.
-    #[regex(r"[0-9][0-9_]*(ns|us|ms|[smh])", priority = 5)]
+    /// Unit-bearing duration, including exact decimal fractions such as `0.25s`.
+    #[regex(r"[0-9][0-9_]*(\.[0-9][0-9_]*)?(ns|us|ms|[smh])", priority = 5)]
     Duration(&'src str),
 
     /// Floating-point literal with optional scientific notation.
@@ -1061,6 +1061,16 @@ mod tests {
                 Token::Duration("200ns"),
                 Token::Duration("50us"),
                 Token::Duration("30m"),
+            ]
+        );
+        assert_eq!(
+            tokens("0.25s 1.5ms 0.1us 2_000.000_001ms 0.1ns"),
+            vec![
+                Token::Duration("0.25s"),
+                Token::Duration("1.5ms"),
+                Token::Duration("0.1us"),
+                Token::Duration("2_000.000_001ms"),
+                Token::Duration("0.1ns"),
             ]
         );
     }

@@ -1,0 +1,19 @@
+actor Ticker {
+    #[every(0.25s)]
+    receive fn tick() {}
+}
+
+fn echo(value: duration) -> duration { value }
+
+fn main() {
+    assert(echo(0.25s) == 250ms);
+    assert(1.5ms == 1500us);
+    assert(0.1us == 100ns);
+    assert(0.0000000000025h == 9ns);
+    assert(2_000.000_001ms == 2s + 1ns);
+    assert(-1.5ms + 2ms == 500us);
+    assert(9223372036.854775807s.nanos() == 9223372036854775807);
+    let point = timestamp.from_unix_secs(0) + 0.25s;
+    assert(point.unix_nanos().expect("exact epoch fraction") == 250000000);
+    println("exact duration decimals");
+}

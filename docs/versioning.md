@@ -13,7 +13,7 @@ development count and commit. A clean build at the matching release tag reports
 the plain release version. Accurate counts require the release tags and their
 history to be available in the checkout.
 
-The 0.6 and 0.7 series develop edition 2026 through feature and maintenance releases.
+The 0.6, 0.7 and 0.8 series develop edition 2026 through feature and maintenance releases.
 A patch release can add language or standard-library features and can include
 intentional surface changes with exact migration guidance. A package using
 an addition declares its minimum compiler version, for example
@@ -25,6 +25,6 @@ owns the version and edition contract. Contributor release guidance lives in
 the [versioning policy](internal/versioning.md) and
 [release runbook](release-runbook.md).
 
-Use the [v0.7.0 release notes](releases/v0.7.0.md) when upgrading a released
+Use the [v0.8.0 release notes](releases/v0.8.0.md) when upgrading a released
 installation. Changes after that tag belong in
-[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.7.0.
+[Unreleased](releases/UNRELEASED.md), rather than being attributed to v0.8.0.

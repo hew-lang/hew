@@ -6928,7 +6928,7 @@ fn main() {
                     .expect("checker must retain imported read signature")
                     .params
                     .as_slice(),
-                [hew_types::Ty::Named { head, .. }] if head.spelling() == expected
+                [hew_types::CallableParameter { ty: hew_types::Ty::Named { head, .. }, .. }] if head.spelling() == expected
             ),
             "checker parameter type must be the complete module owner: {:#?}",
             tco.sigs().get("hew.selfqualtype.read")
@@ -8929,7 +8929,11 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             {
                 continue;
             }
-            let Some(hew_types::Ty::Named { head, .. }) = sig.params.first() else {
+            let Some(hew_types::CallableParameter {
+                ty: hew_types::Ty::Named { head, .. },
+                ..
+            }) = sig.params.first()
+            else {
                 continue;
             };
             let event = head
@@ -9254,7 +9258,7 @@ mod source_analysis_batch_tests {
                 "function:{capabilities:?}:{:?}:{}",
                 params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, ret)
             ),
@@ -9268,7 +9272,7 @@ mod source_analysis_batch_tests {
                 "closure:{capabilities:?}:{:?}:{}:{:?}:{}",
                 params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, ret),
                 captures
@@ -9296,7 +9300,7 @@ mod source_analysis_batch_tests {
                 signature
                     .params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, &signature.return_type)
             )

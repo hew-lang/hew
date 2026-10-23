@@ -1757,13 +1757,14 @@ pub fn lower_program(
             }
             Item::ExternBlock(block) => {
                 for (func_index, func) in block.functions.iter().enumerate() {
-                    let param_tys = func
+                    let params = func
                         .params
                         .iter()
-                        .map(|p| ctx.lower_type(&p.ty))
+                        .map(|p| hew_types::CallableParameter {
+                            ty: ctx.lower_type(&p.ty),
+                            ownership: hew_types::ParameterOwnership::from_consume(p.is_consume),
+                        })
                         .collect::<Vec<_>>();
-                    let param_consume =
-                        func.params.iter().map(|p| p.is_consume).collect::<Vec<_>>();
                     let return_ty = func
                         .return_type
                         .as_ref()
@@ -1785,8 +1786,7 @@ pub fn lower_program(
                         declaration,
                         name: func.name.to_string(),
                         abi: block.abi.clone(),
-                        param_tys,
-                        param_consume,
+                        params,
                         return_ty,
                         // Defining-module provenance: this pass lowers only the
                         // root compilation unit, so `None`. Threaded to MIR so
@@ -1969,13 +1969,16 @@ pub fn lower_program(
                         // third pass.
                         Item::ExternBlock(block) => {
                             for (func_index, func) in block.functions.iter().enumerate() {
-                                let param_tys = func
+                                let params = func
                                     .params
                                     .iter()
-                                    .map(|p| ctx.lower_type(&p.ty))
+                                    .map(|p| hew_types::CallableParameter {
+                                        ty: ctx.lower_type(&p.ty),
+                                        ownership: hew_types::ParameterOwnership::from_consume(
+                                            p.is_consume,
+                                        ),
+                                    })
                                     .collect::<Vec<_>>();
-                                let param_consume =
-                                    func.params.iter().map(|p| p.is_consume).collect::<Vec<_>>();
                                 let return_ty = func
                                     .return_type
                                     .as_ref()
@@ -1998,8 +2001,7 @@ pub fn lower_program(
                                     declaration,
                                     name: func.name.to_string(),
                                     abi: block.abi.clone(),
-                                    param_tys,
-                                    param_consume,
+                                    params,
                                     return_ty,
                                     // Fourth-pass imported modules always carry a
                                     // named `current_module_name` (set to the
@@ -2257,15 +2259,15 @@ pub fn lower_program(
                         declaration,
                         name: function.name.to_string(),
                         abi: block.abi.clone(),
-                        param_tys: function
+                        params: function
                             .params
                             .iter()
-                            .map(|parameter| ctx.lower_type(&parameter.ty))
-                            .collect(),
-                        param_consume: function
-                            .params
-                            .iter()
-                            .map(|parameter| parameter.is_consume)
+                            .map(|parameter| hew_types::CallableParameter {
+                                ty: ctx.lower_type(&parameter.ty),
+                                ownership: hew_types::ParameterOwnership::from_consume(
+                                    parameter.is_consume,
+                                ),
+                            })
                             .collect(),
                         return_ty: function
                             .return_type
@@ -2363,11 +2365,16 @@ pub fn lower_program(
     // stages read the declared parameters, their `consume` dispositions and
     // the return type from a single shape, exactly as for an `extern` block.
     for ((declaration, _), signature) in std::mem::take(&mut ctx.extern_method_signatures) {
-        let (Ok(param_tys), Ok(return_ty)) = (
+        let (Ok(params), Ok(return_ty)) = (
             signature
                 .params
                 .iter()
-                .map(ResolvedTy::from_ty)
+                .map(|parameter| {
+                    ResolvedTy::from_ty(&parameter.ty).map(|ty| hew_types::CallableParameter {
+                        ty,
+                        ownership: parameter.ownership,
+                    })
+                })
                 .collect::<Result<Vec<_>, _>>(),
             ResolvedTy::from_ty(&signature.result),
         ) else {
@@ -2382,8 +2389,7 @@ pub fn lower_program(
             declaration,
             name: signature.endpoint,
             abi: "C".to_string(),
-            param_consume: signature.consumes,
-            param_tys,
+            params,
             return_ty,
             provenance,
             runtime_capability,
@@ -2407,8 +2413,9 @@ pub fn lower_program(
     for item in &items {
         if let HirItem::ExternFn(extern_fn) = item {
             for ty in extern_fn
-                .param_tys
+                .params
                 .iter()
+                .map(|parameter| &parameter.ty)
                 .chain(std::iter::once(&extern_fn.return_ty))
             {
                 for name in crate::value_class::named_type_names(ty) {

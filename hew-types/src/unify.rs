@@ -441,7 +441,13 @@ fn relate_types(subst: &mut Substitution, a: &Ty, b: &Ty, weaken: bool) -> Resul
                 }
             }
             for (a, b) in ap.iter().zip(bp) {
-                unify(subst, a, b)?;
+                if a.ownership != b.ownership {
+                    return Err(UnifyError::Mismatch {
+                        expected: a_resolved.clone(),
+                        actual: b_resolved.clone(),
+                    });
+                }
+                unify(subst, &a.ty, &b.ty)?;
             }
             unify(subst, ar, br)
         }
@@ -626,12 +632,18 @@ mod tests {
         let v = TypeVar::fresh();
         let a = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32, Ty::Var(v)],
+            params: vec![
+                crate::CallableParameter::borrowed(Ty::I32),
+                crate::CallableParameter::borrowed(Ty::Var(v)),
+            ],
             ret: Box::new(Ty::Bool),
         };
         let b = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32, Ty::String],
+            params: vec![
+                crate::CallableParameter::borrowed(Ty::I32),
+                crate::CallableParameter::borrowed(Ty::String),
+            ],
             ret: Box::new(Ty::Bool),
         };
         assert!(unify(&mut subst, &a, &b).is_ok());
@@ -755,13 +767,13 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::String],
         };
         let function = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
         };
         assert!(unify(&mut subst, &closure, &function).is_err());
@@ -781,7 +793,7 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::Var(v)],
+            params: vec![crate::CallableParameter::borrowed(Ty::Var(v))],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32],
         };
@@ -792,7 +804,7 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::String],
+            params: vec![crate::CallableParameter::borrowed(Ty::String)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32],
         };
@@ -810,13 +822,16 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32, Ty::Bool],
+            params: vec![
+                crate::CallableParameter::borrowed(Ty::I32),
+                crate::CallableParameter::borrowed(Ty::Bool),
+            ],
             ret: Box::new(Ty::Unit),
             captures: vec![],
         };
         let function = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Unit),
         };
         assert!(matches!(

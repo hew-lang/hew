@@ -302,7 +302,7 @@ impl RuntimeValueKind {
                 | ResolvedTy::Closure { params, ret, .. }
                     if params.len() == 1 && **ret == ResolvedTy::Bytes =>
                 {
-                    params[0].clone()
+                    params[0].ty.clone()
                 }
                 _ => return None,
             },

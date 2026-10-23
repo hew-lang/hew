@@ -811,8 +811,14 @@ impl Checker {
                             params: func
                                 .params
                                 .iter()
-                                .map(|ty| {
-                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
+                                .map(|parameter| {
+                                    parameter.map(|ty| {
+                                        self.canonicalize_registry_signature(
+                                            ty,
+                                            &canonical_owner,
+                                            &[],
+                                        )
+                                    })
                                 })
                                 .collect(),
                             return_type: self.canonicalize_registry_signature(

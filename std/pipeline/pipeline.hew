@@ -72,7 +72,7 @@ fn dispatch<I, T, U>(consume source: I, consume inboxes: Vec<Inbox<T>>, consume 
     };
 }
 
-fn work<T, U>(id: i64, consume input: Stream<Job<T>>, consume output: Sink<Result<Completed<U>, ScopeFailure>>, consume ready: Sink<i64>, transform: fn[clone, suspends](T) -> U) {
+fn work<T, U>(id: i64, consume input: Stream<Job<T>>, consume output: Sink<Result<Completed<U>, ScopeFailure>>, consume ready: Sink<i64>, transform: fn[clone, suspends](consume T) -> U) {
     scope {
         loop {
             if ready.send(id).is_err() {
@@ -99,10 +99,11 @@ fn work<T, U>(id: i64, consume input: Stream<Job<T>>, consume output: Sink<Resul
 /// shared admission limit bounds active jobs and results waiting for emission.
 /// Each worker receives its own copy of the cloneable transform, whose captures
 /// must be Send. Failures propagate through the owning scope; items are not retried.
-/// The transform borrows its input; the worker releases that input after the
-/// call. Results may own resources independently of the input.
+/// The transform owns each input. It may return that same resource to forward
+/// ownership downstream, or return a new value. Inputs left in the transform
+/// receive ordinary cleanup on return, fault or cancellation.
 /// `concurrency` must be positive.
-pub gen fn map<I, T, U>(consume source: I, transform: fn[clone, suspends](T) -> U, concurrency: i64 = 4, order: Order = .Input) -> U where I: Iterator<Item = T> + Send, T: Send, U: Send {
+pub gen fn map<I, T, U>(consume source: I, transform: fn[clone, suspends](consume T) -> U, concurrency: i64 = 4, order: Order = .Input) -> U where I: Iterator<Item = T> + Send, T: Send, U: Send {
     assert(concurrency > 0);
     scope {
         let (output, input): (Sink<Result<Completed<U>, ScopeFailure>>, Stream<Result<Completed<U>, ScopeFailure>>) = stream.pipe(concurrency).expect("pipeline concurrency");

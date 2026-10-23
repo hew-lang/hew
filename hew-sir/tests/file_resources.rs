@@ -113,7 +113,7 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
             };
             match mutation {
                 2 => lifecycle.release_declaration = DefId::for_test("impostor.release"),
-                3 => release.consumes[0] = false,
+                3 => release.params[0].ownership = hew_types::ParameterOwnership::Borrow,
                 4 => {
                     lifecycle.discharge_depth =
                         hew_types::ffi_contracts::ReleaseDischargeDepth::None;
@@ -121,7 +121,7 @@ fn resource_release_rejects_missing_identity_signature_discharge_and_copy_author
                 5 => producers.clear(),
                 6 => lifecycle.resource_declaration = DefId::for_test("impostor.FileReadStream"),
                 7 => release.result = hew_types::ResolvedTy::String,
-                8 => producers[0].consumes[0] = true,
+                8 => producers[0].params[0].ownership = hew_types::ParameterOwnership::Consume,
                 _ => unreachable!(),
             }
         }

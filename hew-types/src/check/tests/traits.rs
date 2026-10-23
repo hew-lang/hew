@@ -660,7 +660,7 @@ fn qualified_dyn_trait_keeps_foreign_method_order_and_identity() {
         .defs
         .lookup_path("ma.show")
         .expect("foreign function");
-    let Ty::TraitObject { traits } = &output.fn_sigs[&show].params[0] else {
+    let Ty::TraitObject { traits } = &output.fn_sigs[&show].params[0].ty else {
         panic!("foreign parameter should be a trait object");
     };
     assert_eq!(traits[0].trait_id, Some(foreign_trait));
@@ -1790,7 +1790,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_type_def() {
         "get".to_string(),
         FnSig {
             param_names: vec!["index".to_string()],
-            params: vec![Ty::I64],
+            params: vec![crate::CallableParameter::borrowed(Ty::I64)],
             return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
@@ -1846,7 +1846,7 @@ fn named_type_with_get_method_rejects_bracket_index_via_fn_sig() {
         "Wrapper::get",
         FnSig {
             param_names: vec!["index".to_string()],
-            params: vec![Ty::I64],
+            params: vec![crate::CallableParameter::borrowed(Ty::I64)],
             return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
@@ -1897,7 +1897,7 @@ fn hashmap_bracket_index_is_a_compile_error() {
         "get".to_string(),
         FnSig {
             param_names: vec!["key".to_string()],
-            params: vec![Ty::String],
+            params: vec![crate::CallableParameter::borrowed(Ty::String)],
             return_type: option_v,
             ..FnSig::default()
         },
@@ -2044,7 +2044,9 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
         "Wrapper::value",
         FnSig {
             param_names: vec!["next".to_string()],
-            params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+            params: vec![crate::CallableParameter::borrowed(Ty::param(
+                crate::ParamHead::for_test("T"),
+            ))],
             return_type: Ty::param(crate::ParamHead::for_test("T")),
             ..FnSig::default()
         },
@@ -2053,7 +2055,10 @@ fn named_method_lookup_substitutes_type_params_for_fn_sig_fallback() {
     let sig = checker
         .lookup_named_method_sig("Wrapper", &[Ty::String], "value")
         .expect("fn_sigs fallback should resolve");
-    assert_eq!(sig.params, vec![Ty::String]);
+    assert_eq!(
+        sig.params,
+        vec![crate::CallableParameter::borrowed(Ty::String)]
+    );
     assert_eq!(sig.return_type, Ty::String);
 }
 

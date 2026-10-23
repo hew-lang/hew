@@ -3546,6 +3546,30 @@ call-once invocation. A capture without an independent snapshot operation
 requires `move`. Consuming a captured owner during invocation, including
 returning it or transferring it into another value, requires call-once.
 
+Callable parameters carry the same ownership contract as named function
+parameters. `fn(T) -> U` borrows its argument; `fn(consume T) -> U` receives an
+owned argument. These parameter contracts must match exactly when a callable
+is assigned, passed or returned. The compiler does not insert an adapter that
+changes a borrowed argument into an owned one.
+
+A closure can declare `|consume item: T| ...`. When its parameter mode is
+omitted, a checked expected callable signature supplies the mode; without
+such a signature, the parameter is borrowed. Anonymous actor handler
+parameters use the same explicit `consume` spelling as named receive methods.
+Consuming a parameter does not consume the callable or its captures: a
+read-only callable may accept and return a fresh owned input on every call.
+
+```hew
+fn forward(consume text: string) -> string { text }
+
+fn main() {
+    let explicit: fn(consume string) -> string = forward;
+    let inferred: fn(consume string) -> string = |text| text;
+    println(explicit("first"));
+    println(inferred("second"));
+}
+```
+
 Written function types specify invocation and duplication guarantees:
 
 | Type | Invocation | Independent copies |

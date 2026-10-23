@@ -810,6 +810,7 @@ mod non_root_module_inference_scope {
             is_move: false,
             type_params: None,
             params: vec![LambdaParam {
+                ownership: None,
                 name: Ident::new("x"),
                 ty: Some((TypeExpr::Infer, 15..16)),
                 name_span: 14..15,

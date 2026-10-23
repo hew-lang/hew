@@ -82,7 +82,11 @@ fn display_function_no_params() {
 fn display_function_multiple_params() {
     let ty = Ty::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32, Ty::Bool, Ty::String],
+        params: vec![
+            hew_types::CallableParameter::borrowed(Ty::I32),
+            hew_types::CallableParameter::borrowed(Ty::Bool),
+            hew_types::CallableParameter::borrowed(Ty::String),
+        ],
         ret: Box::new(Ty::F64),
     };
     assert_eq!(ty.to_string(), "fn(i32, bool, string) -> f64");
@@ -98,7 +102,7 @@ fn display_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
     };
@@ -529,7 +533,7 @@ fn contains_var_in_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::Var(v)],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::Var(v))],
         ret: Box::new(Ty::I32),
         captures: vec![],
     };
@@ -543,7 +547,7 @@ fn contains_var_in_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
         ret: Box::new(Ty::Var(v)),
         captures: vec![],
     };
@@ -571,7 +575,7 @@ fn contains_var_in_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::String],
     };
@@ -654,7 +658,7 @@ fn substitute_in_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::Var(v)],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::Var(v))],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
     };
@@ -668,7 +672,7 @@ fn substitute_in_closure() {
                 module_idx: 0
             }),
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::Bool],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::Bool)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::Bool],
         }
@@ -738,7 +742,10 @@ fn substitute_in_function() {
     let v = TypeVar(6050);
     let ty = Ty::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::Var(v), Ty::I32],
+        params: vec![
+            hew_types::CallableParameter::borrowed(Ty::Var(v)),
+            hew_types::CallableParameter::borrowed(Ty::I32),
+        ],
         ret: Box::new(Ty::Var(v)),
     };
     let result = ty.substitute(v, &Ty::Bool);
@@ -746,7 +753,10 @@ fn substitute_in_function() {
         result,
         Ty::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::Bool, Ty::I32],
+            params: vec![
+                hew_types::CallableParameter::borrowed(Ty::Bool),
+                hew_types::CallableParameter::borrowed(Ty::I32)
+            ],
             ret: Box::new(Ty::Bool),
         }
     );
@@ -910,24 +920,24 @@ fn ty_equality_composites() {
     assert_eq!(
         Ty::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
         }
     );
     assert_ne!(
         Ty::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
         },
         Ty::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::I64],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::I64)],
             ret: Box::new(Ty::Bool),
         }
     );
@@ -950,7 +960,7 @@ fn apply_subst_through_closure() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::Var(v)],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::Var(v))],
         ret: Box::new(Ty::Var(v)),
         captures: vec![Ty::Var(v)],
     };
@@ -963,7 +973,7 @@ fn apply_subst_through_closure() {
                 module_idx: 0
             }),
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![Ty::F32],
+            params: vec![hew_types::CallableParameter::borrowed(Ty::F32)],
             ret: Box::new(Ty::F32),
             captures: vec![Ty::F32],
         }

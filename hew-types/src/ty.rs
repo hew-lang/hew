@@ -591,7 +591,7 @@ pub enum Ty {
         /// Invocation and duplication guarantees of this callable value.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<Ty>,
+        params: Vec<crate::CallableParameter<Ty>>,
         /// Return type
         ret: Box<Ty>,
     },
@@ -610,7 +610,7 @@ pub enum Ty {
         /// Invocation and duplication guarantees of this concrete closure.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<Ty>,
+        params: Vec<crate::CallableParameter<Ty>>,
         /// Return type
         ret: Box<Ty>,
         /// Types of captured variables from the enclosing scope
@@ -1177,7 +1177,10 @@ impl Ty {
                     if i > 0 {
                         write!(f, ", ")?;
                     }
-                    param.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    if param.ownership == crate::ParameterOwnership::Consume {
+                        write!(f, "consume ")?;
+                    }
+                    param.ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ") -> ")?;
                 ret.fmt_with_numeric_names(f, i64_name, f64_name)
@@ -1205,7 +1208,10 @@ impl Ty {
                     if index != 0 {
                         write!(f, ", ")?;
                     }
-                    param.fmt_with_numeric_names(f, i64_name, f64_name)?;
+                    if param.ownership == crate::ParameterOwnership::Consume {
+                        write!(f, "consume ")?;
+                    }
+                    param.ty.fmt_with_numeric_names(f, i64_name, f64_name)?;
                 }
                 write!(f, ") -> ")?;
                 ret.fmt_with_numeric_names(f, i64_name, f64_name)
@@ -1361,7 +1367,10 @@ impl Ty {
             Ty::Array(elem, _) | Ty::Slice(elem) => elem.has_inference_var(),
             Ty::Named { args, .. } => args.iter().any(Ty::has_inference_var),
             Ty::Function { params, ret, .. } => {
-                params.iter().any(Ty::has_inference_var) || ret.has_inference_var()
+                params
+                    .iter()
+                    .any(|parameter| parameter.ty.has_inference_var())
+                    || ret.has_inference_var()
             }
             Ty::Closure {
                 params,
@@ -1369,7 +1378,9 @@ impl Ty {
                 captures,
                 ..
             } => {
-                params.iter().any(Ty::has_inference_var)
+                params
+                    .iter()
+                    .any(|parameter| parameter.ty.has_inference_var())
                     || ret.has_inference_var()
                     || captures.iter().any(Ty::has_inference_var)
             }
@@ -1989,7 +2000,13 @@ impl Ty {
 
     /// The callable contract, before instantiating any quantified binders.
     #[must_use]
-    pub fn callable_signature(&self) -> Option<(crate::CallableCapabilities, &[Ty], &Ty)> {
+    pub fn callable_signature(
+        &self,
+    ) -> Option<(
+        crate::CallableCapabilities,
+        &[crate::CallableParameter<Ty>],
+        &Ty,
+    )> {
         match self {
             Self::Function {
                 capabilities,
@@ -2119,7 +2136,10 @@ impl Ty {
                 ret,
             } => Ty::Function {
                 capabilities: *capabilities,
-                params: params.iter().map(&mut *f).collect(),
+                params: params
+                    .iter()
+                    .map(|parameter| parameter.map(&mut *f))
+                    .collect(),
                 ret: Box::new(f(ret)),
             },
             Ty::Closure {
@@ -2130,7 +2150,10 @@ impl Ty {
                 identity,
             } => Ty::Closure {
                 capabilities: *capabilities,
-                params: params.iter().map(&mut *f).collect(),
+                params: params
+                    .iter()
+                    .map(|parameter| parameter.map(&mut *f))
+                    .collect(),
                 ret: Box::new(f(ret)),
                 captures: captures.iter().map(&mut *f).collect(),
                 identity: identity.clone(),
@@ -2226,7 +2249,7 @@ impl Ty {
             | Ty::AssocType { base: child, .. } => f(child)?,
             Ty::Function { params, ret, .. } => {
                 for child in params {
-                    f(child)?;
+                    f(&child.ty)?;
                 }
                 f(ret)?;
             }
@@ -2237,7 +2260,7 @@ impl Ty {
                 ..
             } => {
                 for child in params {
-                    f(child)?;
+                    f(&child.ty)?;
                 }
                 f(ret)?;
                 for child in captures {
@@ -2546,7 +2569,10 @@ mod tests {
     fn test_substitute_type_param() {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+            params: vec![crate::CallableParameter {
+                ty: Ty::param(crate::ParamHead::for_test("T")),
+                ownership: crate::ParameterOwnership::Consume,
+            }],
             ret: Box::new(Ty::Tuple(vec![
                 Ty::param(crate::ParamHead::for_test("T")),
                 Ty::I32,
@@ -2559,7 +2585,10 @@ mod tests {
             substituted,
             Ty::Function {
                 capabilities: crate::CallableCapabilities::default(),
-                params: vec![Ty::String],
+                params: vec![crate::CallableParameter {
+                    ty: Ty::String,
+                    ownership: crate::ParameterOwnership::Consume
+                }],
                 ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::I32])),
             }
         );
@@ -2623,7 +2652,7 @@ mod tests {
         let inferred = Ty::Var(TypeVar::fresh());
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Tuple(vec![Ty::String, inferred.clone()])),
         };
 
@@ -2640,7 +2669,10 @@ mod tests {
                 "{}",
                 Ty::Function {
                     capabilities: crate::CallableCapabilities::default(),
-                    params: vec![Ty::I32, Ty::Bool],
+                    params: vec![
+                        crate::CallableParameter::borrowed(Ty::I32),
+                        crate::CallableParameter::borrowed(Ty::Bool)
+                    ],
                     ret: Box::new(Ty::String),
                 }
             ),
@@ -2675,8 +2707,8 @@ mod tests {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                Ty::named_for_test("Vec", vec![Ty::I64]),
-                Ty::Tuple(vec![Ty::Bool, Ty::I64]),
+                crate::CallableParameter::borrowed(Ty::named_for_test("Vec", vec![Ty::I64])),
+                crate::CallableParameter::borrowed(Ty::Tuple(vec![Ty::Bool, Ty::I64])),
             ],
             ret: Box::new(Ty::result(
                 Ty::I64,
@@ -2817,7 +2849,7 @@ mod tests {
         let v = TypeVar::fresh();
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Var(v)),
         };
         assert!(ty.contains_var(v));

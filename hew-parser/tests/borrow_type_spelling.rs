@@ -62,7 +62,7 @@ fn extern_borrow_context_recurses_through_generics_and_callbacks() {
     else {
         panic!("expected callback type, got {:?}", params[1].ty.0);
     };
-    assert!(matches!(callback_params[0].0, TypeExpr::Borrow(_)));
+    assert!(matches!(callback_params[0].ty.0, TypeExpr::Borrow(_)));
 
     let Some((TypeExpr::Named { type_args, .. }, _)) = &functions[0].return_type else {
         panic!("expected generic return type");

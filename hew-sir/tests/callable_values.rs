@@ -791,3 +791,43 @@ fn a_capture_mutation_takes_the_capture_and_restores_it_on_failure() {
     assert_eq!(taken, [capture(0), capture(1)]);
     assert_eq!(restored, [capture(0)]);
 }
+
+#[test]
+fn borrowed_callable_weakening_preserves_parameter_ownership() {
+    let mut module = lower_source(
+        r"
+        fn increment(value: i64) -> i64 { value + 1 }
+        fn apply(callback: fn[suspends](i64) -> i64, value: i64) -> i64 {
+            callback(value)
+        }
+        fn reuse(callback: fn(i64) -> i64) -> i64 {
+            apply(callback, 1) + callback(2)
+        }
+        fn main() -> i64 { reuse(increment) }
+        ",
+    );
+    let function = module
+        .functions
+        .iter_mut()
+        .find(|function| module.defs.path(function.declaration) == "reuse")
+        .expect("reusable borrowed callback body");
+    let result = function.blocks.iter_mut()
+        .flat_map(|block| &mut block.ops)
+        .filter(|operation| matches!(operation.kind, SemOpKind::BeginBorrow { .. }))
+        .flat_map(|operation| &mut operation.results)
+        .find(|result| matches!(&result.ty, hew_types::ResolvedTy::Function { capabilities, .. } if capabilities.suspends))
+        .expect("weakening to suspends must retain a borrow");
+    let hew_types::ResolvedTy::Function { params, .. } = &mut result.ty else {
+        unreachable!()
+    };
+    assert_eq!(params[0].ownership, hew_types::ParameterOwnership::Borrow);
+    params[0].ownership = hew_types::ParameterOwnership::Consume;
+    let diagnostics = verify_module(&module);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|diagnostic| format!("{diagnostic:?}")
+                .contains("begin_borrow must preserve its storage and callable argument contract")),
+        "a borrowed callable must not change parameter ownership: {diagnostics:?}"
+    );
+}

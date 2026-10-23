@@ -36,17 +36,24 @@ impl Checker {
             .fn_sig(signature_key)
             .cloned()
             .unwrap_or_else(|| panic!("function value `{signature_key}` has a signature"));
-        if sig
-            .param_ownership
-            .contains(&crate::env::ParameterOwnership::Consume)
-            || sig.consumes_receiver
-        {
-            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, span,
-                "cannot use a consuming function declaration as a callable value: callable types do not preserve parameter ownership modes".to_string(),
-                vec!["call the declaration directly to preserve its consume contract".to_string()]);
+        if sig.consumes_receiver {
+            self.report_error_with_suggestions(
+                TypeErrorKind::InvalidOperation,
+                span,
+                "a consuming receiver method requires an explicit receiver invocation".to_string(),
+                vec!["wrap the receiver invocation in a consuming closure".to_string()],
+            );
             return Ty::Error;
         }
         let (params, ret, arguments) = self.instantiate_fn_sig_for_call(&sig, type_args, span);
+        let params = params
+            .into_iter()
+            .zip(&sig.params)
+            .map(|(ty, parameter)| crate::CallableParameter {
+                ty,
+                ownership: parameter.ownership,
+            })
+            .collect();
         self.enforce_signature_bounds(&sig, &arguments, span);
         self.record_generic_application(
             super::types::GenericCallee::Function { key: signature_key },
@@ -702,7 +709,18 @@ impl Checker {
         expr: &Expr,
         span: &Span,
     ) {
-        if sig.param_ownership.get(index) != Some(&crate::env::ParameterOwnership::Consume) {
+        if let Some(parameter) = sig.params.get(index) {
+            self.record_argument_consumption(parameter.ownership, expr, span);
+        }
+    }
+
+    pub(super) fn record_argument_consumption(
+        &mut self,
+        ownership: crate::ParameterOwnership,
+        expr: &Expr,
+        span: &Span,
+    ) {
+        if ownership != crate::ParameterOwnership::Consume {
             return;
         }
         if self
@@ -797,7 +815,7 @@ impl Checker {
             return false;
         }
         let suggestion = if self.lambda_capture_depth.is_some() {
-            format!("lambda parameters cannot declare consume; use a named function with a `consume {root}: ...` parameter")
+            format!("cannot consume borrowed lambda parameter `{root}`; declare `consume {root}` or provide a consuming callable signature")
         } else {
             format!("declare the parameter `consume {root}: ...` before consuming it")
         };
@@ -1068,15 +1086,20 @@ impl Checker {
                     return None;
                 }
                 let mut trial = self.subst.clone();
-                for (left, right) in lp.iter().zip(rp).chain(std::iter::once((&**lr, &**rr))) {
-                    Self::try_unify_invariant(&mut trial, left, right).then_some(())?;
+                for (left, right) in lp.iter().zip(rp) {
+                    (left.ownership == right.ownership).then_some(())?;
+                    Self::try_unify_invariant(&mut trial, &left.ty, &right.ty).then_some(())?;
                 }
+                Self::try_unify_invariant(&mut trial, lr, rr).then_some(())?;
                 let capabilities = CallableCapabilities {
                     call: lc.call.max(rc.call),
                     clone: lc.clone && rc.clone,
                     suspends: lc.suspends || rc.suspends,
                 };
-                let params = lp.iter().map(|ty| trial.resolve(ty)).collect();
+                let params = lp
+                    .iter()
+                    .map(|parameter| parameter.map(|ty| trial.resolve(ty)))
+                    .collect();
                 let ret = Box::new(trial.resolve(lr));
                 let joined = match (left, right) {
                     (

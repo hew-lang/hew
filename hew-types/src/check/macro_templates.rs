@@ -228,8 +228,13 @@ impl TemplateNames<'_> {
                 params,
                 return_type,
                 ..
+            } => {
+                for ty in params {
+                    self.ty(&ty.ty)?;
+                }
+                self.ty(return_type)?;
             }
-            | TypeExpr::ActorFn {
+            TypeExpr::ActorFn {
                 params,
                 return_type,
             } => {

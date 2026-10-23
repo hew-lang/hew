@@ -400,7 +400,7 @@ impl LowerCtx {
     ) -> HirExpr {
         let fn_ty = ResolvedTy::Function {
             capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-            params: vec![value.ty.clone()],
+            params: vec![hew_types::CallableParameter::borrowed(value.ty.clone())],
             ret: Box::new(ResolvedTy::String),
         };
         let callee = HirExpr {

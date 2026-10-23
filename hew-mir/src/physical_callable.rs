@@ -254,8 +254,10 @@ pub(super) fn verify_closures(module: &PhysicalModule) -> Result<(), PhysicalErr
                 .get(entry.body.0 as usize)
                 .filter(|body| body.id == entry.body)
                 .ok_or_else(|| PhysicalError::new("physical closure lacks its exact body"))?;
-            let (params, ret, _) =
-                hew_sir::callable_parts(&invocation_ty).map_err(PhysicalError::new)?;
+            let signature = hew_sir::callable_value_signature(&invocation_ty, &module.type_facts)
+                .map_err(PhysicalError::new)?;
+            let params = &signature.params;
+            let ret = &signature.return_ty;
             if body.instance != hew_sir::CallableInstance::Closure(closure.id)
                 || body.params.len() != params.len() + 1
                 || &body.return_ty != ret
@@ -264,8 +266,8 @@ pub(super) fn verify_closures(module: &PhysicalModule) -> Result<(), PhysicalErr
                 || body.params[0].carrier != ParamCarrier::Indirect
                 || body.params[1..]
                     .iter()
-                    .map(|param| &param.ty)
-                    .ne(params.iter())
+                    .map(|param| (&param.ty, param.passing))
+                    .ne(params.iter().map(|param| (&param.ty, param.passing)))
                 || !module
                     .environment_glue
                     .iter()
@@ -343,25 +345,25 @@ pub(super) fn verify_function_make(
         .get(callee.0 as usize)
         .filter(|row| row.id == callee)
         .ok_or_else(|| PhysicalError::new("function value lacks its exact callable"))?;
-    let ResolvedTy::Function {
-        params,
-        ret,
-        capabilities,
-    } = &dest.ty
-    else {
+    let ResolvedTy::Function { capabilities, .. } = &dest.ty else {
         return Err(PhysicalError::new(
             "function value requires a function carrier type",
         ));
     };
+    let signature = hew_sir::callable_value_signature(&dest.ty, &module.type_facts)
+        .map_err(PhysicalError::new)?;
     if dest.own != OwnKind::Owned
         || capabilities.call != CallableCallMode::Read
         || !capabilities.clone
         || callee
             .params
             .iter()
-            .map(|param| &param.ty)
-            .ne(params.iter())
-        || callee.return_ty != **ret
+            .map(|param| (&param.ty, param.passing))
+            .ne(signature
+                .params
+                .iter()
+                .map(|param| (&param.ty, param.passing)))
+        || callee.return_ty != signature.return_ty
         || matches!(callee.instance, hew_sir::CallableInstance::Closure(_))
     {
         return Err(PhysicalError::new(

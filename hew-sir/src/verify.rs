@@ -4300,11 +4300,15 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::BeginBorrow { owner } => {
-            if types.get(&owner.value) != Some(&result.ty) {
+            if !types.get(&owner.value).is_some_and(|source| {
+                source == &result.ty
+                    || crate::verify_callable_coercion(source, &result.ty, facts).is_ok()
+            }) {
                 invalid_operation(
                     function,
                     operation.id,
-                    "begin_borrow must preserve its exact typed storage".to_string(),
+                    "begin_borrow must preserve its storage and callable argument contract"
+                        .to_string(),
                     diagnostics,
                 );
             }
@@ -4604,7 +4608,7 @@ fn verify_extern_call_terminator(
             diagnostics,
         );
     }
-    if args.len() != signature.params.len() || args.len() != signature.consumes.len() {
+    if args.len() != signature.params.len() {
         invalid_operation(
             function,
             id,
@@ -4618,7 +4622,7 @@ fn verify_extern_call_terminator(
         return;
     }
     for (index, argument) in args.iter().enumerate() {
-        let declared = &signature.params[index];
+        let declared = &signature.params[index].ty;
         let Some(actual) = types.get(&argument.operand.value) else {
             continue;
         };
@@ -6116,8 +6120,8 @@ fn verify_terminator_shape(
                                 .iter()
                                 .zip(&signature.params)
                                 .all(|(input, parameter)| {
-                                    types.get(&input.operand.value) == Some(parameter)
-                                        && match owns(parameter) {
+                                    types.get(&input.operand.value) == Some(&parameter.ty)
+                                        && match owns(&parameter.ty) {
                                             Ok(OwnKind::Owned) => {
                                                 input.decision == crate::BoundaryDecision::Move
                                             }

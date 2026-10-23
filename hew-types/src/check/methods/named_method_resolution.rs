@@ -89,8 +89,10 @@ impl Checker {
                     FnSig {
                         params: params
                             .iter()
-                            .map(|ty| {
-                                self.canonicalize_registry_signature(ty, &canonical_owner, &[])
+                            .map(|parameter| {
+                                parameter.map(|ty| {
+                                    self.canonicalize_registry_signature(ty, &canonical_owner, &[])
+                                })
                             })
                             .collect(),
                         return_type: self.canonicalize_registry_signature(
@@ -792,7 +794,8 @@ impl Checker {
         }
         for (arg, param_ty) in args.iter().zip(params.iter()) {
             let (expr, sp) = arg.expr();
-            self.check_against(expr, sp, param_ty);
+            self.check_against(expr, sp, &param_ty.ty);
+            self.record_argument_consumption(param_ty.ownership, expr, sp);
         }
         if let Ok(field_resolved) = crate::resolved_ty::ResolvedTy::from_ty(&resolved_field) {
             self.record_method_call_rewrite(

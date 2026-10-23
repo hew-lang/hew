@@ -101,7 +101,7 @@ mod tests {
         let push_declaration = canonical.defs.mint_for_test("bytes::push");
         let push_signature = FnSig {
             impl_method: Some(method_provenance(push_declaration, "push")),
-            params: vec![Ty::U8],
+            params: vec![crate::CallableParameter::borrowed(Ty::U8)],
             return_type: Ty::Unit,
             ..FnSig::default()
         };
@@ -129,7 +129,7 @@ mod tests {
         );
 
         let wrong_signature = FnSig {
-            params: vec![Ty::I64],
+            params: vec![crate::CallableParameter::borrowed(Ty::I64)],
             ..push_signature.clone()
         };
         assert_eq!(

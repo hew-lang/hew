@@ -321,7 +321,7 @@ impl Checker {
                 },
             ) => {
                 for (syntax, ty) in params.iter_mut().zip(types) {
-                    self.contextualize_alias_target(syntax, ty);
+                    self.contextualize_alias_target(&mut syntax.ty, &ty.ty);
                 }
                 self.contextualize_alias_target(return_type, ret);
             }

@@ -791,7 +791,7 @@ impl LowerCtx {
                             .is_none_or(|expected| expected == source_key)
                         && contract.matches_signature(
                             &self.defs,
-                            &signature.param_tys,
+                            &signature.params.iter().map(|parameter| parameter.ty.clone()).collect::<Vec<_>>(),
                             &signature.return_ty,
                         )
                 });
@@ -1209,7 +1209,7 @@ impl LowerCtx {
             ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 params
                     .iter()
-                    .all(|part| self.imported_signature_type_available(part, receiver))
+                    .all(|part| self.imported_signature_type_available(&part.ty, receiver))
                     && self.imported_signature_type_available(ret, receiver)
             }
             // A trait object names its traits by checked identity; its

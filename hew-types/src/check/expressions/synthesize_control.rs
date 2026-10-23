@@ -239,8 +239,10 @@ impl Checker {
                 }
                 let msg_ty = match &lambda_ty {
                     Ty::Function { params, .. } | Ty::Closure { params, .. } => {
-                        let param_types: Vec<Ty> =
-                            params.iter().map(|ty| self.subst.resolve(ty)).collect();
+                        let param_types: Vec<Ty> = params
+                            .iter()
+                            .map(|parameter| self.subst.resolve(&parameter.ty))
+                            .collect();
                         match param_types.len() {
                             0 => Ty::Tuple(Vec::new()),
                             1 => param_types.into_iter().next().unwrap(),

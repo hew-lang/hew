@@ -89,21 +89,27 @@ fn canonical_string_nested_generic() {
 fn canonical_string_function() {
     let ty = ResolvedTy::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![ResolvedTy::I32, ResolvedTy::Bool],
+        params: vec![
+            hew_types::CallableParameter::borrowed(ResolvedTy::I32),
+            hew_types::CallableParameter::borrowed(ResolvedTy::Bool),
+        ],
         ret: Box::new(ResolvedTy::String),
     };
     assert_eq!(ty.canonical_string(), "fn(i32,bool)->string");
     let quantified = |outer: &str, inner: &str, return_outer: bool| {
         let outer = hew_types::ParamHead::for_test(outer);
         let inner = hew_types::ParamHead::for_test(inner);
-        let bind = |parameter, params, ret| ResolvedTy::GenericCallable {
+        let bind = |parameter, params: Vec<ResolvedTy>, ret| ResolvedTy::GenericCallable {
             parameters: vec![hew_types::CallableTypeParameter {
                 parameter,
                 bounds: vec![],
             }],
             callable: Box::new(ResolvedTy::Function {
                 capabilities: hew_parser::ast::CallableCapabilities::default(),
-                params,
+                params: params
+                    .into_iter()
+                    .map(hew_types::CallableParameter::borrowed)
+                    .collect(),
                 ret: Box::new(ret),
             }),
         };
@@ -141,7 +147,7 @@ fn canonical_string_function_no_params() {
 fn canonical_string_closure_with_captures() {
     let ty = ResolvedTy::Closure {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![ResolvedTy::I32],
+        params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I32)],
         ret: Box::new(ResolvedTy::Bool),
         captures: vec![ResolvedTy::String, ResolvedTy::I64],
     };

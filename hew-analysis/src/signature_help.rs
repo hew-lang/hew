@@ -123,7 +123,7 @@ pub fn build_signature_help(
     // Build parameter infos with byte-offset ranges within the label string.
     let mut params = Vec::new();
     for (name, ty) in sig.param_names.iter().zip(&sig.params) {
-        let param_text = format!("{name}: {}", ty.user_facing());
+        let param_text = crate::hover::format_named_parameter(name, ty);
         if let Some(start) = label.find(&param_text) {
             params.push(ParameterInfo {
                 label_start: start as u32,
@@ -344,7 +344,7 @@ fn format_sig_label(name: &str, sig: &FnSig) -> String {
         .param_names
         .iter()
         .zip(&sig.params)
-        .map(|(n, t)| format!("{n}: {}", t.user_facing()))
+        .map(|(n, t)| crate::hover::format_named_parameter(n, t))
         .collect();
     let display_name = name
         .rsplit(['.', ':'])
@@ -423,7 +423,10 @@ mod tests {
     ) -> TypeCheckOutput {
         let sig = FnSig {
             param_names: param_names.into_iter().map(String::from).collect(),
-            params,
+            params: params
+                .into_iter()
+                .map(hew_parser::ast::CallableParameter::borrowed)
+                .collect(),
             return_type: ret,
             ..FnSig::default()
         };
@@ -634,7 +637,7 @@ fn probe(mat: Matcher, s: string) {
             "stream.pipe".to_string(),
             FnSig {
                 param_names: vec!["capacity".to_string()],
-                params: vec![Ty::I64],
+                params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I64)],
                 return_type: Ty::Unit,
                 ..FnSig::default()
             },
@@ -656,7 +659,7 @@ fn probe(mat: Matcher, s: string) {
                     "pipe".to_string(),
                     FnSig {
                         param_names: vec!["count".to_string()],
-                        params: vec![Ty::I32],
+                        params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I32)],
                         return_type: Ty::Unit,
                         ..FnSig::default()
                     },
@@ -697,7 +700,7 @@ fn probe(mat: Matcher, s: string) {
             "foo".to_string(),
             FnSig {
                 param_names: vec!["count".to_string()],
-                params: vec![Ty::I32],
+                params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I32)],
                 return_type: Ty::Unit,
                 ..FnSig::default()
             },
@@ -759,7 +762,7 @@ fn probe(mat: Matcher, s: string) {
         // signature's `documentation` field.
         let sig = FnSig {
             param_names: vec!["x".to_string()],
-            params: vec![Ty::I32],
+            params: vec![hew_parser::ast::CallableParameter::borrowed(Ty::I32)],
             return_type: Ty::I32,
             doc_comment: Some("Returns the square of x.".to_string()),
             ..FnSig::default()

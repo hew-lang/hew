@@ -2103,7 +2103,10 @@ mod tests {
     fn test_mismatch_with_complex_types() {
         let expected = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32, Ty::Bool],
+            params: vec![
+                crate::CallableParameter::borrowed(Ty::I32),
+                crate::CallableParameter::borrowed(Ty::Bool),
+            ],
             ret: Box::new(Ty::String),
         };
         let actual = Ty::Tuple(vec![Ty::I32, Ty::Bool]);

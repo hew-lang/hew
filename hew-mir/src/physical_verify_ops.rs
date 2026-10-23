@@ -386,9 +386,14 @@ pub(crate) fn verify_whole_value_borrow(
     dest: StorageId,
     source: StorageId,
 ) -> Result<(), PhysicalError> {
-    require_same_storage_type(function, dest, source, "physical borrow")?;
-    let ty = &storage(function, source)?.ty;
-    semantic_type_facts(module, ty)?;
+    let source_ty = &storage(function, source)?.ty;
+    let target_ty = &storage(function, dest)?.ty;
+    if source_ty != target_ty {
+        hew_sir::verify_callable_coercion(source_ty, target_ty, &module.type_facts)
+            .map_err(PhysicalError::new)?;
+    }
+    semantic_type_facts(module, source_ty)?;
+    semantic_type_facts(module, target_ty)?;
     verify_borrow_dependency(function, dest, source)
 }
 

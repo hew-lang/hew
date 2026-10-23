@@ -420,12 +420,15 @@ fn mentions_type_param(ty: &ResolvedTy, params: &[crate::ParamHead]) -> bool {
             captures,
             ..
         } => {
-            p.iter().any(|t| mentions_type_param(t, params))
+            p.iter()
+                .any(|parameter| mentions_type_param(&parameter.ty, params))
                 || mentions_type_param(ret, params)
                 || captures.iter().any(|t| mentions_type_param(t, params))
         }
         ResolvedTy::Function { params: p, ret, .. } => {
-            p.iter().any(|t| mentions_type_param(t, params)) || mentions_type_param(ret, params)
+            p.iter()
+                .any(|parameter| mentions_type_param(&parameter.ty, params))
+                || mentions_type_param(ret, params)
         }
         _ => false,
     }

@@ -665,7 +665,7 @@ fn qualified_param_type_carries_module_into_resolved_sig() {
         .get("take_alpha")
         .expect("take_alpha sig must be registered");
     let param = sig.params.first().expect("take_alpha has one param");
-    match param {
+    match &param.ty {
         Ty::Named {
             head: name_head, ..
         } => assert_eq!(

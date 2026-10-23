@@ -1273,10 +1273,12 @@ impl Checker {
             params: sig
                 .params
                 .iter()
-                .map(|param| {
-                    self.bind_associated_schema_type(
-                        &self.normalize_for_type_params(param, &sig.type_params),
-                    )
+                .map(|parameter| {
+                    parameter.map(|ty| {
+                        self.bind_associated_schema_type(
+                            &self.normalize_for_type_params(ty, &sig.type_params),
+                        )
+                    })
                 })
                 .collect(),
             return_type: self.bind_associated_schema_type(
@@ -2419,7 +2421,7 @@ impl Checker {
             }
             Ty::Function { params, ret, .. } => {
                 for param in params {
-                    self.enforce_type_def_bounds_recursive(param, span);
+                    self.enforce_type_def_bounds_recursive(&param.ty, span);
                 }
                 self.enforce_type_def_bounds_recursive(ret, span);
             }
@@ -2430,7 +2432,7 @@ impl Checker {
                 ..
             } => {
                 for param in params {
-                    self.enforce_type_def_bounds_recursive(param, span);
+                    self.enforce_type_def_bounds_recursive(&param.ty, span);
                 }
                 self.enforce_type_def_bounds_recursive(ret, span);
                 for capture in captures {
@@ -2599,7 +2601,7 @@ impl Checker {
             }
             Ty::Function { params, ret, .. } => {
                 for param in params {
-                    self.canonicalize_actor_handles(param);
+                    self.canonicalize_actor_handles(&mut param.ty);
                 }
                 self.canonicalize_actor_handles(ret);
             }
@@ -2609,7 +2611,11 @@ impl Checker {
                 captures,
                 ..
             } => {
-                for param in params.iter_mut().chain(captures.iter_mut()) {
+                for param in params
+                    .iter_mut()
+                    .map(|parameter| &mut parameter.ty)
+                    .chain(captures.iter_mut())
+                {
                     self.canonicalize_actor_handles(param);
                 }
                 self.canonicalize_actor_handles(ret);
@@ -3109,10 +3115,12 @@ impl Checker {
                     capabilities: *capabilities,
                     params: params
                         .iter()
-                        .map(|te| {
-                            self.resolve_type_expr_tracking_holes_with_context(
-                                te, hole_vars, context,
-                            )
+                        .map(|parameter| {
+                            parameter.map(|te| {
+                                self.resolve_type_expr_tracking_holes_with_context(
+                                    te, hole_vars, context,
+                                )
+                            })
                         })
                         .collect(),
                     ret: Box::new(self.resolve_type_expr_tracking_holes_with_context(

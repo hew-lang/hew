@@ -382,9 +382,10 @@ impl Checker {
             }
         }
         for param_ty in &mut sig.params {
-            *param_ty = param_ty
-                .substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
-                .substitute_type_params_parallel(&subst);
+            *param_ty = param_ty.map(|ty| {
+                ty.substitute_type_param(crate::ParamHead::receiver(trait_id), receiver_ty)
+                    .substitute_type_params_parallel(&subst)
+            });
         }
         sig.return_type = sig
             .return_type

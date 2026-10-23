@@ -60,7 +60,20 @@ impl ResolvedTy {
         binders: &std::collections::BTreeMap<crate::TypeParamId, usize>,
     ) -> String {
         let render = |ty: &Self| ty.canonical_string_with_binders(binders);
-        let list = |types: &[Self]| types.iter().map(render).collect::<Vec<_>>().join(",");
+        let parameters = |params: &[crate::CallableParameter<Self>]| {
+            params
+                .iter()
+                .map(|parameter| {
+                    let prefix = if parameter.ownership == crate::ParameterOwnership::Consume {
+                        "consume "
+                    } else {
+                        ""
+                    };
+                    format!("{prefix}{}", render(&parameter.ty))
+                })
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         let head_name = |head: &crate::TypeHead| match head {
             crate::TypeHead::Param(parameter) if binders.contains_key(&parameter.id) => {
                 format!("${}", binders[&parameter.id])
@@ -136,7 +149,7 @@ impl ResolvedTy {
                 params,
                 ret,
             } => {
-                format!("fn{capabilities}({})->{}", list(params), render(ret))
+                format!("fn{capabilities}({})->{}", parameters(params), render(ret))
             }
             ResolvedTy::Closure {
                 params,
@@ -147,7 +160,7 @@ impl ResolvedTy {
                 let cap_strs: Vec<String> = captures.iter().map(render).collect();
                 format!(
                     "closure{capabilities}({})->{}{{{}}}",
-                    list(params),
+                    parameters(params),
                     render(ret),
                     cap_strs.join(",")
                 )

@@ -43,7 +43,7 @@ pub(crate) fn instantiate_named_method_sig(
         }
     }
     for param_ty in &mut sig.params {
-        *param_ty = param_ty.substitute_type_params_parallel(&subst_map);
+        *param_ty = param_ty.map(|ty| ty.substitute_type_params_parallel(&subst_map));
     }
     sig.return_type = sig.return_type.substitute_type_params_parallel(&subst_map);
 
@@ -538,7 +538,10 @@ mod tests {
             "Wrapper::value".to_string(),
             FnSig {
                 param_names: vec!["next".to_string()],
-                params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+                params: vec![crate::CallableParameter {
+                    ty: Ty::param(crate::ParamHead::for_test("T")),
+                    ownership: crate::ParameterOwnership::Consume,
+                }],
                 return_type: Ty::param(crate::ParamHead::for_test("T")),
                 ..FnSig::default()
             },
@@ -555,7 +558,13 @@ mod tests {
             .into_iter()
             .find(|(method_name, _)| method_name == "value")
             .expect("fallback method should be collected");
-        assert_eq!(value_sig.params, vec![Ty::String]);
+        assert_eq!(
+            value_sig.params,
+            vec![crate::CallableParameter {
+                ty: Ty::String,
+                ownership: crate::ParameterOwnership::Consume
+            }]
+        );
         assert_eq!(value_sig.return_type, Ty::String);
     }
 
@@ -578,7 +587,7 @@ mod tests {
                         "send".to_string(),
                         FnSig {
                             param_names: vec!["data".to_string()],
-                            params: vec![Ty::String],
+                            params: vec![crate::CallableParameter::borrowed(Ty::String)],
                             return_type: Ty::Unit,
                             ..FnSig::default()
                         },
@@ -596,7 +605,7 @@ mod tests {
             "Sink::send".to_string(),
             FnSig {
                 param_names: vec!["data".to_string()],
-                params: vec![Ty::String],
+                params: vec![crate::CallableParameter::borrowed(Ty::String)],
                 return_type: Ty::Unit,
                 ..FnSig::default()
             },
@@ -610,7 +619,10 @@ mod tests {
             "send",
         )
         .expect("builtin pipe method should resolve");
-        assert_eq!(sig.params, vec![Ty::I64]);
+        assert_eq!(
+            sig.params,
+            vec![crate::CallableParameter::borrowed(Ty::I64)]
+        );
     }
 
     #[test]

@@ -101,7 +101,11 @@ fn instantiate_receiver_projections(tc: &TypeCheckOutput, mut sig: FnSig) -> FnS
             &tc.defs,
         )
     };
-    sig.params = sig.params.iter().map(instantiate).collect();
+    sig.params = sig
+        .params
+        .iter()
+        .map(|param| param.map(instantiate))
+        .collect();
     sig.return_type = instantiate(&sig.return_type);
     sig
 }

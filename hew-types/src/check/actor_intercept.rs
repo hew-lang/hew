@@ -123,11 +123,12 @@ impl Checker {
                     return false;
                 };
                 let actor = crate::Ty::param(*actor);
-                signature.params
-                    == [crate::actor_delivery::nominal(
-                        crate::KnownDecl::Call,
-                        vec![actor.clone()],
-                    )]
+                signature.params.len() == 1
+                    && signature.params[0].ty
+                        == crate::actor_delivery::nominal(
+                            crate::KnownDecl::Call,
+                            vec![actor.clone()],
+                        )
                     && signature.return_type
                         == crate::actor_delivery::nominal(crate::KnownDecl::Outcome, vec![actor])
             });
@@ -184,7 +185,8 @@ impl Checker {
             let call =
                 crate::actor_delivery::nominal(crate::KnownDecl::Call, vec![actor_ty.clone()]);
             let outcome = crate::actor_delivery::nominal(crate::KnownDecl::Outcome, vec![actor_ty]);
-            if signature.params != [call]
+            if signature.params.len() != 1
+                || signature.params[0].ty != call
                 || signature.return_type != outcome
                 || method
                     .type_params

@@ -78,21 +78,19 @@ struct ExplicitReturnFinder {
 }
 
 fn extern_signature_description(
-    signature_params: &[Ty],
+    signature_params: &[crate::CallableParameter<Ty>],
     return_type: &Ty,
-    consuming_params: &[bool],
     is_variadic: bool,
 ) -> String {
     let mut params = signature_params
         .iter()
-        .enumerate()
-        .map(|(index, ty)| {
-            let ownership = if consuming_params.get(index).copied().unwrap_or(false) {
+        .map(|parameter| {
+            let ownership = if parameter.ownership == crate::ParameterOwnership::Consume {
                 "consume "
             } else {
                 ""
             };
-            format!("{ownership}{}", ty.user_facing())
+            format!("{ownership}{}", parameter.ty.user_facing())
         })
         .collect::<Vec<_>>();
     if is_variadic {
@@ -392,7 +390,6 @@ fn lifecycle_matches(
 }
 
 fn release_signature_mismatch(
-    declaration: &SourceExternDeclaration,
     signature: &FnSig,
     release_contract: &crate::ffi_contracts::ExternOwnershipContract,
     owner_module: &str,
@@ -406,9 +403,7 @@ fn release_signature_mismatch(
     if release_contract.params.len() != release_contract.resource_param_types.len() {
         return Some("release contract resource parameter arity is incomplete".to_string());
     }
-    if signature.params.len() != release_contract.params.len()
-        || declaration.consuming_params.len() != release_contract.params.len()
-    {
+    if signature.params.len() != release_contract.params.len() {
         return Some(format!(
             "source release arity {} does not match contract arity {}",
             signature.params.len(),
@@ -440,14 +435,14 @@ fn release_signature_mismatch(
         .zip(&signature.params)
         .enumerate()
     {
-        let source_consumes = declaration.consuming_params[index];
+        let source_consumes = source_ty.ownership == crate::ParameterOwnership::Consume;
         if source_consumes != (*mode == ExternParamOwnership::Consume) {
             return Some(format!(
                 "source consume disposition differs from contract at parameter {index}"
             ));
         }
         if !nominal.is_empty()
-            && !exact_source_nominal_matches(source_ty, nominal, Some(owner_module))
+            && !exact_source_nominal_matches(&source_ty.ty, nominal, Some(owner_module))
         {
             return Some(format!(
                 "source resource nominal differs from contract at parameter {index}"
@@ -638,7 +633,6 @@ fn derive_source_resource_candidate(
         );
     };
     if let Some(detail) = release_signature_mismatch(
-        release_declaration,
         release_signature,
         release_contract,
         typed_result.owner_module,

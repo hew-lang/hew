@@ -1395,7 +1395,12 @@ impl ModuleRegistry {
         &self,
         handle_type: &str,
         method: &str,
-    ) -> Option<(String, Vec<crate::ty::Ty>, crate::ty::Ty, String)> {
+    ) -> Option<(
+        String,
+        Vec<crate::CallableParameter<crate::ty::Ty>>,
+        crate::ty::Ty,
+        String,
+    )> {
         let (module_id, info, spelling) = self.registry_receiver_declaration(handle_type, true)?;
         let canonical_owner = module_id.dotted();
         let hm = info
@@ -1405,7 +1410,9 @@ impl ModuleRegistry {
         let params = hm
             .params
             .iter()
-            .map(|ty| self.canonicalize_registry_signature_ty(ty, &canonical_owner))
+            .map(|parameter| {
+                parameter.map(|ty| self.canonicalize_registry_signature_ty(ty, &canonical_owner))
+            })
             .collect();
         let return_type =
             self.canonicalize_registry_signature_ty(&hm.return_type, &canonical_owner);
@@ -2381,11 +2388,13 @@ mod tests {
                     method_name: "clone_for_test".to_string(),
                     c_symbol: c_symbol.to_string(),
                     params: vec![
-                        crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
-                            "regex.Pattern",
+                        crate::CallableParameter::borrowed(crate::ty::Ty::option(
+                            crate::ty::Ty::unresolved_for_test("regex.Pattern", vec![]),
+                        )),
+                        crate::CallableParameter::borrowed(crate::ty::Ty::unresolved_for_test(
+                            "regex.Foreign",
                             vec![],
                         )),
-                        crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
                     ],
                     return_type: crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
                         "regex.Pattern",
@@ -2416,7 +2425,7 @@ mod tests {
         assert_eq!(a.0, "vendor_a_clone");
         assert_eq!(a.3, "vendor_a.text.regex");
         assert_eq!(
-            a.1[0],
+            a.1[0].ty,
             crate::ty::Ty::option(crate::ty::Ty::unresolved_for_test(
                 "vendor_a.text.regex.Pattern",
                 vec![]
@@ -2424,7 +2433,7 @@ mod tests {
             "nested signature positions must retain the selected source owner"
         );
         assert_eq!(
-            a.1[1],
+            a.1[1].ty,
             crate::ty::Ty::unresolved_for_test("regex.Foreign", vec![]),
             "an undeclared foreign regex.X type must not inherit the owner"
         );
@@ -2482,14 +2491,20 @@ mod tests {
             .resolve_handle_method_sig("net.Listener", "close")
             .expect("net.Listener.close should resolve");
         assert_eq!(listener_close.0, "hew_tcp_listener_close");
-        assert_eq!(listener_close.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(
+            listener_close.1,
+            Vec::<crate::CallableParameter<crate::ty::Ty>>::new()
+        );
         assert_eq!(listener_close.2, crate::ty::Ty::Unit);
 
         let request_close = reg
             .resolve_handle_method_sig("http.Request", "close")
             .expect("http.Request.close should be extracted");
         assert_eq!(request_close.0, "hew_http_request_free");
-        assert_eq!(request_close.1, Vec::<crate::ty::Ty>::new());
+        assert_eq!(
+            request_close.1,
+            Vec::<crate::CallableParameter<crate::ty::Ty>>::new()
+        );
         assert_eq!(request_close.2, crate::ty::Ty::Unit);
 
         assert_eq!(

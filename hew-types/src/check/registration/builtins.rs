@@ -716,7 +716,10 @@ impl Checker {
         self.register_builtin_sig(
             name,
             FnSig {
-                params,
+                params: params
+                    .into_iter()
+                    .map(crate::CallableParameter::borrowed)
+                    .collect(),
                 return_type,
                 ..FnSig::default()
             },
@@ -741,7 +744,13 @@ impl Checker {
             .collect();
         let params = params
             .into_iter()
-            .map(|ty| self.canonicalize_registry_signature(&ty, "", &type_params))
+            .map(|ty| {
+                crate::CallableParameter::borrowed(self.canonicalize_registry_signature(
+                    &ty,
+                    "",
+                    &type_params,
+                ))
+            })
             .collect();
         let return_type = self.canonicalize_registry_signature(return_type, "", &type_params);
         let mut bounds = ParamBounds::default();

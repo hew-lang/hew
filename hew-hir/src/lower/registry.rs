@@ -24,12 +24,16 @@ impl LowerCtx {
             // item IDs remain stable while builtin callees still carry Item refs.
             let index = u32::try_from(index).expect("stdlib catalog fits in u32");
             let id = ItemId(u32::MAX - index);
-            let param_tys = builtin.params.iter().map(|ty| ty.to_resolved()).collect();
+            let param_tys = builtin
+                .params
+                .iter()
+                .map(|ty| hew_types::CallableParameter::borrowed(ty.to_resolved()))
+                .collect();
             let return_ty = builtin.return_ty.to_resolved();
             let entry = FnEntry {
                 id,
                 return_ty,
-                param_tys,
+                params: param_tys,
                 linkage: Some(builtin.linkage),
                 type_params: Vec::new(),
                 builtin_family: None,
@@ -97,10 +101,12 @@ impl LowerCtx {
             FnEntry {
                 id: ItemId(u32::MAX / 2),
                 return_ty: ResolvedTy::Unit,
-                param_tys: vec![ResolvedTy::named_actor_path(
-                    &self.defs,
-                    hew_types::BuiltinType::ActorHandle.canonical_name(),
-                    vec![ResolvedTy::Unit],
+                params: vec![hew_types::CallableParameter::borrowed(
+                    ResolvedTy::named_actor_path(
+                        &self.defs,
+                        hew_types::BuiltinType::ActorHandle.canonical_name(),
+                        vec![ResolvedTy::Unit],
+                    ),
                 )],
                 linkage: None,
                 type_params: Vec::new(),
@@ -135,10 +141,12 @@ impl LowerCtx {
                 FnEntry {
                     id,
                     return_ty: ResolvedTy::Unit,
-                    param_tys: vec![ResolvedTy::named_actor_path(
-                        &self.defs,
-                        hew_types::BuiltinType::ActorHandle.canonical_name(),
-                        vec![ResolvedTy::Unit],
+                    params: vec![hew_types::CallableParameter::borrowed(
+                        ResolvedTy::named_actor_path(
+                            &self.defs,
+                            hew_types::BuiltinType::ActorHandle.canonical_name(),
+                            vec![ResolvedTy::Unit],
+                        ),
                     )],
                     linkage: None,
                     type_params: Vec::new(),
@@ -186,7 +194,7 @@ impl LowerCtx {
                 FnEntry {
                     id,
                     return_ty: ResolvedTy::Unit,
-                    param_tys: Vec::new(),
+                    params: Vec::new(),
                     linkage: None,
                     type_params: Vec::new(),
                     builtin_family,
@@ -204,7 +212,14 @@ impl LowerCtx {
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-        let param_tys = func.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        let param_tys = func
+            .params
+            .iter()
+            .map(|p| hew_types::CallableParameter {
+                ty: self.lower_type(&p.ty),
+                ownership: hew_types::ParameterOwnership::from_consume(p.is_consume),
+            })
+            .collect();
         let type_params = self
             .source_type_parameters(&func.fn_span, func.type_params.as_ref().map_or(0, Vec::len));
         let type_params = self.associated_type_schemas.binders(&type_params);
@@ -213,7 +228,7 @@ impl LowerCtx {
             FnEntry {
                 id,
                 return_ty,
-                param_tys,
+                params: param_tys,
                 linkage: None,
                 type_params,
                 builtin_family: None,
@@ -294,13 +309,13 @@ impl LowerCtx {
         self.register_fn_entry(symbol, method);
         if Self::is_var_self_method(method) {
             if let Some(entry) = self.fn_registry.get_mut(symbol) {
-                let Some(receiver_ty) = entry.param_tys.first().cloned() else {
+                let Some(receiver_ty) = entry.params.first().cloned() else {
                     unreachable!(
                         "var-self method `{symbol}` was registered without a receiver parameter"
                     );
                 };
                 entry.return_ty =
-                    Self::var_self_dual_return_ty(entry.return_ty.clone(), receiver_ty);
+                    Self::var_self_dual_return_ty(entry.return_ty.clone(), receiver_ty.ty);
             }
         }
         if impl_type_params.is_empty() {
@@ -330,13 +345,20 @@ impl LowerCtx {
             .return_type
             .as_ref()
             .map_or(ResolvedTy::Unit, |ty| self.lower_type(ty));
-        let param_tys = decl.params.iter().map(|p| self.lower_type(&p.ty)).collect();
+        let param_tys = decl
+            .params
+            .iter()
+            .map(|p| hew_types::CallableParameter {
+                ty: self.lower_type(&p.ty),
+                ownership: hew_types::ParameterOwnership::from_consume(p.is_consume),
+            })
+            .collect();
         self.fn_registry.insert(
             decl.name.to_string(),
             FnEntry {
                 id,
                 return_ty,
-                param_tys,
+                params: param_tys,
                 linkage: None,
                 type_params: Vec::new(),
                 builtin_family: None,

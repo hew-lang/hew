@@ -6,9 +6,41 @@
     reason = "grammar-area submodules share the parent parser namespace via the split"
 )]
 use super::*;
-use crate::ast::{CallableCallMode, CallableCapabilities};
+use crate::ast::{CallableCallMode, CallableCapabilities, CallableParameter, ParameterOwnership};
 
 impl Parser<'_> {
+    fn parse_callable_parameter(
+        &mut self,
+        context: TypeParseContext,
+    ) -> Option<CallableParameter<Spanned<TypeExpr>>> {
+        let consume = matches!(self.peek(), Some(Token::Identifier(name)) if *name == "consume");
+        if consume && self.peek_at(self.pos + 1) == Some(&Token::Less) {
+            // Distinguish an owned associated type from a generic type named
+            // `consume`. The ordinary type parser owns both angle grammars.
+            let saved = self.save_pos();
+            self.advance();
+            if let Some(ty) = self.parse_type_with_context(context) {
+                return Some(CallableParameter {
+                    ty,
+                    ownership: ParameterOwnership::Consume,
+                });
+            }
+            self.restore_pos(saved);
+        }
+        let is_consume = consume
+            && !matches!(
+                self.peek_at(self.pos + 1),
+                None | Some(Token::Comma | Token::RightParen | Token::Less | Token::Dot)
+            );
+        if is_consume {
+            self.advance();
+        }
+        Some(CallableParameter {
+            ty: self.parse_type_with_context(context)?,
+            ownership: ParameterOwnership::from_consume(is_consume),
+        })
+    }
+
     fn parse_callable_capabilities(&mut self) -> Option<CallableCapabilities> {
         let mut capabilities = CallableCapabilities::default();
         if !self.eat(&Token::LeftBracket) {
@@ -308,7 +340,7 @@ impl Parser<'_> {
 
                 let mut params = Vec::new();
                 while !self.at_end() && self.peek() != Some(&Token::RightParen) {
-                    params.push(self.parse_type_with_context(context)?);
+                    params.push(self.parse_callable_parameter(context)?);
                     if !self.eat(&Token::Comma) {
                         break;
                     }

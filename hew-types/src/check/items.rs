@@ -915,7 +915,7 @@ impl Checker {
                     .as_ref()
                     .and_then(|signature| signature.params.get(i - receiver_offset))
                 {
-                    self.expect_type(declared, &ty, &p.ty.1);
+                    self.expect_type(&declared.ty, &ty, &p.ty.1);
                 }
             }
             let private_copy = p.is_mutable
@@ -1014,12 +1014,10 @@ impl Checker {
             .any(|attribute| attribute.name.as_str() == "intercept")
             && self.fn_sig(fn_name).is_some_and(|signature| {
                 signature.return_type.contains_interceptor_token()
-                    || signature.params.iter().zip(&signature.param_ownership).any(
-                        |(ty, ownership)| {
-                            *ownership == crate::env::ParameterOwnership::Consume
-                                && ty.contains_interceptor_token()
-                        },
-                    )
+                    || signature.params.iter().any(|parameter| {
+                        parameter.ownership == crate::ParameterOwnership::Consume
+                            && parameter.ty.contains_interceptor_token()
+                    })
             })
         {
             self.report_error(

@@ -639,8 +639,13 @@ fn type_has_infer(ty: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        } => {
+            params
+                .iter()
+                .any(|parameter| type_has_infer(&parameter.ty.0))
+                || type_has_infer(&return_type.0)
         }
-        | TypeExpr::ActorFn {
+        TypeExpr::ActorFn {
             params,
             return_type,
         } => {

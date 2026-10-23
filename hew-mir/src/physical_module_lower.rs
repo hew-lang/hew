@@ -255,7 +255,7 @@ pub fn lower_physical_module(
                 params: signature
                     .params
                     .iter()
-                    .map(slot)
+                    .map(|parameter| slot(&parameter.ty))
                     .collect::<Result<Vec<_>, PhysicalError>>()?,
                 result: (signature.result != ResolvedTy::Unit)
                     .then(|| slot(&signature.result))

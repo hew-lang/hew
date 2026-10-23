@@ -816,6 +816,36 @@ fn synthesized_lambda_actors(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::Hir
         .collect()
 }
 
+#[test]
+fn consuming_actor_lambda_parameter_reaches_its_handler_binding() {
+    let (parsed, checked) = support::checker_pipeline::typecheck_source(
+        r#"
+        fn main() {
+            let echo = actor |consume value: string| -> string { value };
+            let reply = echo("hello");
+            stop(echo);
+            stopped(echo);
+        }
+        "#,
+    );
+    assert!(checked.errors.is_empty(), "{:?}", checked.errors);
+    let output =
+        hew_hir::lower_program_host_target(&parsed.program, &checked, &hew_hir::ResolutionCtx);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    assert!(verify_hir(&output.module).is_empty());
+    let actors = synthesized_lambda_actors(&output);
+    let [actor] = actors.as_slice() else {
+        panic!("one synthesized actor")
+    };
+    let parameter = actor.receive_handlers[0]
+        .params
+        .iter()
+        .find(|parameter| parameter.name == "value")
+        .expect("actor lambda input binding");
+    assert!(parameter.is_consume);
+    assert_eq!(parameter.ty, hew_types::ResolvedTy::String);
+}
+
 fn self_capture_refusals(output: &hew_hir::LowerOutput) -> Vec<&hew_hir::HirDiagnostic> {
     output
         .diagnostics

@@ -21,6 +21,51 @@ pub enum CallableCallMode {
     Once,
 }
 
+/// Whether a callable parameter borrows its argument or takes ownership.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+pub enum ParameterOwnership {
+    #[default]
+    Borrow,
+    Consume,
+}
+
+impl ParameterOwnership {
+    #[must_use]
+    pub const fn from_consume(consume: bool) -> Self {
+        if consume {
+            Self::Consume
+        } else {
+            Self::Borrow
+        }
+    }
+}
+
+/// A callable parameter's type and ownership contract travel together.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct CallableParameter<T> {
+    pub ty: T,
+    pub ownership: ParameterOwnership,
+}
+
+impl<T> CallableParameter<T> {
+    #[must_use]
+    pub const fn borrowed(ty: T) -> Self {
+        Self {
+            ty,
+            ownership: ParameterOwnership::Borrow,
+        }
+    }
+
+    pub fn map<U>(&self, map: impl FnOnce(&T) -> U) -> CallableParameter<U> {
+        CallableParameter {
+            ty: map(&self.ty),
+            ownership: self.ownership,
+        }
+    }
+}
+
 /// Callable guarantees preserved when its concrete environment is erased.
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
@@ -834,7 +879,7 @@ pub enum TypeExpr {
         capabilities: CallableCapabilities,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         type_params: Option<Vec<TypeParam>>,
-        params: Vec<Spanned<TypeExpr>>,
+        params: Vec<CallableParameter<Spanned<TypeExpr>>>,
         return_type: Box<Spanned<TypeExpr>>,
     },
     /// An anonymous actor's handle type, `actor(M) -> R`, mirroring `fn(M) -> R`.
@@ -1128,6 +1173,8 @@ pub struct TimeoutClause {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LambdaParam {
     pub name: Ident,
+    /// Omitted ownership is inferred from the expected callable signature.
+    pub ownership: Option<ParameterOwnership>,
     pub ty: Option<Spanned<TypeExpr>>,
     /// Span of the parameter name.
     pub name_span: Span,

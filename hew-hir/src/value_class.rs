@@ -380,7 +380,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
         }
         ResolvedTy::Function { params, ret , .. } => {
             for param in params {
-                collect_named_type_components(param, components);
+                collect_named_type_components(&param.ty, components);
             }
             collect_named_type_components(ret, components);
         }
@@ -390,7 +390,7 @@ fn collect_named_type_components(ty: &ResolvedTy, components: &mut Vec<NamedType
             captures,
          .. } => {
             for param in params {
-                collect_named_type_components(param, components);
+                collect_named_type_components(&param.ty, components);
             }
             collect_named_type_components(ret, components);
             for capture in captures {

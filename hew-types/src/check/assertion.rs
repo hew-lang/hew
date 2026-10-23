@@ -9,7 +9,8 @@ use super::{BinaryOp, CallArg, Checker, Expr, FnSig, SpanKey, Ty, TypeDefKind, V
 
 /// The signature of `assert(condition, message)`.
 pub(super) fn with_message(mut sig: FnSig) -> FnSig {
-    sig.params.push(Ty::String);
+    sig.params
+        .push(crate::CallableParameter::borrowed(Ty::String));
     if !sig.param_names.is_empty() {
         sig.param_names.push("message".to_string());
     }

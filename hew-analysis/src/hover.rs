@@ -1,6 +1,6 @@
 //! Hover analysis: produce rich hover information for identifiers and expressions.
 
-use hew_parser::ast::Ident;
+use hew_parser::ast::{CallableParameter, Ident, ParameterOwnership};
 
 use hew_parser::ast::{
     Block, ConditionItem, Expr, FnDecl, Item, Param, Pattern, RecordKind, Span, Stmt, TraitBound,
@@ -144,8 +144,16 @@ fn append_hover_fallback_notes(contents: &mut String, notes: impl IntoIterator<I
 
 fn render_expr_hover(snippet: &str, ty: &Ty) -> String {
     if let Ty::Function { params, ret, .. } = ty {
-        let param_displays: Vec<HoverTypeDisplay> =
-            params.iter().map(fn_component_display).collect();
+        let param_displays: Vec<HoverTypeDisplay> = params
+            .iter()
+            .map(|param| {
+                let mut display = fn_component_display(&param.ty);
+                display
+                    .body
+                    .insert_str(0, parameter_prefix(param.ownership));
+                display
+            })
+            .collect();
         let param_list: Vec<String> = param_displays
             .iter()
             .map(|display| display.body.clone())
@@ -1146,7 +1154,11 @@ fn format_type_expr_hover(type_expr: &TypeExpr) -> String {
             format_type_parameters_hover(type_params.as_deref().unwrap_or_default()),
             params
                 .iter()
-                .map(|(param, _)| format_type_expr_hover(param))
+                .map(|param| format!(
+                    "{}{}",
+                    parameter_prefix(param.ownership),
+                    format_type_expr_hover(&param.ty.0)
+                ))
                 .collect::<Vec<_>>()
                 .join(", "),
             format_type_expr_hover(&return_type.0)
@@ -1374,7 +1386,7 @@ fn hover_param_in_decl(
         .find_map(|(param_name, ty)| (param_name == param.name.name.as_str()).then_some(ty))?;
 
     Some(HoverResult {
-        contents: format!("```hew\n{word}: {}\n```", ty.user_facing()),
+        contents: format!("```hew\n{}\n```", format_named_parameter(word, ty)),
         span: Some(word_span),
     })
 }
@@ -1421,13 +1433,28 @@ pub fn format_fn_signature_inline(name: &str, sig: &FnSig) -> String {
     format_fn_sig_line(name, &params, sig)
 }
 
+fn parameter_prefix(ownership: ParameterOwnership) -> &'static str {
+    match ownership {
+        ParameterOwnership::Borrow => "",
+        ParameterOwnership::Consume => "consume ",
+    }
+}
+
+pub(crate) fn format_named_parameter(name: &str, param: &CallableParameter<Ty>) -> String {
+    format!(
+        "{}{name}: {}",
+        parameter_prefix(param.ownership),
+        param.ty.user_facing()
+    )
+}
+
 fn format_fn_hover_params(sig: &FnSig) -> Vec<String> {
     sig.params
         .iter()
         .enumerate()
         .map(|(index, ty)| match sig.param_names.get(index) {
-            Some(name) if !name.is_empty() => format!("{name}: {}", ty.user_facing()),
-            _ => ty.user_facing().to_string(),
+            Some(name) if !name.is_empty() => format_named_parameter(name, ty),
+            _ => format!("{}{}", parameter_prefix(ty.ownership), ty.ty.user_facing()),
         })
         .collect()
 }
@@ -1523,7 +1550,10 @@ mod tests {
     fn make_fn_sig(param_names: Vec<&str>, params: Vec<Ty>, ret: Ty) -> FnSig {
         FnSig {
             param_names: param_names.into_iter().map(String::from).collect(),
-            params,
+            params: params
+                .into_iter()
+                .map(CallableParameter::borrowed)
+                .collect(),
             return_type: ret,
             ..FnSig::default()
         }
@@ -2543,6 +2573,38 @@ mod tests {
             hr.contents.contains("i64"),
             "hover must show the binding type i64; got: {}",
             hr.contents
+        );
+    }
+
+    #[test]
+    fn consuming_parameters_appear_in_hover_and_signature_help() {
+        let source = "fn forward(consume value: string) -> string { value }\nfn main() { let result = forward(\"hello\"); }";
+        let pr = hew_parser::parse(source);
+        assert!(pr.errors.is_empty(), "{:?}", pr.errors);
+        let tc = type_check(&pr);
+        assert!(tc.errors.is_empty(), "{:?}", tc.errors);
+        let offset = source.find("forward(").unwrap();
+        let result = hover(source, &pr, Some(&tc), offset).unwrap();
+        assert!(
+            result
+                .contents
+                .contains("fn forward(consume value: string) -> string"),
+            "{}",
+            result.contents
+        );
+        let offset = source.rfind("forward(").unwrap();
+        let help =
+            crate::signature_help::build_signature_help(source, &tc, offset + "forward(".len())
+                .unwrap();
+        let signature = &help.signatures[0];
+        assert_eq!(
+            signature.label,
+            "fn forward(consume value: string) -> string"
+        );
+        let parameter = &signature.parameters[0];
+        assert_eq!(
+            &signature.label[parameter.label_start as usize..parameter.label_end as usize],
+            "consume value: string"
         );
     }
 

@@ -449,10 +449,10 @@ impl Checker {
                     .iter()
                     .skip(offset)
                     .zip(parameters)
-                    .filter_map(|(formal, ty)| {
+                    .filter_map(|(formal, parameter)| {
                         let ty = self
                             .subst
-                            .resolve(&ty)
+                            .resolve(&parameter.ty)
                             .substitute_type_params_parallel(types);
                         (!self.effect_origin_carrier_type(&ty, &mut environments.effect_carriers))
                             .then_some(*formal)

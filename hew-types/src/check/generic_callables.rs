@@ -27,7 +27,11 @@ impl Checker {
             return ty;
         };
         let mut variables = super::HashSet::new();
-        for ty in params.iter().chain(std::iter::once(ret.as_ref())) {
+        for ty in params
+            .iter()
+            .map(|parameter| &parameter.ty)
+            .chain(std::iter::once(ret.as_ref()))
+        {
             super::collect_unresolved_inference_vars(ty, &mut variables);
         }
         for binding in self.env.visible_bindings() {
@@ -382,7 +386,7 @@ impl Checker {
             signature.params = signature
                 .params
                 .iter()
-                .map(|ty| ty.substitute_type_params_parallel(&rename))
+                .map(|parameter| parameter.map(|ty| ty.substitute_type_params_parallel(&rename)))
                 .collect();
             signature.return_type = signature
                 .return_type

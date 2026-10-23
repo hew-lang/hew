@@ -441,7 +441,10 @@ else needs `impl Display for {rendered}`)"
                         .collect();
                     Ty::Function {
                         capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                        params,
+                        params: params
+                            .into_iter()
+                            .map(crate::CallableParameter::borrowed)
+                            .collect(),
                         ret: Box::new(return_type),
                     }
                 }
@@ -992,7 +995,10 @@ else needs `impl Display for {rendered}`)"
                 let ret = self.named_ty_for_key(&qualified_type, args);
                 Ty::Function {
                     capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-                    params: subst_params,
+                    params: subst_params
+                        .into_iter()
+                        .map(crate::CallableParameter::borrowed)
+                        .collect(),
                     ret: Box::new(ret),
                 }
             }

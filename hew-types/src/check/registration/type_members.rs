@@ -595,12 +595,16 @@ impl Checker {
             let field_ty = self.resolve_registered_annotation_ty(&field.ty, &mut hole_vars);
             fields.insert(field.name.to_string(), field_ty);
         }
-        let init_params: Vec<Ty> = ad.init.as_ref().map_or_else(Vec::new, |init| {
-            init.params
-                .iter()
-                .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
-                .collect()
-        });
+        let init_params: Vec<crate::CallableParameter<Ty>> =
+            ad.init.as_ref().map_or_else(Vec::new, |init| {
+                init.params
+                    .iter()
+                    .map(|p| crate::CallableParameter {
+                        ty: self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars),
+                        ownership: crate::ParameterOwnership::from_consume(p.is_consume),
+                    })
+                    .collect()
+            });
         if has_type_params {
             self.current_type_param_bounds.pop();
         }
@@ -663,6 +667,10 @@ impl Checker {
         self.exit_primary_sig_scope(scope);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "member resolution and dependent registry updates form one transaction"
+    )]
     pub(super) fn reresolve_type_decl_members_in_scope(&mut self, td: &TypeDecl) {
         let kind = match td.kind {
             TypeDeclKind::Struct => TypeDefKind::Struct,
@@ -745,10 +753,14 @@ impl Checker {
         // Re-key tuple variant constructors over the canonical payload types.
         // Unit/struct variants carry no member-dependent constructor signature.
         for (variant_name, variant_def) in &type_def.variants {
-            if let VariantDef::Tuple(variant_tys) = variant_def {
-                if let Some(sig) = self.fn_sig_mut(variant_name) {
-                    sig.params.clone_from(variant_tys);
-                }
+            let VariantDef::Tuple(variant_tys) = variant_def else {
+                continue;
+            };
+            if let Some(sig) = self.fn_sig_mut(variant_name) {
+                sig.params = variant_tys
+                    .iter()
+                    .map(|ty| crate::CallableParameter::borrowed(ty.clone()))
+                    .collect();
             }
         }
 
@@ -846,8 +858,13 @@ impl Checker {
                 let canonical = self.authoritative_type_def_key(rd.name.name.as_str());
                 let mut changed = false;
                 if let Some(sig) = self.fn_sig_mut(&canonical) {
-                    if sig.params != param_tys {
-                        sig.params.clone_from(&param_tys);
+                    let parameters: Vec<_> = param_tys
+                        .iter()
+                        .cloned()
+                        .map(crate::CallableParameter::borrowed)
+                        .collect();
+                    if sig.params != parameters {
+                        sig.params = parameters;
                         changed = true;
                     }
                 }
@@ -1142,7 +1159,10 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     bounds: type_param_bounds.clone(),
-                                    params: variant_tys,
+                                    params: variant_tys
+                                        .into_iter()
+                                        .map(crate::CallableParameter::borrowed)
+                                        .collect(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1469,7 +1489,10 @@ impl Checker {
                                 FnSig {
                                     type_params: type_param_names.clone(),
                                     bounds: type_param_bounds.clone(),
-                                    params: variant_tys,
+                                    params: variant_tys
+                                        .into_iter()
+                                        .map(crate::CallableParameter::borrowed)
+                                        .collect(),
                                     return_type,
                                     is_builtin_variant: self.in_stdlib_registration,
                                     ..FnSig::default()
@@ -1643,7 +1666,10 @@ impl Checker {
                 let signature = FnSig {
                     type_params: type_param_names.clone(),
                     bounds: type_param_bounds.clone(),
-                    params: param_tys,
+                    params: param_tys
+                        .into_iter()
+                        .map(crate::CallableParameter::borrowed)
+                        .collect(),
                     return_type: return_type.clone(),
                     ..FnSig::default()
                 };
@@ -2050,7 +2076,7 @@ impl Checker {
                 "step".to_string(),
                 FnSig {
                     param_names: vec!["event".to_string()],
-                    params: vec![event_ty.clone()],
+                    params: vec![crate::CallableParameter::borrowed(event_ty.clone())],
                     ..FnSig::default()
                 },
             );
@@ -2071,7 +2097,7 @@ impl Checker {
                 "take_emits".to_string(),
                 FnSig {
                     param_names: vec!["event".to_string()],
-                    params: vec![event_ty],
+                    params: vec![crate::CallableParameter::borrowed(event_ty)],
                     return_type: Ty::I64,
                     ..FnSig::default()
                 },

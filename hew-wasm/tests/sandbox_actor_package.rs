@@ -1190,10 +1190,9 @@ fn quantified_closures_keep_one_environment_across_instantiations() {
 
 #[test]
 fn invoked_once_callables_release_their_resource_captures() {
-    assert_native_manifest(
-        "once-callable-capture-cleanup",
-        hew_compile::SourceSet::in_memory(),
-    );
+    for name in ["once-callable-capture-cleanup", "callable-parameter-modes"] {
+        assert_native_manifest(name, hew_compile::SourceSet::in_memory());
+    }
 }
 
 #[test]
@@ -1227,6 +1226,7 @@ fn pipelines_preserve_order_and_drain_on_every_exit() {
     for name in [
         "pipeline-generator-composition",
         "example-concurrent-pipeline",
+        "pipeline-owned-forwarding",
         "pipeline-bounded-admission",
         "pipeline-stdlib-pipeline-owned-normal",
         "pipeline-stdlib-pipeline-owned-shutdown-drain",

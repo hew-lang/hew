@@ -1052,7 +1052,7 @@ mod tests {
                         "callback".to_string(),
                         Ty::Function {
                             capabilities: crate::CallableCapabilities::default(),
-                            params: vec![actor_handle("C")],
+                            params: vec![crate::CallableParameter::borrowed(actor_handle("C"))],
                             ret: Box::new(actor_handle("C")),
                         },
                     ),

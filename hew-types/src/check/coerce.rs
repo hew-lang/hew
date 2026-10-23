@@ -278,7 +278,7 @@ impl Checker {
             for (trait_param, handler_param) in
                 trait_sig.params.iter().zip(handler.param_tys.iter())
             {
-                if *trait_param != handler_param.to_ty() {
+                if trait_param.ty != handler_param.to_ty() {
                     return false;
                 }
             }
@@ -1298,8 +1298,11 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        } => {
+            params.iter().any(|p| type_expr_mentions_self(&p.ty.0))
+                || type_expr_mentions_self(&return_type.0)
         }
-        | TypeExpr::ActorFn {
+        TypeExpr::ActorFn {
             params,
             return_type,
         } => {

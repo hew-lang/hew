@@ -418,8 +418,13 @@ pub(super) trait FreshSpans {
                 params,
                 return_type,
                 ..
+            } => {
+                for ty in params {
+                    self.refresh_type(&mut ty.ty);
+                }
+                self.refresh_type(return_type);
             }
-            | TypeExpr::ActorFn {
+            TypeExpr::ActorFn {
                 params,
                 return_type,
             } => {

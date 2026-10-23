@@ -1,4 +1,4 @@
-use hew_parser::ast::{CallableCallMode, Item, TypeExpr};
+use hew_parser::ast::{CallableCallMode, Expr, Item, ParameterOwnership, TypeExpr};
 use hew_parser::{ast_eq::program_eq_ignoring_spans, fmt::format_source, parse};
 
 #[test]
@@ -137,4 +137,122 @@ fn malformed_capture_prefixes_and_qualifiers_are_rejected() {
         let source = format!("fn accept(f: fn{qualifiers}() -> i64) {{}}");
         assert!(!parse(&source).errors.is_empty(), "accepted {source}");
     }
+}
+
+#[test]
+fn callable_parameter_ownership_survives_nested_signatures_and_formatting() {
+    let source = "fn accept(f: fn[clone,suspends](consume Packet, fn(consume [Packet]) -> Packet, consume) -> Packet) {}";
+    let parsed = parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(accept) = &parsed.program.items[0].0 else {
+        panic!("function")
+    };
+    let TypeExpr::Function { params, .. } = &accept.params[0].ty.0 else {
+        panic!("callable type")
+    };
+    assert_eq!(params[0].ownership, ParameterOwnership::Consume);
+    assert_eq!(params[1].ownership, ParameterOwnership::Borrow);
+    assert_eq!(params[2].ownership, ParameterOwnership::Borrow);
+    let TypeExpr::Function { params: nested, .. } = &params[1].ty.0 else {
+        panic!("nested callable type")
+    };
+    assert_eq!(nested[0].ownership, ParameterOwnership::Consume);
+    let formatted = format_source(source, &parsed.program);
+    assert!(formatted.contains(
+        "fn[clone, suspends](consume Packet, fn(consume [Packet]) -> Packet, consume) -> Packet"
+    ));
+    let reparsed = parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(program_eq_ignoring_spans(
+        &parsed.program,
+        &reparsed.program
+    ));
+    assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+}
+
+#[test]
+fn lambda_parameter_ownership_distinguishes_explicit_consume_from_inference() {
+    for expression in [
+        "|consume packet: Packet, borrowed: Packet, consume: Packet| packet",
+        "move |consume packet, borrowed, consume| packet",
+    ] {
+        let source = format!("fn make() {{ {expression} }}");
+        let parsed = parse(&source);
+        assert!(parsed.errors.is_empty(), "{source}: {:?}", parsed.errors);
+        let Item::Function(make) = &parsed.program.items[0].0 else {
+            panic!("function")
+        };
+        let Some((Expr::Lambda { params, .. }, _)) = make.body.trailing_expr.as_deref() else {
+            panic!("lambda")
+        };
+        assert_eq!(params[0].ownership, Some(ParameterOwnership::Consume));
+        assert_eq!(params[1].ownership, None);
+        assert_eq!(params[2].ownership, None);
+        assert_eq!(&source[params[0].name_span.clone()], "packet");
+        let formatted = format_source(&source, &parsed.program);
+        let reparsed = parse(&formatted);
+        assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+        assert!(program_eq_ignoring_spans(
+            &parsed.program,
+            &reparsed.program
+        ));
+        assert_eq!(format_source(&formatted, &reparsed.program), formatted);
+    }
+}
+
+#[test]
+fn consuming_callable_parameters_require_a_type_or_binding() {
+    for source in [
+        "fn accept(f: fn(consume Packet Packet)) {}",
+        "fn make() { |consume packet:| packet }",
+        "fn make() { |consume packet Packet| packet }",
+    ] {
+        assert!(!parse(source).errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn consuming_associated_type_and_contextual_type_name_round_trip() {
+    let source = "fn accept(f: fn(consume <Packet as Decode>.Output, consume<Packet>, consume.Part) -> Packet) {}";
+    let parsed = parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(accept) = &parsed.program.items[0].0 else {
+        panic!("function")
+    };
+    let TypeExpr::Function { params, .. } = &accept.params[0].ty.0 else {
+        panic!("callable")
+    };
+    assert_eq!(params[0].ownership, ParameterOwnership::Consume);
+    assert!(params[1..]
+        .iter()
+        .all(|parameter| parameter.ownership == ParameterOwnership::Borrow));
+    let formatted = format_source(source, &parsed.program);
+    let reparsed = parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(program_eq_ignoring_spans(
+        &parsed.program,
+        &reparsed.program
+    ));
+}
+
+#[test]
+fn bare_consume_lambda_parameter_remains_an_identifier() {
+    let source = "fn make() { |consume| consume }";
+    let parsed = parse(source);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+    let Item::Function(make) = &parsed.program.items[0].0 else {
+        panic!("function")
+    };
+    let Some((Expr::Lambda { params, .. }, _)) = make.body.trailing_expr.as_deref() else {
+        panic!("lambda")
+    };
+    assert_eq!(params[0].name.name.as_str(), "consume");
+    assert_eq!(params[0].ownership, None);
+    let formatted = format_source(source, &parsed.program);
+    let reparsed = parse(&formatted);
+    assert!(reparsed.errors.is_empty(), "{:?}", reparsed.errors);
+    assert!(program_eq_ignoring_spans(
+        &parsed.program,
+        &reparsed.program
+    ));
 }

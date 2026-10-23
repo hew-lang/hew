@@ -202,7 +202,6 @@ impl Checker {
         declaration_ordinal: usize,
         source_symbol: &str,
         sig: &FnSig,
-        consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
     ) -> Option<crate::DefId> {
         let declaration = self.require_declaration_occurrence(
@@ -230,7 +229,7 @@ impl Checker {
         let resolved_params = sig
             .params
             .iter()
-            .map(|ty| extern_contract_nominal_identity(self, ty))
+            .map(|parameter| parameter.map(|ty| extern_contract_nominal_identity(self, ty)))
             .collect::<Vec<_>>();
         let resolved_return = extern_contract_nominal_identity(self, &sig.return_type);
         let Some((established_id, established)) = self
@@ -243,7 +242,6 @@ impl Checker {
                 symbol: source_symbol.to_string(),
                 params: resolved_params,
                 return_type: resolved_return,
-                consuming_params: consuming_params.to_vec(),
                 is_variadic: f.is_variadic,
                 span: f.span.clone(),
                 declaring_module: self.current_module.clone(),
@@ -253,7 +251,6 @@ impl Checker {
         };
         let agrees = established.params == resolved_params
             && established.return_type == resolved_return
-            && established.consuming_params == consuming_params
             && established.is_variadic == f.is_variadic;
         if agrees {
             // Single-owner property: a further agreeing declaration becomes
@@ -280,7 +277,6 @@ impl Checker {
                 &established,
                 &resolved_params,
                 &resolved_return,
-                consuming_params,
                 f,
             );
         }
@@ -293,27 +289,21 @@ impl Checker {
         &mut self,
         source_symbol: &str,
         established: &crate::extern_table::ExternContract,
-        resolved_params: &[Ty],
+        resolved_params: &[crate::CallableParameter<Ty>],
         resolved_return: &Ty,
-        consuming_params: &[bool],
         f: &hew_parser::ast::ExternFnDecl,
     ) {
         let established_description = extern_signature_description(
             &established.params,
             &established.return_type,
-            &established.consuming_params,
             established.is_variadic,
         );
         // Describe the RESOLVED identities — the things actually compared —
         // so two same-leaf nominals from different declaring files render
         // distinguishably (`pkg.Tok` vs `pkg.aaa.Tok`), never as one
         // spelling conflicting with itself.
-        let conflicting = extern_signature_description(
-            resolved_params,
-            resolved_return,
-            consuming_params,
-            f.is_variadic,
-        );
+        let conflicting =
+            extern_signature_description(resolved_params, resolved_return, f.is_variadic);
         // File-accurate attribution (rc1-F1 stage C): item spans are
         // file-relative byte offsets, so a declaration living in a peer
         // file of a directory module must route to THAT file, never the
@@ -536,13 +526,15 @@ impl Checker {
                 ));
             }
             let mut sig = FnSig {
-                param_ownership: f
-                    .params
-                    .iter()
-                    .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
-                    .collect(),
                 param_names,
-                params,
+                params: params
+                    .into_iter()
+                    .zip(&f.params)
+                    .map(|(ty, parameter)| crate::CallableParameter {
+                        ty,
+                        ownership: crate::ParameterOwnership::from_consume(parameter.is_consume),
+                    })
+                    .collect(),
                 return_type,
                 extern_symbol: self.ingest_extern_symbol_attrs(&f.attributes),
                 ..FnSig::default()
@@ -571,7 +563,7 @@ impl Checker {
                 sig.params = sig
                     .params
                     .iter()
-                    .map(|ty| self.resolve_extern_signature_nominals(ty))
+                    .map(|parameter| parameter.map(|ty| self.resolve_extern_signature_nominals(ty)))
                     .collect();
                 sig.return_type = self.resolve_extern_signature_nominals(&sig.return_type);
             }
@@ -580,17 +572,11 @@ impl Checker {
             // enclosing source occurrence inventoried before registration.
             let key = scoped_module_item_name(self.canonical_fn_owner(), f.name.name.as_str())
                 .unwrap_or_else(|| f.name.to_string());
-            let consuming_params = f
-                .params
-                .iter()
-                .map(|param| param.is_consume)
-                .collect::<Vec<_>>();
             let Some(declaration) = self.resolve_extern_contract(
                 block_span,
                 declaration_ordinal,
                 &source_symbol,
                 &sig,
-                &consuming_params,
                 f,
             ) else {
                 continue;
@@ -604,7 +590,7 @@ impl Checker {
                         span: f.span.clone(),
                         source_module: self.current_module.clone(),
                         variadic: f.is_variadic,
-                        consumes: consuming_params.iter().any(|consumes| *consumes),
+                        consumes: f.params.iter().any(|parameter| parameter.is_consume),
                     });
             }
             if !self
@@ -621,7 +607,6 @@ impl Checker {
                         declaring_module: self.current_module.clone(),
                         declaring_file: self.current_module_idx,
                         direct_import_modules: self.current_module_direct_imports.clone(),
-                        consuming_params,
                     });
             }
 
@@ -647,10 +632,10 @@ impl Checker {
             }
             if let Some(signature) = self.fn_sigs.get(&pending.declaration) {
                 for (index, ty) in signature.params.iter().enumerate() {
-                    if let Some(reason) = self.offload_refusal(ty) {
+                    if let Some(reason) = self.offload_refusal(&ty.ty) {
                         refusals.push(format!(
                             "parameter {index} is `{}`, which {reason}",
-                            ty.user_facing()
+                            ty.ty.user_facing()
                         ));
                     }
                 }

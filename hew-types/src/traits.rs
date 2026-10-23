@@ -1132,7 +1132,7 @@ mod tests {
         let registry = TraitRegistry::new();
         let fn_ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
         };
         assert!(!registry.is_send(&fn_ty));
@@ -1281,7 +1281,7 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, Ty::String],
         };
@@ -1303,7 +1303,7 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Bool),
             captures: vec![Ty::I32, ptr],
         };

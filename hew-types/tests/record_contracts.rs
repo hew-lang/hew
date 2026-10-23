@@ -319,9 +319,11 @@ fn main() -> i64 {
     assert!(service.require(&key).is_err());
     let abstract_fn = ResolvedTy::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![ResolvedTy::TypeParam {
-            name: hew_types::ParamHead::for_test("U"),
-        }],
+        params: vec![hew_types::CallableParameter::borrowed(
+            ResolvedTy::TypeParam {
+                name: hew_types::ParamHead::for_test("U"),
+            },
+        )],
         ret: Box::new(ResolvedTy::Unit),
     };
     assert!(matches!(

@@ -186,8 +186,13 @@ impl LocalNonFunctionRoles<'_> {
                 params,
                 return_type,
                 ..
+            } => {
+                for param in params {
+                    self.annotation(&param.ty.0);
+                }
+                self.annotation(&return_type.0);
             }
-            | TypeExpr::ActorFn {
+            TypeExpr::ActorFn {
                 params,
                 return_type,
             } => {

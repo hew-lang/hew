@@ -2014,7 +2014,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
         }
         ResolvedTy::Named { args, .. } => out.extend(args.iter().cloned()),
         ResolvedTy::Function { params, ret, .. } => {
-            out.extend(params.iter().cloned());
+            out.extend(params.iter().map(|parameter| parameter.ty.clone()));
             out.push((**ret).clone());
         }
         ResolvedTy::Closure {
@@ -2023,7 +2023,7 @@ pub fn push_type_components(ty: &ResolvedTy, out: &mut Vec<ResolvedTy>) {
             captures,
             ..
         } => {
-            out.extend(params.iter().cloned());
+            out.extend(params.iter().map(|parameter| parameter.ty.clone()));
             out.push((**ret).clone());
             out.extend(captures.iter().cloned());
         }

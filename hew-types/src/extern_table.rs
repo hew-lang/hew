@@ -63,17 +63,11 @@ pub struct ExternContract {
     pub owner: DefId,
     /// Monomorphic C symbol.
     pub symbol: String,
-    /// Registered parameter types, exactly as stored on the minting
-    /// declaration's `FnSig`. Contract comparison canonicalizes both sides
-    /// at the compare site (the checker owns spelling→identity resolution).
-    pub params: Vec<Ty>,
+    /// Registered parameter types and ownership, resolved in the minting
+    /// declaration's lexical context. Adoption requires exact equality of
+    /// both type identities and argument ownership.
+    pub params: Vec<crate::CallableParameter<Ty>>,
     pub return_type: Ty,
-    /// Authoritative ABI ownership disposition (who frees each argument).
-    /// Adoption requires EXACT equality of consuming modes, so every
-    /// declaration that resolves to this contract stores identical modes —
-    /// the per-declaration `fn_param_ownership` view cannot diverge from
-    /// this field by construction.
-    pub consuming_params: Vec<bool>,
     pub is_variadic: bool,
     /// Minting declaration's span, for conflict diagnostics.
     pub span: Span,

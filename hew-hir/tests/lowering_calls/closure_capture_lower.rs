@@ -518,7 +518,7 @@ fn mutable_callable_field_call_keeps_the_selected_projection() {
                 call: hew_types::CallableCallMode::Var,
                 clone: true
             },
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
         }
     );

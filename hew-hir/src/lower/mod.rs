@@ -654,7 +654,7 @@ impl LowerOutput {
 struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
-    param_tys: Vec<ResolvedTy>,
+    params: Vec<hew_types::CallableParameter<ResolvedTy>>,
     linkage: Option<BuiltinLinkage>,
     /// Source-declared generic type parameter names, in order. Empty for
     /// non-generic functions. Consulted at `Expr::Call` lowering sites to

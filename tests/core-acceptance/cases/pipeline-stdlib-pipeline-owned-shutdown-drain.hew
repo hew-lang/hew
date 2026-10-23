@@ -34,6 +34,12 @@ fn main() {
         break;
     }
     assert(mapped.count() == 6);
+    let forwarded = semaphore.new(0);
+    for item in pipeline.map(items.source(forwarded), |consume item: items.Item| item, concurrency: 2) {
+        assert(item.index == 0);
+        break;
+    }
+    assert(forwarded.count() == 6);
     let created = semaphore.new(0);
     let output_closed = semaphore.new(0);
     let (sink, input): (Sink<Input>, Stream<Input>) = stream.pipe(6).expect("outputs");

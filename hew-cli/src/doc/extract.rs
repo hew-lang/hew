@@ -156,7 +156,7 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
             return_type,
             ..
         } => {
-            let param_strs: Vec<String> = params.iter().map(|(t, _)| format_type(t)).collect();
+            let param_strs: Vec<String> = params.iter().map(format_callable_parameter).collect();
             format!(
                 "fn({}) -> {}",
                 param_strs.join(", "),
@@ -210,6 +210,19 @@ fn format_type(ty: &hew_parser::ast::TypeExpr) -> String {
         TypeExpr::Infer => "_".to_string(),
         TypeExpr::Borrow(inner) => format!("&{}", format_type(&inner.0)),
     }
+}
+
+fn format_callable_parameter(
+    parameter: &hew_parser::ast::CallableParameter<
+        hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>,
+    >,
+) -> String {
+    let prefix = if parameter.ownership == hew_parser::ast::ParameterOwnership::Consume {
+        "consume "
+    } else {
+        ""
+    };
+    format!("{prefix}{}", format_type(&parameter.ty.0))
 }
 
 /// Best-effort literal-expression rendering for const values. Non-literal

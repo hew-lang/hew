@@ -160,7 +160,6 @@ pub(super) struct SourceExternDeclaration {
     /// result provenance to cross one acyclic import edge without treating a
     /// qualified lookalike or transitive dependency as authority.
     pub(super) direct_import_modules: BTreeSet<String>,
-    pub(super) consuming_params: Vec<bool>,
 }
 
 /// An `#[offload]` extern declaration awaiting signature validation, which
@@ -179,9 +178,7 @@ pub(super) struct PendingOffload {
 pub struct ExternMethodSignature {
     /// The linker endpoint the attribute names.
     pub endpoint: String,
-    pub params: Vec<Ty>,
-    /// `consume` disposition per parameter, parallel to `params`.
-    pub consumes: Vec<bool>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     pub result: Ty,
     /// Dotted module path the declaration came from, when it has one.
     pub declaring_module: Option<String>,
@@ -2875,10 +2872,7 @@ pub struct FnSig {
     /// A call enforces them where it is checked.
     pub receiver_obligations: Vec<ReceiverObligation>,
     pub param_names: Vec<String>,
-    pub params: Vec<Ty>,
-    /// Ownership explicitly declared for each parameter, aligned with `params`.
-    /// Callable value types cannot preserve consuming slots, so erasure is refused.
-    pub param_ownership: Vec<crate::env::ParameterOwnership>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     pub return_type: Ty,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
@@ -2983,7 +2977,6 @@ impl Default for FnSig {
             receiver_obligations: vec![],
             param_names: vec![],
             params: vec![],
-            param_ownership: vec![],
             return_type: Ty::Unit,
             doc_comment: None,
             extern_symbol: None,

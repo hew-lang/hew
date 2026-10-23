@@ -434,7 +434,10 @@ impl LowerCtx {
             },
             ResolvedTy::Function {
                 capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                params: args.iter().map(|arg| arg.ty.clone()).collect(),
+                params: args
+                    .iter()
+                    .map(|arg| hew_types::CallableParameter::borrowed(arg.ty.clone()))
+                    .collect(),
                 ret: Box::new(result_ty.clone()),
             },
             IntentKind::Read,

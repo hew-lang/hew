@@ -1767,7 +1767,7 @@ impl Checker {
                     let Some(signature) = self.record_dyn_index_method_call(traits, span) else {
                         return Ty::Error;
                     };
-                    self.check_against(&index.0, &index.1, &signature.params[0]);
+                    self.check_against(&index.0, &index.1, &signature.params[0].ty);
                     if matches!(signature.return_type, Ty::AssocType { .. }) {
                         self.report_error(
                             TypeErrorKind::InvalidOperation,

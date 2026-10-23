@@ -133,7 +133,7 @@ pub enum ResolvedTy {
         /// Invocation and duplication guarantees of this callable value.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<ResolvedTy>,
+        params: Vec<crate::CallableParameter<ResolvedTy>>,
         /// Return type
         ret: Box<ResolvedTy>,
     },
@@ -142,7 +142,7 @@ pub enum ResolvedTy {
         /// Invocation and duplication guarantees of this concrete closure.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<ResolvedTy>,
+        params: Vec<crate::CallableParameter<ResolvedTy>>,
         /// Return type
         ret: Box<ResolvedTy>,
         /// Types of captured variables from the enclosing scope
@@ -810,10 +810,10 @@ impl ResolvedTy {
             ) => {
                 left_capabilities == right_capabilities
                     && left_params.len() == right_params.len()
-                    && left_params
-                        .iter()
-                        .zip(right_params)
-                        .all(|(left, right)| left.is_storage_congruent_with(right))
+                    && left_params.iter().zip(right_params).all(|(left, right)| {
+                        left.ownership == right.ownership
+                            && left.ty.is_storage_congruent_with(&right.ty)
+                    })
                     && left_ret.is_storage_congruent_with(right_ret)
             }
             _ => false,
@@ -964,7 +964,7 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Function {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params)?,
+                params: Self::convert_parameters(params)?,
                 ret: Box::new(Self::from_ty(ret)?),
             }),
             Ty::Closure {
@@ -975,7 +975,7 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Closure {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params)?,
+                params: Self::convert_parameters(params)?,
                 ret: Box::new(Self::from_ty(ret)?),
                 captures: Self::convert_vec(captures)?,
             }),
@@ -1005,6 +1005,20 @@ impl ResolvedTy {
                 assoc_name: assoc_name.to_string(),
             }),
         }
+    }
+
+    fn convert_parameters(
+        parameters: &[crate::CallableParameter<Ty>],
+    ) -> Result<Vec<crate::CallableParameter<Self>>, BoundaryError> {
+        parameters
+            .iter()
+            .map(|parameter| {
+                Ok(crate::CallableParameter {
+                    ty: Self::from_ty(&parameter.ty)?,
+                    ownership: parameter.ownership,
+                })
+            })
+            .collect()
     }
 
     fn convert_vec(tys: &[Ty]) -> Result<Vec<ResolvedTy>, BoundaryError> {
@@ -1121,7 +1135,10 @@ impl ResolvedTy {
                 ..
             } => Ty::Function {
                 capabilities: *capabilities,
-                params: params.iter().map(Self::to_ty).collect(),
+                params: params
+                    .iter()
+                    .map(|parameter| parameter.map(Self::to_ty))
+                    .collect(),
                 ret: Box::new(ret.to_ty()),
             },
             ResolvedTy::Pointer {
@@ -1499,7 +1516,7 @@ pub fn substitute_type_params(
             capabilities: *capabilities,
             params: callable_params
                 .iter()
-                .map(|param| substitute_type_params(param, params, args))
+                .map(|param| param.map(|ty| substitute_type_params(ty, params, args)))
                 .collect(),
             ret: Box::new(substitute_type_params(ret, params, args)),
         },
@@ -1512,7 +1529,7 @@ pub fn substitute_type_params(
             capabilities: *capabilities,
             params: callable_params
                 .iter()
-                .map(|param| substitute_type_params(param, params, args))
+                .map(|param| param.map(|ty| substitute_type_params(ty, params, args)))
                 .collect(),
             ret: Box::new(substitute_type_params(ret, params, args)),
             captures: captures
@@ -1751,7 +1768,7 @@ fn mangle_named_segment(
 fn mangle_function_like_segment(
     head: &str,
     capabilities: CallableCapabilities,
-    params: &[ResolvedTy],
+    params: &[crate::CallableParameter<ResolvedTy>],
     ret: &ResolvedTy,
     captures: Option<&[ResolvedTy]>,
     type_param_mode: TypeParamMangle,
@@ -1766,7 +1783,16 @@ fn mangle_function_like_segment(
     } else {
         "unique"
     };
-    let params_seg = mangle_type_list_segment(params, type_param_mode)?;
+    let mut params_seg = String::new();
+    for (index, parameter) in params.iter().enumerate() {
+        if index > 0 {
+            params_seg.push_str("$c");
+        }
+        if parameter.ownership == crate::ParameterOwnership::Consume {
+            params_seg.push_str("$kconsume");
+        }
+        params_seg.push_str(&mangle_resolved_ty_segment(&parameter.ty, type_param_mode)?);
+    }
     let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
     let mut out = format!("{head}$k{call}$k{clone}$x{params_seg}$r{ret_seg}");
     if capabilities.suspends {
@@ -1850,41 +1876,57 @@ mod tests {
         let mut keys = std::collections::HashSet::new();
         let mut canonical = std::collections::HashSet::new();
         let mut functions = Vec::new();
-        for call in [Read, Var, Once] {
-            for (clone, suspends) in [(false, false), (true, false), (false, true), (true, true)] {
-                let capabilities = CallableCapabilities {
-                    call,
-                    clone,
-                    suspends,
-                };
-                let function = ResolvedTy::Function {
-                    capabilities,
-                    params: vec![ResolvedTy::I64],
-                    ret: Box::new(ResolvedTy::Bool),
-                };
-                assert!(functions
-                    .iter()
-                    .all(|previous| !function.is_storage_congruent_with(previous)));
-                functions.push(function.clone());
-                for ty in [
-                    function,
-                    ResolvedTy::Closure {
+        for ownership in [
+            crate::ParameterOwnership::Borrow,
+            crate::ParameterOwnership::Consume,
+        ] {
+            for call in [Read, Var, Once] {
+                for (clone, suspends) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let capabilities = CallableCapabilities {
+                        call,
+                        clone,
+                        suspends,
+                    };
+                    let function = ResolvedTy::Function {
                         capabilities,
-                        params: vec![ResolvedTy::I64],
+                        params: vec![crate::CallableParameter {
+                            ty: ResolvedTy::I64,
+                            ownership,
+                        }],
                         ret: Box::new(ResolvedTy::Bool),
-                        captures: vec![ResolvedTy::String],
-                    },
-                    ResolvedTy::Closure {
-                        capabilities,
-                        params: vec![ResolvedTy::I64],
-                        ret: Box::new(ResolvedTy::Bool),
-                        captures: vec![ResolvedTy::I64],
-                    },
-                ] {
-                    assert!(keys.insert(
-                        mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
-                    ));
-                    assert!(canonical.insert(ty.canonical_string()));
+                    };
+                    assert!(functions
+                        .iter()
+                        .all(|previous| !function.is_storage_congruent_with(previous)));
+                    functions.push(function.clone());
+                    for ty in [
+                        function,
+                        ResolvedTy::Closure {
+                            capabilities,
+                            params: vec![crate::CallableParameter {
+                                ty: ResolvedTy::I64,
+                                ownership,
+                            }],
+                            ret: Box::new(ResolvedTy::Bool),
+                            captures: vec![ResolvedTy::String],
+                        },
+                        ResolvedTy::Closure {
+                            capabilities,
+                            params: vec![crate::CallableParameter {
+                                ty: ResolvedTy::I64,
+                                ownership,
+                            }],
+                            ret: Box::new(ResolvedTy::Bool),
+                            captures: vec![ResolvedTy::I64],
+                        },
+                    ] {
+                        assert!(keys.insert(
+                            mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
+                        ));
+                        assert!(canonical.insert(ty.canonical_string()));
+                    }
                 }
             }
         }
@@ -2058,7 +2100,7 @@ mod tests {
     fn from_ty_rejects_nested_error_in_function_return() {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Error),
         };
         assert_eq!(ResolvedTy::from_ty(&ty), Err(BoundaryError::TaintedError));
@@ -2104,23 +2146,34 @@ mod tests {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                Ty::Array(Box::new(Ty::I32), 4),
-                Ty::Slice(Box::new(Ty::Bool)),
+                crate::CallableParameter {
+                    ty: Ty::Array(Box::new(Ty::I32), 4),
+                    ownership: crate::ParameterOwnership::Consume,
+                },
+                crate::CallableParameter::borrowed(Ty::Slice(Box::new(Ty::Bool))),
             ],
             ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::Unit])),
         };
         let expected = ResolvedTy::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
-                ResolvedTy::Slice(Box::new(ResolvedTy::Bool)),
+                crate::CallableParameter {
+                    ty: ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
+                    ownership: crate::ParameterOwnership::Consume,
+                },
+                crate::CallableParameter::borrowed(ResolvedTy::Slice(Box::new(ResolvedTy::Bool))),
             ],
             ret: Box::new(ResolvedTy::Tuple(vec![
                 ResolvedTy::String,
                 ResolvedTy::Unit,
             ])),
         };
-        assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected));
+        assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected.clone()));
+        assert_eq!(expected.to_ty(), ty);
+        assert_eq!(
+            expected.canonical_string(),
+            "fn(consume [i32;4],[bool])->(string,unit)"
+        );
     }
 
     #[test]
@@ -2132,19 +2185,19 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::Pointer {
+            params: vec![crate::CallableParameter::borrowed(Ty::Pointer {
                 is_mutable: true,
                 pointee: Box::new(Ty::I32),
-            }],
+            })],
             ret: Box::new(Ty::Unit),
             captures: vec![Ty::Bool],
         };
         let expected = ResolvedTy::Closure {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![ResolvedTy::Pointer {
+            params: vec![crate::CallableParameter::borrowed(ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::I32),
-            }],
+            })],
             ret: Box::new(ResolvedTy::Unit),
             captures: vec![ResolvedTy::Bool],
         };
@@ -2218,7 +2271,7 @@ mod tests {
             },
             Ty::Function {
                 capabilities: crate::CallableCapabilities::default(),
-                params: vec![Ty::I32],
+                params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                 ret: Box::new(Ty::String),
             },
         ];

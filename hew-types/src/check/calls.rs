@@ -1780,10 +1780,15 @@ impl Checker {
         let params = signature
             .params
             .iter()
-            .map(|ty| ResolvedTy::from_ty(&self.subst.resolve(ty)))
+            .map(|parameter| ResolvedTy::from_ty(&self.subst.resolve(&parameter.ty)))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let result = ResolvedTy::from_ty(&self.subst.resolve(&signature.return_type)).ok()?;
+        let consumes: Vec<_> = contract
+            .params
+            .iter()
+            .map(|parameter| parameter.ownership == crate::ParameterOwnership::Consume)
+            .collect();
         (family.matches_encoding_extern(
             &self.defs,
             module,
@@ -1791,7 +1796,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ) || family.matches_deque_extern(
             &self.defs,
             module,
@@ -1799,7 +1804,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ) || family.matches_file_read_extern(
             &self.defs,
             module,
@@ -1807,7 +1812,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ) || family.matches_tcp_extern(
             &self.defs,
             module,
@@ -1815,7 +1820,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ) || family.matches_semaphore_extern(
             &self.defs,
             module,
@@ -1823,7 +1828,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ) || family.matches_async_io_extern(
             &self.defs,
             module,
@@ -1831,7 +1836,7 @@ impl Checker {
             &extern_decl.symbol,
             &params,
             &result,
-            &contract.consuming_params,
+            &consumes,
         ))
         .then_some(family)
     }
@@ -2657,7 +2662,7 @@ impl Checker {
                     for (i, arg) in args.iter().enumerate() {
                         if let Some(param_ty) = sig.params.get(i) {
                             let (expr, sp) = arg.expr();
-                            self.check_against(expr, sp, param_ty);
+                            self.check_against(expr, sp, &param_ty.ty);
                         }
                     }
                     return sig.return_type;
@@ -2892,7 +2897,8 @@ impl Checker {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param) = params.get(i) {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param);
+                        self.check_against(expr, sp, &param.ty);
+                        self.record_argument_consumption(param.ownership, expr, sp);
                     }
                 }
                 self.reject_interceptor_return(&ret, span);
@@ -3238,8 +3244,9 @@ impl Checker {
                             .unwrap_or(index);
                         let shared = signature
                             .as_ref()
-                            .and_then(|sig| sig.param_ownership.get(slot + offset))
-                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                            .and_then(|sig| sig.params.get(slot + offset))
+                            .map(|parameter| parameter.ownership)
+                            .is_none_or(|mode| mode != crate::env::ParameterOwnership::Consume);
                         let (expr, span) = arg.expr();
                         self.check_select_call_transfer(
                             expr,
@@ -3267,8 +3274,9 @@ impl Checker {
                             .unwrap_or(index);
                         let shared = signature
                             .as_ref()
-                            .and_then(|sig| sig.param_ownership.get(slot))
-                            .is_none_or(|mode| *mode != crate::env::ParameterOwnership::Consume);
+                            .and_then(|sig| sig.params.get(slot))
+                            .map(|parameter| parameter.ownership)
+                            .is_none_or(|mode| mode != crate::env::ParameterOwnership::Consume);
                         let (expr, span) = arg.expr();
                         self.check_select_call_transfer(
                             expr,

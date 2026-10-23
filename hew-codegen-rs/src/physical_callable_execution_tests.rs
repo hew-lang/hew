@@ -184,7 +184,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
     let original = &module.closures[0].ty;
     let exposed = if weak_once {
         ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
                 suspends: false,
@@ -312,7 +312,7 @@ fn counter_module(
     invoke: bool,
 ) -> sir::SemModule {
     let ty = ResolvedTy::Closure {
-        params: vec![ResolvedTy::I64],
+        params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
         ret: Box::new(ResolvedTy::I64),
         captures: vec![ResolvedTy::I64],
         capabilities: CallableCapabilities {
@@ -323,7 +323,7 @@ fn counter_module(
     };
     let exposed = if weak_once {
         ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
                 suspends: false,

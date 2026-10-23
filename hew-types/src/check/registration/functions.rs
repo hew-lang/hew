@@ -598,11 +598,13 @@ impl Checker {
                                         sig.params
                                             .iter()
                                             .skip(sig_skip)
-                                            .map(|ty| {
-                                                ty.substitute_type_param(
-                                                    crate::ParamHead::receiver(trait_id),
-                                                    &concrete_self,
-                                                )
+                                            .map(|parameter| {
+                                                parameter.map(|ty| {
+                                                    ty.substitute_type_param(
+                                                        crate::ParamHead::receiver(trait_id),
+                                                        &concrete_self,
+                                                    )
+                                                })
                                             })
                                             .collect::<Vec<_>>(),
                                         sig.return_type.substitute_type_param(
@@ -615,10 +617,13 @@ impl Checker {
                                         m.params
                                             .iter()
                                             .skip(skip)
-                                            .map(|p| {
-                                                self.resolve_registered_annotation_ty_no_holes(
+                                            .map(|p| crate::CallableParameter {
+                                                ty: self.resolve_registered_annotation_ty_no_holes(
                                                     &p.ty,
-                                                )
+                                                ),
+                                                ownership: crate::ParameterOwnership::from_consume(
+                                                    p.is_consume,
+                                                ),
                                             })
                                             .collect(),
                                         m.return_type.as_ref().map_or(Ty::Unit, |ret| {
@@ -981,7 +986,7 @@ impl Checker {
             .skip(skip)
             .map(|p| p.name.to_string())
             .collect();
-        let params = fd
+        let params: Vec<Ty> = fd
             .params
             .iter()
             .skip(skip)
@@ -1009,14 +1014,15 @@ impl Checker {
             type_params: self
                 .source_parameter_heads(fd.type_params.as_deref().unwrap_or_default(), &fd.fn_span),
             bounds,
-            param_ownership: fd
-                .params
-                .iter()
-                .skip(skip)
-                .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
-                .collect(),
             param_names,
-            params,
+            params: params
+                .into_iter()
+                .zip(fd.params.iter().skip(skip))
+                .map(|(ty, parameter)| crate::CallableParameter {
+                    ty,
+                    ownership: crate::ParameterOwnership::from_consume(parameter.is_consume),
+                })
+                .collect(),
             return_type,
             doc_comment: fd.doc_comment.clone(),
             extern_symbol: self.ingest_extern_symbol_attrs(&fd.attributes),
@@ -1091,7 +1097,7 @@ impl Checker {
             let Ok(params) = signature
                 .params
                 .iter()
-                .map(resolve)
+                .map(|parameter| resolve(&parameter.ty))
                 .collect::<Result<Vec<_>, _>>()
             else {
                 return false;
@@ -1601,7 +1607,6 @@ impl Checker {
                 },
             }),
             param_defaults: registered.param_defaults.clone(),
-            param_ownership: registered.param_ownership.clone(),
             bounds: registered.bounds.clone(),
             type_params: all_type_params,
             param_names,
@@ -2090,7 +2095,10 @@ impl Checker {
             param_names: params.iter().map(|param| param.name.to_string()).collect(),
             params: params
                 .iter()
-                .map(|param| self.resolve_registered_annotation_ty_no_holes(&param.ty))
+                .map(|param| crate::CallableParameter {
+                    ty: self.resolve_registered_annotation_ty_no_holes(&param.ty),
+                    ownership: crate::ParameterOwnership::from_consume(param.is_consume),
+                })
                 .collect(),
             param_defaults: self.register_default_parameters(owner, params, 0),
             ..FnSig::default()
@@ -2125,7 +2133,10 @@ impl Checker {
         let params = rf
             .params
             .iter()
-            .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
+            .map(|p| crate::CallableParameter {
+                ty: self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars),
+                ownership: crate::ParameterOwnership::from_consume(p.is_consume),
+            })
             .collect();
         let declared_return_type = rf.return_type.as_ref().map_or(Ty::Unit, |ret| {
             self.resolve_registered_annotation_ty(ret, &mut hole_vars)
@@ -2214,7 +2225,7 @@ impl Checker {
             self.current_type_param_bounds.push(bounds.clone());
         }
         let param_names = fd.params.iter().map(|p| p.name.to_string()).collect();
-        let params = fd
+        let params: Vec<Ty> = fd
             .params
             .iter()
             .map(|p| self.resolve_registered_annotation_ty(&p.ty, &mut hole_vars))
@@ -2239,13 +2250,15 @@ impl Checker {
             param_defaults,
             type_params,
             bounds,
-            param_ownership: fd
-                .params
-                .iter()
-                .map(|param| crate::env::ParameterOwnership::from_consume(param.is_consume))
-                .collect(),
             param_names,
-            params,
+            params: params
+                .into_iter()
+                .zip(fd.params.iter())
+                .map(|(ty, parameter)| crate::CallableParameter {
+                    ty,
+                    ownership: crate::ParameterOwnership::from_consume(parameter.is_consume),
+                })
+                .collect(),
             return_type,
             doc_comment: fd.doc_comment.clone(),
             ..FnSig::default()

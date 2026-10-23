@@ -693,7 +693,7 @@ fn impl_body_projection_never_retries_through_a_same_leaf_symbol() {
         FnEntry {
             id: ItemId(1),
             return_ty: ResolvedTy::I64,
-            param_tys: Vec::new(),
+            params: Vec::new(),
             linkage: None,
             type_params: Vec::new(),
             builtin_family: None,

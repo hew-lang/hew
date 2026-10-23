@@ -21,3 +21,12 @@ pub fn source(closed: semaphore.Semaphore) -> Stream<Item> {
     sink.finish();
     input
 }
+
+/// Forward the exact resource owner through an imported callable value.
+pub fn forward(consume item: Item) -> Item {
+    item
+}
+
+pub fn index(item: Item) -> i64 {
+    item.index
+}

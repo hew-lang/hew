@@ -88,7 +88,14 @@ pub struct GeneratorSendSite {
 /// Refuses non-callable types instead of interpreting their storage as a callable.
 pub fn callable_parts(
     ty: &ResolvedTy,
-) -> Result<(&[ResolvedTy], &ResolvedTy, CallableCapabilities), String> {
+) -> Result<
+    (
+        &[hew_types::CallableParameter<ResolvedTy>],
+        &ResolvedTy,
+        CallableCapabilities,
+    ),
+    String,
+> {
     match ty.callable_body() {
         ResolvedTy::Function {
             params,
@@ -122,8 +129,14 @@ pub fn callable_value_signature(
         failure_domain: hew_types::CallableFailureDomain::HewFault,
         params: params
             .iter()
-            .map(|ty| {
+            .map(|parameter| {
+                let ty = &parameter.ty;
                 let passing = match OwnKind::of_ty(ty, facts)? {
+                    OwnKind::Owned
+                        if parameter.ownership == hew_types::ParameterOwnership::Consume =>
+                    {
+                        SemParamPassing::Consume
+                    }
                     OwnKind::Owned => SemParamPassing::Borrow,
                     OwnKind::None => SemParamPassing::ReadOnly,
                     OwnKind::Guaranteed => {
@@ -545,12 +558,12 @@ mod tests {
     fn callable_coercions_forget_but_never_invent_capabilities() {
         let mut service = TypeFactService::new(TypeFactContext::default(), TypeFactTable::new());
         let source = ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities::FUNCTION_ITEM,
         };
         let target = ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
                 suspends: false,

@@ -720,7 +720,11 @@ impl Checker {
                 .resolve(&ty.substitute_type_params_parallel(&substitutions))
         };
         Some((
-            signature.params.iter().map(resolve).collect(),
+            signature
+                .params
+                .iter()
+                .map(|parameter| resolve(&parameter.ty))
+                .collect(),
             resolve(&signature.return_type),
         ))
     }

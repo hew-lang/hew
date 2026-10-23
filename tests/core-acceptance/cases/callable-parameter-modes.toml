@@ -1,0 +1,11 @@
+[[case]]
+id = "callable-parameter-modes"
+intent = "Named and generic function values, consuming closures and anonymous actor handlers forward resource owners exactly once, borrowed callbacks preserve their input, and consuming copyable arguments retain independent values."
+source = "cases/callable-parameter-modes.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "callable parameter owners preserved\n"
+stderr = ""
+exit = 0

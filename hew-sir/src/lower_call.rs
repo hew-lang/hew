@@ -1262,6 +1262,29 @@ impl Builder<'_, '_> {
                 }
             } else if self.ty(&arg.ty) == expected.ty {
                 self.lower_call_read(arg, loans, stable_tail, true)?
+            } else if expected.passing == SemParamPassing::Borrow
+                && matches!(
+                    self.ty(&arg.ty).callable_body(),
+                    ResolvedTy::Function { .. } | ResolvedTy::Closure { .. }
+                )
+            {
+                let source = self.ty(&arg.ty);
+                self.service.require_type_facts(&expected.ty)?;
+                crate::verify_callable_coercion(
+                    &source,
+                    &expected.ty,
+                    self.service.checked_facts.rows(),
+                )?;
+                self.service
+                    .register_callable_coercion(&source, &expected.ty)?;
+                let owner = self.lower_call_read(arg, loans, stable_tail, true)?;
+                let value = self.emit_typed(
+                    Provenance::Site(arg.site),
+                    &expected.ty,
+                    SemOpKind::BeginBorrow { owner },
+                )?;
+                loans.push(value);
+                Operand { value }
             } else {
                 let value = lower_initial_value_transfer(
                     self,
@@ -2462,8 +2485,7 @@ impl Builder<'_, '_> {
                         failure_domain: function.failure_domain,
                         declaration: function.declaration,
                         symbol: function.name.clone(),
-                        params: function.param_tys.clone(),
-                        consumes: function.param_consume.clone(),
+                        params: function.params.clone(),
                         result: function.return_ty.clone(),
                         runtime_capability: function.runtime_capability,
                         offload: function.offload,
@@ -2508,15 +2530,20 @@ impl Builder<'_, '_> {
             }
             return Ok(());
         };
-        if contract.params.len() == signature.consumes.len() {
+        if contract.params.len() == signature.params.len() {
             for (index, (declared, audited)) in
-                signature.consumes.iter().zip(contract.params).enumerate()
+                signature.params.iter().zip(contract.params).enumerate()
             {
-                if obligations[index] && *declared != (*audited == ExternParamOwnership::Consume) {
+                if obligations[index]
+                    && declared.ownership
+                        != hew_types::ParameterOwnership::from_consume(
+                            *audited == ExternParamOwnership::Consume,
+                        )
+                {
                     return Err(format!(
                         "extern `{}` parameter {index} declares {}, its audited ownership row says {audited:?}",
                         signature.symbol,
-                        if *declared { "`consume`" } else { "a borrow" }
+                        if declared.ownership == hew_types::ParameterOwnership::Consume { "`consume`" } else { "a borrow" }
                     ));
                 }
             }
@@ -2553,7 +2580,7 @@ impl Builder<'_, '_> {
         value_required: bool,
     ) -> Result<Option<ValueId>, String> {
         let signature = self.extern_signature(declaration, endpoint)?;
-        if signature.params.len() != args.len() || signature.consumes.len() != args.len() {
+        if signature.params.len() != args.len() {
             return Err(format!(
                 "extern `{endpoint}` declares {} parameters, called with {}",
                 signature.params.len(),
@@ -2575,6 +2602,7 @@ impl Builder<'_, '_> {
         for ty in signature
             .params
             .iter()
+            .map(|parameter| &parameter.ty)
             .chain(std::iter::once(&signature.result))
         {
             if *ty != ResolvedTy::Unit {
@@ -2582,8 +2610,8 @@ impl Builder<'_, '_> {
             }
         }
         let mut decisions = Vec::with_capacity(args.len());
-        for (index, ty) in signature.params.iter().enumerate() {
-            let own = OwnKind::of_ty(ty, self.service.checked_facts.rows())?;
+        for (index, parameter) in signature.params.iter().enumerate() {
+            let own = OwnKind::of_ty(&parameter.ty, self.service.checked_facts.rows())?;
             decisions.push(signature.param_decision(index, own));
         }
         let obligations = decisions
@@ -2816,7 +2844,10 @@ impl Builder<'_, '_> {
         let mut placed: Vec<Option<crate::BoundaryOperand>> = args.iter().map(|_| None).collect();
         for &index in order {
             let argument = &args[index];
-            let own = OwnKind::of_ty(&signature.params[index], self.service.checked_facts.rows())?;
+            let own = OwnKind::of_ty(
+                &signature.params[index].ty,
+                self.service.checked_facts.rows(),
+            )?;
             let (value, decision) = if own == OwnKind::Owned {
                 (
                     self.lower_consuming_value(argument)?,

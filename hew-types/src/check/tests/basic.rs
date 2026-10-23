@@ -2084,7 +2084,10 @@ fn typecheck_local_result_enum_not_qualified_to_sqlite() {
         .sigs()
         .get("unwrap_or")
         .expect("unwrap_or signature should be registered");
-    assert_eq!(sig.params[0], Ty::named_in(&output.defs, "Result", vec![]));
+    assert_eq!(
+        sig.params[0].ty,
+        Ty::named_in(&output.defs, "Result", vec![])
+    );
 }
 
 #[test]

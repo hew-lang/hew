@@ -36,7 +36,10 @@ fn extern_borrow_signature_registers_exact_types() {
     let borrow_i64 = Ty::Borrow {
         pointee: Box::new(Ty::I64),
     };
-    assert_eq!(sig.params, vec![borrow_i64.clone()]);
+    assert_eq!(
+        sig.params,
+        vec![crate::CallableParameter::borrowed(borrow_i64.clone())]
+    );
     assert_eq!(sig.return_type, borrow_i64);
 }
 
@@ -287,10 +290,11 @@ fn injected_ordinary_function_borrow_fails_closed() {
 
     let output = Checker::new(ModuleRegistry::new(vec![])).check_program(&parsed.program);
     assert_one_borrow_outside_extern(&output.errors, borrow_span);
-    assert!(output
-        .sigs()
-        .get("ordinary")
-        .is_none_or(|sig| { sig.params.iter().all(|ty| !matches!(ty, Ty::Borrow { .. })) }));
+    assert!(output.sigs().get("ordinary").is_none_or(|sig| {
+        sig.params
+            .iter()
+            .all(|parameter| !matches!(parameter.ty, Ty::Borrow { .. }))
+    }));
 }
 
 #[test]

@@ -24,7 +24,7 @@ impl LowerCtx {
 
     pub(super) fn closure_signature_from_ty(
         ty: &ResolvedTy,
-    ) -> Option<(Vec<ResolvedTy>, ResolvedTy)> {
+    ) -> Option<(Vec<hew_types::CallableParameter<ResolvedTy>>, ResolvedTy)> {
         match ty.callable_body() {
             ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 Some((params.clone(), ret.as_ref().clone()))
@@ -242,8 +242,15 @@ impl LowerCtx {
         let hir_params = params
             .iter()
             .zip(signature_params)
-            .map(|(param, ty)| {
-                self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone())
+            .map(|(param, signature)| {
+                let mut binding = self.bind_checked(
+                    param.name.to_string(),
+                    signature.ty,
+                    false,
+                    param.name_span.clone(),
+                );
+                binding.is_consume = signature.ownership == hew_types::ParameterOwnership::Consume;
+                binding
             })
             .collect();
         let enclosing_failing = self.failing_generator_item.take();

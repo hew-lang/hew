@@ -35,7 +35,7 @@ function mathPackage(key, args, printKind) {
 
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.9.2",
+    hew_version: "0.9.3",
     compiler_version: "math-intrinsic-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

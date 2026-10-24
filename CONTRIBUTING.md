@@ -127,6 +127,12 @@ default runtime features, use
 Neither selection substitutes for source-level native execution when changing
 compiler/runtime interactions.
 
+Use `make test-debugger` for live Hew and runtime debugging. Its `debugger`
+profile includes full debug information in the binaries, so moving a fixture
+does not leave references to cached split-DWARF files. Ordinary development
+builds retain their smaller line-table-only profile. Narrow the selection with
+`DEBUGGER_TEST_ARGS='-E test(debugger_names_suspended_actor_handler_frame_at_runtime_boundary)'`.
+
 `make preflight` runs the lint graph and the same Make-owned test groups as Linux CI; it is the standard manual gate before opening a PR. `make ci-preflight` remains a compatibility alias.
 
 ### E2E test workflow

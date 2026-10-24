@@ -1,0 +1,65 @@
+//! # Expressions and control flow
+//!
+//! Hew uses expressions for values and statements for effects. The last
+//! expression in a block is its value; adding a semicolon makes it a statement
+//! with unit value. `if` and `match` can therefore return values directly.
+//!
+//! ```hew
+//! enum Reading {
+//!     Value(i64);
+//!     Missing;
+//! }
+//!
+//! fn describe(reading: Reading) -> string {
+//!     match reading {
+//!         .Value(value) if value > 80 => "high",
+//!         .Value(_) => "normal",
+//!         .Missing => "missing",
+//!     }
+//! }
+//!
+//! fn main() {
+//!     var total = 0;
+//!     for value in 1..=4 {
+//!         if value % 2 == 0 {
+//!             total += value;
+//!         }
+//!     }
+//!     println(f"{describe(.Value(total))}: {total}");
+//! }
+//! ```
+//!
+//! ## Bindings and assignment
+//!
+//! `let` creates an immutable binding and `var` creates a mutable one. Use
+//! `var` when reassigning the binding, assigning through one of its fields or
+//! elements, or calling a `var self` method. Compound assignments include
+//! `+=`, `-=`, `*=`, and `/=`. Hew does not use `let mut`.
+//!
+//! ## Branches and patterns
+//!
+//! `match` must cover every value. Enum matches can omit a wildcard so the
+//! compiler reports newly added variants. Patterns can bind tuple positions,
+//! enum payloads, and record fields; `if let` and `while let` use the same
+//! pattern language when only one case matters. A guard follows a pattern as
+//! `pattern if condition => value`; guarded arms do not count as exhaustive.
+//! Conditions may chain boolean expressions and `let` patterns with `&&`.
+//! `let pattern = value else { ... };` binds a successful pattern for the
+//! surrounding block; its `else` branch must leave that block.
+//!
+//! ## Loops and ranges
+//!
+//! `for value in start..end` excludes `end`; `start..=end` includes it.
+//! `while condition` repeats while its condition is true, and `loop` repeats
+//! until `break`, `return`, or failure leaves it. `break` and `continue` work
+//! in `for`, `while`, and `loop` bodies. Prefix a loop with a label such as
+//! `@outer:` and write `break @outer` or `continue @outer` to target it from a
+//! nested loop.
+//!
+//! ## Cleanup
+//!
+//! `defer { ... }` runs at the end of its block in last-in, first-out order.
+//! It is for local synchronous cleanup; it cannot suspend. Prefer
+//! [resources](language.resources.html) when a value owns an external lifetime,
+//! because resource cleanup also follows early returns, failures, and task
+//! cancellation.

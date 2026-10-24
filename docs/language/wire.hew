@@ -1,0 +1,43 @@
+//! # Wire data and serialization
+//!
+//! `#[wire]` marks records, enums, and machines whose schema can cross a
+//! service or remote-actor boundary. Fields and variants receive stable numeric
+//! identities. Assign explicit `@N` tags for a published schema, and reserve a
+//! deleted tag instead of reusing it.
+//!
+//! ```hew
+//! #[serial(case = "camelCase")]
+//! #[wire(version = 1, min_version = 1)]
+//! type User {
+//!     id: u64 @1;
+//!     display_name: string @2;
+//!     email: Option<string> @3 optional;
+//!     reserved @4;
+//! }
+//!
+//! fn main() {
+//!     let user = User {
+//!         id: 7,
+//!         display_name: "Ada",
+//!         email: .None,
+//!     };
+//!     println(user.display_name);
+//! }
+//! ```
+//!
+//! Required `Option<T>` fields encode `None` as a present null. An
+//! `optional Option<T>` field omits its key when it is `None`. Changing between
+//! required and optional is incompatible. Unknown fields are discarded when
+//! decoding, so decoding and re-encoding does not preserve them.
+//!
+//! [CBOR](std.encoding.cbor.html) is the binary wire and inter-node format.
+//! [JSON](std.encoding.json.html) and [YAML](std.encoding.yaml.html) are text
+//! interchange formats. JSON uses field names;
+//! `#[serial(case = "camelCase")]` sets a type-wide convention and
+//! `#[serial(key = "name")]` overrides one field. JSON encodes `bytes` as
+//! base64 text, while CBOR uses byte strings.
+//!
+//! Run `hew wire check --against path/to/published/schema` in CI. It rejects
+//! reused or changed tags, incompatible field presence, and other breaking
+//! changes. Generic wire declarations are schema families: each concrete
+//! argument must itself be admissible when encoded or sent remotely.

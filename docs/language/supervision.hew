@@ -3,6 +3,41 @@
 //! A supervisor owns named child roles and fungible pools. It restarts failed
 //! children under its strategy and restart budget.
 //!
+//! ```hew
+//! actor Worker {
+//!     let id: i64;
+//!     receive fn work(value: i64) -> i64 { value + id }
+//! }
+//!
+//! supervisor WorkerPool {
+//!     strategy: one_for_one;
+//!     intensity: 5 within 10s;
+//!     child primary: Worker { id: 1 };
+//! }
+//!
+//! fn main() {
+//!     let workers = spawn WorkerPool;
+//!     match workers.primary.work(41) {
+//!         .Ok(value) => println(value),
+//!         .Err(error) => println(f"worker failed: {error}"),
+//!     }
+//! }
+//! ```
+//!
+//! `one_for_one` restarts the failed child. The intensity clause limits a role
+//! to five restarts in ten seconds; exhausting the budget leaves it unavailable.
+//! Access a named child through its supervisor handle, as `workers.primary`
+//! above. Pools add a `count` clause and expose indexed child access.
+//! `one_for_all` restarts every child after one fails, while `rest_for_one`
+//! restarts the failed child and children declared after it.
+//! `simple_one_for_one` is for a homogeneous dynamic pool.
+//!
+//! Child restart policies are `permanent`, `transient`, and `temporary`.
+//! Permanent children restart after any exit; transient children restart only
+//! after a fault; temporary children do not restart. Nested supervisors apply
+//! their own strategy first and escalate when their local restart budget is
+//! exhausted.
+//!
 //! A child role resolves the current incarnation on a call. A direct incarnation
 //! handle remains tied to that actor; restarting a role does not revive a stale
 //! incarnation. Restart reconstructs declared state, so persist application data
@@ -16,6 +51,8 @@
 //! declaration order; `terminate(supervisor)` requests cancellation.
 //! `stopped(supervisor)` waits for the whole tree's terminal cleanup.
 //!
-//! See the language guide's actor and lifecycle sections and the supervision
-//! contract in HEW-SPEC-2026. Source declarations alone do not establish support
-//! for every supervisor strategy or target.
+//! Supervisor strategy and runtime support can differ by compilation target;
+//! check the target's capability documentation before relying on supervision
+//! outside the native runtime. The
+//! [actor-lifecycle concepts guide](https://hew.sh/docs/concepts/actor-lifecycle)
+//! connects stopping, faults, restarts, and supervision as one lifecycle.

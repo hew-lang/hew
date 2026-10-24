@@ -1,0 +1,82 @@
+//! # Functions, generics, and errors
+//!
+//! Functions declare named parameters and an optional return type. A generic
+//! parameter can carry trait bounds inline or in a `where` clause. Callable
+//! values use `fn(T) -> U`; add `suspends` inside the brackets when a stored
+//! callable may suspend, for example `fn[suspends](T) -> U`.
+//!
+//! ```hew
+//! enum LookupError {
+//!     Missing;
+//! }
+//!
+//! fn identity<T>(value: T) -> T { value }
+//!
+//! fn require(value: Option<i64>) -> i64 fails LookupError {
+//!     match value {
+//!         .Some(number) => number,
+//!         .None => return error .Missing,
+//!     }
+//! }
+//!
+//! fn next(value: Option<i64>) -> i64 fails LookupError {
+//!     require(value)? + 1
+//! }
+//!
+//! fn main() {
+//!     match next(.Some(identity(41))) {
+//!         .Ok(value) => println(value),
+//!         .Err(_) => println("missing"),
+//!     }
+//! }
+//! ```
+//!
+//! ## Ownership parameters and receivers
+//!
+//! An ordinary parameter borrows or copies according to its type. Write
+//! `consume value: T` when a call transfers an owned value. Method receivers
+//! are `self`, `var self` when the method mutates a value receiver, or
+//! `consume self` when the method terminates ownership. These modifiers are
+//! part of the public API contract and appear in the generated reference.
+//!
+//! Closures use `|value: T| expression` or `|value: T| { ... }`. A stored
+//! closure's callable type can also specify `var`, `once`, `clone`, and
+//! `suspends` capabilities in brackets. The unqualified form is repeated and
+//! read-only.
+//!
+//! ## Arguments and suspension
+//!
+//! Positional arguments come before named arguments; named arguments may then
+//! appear in any order. Parameters with a default expression may be omitted.
+//! Arguments evaluate left to right as written, followed by omitted defaults
+//! in parameter order. Parameter names are therefore part of a public API.
+//! Closures and values of function type accept positional arguments only,
+//! because their types retain no parameter names or defaults.
+//!
+//! Hew has no `async fn` or `for await` syntax. Suspension is inferred from a
+//! named function's body, and ordinary calls wait when needed. A stored
+//! callable must state that possibility as `fn[suspends](T) -> U`; a callable
+//! type without the qualifier promises not to suspend.
+//!
+//! ## Typed failure
+//!
+//! `fn operation() -> T fails E` has a success value `T` and a typed failure
+//! edge `E`; calling it produces `Result<T, E>`. Leave through the failure edge
+//! with `return error value` or `?` on a compatible `Result`. Handle a result
+//! with `match`, `?`, or `handle error { ... }`. A dropped `Result` is a compile
+//! error; write `let _ = operation();` only when discarding it is deliberate.
+//!
+//! `Option<T>` represents presence or absence. `?` on an `Option` propagates
+//! absence only from a function returning `Option`; it does not invent an
+//! error value. Use `expect(reason)` when absence or failure is an invariant
+//! violation that should trap.
+//!
+//! ## Generators
+//!
+//! `gen fn values() -> T` declares `T` as the yielded item type. Calling it
+//! returns a generator handle; writing `Generator<T, R>` as the declared
+//! return type would instead mean that each yielded item is itself a generator
+//! handle. A `for` loop drives a generator to completion. A failing generator
+//! declared with `fails E` yields `Result<T, E>` items and stops after its
+//! failure item. Generator parameters and captured owners follow the same
+//! borrow and consume rules as ordinary functions.

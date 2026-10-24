@@ -1,0 +1,37 @@
+//! # Compile-time inputs and source generation
+//!
+//! Hew provides bounded syntax macros, package-confined compile-time inputs,
+//! and manifest-controlled source generation. They run at different stages and
+//! carry different authority.
+//!
+//! `include_str!("path")` and `include_bytes!("path")` embed a package file.
+//! `embed!("data.json")` decodes JSON, YAML, or TOML into its expected concrete
+//! type. `stringify!(expression)` returns canonical source without resolving or
+//! evaluating the expression, and `location!()` returns a package-relative
+//! source location. File paths cannot escape the package after symlink
+//! resolution.
+//!
+//! A declarative `macro` matches token trees and produces expressions or
+//! items. Captured identifiers keep the caller's context; introduced bindings
+//! are fresh and free names resolve in the defining module. Expansion is
+//! bounded and cannot run code, inspect types, read files, or use the network.
+//! Built-in input operations retain the explicit file authority described
+//! above. Use `hew tool expand file.hew` to inspect expanded syntax.
+//!
+//! Custom attributes are attribute-macro rules and must resolve after macro
+//! expansion. Unknown attributes are errors. Built-ins include resource and
+//! wire markers, test and benchmark markers, actor lifecycle hooks,
+//! `#[every(...)]`, `#[intercept]`, `#[confined]`, and native-boundary
+//! attributes; each is accepted only on its documented declaration kind.
+//!
+//! `[[generate]]` entries in `hew.toml` name ordered, deterministic source
+//! generation steps with declared input globs and one owned output directory.
+//! `hew generate` runs stale steps; check, build, run, and test prepare them
+//! before loading generated modules. `hew generate --check` regenerates in
+//! scratch space and fails on a diff. Generated `.hew` files are formatted and
+//! published with the package; registry dependencies never execute generators.
+//!
+//! Generation limits filesystem writes to the declared output, refuses
+//! network, process, environment, and native-package authority, fixes clocks,
+//! and seeds randomness. This makes generation reproducible, but it is not an
+//! operating-system sandbox.

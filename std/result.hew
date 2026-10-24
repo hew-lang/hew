@@ -1,6 +1,9 @@
-//! Result methods.
+//! Inspect, transform, or add context to an explicit success or error value.
 //!
-//! Every program sees these methods without an import, like `.len()`.
+//! `Result<T, E>` is either `Ok(T)` or `Err(E)`. These methods are always in
+//! scope; no import is needed. Use `match`, `?`, or `handle error` for control
+//! flow, and `expect` only when failure is an invariant violation that should
+//! trap.
 
 impl<T, E> Result<T, E> {
     /// Returns `true` if the result contains an `Ok` value.

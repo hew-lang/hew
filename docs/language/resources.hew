@@ -24,3 +24,9 @@
 //!
 //! Ordinary data such as JSON values needs no manual close or free. Use resources
 //! for external identity and lifetime, not for bookkeeping around ordinary data.
+//!
+//! Use `#[linear]` for a value that must be consumed explicitly but has no
+//! automatic cleanup operation. A live linear value must be moved into a
+//! consuming function or method on every exit path. Choose `#[resource]` when
+//! scope exit can safely call `close`; choose `#[linear]` when the caller must
+//! make the terminal action explicit.

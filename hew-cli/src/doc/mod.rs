@@ -3,6 +3,7 @@
 //! This module extracts doc comments from parsed Hew source files and renders
 //! them as static HTML pages or Markdown files.
 
+mod config;
 mod extract;
 pub mod highlight;
 pub mod markdown;
@@ -11,7 +12,7 @@ mod template;
 
 pub use extract::extract_docs;
 pub use highlight::highlight;
-pub use render::{render_index, render_module};
+pub use render::{build_reference_index, page_title, render_index, render_module_with_index};
 pub use template::{not_found_page, wrap_page};
 
 /// Derive a module name from a file path relative to a root directory.
@@ -81,10 +82,25 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         args.format,
         crate::args::DocFormat::Markdown | crate::args::DocFormat::Md
     );
+    let mut site_config = match args.site_config.as_deref() {
+        Some(path) => config::DocSiteConfig::load(path).unwrap_or_else(|error| {
+            eprintln!("Error: {error}");
+            std::process::exit(1);
+        }),
+        None => config::DocSiteConfig::default(),
+    };
+    if let Some(version) = args.site_version.as_deref() {
+        let version = version.trim();
+        if version.is_empty() {
+            eprintln!("Error: --site-version cannot be empty");
+            std::process::exit(1);
+        }
+        site_config.display_version = version.to_string();
+    }
 
     if input_paths.is_empty() {
         eprintln!(
-            "Usage: hew doc <file_or_dir> [--output-dir <dir>] [--format html|markdown] [--open]"
+            "Usage: hew doc <file_or_dir> [--output-dir <dir>] [--format html|markdown] [--site-config <file>] [--site-version <version>] [--open]"
         );
         std::process::exit(1);
     }
@@ -98,7 +114,9 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
             collect_hew_files(path, &mut files);
             for file in files {
                 let name = derive_module_name(&file, path);
-                entries.push((file, name));
+                if site_config.includes(&name) {
+                    entries.push((file, name));
+                }
             }
         } else if path.exists() {
             let name = path
@@ -106,7 +124,9 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
                 .and_then(|s| s.to_str())
                 .unwrap_or("unknown")
                 .to_string();
-            entries.push((path.to_path_buf(), name));
+            if site_config.includes(&name) {
+                entries.push((path.to_path_buf(), name));
+            }
         } else {
             eprintln!("Error: {path_str} does not exist");
             std::process::exit(1);
@@ -172,14 +192,14 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
 
     if use_markdown {
         // Render Markdown
-        let index_md = markdown::render_index(&modules);
+        let index_md = markdown::render_index(&modules, &site_config);
         if let Err(e) = std::fs::write(out.join("README.md"), &index_md) {
             eprintln!("Error writing README.md: {e}");
             std::process::exit(1);
         }
 
         for module in &modules {
-            let md = markdown::render_module(module);
+            let md = markdown::render_module(module, site_config.is_guide(&module.name));
             let filename = module_to_filename(&module.name, "md");
             if let Err(e) = std::fs::write(out.join(&filename), &md) {
                 eprintln!("Error writing {filename}: {e}");
@@ -188,25 +208,28 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         }
     } else {
         // Render HTML
-        let index_body = render_index(&modules);
-        let index_html = wrap_page("Index", &index_body, None);
+        let reference_index = build_reference_index(&modules);
+        let index_body = render_index(&modules, &site_config);
+        let index_html = wrap_page(&site_config, "Index", &index_body, None);
         if let Err(e) = std::fs::write(out.join("index.html"), &index_html) {
             eprintln!("Error writing index.html: {e}");
             std::process::exit(1);
         }
-        if let Err(e) = std::fs::write(out.join("404.html"), not_found_page()) {
+        if let Err(e) = std::fs::write(out.join("404.html"), not_found_page(&site_config)) {
             eprintln!("Error writing 404.html: {e}");
             std::process::exit(1);
         }
 
         for module in &modules {
-            let body = render_module(module);
+            let is_guide = site_config.is_guide(&module.name);
+            let body = render_module_with_index(module, &reference_index, is_guide);
             let filename = module_to_filename(&module.name, "html");
-            let escaped_name = crate::util::html_escape(&module.name);
+            let display_name = page_title(module, is_guide);
+            let escaped_name = crate::util::html_escape(&display_name);
             let breadcrumb = format!(
-                "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"
+                "<a href=\"index.html\">Index</a><a href=\"{filename}\" aria-current=\"page\">{escaped_name}</a>"
             );
-            let html = wrap_page(&module.name, &body, Some(&breadcrumb));
+            let html = wrap_page(&site_config, &display_name, &body, Some(&breadcrumb));
             if let Err(e) = std::fs::write(out.join(&filename), &html) {
                 eprintln!("Error writing {filename}: {e}");
                 had_errors = true;

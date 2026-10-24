@@ -1,6 +1,9 @@
-//! Option methods.
+//! Inspect, transform, or extract a value that may be absent.
 //!
-//! Every program sees these methods without an import, like `.len()`.
+//! `Option<T>` is either `Some(T)` or `None`. These methods are always in
+//! scope; no import is needed. Use `match` when each case needs distinct work,
+//! `map` or `and_then` to transform a present value, and `expect` only when
+//! absence is an invariant violation that should trap.
 
 impl<T> Option<T> {
     /// Returns `true` if the option contains a value.

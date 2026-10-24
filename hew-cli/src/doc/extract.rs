@@ -1,5 +1,7 @@
 //! Walk a parsed Hew AST and extract documentation items.
 
+use std::collections::HashMap;
+
 use hew_parser::ast::{
     Expr, Item, Literal, Program, TypeBodyItem, TypeDeclKind, UnaryOp, VariantKind, Visibility,
 };
@@ -17,11 +19,15 @@ pub struct DocModule {
     pub types: Vec<DocType>,
     /// Documented `pub` actors.
     pub actors: Vec<DocActor>,
+    /// Documented `pub` state machines.
+    pub machines: Vec<DocMachine>,
     /// Documented traits. Emitted regardless of visibility because the
     /// stdlib declares method-syntax traits without `pub` even when they
     /// describe methods on a `pub` opaque type (e.g. `ValueMethods` on
     /// `json::Value`).
     pub traits: Vec<DocTrait>,
+    /// Documented inherent implementation blocks.
+    pub impls: Vec<DocImpl>,
     /// Documented `pub` constants.
     pub consts: Vec<DocConst>,
     /// Documented `pub` type aliases.
@@ -84,10 +90,41 @@ pub struct DocActor {
     pub doc: Option<String>,
 }
 
+/// A named state, input event, or output variant in a machine declaration.
+#[derive(Debug, Clone)]
+pub struct DocMachineMember {
+    pub name: String,
+    pub shape: String,
+}
+
+/// A documented state machine declaration.
+#[derive(Debug, Clone)]
+pub struct DocMachine {
+    pub name: String,
+    pub signature: String,
+    pub states: Vec<DocMachineMember>,
+    pub events: Vec<DocMachineMember>,
+    pub outputs: Vec<DocMachineMember>,
+}
+
 /// A documented trait.
 #[derive(Debug, Clone)]
 pub struct DocTrait {
     pub name: String,
+    pub methods: Vec<DocMethod>,
+    pub doc: Option<String>,
+    /// Whether the trait itself is part of the public API. Private method
+    /// traits are retained so their methods can be attached to public types.
+    pub is_public: bool,
+    /// Types that implement this trait in the same module.
+    pub implementation_targets: Vec<String>,
+}
+
+/// A documented inherent implementation block.
+#[derive(Debug, Clone)]
+pub struct DocImpl {
+    pub target: String,
+    pub signature: String,
     pub methods: Vec<DocMethod>,
     pub doc: Option<String>,
 }
@@ -305,6 +342,106 @@ fn visibility_prefix(v: Visibility) -> &'static str {
     }
 }
 
+fn format_trait_bound(bound: &hew_parser::ast::TraitBound) -> String {
+    let mut out = bound.path.to_string();
+    let mut args = bound
+        .type_args
+        .as_ref()
+        .map(|args| {
+            args.iter()
+                .map(|(ty, _)| format_type(ty))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    args.extend(
+        bound
+            .assoc_type_bindings
+            .iter()
+            .map(|binding| format!("{} = {}", binding.name, format_type(&binding.ty.0))),
+    );
+    if !args.is_empty() {
+        out.push('<');
+        out.push_str(&args.join(", "));
+        out.push('>');
+    }
+    out
+}
+
+fn format_type_params(type_params: Option<&[hew_parser::ast::TypeParam]>) -> String {
+    let Some(type_params) = type_params else {
+        return String::new();
+    };
+    if type_params.is_empty() {
+        return String::new();
+    }
+    let params = type_params
+        .iter()
+        .map(|param| {
+            if param.bounds.is_empty() {
+                param.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    param.name,
+                    param
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    format!("<{}>", params.join(", "))
+}
+
+fn format_where_clause(where_clause: Option<&hew_parser::ast::WhereClause>) -> String {
+    let Some(where_clause) = where_clause else {
+        return String::new();
+    };
+    if where_clause.predicates.is_empty() {
+        return String::new();
+    }
+    let predicates = where_clause
+        .predicates
+        .iter()
+        .map(|predicate| {
+            format!(
+                "{}: {}",
+                format_type(&predicate.ty.0),
+                predicate
+                    .bounds
+                    .iter()
+                    .map(format_trait_bound)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(" where {}", predicates.join(", "))
+}
+
+fn format_param(param: &hew_parser::ast::Param, consumes_receiver: bool) -> String {
+    let prefix = if param.is_consume || param.is_receiver && consumes_receiver {
+        "consume "
+    } else if param.is_mutable {
+        "var "
+    } else {
+        ""
+    };
+    let mut rendered = if param.is_receiver {
+        format!("{prefix}self")
+    } else {
+        format!("{prefix}{}: {}", param.name, format_type(&param.ty.0))
+    };
+    if let Some((default, _)) = &param.default {
+        rendered.push_str(" = ");
+        rendered.push_str(&format_literal(default));
+    }
+    rendered
+}
+
 /// Build a function signature string from a function declaration.
 fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     let mut sig = String::new();
@@ -314,18 +451,12 @@ fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     }
     sig.push_str("fn ");
     sig.push_str(f.name.name.as_str());
+    sig.push_str(&format_type_params(f.type_params.as_deref()));
     sig.push('(');
     let params: Vec<String> = f
         .params
         .iter()
-        .map(|p| {
-            let ty_str = format_type(&p.ty.0);
-            if p.is_mutable {
-                format!("var {}: {ty_str}", p.name)
-            } else {
-                format!("{}: {ty_str}", p.name)
-            }
-        })
+        .map(|param| format_param(param, f.consumes_self))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -333,6 +464,7 @@ fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
         sig.push_str(" -> ");
         sig.push_str(&format_type(&ret.0));
     }
+    sig.push_str(&format_where_clause(f.where_clause.as_ref()));
     sig
 }
 
@@ -349,10 +481,7 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
     let params: Vec<String> = r
         .params
         .iter()
-        .map(|p| {
-            let ty_str = format_type(&p.ty.0);
-            format!("{}: {ty_str}", p.name)
-        })
+        .map(|param| format_param(param, false))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -367,11 +496,12 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
 fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
     let mut sig = String::from("fn ");
     sig.push_str(m.name.name.as_str());
+    sig.push_str(&format_type_params(m.type_params.as_deref()));
     sig.push('(');
     let params: Vec<String> = m
         .params
         .iter()
-        .map(|p| format!("{}: {}", p.name, format_type(&p.ty.0)))
+        .map(|param| format_param(param, m.consumes_self))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -379,7 +509,83 @@ fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
         sig.push_str(" -> ");
         sig.push_str(&format_type(&ret.0));
     }
+    sig.push_str(&format_where_clause(m.where_clause.as_ref()));
     sig
+}
+
+fn build_impl_signature(i: &hew_parser::ast::ImplDecl) -> String {
+    format!(
+        "impl{} {}{}",
+        format_type_params(i.type_params.as_deref()),
+        format_type(&i.target_type.0),
+        format_where_clause(i.where_clause.as_ref())
+    )
+}
+
+fn build_machine_signature(machine: &hew_parser::ast::MachineDecl) -> String {
+    let mut params = machine
+        .type_params
+        .iter()
+        .map(|param| {
+            if param.bounds.is_empty() {
+                param.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    param.name,
+                    param
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    params.extend(machine.const_params.iter().map(|param| {
+        param.default.map_or_else(
+            || format!("const {}: usize", param.name),
+            |default| format!("const {}: usize = {default}", param.name),
+        )
+    }));
+    let generics = if params.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", params.join(", "))
+    };
+    format!(
+        "{}machine {}{}{}",
+        visibility_prefix(machine.visibility),
+        machine.name,
+        generics,
+        format_where_clause(machine.where_clause.as_ref())
+    )
+}
+
+fn machine_member(
+    name: hew_parser::ast::Ident,
+    fields: &[(
+        hew_parser::ast::Ident,
+        hew_parser::ast::Spanned<hew_parser::ast::TypeExpr>,
+    )],
+) -> DocMachineMember {
+    let shape = if fields.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " {{ {} }}",
+            fields
+                .iter()
+                .map(|(field, ty)| format!("{field}: {}", format_type(&ty.0)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    DocMachineMember {
+        name: name.to_string(),
+        shape,
+    }
 }
 
 /// Render the payload shape of an enum variant as a string suffix.
@@ -451,10 +657,29 @@ fn extract_enum_variants(body: &[TypeBodyItem]) -> Vec<DocEnumVariant> {
     reason = "sequential match over each Item variant"
 )]
 pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
+    let mut trait_implementations: HashMap<String, Vec<String>> = HashMap::new();
+    for (item, _) in &program.items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        let Some(trait_bound) = &implementation.trait_bound else {
+            continue;
+        };
+        let Some((trait_name, _)) = trait_bound.path.segments.last() else {
+            continue;
+        };
+        trait_implementations
+            .entry(trait_name.to_string())
+            .or_default()
+            .push(format_type(&implementation.target_type.0));
+    }
+
     let mut functions = Vec::new();
     let mut types = Vec::new();
     let mut actors = Vec::new();
+    let mut machines = Vec::new();
     let mut traits = Vec::new();
+    let mut impls = Vec::new();
     let mut consts = Vec::new();
     let mut type_aliases = Vec::new();
 
@@ -506,6 +731,27 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     doc: a.doc_comment.clone(),
                 });
             }
+            Item::Machine(machine) if machine.visibility.is_pub() => {
+                machines.push(DocMachine {
+                    name: machine.name.to_string(),
+                    signature: build_machine_signature(machine),
+                    states: machine
+                        .states
+                        .iter()
+                        .map(|state| machine_member(state.name, &state.fields))
+                        .collect(),
+                    events: machine
+                        .events
+                        .iter()
+                        .map(|event| machine_member(event.name, &event.fields))
+                        .collect(),
+                    outputs: machine
+                        .emits
+                        .iter()
+                        .map(|output| machine_member(output.name, &output.fields))
+                        .collect(),
+                });
+            }
             // Traits are emitted regardless of visibility: the stdlib pattern
             // declares method-syntax traits without `pub` even when they
             // describe methods on a `pub` opaque type (e.g. `ValueMethods`
@@ -531,7 +777,31 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     name: t.name.to_string(),
                     methods,
                     doc: t.doc_comment.clone(),
+                    is_public: t.visibility.is_pub(),
+                    implementation_targets: trait_implementations
+                        .remove(t.name.name.as_str())
+                        .unwrap_or_default(),
                 });
+            }
+            Item::Impl(i) if i.trait_bound.is_none() => {
+                let methods = i
+                    .methods
+                    .iter()
+                    .filter(|method| method.visibility.is_pub() || method.doc_comment.is_some())
+                    .map(|method| DocMethod {
+                        name: method.name.to_string(),
+                        signature: build_fn_signature(method),
+                        doc: method.doc_comment.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                if !methods.is_empty() {
+                    impls.push(DocImpl {
+                        target: format_type(&i.target_type.0),
+                        signature: build_impl_signature(i),
+                        methods,
+                        doc: i.doc_comment.clone(),
+                    });
+                }
             }
             Item::Const(c) if c.visibility.is_pub() => {
                 consts.push(DocConst {
@@ -573,7 +843,9 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
         functions,
         types,
         actors,
+        machines,
         traits,
+        impls,
         consts,
         type_aliases,
     }
@@ -828,5 +1100,65 @@ package const PKG_C: i32 = 1;
         let module = extract_docs(&result.program, "test");
         assert_eq!(module.functions.len(), 1);
         assert!(module.functions[0].doc.is_none());
+    }
+
+    #[test]
+    fn signatures_preserve_generics_ownership_defaults_and_bounds() {
+        let source = r#"pub fn transform<T, U: Display>(consume item: T, limit: i64 = 2) -> U where T: Clone {
+    panic("not called")
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(
+            module.functions[0].signature,
+            "pub fn transform<T, U: Display>(consume item: T, limit: i64 = 2) -> U where T: Clone"
+        );
+    }
+
+    #[test]
+    fn extracts_documented_inherent_methods() {
+        let source = r"impl<T> Option<T> {
+    /// Return the contained value.
+    pub fn expect(consume self, reason: string) -> T { panic(reason) }
+}
+";
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(module.impls.len(), 1);
+        assert_eq!(module.impls[0].target, "Option<T>");
+        assert_eq!(module.impls[0].signature, "impl<T> Option<T>");
+        assert_eq!(module.impls[0].methods.len(), 1);
+        assert!(module.impls[0].methods[0]
+            .signature
+            .contains("expect(consume self, reason: string)"));
+    }
+
+    #[test]
+    fn extracts_public_machine_surface() {
+        let source = r"pub machine Door<const LIMIT: usize = 3> {
+    events { Open { by: string; } Close; }
+    emits { Notice { text: string; } }
+    state Shut;
+    state Ajar { by: string; }
+    on Open: Shut => Ajar { by: event.by }
+    on Close: Ajar => Shut;
+    default { state }
+}
+";
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(module.machines.len(), 1);
+        let machine = &module.machines[0];
+        assert_eq!(
+            machine.signature,
+            "pub machine Door<const LIMIT: usize = 3>"
+        );
+        assert_eq!(machine.states[1].shape, " { by: string }");
+        assert_eq!(machine.events[0].shape, " { by: string }");
+        assert_eq!(machine.outputs[0].name, "Notice");
     }
 }

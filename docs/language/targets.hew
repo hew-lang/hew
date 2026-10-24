@@ -1,0 +1,39 @@
+//! # Target capabilities
+//!
+//! The documentation header identifies the Hew release whose capability rules
+//! apply. Hew has three distinct WebAssembly contexts: browser analysis through
+//! `@hew-lang/wasm`, deterministic browser execution in the sandbox VM, and
+//! WASI execution built with `--target=wasm32-wasi`. Browser analysis does not
+//! by itself establish that a program can execute in either runtime.
+//!
+//! ## WASI support in this release
+//!
+//! | Surface | WASI disposition |
+//! | --- | --- |
+//! | Primitive values, records, enums, patterns, generics, collections | Supported |
+//! | Actors, completion calls, supervision, links and monitors | Supported on the cooperative scheduler |
+//! | `scope`, tasks, `fork`, `await`, `race`, `select` | Supported |
+//! | In-memory streams and semaphores | Supported |
+//! | `sleep` and `#[every(duration)]` | Supported with a warning: timing follows cooperative driver ticks |
+//! | Host-supplied directory resources | Supported when the host grants explicit directory authority |
+//! | Ambient files and file-backed streams | Rejected |
+//! | TCP, HTTP, WebSocket, SMTP, TLS, QUIC, and DNS modules | Rejected |
+//! | Process execution, OS environment helpers, signals, descriptor readiness | Rejected |
+//! | Distributed nodes and remote actors | Rejected |
+//! | Secure random bytes, encryption, and signing modules | Rejected |
+//!
+//! The compiler reports target-specific warnings and rejections before code
+//! generation. Treat an unclassified host capability as unsupported even if a
+//! particular WASI host happens to expose a similar primitive; Hew's standard
+//! library still needs an admitted cross-target implementation.
+//!
+//! ## Choosing a target
+//!
+//! Use native builds for operating-system networking, subprocesses, ambient
+//! filesystem access, distributed actors, and the native cryptography modules.
+//! Use WASI for portable computation and cooperative concurrency when the host
+//! can provide the required standard input or explicit directory resources.
+//! Use the browser analysis package for editor and compiler services. Use the
+//! sandbox VM only for programs whose declared operations are implemented by
+//! that VM; its deterministic scheduler is a separate execution contract from
+//! WASI and native execution.

@@ -1,0 +1,101 @@
+//! # Ownership and sending
+//!
+//! Ownership tracks values that must have one responsible owner. Most Hew data
+//! behaves like ordinary data: reusing it can create an independent logical
+//! value. Resources, stream halves, tasks, generators, some closures, and
+//! aggregates containing them transfer instead.
+//!
+//! ```hew
+//! type Reading {
+//!     label: string;
+//!     samples: Vec<i64>;
+//! }
+//!
+//! fn main() {
+//!     let original = Reading { label: "cpu", samples: [70, 80] };
+//!     var revised = original;
+//!     revised.samples.push(90);
+//!     println(original.samples.len());
+//!     println(revised.samples.len());
+//! }
+//! ```
+//!
+//! `original` and `revised` are independent values. An implementation may
+//! share immutable storage internally, but mutation preserves this observable
+//! value behavior.
+//!
+//! ## Bindings are not ownership modes
+//!
+//! `let` makes a binding immutable. `var` permits reassignment, field or
+//! element assignment, and calls to `var self` methods. Both bindings can hold
+//! ordinary data or an affine owner. The value's type and the operation decide
+//! whether a second use copies, borrows, or transfers it.
+//!
+//! An ordinary function parameter borrows or copies according to its type.
+//! `consume value: T` says the callee needs an owned value. `consume self`
+//! ends ownership of a method receiver. For ordinary copyable data the caller
+//! may still keep an independent value; an affine owner moves and cannot be
+//! reused from its previous place.
+//!
+//! ## Value and owner categories
+//!
+//! | Category | Examples | Reuse and cleanup |
+//! | --- | --- | --- |
+//! | Ordinary data | numbers, strings, bytes, records, enums, collections | Independent value behavior; recursive automatic cleanup |
+//! | Actor reference | a named actor type or `actor(M) -> R` | Copies the actor identity; `stop` requests termination |
+//! | Affine resource | files, sockets, stream halves, `#[resource]` values | Transfers ownership; scope exit closes a live owner |
+//! | Linear value | `#[linear]` declarations | Transfers ownership; every path must explicitly consume it |
+//! | Task or generator | `Task<T>`, generator handles | Transfers ownership; the enclosing construct settles cleanup |
+//! | Callable | closures and function values | Copies or transfers according to captured owners and callable capabilities |
+//!
+//! Aggregates inherit their members' obligations. A record containing a stream
+//! half is affine; a collection of linear values must eventually move each
+//! element to a consuming operation.
+//!
+//! ## Sending values to actors {#send}
+//!
+//! `Send` means that a value can cross an actor boundary without exposing
+//! shared mutable state. The compiler derives this property; user code does
+//! not implement a `Send` trait or add a `#[send]` marker.
+//!
+//! Primitive values, strings, actor references, and records, enums, tuples,
+//! options, results, arrays, and collections whose members are Send can cross
+//! the boundary. Ordinary data arrives as an independent logical snapshot.
+//! An admitted affine owner transfers to the receiver. Raw foreign pointers,
+//! task and generator handles, and values whose safety cannot be established
+//! are rejected.
+//!
+//! ```hew
+//! type Job { id: i64; note: string; }
+//!
+//! actor Worker {
+//!     receive fn run(job: Job) -> i64 { job.id }
+//! }
+//!
+//! fn main() {
+//!     let worker = spawn Worker;
+//!     let job = Job { id: 42, note: "index" };
+//!     println(worker.run(job).expect("worker completes the job"));
+//!     println(job.note);
+//!     stop(worker);
+//!     stopped(worker);
+//! }
+//! ```
+//!
+//! The caller can still use `job` because ordinary message data is
+//! snapshotted. Sending an affine resource instead transfers its sole owner.
+//! The same Send check applies to actor call parameters, mailbox submissions,
+//! replies, and values captured by a lambda actor.
+//!
+//! ## Loans and collection access
+//!
+//! Reading from a collection may temporarily lend an element rather than copy
+//! it when the element has no copy operation. While that loan is live, the
+//! collection cannot be mutated or transferred. Hew infers these loans; source
+//! code has no lifetime annotations.
+//!
+//! Use [resources](language.resources.html) for deterministic cleanup,
+//! [actors](language.actors.html) for delivery and isolation, and
+//! [functions](language.functions.html) for receiver and callable ownership
+//! contracts. For a more gradual introduction, read the
+//! [ownership concepts guide](https://hew.sh/docs/concepts/ownership).

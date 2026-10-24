@@ -2,9 +2,10 @@
 
 use std::fmt::Write;
 
+use super::config::DocSiteConfig;
 use super::extract::{
-    DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
-    DocTypeAlias,
+    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMachine, DocMachineMember, DocMethod,
+    DocModule, DocTrait, DocType, DocTypeAlias,
 };
 
 fn render_fields_md(fields: &[DocField]) -> String {
@@ -52,7 +53,18 @@ fn render_function(f: &DocFunction) -> String {
 }
 
 /// Render a type item as Markdown.
-fn render_type(t: &DocType) -> String {
+fn implementation_target_name(target: &str) -> &str {
+    target
+        .split('<')
+        .next()
+        .unwrap_or(target)
+        .rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(target)
+        .trim()
+}
+
+fn render_type(t: &DocType, module_traits: &[DocTrait]) -> String {
     let label = if t.kind == "struct" { "Struct" } else { "Enum" };
     let mut out = format!("### {label} `{}`\n\n", t.name);
     if let Some(doc) = &t.doc {
@@ -72,6 +84,16 @@ fn render_type(t: &DocType) -> String {
         }
         out.push('\n');
     }
+    let methods = module_traits
+        .iter()
+        .filter(|tr| {
+            tr.implementation_targets
+                .iter()
+                .any(|target| implementation_target_name(target) == t.name.as_str())
+        })
+        .flat_map(|tr| tr.methods.iter().cloned())
+        .collect::<Vec<_>>();
+    out.push_str(&render_methods_md("Methods", &methods));
     out
 }
 
@@ -87,6 +109,29 @@ fn render_actor(a: &DocActor) -> String {
     out
 }
 
+fn render_machine_members_md(heading: &str, members: &[DocMachineMember]) -> String {
+    if members.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("**{heading}:**\n\n");
+    for member in members {
+        let _ = writeln!(out, "- `{}{}`", member.name, member.shape);
+    }
+    out.push('\n');
+    out
+}
+
+fn render_machine(machine: &DocMachine) -> String {
+    let mut out = format!(
+        "### Machine `{}`\n\n`{}`\n\n",
+        machine.name, machine.signature
+    );
+    out.push_str(&render_machine_members_md("States", &machine.states));
+    out.push_str(&render_machine_members_md("Events", &machine.events));
+    out.push_str(&render_machine_members_md("Outputs", &machine.outputs));
+    out
+}
+
 /// Render a trait item as Markdown.
 fn render_trait(t: &DocTrait) -> String {
     let mut out = format!("### Trait `{}`\n\n", t.name);
@@ -95,6 +140,16 @@ fn render_trait(t: &DocTrait) -> String {
         out.push_str("\n\n");
     }
     out.push_str(&render_methods_md("Methods", &t.methods));
+    out
+}
+
+fn render_impl(i: &DocImpl) -> String {
+    let mut out = format!("### `{}`\n\n", i.signature);
+    if let Some(doc) = &i.doc {
+        out.push_str(doc);
+        out.push_str("\n\n");
+    }
+    out.push_str(&render_methods_md("Methods", &i.methods));
     out
 }
 
@@ -123,11 +178,25 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
 
 /// Render a full module page as Markdown.
 #[must_use]
-pub fn render_module(module: &DocModule) -> String {
-    let mut out = format!("# Module `{}`\n\n", module.name);
+pub fn render_module(module: &DocModule, is_guide: bool) -> String {
+    let mut out = if is_guide {
+        format!("# {}\n\n", super::render::page_title(module, true))
+    } else {
+        format!("# Module `{}`\n\n", module.name.replace("::", "."))
+    };
 
     if let Some(doc) = &module.doc {
-        out.push_str(doc);
+        if is_guide {
+            let remainder = doc
+                .lines()
+                .skip_while(|line| !line.trim().starts_with("# "))
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&remainder);
+        } else {
+            out.push_str(doc);
+        }
         out.push_str("\n\n");
     }
 
@@ -141,7 +210,7 @@ pub fn render_module(module: &DocModule) -> String {
     if !module.types.is_empty() {
         out.push_str("## Types\n\n");
         for t in &module.types {
-            out.push_str(&render_type(t));
+            out.push_str(&render_type(t, &module.traits));
         }
     }
 
@@ -152,10 +221,24 @@ pub fn render_module(module: &DocModule) -> String {
         }
     }
 
-    if !module.traits.is_empty() {
+    if !module.machines.is_empty() {
+        out.push_str("## Machines\n\n");
+        for machine in &module.machines {
+            out.push_str(&render_machine(machine));
+        }
+    }
+
+    if module.traits.iter().any(|t| t.is_public) {
         out.push_str("## Traits\n\n");
-        for t in &module.traits {
+        for t in module.traits.iter().filter(|t| t.is_public) {
             out.push_str(&render_trait(t));
+        }
+    }
+
+    if !module.impls.is_empty() {
+        out.push_str("## Inherent methods\n\n");
+        for i in &module.impls {
+            out.push_str(&render_impl(i));
         }
     }
 
@@ -178,14 +261,22 @@ pub fn render_module(module: &DocModule) -> String {
 
 /// Render an index page listing all documented modules as Markdown, grouped by section.
 #[must_use]
-pub fn render_index(modules: &[DocModule]) -> String {
-    let mut out = String::from("# Hew Standard Library\n\n");
+pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
+    let mut out = format!(
+        "# {}\n\n{}\n\n",
+        config.index_title, config.index_description
+    );
 
+    let mut language_mods: Vec<&DocModule> = Vec::new();
     let mut root_mods: Vec<&DocModule> = Vec::new();
     let mut groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
         std::collections::BTreeMap::new();
 
     for m in modules {
+        if config.is_guide(&m.name) {
+            language_mods.push(m);
+            continue;
+        }
         let after_root = m.name.find("::").map_or("", |i| &m.name[i + 2..]);
         if after_root.contains("::") {
             let category = after_root.split("::").next().unwrap_or(after_root);
@@ -194,33 +285,64 @@ pub fn render_index(modules: &[DocModule]) -> String {
             root_mods.push(m);
         }
     }
+    language_mods.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
 
-    for m in &root_mods {
-        let filename = super::module_to_filename(&m.name, "md");
-        let _ = write!(out, "- [`{}`]({})", m.name, filename);
-        if let Some(doc) = &m.doc {
-            if let Some(first_line) = doc.lines().next() {
-                let _ = write!(out, " — {first_line}");
-            }
+    if !language_mods.is_empty() {
+        let _ = writeln!(out, "## {}\n", config.guide_title);
+        for m in &language_mods {
+            render_index_entry_md(&mut out, m, true);
         }
         out.push('\n');
     }
 
+    let _ = writeln!(out, "## {}\n", config.module_title);
+    for m in &root_mods {
+        render_index_entry_md(&mut out, m, false);
+    }
+
     for (category, mods) in &groups {
-        let _ = writeln!(out, "\n## {category}\n");
+        let _ = writeln!(out, "\n### {category}\n");
         for m in mods {
-            let filename = super::module_to_filename(&m.name, "md");
-            let _ = write!(out, "- [`{}`]({})", m.name, filename);
-            if let Some(doc) = &m.doc {
-                if let Some(first_line) = doc.lines().next() {
-                    let _ = write!(out, " — {first_line}");
-                }
-            }
-            out.push('\n');
+            render_index_entry_md(&mut out, m, false);
         }
     }
 
     out
+}
+
+fn render_index_entry_md(out: &mut String, module: &DocModule, is_guide: bool) {
+    let filename = super::module_to_filename(&module.name, "md");
+    if is_guide {
+        let _ = write!(
+            out,
+            "- [{}]({filename})",
+            super::render::page_title(module, true)
+        );
+    } else {
+        let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
+    }
+    let summary = module_summary(module.doc.as_deref());
+    if !summary.is_empty() {
+        let _ = write!(out, " — {summary}");
+    }
+    out.push('\n');
+}
+
+fn module_summary(doc: Option<&str>) -> String {
+    let Some(doc) = doc else {
+        return String::new();
+    };
+    let mut lines = doc.lines().map(str::trim).peekable();
+    while lines
+        .peek()
+        .is_some_and(|line| line.is_empty() || line.starts_with('#'))
+    {
+        lines.next();
+    }
+    lines
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -233,7 +355,7 @@ mod tests {
         let source = "/// Adds numbers.\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
         let result = hew_parser::parse(source);
         let module = extract_docs(&result.program, "math");
-        let md = render_module(&module);
+        let md = render_module(&module, false);
         assert!(md.contains("# Module `math`"));
         assert!(md.contains("## Functions"));
         assert!(md.contains("### `pub fn add(a: i32, b: i32) -> i32`"));
@@ -248,12 +370,14 @@ mod tests {
             functions: vec![],
             types: vec![],
             actors: vec![],
+            machines: vec![],
             traits: vec![],
+            impls: vec![],
             consts: vec![],
             type_aliases: vec![],
         };
-        let md = render_index(&[module]);
-        assert!(md.contains("[`std::math`](std.math.md)"));
+        let md = render_index(&[module], &DocSiteConfig::default());
+        assert!(md.contains("[`std.math`](std.math.md)"));
         assert!(md.contains("Math utilities."));
     }
 }

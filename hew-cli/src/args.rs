@@ -618,6 +618,12 @@ pub struct DocArgs {
     /// Output format.
     #[arg(long, short = 'f', value_enum, default_value = "html")]
     pub format: DocFormat,
+    /// TOML presentation and collection settings for a published site.
+    #[arg(long, value_name = "FILE")]
+    pub site_config: Option<PathBuf>,
+    /// Version shown in generated pages (defaults to the generator version).
+    #[arg(long, value_name = "VERSION")]
+    pub site_version: Option<String>,
     /// Open docs in browser after generation.
     #[arg(long)]
     pub open: bool,

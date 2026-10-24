@@ -1,0 +1,36 @@
+//! # Tests, documentation examples, and benchmarks
+//!
+//! `hew test path` discovers `#[test]` functions recursively. Use `--list`
+//! when discovery is surprising and `--filter text` to run matching names.
+//! A test is an ordinary function with no parameters; assertions and panics
+//! fail it.
+//!
+//! ```hew
+//! fn add(left: i64, right: i64) -> i64 { left + right }
+//!
+//! #[test]
+//! fn adds_values() {
+//!     assert(add(20, 22) == 42);
+//! }
+//!
+//! #[test]
+//! #[should_panic("expected failure")]
+//! fn checks_panics() {
+//!     panic("expected failure");
+//! }
+//! ```
+//!
+//! `#[ignore("reason")]` keeps a test discoverable but skips it by default.
+//! `#[timeout(2s)]` applies a positive wall-clock guard. `#[serial]` prevents
+//! overlap with other serial tests, and `#[real_time]` chooses the threaded
+//! scheduler and host clock instead of deterministic scheduling. These are
+//! modifiers on the same `#[test]` function, not standalone test markers.
+//!
+//! Documentation fences run with `hew test --doc`. Mark a fence `no_run` when
+//! it must compile but depends on a host service, or `ignore` only when it
+//! intentionally demonstrates rejected or incomplete source. A trailing
+//! `// Output:` block makes printed output part of the check.
+//!
+//! `#[bench]` marks a benchmark taking one
+//! [std.bench.Bencher](std.bench.html); run it with `hew bench`. Use tests for
+//! correctness and benchmarks for optimized host-clock measurement.

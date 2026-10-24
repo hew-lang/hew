@@ -1,11 +1,11 @@
-//! Stream<T> and Sink<T> — the one pipe family.
+//! Typed streams and sinks for in-memory pipes, files, sockets, and actors.
 //!
 //! A pipe moves data between actors, sockets and files. `Stream<T>` is the
 //! read half and `Sink<T>` the write half; the same two handle types cover an
 //! in-memory pipe (`pipe`), a file (`open`), a socket (`Connection.split`)
 //! and an actor's `receive gen fn`.
 //!
-//! The contract, stated once:
+//! # Read, write, and close
 //!
 //! - `input.recv()` returns `Option<T>`: `Some(item)` is data, `None` means
 //!   every sink finished. A transport failure traps the reading actor with a

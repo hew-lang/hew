@@ -4,11 +4,6 @@
 //! (clamp, sign), floating-point functions (sqrt, pow, floor, ceil, round),
 //! and transcendentals (exp, log, sin, cos) plus common constants.
 //!
-//! Generic numeric and floating-point functions are lowered to LLVM math ops by
-//! the codegen backend. Integer-only helpers and constants are
-//! implemented directly in Hew. The Rust crate in `src/lib.rs` remains only
-//! as a workspace build placeholder.
-//!
 //! # Examples
 //!
 //! ```

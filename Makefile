@@ -24,7 +24,7 @@
 #   make assemble     — also build debug tools, native cross archives and WASI
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
-#   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
+#   make build-docs-reference — generate the versioned language/API reference
 #   make hew          — release-lib compiler + archive, staged at build/bin/hew
 #   make hew-debug    — debug compiler + archive, staged at build/bin/hew-debug
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
@@ -76,7 +76,7 @@
 .PHONY: test-packaged-sdk
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
-.PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
+.PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate build-docs-reference
 .PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
@@ -956,18 +956,32 @@ windows-release-candidate:
 	git archive --format=tar.gz -o target/hew-windows-candidate.tar.gz HEAD
 	@echo "Wrote target/hew-windows-candidate.tar.gz from $$(git rev-parse HEAD)"
 
-# Build stdlib docs and print the wrangler deploy command.
-# Requires a release binary; run `make release` first if the release hew
-# is absent or stale.  The operator supplies the Cloudflare token via
-# `wrangler login` or CLOUDFLARE_API_TOKEN in the shell — it is never in
-# this file.
-publish-docs: ## Release: build docs and print the operator deploy command
-	@test -f "$(RELEASE_DIR)/hew" \
-		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	"$(RELEASE_DIR)/hew" doc std/ --output-dir "$(CARGO_TARGET_ROOT)/doc/"
-	@echo ""
-	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
-	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
+# Build the reusable language and API reference consumed by publishing systems.
+DOCS_HEW ?= $(RELEASE_DIR)/hew
+DOCS_OUTPUT_DIR ?= $(CARGO_TARGET_ROOT)/doc
+DOCS_VERSION ?=
+DOCS_STD_SOURCE ?= std/
+DOCS_LANGUAGE_SOURCE ?= docs/language/
+DOCS_STABLE_REF ?=
+
+build-docs-reference: ## Release: generate the versioned language and API reference
+	@test -f "$(DOCS_HEW)" \
+		|| { echo "Error: docs compiler not found at $(DOCS_HEW)."; exit 1; }
+	@set -eu; \
+	version="$(DOCS_VERSION)"; \
+	if [ -z "$$version" ]; then \
+		version="$$("$(DOCS_HEW)" --version | sed -n 's/^hew //p')"; \
+	fi; \
+	[ -n "$$version" ] || { echo "Error: could not determine the Hew version" >&2; exit 1; }; \
+	if [ -n "$(DOCS_STABLE_REF)" ]; then \
+		$(PYTHON) scripts/check-doc-source-fidelity.py \
+			--stable-ref "$(DOCS_STABLE_REF)" \
+			--candidate-std "$(DOCS_STD_SOURCE)"; \
+	fi; \
+	"$(DOCS_HEW)" doc "$(DOCS_STD_SOURCE)" "$(DOCS_LANGUAGE_SOURCE)" \
+		--site-config docs/docs-site.toml \
+		--site-version "$$version" \
+		--output-dir "$(DOCS_OUTPUT_DIR)"
 
 PACKAGED_SDK_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance

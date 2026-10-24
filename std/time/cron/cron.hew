@@ -2,8 +2,8 @@
 //!
 //! Accepts five fields (minute hour day month weekday), six fields (with
 //! seconds first), or seven fields (with a year last). Names, lists, ranges,
-//! steps and the standard @yearly/@monthly/@weekly/@daily/@hourly forms are
-//! supported. Day-of-month and weekday must both match. Weekdays use the
+//! steps and the standard `@yearly`, `@monthly`, `@weekly`, `@daily`, and
+//! `@hourly` forms are supported. Day-of-month and weekday must both match. Weekdays use the
 //! established numbering Sunday=1 through Saturday=7.
 //!
 //! Expressions are ordinary immutable values; they need no close operation.

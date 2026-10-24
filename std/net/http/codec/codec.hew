@@ -1,4 +1,4 @@
-//! HTTP/1.1 codec over ordinary `std.net` calls.
+//! Build HTTP/1.1 requests and parse buffered responses over `std.net`.
 //!
 //! Call `conn.recv()` directly; pending reads can suspend the caller.
 //! Use `fork` for concurrent work and `await` for the resulting task.
@@ -73,7 +73,7 @@ pub const CLIENT_MAX_READS: i64 = 8192;
 /// A validated HTTP/1.1 response parsed from buffered text. `code` is the
 /// HTTP status code and `body_text` is the response body. `header_section` is the raw header block (the lines
 /// between the status line and the blank line, CRLF-separated), parsed on demand
-/// by [`Response.header`].
+/// by [`Response.header`](#method.Response.header).
 pub type Response {
     code: i64;
     body_text: string;
@@ -179,7 +179,7 @@ pub fn build_request(method: string, host: string, path: string, body: string, c
 
 // ── URL splitting (host:port + path) ──────────────────────────────────
 /// Parse `url_str` into a `(host:port, path)` pair ready for `net.connect` and
-/// [`build_request`]. Plaintext HTTP/1.1 only (HTTPS is BUG-NET-3): a `scheme`
+/// [`build_request`](#fn.build_request). Plaintext HTTP/1.1 only: a `scheme`
 /// prefix (`http://`) is stripped, the authority is split into host + optional
 /// port (defaulting to 80, or 443 for an `https` scheme so a caller can detect
 /// it), and the path defaults to `/`. Parsed with string ops — no dependency on
@@ -403,7 +403,7 @@ fn is_http_version(version: string) -> bool {
 }
 
 /// The header lines of an HTTP head block (everything after the status line),
-/// re-joined with CRLF for [`find_response_header`].
+/// re-joined with CRLF for [`find_response_header`](#fn.find_response_header).
 fn header_section_of(head: string) -> string {
     match head.find("\r\n") {
         .Some(first) => head[first + 2 .. head.len()],
@@ -412,7 +412,8 @@ fn header_section_of(head: string) -> string {
 }
 
 /// The declared `Content-Length` of a header section, or `0` when absent/invalid.
-/// Used to bound the read loop (see [`response_over_limit`]).
+/// Used to bound the read loop (see
+/// [`response_over_limit`](#fn.response_over_limit)).
 ///
 /// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
 /// OVERFLOWS i64 saturates to `CLIENT_MAX_BODY_BYTES + 1` — guaranteed to exceed the

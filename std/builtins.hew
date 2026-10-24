@@ -1,8 +1,8 @@
-//! Built-in functions available in every Hew program.
+//! Built-in types, traits, and functions available in every Hew program.
 //!
-//! These functions are always in scope — no `import` is needed.
-//! They cover I/O, assertions, math, string operations, and
-//! program control flow.
+//! No `import` is needed. This page includes actor delivery and lifecycle
+//! types, machine interfaces, core traits, assertions, conversion, and program
+//! control functions. Focused operations also appear in their `std` modules.
 
 // ---------------------------------------------------------------------------
 // Actor references

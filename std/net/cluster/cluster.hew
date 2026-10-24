@@ -1,4 +1,4 @@
-//! Current local knowledge of membership and registered names.
+//! Inspect this node's current cluster membership and registered names.
 //!
 //! Watches coalesce readiness and re-read authoritative snapshots. They are not
 //! lossless event logs. Locations are discovery metadata, never actor authority.

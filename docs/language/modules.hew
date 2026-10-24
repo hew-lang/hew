@@ -1,0 +1,51 @@
+//! # Modules, packages, and native boundaries
+//!
+//! A Hew source file is a module. Import dotted module paths with `import` and
+//! refer to the module through its final component. Standard-library imports
+//! use names such as `std.math` and `std.encoding.json`.
+//!
+//! ```hew
+//! import std.math;
+//!
+//! fn main() {
+//!     println(math.max(3, 7));
+//! }
+//! ```
+//!
+//! `import app.model;` imports a package module. A quoted import such as
+//! `import "helpers.hew";` loads a source file relative to the importer. Add
+//! `as name` to a whole-module import to choose its local qualifier, or use a
+//! brace selection to import named public items.
+//!
+//! ## Visibility
+//!
+//! A declaration without a visibility keyword is private to its module.
+//! `package` exposes it to the current package, and `pub` exposes it to importers.
+//! The same keywords apply to functions, types, constants, actors, traits, and
+//! other exported declarations. Imports form a directed acyclic graph; the
+//! compiler reports the complete path when it finds a cycle.
+//!
+//! `hew init name` creates a package with `hew.toml`. `hew check`, `hew build`,
+//! and `hew run` search parent directories for that manifest. The optional
+//! `[package] main` field selects the entry file; otherwise it is `main.hew`.
+//! Directories form nested namespaces. A directory module uses its matching
+//! `name/name.hew` root and can be composed with peer files in that directory;
+//! import paths still use dots rather than filesystem separators.
+//!
+//! ## Foreign functions and unsafe code
+//!
+//! `extern` blocks declare native symbols and ABI types. Calls that rely on raw
+//! pointers or an unchecked host contract belong inside `unsafe { ... }`.
+//! Package `[native]` configuration supplies the Rust, C, C++, or system-library
+//! implementation linked into native builds. These declarations describe a
+//! native boundary and do not imply WASI or browser availability; consult
+//! [target capabilities](language.targets.html) before exposing them in a
+//! portable package.
+//!
+//! ## Declarative macros
+//!
+//! `macro` declarations transform token trees during compilation. A macro call
+//! uses `name!(...)`, `name![...]`, or `name!{...}` and expands before name and
+//! type checking. Expansion is hygienic, bounded, and cannot perform arbitrary
+//! build-time I/O. Use ordinary generic functions or traits when token-level
+//! syntax generation is unnecessary.

@@ -24,7 +24,7 @@ const destroy = (value) => op("destroy_value", { value });
 function pkg(ops, { fault = false, projected = false } = {}) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.9.0",
+    hew_version: "0.9.1",
     compiler_version: "resource-assignment-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

@@ -13,7 +13,7 @@ const PRINT_LN = { id: 0, family: "Print", detail: { kind: "Str", newline: true 
 function pkg(strings, blocks) {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.9.0",
+    hew_version: "0.9.1",
     compiler_version: "v1-defer-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

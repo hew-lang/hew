@@ -112,12 +112,12 @@ fn narrow_extern_arguments_carry_their_c_widening_on_every_target() {
         );
         assert_eq!(
             declaration(&ir, "widening_probe"),
-            "declare i8 @widening_probe(i8 zeroext, i8 zeroext, i8 signext, i16 zeroext, i16 signext, i32)",
+            "declare i8 @widening_probe(i1 zeroext, i8 zeroext, i8 signext, i16 zeroext, i16 signext, i32)",
             "{target:?}: a narrow extern return stays unmarked, so the caller masks it"
         );
         assert_eq!(
             declaration(&ir, "widening_truth"),
-            "declare i8 @widening_truth()",
+            "declare zeroext i1 @widening_truth()",
             "{target:?}"
         );
         assert!(

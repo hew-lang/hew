@@ -6574,7 +6574,7 @@ fn import_parses_to_segmented_path() {
     };
     assert_eq!(
         path_segments(source, &import.path),
-        idents(&["std", "net", "http"])
+        idents(&["std", "net", "http", "server"])
     );
 }
 

@@ -1113,7 +1113,9 @@ fn main() -> i32 {
 }
 ```
 
-```hew
+The next example expects a command-line argument; running it without one exits with code 1.
+
+```hew,no_run
 import std.os;
 
 // Pattern 2: check args, exit non-zero on error
@@ -4329,7 +4331,7 @@ fn main() {
     var rng = random.Rng.new(42);
     println(rng.next_u64());
     println(rng.next_f64());     // f64 in [0.0, 1.0)
-    println(rng.range(1, 7));    // i64 in [1, 7)
+    println(rng.range(1, 7).expect("valid range"));  // i64 in [1, 7)
 
     let hand: Vec<i64> = [1, 2, 3, 4, 5];
     let shuffled = rng.shuffle(hand);
@@ -4344,13 +4346,15 @@ fn main() {
 
 Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
-`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `hash.random_bytes(n).expect("valid random draw")` and `random.crypto_u64().expect("valid random draw")`, convenience wrappers over `hash.random_bytes` (`std.crypto.hash`) that draw from OS entropy:
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure. For cryptographic randomness, use `hash.random_bytes` from `std.crypto.hash` or `random.crypto_u64`; both return checked results and draw from OS entropy:
 
 ```hew
 import std.random;
+import std.crypto.hash;
 fn main() {
     let key = hash.random_bytes(32).expect("valid random draw");  // bytes, always freshly drawn
     let token = random.crypto_u64().expect("valid random draw");
+    println(f"Generated {key.len()} key bytes and token {token}");
 }
 ```
 
@@ -5237,16 +5241,20 @@ fn main() {
     let parts = codec.split_address("http://127.0.0.1:8080/health");
     println(f"connect to {parts.0}");   // connect to 127.0.0.1:8080
     let raw = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":true}";
-    let resp = codec.parse_response(raw);
-    println(f"status={resp.status()} type={resp.content_type()} body={resp.body()}");
+    let resp = codec.parse_response(raw).expect("valid response").expect("complete response");
+    println(f"status={resp.status()} type={resp.content_type().expect("content type header")} body={resp.body()}");
 }
 ```
 
-Build requests with `build_get(host, path)` / `build_request(...)` and parse
-replies with `parse_response` → `status()` / `body()` / `header(name)` /
-`content_type()`; the server side parses with `parse_request` → `method()` /
-`path()` / `header(name)` / `is_valid()` and builds replies with
-`response_text` / `response_json`. The `Listener` / `Connection` handles must be
+Build requests with `build_get(host, path)` / `build_request(...)`, handling
+`BuildError`. Parse replies with `parse_response`, which returns
+`Result<Option<Response>, ResponseError>`:
+`Ok(None)` needs more input, and `Err` reports malformed or oversized input.
+A complete response provides `status()` / `body()` / `header(name)` /
+`content_type()`. The server side uses `parse_request`, returning
+`Result<Option<Request>, RequestError>`, then reads `method()` / `path()` /
+`header(name)` from a complete request. `response_text` / `response_json` build
+replies with checked `BuildError` results. The `Listener` / `Connection` handles must be
 handler LOCALS — an opaque handle in actor state is rejected by the
 supervisor-restart clone gate. Full client+server program (two routes):
 [`examples/net/http_await_service.hew`](../examples/net/http_await_service.hew)

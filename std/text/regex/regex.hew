@@ -9,8 +9,7 @@
 //!
 //! fn main() {
 //!     let re = regex.new("[0-9]+").expect("valid pattern");
-//!     if re.is_match("abc123") {
-//!         let m = re.find("abc123");
+//!     if let .Some(m) = re.find("abc123") {
 //!         println(m);  // "123"
 //!     }
 //!     re.close();

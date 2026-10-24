@@ -153,6 +153,24 @@ test("negative supervisor stop deadlines reject before construction or host effe
   assert.equal(calls, 0);
 });
 
+test("actor heap limits reject before execution when accounting is unavailable", async () => {
+  const counter = JSON.parse(
+    fs.readFileSync(
+      new URL("../fixtures/15-actor-counter/bytecode.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  counter.actors[0].max_heap_bytes = 1024;
+  const trace = await runBytecode(counter);
+  assert.equal(trace.result, "sandbox_rejected");
+  assert.equal(
+    trace.final_state.sandbox_rejections[0].capability,
+    "actor.heap_limit",
+  );
+  assert.equal(trace.final_state.step_count, 0);
+  assert.deepEqual(trace.final_state.stdout, []);
+});
+
 test("unknown actor and supervisor policies reject before execution", async () => {
   const supervisor = JSON.parse(
     fs.readFileSync(

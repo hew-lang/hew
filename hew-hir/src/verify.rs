@@ -1068,6 +1068,22 @@ impl Verifier {
                     for binding in &arm.bindings {
                         self.binding(binding.binding, binding.span.clone());
                     }
+                    for statement in &arm.pattern_bindings {
+                        self.node(statement.node, statement.span.clone());
+                        if let HirStmtKind::Destructure { value, fields } = &statement.kind {
+                            self.destructure_bindings(value, fields);
+                        } else {
+                            self.diagnostics.push(self.diagnostic(
+                                HirDiagnosticKind::CheckerBoundaryViolation {
+                                    name: "match pattern binding".into(),
+                                    reason:
+                                        "pattern binding is not an aggregate destructure".into(),
+                                },
+                                statement.span.clone(),
+                                "match arm contains an invalid pattern-binding plan",
+                            ));
+                        }
+                    }
                     if let Some(guard) = &arm.guard {
                         self.expr(guard);
                     }
@@ -1078,14 +1094,18 @@ impl Verifier {
                 binding,
                 start,
                 end,
-                step,
+                adapters,
                 body,
                 ..
             } => {
                 self.binding(binding.id, binding.span.clone());
                 self.expr(start);
                 self.expr(end);
-                self.expr(step);
+                for adapter in adapters {
+                    if let crate::HirRangeAdapter::Step(step) = adapter {
+                        self.expr(step);
+                    }
+                }
                 self.block(body);
             }
             HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {

@@ -516,18 +516,27 @@ pub(super) fn scan_expr_for_call_shape(
         HirExprKind::ForRange {
             start,
             end,
-            step,
+            adapters,
             body,
             ..
         } => {
             scan_expr_for_call_shape(start, callable, diagnostics);
             scan_expr_for_call_shape(end, callable, diagnostics);
-            scan_expr_for_call_shape(step, callable, diagnostics);
+            for adapter in adapters {
+                if let HirRangeAdapter::Step(step) = adapter {
+                    scan_expr_for_call_shape(step, callable, diagnostics);
+                }
+            }
             scan_block_for_call_shape(body, callable, diagnostics);
         }
         HirExprKind::Match { scrutinee, arms } => {
             scan_expr_for_call_shape(scrutinee, callable, diagnostics);
             for arm in arms {
+                for statement in &arm.pattern_bindings {
+                    if let HirStmtKind::Destructure { value, .. } = &statement.kind {
+                        scan_expr_for_call_shape(value, callable, diagnostics);
+                    }
+                }
                 if let Some(guard) = &arm.guard {
                     scan_expr_for_call_shape(guard, callable, diagnostics);
                 }

@@ -1,0 +1,18 @@
+type Message { text: string; count: i64; }
+enum Envelope<T> { Data(T); Empty; }
+
+fn describe(message: Envelope<(i64, Message)>) -> string {
+    match message {
+        .Data((number, Message { text, count })) if number > 10 => f"large {text} {count}",
+        .Data((number, Message { text, count })) if count == number => f"equal {text}",
+        .Data((number, Message { text, count })) => f"other {text} {number} {count}",
+        .Empty => "empty",
+    }
+}
+
+fn main() {
+    println(describe(.Data((3, Message { text: "kept", count: 3 }))));
+    println(describe(.Data((2, Message { text: "fallback", count: 4 }))));
+    println(describe(.Data((12, Message { text: "selected", count: 8 }))));
+    println(describe(.Empty));
+}

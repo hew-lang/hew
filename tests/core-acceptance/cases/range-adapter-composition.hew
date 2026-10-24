@@ -1,0 +1,23 @@
+fn step(label: string, amount: i64) -> i64 {
+    println(label);
+    amount
+}
+
+fn main() {
+    for value in (0..10).step_by(step("first", 2)).rev().step_by(step("second", 2)) {
+        println(value);
+    }
+    for value in (-7..=7).step_by(3).rev().rev().step_by(2) {
+        println(value);
+    }
+    for value in (0..0).step_by(2).rev() { println(value); }
+    let low: i64 = -9223372036854775807 - 1;
+    for value in (low..=9223372036854775807).step_by(9223372036854775807).rev() {
+        println(value);
+    }
+    let first: u64 = 0;
+    let last: u64 = 18446744073709551615;
+    for value in (first..=last).step_by(last).step_by(2).rev().step_by(2) {
+        println(value);
+    }
+}

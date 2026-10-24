@@ -27,18 +27,6 @@ impl LowerCtx {
         }
     }
 
-    /// Build a typed integer-literal HIR expression.  Used to synthesise the
-    /// default stride `1` for a non-strided `ForRange` so MIR always sees a
-    /// concrete step operand at the loop's element width.
-    pub(super) fn make_int_literal(&mut self, value: i128, ty: ResolvedTy, span: Span) -> HirExpr {
-        self.make_expr(
-            HirExprKind::Literal(HirLiteral::Integer(value)),
-            ty,
-            IntentKind::Read,
-            span,
-        )
-    }
-
     pub(super) fn make_binding_ref(
         &mut self,
         name: String,

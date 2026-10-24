@@ -648,54 +648,6 @@ impl LowerCtx {
                 // misread as a range adapter.
                 let peeled = Self::peel_range_adapter_chain(&iterable.0);
                 let kind = match (peeled, &pattern.0) {
-                    (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard)
-                        if spec.step_before_rev =>
-                    {
-                        let binding_name = match &pattern.0 {
-                            Pattern::Identifier(var_name) => var_name.to_string(),
-                            Pattern::Wildcard => {
-                                format!("__hew_for_wildcard_{}", self.ids.binding().0)
-                            }
-                            _ => unreachable!("range-for arm only matches identifiers or wildcard"),
-                        };
-                        // `.step_by(k)` before `.rev()` does not commute with the
-                        // supported `.rev()`-then-`.step_by(k)` order and cannot
-                        // be expressed by the order-insensitive ForRange fold
-                        // (the descending counter would start at the raw high
-                        // bound instead of the last strided element, silently
-                        // emitting a wrong sequence).  Reject fail-closed rather
-                        // than miscompile; the user can write the supported
-                        // order `(a..b).rev().step_by(k)`.
-                        self.unsupported(
-                            iterable.1.clone(),
-                            "`step_by` before `rev` is unsupported; \
-                             write `(a..b).rev().step_by(k)`",
-                            "for-range-adapter-lowering",
-                        );
-                        // Bind the loop variable (the range element is an
-                        // integer; the checker already typed it `Range<T>`) and
-                        // lower the body so its diagnostics still flow and the
-                        // body does not cascade into spurious unresolved-symbol
-                        // errors for the loop variable.  The primary diagnostic
-                        // above is the actionable one.
-                        self.push_scope();
-                        let _ = if matches!(pattern.0, Pattern::Identifier(_)) {
-                            self.bind_checked(
-                                binding_name,
-                                ResolvedTy::I64,
-                                false,
-                                pattern.1.clone(),
-                            )
-                        } else {
-                            self.bind(binding_name, ResolvedTy::I64, false, pattern.1.clone())
-                        };
-                        let _ = self.lower_block(body, &ResolvedTy::Unit);
-                        self.pop_scope();
-                        HirExprKind::Unsupported(
-                            "for-in over `(a..b).step_by(k).rev()` (unsupported adapter order)"
-                                .into(),
-                        )
-                    }
                     (Some(spec), Pattern::Identifier(_) | Pattern::Wildcard) => {
                         let binding_name = match &pattern.0 {
                             Pattern::Identifier(var_name) => var_name.to_string(),
@@ -708,9 +660,7 @@ impl LowerCtx {
                             range_start,
                             range_end,
                             inclusive,
-                            descending,
-                            step_expr,
-                            step_before_rev: _,
+                            adapters,
                         } = spec;
 
                         // Lower start and end expressions first so their
@@ -764,14 +714,15 @@ impl LowerCtx {
                                 .unwrap_or(ResolvedTy::I64)
                         };
 
-                        // Lower the stride expression (or synthesise a literal
-                        // `1` at the element type for a non-strided range) before
-                        // binding the loop variable, so a captured `step_by(n)`
-                        // resolves against the enclosing scope.
-                        let step_hir = match step_expr {
-                            Some(step) => self.lower_expr(step, IntentKind::Read),
-                            None => self.make_int_literal(1, elem_ty.clone(), iterable.1.clone()),
-                        };
+                        let adapters = adapters
+                            .into_iter()
+                            .map(|step| match step {
+                                Some(step) => {
+                                    HirRangeAdapter::Step(self.lower_expr(step, IntentKind::Read))
+                                }
+                                None => HirRangeAdapter::Reverse,
+                            })
+                            .collect();
 
                         // Bind the loop variable inside a fresh scope so it is
                         // scoped to the body but visible during body lowering.
@@ -790,8 +741,7 @@ impl LowerCtx {
                             start: Box::new(start_hir),
                             end: Box::new(end_hir),
                             inclusive,
-                            step: Box::new(step_hir),
-                            descending,
+                            adapters,
                             body: body_block,
                         }
                     }

@@ -37,10 +37,10 @@ use crate::node::{
     HirDestructureField, HirDestructureSelector, HirExpr, HirExprKind, HirField, HirFn,
     HirGenCapture, HirItem, HirLambdaCapture, HirLifecycleHook, HirLifecycleHookKind, HirLiteral,
     HirMatchArm, HirMatchArmBinding, HirMatchArmPredicate, HirModule, HirPayloadPredicate,
-    HirPayloadVariantPredicate, HirRecordDecl, HirRegexLiteral, HirRestartPolicy, HirSelect,
-    HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild, HirSupervisorDecl,
-    HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget, HirVariant,
-    HirVariantKind,
+    HirPayloadVariantPredicate, HirRangeAdapter, HirRecordDecl, HirRegexLiteral, HirRestartPolicy,
+    HirSelect, HirSelectArm, HirSelectArmKind, HirStmt, HirStmtKind, HirSupervisorChild,
+    HirSupervisorDecl, HirSupervisorStrategy, HirTypeDecl, HirTypeDeclKind, HirVarSelfMethodTarget,
+    HirVariant, HirVariantKind,
 };
 use crate::stdlib_catalog::{self, BuiltinEntry, BuiltinLinkage};
 use crate::{IntentKind, ResourceMarker};

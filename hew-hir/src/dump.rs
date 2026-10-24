@@ -1063,19 +1063,25 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             start,
             end,
             inclusive,
-            step,
-            descending,
+            adapters,
             body,
         } => {
             writeln!(
                 out,
-                "{pad}  for-range {} (inclusive={inclusive}, descending={descending}, label={label:?})",
+                "{pad}  for-range {} (inclusive={inclusive}, label={label:?})",
                 binding.name
             )
             .expect("write to string");
             dump_expr(defs, out, start, indent + 4);
             dump_expr(defs, out, end, indent + 4);
-            dump_expr(defs, out, step, indent + 4);
+            for adapter in adapters {
+                match adapter {
+                    crate::HirRangeAdapter::Reverse => {
+                        writeln!(out, "{pad}    reverse").expect("write to string");
+                    }
+                    crate::HirRangeAdapter::Step(step) => dump_expr(defs, out, step, indent + 4),
+                }
+            }
             dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Match { scrutinee, arms } => {
@@ -1122,6 +1128,16 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
                 }
                 for pvp in &arm.payload_variant_predicates {
                     dump_payload_variant_predicate(out, pvp, indent + 6);
+                }
+                for statement in &arm.pattern_bindings {
+                    if let HirStmtKind::Destructure { value, fields } = &statement.kind {
+                        writeln!(out, "{pad}      pattern-destructure {fields:?}")
+                            .expect("write to string");
+                        dump_expr(defs, out, value, indent + 6);
+                    }
+                }
+                if let Some(guard) = &arm.guard {
+                    dump_expr(defs, out, guard, indent + 6);
                 }
                 dump_expr(defs, out, &arm.body, indent + 6);
             }

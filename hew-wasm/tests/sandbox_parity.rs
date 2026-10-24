@@ -1079,6 +1079,30 @@ fn playground_sources_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn frontend_completion_forms_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "associated-record-constructor",
+            source_rel: "tests/core-acceptance/cases/associated-record-constructor.hew",
+        },
+        ParityCase {
+            test_name: "guarded-aggregate-match",
+            source_rel: "tests/core-acceptance/cases/guarded-aggregate-match.hew",
+        },
+        ParityCase {
+            test_name: "range-adapter-composition",
+            source_rel: "tests/core-acceptance/cases/range-adapter-composition.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn generic_sort_and_reverse_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

@@ -1549,23 +1549,6 @@ impl LowerCtx {
                 rejected = true;
                 continue;
             }
-            if !body_prelude.is_empty() && arm.guard.is_some() {
-                self.walk_pattern_arm_body(&arm.body);
-                self.unsupported(
-                    pattern_span.clone(),
-                    "guarded match arm with nested aggregate payload destructure",
-                    "match-expression-substrate",
-                );
-                if let Some(previous) = previous_scope_id {
-                    self.current_scope_id = previous;
-                }
-                if needs_scope {
-                    self.pop_scope();
-                }
-                rejected = true;
-                continue;
-            }
-
             // Materialise nested constructor predicate trees. Their inner
             // bindings are registered in the same arm scope as the payload
             // bindings above, so guard/body references resolve through them.
@@ -1600,33 +1583,13 @@ impl LowerCtx {
                 .as_ref()
                 .map(|guard_spanned| self.lower_expr(guard_spanned, IntentKind::Read));
 
-            let mut body_hir = self.lower_pattern_arm_body(
+            let body_hir = self.lower_pattern_arm_body(
                 &arm.body,
                 block_result_ty,
                 &bindings,
                 &payload_variant_predicates,
                 &body_prelude,
             );
-            if !body_prelude.is_empty() {
-                let body_ty = body_hir.ty.clone();
-                let body_span = arm.pattern.1.start..arm.body_end();
-                body_hir = HirExpr {
-                    node: self.ids.node(),
-                    site: self.ids.site(),
-                    ty: body_ty.clone(),
-                    intent: IntentKind::Read,
-                    kind: HirExprKind::Block(HirBlock {
-                        node: self.ids.node(),
-                        scope: self.ids.scope(),
-                        statements: body_prelude,
-                        tail: Some(Box::new(body_hir)),
-                        ty: body_ty,
-                        span: body_span.clone(),
-                    }),
-                    span: body_span,
-                };
-            }
-
             if let Some(previous) = previous_scope_id {
                 self.current_scope_id = previous;
             }
@@ -1650,6 +1613,7 @@ impl LowerCtx {
                 bindings,
                 payload_predicates,
                 payload_variant_predicates,
+                pattern_bindings: body_prelude,
                 guard: guard_hir,
                 body: body_hir,
                 span: arm.pattern.1.start..arm.body_end(),

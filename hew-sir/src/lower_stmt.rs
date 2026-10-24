@@ -656,8 +656,7 @@ impl Builder<'_, '_> {
                 start,
                 end,
                 inclusive,
-                step,
-                descending,
+                adapters,
                 body,
             } => {
                 return self.lower_for_range(
@@ -665,9 +664,8 @@ impl Builder<'_, '_> {
                     binding,
                     start,
                     end,
-                    step,
                     *inclusive,
-                    *descending,
+                    adapters,
                     body,
                 );
             }

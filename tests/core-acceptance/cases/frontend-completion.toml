@@ -1,0 +1,32 @@
+[[case]]
+id = "associated-record-constructor"
+intent = "An associated type projecting to a generic record uses ordinary field and functional-update semantics."
+source = "cases/associated-record-constructor.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "ready 42\n"
+exit = 0
+
+[[case]]
+id = "guarded-aggregate-match"
+intent = "Nested owned aggregate bindings remain readable across failed guards and transfer only to the selected arm."
+source = "cases/guarded-aggregate-match.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "equal kept\nother fallback 2 4\nlarge selected 8\nempty\n"
+exit = 0
+
+[[case]]
+id = "range-adapter-composition"
+intent = "Range steps and reversals compose in source order across repeated adapters, empty ranges and integer-domain endpoints."
+source = "cases/range-adapter-composition.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "first\nsecond\n8\n4\n0\n-7\n-1\n5\n9223372036854775806\n-1\n-9223372036854775808\n0\n"
+exit = 0

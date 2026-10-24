@@ -358,6 +358,7 @@ impl Builder<'_, '_> {
 
             let mut guard_diverged = false;
             if let Some(guard) = &arm.guard {
+                self.probe_match_pattern_bindings(&arm.pattern_bindings)?;
                 // A guard runs with the candidate's names bound. What it
                 // allocates and what it borrows belong to the guard, not to the
                 // arm, and are released before the candidate can be rejected.
@@ -384,7 +385,33 @@ impl Builder<'_, '_> {
             if !guard_diverged {
                 self.end_loans_since(plan.outer_loans)?;
                 self.select_match_candidate(plan, arm, &fields)?;
+                // Saved rejection states retain the probe declarations. The
+                // selected path introduces their owned replacements once.
+                let projected = arm
+                    .pattern_bindings
+                    .iter()
+                    .filter_map(|statement| match &statement.kind {
+                        hew_hir::HirStmtKind::Destructure { fields, .. } => Some(fields),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter_map(|field| field.binding.as_ref().map(|binding| binding.id))
+                    .collect::<HashSet<_>>();
+                self.bindings
+                    .retain(|binding, _| !projected.contains(binding));
+                self.binding_declarations
+                    .retain(|binding, _| !projected.contains(binding));
+                for scope in &mut self.scopes {
+                    scope.retain(|binding| !projected.contains(binding));
+                }
                 self.acquire_selected_match_bindings(&plan.outer_bindings)?;
+                for statement in &arm.pattern_bindings {
+                    let hew_hir::HirStmtKind::Destructure { value, fields } = &statement.kind
+                    else {
+                        return Err("match pattern binding is not an aggregate destructure".into());
+                    };
+                    self.lower_destructure(value, fields)?;
+                }
                 let result = self.lower_selected_body(&arm.body, &plan.result_ty)?;
                 if self.is_open() {
                     for value in plan.outer_live.keys() {
@@ -1192,6 +1219,76 @@ impl Builder<'_, '_> {
             }
             let value = field.value;
             self.bind_selected_value(binding.binding, &binding.name, value, span.clone())?;
+        }
+        Ok(())
+    }
+
+    /// A nested aggregate pattern's names are loans until its guard succeeds.
+    /// The selected arm uses the same ordered destructures to acquire owners.
+    fn probe_match_pattern_bindings(
+        &mut self,
+        statements: &[hew_hir::HirStmt],
+    ) -> Result<(), String> {
+        for statement in statements {
+            let hew_hir::HirStmtKind::Destructure { value, fields } = &statement.kind else {
+                return Err("match pattern binding is not an aggregate destructure".into());
+            };
+            let HirExprKind::BindingRef {
+                resolved: ResolvedRef::Binding(source),
+                ..
+            } = &value.kind
+            else {
+                return Err("match pattern destructure has no source binding".into());
+            };
+            let BindingTarget::Value(source) = self.binding_target(*source)? else {
+                return Err("match pattern carrier is not an SSA value".into());
+            };
+            let ty = self.ty(&value.ty);
+            let shape = self.service.require_aggregate_shape(&ty)?;
+            let recipes = crate::aggregate_field_recipes(
+                shape,
+                &ty,
+                &self.service.aggregate_shapes,
+                self.service.checked_facts.rows(),
+            )?;
+            let projected =
+                self.probe_aggregate_fields(source, shape, &recipes, is_initial_value_type(&ty))?;
+            if fields.len() != recipes.len() {
+                return Err(
+                    "match pattern destructure field count disagrees with its shape".into(),
+                );
+            }
+            for (index, field) in fields.iter().enumerate() {
+                let expected = match shape {
+                    AggregateShapeRef::Tuple => hew_hir::HirDestructureSelector::Tuple(
+                        u32::try_from(index).map_err(|_| "pattern field index exceeds u32")?,
+                    ),
+                    AggregateShapeRef::Record(id) => hew_hir::HirDestructureSelector::Record(
+                        self.service.aggregate_shapes[id.0 as usize].fields[index]
+                            .name
+                            .clone(),
+                    ),
+                };
+                if field.selector != expected {
+                    return Err(
+                        "match pattern destructure selector disagrees with its shape".into(),
+                    );
+                }
+                if let Some(binding) = &field.binding {
+                    self.bind_match_fields(
+                        &[HirMatchArmBinding {
+                            span: binding.span.clone(),
+                            binding: binding.id,
+                            field_idx: u32::try_from(index)
+                                .map_err(|_| "pattern field index exceeds u32")?,
+                            name: binding.name.clone(),
+                            ty: binding.ty.clone(),
+                        }],
+                        &projected,
+                        &binding.span,
+                    )?;
+                }
+            }
         }
         Ok(())
     }

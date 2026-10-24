@@ -1878,17 +1878,9 @@ pub enum HirExprKind {
         end: Box<HirExpr>,
         /// `true` for `..=` (inclusive upper bound).
         inclusive: bool,
-        /// Per-iteration stride magnitude (always positive).  Defaults to a
-        /// literal `1`; set to `k` by the `(a..b).step_by(k)` adapter.  MIR
-        /// lowering advances the counter by this value each iteration (adding
-        /// it ascending, subtracting it descending).
-        step: Box<HirExpr>,
-        /// `true` when the loop iterates from the high bound down to the low
-        /// bound — produced by the `(a..b).rev()` adapter.  MIR lowering
-        /// initialises the counter at the high bound, decrements by `step`, and
-        /// flips the header comparison so the sequence is the forward range's
-        /// reverse (e.g. `(0..5).rev()` yields `4 3 2 1 0`).
-        descending: bool,
+        /// Iterator adapters in source evaluation order. Reversal and stepping
+        /// compose on the sequence produced by the preceding adapter.
+        adapters: Vec<HirRangeAdapter>,
         /// Loop body.
         body: HirBlock,
     },
@@ -2166,6 +2158,10 @@ pub struct HirMatchArm {
     /// or tuple elements, evaluated after `payload_predicates` and before
     /// bindings/guard/body.
     pub payload_variant_predicates: Vec<HirPayloadVariantPredicate>,
+    /// Nested aggregate projections introduced by the pattern. A candidate
+    /// probes these without taking ownership before its guard; the selected
+    /// arm then binds their owned values before evaluating its body.
+    pub pattern_bindings: Vec<HirStmt>,
     /// Optional guard expression (`Pattern if <guard> => ...`).
     ///
     /// When `Some`, the arm fires only if the pattern matches AND the guard
@@ -2179,6 +2175,13 @@ pub struct HirMatchArm {
     pub body: HirExpr,
     /// Source span of the arm (pattern through body).
     pub span: std::ops::Range<usize>,
+}
+
+/// One integer-range iterator adapter, retained in source order.
+#[derive(Debug, Clone, PartialEq)]
+pub enum HirRangeAdapter {
+    Reverse,
+    Step(HirExpr),
 }
 
 /// One named payload binding introduced by a constructor-pattern match arm.

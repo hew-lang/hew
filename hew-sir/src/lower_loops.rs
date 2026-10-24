@@ -168,9 +168,8 @@ impl Builder<'_, '_> {
         loop_binding: &HirBinding,
         start: &HirExpr,
         end: &HirExpr,
-        step: &HirExpr,
         inclusive: bool,
-        descending: bool,
+        adapters: &[hew_hir::HirRangeAdapter],
         body: &HirBlock,
     ) -> Result<(), String> {
         use hew_parser::ast::BinaryOp;
@@ -180,36 +179,17 @@ impl Builder<'_, '_> {
         }
         let initial = self.lower_range_operand(start, &ty)?;
         let bound = self.lower_range_operand(end, &ty)?;
-        let stride = self.lower_range_operand(step, &ty)?;
-        let zero = Operand {
-            value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstInteger(0))?,
-        };
-        let positive = self.range_compare(BinaryOp::Greater, stride.clone(), zero)?;
-        let valid = self.new_block(Vec::new());
-        let invalid = self.new_block(Vec::new());
-        self.set_terminator(SemTerminator::Branch {
-            condition: positive,
-            then_target: Edge {
-                target: valid,
-                args: Vec::new(),
-            },
-            else_target: Edge {
-                target: invalid,
-                args: Vec::new(),
-            },
-        })?;
-        let before = self.control_state();
-        self.current = invalid;
-        let mut message = step.clone();
-        message.ty = ResolvedTy::String;
-        message.kind = HirExprKind::Literal(HirLiteral::String(
-            "step_by requires a positive step".into(),
-        ));
-        let mut panic = step.clone();
-        panic.ty = ResolvedTy::Never;
-        self.lower_panic(&panic, &[message])?;
-        self.restore_control_state(&before);
-        self.current = valid;
+        let mut steps = Vec::with_capacity(adapters.len());
+        for adapter in adapters {
+            match adapter {
+                hew_hir::HirRangeAdapter::Reverse => steps.push(None),
+                hew_hir::HirRangeAdapter::Step(step) => {
+                    let stride = self.lower_range_operand(step, &ty)?;
+                    self.require_positive_range_step(step, &ty, stride.clone())?;
+                    steps.push(Some(self.range_cast(stride, &ResolvedTy::U64)?));
+                }
+            }
+        }
 
         let outer_floor = self.scopes.len();
         self.open_scope();
@@ -227,8 +207,8 @@ impl Builder<'_, '_> {
             preserved: self.owned_live.keys().copied().collect(),
             scope_floor: self.scopes.len(),
         };
-        // Check emptiness before subtracting from an exclusive high endpoint.
-        // Even MIN..MIN reversed is empty without overflowing MIN - 1.
+        // Check emptiness before deriving the final inclusive endpoint.
+        // MIN..MIN remains empty without evaluating MIN - 1.
         let nonempty = self.range_compare(
             if inclusive {
                 BinaryOp::LessEqual
@@ -249,22 +229,65 @@ impl Builder<'_, '_> {
             else_target: empty,
         })?;
         self.current = setup;
-        if descending {
-            let first = if inclusive {
-                bound.value
-            } else {
-                let one = Operand {
-                    value: self.emit_typed(
-                        Provenance::Synthesized,
-                        &ty,
-                        SemOpKind::ConstInteger(1),
-                    )?,
-                };
-                self.range_advance(&ty, BinaryOp::Subtract, bound.clone(), one, &scope)?
+        let mut first = initial;
+        let mut last = if inclusive {
+            bound
+        } else {
+            let one = Operand {
+                value: self.emit_typed(Provenance::Synthesized, &ty, SemOpKind::ConstInteger(1))?,
             };
-            self.bindings
-                .insert(loop_binding.id, BindingTarget::Value(first));
+            Operand {
+                value: self.range_advance(&ty, BinaryOp::Subtract, bound, one, &scope)?,
+            }
+        };
+        let mut stride = Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::ConstInteger(1),
+            )?,
+        };
+        let mut descending = false;
+        for step in steps {
+            if let Some(step) = step {
+                let first_bits = self.range_cast(first.clone(), &ResolvedTy::U64)?;
+                let last_bits = self.range_cast(last.clone(), &ResolvedTy::U64)?;
+                let (high, low) = if descending {
+                    (first_bits.clone(), last_bits)
+                } else {
+                    (last_bits, first_bits.clone())
+                };
+                // Endpoint distance fits u64 even for the entire signed or
+                // unsigned domain. Counting gaps avoids overflowing length + 1.
+                let distance = self.range_integer_op(start, BinaryOp::WrappingSub, high, low)?;
+                let gaps =
+                    self.range_integer_op(start, BinaryOp::Divide, distance, stride.clone())?;
+                let gaps = self.range_integer_op(start, BinaryOp::Divide, gaps, step.clone())?;
+                let product = self.range_integer_op(start, BinaryOp::WrappingMul, stride, step)?;
+                let offset =
+                    self.range_integer_op(start, BinaryOp::WrappingMul, gaps, product.clone())?;
+                let endpoint = self.range_integer_op(
+                    start,
+                    if descending {
+                        BinaryOp::WrappingSub
+                    } else {
+                        BinaryOp::WrappingAdd
+                    },
+                    first_bits,
+                    offset,
+                )?;
+                last = self.range_cast(endpoint, &ty)?;
+                // A product can overflow only when stepping left one element.
+                // Keep a nonzero divisor for any later adapter on that singleton.
+                stride = self.nonzero_range_stride(product)?;
+            } else {
+                std::mem::swap(&mut first, &mut last);
+                descending = !descending;
+            }
         }
+        let stride = self.range_cast(stride, &ty)?;
+        self.bindings
+            .insert(loop_binding.id, BindingTarget::Value(first.value));
         let entry = self.loop_edge(&scope, header.block)?;
         self.set_terminator(SemTerminator::Goto(entry))?;
         self.restore_control_state(&header);
@@ -272,19 +295,15 @@ impl Builder<'_, '_> {
         let counter = Operand {
             value: self.scalar_binding(loop_binding.id)?,
         };
-        let (comparison, endpoint) = if descending {
-            (BinaryOp::GreaterEqual, initial)
-        } else {
-            (
-                if inclusive {
-                    BinaryOp::LessEqual
-                } else {
-                    BinaryOp::Less
-                },
-                bound,
-            )
-        };
-        let condition = self.range_compare(comparison, counter, endpoint)?;
+        let condition = self.range_compare(
+            if descending {
+                BinaryOp::GreaterEqual
+            } else {
+                BinaryOp::LessEqual
+            },
+            counter,
+            last,
+        )?;
         let exit_edge = self.loop_edge(&scope, exit.block)?;
         let body_block = self.new_block(Vec::new());
         self.set_terminator(SemTerminator::Branch {
@@ -331,6 +350,124 @@ impl Builder<'_, '_> {
         self.end_scopes(outer_floor)?;
         self.leave_scope();
         Ok(())
+    }
+
+    fn require_positive_range_step(
+        &mut self,
+        step: &HirExpr,
+        ty: &ResolvedTy,
+        stride: Operand,
+    ) -> Result<(), String> {
+        let zero = Operand {
+            value: self.emit_typed(Provenance::Synthesized, ty, SemOpKind::ConstInteger(0))?,
+        };
+        let positive = self.range_compare(hew_parser::ast::BinaryOp::Greater, stride, zero)?;
+        let valid = self.new_block(Vec::new());
+        let invalid = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition: positive,
+            then_target: Edge {
+                target: valid,
+                args: Vec::new(),
+            },
+            else_target: Edge {
+                target: invalid,
+                args: Vec::new(),
+            },
+        })?;
+        let before = self.control_state();
+        self.current = invalid;
+        let mut message = step.clone();
+        message.ty = ResolvedTy::String;
+        message.kind = HirExprKind::Literal(HirLiteral::String(
+            "step_by requires a positive step".into(),
+        ));
+        let mut panic = step.clone();
+        panic.ty = ResolvedTy::Never;
+        self.lower_panic(&panic, &[message])?;
+        self.restore_control_state(&before);
+        self.current = valid;
+        Ok(())
+    }
+
+    fn range_cast(&mut self, value: Operand, ty: &ResolvedTy) -> Result<Operand, String> {
+        Ok(Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                ty,
+                SemOpKind::Cast {
+                    value,
+                    to: ty.clone(),
+                },
+            )?,
+        })
+    }
+
+    fn range_integer_op(
+        &mut self,
+        source: &HirExpr,
+        op: hew_parser::ast::BinaryOp,
+        lhs: Operand,
+        rhs: Operand,
+    ) -> Result<Operand, String> {
+        if op == hew_parser::ast::BinaryOp::Divide {
+            let mut expression = source.clone();
+            expression.ty = ResolvedTy::U64;
+            return self
+                .lower_checked_binary(&expression, op, lhs, rhs)
+                .map(|value| Operand { value });
+        }
+        Ok(Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::Binary { op, lhs, rhs },
+            )?,
+        })
+    }
+
+    fn nonzero_range_stride(&mut self, stride: Operand) -> Result<Operand, String> {
+        let zero = Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::ConstInteger(0),
+            )?,
+        };
+        let condition =
+            self.range_compare(hew_parser::ast::BinaryOp::NotEqual, stride.clone(), zero)?;
+        let value = self.fresh_value();
+        let join = self.new_block(vec![BlockArg {
+            value,
+            ty: ResolvedTy::U64,
+            own: crate::OwnKind::None,
+        }]);
+        let singleton = self.new_block(Vec::new());
+        self.set_terminator(SemTerminator::Branch {
+            condition,
+            then_target: Edge {
+                target: join,
+                args: vec![stride],
+            },
+            else_target: Edge {
+                target: singleton,
+                args: Vec::new(),
+            },
+        })?;
+        self.current = singleton;
+        let one = Operand {
+            value: self.emit_typed(
+                Provenance::Synthesized,
+                &ResolvedTy::U64,
+                SemOpKind::ConstInteger(1),
+            )?,
+        };
+        self.set_terminator(SemTerminator::Goto(Edge {
+            target: join,
+            args: vec![one],
+        }))?;
+        self.current = join;
+        Ok(Operand { value })
     }
 
     fn lower_range_operand(&mut self, expr: &HirExpr, ty: &ResolvedTy) -> Result<Operand, String> {

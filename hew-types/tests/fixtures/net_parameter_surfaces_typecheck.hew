@@ -12,7 +12,7 @@ fn main() {
     let tls_port: i64 = 443;
     let tls_size: i64 = 4096;
     let tls_stream: tls.TlsStream = tls.connect("example.com", tls_port, tls.options()).expect("connect");
-    let _tls_chunk: Result<bytes, net.NetError> = tls.read(tls_stream, tls_size);
+    let _tls_chunk: Result<bytes, net.NetError> = tls_stream.read(tls_size);
     let smtp_port: i64 = 587;
     let _smtp_conn: Result<smtp.Conn, smtp.SmtpError> = smtp.connect("smtp.example.com", smtp_port, "user", "pass");
     let _smtp_tls_conn: Result<smtp.Conn, smtp.SmtpError> = smtp.connect_tls("smtp.example.com", 465, "user", "pass");
@@ -34,7 +34,7 @@ fn main() {
     };
     let _read_timeout_status: Result<(), net.NetError> = conn.set_read_timeout(timeout);
     let _write_timeout_status: Result<(), net.NetError> = conn.set_write_timeout(timeout);
-    let quic_conn: quic.QUICConnection = quic.new_client().connect("127.0.0.1:4433", "localhost");
+    let quic_conn: quic.QUICConnection = quic.new_client().expect("QUIC endpoint").connect("127.0.0.1:4433", "localhost").expect("QUIC connection");
     let quic_obs: quic.QUICConnectionObservation = quic_conn.observe();
     let quic_rtt: i64 = quic_obs.rtt_ms;
     println(ws_port + quic_rtt);

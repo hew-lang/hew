@@ -313,12 +313,11 @@ pub struct ModuleMembership {
 }
 
 impl ModuleMembership {
-    /// Whether checking this file checks its whole directory module. A std
-    /// source is checked by itself under the identity the std root gives it.
+    /// Whether checking this file checks its whole directory module, including
+    /// standard-library peers that share their entry's canonical identity.
     #[must_use]
     pub fn checks_as_directory_module(&self) -> bool {
         matches!(self.role, MembershipRole::Entry | MembershipRole::Peer)
-            && !matches!(self.anchor, ModuleAnchor::Std { .. })
     }
 
     /// Whether the file is its package's root module, `<leaf>.hew` beside

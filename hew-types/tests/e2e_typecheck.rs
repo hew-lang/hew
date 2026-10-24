@@ -2,11 +2,10 @@ mod common;
 
 use hew_parser::ast::Ident;
 use std::fs;
-use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use common::{
-    checker, parse_and_typecheck_inline, parse_program, repo_root, typecheck as typecheck_inline,
+    parse_and_typecheck_inline, repo_root, typecheck as typecheck_inline,
     typecheck_wasm as typecheck_inline_wasm,
 };
 use hew_parser::ast::{Expr, Item, Stmt};
@@ -67,13 +66,6 @@ fn assert_single_unknown_return_error(output: &hew_types::TypeCheckOutput, conte
     );
 }
 
-#[test]
-fn typecheck_top_level_networking_demos() {
-    for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
-        assert_typechecks(&repo_root().join(relative), relative);
-    }
-}
-
 // A module's `impl Trait for T` blocks are registered when the module is
 // loaded, not when the importer names `T` in an explicit `{...}` selection.
 // A bare `import std.net;` plus a qualified `net.NetError` therefore
@@ -119,18 +111,6 @@ fn interpolate(endpoint: net.Endpoint) -> string {
                 && e.message.contains("Display")
         }),
         "expected a Display bound refusal for `std.net.Endpoint`, got: {:#?}",
-        output.errors
-    );
-}
-
-fn assert_typechecks(path: &Path, label: &str) {
-    let source = fs::read_to_string(path).unwrap();
-    let program = parse_program(&source);
-    let mut checker = checker();
-    let output = checker.check_program(&program);
-    assert!(
-        output.errors.is_empty(),
-        "{label} should type-check cleanly, got: {:#?}",
         output.errors
     );
 }
@@ -731,7 +711,7 @@ fn method_call_dispatches_resource_wrapper_through_impl() {
         r#"
 import std.net.http.server as http;
 
-fn respond(req: http.Request) -> i64 {
+fn respond(consume req: http.Request) -> i64 {
     let _sent = req.respond_text(200, "ok").is_ok();
     0
 }
@@ -2233,9 +2213,8 @@ fn http_respond_three_arg_typechecks() {
 fn main() {
     match http.listen(":8080") {
         .Ok(server) => {
-            let req = server.accept();
+            let req = match server.accept() { .Ok(request) => request, .Err(_) => return, };
             let _sent = req.respond(200, "text/plain", "Hello, Hew!").is_ok();
-            req.close();
             server.close();
         }
         .Err(_err) => {}

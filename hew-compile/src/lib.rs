@@ -2652,10 +2652,32 @@ fn run_directory_module_frontend(
             entry.display()
         )));
     };
-    state
-        .program
-        .items
-        .push(file_import(entry_name.to_string()));
+    if let Some(module) = canonical_direct_stdlib_module_for_source(entry) {
+        state.program.items.push((
+            Item::Import(ImportDecl {
+                path: hew_parser::ast::Path::from_spellings(
+                    &module
+                        .segments
+                        .iter()
+                        .map(|part| part.as_str())
+                        .collect::<Vec<_>>(),
+                ),
+                spec: None,
+                selection_trailing_comma: false,
+                module_alias: None,
+                file_path: None,
+                resolved_items: None,
+                resolved_item_source_paths: Vec::new(),
+                resolved_source_paths: Vec::new(),
+            }),
+            0..0,
+        ));
+    } else {
+        state
+            .program
+            .items
+            .push(file_import(entry_name.to_string()));
+    }
     run_frontend_after_parse(state, &project, &label, options, None)
 }
 
@@ -5957,6 +5979,63 @@ mod tests {
             "imported return expressions must retain their checked identities: {:#?}",
             hir.diagnostics
         );
+    }
+
+    #[test]
+    fn typecheck_top_level_networking_demos() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        for relative in ["examples/http_server.hew", "examples/static_server.hew"] {
+            check_file(
+                &root.join(relative).display().to_string(),
+                &FrontendOptions::default(),
+            )
+            .unwrap_or_else(|failure| panic!("{relative}: {failure:#?}"));
+        }
+    }
+
+    #[test]
+    fn direct_stdlib_directory_sources_check_their_complete_owner() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        for relative in [
+            "std/net/http/codec/codec.hew",
+            "std/net/http/codec/request.hew",
+        ] {
+            check_file(
+                &root.join(relative).display().to_string(),
+                &FrontendOptions::default(),
+            )
+            .unwrap_or_else(|failure| panic!("{relative}: {failure:#?}"));
+        }
+    }
+
+    #[test]
+    fn direct_stdlib_directory_check_reports_invalid_peer_buffer() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        let peer = root.join("std/net/http/codec/request.hew");
+        let original = fs::read_to_string(&peer).expect("read peer");
+        let mut options = FrontendOptions::default();
+        options.documents.insert(
+            peer.display().to_string(),
+            format!("{original}\npub fn invalid_peer_value() -> bool {{ 1 }}\n"),
+        );
+        let failure = check_file(
+            &root
+                .join("std/net/http/codec/codec.hew")
+                .display()
+                .to_string(),
+            &options,
+        )
+        .expect_err("checking the entry must check its peer's body");
+        assert!(failure.diagnostics.iter().any(|diagnostic| {
+            matches!(&diagnostic.kind, FrontendDiagnosticKind::Type(error) if matches!(error.kind, hew_types::error::TypeErrorKind::Mismatch { .. }))
+                && diagnostic.filename.as_deref().is_some_and(|file| Path::new(file).ends_with("codec/request.hew"))
+        }), "{failure:#?}");
     }
 
     #[test]

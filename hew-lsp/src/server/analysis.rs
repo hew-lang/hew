@@ -1718,26 +1718,25 @@ pub(super) mod tests {
 
     #[test]
     fn coverage_tls_ffi_result_surface() {
-        // BUG-NET-3 std/net/tls FFI-result surface (free-function form, the
-        // shape the accept fixture exercises: `tls.read(stream, n)`).
+        // The checked stream method retains its result in editor surfaces.
         let source = "import std.net.tls;\n\
                       fn probe() {\n\
                       \x20   let stream = tls.connect(\"h\", 443, tls.options()).expect(\"c\");\n\
-                      \x20   let chunk = tls.read(stream, 16);\n\
+                      \x20   let chunk = stream.read(16);\n\
                       }\n";
         let doc = analyze_repo_rooted("lsp_cov_tls", source);
 
         assert_eq!(hard_type_diagnostic(&doc), None);
-        let hover = surface_hover(&doc, source, "tls.read");
+        let hover = surface_hover(&doc, source, "stream.read");
         assert!(
             hover.contains("Result<bytes,") && hover.contains("NetError"),
-            "hover over tls.read should report Result<bytes, net.NetError>, got: {hover}",
+            "hover over stream.read should report Result<bytes, net.NetError>, got: {hover}",
         );
-        let sig = surface_sighelp(&doc, source, "tls.read");
+        let sig = surface_sighelp(&doc, source, "stream.read");
         assert!(
             sig.iter()
                 .any(|s| s.contains("read(") && s.contains("Result<bytes,")),
-            "signature help should label tls.read -> Result<bytes, net.NetError>, got: {sig:?}",
+            "signature help should label stream.read -> Result<bytes, net.NetError>, got: {sig:?}",
         );
         assert!(
             surface_inlays(&doc)

@@ -30,6 +30,7 @@
 //!
 //! `race` chooses the first completion, including an ordinary Err, and cleans up
 //! losers. `select` uses `value from source => ...` and `after duration => ...`.
-//! Task, timer, channel-receive and actor-call selection are on the native
-//! path. Stream selection remains unsupported at this checkpoint. Actor
-//! streams use ordinary `for`, without await.
+//! Ordinary calls, tasks, timers, channel receives, actor calls, and
+//! `Stream<T>.recv()` are supported selection sources. Adapted file and socket
+//! stream readiness is not a selectable source. Actor streams use ordinary
+//! `for`, without await.

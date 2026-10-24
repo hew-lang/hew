@@ -22,6 +22,8 @@ pub struct DocModule {
     /// describe methods on a `pub` opaque type (e.g. `ValueMethods` on
     /// `json::Value`).
     pub traits: Vec<DocTrait>,
+    /// Documented inherent implementation blocks.
+    pub impls: Vec<DocImpl>,
     /// Documented `pub` constants.
     pub consts: Vec<DocConst>,
     /// Documented `pub` type aliases.
@@ -88,6 +90,17 @@ pub struct DocActor {
 #[derive(Debug, Clone)]
 pub struct DocTrait {
     pub name: String,
+    pub methods: Vec<DocMethod>,
+    pub doc: Option<String>,
+    /// Whether the trait itself is part of the public API. Private method
+    /// traits are retained so their methods can be attached to public types.
+    pub is_public: bool,
+}
+
+/// A documented inherent implementation block.
+#[derive(Debug, Clone)]
+pub struct DocImpl {
+    pub target: String,
     pub methods: Vec<DocMethod>,
     pub doc: Option<String>,
 }
@@ -305,6 +318,106 @@ fn visibility_prefix(v: Visibility) -> &'static str {
     }
 }
 
+fn format_trait_bound(bound: &hew_parser::ast::TraitBound) -> String {
+    let mut out = bound.path.to_string();
+    let mut args = bound
+        .type_args
+        .as_ref()
+        .map(|args| {
+            args.iter()
+                .map(|(ty, _)| format_type(ty))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    args.extend(
+        bound
+            .assoc_type_bindings
+            .iter()
+            .map(|binding| format!("{} = {}", binding.name, format_type(&binding.ty.0))),
+    );
+    if !args.is_empty() {
+        out.push('<');
+        out.push_str(&args.join(", "));
+        out.push('>');
+    }
+    out
+}
+
+fn format_type_params(type_params: Option<&[hew_parser::ast::TypeParam]>) -> String {
+    let Some(type_params) = type_params else {
+        return String::new();
+    };
+    if type_params.is_empty() {
+        return String::new();
+    }
+    let params = type_params
+        .iter()
+        .map(|param| {
+            if param.bounds.is_empty() {
+                param.name.to_string()
+            } else {
+                format!(
+                    "{}: {}",
+                    param.name,
+                    param
+                        .bounds
+                        .iter()
+                        .map(format_trait_bound)
+                        .collect::<Vec<_>>()
+                        .join(" + ")
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    format!("<{}>", params.join(", "))
+}
+
+fn format_where_clause(where_clause: Option<&hew_parser::ast::WhereClause>) -> String {
+    let Some(where_clause) = where_clause else {
+        return String::new();
+    };
+    if where_clause.predicates.is_empty() {
+        return String::new();
+    }
+    let predicates = where_clause
+        .predicates
+        .iter()
+        .map(|predicate| {
+            format!(
+                "{}: {}",
+                format_type(&predicate.ty.0),
+                predicate
+                    .bounds
+                    .iter()
+                    .map(format_trait_bound)
+                    .collect::<Vec<_>>()
+                    .join(" + ")
+            )
+        })
+        .collect::<Vec<_>>();
+    format!(" where {}", predicates.join(", "))
+}
+
+fn format_param(param: &hew_parser::ast::Param, consumes_receiver: bool) -> String {
+    let prefix = if param.is_consume || param.is_receiver && consumes_receiver {
+        "consume "
+    } else if param.is_mutable {
+        "var "
+    } else {
+        ""
+    };
+    let mut rendered = if param.is_receiver {
+        format!("{prefix}self")
+    } else {
+        format!("{prefix}{}: {}", param.name, format_type(&param.ty.0))
+    };
+    if let Some((default, _)) = &param.default {
+        rendered.push_str(" = ");
+        rendered.push_str(&format_literal(default));
+    }
+    rendered
+}
+
 /// Build a function signature string from a function declaration.
 fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     let mut sig = String::new();
@@ -314,18 +427,12 @@ fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
     }
     sig.push_str("fn ");
     sig.push_str(f.name.name.as_str());
+    sig.push_str(&format_type_params(f.type_params.as_deref()));
     sig.push('(');
     let params: Vec<String> = f
         .params
         .iter()
-        .map(|p| {
-            let ty_str = format_type(&p.ty.0);
-            if p.is_mutable {
-                format!("var {}: {ty_str}", p.name)
-            } else {
-                format!("{}: {ty_str}", p.name)
-            }
-        })
+        .map(|param| format_param(param, f.consumes_self))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -333,6 +440,7 @@ fn build_fn_signature(f: &hew_parser::ast::FnDecl) -> String {
         sig.push_str(" -> ");
         sig.push_str(&format_type(&ret.0));
     }
+    sig.push_str(&format_where_clause(f.where_clause.as_ref()));
     sig
 }
 
@@ -349,10 +457,7 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
     let params: Vec<String> = r
         .params
         .iter()
-        .map(|p| {
-            let ty_str = format_type(&p.ty.0);
-            format!("{}: {ty_str}", p.name)
-        })
+        .map(|param| format_param(param, false))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -367,11 +472,12 @@ fn build_receive_signature(r: &hew_parser::ast::ReceiveFnDecl) -> String {
 fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
     let mut sig = String::from("fn ");
     sig.push_str(m.name.name.as_str());
+    sig.push_str(&format_type_params(m.type_params.as_deref()));
     sig.push('(');
     let params: Vec<String> = m
         .params
         .iter()
-        .map(|p| format!("{}: {}", p.name, format_type(&p.ty.0)))
+        .map(|param| format_param(param, m.consumes_self))
         .collect();
     sig.push_str(&params.join(", "));
     sig.push(')');
@@ -379,6 +485,7 @@ fn build_trait_method_signature(m: &hew_parser::ast::TraitMethod) -> String {
         sig.push_str(" -> ");
         sig.push_str(&format_type(&ret.0));
     }
+    sig.push_str(&format_where_clause(m.where_clause.as_ref()));
     sig
 }
 
@@ -455,6 +562,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
     let mut types = Vec::new();
     let mut actors = Vec::new();
     let mut traits = Vec::new();
+    let mut impls = Vec::new();
     let mut consts = Vec::new();
     let mut type_aliases = Vec::new();
 
@@ -531,7 +639,27 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     name: t.name.to_string(),
                     methods,
                     doc: t.doc_comment.clone(),
+                    is_public: t.visibility.is_pub(),
                 });
+            }
+            Item::Impl(i) if i.trait_bound.is_none() => {
+                let methods = i
+                    .methods
+                    .iter()
+                    .filter(|method| method.visibility.is_pub() || method.doc_comment.is_some())
+                    .map(|method| DocMethod {
+                        name: method.name.to_string(),
+                        signature: build_fn_signature(method),
+                        doc: method.doc_comment.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                if !methods.is_empty() {
+                    impls.push(DocImpl {
+                        target: format_type(&i.target_type.0),
+                        methods,
+                        doc: i.doc_comment.clone(),
+                    });
+                }
             }
             Item::Const(c) if c.visibility.is_pub() => {
                 consts.push(DocConst {
@@ -574,6 +702,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
         types,
         actors,
         traits,
+        impls,
         consts,
         type_aliases,
     }
@@ -828,5 +957,38 @@ package const PKG_C: i32 = 1;
         let module = extract_docs(&result.program, "test");
         assert_eq!(module.functions.len(), 1);
         assert!(module.functions[0].doc.is_none());
+    }
+
+    #[test]
+    fn signatures_preserve_generics_ownership_defaults_and_bounds() {
+        let source = r#"pub fn transform<T, U: Display>(consume item: T, limit: i64 = 2) -> U where T: Clone {
+    panic("not called")
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(
+            module.functions[0].signature,
+            "pub fn transform<T, U: Display>(consume item: T, limit: i64 = 2) -> U where T: Clone"
+        );
+    }
+
+    #[test]
+    fn extracts_documented_inherent_methods() {
+        let source = r#"impl<T> Option<T> {
+    /// Return the contained value.
+    pub fn expect(consume self, reason: string) -> T { panic(reason) }
+}
+"#;
+        let result = hew_parser::parse(source);
+        assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
+        let module = extract_docs(&result.program, "test");
+        assert_eq!(module.impls.len(), 1);
+        assert_eq!(module.impls[0].target, "Option<T>");
+        assert_eq!(module.impls[0].methods.len(), 1);
+        assert!(module.impls[0].methods[0]
+            .signature
+            .contains("expect(consume self, reason: string)"));
     }
 }

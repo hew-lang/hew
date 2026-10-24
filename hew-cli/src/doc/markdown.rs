@@ -3,7 +3,7 @@
 use std::fmt::Write;
 
 use super::extract::{
-    DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
+    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMethod, DocModule, DocTrait, DocType,
     DocTypeAlias,
 };
 
@@ -98,6 +98,16 @@ fn render_trait(t: &DocTrait) -> String {
     out
 }
 
+fn render_impl(i: &DocImpl) -> String {
+    let mut out = format!("### Methods on `{}`\n\n", i.target);
+    if let Some(doc) = &i.doc {
+        out.push_str(doc);
+        out.push_str("\n\n");
+    }
+    out.push_str(&render_methods_md("Methods", &i.methods));
+    out
+}
+
 /// Render a constant item as Markdown.
 fn render_const(c: &DocConst) -> String {
     let mut out = format!(
@@ -124,7 +134,7 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
 /// Render a full module page as Markdown.
 #[must_use]
 pub fn render_module(module: &DocModule) -> String {
-    let mut out = format!("# Module `{}`\n\n", module.name);
+    let mut out = format!("# Module `{}`\n\n", module.name.replace("::", "."));
 
     if let Some(doc) = &module.doc {
         out.push_str(doc);
@@ -152,10 +162,17 @@ pub fn render_module(module: &DocModule) -> String {
         }
     }
 
-    if !module.traits.is_empty() {
+    if module.traits.iter().any(|t| t.is_public) {
         out.push_str("## Traits\n\n");
-        for t in &module.traits {
+        for t in module.traits.iter().filter(|t| t.is_public) {
             out.push_str(&render_trait(t));
+        }
+    }
+
+    if !module.impls.is_empty() {
+        out.push_str("## Inherent methods\n\n");
+        for i in &module.impls {
+            out.push_str(&render_impl(i));
         }
     }
 
@@ -197,7 +214,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
 
     for m in &root_mods {
         let filename = super::module_to_filename(&m.name, "md");
-        let _ = write!(out, "- [`{}`]({})", m.name, filename);
+        let _ = write!(out, "- [`{}`]({})", m.name.replace("::", "."), filename);
         if let Some(doc) = &m.doc {
             if let Some(first_line) = doc.lines().next() {
                 let _ = write!(out, " — {first_line}");
@@ -210,7 +227,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
         let _ = writeln!(out, "\n## {category}\n");
         for m in mods {
             let filename = super::module_to_filename(&m.name, "md");
-            let _ = write!(out, "- [`{}`]({})", m.name, filename);
+            let _ = write!(out, "- [`{}`]({})", m.name.replace("::", "."), filename);
             if let Some(doc) = &m.doc {
                 if let Some(first_line) = doc.lines().next() {
                     let _ = write!(out, " — {first_line}");
@@ -249,11 +266,12 @@ mod tests {
             types: vec![],
             actors: vec![],
             traits: vec![],
+            impls: vec![],
             consts: vec![],
             type_aliases: vec![],
         };
         let md = render_index(&[module]);
-        assert!(md.contains("[`std::math`](std.math.md)"));
+        assert!(md.contains("[`std.math`](std.math.md)"));
         assert!(md.contains("Math utilities."));
     }
 }

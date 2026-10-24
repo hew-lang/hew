@@ -1,0 +1,70 @@
+//! # Language basics
+//!
+//! A Hew program starts in `fn main()`. Bind immutable values with `let` and
+//! mutable values with `var`; Hew has no `let mut` form. Primitive types use
+//! lowercase names such as `i64`, `f64`, `bool`, `char`, and `string`.
+//!
+//! ```hew
+//! type Reading {
+//!     label: string;
+//!     value: i64;
+//! }
+//!
+//! enum Level {
+//!     Normal;
+//!     High(i64);
+//! }
+//!
+//! fn classify(reading: Reading) -> Level {
+//!     if reading.value > 80 {
+//!         .High(reading.value)
+//!     } else {
+//!         .Normal
+//!     }
+//! }
+//!
+//! fn main() {
+//!     var readings: Vec<Reading> = Vec.new();
+//!     readings.push(Reading { label: "cpu", value: 92 });
+//!
+//!     for reading in readings {
+//!         let label = reading.label;
+//!         match classify(reading) {
+//!             .Normal => println(f"{label}: normal"),
+//!             .High(value) => println(f"{label}: high ({value})"),
+//!         }
+//!     }
+//! }
+//! ```
+//!
+//! `type` declares a record; there is no `struct` keyword. Enum variants end
+//! with semicolons and can be constructed with a leading dot when the expected
+//! enum type is known. `match` is exhaustive, so adding a variant requires its
+//! callers to handle the new case.
+//!
+//! A block's last expression is its value. A trailing semicolon makes that
+//! expression a statement returning unit. Use `if` or `match` wherever an
+//! expression is accepted.
+//!
+//! ## Functions, ownership, and errors
+//!
+//! Parameters are borrowed or copied according to their type. Write
+//! `consume value: T` when a public function takes ownership, and `var self`
+//! for a method that mutates its receiver. Functions declared with
+//! `fails ErrorType` are handled with `match`, `?`, or `handle error { ... }`.
+//! `Option<T>` represents an optional value and `Result<T, E>` represents an
+//! explicit success or error value; their methods are listed in the standard
+//! library reference.
+//!
+//! ## Modules and imports
+//!
+//! Import modules with dotted paths, for example `import std.encoding.json;`.
+//! The module can then be used through its final path component, such as
+//! `json.parse(text)`. Use `hew check file.hew` to type-check a standalone
+//! program before building or running it.
+//!
+//! Continue with [actors](language.actors.html),
+//! [structured concurrency](language.concurrency.html),
+//! [resources](language.resources.html),
+//! [state machines](language.machines.html), and
+//! [supervision](language.supervision.html).

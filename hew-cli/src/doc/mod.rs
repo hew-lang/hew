@@ -202,11 +202,12 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         for module in &modules {
             let body = render_module(module);
             let filename = module_to_filename(&module.name, "html");
-            let escaped_name = crate::util::html_escape(&module.name);
+            let display_name = module.name.replace("::", ".");
+            let escaped_name = crate::util::html_escape(&display_name);
             let breadcrumb = format!(
                 "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"
             );
-            let html = wrap_page(&module.name, &body, Some(&breadcrumb));
+            let html = wrap_page(&display_name, &body, Some(&breadcrumb));
             if let Err(e) = std::fs::write(out.join(&filename), &html) {
                 eprintln!("Error writing {filename}: {e}");
                 had_errors = true;

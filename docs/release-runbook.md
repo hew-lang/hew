@@ -190,10 +190,12 @@ Standalone WASI remains non-gating.
 The release receipt binds producer results and optional notes to the producer's source and run, while
 checksums and provenance cover every shipped asset. Available package outputs
 are retained even if another packaging lane failed. Existing per-platform SDK
-acceptance receipts remain in the producer run. GHCR and docs publication are
-skipped when their producers failed; Homebrew waits for all three formula
-archives and is skipped when the macOS archive is unavailable. npm and the GitHub Release can
-proceed with the required Linux and browser products.
+acceptance receipts remain in the producer run. GHCR is skipped when its
+producer failed. After a GitHub Release is published, `publish-docs` fails
+explicitly when `build-docs` did not succeed, so a stale docs site is visible
+in the release run and **Re-run failed jobs** can recover it. Homebrew waits for
+all three formula archives and is skipped when the macOS archive is unavailable.
+npm and the GitHub Release can proceed with the required Linux and browser products.
 
 ## Prerequisites
 

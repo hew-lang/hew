@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use crate::util::html_escape;
 
 use super::extract::{
-    DocActor, DocConst, DocField, DocFunction, DocMethod, DocModule, DocTrait, DocType,
+    DocActor, DocConst, DocField, DocFunction, DocImpl, DocMethod, DocModule, DocTrait, DocType,
     DocTypeAlias,
 };
 use super::highlight;
@@ -85,7 +85,8 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code_block = false;
-                if code_lang.is_empty() || code_lang == "hew" {
+                let primary_lang = code_lang.split(',').next().unwrap_or_default().trim();
+                if primary_lang.is_empty() || primary_lang == "hew" {
                     html.push_str(&highlight::highlight(&code_buf));
                 } else {
                     html.push_str("<pre><code>");
@@ -174,7 +175,7 @@ fn build_type_index(module: &DocModule) -> TypeIndex {
     for a in &module.actors {
         index.insert(a.name.clone(), format!("#actor.{}", a.name));
     }
-    for t in &module.traits {
+    for t in module.traits.iter().filter(|t| t.is_public) {
         index.insert(t.name.clone(), format!("#trait.{}", t.name));
     }
     index
@@ -368,17 +369,15 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
                 .filter(|m| first_param_type(&m.signature) == Some(t.name.as_str()))
                 .collect();
             if !applicable.is_empty() {
-                out.push_str("<p class=\"trait-ref\">via <a href=\"#trait.");
-                out.push_str(&html_escape(&tr.name));
-                out.push_str("\"><code>");
-                out.push_str(&html_escape(&tr.name));
-                out.push_str("</code></a></p>\n");
-                for m in applicable {
-                    out.push_str("<div class=\"method\" id=\"method.");
+                if tr.is_public {
+                    out.push_str("<p class=\"trait-ref\">via <a href=\"#trait.");
                     out.push_str(&html_escape(&tr.name));
-                    out.push('.');
-                    out.push_str(&html_escape(&m.name));
-                    out.push_str("\">\n<span class=\"sig\">");
+                    out.push_str("\"><code>");
+                    out.push_str(&html_escape(&tr.name));
+                    out.push_str("</code></a></p>\n");
+                }
+                for m in applicable {
+                    out.push_str("<div class=\"method\">\n<span class=\"sig\">");
                     let highlighted = highlight_signature(&m.signature);
                     out.push_str(&link_signature_types(&highlighted, index));
                     out.push_str("</span>\n");
@@ -427,6 +426,24 @@ fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
     out
 }
 
+/// Render documented methods from an inherent implementation block.
+fn render_impl(i: &DocImpl, index: &TypeIndex) -> String {
+    let mut out = String::from("<div class=\"item impl\">\n<h3>Methods on <code>");
+    out.push_str(&html_escape(&i.target));
+    out.push_str("</code></h3>\n");
+    push_doc(&mut out, i.doc.as_ref());
+    for method in &i.methods {
+        out.push_str("<div class=\"method\">\n<span class=\"sig\">");
+        let highlighted = highlight_signature(&method.signature);
+        out.push_str(&link_signature_types(&highlighted, index));
+        out.push_str("</span>\n");
+        out.push_str(&render_inline_doc(method.doc.as_ref()));
+        out.push_str("</div>\n");
+    }
+    out.push_str("</div>\n");
+    out
+}
+
 /// Render a constant item.
 fn render_const(c: &DocConst) -> String {
     let mut out = String::from("<div class=\"item\" id=\"const.");
@@ -461,6 +478,10 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
     out
 }
 
+fn display_module_name(name: &str) -> String {
+    name.replace("::", ".")
+}
+
 /// Render a full module page body (without the outer HTML wrapper).
 #[must_use]
 #[expect(
@@ -471,7 +492,7 @@ pub fn render_module(module: &DocModule) -> String {
     let mut body = String::new();
 
     body.push_str("<h1>Module <code>");
-    body.push_str(&html_escape(&module.name));
+    body.push_str(&html_escape(&display_module_name(&module.name)));
     body.push_str("</code></h1>\n");
 
     // Module-level docs are under <h1>; shift doc `#` → <h2> (offset 1).
@@ -488,7 +509,8 @@ pub fn render_module(module: &DocModule) -> String {
     let has_items = !module.functions.is_empty()
         || !module.types.is_empty()
         || !module.actors.is_empty()
-        || !module.traits.is_empty()
+        || module.traits.iter().any(|t| t.is_public)
+        || !module.impls.is_empty()
         || !module.consts.is_empty()
         || !module.type_aliases.is_empty();
     if has_items {
@@ -516,7 +538,7 @@ pub fn render_module(module: &DocModule) -> String {
             body.push_str(&html_escape(&a.name));
             body.push_str("</a></li>\n");
         }
-        for t in &module.traits {
+        for t in module.traits.iter().filter(|t| t.is_public) {
             body.push_str("<li><a href=\"#trait.");
             body.push_str(&html_escape(&t.name));
             body.push_str("\">trait ");
@@ -536,6 +558,9 @@ pub fn render_module(module: &DocModule) -> String {
             body.push_str("\">type ");
             body.push_str(&html_escape(&ta.name));
             body.push_str("</a></li>\n");
+        }
+        if !module.impls.is_empty() {
+            body.push_str("<li><a href=\"#implementations\">inherent methods</a></li>\n");
         }
         body.push_str("</ul>\n");
     }
@@ -561,10 +586,17 @@ pub fn render_module(module: &DocModule) -> String {
         }
     }
 
-    if !module.traits.is_empty() {
+    if module.traits.iter().any(|t| t.is_public) {
         body.push_str("<h2>Traits</h2>\n");
-        for t in &module.traits {
+        for t in module.traits.iter().filter(|t| t.is_public) {
             body.push_str(&render_trait(t, &index));
+        }
+    }
+
+    if !module.impls.is_empty() {
+        body.push_str("<h2 id=\"implementations\">Inherent methods</h2>\n");
+        for i in &module.impls {
+            body.push_str(&render_impl(i, &index));
         }
     }
 
@@ -588,15 +620,20 @@ pub fn render_module(module: &DocModule) -> String {
 /// Render an index page listing all documented modules, grouped by section.
 #[must_use]
 pub fn render_index(modules: &[DocModule]) -> String {
-    let mut body = String::from("<h1>Hew Standard Library</h1>\n");
+    let mut body = String::from(
+        "<h1>Hew documentation</h1>\n<p>Language guides and the standard-library API for this Hew release.</p>\n<label class=\"search-label\" for=\"module-search\">Find a guide or module</label>\n<input id=\"module-search\" class=\"module-search\" type=\"search\" placeholder=\"Filter by name or description\" autocomplete=\"off\">\n<p id=\"search-status\" class=\"search-status\" aria-live=\"polite\"></p>\n",
+    );
 
-    // Group: root-level modules (single :: component after prefix) first,
-    // then by the second path component (e.g., "encoding", "crypto").
+    let mut language_mods: Vec<&DocModule> = Vec::new();
     let mut root_mods: Vec<&DocModule> = Vec::new();
     let mut groups: std::collections::BTreeMap<String, Vec<&DocModule>> =
         std::collections::BTreeMap::new();
 
     for m in modules {
+        if m.name.starts_with("language::") {
+            language_mods.push(m);
+            continue;
+        }
         let after_root = m.name.find("::").map_or("", |i| &m.name[i + 2..]);
         if after_root.contains("::") {
             let category = after_root.split("::").next().unwrap_or(after_root);
@@ -606,6 +643,17 @@ pub fn render_index(modules: &[DocModule]) -> String {
         }
     }
 
+    if !language_mods.is_empty() {
+        body.push_str(
+            "<section class=\"doc-section\"><h2>Language guide</h2>\n<ul class=\"module-list\">\n",
+        );
+        for m in &language_mods {
+            render_index_entry(&mut body, m);
+        }
+        body.push_str("</ul></section>\n");
+    }
+
+    body.push_str("<section class=\"doc-section\"><h2>Standard library</h2>\n");
     if !root_mods.is_empty() {
         body.push_str("<ul class=\"module-list\">\n");
         for m in &root_mods {
@@ -615,33 +663,54 @@ pub fn render_index(modules: &[DocModule]) -> String {
     }
 
     for (category, mods) in &groups {
-        body.push_str("<div class=\"section-heading\">");
+        body.push_str("<h3 class=\"section-heading\">");
         body.push_str(&html_escape(category));
-        body.push_str("</div>\n<ul class=\"module-list\">\n");
+        body.push_str("</h3>\n<ul class=\"module-list\">\n");
         for m in mods {
             render_index_entry(&mut body, m);
         }
         body.push_str("</ul>\n");
     }
+    body.push_str("</section>\n");
 
     body
 }
 
 fn render_index_entry(body: &mut String, m: &DocModule) {
     let filename = super::module_to_filename(&m.name, "html");
-    body.push_str("<li><a href=\"");
+    let summary = module_summary(m.doc.as_deref());
+    let display_name = display_module_name(&m.name);
+    body.push_str("<li class=\"module-entry\" data-search=\"");
+    body.push_str(&html_escape(&format!("{display_name} {summary}")));
+    body.push_str("\"><a href=\"");
     body.push_str(&html_escape(&filename));
     body.push_str("\"><code>");
-    body.push_str(&html_escape(&m.name));
+    body.push_str(&html_escape(&display_name));
     body.push_str("</code></a>");
-    if let Some(doc) = &m.doc {
-        if let Some(first_line) = doc.lines().next() {
-            body.push_str("<span class=\"module-desc\"> — ");
-            body.push_str(&html_escape(first_line));
-            body.push_str("</span>");
-        }
+    if !summary.is_empty() {
+        body.push_str("<span class=\"module-desc\"> — ");
+        body.push_str(&html_escape(&summary));
+        body.push_str("</span>");
     }
     body.push_str("</li>\n");
+}
+
+fn module_summary(doc: Option<&str>) -> String {
+    let Some(doc) = doc else {
+        return String::new();
+    };
+    let mut lines = doc.lines().map(str::trim).peekable();
+    while lines
+        .peek()
+        .is_some_and(|line| line.is_empty() || line.starts_with('#'))
+    {
+        lines.next();
+    }
+    lines
+        .take_while(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('`', "")
 }
 
 #[cfg(test)]
@@ -672,13 +741,15 @@ pub fn add(a: i32, b: i32) -> i32 {
             types: vec![],
             actors: vec![],
             traits: vec![],
+            impls: vec![],
             consts: vec![],
             type_aliases: vec![],
         };
         let html = render_index(&[module]);
         assert!(html.contains("std.math.html"));
-        assert!(html.contains("std::math"));
+        assert!(html.contains("std.math"));
         assert!(html.contains("Math utilities."));
+        assert!(html.contains("module-search"));
     }
 
     #[test]
@@ -759,6 +830,12 @@ pub type UserId = i64;
         let md = "Some text.\n\n```\nlet x = 1;\n```\n";
         let html = markdown_to_html(md, 0);
         assert!(html.contains("<code>"));
+    }
+
+    #[test]
+    fn markdown_highlights_hew_fences_with_modifiers() {
+        let html = markdown_to_html("```hew,no_run\nlet value = 1;\n```\n", 0);
+        assert!(html.contains("class=\"shiki\""));
     }
 
     #[test]
@@ -918,8 +995,13 @@ trait ValueMethods {
         );
         assert!(type_section.contains("get_int"), "get_int must be listed");
         assert!(
-            type_section.contains("href=\"#trait.ValueMethods\""),
-            "back-link to ValueMethods trait must be present"
+            !html.contains("<h3>Trait <code>ValueMethods</code></h3>"),
+            "private method traits must not be presented as public API"
+        );
+        assert_eq!(
+            html.matches("id=\"method.ValueMethods.stringify\"").count(),
+            0,
+            "surfaced private methods must not create duplicate anchors"
         );
     }
 

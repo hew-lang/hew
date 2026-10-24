@@ -278,7 +278,7 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     });
     let standalone = path.extension().is_some_and(|ext| ext == "md")
         || main.is_some()
-        || imports_own_module(&fence.code, path);
+        || imports_own_module(&parsed.program, path);
     let base = if standalone { "" } else { module };
     if let Some(main) = main {
         let call = if main
@@ -328,25 +328,14 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     }
 }
 
-fn imports_own_module(code: &str, path: &Path) -> bool {
-    let Some(relative) = path
-        .ancestors()
-        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "std"))
-        .and_then(|std_root| path.strip_prefix(std_root).ok())
-    else {
+fn imports_own_module(program: &hew_parser::ast::Program, path: &Path) -> bool {
+    let Some(module) = hew_types::module_registry::canonical_stdlib_module_for_source(path) else {
         return false;
     };
-    let mut segments = relative
-        .with_extension("")
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    if segments.len() > 1 && segments.last() == segments.get(segments.len() - 2) {
-        segments.pop();
-    }
-    let module = segments.join(".");
-    code.lines()
-        .any(|line| line.trim() == format!("import std.{module};"))
+    program.items.iter().any(|(item, _)| {
+        matches!(item, hew_parser::ast::Item::Import(import)
+            if import.file_path.is_none() && import.path.to_string() == module.dotted())
+    })
 }
 
 #[cfg(test)]
@@ -382,15 +371,5 @@ mod tests {
         let examples = extract_fences(source, true);
         assert_eq!(examples.len(), 1);
         assert_eq!(examples[0].code, "println(7);\n");
-    }
-
-    #[test]
-    fn self_import_uses_the_declared_std_module_once() {
-        let source = "//! ```hew\n//! import std.net.tls;\n//! let _ = tls.connect;\n//! ```\npub fn module_item() {}\n";
-        let fence = &extract_fences(source, true)[0];
-        let generated =
-            example_source(source, fence, Path::new("std/net/tls/tls.hew"), "__example");
-        assert!(generated.contains("import std.net.tls;"));
-        assert!(!generated.contains("pub fn module_item"));
     }
 }

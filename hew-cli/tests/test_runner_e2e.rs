@@ -254,6 +254,32 @@ fn doc_imports_keep_source_items_in_scope() {
 }
 
 #[test]
+fn doc_directory_peer_uses_its_canonical_module() {
+    require_codegen();
+    let root = repo_root();
+    let source = root.join("std/net/http/codec/request.hew");
+    let output = run_hew_in(
+        &root,
+        &[
+            "test",
+            "--doc",
+            source.to_str().unwrap(),
+            "--format",
+            "json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let events = String::from_utf8_lossy(&output.stdout);
+    assert!(events.contains("request.hew::doc(module)#1"), "{events}");
+    assert!(events.contains("\"passed\":1"), "{events}");
+}
+
+#[test]
 fn doc_declarations_compile_and_can_be_called_in_the_same_fence() {
     require_codegen();
     let dir = support::tempdir();

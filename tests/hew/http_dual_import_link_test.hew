@@ -1,49 +1,13 @@
-//! HTTP server and client resources keep distinct implementation identities
-//! when imported into one compilation unit. Both resource families must link
-//! and their authored methods must remain executable.
+//! HTTP request timeout configuration reports invalid values explicitly.
 
 import std.net.http.server as http;
 
-import std.net.http.client;
-
-/// Server-side impl (`impl ServerMethods for Server`) is reachable and
-/// executable in the dual-import unit. `:0` binds an ephemeral port (the
-/// CI-safe pattern, cf. `net_try_api_test.hew` `net.listen(":0")`), so no
-/// fixed port is held across the test run.
 #[test]
 #[real_time]
-fn test_server_impl_linked_in_dual_import_unit() {
-    match http.listen(":0") {
-        .Ok(server) => {
-            assert(server.set_request_timeout(0ns) == -1);
-            assert(server.set_request_timeout(-1ns) == -1);
-            assert(server.set_request_timeout(1ns) == 0);
-            assert(server.set_request_timeout(1s) == 0);
-            server.close();
-            assert(true);
-        }
-        .Err(_err) => {
-            assert(false);
-        }
-    }
-}
-
-/// Every `Response` accessor that was previously a bodiless declaration is now
-/// executable. Nothing listens on 127.0.0.1:1, so the request fails at the
-/// transport and `status()` returns the documented -1 error status (see
-/// `client.hew` `status()` doc: "Returns -1 on error"). Each of the six
-/// accessors named in the pre-fix verify failure is invoked, so a regression
-/// re-introducing the bodiless declaration would fail to link this test.
-#[test]
-#[real_time]
-fn test_response_accessors_linked_in_dual_import_unit() {
-    assert(client.set_timeout(100ms).is_ok());
-    let resp = client.get("http://127.0.0.1:1");
-    assert(resp.status() == -1);
-    let _body = resp.body();
-    let _content_type = resp.content_type();
-    let _header = resp.header("content-type");
-    let _headers = resp.headers();
-    resp.close();
-    assert(true);
+fn test_request_timeout_rejects_nonpositive_values() {
+    let server = http.listen("127.0.0.1:0").expect("listen");
+    assert(server.set_request_timeout(0ns).is_err());
+    assert(server.set_request_timeout(-1ns).is_err());
+    assert(server.set_request_timeout(1ns).is_ok());
+    assert(server.set_request_timeout(1s).is_ok());
 }

@@ -6,7 +6,7 @@ fn main() -> i64 {
     var errs = 0;
     for _ in 0..50 {
         match tls.connect("127.0.0.1", 1, tls.options()) {
-            .Ok(stream) => tls.close(stream),
+            .Ok(stream) => stream.close(),
             .Err(error) => {
                 let _detail = f"{error}";
                 errs = errs + 1;

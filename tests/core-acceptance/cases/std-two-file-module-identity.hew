@@ -7,8 +7,11 @@ import std.net.http.codec.request;
 import std.net.http.codec;
 
 fn reject_code(raw: string) -> i64 {
-    let parsed = request.parse_request(raw);
-    parsed.reject_code
+    match request.parse_request(raw) {
+        .Ok(.Some(_)) => 0,
+        .Ok(.None) => -1,
+        .Err(error) => error.status(),
+    }
 }
 
 fn main() {
@@ -16,5 +19,5 @@ fn main() {
     println(reject_code("nonsense\r\n\r\n"));
     println(codec.request_complete("GET / HTTP/1.1\r\n\r\n"));
     // The sibling file's own surface stays reachable through its own binding.
-    println(codec.build_get("example.com", "/").starts_with("GET / HTTP/1.1"));
+    println(codec.build_get("example.com", "/").expect("request").starts_with("GET / HTTP/1.1"));
 }

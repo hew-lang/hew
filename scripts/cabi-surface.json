@@ -9391,6 +9391,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_http_request_has_header( *const HewHttpRequest, *const HewString, ) -> bool"
+      },
+      "symbol": "hew_http_request_has_header"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_http_request_header( *const HewHttpRequest, *const HewString, ) -> *mut HewString"
       },
       "symbol": "hew_http_request_header"
@@ -9420,6 +9433,19 @@
         "native": "fn hew_http_request_hew( *const HewString, *const HewString, *const HewString, *mut HewVec, ) -> *mut HewHttpResponse"
       },
       "symbol": "hew_http_request_hew"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_http_request_is_valid( *const HewHttpRequest) -> bool"
+      },
+      "symbol": "hew_http_request_is_valid"
     },
     {
       "availability": [
@@ -9576,6 +9602,19 @@
         "native": "fn hew_http_response_free( *mut HewHttpResponse)"
       },
       "symbol": "hew_http_response_free"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_http_response_has_header( *const HewHttpResponse, *const HewString, ) -> bool"
+      },
+      "symbol": "hew_http_response_has_header"
     },
     {
       "availability": [
@@ -13695,6 +13734,19 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
+        "native": "fn hew_quic_conn_is_valid( *const HewQuicConn) -> bool"
+      },
+      "symbol": "hew_quic_conn_is_valid"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
         "native": "fn hew_quic_conn_last_error( *const HewQuicConn) -> *mut HewString"
       },
       "symbol": "hew_quic_conn_last_error"
@@ -13828,6 +13880,19 @@
         "native": "fn hew_quic_endpoint_connect( *mut HewQuicEndpoint, *const HewString, *const HewString, ) -> *mut HewQuicConn"
       },
       "symbol": "hew_quic_endpoint_connect"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_quic_endpoint_is_valid( *const HewQuicEndpoint) -> bool"
+      },
+      "symbol": "hew_quic_endpoint_is_valid"
     },
     {
       "availability": [
@@ -14023,6 +14088,19 @@
         "native": "fn hew_quic_stream_finish( *mut HewQuicStream) -> c_int"
       },
       "symbol": "hew_quic_stream_finish"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "stable-stdlib",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_quic_stream_is_valid( *const HewQuicStream) -> bool"
+      },
+      "symbol": "hew_quic_stream_is_valid"
     },
     {
       "availability": [

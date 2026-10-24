@@ -90,6 +90,8 @@ pub enum NetError {
     InvalidArgument(string);
     /// Any other network-level failure.
     Other(i64);
+    /// A protocol, verification or transport failure with operation detail.
+    Protocol(string);
 }
 
 // WASM-TODO(wasi-errno): WASI uses wasi_errno codes; add a target-aware mapping.
@@ -133,6 +135,7 @@ impl Display for NetError {
             NetError.Cancelled(code) => f"Cancelled({code})",
             NetError.InvalidArgument(detail) => f"InvalidArgument({detail})",
             NetError.Other(code) => f"Other({code})",
+            NetError.Protocol(detail) => f"Protocol({detail})",
         }
     }
 }

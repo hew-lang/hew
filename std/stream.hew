@@ -120,7 +120,7 @@ pub fn open(path: string) -> Result<Stream<bytes>, string> {
 /// fn main() {
 ///     match http.listen(":8080") {
 ///         .Ok(server) => {
-///             let req = server.accept();
+///             let req = server.accept().expect("accept request");
 ///             match stream.open("data.txt") {
 ///                 .Ok(file) => {
 ///                     let body = match req.respond_stream(200, "text/plain") {
@@ -131,10 +131,9 @@ pub fn open(path: string) -> Result<Stream<bytes>, string> {
 ///                 }
 ///                 .Err(e) => println(e),
 ///             }
-///             req.close();
 ///             server.close();
 ///         }
-///         .Err(_err) => println(http.listen_error()),
+///         .Err(error) => println(error),
 ///     }
 /// }
 /// ```

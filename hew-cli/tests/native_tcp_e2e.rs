@@ -189,8 +189,6 @@ fn network_timeouts_require_explicit_duration_units() {
         "server.set_request_timeout(TIME)",
         "stream.recv_timeout(TIME)",
         "stream.send_timeout(b\"data\", TIME)",
-        "quic.stream_recv_timeout(stream, TIME)",
-        "quic.stream_send_timeout(stream, b\"data\", TIME)",
     ] {
         let source = format!(
             r"

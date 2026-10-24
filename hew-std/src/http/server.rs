@@ -211,8 +211,8 @@ impl ResponseThreadTracker {
     /// bound the wait via a channel `recv_timeout`, while the worker itself is
     /// tracked here so server shutdown can join (or detach) it.
     ///
-    /// Returns the receiver. The worker drops the sender on any error path
-    /// (overflow, IO error, or trickle-deadline expiry). The trickle-deadline
+    /// Returns the receiver. The worker reports read and size failures through
+    /// this channel before releasing the request. The trickle-deadline
     /// 408 reply is dispatched from inside the worker so a slow-reader peer
     /// can only park the worker thread, not the request-handling thread; the
     /// 2 s join timeout on shutdown then backstops a stuck write.
@@ -221,9 +221,9 @@ impl ResponseThreadTracker {
         request: tiny_http::Request,
         max_body_size: usize,
         request_body_timeout: Duration,
-    ) -> mpsc::Receiver<(Vec<u8>, tiny_http::Request)> {
+    ) -> mpsc::Receiver<Result<(Vec<u8>, tiny_http::Request), String>> {
         self.reap_completed();
-        let (body_tx, body_rx) = mpsc::sync_channel::<(Vec<u8>, tiny_http::Request)>(1);
+        let (body_tx, body_rx) = mpsc::sync_channel(1);
         let (done_tx, done_rx) = mpsc::channel();
         let active_count = Arc::clone(&self.active_count);
         active_count.fetch_add(1, Ordering::AcqRel);
@@ -245,6 +245,9 @@ impl ResponseThreadTracker {
             };
             match read_result {
                 Ok(_) if buf.len() > max_body_size => {
+                    let _ = body_tx.send(Err(format!(
+                        "http.request.body: exceeds {max_body_size} bytes"
+                    )));
                     let response = tiny_http::Response::from_string("Payload Too Large")
                         .with_status_code(tiny_http::StatusCode(413));
                     if let Err(err) = request.respond(response) {
@@ -252,20 +255,22 @@ impl ResponseThreadTracker {
                     }
                 }
                 Ok(_) => {
-                    if body_tx.send((buf, request)).is_err() {
+                    if body_tx.send(Ok((buf, request))).is_err() {
                         // Receiver was dropped (caller already returned). The
                         // request is dropped here; the connection closes.
                     }
                 }
                 Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                    let _ = body_tx.send(Err(format!("http.request.body: {err}")));
                     let response = tiny_http::Response::from_string("Request Timeout")
                         .with_status_code(tiny_http::StatusCode(408));
                     if let Err(err) = request.respond(response) {
                         eprintln!("hew_http: failed to send 408 response: {err}");
                     }
                 }
-                Err(_) => {
-                    // Other IO errors: drop the request, peer sees connection close.
+                Err(error) => {
+                    let _ = body_tx.send(Err(format!("http.request.body: {error}")));
+                    // Drop the request; the peer observes a closed connection.
                 }
             }
             if done_tx.send(()).is_err() {
@@ -444,7 +449,9 @@ fn io_errno_of(err: &(dyn std::error::Error + 'static)) -> i64 {
 /// [`hew_http_server_new`].
 #[no_mangle]
 pub unsafe extern "C" fn hew_http_server_recv(srv: *mut HewHttpServer) -> *mut HewHttpRequest {
+    crate::http::client::clear_http_last_error();
     if srv.is_null() {
+        crate::http::client::set_http_last_error("http.accept: invalid server");
         return std::ptr::null_mut();
     }
     // SAFETY: srv was allocated by hew_http_server_new and is valid.
@@ -458,8 +465,38 @@ pub unsafe extern "C" fn hew_http_server_recv(srv: *mut HewHttpServer) -> *mut H
             request_body_timeout: server.request_body_timeout,
             response_threads: Some(server.response_threads.clone()),
         })),
-        Err(_) => std::ptr::null_mut(),
+        Err(error) => {
+            crate::http::client::set_http_last_error(format!("http.accept: {error}"));
+            std::ptr::null_mut()
+        }
     }
+}
+
+/// Whether a request handle is live.
+#[no_mangle]
+pub extern "C" fn hew_http_request_is_valid(req: *const HewHttpRequest) -> bool {
+    !req.is_null()
+}
+
+/// Whether an incoming request contains a header, including an empty value.
+///
+/// # Safety
+/// `req` and `name` must be live borrowed handles or null.
+#[no_mangle]
+pub unsafe extern "C" fn hew_http_request_has_header(
+    req: *const HewHttpRequest,
+    name: *const HewString,
+) -> bool {
+    // SAFETY: the caller lends both handles for this call.
+    let (Some(request), name) = (unsafe { req.as_ref() }, unsafe { string_as_str(name) }) else {
+        return false;
+    };
+    request.inner.as_ref().is_some_and(|inner| {
+        inner
+            .headers()
+            .iter()
+            .any(|header| header.field.as_str().as_str().eq_ignore_ascii_case(name))
+    })
 }
 
 /// Set max request body size (in bytes) for future received requests.
@@ -566,18 +603,22 @@ pub unsafe extern "C" fn hew_http_request_body(
     req: *mut HewHttpRequest,
     out_len: *mut usize,
 ) -> *mut u8 {
+    crate::http::client::clear_http_last_error();
     if req.is_null() || out_len.is_null() {
+        crate::http::client::set_http_last_error("http.request.body: request is unavailable");
         return std::ptr::null_mut();
     }
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &mut *req };
     let Some(inner) = request.inner.take() else {
+        crate::http::client::set_http_last_error("http.request.body: request is unavailable");
         return std::ptr::null_mut();
     };
     let Some(response_threads) = request.response_threads.clone() else {
         // No tracker means the request was constructed in a unit test without
         // server backing — drop the request and signal failure.
         drop(inner);
+        crate::http::client::set_http_last_error("http.request.body: request is unavailable");
         return std::ptr::null_mut();
     };
 
@@ -593,18 +634,23 @@ pub unsafe extern "C" fn hew_http_request_body(
     let max_body_size = request.max_body_size;
     let body_rx = response_threads.spawn_body_read(inner, max_body_size, request_body_timeout);
     let outer_deadline = request_body_timeout.saturating_mul(2);
-    let Ok((buf, returned_inner)) = body_rx.recv_timeout(outer_deadline) else {
-        // Worker either timed out (full stall), errored, or sent a 408/413.
-        // The worker still owns the request; the connection will close
-        // when it eventually unwinds (or on server drop, bounded by the
-        // 2 s join timeout).
-        return std::ptr::null_mut();
+    let (buf, returned_inner) = match body_rx.recv_timeout(outer_deadline) {
+        Ok(Ok(result)) => result,
+        Ok(Err(detail)) => {
+            crate::http::client::set_http_last_error(detail);
+            return std::ptr::null_mut();
+        }
+        Err(error) => {
+            crate::http::client::set_http_last_error(format!("http.request.body: {error}"));
+            return std::ptr::null_mut();
+        }
     };
     request.inner = Some(returned_inner);
 
     let len = buf.len();
     let ptr = malloc_bytes(&buf);
     if ptr.is_null() {
+        crate::http::client::set_http_last_error("http.request.body: allocation failed");
         return std::ptr::null_mut();
     }
     // SAFETY: out_len is valid per caller contract.
@@ -663,6 +709,7 @@ pub unsafe extern "C" fn hew_http_request_header(
     req: *const HewHttpRequest,
     name: *const HewString,
 ) -> *mut HewString {
+    crate::http::client::clear_http_last_error();
     if req.is_null() || name.is_null() {
         return std::ptr::null_mut();
     }
@@ -676,6 +723,9 @@ pub unsafe extern "C" fn hew_http_request_header(
     }
 
     let Some(inner) = request.inner.as_ref() else {
+        crate::http::client::set_http_last_error(
+            "http.request.header: request already responded to",
+        );
         return std::ptr::null_mut();
     };
 
@@ -714,6 +764,7 @@ pub unsafe extern "C" fn hew_http_respond(
     content_type: *const c_char,
 ) -> i32 {
     if req.is_null() {
+        set_last_error("http.respond: invalid request".into());
         return -1;
     }
     let Ok(status_code) = validate_http_status(status) else {
@@ -732,6 +783,7 @@ pub unsafe extern "C" fn hew_http_respond(
     // SAFETY: req was allocated by hew_http_server_recv and is valid.
     let request = unsafe { &mut *req };
     let Some(inner) = request.inner.take() else {
+        set_last_error("http.respond: request already responded to".into());
         return -1;
     };
 
@@ -748,10 +800,12 @@ pub unsafe extern "C" fn hew_http_respond(
         response = response.with_header(header);
     }
 
-    if inner.respond(response).is_ok() {
-        0
-    } else {
-        -1
+    match inner.respond(response) {
+        Ok(()) => 0,
+        Err(error) => {
+            set_last_error(format!("http.respond: {error}"));
+            -1
+        }
     }
 }
 
@@ -2284,6 +2338,9 @@ mod tests {
         // SAFETY: req and out_len are valid.
         let body_ptr = unsafe { hew_http_request_body(req, &raw mut out_len) };
         assert!(body_ptr.is_null(), "oversized body should be rejected");
+        // SAFETY: the error accessor transfers one managed string owner.
+        let detail = unsafe { take_string(crate::http::client::hew_http_last_error()) };
+        assert!(detail.contains("exceeds 5 bytes"), "{detail}");
 
         let client_result = handle.join().unwrap();
         match client_result {
@@ -2349,6 +2406,12 @@ mod tests {
 
         let response = handle.join().unwrap();
         assert!(body_ptr.is_null(), "timed out body should be rejected");
+        // SAFETY: the error accessor transfers one managed string owner.
+        let detail = unsafe { take_string(crate::http::client::hew_http_last_error()) };
+        assert!(
+            detail.contains("timed out") || detail.contains("deadline"),
+            "{detail}"
+        );
         assert!(
             response.starts_with("HTTP/1.1 408") || response.starts_with("HTTP/1.0 408"),
             "expected 408 response, got {response:?}"

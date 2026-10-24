@@ -7,7 +7,7 @@
 //
 // Usage: http_server [port] [root_dir]
 // Defaults: port=8080, root_dir="."
-import std.net.http.{Request, Server};
+import std.net.http.server as http;
 
 import std.fs;
 
@@ -15,14 +15,14 @@ import std.os;
 
 import std.net.mime;
 
-fn serve_forever(root: string, srv: Server) {
+fn serve_forever(root: string, srv: http.Server) {
     loop {
-        let req = srv.accept();
+        let req = srv.accept().expect("accept request");
         serve_request(root, req);
     }
 }
 
-fn serve_request(root: string, consume req: Request) {
+fn serve_request(root: string, consume req: http.Request) {
     let request_path = req.path();
     if request_path.contains("..") {
         match req.respond_text(403, "403 Forbidden") {
@@ -64,7 +64,6 @@ fn serve_request(root: string, consume req: Request) {
             }
         }
     }
-    req.close();
 }
 
 fn main() {
@@ -83,14 +82,13 @@ fn main() {
         }
     }
     let addr = f"0.0.0.0:{port}";
-    println("=== Hew HTTP Static File Server ===");
+    println("=== Hew HTTP Static File http.Server ===");
     println(f"Listening on http://{addr}  root={root}");
     match http.listen(addr) {
         .Ok(srv) => {
             serve_forever(root, srv);
         }
-        .Err(_) => {
-            let detail = http.listen_error();
+        .Err(detail) => {
             println(f"cannot listen on {addr}: {detail}");
         }
     }

@@ -44,7 +44,7 @@ fn deadline_case(child: bool) {
     let server = websocket.listen("127.0.0.1:0").expect("listen");
     let gate = spawn Gate;
     let peer = fork paused_peer(f"ws://127.0.0.1:{server.port()}", gate);
-    let conn = server.accept();
+    let conn = server.accept().expect("accept connection");
     assert(conn.recv().expect("paused peer").is_some());
     let cancelled = scope within 100ms {
         if child {
@@ -70,7 +70,7 @@ fn main() {
     let peer_gate = spawn Gate;
     let writer_gate = spawn Gate;
     let peer = fork paused_peer(f"ws://127.0.0.1:{server.port()}", peer_gate);
-    let conn = server.accept();
+    let conn = server.accept().expect("accept connection");
     assert(conn.recv().expect("paused peer").is_some());
     let writer = spawn Writer { conn, gate: writer_gate };
     let running = fork writer.run();

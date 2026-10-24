@@ -9,9 +9,9 @@ actor Client {
 
     receive fn fetch(unused: i64) {
         let _ = client.set_timeout(5000ms);
-        let response = client.get(url);
+        let response = client.get(url).expect("HTTP request succeeds");
         for _ in 0..frames {
-            let checksum = response.body().len() + response.content_type().len() + response.header("Content-Type").len();
+            let checksum = response.body().expect("body decodes").len() + response.content_type().expect("read content type").expect("content type is present").len() + response.header("Content-Type").expect("read header").expect("header is present").len();
             println(checksum);
         }
         response.close();
@@ -26,15 +26,15 @@ actor Client {
 fn main() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
-            let port = http.server_port(server);
+            let port = server.port();
             let client = spawn Client { url: f"http://127.0.0.1:{port}/retention", frames: 50, complete: 0 };
-            let _ = client.fetch(0);
-            let request = server.accept();
+            let fetching = fork client.fetch(0);
+            let request = server.accept().expect("accept connection");
             match request.respond(200, "application/retention", "response-owner") {
                 .Ok(_) => {}
                 .Err(_) => panic("HTTP retention response failed"),
             }
-            request.close();
+            assert((await fetching).is_ok());
             match client.finished() {
                 .Ok(done) => {
                     if done != 1 {

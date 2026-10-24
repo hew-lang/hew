@@ -1,16 +1,14 @@
-//! HTTP client compatibility module for outbound requests.
+//! HTTP client module for outbound requests.
 //!
 //! Provides basic outbound HTTP functionality for native Hew programs via
 //! `import std.net.http.client;`.
 //!
-//! This compatibility module now carries the bounded v0.3 client slice:
-//! `request`, `request_string`, `set_timeout`, plus the legacy `get` / `post`
-//! helpers built on the same request path.
+//! Requests and body decoding return checked errors with operation detail.
 //!
 //! Response accessors: `status()`, `body()`, `header(name)`, `content_type()`,
 //! `headers()` (all headers as `Vec<(string, string)>`), and `close()`.
 //! The `_string` convenience helpers (`request_string`, `get_string`,
-//! `post_string`) return `Option<string>` — `None` on transport failure.
+//! `post_string`) return checked results, preserving transport and decoding errors.
 //!
 //! # Examples
 //!
@@ -19,13 +17,13 @@
 //!
 //! fn main() {
 //!     match client.get_string("https://example.com") {
-//!         .Some(body) => println(body),
-//!         .None => println("request failed"),
+//!         .Ok(body) => println(body),
+//!         .Err(err) => println(f"request failed: {err}"),
 //!     }
 //!
 //!     var headers: Vec<(string, string)> = Vec.new();
 //!     headers.push(("Accept", "application/json"));
-//!     let resp = client.request("GET", "https://api.example.com/data", "", headers);
+//!     let resp = client.request("GET", "https://api.example.com/data", "", headers).expect("request succeeds");
 //!     println(resp.status());
 //!     resp.close();
 //! }
@@ -46,24 +44,43 @@ import std.net;
 pub type Response {
 }
 
+/// A failed HTTP operation and its transport, protocol or decoding detail.
+pub enum HttpError {
+    Request(string);
+    Body(string);
+    Header(string);
+}
+
+impl Error for HttpError {}
+
+impl Display for HttpError {
+    fn fmt(self) -> string {
+        match self {
+            .Request(detail) => f"HTTP request: {detail}",
+            .Body(detail) => f"HTTP body: {detail}",
+            .Header(detail) => f"HTTP header: {detail}",
+        }
+    }
+}
+
 // ── Response methods ──────────────────────────────────────────────────
 /// Methods available on an HTTP `Response`.
 trait ResponseMethods {
-    /// Return the HTTP status code (e.g. 200, 404). Returns -1 on error.
+    /// Return the HTTP status code (e.g. 200, 404). The response has a valid HTTP status.
     fn status(self) -> i64;
 
     /// Return a copy of the response body as a string.
-    fn body(self) -> string;
+    fn body(self) -> string fails HttpError;
 
     /// Look up a response header by name (case-insensitive).
     ///
-    /// Returns an empty string if the header is not present.
-    fn header(self, name: string) -> string;
+    /// Returns `None` if the header is not present.
+    fn header(self, name: string) -> Option<string> fails HttpError;
 
     /// Return the `Content-Type` response header.
     ///
-    /// Returns an empty string if not present.
-    fn content_type(self) -> string;
+    /// Returns `None` if not present.
+    fn content_type(self) -> Option<string> fails HttpError;
 
     /// Return all response headers as a list of `(name, value)` pairs.
     ///
@@ -81,22 +98,40 @@ impl ResponseMethods for Response {
         }
     }
     /// Return a copy of the response body as a string.
-    fn body(self) -> string {
-        unsafe {
+    fn body(self) -> string fails HttpError {
+        let body = unsafe {
             hew_http_response_body(self)
+        };
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        if !detail.is_empty() {
+            return error HttpError.Body(detail);
         }
+        body
     }
     /// Look up a response header by name (case-insensitive).
-    fn header(self, name: string) -> string {
-        unsafe {
+    fn header(self, name: string) -> Option<string> fails HttpError {
+        let value = unsafe {
             hew_http_response_header(self, name)
+        };
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        if !detail.is_empty() {
+            return error HttpError.Header(detail);
+        }
+        if unsafe {
+            hew_http_response_has_header(self, name)
+        } {
+            .Some(value)
+        } else {
+            .None
         }
     }
     /// Return the `Content-Type` response header.
-    fn content_type(self) -> string {
-        unsafe {
-            hew_http_response_content_type(self)
-        }
+    fn content_type(self) -> Option<string> fails HttpError {
+        self.header("content-type")?
     }
     /// Return all response headers as a list of `(name, value)` pairs.
     fn headers(self) -> Vec<(string, string)> {
@@ -140,22 +175,35 @@ fn content_type_headers(content_type: string) -> Vec<(string, string)> {
 /// fn main() {
 ///     var headers: Vec<(string, string)> = Vec.new();
 ///     headers.push(("Accept", "application/json"));
-///     let resp = client.request("GET", "https://example.com", "", headers);
+///     let resp = client.request("GET", "https://example.com", "", headers).expect("request succeeds");
 ///     println(resp.status());
 ///     resp.close();
 /// }
 /// ```
-pub fn request(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response {
-    unsafe {
+pub fn request(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Response fails HttpError {
+    let response = unsafe {
         hew_http_request_hew(method, url, body, headers)
+    };
+    if response.status() < 0 {
+        let reason = unsafe {
+            hew_http_response_body(response)
+        };
+        let detail = unsafe {
+            hew_http_last_error()
+        };
+        if !detail.is_empty() {
+            return error HttpError.Request(detail);
+        }
+        return error HttpError.Request(reason);
     }
+    response
 }
 
 /// Perform an HTTP request and return the response body as a string.
 ///
 /// Each header entry is a `(name, value)` pair, e.g. `("Accept", "application/json")`.
-/// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `client.request`
+/// Returns an error on transport or network failure. Non-2xx HTTP responses
+/// still return `Ok` (the body may be empty); use `client.request`
 /// to inspect the status code.
 ///
 /// # Examples
@@ -166,31 +214,14 @@ pub fn request(method: string, url: string, body: string, headers: Vec<(string, 
 /// fn main() {
 ///     var headers: Vec<(string, string)> = Vec.new();
 ///     match client.request_string("GET", "https://example.com", "", headers) {
-///         .Some(body) => println(body),
-///         .None => println("request failed"),
+///         .Ok(body) => println(body),
+///         .Err(err) => println(f"request failed: {err}"),
 ///     }
 /// }
 /// ```
-pub fn request_string(method: string, url: string, body: string, headers: Vec<(string, string)>) -> Option<string> {
-    let resp = unsafe {
-        hew_http_request_hew(method, url, body, headers)
-    };
-    let status = unsafe {
-        hew_http_response_status(resp)
-    };
-    if status < 0 {
-        unsafe {
-            hew_http_response_free(resp)
-        };
-        return .None;
-    }
-    let result = unsafe {
-        hew_http_response_body(resp)
-    };
-    unsafe {
-        hew_http_response_free(resp)
-    };
-    .Some(result)
+pub fn request_string(method: string, url: string, body: string, headers: Vec<(string, string)>) -> string fails HttpError {
+    let response = request(method, url, body, headers)?;
+    response.body()?
 }
 
 /// Set the global outbound-request timeout, rejecting a value the C ABI
@@ -202,16 +233,6 @@ pub fn set_timeout(timeout: duration) fails net.NetError {
     };
 }
 
-/// Return the last HTTP client error observed on this thread.
-///
-/// Accessors that return null on allocation failure update this string.
-/// Successful accessor calls clear it.
-pub fn last_error() -> string {
-    unsafe {
-        hew_http_last_error()
-    }
-}
-
 /// Perform an HTTP GET request and return a `Response` handle.
 ///
 /// # Examples
@@ -220,13 +241,13 @@ pub fn last_error() -> string {
 /// import std.net.http.client;
 ///
 /// fn main() {
-///     let resp = client.get("https://example.com");
+///     let resp = client.get("https://example.com").expect("request succeeds");
 ///     println(resp.status());
 ///     resp.close();
 /// }
 /// ```
-pub fn get(url: string) -> Response {
-    request("GET", url, "", empty_headers())
+pub fn get(url: string) -> Response fails HttpError {
+    request("GET", url, "", empty_headers())?
 }
 
 /// Perform an HTTP POST request and return a `Response` handle.
@@ -237,12 +258,12 @@ pub fn get(url: string) -> Response {
 /// import std.net.http.client;
 ///
 /// fn main() {
-///     let resp = client.post("https://api.example.com/data", "application/json", "{}");
+///     let resp = client.post("https://api.example.com/data", "application/json", "{}").expect("request succeeds");
 ///     resp.close();
 /// }
 /// ```
-pub fn post(url: string, content_type: string, body: string) -> Response {
-    request("POST", url, body, content_type_headers(content_type))
+pub fn post(url: string, content_type: string, body: string) -> Response fails HttpError {
+    request("POST", url, body, content_type_headers(content_type))?
 }
 
 /// Perform an HTTP GET request and return the response body as a string.
@@ -250,8 +271,8 @@ pub fn post(url: string, content_type: string, body: string) -> Response {
 /// This is a convenience function that combines the request and body
 /// extraction in a single call.
 ///
-/// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `client.get`
+/// Returns an error on transport or network failure. Non-2xx HTTP responses
+/// still return `Ok` (the body may be empty); use `client.get`
 /// to inspect the status code.
 ///
 /// # Examples
@@ -261,19 +282,19 @@ pub fn post(url: string, content_type: string, body: string) -> Response {
 ///
 /// fn main() {
 ///     match client.get_string("https://example.com") {
-///         .Some(body) => println(body),
-///         .None => println("request failed"),
+///         .Ok(body) => println(body),
+///         .Err(err) => println(f"request failed: {err}"),
 ///     }
 /// }
 /// ```
-pub fn get_string(url: string) -> Option<string> {
-    request_string("GET", url, "", empty_headers())
+pub fn get_string(url: string) -> string fails HttpError {
+    request_string("GET", url, "", empty_headers())?
 }
 
 /// Perform an HTTP POST request and return the response body as a string.
 ///
-/// Returns `None` on transport or network failure. Non-2xx HTTP responses
-/// still return `Some` (the body may be empty); use `client.post`
+/// Returns an error on transport or network failure. Non-2xx HTTP responses
+/// still return `Ok` (the body may be empty); use `client.post`
 /// to inspect the status code.
 ///
 /// # Examples
@@ -287,13 +308,13 @@ pub fn get_string(url: string) -> Option<string> {
 ///         "application/json",
 ///         "{\"key\": \"value\"}",
 ///     ) {
-///         .Some(body) => println(body),
-///         .None => println("request failed"),
+///         .Ok(body) => println(body),
+///         .Err(err) => println(f"request failed: {err}"),
 ///     }
 /// }
 /// ```
-pub fn post_string(url: string, content_type: string, body: string) -> Option<string> {
-    request_string("POST", url, body, content_type_headers(content_type))
+pub fn post_string(url: string, content_type: string, body: string) -> string fails HttpError {
+    request_string("POST", url, body, content_type_headers(content_type))?
 }
 
 // ── FFI bindings (implementation detail) ──────────────────────────────
@@ -305,6 +326,6 @@ extern "C" {
     fn hew_http_response_status(resp: Response) -> i32;
     fn hew_http_response_body(resp: Response) -> string;
     fn hew_http_response_header(resp: Response, name: string) -> string;
-    fn hew_http_response_content_type(resp: Response) -> string;
+    fn hew_http_response_has_header(resp: Response, name: string) -> bool;
     fn hew_http_response_headers(resp: Response) -> Vec<(string, string)>;
 }

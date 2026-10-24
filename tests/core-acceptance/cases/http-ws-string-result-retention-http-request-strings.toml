@@ -6,6 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
 [case.expected]
-stdout = "28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n28\n"
-stderr = "hew: failure: UserPanic (212): HTTP request retention response failed\nhew: actor crash in Client.fetch (actor 1): UserPanic\nhew: failure: UserPanic (212): HTTP retention client failed\n"
-exit = 1
+stdout = "13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n13\n"
+exit = 0

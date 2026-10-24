@@ -4,102 +4,108 @@
 //!
 //! Each section fails the program (panicking assertion) if a malicious input is
 //! NOT rejected, so this is the executable regression for the security revision:
-//! oversized/over-declared requests fail closed (413 / -1), malformed framing
+//! oversized/over-declared requests fail closed (TooLarge), malformed framing
 //! fails closed (400), and CRLF in caller-provided builder fields is rejected
 //! (no injected header). A clean run prints `codec-hardening-ok`.
 
 import std.net.http.codec;
 
-import std.string;
+fn request_rejected(raw: string, status: i64) -> bool {
+    match codec.parse_request(raw) {
+        .Err(error) => error.status() == status,
+        .Ok(_) => false,
+    }
+}
 
-// ── F2: size caps fail closed (413 server / -1 client) ────────────────
+// ── F2: size caps fail closed (typed request and response errors) ────────────────
 fn check_f2_size_caps() {
     let nl = "\r\n";
     // An enormous declared Content-Length is rejected with 413 (a peer can no
     // longer force the server to wait for / buffer a giant body).
     let over_declared = f"POST / HTTP/1.1{nl}Content-Length: 99999999{nl}{nl}";
     assert(codec.over_limit(over_declared));
-    let req_over = codec.parse_request(over_declared);
-    assert(req_over.reject_status() == 413);
+    assert(request_rejected(over_declared, 413));
 
     // An unbounded head with no terminator is rejected once it crosses the
     // header ceiling (no unbounded buffering of a header flood).
     let huge_head = f"GET / HTTP/1.1{nl}X: " + ("a").repeat(70000);
     assert(codec.over_limit(huge_head));
-    let req_head = codec.parse_request(huge_head);
-    assert(req_head.reject_status() == 413);
+    assert(request_rejected(huge_head, 413));
 
     // The client side fails closed identically on an oversized response head.
     let huge_resp = f"HTTP/1.1 200 OK{nl}X: " + ("b").repeat(70000);
     assert(codec.response_over_limit(huge_resp));
-    let resp = codec.parse_response(huge_resp);
-    assert(resp.status() == -1);
+    assert(codec.parse_response(huge_resp).is_err());
+
+    // Read-to-close framing still enforces the body cap without Content-Length.
+    let huge_body = f"HTTP/1.1 200 OK{nl}{nl}" + "x".repeat(codec.CLIENT_MAX_BODY_BYTES + 1);
+    assert(codec.parse_response(huge_body).is_err());
 }
 
 // ── F3: malformed framing fails closed with 400 ───────────────────────
 fn check_f3_framing() {
     let nl = "\r\n";
-    // A well-formed request passes (reject_status 0).
+    // A well-formed request produces a value.
+    let incomplete = f"POST / HTTP/1.1{nl}Content-Length: 2{nl}{nl}a";
+    assert(codec.parse_request(incomplete).expect("incomplete body").is_none());
     let ok = f"GET /hello HTTP/1.1{nl}Host: h{nl}{nl}";
-    assert(codec.parse_request(ok).reject_status() == 0);
+    assert(codec.parse_request(ok).expect("valid request").is_some());
 
     // Request line with the wrong token count → 400.
     let two_token = f"GET /only{nl}{nl}";
-    assert(codec.parse_request(two_token).reject_status() == 400);
+    assert(request_rejected(two_token, 400));
 
     // Unsupported HTTP version → 400.
     let bad_ver = f"GET / HTTP/1.0{nl}{nl}";
-    assert(codec.parse_request(bad_ver).reject_status() == 400);
+    assert(request_rejected(bad_ver, 400));
 
     // Non-origin target → 400.
     let bad_target = f"GET haxor HTTP/1.1{nl}{nl}";
-    assert(codec.parse_request(bad_target).reject_status() == 400);
+    assert(request_rejected(bad_target, 400));
 
     // Transfer-Encoding is unsupported in this buffered codec → 400.
     let te = f"POST / HTTP/1.1{nl}Transfer-Encoding: chunked{nl}{nl}";
-    assert(codec.parse_request(te).reject_status() == 400);
+    assert(request_rejected(te, 400));
 
     // Duplicate / conflicting Content-Length → 400 (request smuggling vector).
     let dup_cl = f"POST / HTTP/1.1{nl}Content-Length: 4{nl}Content-Length: 5{nl}{nl}body";
-    assert(codec.parse_request(dup_cl).reject_status() == 400);
+    assert(request_rejected(dup_cl, 400));
 
     // Non-numeric Content-Length → 400 (was silently treated as 0 before).
     let bad_cl = f"POST / HTTP/1.1{nl}Content-Length: abc{nl}{nl}";
-    assert(codec.parse_request(bad_cl).reject_status() == 400);
+    assert(request_rejected(bad_cl, 400));
 }
 
 // ── F4: CRLF in caller-provided builder fields is rejected ─────────────
 fn check_f4_crlf() {
     // A path carrying an embedded CRLF would inject a header / split the request
-    // line — the client builder rejects it (empty string, request never sent).
+    // line — the client builder rejects it (checked error, request never sent).
     let injected_path = codec.build_request("GET", "h", "/x\r\nEvil: 1", "", "");
-    assert((injected_path).is_empty());
-    assert(!(injected_path).contains("Evil"));
+    assert(injected_path.is_err());
 
     // A host carrying an embedded CRLF is likewise rejected.
     let injected_host = codec.build_request("GET", "h\r\nEvil: 1", "/x", "", "");
-    assert((injected_host).is_empty());
+    assert(injected_host.is_err());
 
     // A method carrying a control character is rejected.
     let injected_method = codec.build_request("GE\nT", "h", "/x", "", "");
-    assert((injected_method).is_empty());
+    assert(injected_method.is_err());
 
     // A bare-LF in a content type is rejected.
     let injected_ct = codec.build_request("POST", "h", "/x", "data", "text/plain\nEvil: 1");
-    assert((injected_ct).is_empty());
+    assert(injected_ct.is_err());
 
     // A clean request still builds and carries no injected header.
-    let clean = codec.build_get("h", "/x");
+    let clean = codec.build_get("h", "/x").expect("valid request");
     assert(!(clean).is_empty());
     assert((clean).contains("GET /x HTTP/1.1"));
 
     // The server response builder rejects a CRLF-bearing content type.
     let injected_resp = codec.build_response(200, "text/plain\r\nEvil: 1", "ok");
-    assert((injected_resp).is_empty());
-    assert(!(injected_resp).contains("Evil"));
+    assert(injected_resp.is_err());
 
     // A clean response still builds.
-    let clean_resp = codec.response_text(200, "ok");
+    let clean_resp = codec.response_text(200, "ok").expect("valid response");
     assert(!(clean_resp).is_empty());
 }
 
@@ -110,47 +116,46 @@ fn check_sf1_content_length_overflow() {
     // bypass the body cap — it fails closed with 413 on the server.
     let overflow_cl = f"POST / HTTP/1.1{nl}Content-Length: 99999999999999999999999999{nl}{nl}";
     assert(codec.over_limit(overflow_cl));
-    let req_overflow = codec.parse_request(overflow_cl);
-    assert(req_overflow.reject_status() == 413);
+    assert(request_rejected(overflow_cl, 413));
 
     // An oversized-but-non-overflowing Content-Length above the ceiling is also
     // rejected (8 MiB + 1).
     let oversized_cl = f"POST / HTTP/1.1{nl}Content-Length: 8388609{nl}{nl}";
-    assert(codec.parse_request(oversized_cl).reject_status() == 413);
+    assert(request_rejected(oversized_cl, 413));
 
     // The client side fails closed identically on an overflowing declared
-    // response Content-Length (status -1, not fail-open).
+    // response Content-Length (typed error).
     let overflow_resp = f"HTTP/1.1 200 OK{nl}Content-Length: 99999999999999999999999999{nl}{nl}x";
     assert(codec.response_over_limit(overflow_resp));
-    assert(codec.parse_response(overflow_resp).status() == -1);
+    assert(codec.parse_response(overflow_resp).is_err());
 }
 
-// ── SF2: malformed response status lines fail closed (-1) ─────────────
+// ── SF2: malformed response status lines return checked errors ─────────────
 fn check_sf2_status_line() {
     let nl = "\r\n";
     // A non-HTTP version token with a numeric 2nd field is NOT a 200.
     let bogus = f"BOGUS 200{nl}{nl}";
-    assert(codec.parse_response(bogus).status() == -1);
+    assert(codec.parse_response(bogus).is_err());
 
     // An unrecognised HTTP version is rejected.
     let bad_ver = f"HTTP/9 200{nl}{nl}";
-    assert(codec.parse_response(bad_ver).status() == -1);
+    assert(codec.parse_response(bad_ver).is_err());
 
-    // A response missing the CRLF-CRLF terminator is not fully framed → -1.
+    // A response missing the CRLF-CRLF terminator is incomplete and needs more bytes.
     let no_term = f"HTTP/1.1 200 OK{nl}Content-Length: 0{nl}";
-    assert(codec.parse_response(no_term).status() == -1);
+    assert(codec.parse_response(no_term).expect("incomplete response").is_none());
 
     // A non-3-digit and an out-of-range status are rejected.
     let two_digit = f"HTTP/1.1 20 OK{nl}{nl}";
-    assert(codec.parse_response(two_digit).status() == -1);
+    assert(codec.parse_response(two_digit).is_err());
     let out_of_range = f"HTTP/1.1 700 Nope{nl}{nl}";
-    assert(codec.parse_response(out_of_range).status() == -1);
+    assert(codec.parse_response(out_of_range).is_err());
 
     // A well-formed status line (incl. HTTP/1.0) still parses to its code.
     let ok11 = f"HTTP/1.1 200 OK{nl}{nl}body";
-    assert(codec.parse_response(ok11).status() == 200);
+    assert(codec.parse_response(ok11).expect("valid response").expect("complete response").status() == 200);
     let ok10 = f"HTTP/1.0 404 Not Found{nl}{nl}";
-    assert(codec.parse_response(ok10).status() == 404);
+    assert(codec.parse_response(ok10).expect("valid response").expect("complete response").status() == 404);
 }
 
 // ── SF3: request header line without a colon fails closed (400) ───────
@@ -158,15 +163,15 @@ fn check_sf3_colonless_header() {
     let nl = "\r\n";
     // A header line with no ':' name/value separator is malformed → 400.
     let bad_header = f"GET / HTTP/1.1{nl}BadHeader{nl}{nl}";
-    assert(codec.parse_request(bad_header).reject_status() == 400);
+    assert(request_rejected(bad_header, 400));
 
     // A header line with an empty name (leading ':') is likewise rejected.
     let empty_name = f"GET / HTTP/1.1{nl}: value{nl}{nl}";
-    assert(codec.parse_request(empty_name).reject_status() == 400);
+    assert(request_rejected(empty_name, 400));
 
     // Well-formed headers still pass.
     let ok = f"GET / HTTP/1.1{nl}Host: h{nl}X-Trace: 1{nl}{nl}";
-    assert(codec.parse_request(ok).reject_status() == 0);
+    assert(codec.parse_request(ok).expect("valid request").is_some());
 }
 
 fn main() {

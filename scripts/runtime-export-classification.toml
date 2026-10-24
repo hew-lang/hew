@@ -942,6 +942,8 @@ stable-stdlib = [
   "hew_http_request_body_string",
   "hew_http_request_free",
   "hew_http_request_header",
+  "hew_http_request_has_header",
+  "hew_http_request_is_valid",
   "hew_http_request_headers",
   "hew_http_request_hew",
   "hew_http_request_method",
@@ -953,6 +955,7 @@ stable-stdlib = [
   "hew_http_response_body",
   "hew_http_response_content_type",
   "hew_http_response_free",
+  "hew_http_response_has_header",
   "hew_http_response_header",
   "hew_http_response_headers",
   "hew_http_response_status",
@@ -1051,6 +1054,9 @@ stable-stdlib = [
   "hew_quic_event_free",
   "hew_quic_event_kind",
   "hew_quic_last_error",
+  "hew_quic_endpoint_is_valid",
+  "hew_quic_conn_is_valid",
+  "hew_quic_stream_is_valid",
   "hew_quic_new_client",
   "hew_quic_new_client_with_ca",
   "hew_quic_new_server",
@@ -4899,6 +4905,22 @@ release-symbol = ""
 discharge-depth = "none"
 
 [[ownership.contracts]]
+symbol = "hew_http_request_has_header"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.server.Request", ""]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_request_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.http.server.Request"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
 symbol = "hew_http_request_header"
 result = "fresh"
 params = ["borrow", "borrow"]
@@ -5047,6 +5069,14 @@ symbol = "hew_http_response_free"
 result = "none"
 params = ["consume"]
 resource-param-types = ["std.net.http.client.Response"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_http_response_has_header"
+result = "none"
+params = ["borrow", "borrow"]
+resource-param-types = ["std.net.http.client.Response", ""]
 release-symbol = ""
 discharge-depth = "none"
 
@@ -5558,6 +5588,30 @@ params = []
 release-symbol = "hew_string_drop"
 discharge-depth = "shallow"
 result-retention = "transferred"
+
+[[ownership.contracts]]
+symbol = "hew_quic_endpoint_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICEndpoint"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_conn_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICConnection"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_quic_stream_is_valid"
+result = "none"
+params = ["borrow"]
+resource-param-types = ["std.net.quic.QUICStream"]
+release-symbol = ""
+discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_quic_new_client"

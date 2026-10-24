@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1668u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1674u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1674] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -3674,6 +3674,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
      "{\"native\": \"fn hew_http_request_free( *mut HewHttpRequest)\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_http_request_has_header",
+     "{\"native\": \"fn hew_http_request_has_header( *const HewHttpRequest, "
+     "*const HewString, ) -> bool\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_header",
      "{\"native\": \"fn hew_http_request_header( *const HewHttpRequest, *const "
      "HewString, ) -> *mut HewString\"}",
@@ -3687,6 +3692,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
     {"hew_http_request_hew",
      "{\"native\": \"fn hew_http_request_hew( *const HewString, *const "
      "HewString, *const HewString, *mut HewVec, ) -> *mut HewHttpResponse\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_http_request_is_valid",
+     "{\"native\": \"fn hew_http_request_is_valid( *const HewHttpRequest) -> "
+     "bool\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_request_method",
@@ -3746,6 +3756,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_free",
      "{\"native\": \"fn hew_http_response_free( *mut HewHttpResponse)\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_http_response_has_header",
+     "{\"native\": \"fn hew_http_response_has_header( *const HewHttpResponse, "
+     "*const HewString, ) -> bool\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_http_response_header",
@@ -5239,6 +5254,10 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
      "bool\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_quic_conn_is_valid",
+     "{\"native\": \"fn hew_quic_conn_is_valid( *const HewQuicConn) -> bool\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_quic_conn_last_error",
      "{\"native\": \"fn hew_quic_conn_last_error( *const HewQuicConn) -> *mut "
      "HewString\"}",
@@ -5290,6 +5309,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
     {"hew_quic_endpoint_connect",
      "{\"native\": \"fn hew_quic_endpoint_connect( *mut HewQuicEndpoint, "
      "*const HewString, *const HewString, ) -> *mut HewQuicConn\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_quic_endpoint_is_valid",
+     "{\"native\": \"fn hew_quic_endpoint_is_valid( *const HewQuicEndpoint) -> "
+     "bool\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_quic_endpoint_last_error",
@@ -5360,6 +5384,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1668] = {
     {"hew_quic_stream_finish",
      "{\"native\": \"fn hew_quic_stream_finish( *mut HewQuicStream) -> "
      "c_int\"}",
+     "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
+     HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_quic_stream_is_valid",
+     "{\"native\": \"fn hew_quic_stream_is_valid( *const HewQuicStream) -> "
+     "bool\"}",
      "native", "stable-stdlib", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_quic_stream_last_error",

@@ -1138,7 +1138,7 @@ actor RemoteCrashObserver {
     var notices: i64 = 0;
 
     receive fn attach(peer: KeyValue) -> Result<(), LinkError> {
-        assert(set_partition_policy(PartitionPolicy.CrashLinked));
+        assert(set_partition_policy(PartitionPolicy.CrashLinked).is_ok());
         link(peer)
     }
 
@@ -1175,7 +1175,7 @@ actor Linker {
         } else {
             PartitionPolicy.MonitorLost
         };
-        assert(set_partition_policy(policy));
+        assert(set_partition_policy(policy).is_ok());
         let status = link(peer);
         let ok = match status {
             Result.Ok(_) => true,

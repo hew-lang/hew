@@ -32,7 +32,7 @@
 //!
 //! fn main() {
 //!     let server = websocket.listen("0.0.0.0:8080").expect("listen");
-//!     let conn = server.accept();
+//!     let conn = server.accept().expect("accept connection");
 //!     if let .Ok(.Some(message)) = conn.recv() {
 //!         match message {
 //!             websocket.Message.Text(text) => conn.send_text(f"got {text}").expect("send"),
@@ -86,9 +86,15 @@ fn last_net_error() -> net.NetError {
         hew_ws_last_errno()
     };
     if errno == WS_INVALID_ARGUMENT {
-        net.NetError.InvalidArgument(last_error())
+        net.NetError.InvalidArgument(unsafe {
+            hew_ws_last_error()
+        })
     } else if errno == WS_TIMED_OUT {
         net.NetError.TimedOut(0)
+    } else if errno == 0 {
+        net.NetError.Protocol(unsafe {
+            hew_ws_last_error()
+        })
     } else {
         net.net_error_from_errno(errno)
     }
@@ -225,16 +231,23 @@ pub type Server {
 trait ServerMethods {
     /// Wait for the next client to complete a WebSocket handshake.
     /// A scope deadline cancels this wait without closing the listener.
-    fn accept(self) -> Conn;
+    fn accept(self) -> Conn fails net.NetError;
 
     /// Get the port the server is listening on.
     fn port(self) -> i64;
 }
 
 impl ServerMethods for Server {
-    fn accept(self) -> Conn {
-        unsafe {
+    fn accept(self) -> Conn fails net.NetError {
+        let connection = unsafe {
             hew_ws_server_accept(self)
+        };
+        if unsafe {
+            hew_ws_conn_is_valid(connection)
+        } {
+            connection
+        } else {
+            return error last_net_error();
         }
     }
     fn port(self) -> i64 {
@@ -285,16 +298,6 @@ pub trait WebSocketHandler {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
-/// Return the detail of this actor's most recent WebSocket failure.
-///
-/// Returns the empty string when the last call succeeded. Call it immediately
-/// after an `Err` for the precise, non-secret reason.
-pub fn last_error() -> string {
-    unsafe {
-        hew_ws_last_error()
-    }
-}
-
 /// Open a WebSocket connection to `url` (client).
 ///
 /// `ws://` and `wss://` are supported; `wss://` verifies the server with
@@ -304,8 +307,8 @@ pub fn last_error() -> string {
 /// and the upgrade together (`TimedOut`); resolving the host name is not
 /// bounded by it. `options.tls.io_timeout` bounds each send. A non-empty
 /// `options.subprotocols` must have one selected by the server. A bad URL or
-/// subprotocol name is `InvalidArgument`; `websocket.last_error()` has the
-/// precise detail of any failure.
+/// subprotocol name is `InvalidArgument`; the error carries the
+/// precise failure detail.
 ///
 /// # Examples
 ///
@@ -346,7 +349,7 @@ pub fn connect(url: string, options: ConnectOptions) -> Conn fails net.NetError 
 /// Start a WebSocket server listening on the given address.
 ///
 /// Returns `Err(net.NetError)` when the address cannot be bound. Use
-/// `websocket.last_error()` for the precise detail.
+/// the returned error for the precise detail.
 ///
 /// # Examples
 ///

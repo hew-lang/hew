@@ -23,12 +23,12 @@ fn main() {
     println(uuid.is_valid("not-a-uuid"));
 
     // Managed strings in both directions: borrowed argument, owned result.
-    println(ipnet.cidr_network("10.0.0.5/24"));
-    println(ipnet.cidr_broadcast("192.168.1.0/24") + "/32");
+    println(ipnet.cidr_network("10.0.0.5/24").expect("network"));
+    println(ipnet.cidr_broadcast("192.168.1.0/24").expect("network").expect("broadcast") + "/32");
     println(ipnet.is_v4("127.0.0.1"));
     println(ipnet.is_v6("::1"));
     println(ipnet.is_private("10.1.2.3"));
-    println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));
+    println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3").expect("contains"));
 
     // Accessors on an opaque handle each hand back their own owner.
     let u = url.parse("https://example.test:8080/a/b?q=hew#frag").expect("valid URL");

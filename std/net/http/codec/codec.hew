@@ -10,7 +10,6 @@
 //! ```
 //! import std.net;
 //! import std.net.http.codec;
-//! import std.string;
 //! import std.encoding.utf8;
 //!
 //! actor Fetcher {
@@ -19,7 +18,7 @@
 //!     let host: string;   // "127.0.0.1"
 //!     receive fn go(unused: i64) {
 //!         let conn = match net.connect(addr) { .Ok(value) => value, .Err(error) => panic("network operation failed"), };
-//!         conn.send(codec.build_get(host, path).to_bytes()).expect("send succeeds");
+//!         conn.send(codec.build_get(host, path).expect("valid request fields").to_bytes()).expect("send succeeds");
 //!         var raw = "";
 //!         var reads = 0;
 //!         var done = false;
@@ -45,7 +44,7 @@
 //!             }
 //!         }
 //!         let _ = conn.close();
-//!         let resp = codec.parse_response(raw);
+//!         let resp = codec.parse_response(raw).expect("valid response").expect("complete response");
 //!         println(resp.body());
 //!     }
 //! }
@@ -53,11 +52,9 @@
 
 import std.iter;
 
-import std.string;
-
 // ── Hardening limits (fail-closed DoS bounds) ─────────────────────────
 /// Maximum bytes accepted in the response head (status line + headers). A head
-/// larger than this fails closed (`status == -1`) rather than buffering unbounded.
+/// larger than this returns `ResponseError.TooLarge` before further buffering.
 pub const CLIENT_MAX_HEADER_BYTES: i64 = 65536;
 
 /// Maximum bytes accepted in the response body — also the `Content-Length`
@@ -73,13 +70,8 @@ pub const CLIENT_MAX_RESPONSE_BYTES: i64 = 16842752;
 /// closed. Bounds an endless-trickle server that never closes the connection.
 pub const CLIENT_MAX_READS: i64 = 8192;
 
-/// A fully-buffered HTTP/1.1 response parsed from the raw bytes read off a
-/// suspending connection. Exposes the same accessor surface as the blocking
-/// client's `Response` so downstream code is agnostic to which path produced it.
-///
-/// `code` is the parsed status code (`-1` on a malformed/empty response — the
-/// transport-failure convention the blocking client also uses). `body_text` is
-/// the response body. `header_section` is the raw header block (the lines
+/// A validated HTTP/1.1 response parsed from buffered text. `code` is the
+/// HTTP status code and `body_text` is the response body. `header_section` is the raw header block (the lines
 /// between the status line and the blank line, CRLF-separated), parsed on demand
 /// by [`Response.header`].
 pub type Response {
@@ -88,21 +80,35 @@ pub type Response {
     header_section: string;
 }
 
-/// Methods on [`Response`] — byte-identical surface to the blocking
-/// `Response` (`status` / `body` / `header` / `content_type`).
+/// A request or response that cannot be serialized safely.
+pub enum BuildError {
+    InvalidField(string);
+    InvalidStatus(i64);
+}
+
+impl Error for BuildError {}
+
+/// A malformed or oversized buffered HTTP response.
+pub enum ResponseError {
+    Malformed(string);
+    TooLarge;
+}
+
+impl Error for ResponseError {}
+
+/// Accessors for a successfully parsed HTTP response.
 trait ResponseMethods {
-    /// The HTTP status code (e.g. 200, 404), or `-1` on a transport/parse error.
+    /// The validated HTTP status code (e.g. 200, 404).
     fn status(self) -> i64;
 
     /// The response body as a string.
     fn body(self) -> string;
 
-    /// Look up a response header by name (case-insensitive). Returns an empty
-    /// string if the header is not present.
-    fn header(self, name: string) -> string;
+    /// Look up a response header by name (case-insensitive), or `None` if absent.
+    fn header(self, name: string) -> Option<string>;
 
-    /// The `Content-Type` response header (empty string if absent).
-    fn content_type(self) -> string;
+    /// The `Content-Type` response header, or `None` if absent.
+    fn content_type(self) -> Option<string>;
 }
 
 impl ResponseMethods for Response {
@@ -112,19 +118,19 @@ impl ResponseMethods for Response {
     fn body(self) -> string {
         self.body_text
     }
-    fn header(self, name: string) -> string {
-        find_response_header(self.header_section, name)
+    fn header(self, name: string) -> Option<string> {
+        find_header(self.header_section, name)
     }
-    fn content_type(self) -> string {
-        find_response_header(self.header_section, "Content-Type")
+    fn content_type(self) -> Option<string> {
+        find_header(self.header_section, "Content-Type")
     }
 }
 
 // ── Request building ──────────────────────────────────────────────────
 /// Build a `GET` request line + headers for `path` on `host`, with the
 /// `Connection: close` framing this buffered codec relies on (read-to-close).
-pub fn build_get(host: string, path: string) -> string {
-    build_request("GET", host, path, "", "")
+pub fn build_get(host: string, path: string) -> string fails BuildError {
+    build_request("GET", host, path, "", "")?
 }
 
 /// Build an HTTP/1.1 request: the request line, `Host`, `Connection: close`,
@@ -134,25 +140,24 @@ pub fn build_get(host: string, path: string) -> string {
 /// FAILS CLOSED on header smuggling (F4): a `method`, `host`, `path`, or
 /// `content_type` carrying a `\r`/`\n` or other control character would inject
 /// extra headers (or split the request line), so any such value is rejected and
-/// an empty string is returned — the caller writes nothing and the request is
-/// never sent with an attacker-controlled header.
-pub fn build_request(method: string, host: string, path: string, body: string, content_type: string) -> string {
+/// a checked error is returned before any request bytes are emitted.
+pub fn build_request(method: string, host: string, path: string, body: string, content_type: string) -> string fails BuildError {
     let req_path = if (path).is_empty() {
         "/"
     } else {
         path
     };
     if contains_control_char(method) {
-        return "";
+        return error BuildError.InvalidField("method contains a control character");
     }
     if contains_control_char(host) {
-        return "";
+        return error BuildError.InvalidField("host contains a control character");
     }
     if contains_control_char(req_path) {
-        return "";
+        return error BuildError.InvalidField("req_path contains a control character");
     }
     if contains_control_char(content_type) {
-        return "";
+        return error BuildError.InvalidField("content_type contains a control character");
     }
     let nl = "\r\n";
     var req = f"{method} {req_path} HTTP/1.1" + nl;
@@ -303,37 +308,47 @@ pub fn response_over_limit(raw: string) -> bool {
     return declared > CLIENT_MAX_BODY_BYTES;
 }
 
-/// Parse the raw bytes read off a connection into an [`Response`]. The
-/// header/body boundary is the first CRLF-CRLF; the status code is parsed and
-/// VALIDATED from the status line. A response is rejected with `code == -1` (the
-/// transport-failure convention) when it is empty, exceeds a size bound (F2/SF1),
-/// is missing the CRLF-CRLF header terminator (SF2), or has a status line that is
-/// not a valid `HTTP/1.x` version + 3-digit `100`-`599` status (SF2).
-pub fn parse_response(raw: string) -> Response {
-    if (raw).is_empty() {
-        return Response { code: -1, body_text: "", header_section: "" };
-    }
+/// Parse a buffered HTTP response. `None` means more header or declared body
+/// bytes are needed; malformed framing and size limits return an error.
+/// Responses without `Content-Length` use the caller's read-to-close framing.
+pub fn parse_response(raw: string) -> Option<Response> fails ResponseError {
     if response_over_limit(raw) {
-        return Response { code: -1, body_text: "", header_section: "" };
+        return error ResponseError.TooLarge;
     }
     let sep = match raw.find("\r\n\r\n") {
         .Some(i) => i,
-        // SF2 — no header terminator: the response is not fully framed.
-        .None => return Response { code: -1, body_text: "", header_section: "" },
+        .None => return .None,
     };
     let head = raw[0..sep];
     let body = raw[sep + 4 .. raw.len()];
-    let head_lines = (head).split("\r\n");
-    let status_line = if head_lines.len() > 0 {
-        head_lines[0]
-    } else {
-        ""
-    };
-    let code = parse_status_code(status_line);
-    // The header section is the head with the status line removed (the lines
-    // after the first CRLF), re-joined for on-demand `header()` lookups.
+    if body.len() > CLIENT_MAX_BODY_BYTES {
+        return error ResponseError.TooLarge;
+    }
+    let code = parse_status_code(first_line(head));
+    if code < 0 {
+        return error ResponseError.Malformed("invalid HTTP status line");
+    }
     let header_section = header_section_of(head);
-    Response { code: code, body_text: body, header_section: header_section }
+    if !headers_have_colons(header_section) || header_count(header_section, "Transfer-Encoding") > 0 {
+        return error ResponseError.Malformed("invalid or unsupported response headers");
+    }
+    let count = header_count(header_section, "Content-Length");
+    if count > 1 {
+        return error ResponseError.Malformed("duplicate Content-Length");
+    }
+    if count == 1 {
+        let length = match find_header(header_section, "Content-Length") {
+            .Some(value) => value,
+            .None => "",
+        };
+        if length.is_empty() || !iter.all(length.iter(), |c: char| c.is_digit()) {
+            return error ResponseError.Malformed("invalid Content-Length");
+        }
+        if body.len() < declared_content_length(header_section) {
+            return .None;
+        }
+    }
+    .Some(Response { code: code, body_text: body, header_section: header_section })
 }
 
 /// Parse + validate the status code from an HTTP status line
@@ -396,42 +411,19 @@ fn header_section_of(head: string) -> string {
     }
 }
 
-/// Case-insensitive header lookup over a CRLF-separated header section.
-fn find_response_header(header_section: string, name: string) -> string {
-    if (header_section).is_empty() {
-        return "";
-    }
-    let target = name.to_lower();
-    let lines = (header_section).split("\r\n");
-    let n = lines.len();
-    var found = "";
-    for i in 0..n {
-        let line = lines[i];
-        // A colon at index 0 is an empty header name — skip it, exactly as
-        // the old `colon > 0` guard did.
-        match line.find(":") {
-            .Some(colon) if colon > 0 => {
-                let key = (line[0..colon]).trim().to_lower();
-                if key == target {
-                    found = (line[colon + 1 .. line.len()]).trim();
-                }
-            }
-            _ => {}
-        }
-    }
-    found
-}
-
 /// The declared `Content-Length` of a header section, or `0` when absent/invalid.
 /// Used to bound the read loop (see [`response_over_limit`]).
 ///
 /// The value is parsed into a BOUNDED integer (SF1): an all-digit value that
 /// OVERFLOWS i64 saturates to `CLIENT_MAX_BODY_BYTES + 1` — guaranteed to exceed the
 /// body ceiling — so an overflowing `Content-Length` fails closed (the response
-/// is rejected with `status == -1`) rather than `string.to_int` returning `0`
+/// returns `ResponseError.TooLarge`) rather than treating overflow as zero
 /// and the oversized body bypassing the cap. A non-numeric value reads to close.
 fn declared_content_length(header_section: string) -> i64 {
-    let value = find_response_header(header_section, "Content-Length");
+    let value = match find_header(header_section, "Content-Length") {
+        .Some(value) => value,
+        .None => "",
+    };
     if (value).is_empty() {
         return 0;
     }

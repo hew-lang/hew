@@ -42,18 +42,18 @@ fn main() {
     let listen_addr = f":{port}";
     // Create a QUIC server endpoint on a fixed address.
     // Self-signed certificate is auto-generated for development.
-    let ep = quic.new_server(listen_addr);
+    let ep = quic.new_server(listen_addr).expect("QUIC operation succeeds");
     println(f"[server] listening on :{port}");
 
     // Accept one incoming connection.
-    let conn = ep.accept();
+    let conn = ep.accept().expect("QUIC operation succeeds");
     let connected = ep.on_event();
     assert(connected.kind() == 0);
     connected.close();
     println("[server] accepted connection");
 
     // Accept a stream on that connection.
-    let stream = conn.accept_stream();
+    let stream = conn.accept_stream().expect("QUIC operation succeeds");
     let opened = conn.on_event();
     assert(opened.kind() == 2);
     opened.close();
@@ -86,7 +86,7 @@ fn main() {
     assert((kind1 == 3 || kind2 == 3) && (kind1 == 1 || kind2 == 1));
 
     // Clean shutdown of connection.
-    assert_ok(conn.disconnect());
+    conn.close();
 
     // Clean shutdown of endpoint.
     ep.close();

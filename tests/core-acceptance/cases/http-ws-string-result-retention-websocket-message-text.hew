@@ -8,7 +8,7 @@ actor Client {
     receive fn send_frames(unused: i64) {
         match websocket.connect(url, websocket.options()) {
             .Ok(connection) => {
-                for _ in 0 .. frames {
+                for _ in 0..frames {
                     if connection.send_text("message-owner").is_err() {
                         panic("WebSocket retention send failed")
                     }
@@ -41,8 +41,8 @@ fn main() {
             // Calling it inline would leave nobody to accept or drain.
             scope {
                 let _driver = fork drive_client(client);
-                let connection = server.accept();
-                for _ in 0 .. 50 {
+                let connection = server.accept().expect("accept connection");
+                for _ in 0..50 {
                     match connection.recv() {
                         .Ok(.Some(websocket.Message.Text(text))) => println(text.len()),
                         _ => panic("WebSocket retention expected a text message"),

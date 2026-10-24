@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 60
 
 [case.expected]
-stdout = "15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n15\n"
+stdout = "56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n56\n"
 exit = 0

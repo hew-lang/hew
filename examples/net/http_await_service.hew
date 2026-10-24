@@ -8,8 +8,6 @@ import std.net;
 
 import std.net.http.codec;
 
-import std.string;
-
 fn serve(consume listener: net.Listener, requests: i64) {
     for r in 0..requests {
         let conn = listener.accept().expect("accept");
@@ -40,15 +38,15 @@ fn serve(consume listener: net.Listener, requests: i64) {
                 done = true;
             }
         }
-        let req = codec.parse_request(raw);
-        var reply = codec.response_text(req.reject_status(), "rejected");
-        if req.is_valid() {
-            reply = match req.path() {
+        let reply = match codec.parse_request(raw) {
+            .Ok(.Some(req)) => match req.path() {
                 "/hello" => codec.response_text(200, "hi from hew"),
                 "/health" => codec.response_json(200, "{\"status\":\"ok\"}"),
                 _ => codec.response_text(404, "not found"),
-            };
-        }
+            }
+            .Ok(.None) => codec.response_text(400, "incomplete request"),
+            .Err(error) => codec.response_text(error.status(), "rejected"),
+        }.expect("valid response fields");
         let _ = conn.send(reply.to_bytes());
         let _ = conn.close();
     }
@@ -60,7 +58,7 @@ fn fetch(addr: string, host: string, path: string) {
         .Ok(conn) => conn,
         .Err(_) => panic(f"network setup failed"),
     };
-    let _ = conn.send(codec.build_get(host, path).to_bytes());
+    let _ = conn.send(codec.build_get(host, path).expect("valid request fields").to_bytes());
     var raw = "";
     var reads = 0;
     var done = false;
@@ -87,9 +85,13 @@ fn fetch(addr: string, host: string, path: string) {
         }
     }
     let _ = conn.close();
-    let resp = codec.parse_response(raw);
+    let resp = codec.parse_response(raw).expect("valid response").expect("complete response");
+    let content_type = match resp.content_type() {
+        .Some(value) => value,
+        .None => "",
+    };
     let line = match resp.status() {
-        200 => f"GET {path} -> 200 {resp.content_type()}: {resp.body()}",
+        200 => f"GET {path} -> 200 {content_type}: {resp.body()}",
         code => f"GET {path} -> {code}",
     };
     println(line);

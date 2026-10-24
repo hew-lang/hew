@@ -73,15 +73,17 @@ const TLS_STATUS_TLS_ERROR: i32 = 2;
 
 const TLS_STATUS_IO_ERROR: i32 = 3;
 
-fn tls_error_from_status(status: i32) -> net.NetError { // INTERNAL-ABI: TLS FFI bridge reports a small status enum; detail stays in last_error()
+fn tls_error_from_status(status: i32) -> net.NetError { // INTERNAL-ABI: TLS FFI bridge reports a small status enum; capture detail before the next operation
     if status == TLS_STATUS_RETRYABLE {
-        NetError.TimedOut(0)
+        net.NetError.TimedOut(0)
     } else {
-        NetError.Other(0)
+        net.NetError.Protocol(unsafe {
+            hew_tls_last_error()
+        })
     }
 }
 
-fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
+fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result and captures failure detail
     if raw.status == TLS_STATUS_SUCCESS {
         .Ok(raw.written as i64)
     } else {
@@ -89,7 +91,7 @@ fn tls_write_result(raw: TlsWriteFfiResult) -> Result<i64, net.NetError> { // IN
     }
 }
 
-fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result while leaving detail in last_error()
+fn tls_read_result(raw: TlsReadFfiResult) -> Result<bytes, net.NetError> { // INTERNAL-ABI: bridge helper lifts raw FFI status into Result and captures failure detail
     if raw.status == TLS_STATUS_SUCCESS {
         .Ok(raw.data)
     } else {
@@ -142,7 +144,7 @@ trait TlsStreamMethods {
     /// Read up to `size` bytes from the TLS stream.
     ///
     /// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
-    /// retryable/TLS/I-O failures. Use `last_error()` for the precise class.
+    /// retryable/TLS/I-O failures. The error retains the precise failure detail.
     ///
     /// Cancellation leaves the borrowed connection open, but an already-started
     /// read may consume bytes whose result is abandoned.
@@ -204,8 +206,7 @@ const TLS_CONNECT_OS: i32 = 3;
 /// `options.handshake_timeout` or the result is `TimedOut`; resolving `host`
 /// precedes them and is not bounded by the deadline. A bad trust PEM,
 /// host or port is `InvalidArgument`; a certificate the trust does not
-/// accept, or a hostname mismatch, is `Other` with the alert in
-/// `last_error()`. Waiting suspends the caller so unrelated actors can run.
+/// accept, or a hostname mismatch, is `Protocol` with the alert detail. Waiting suspends the caller so unrelated actors can run.
 pub fn connect(host: string, port: i64, options: TlsOptions) -> TlsStream fails net.NetError {
     let checked = net.port_arg("tls.connect", port)?;
     let handshake_ms = net.duration_ms("tls.connect handshake_timeout", options.handshake_timeout)?;
@@ -222,47 +223,15 @@ pub fn connect(host: string, port: i64, options: TlsOptions) -> TlsStream fails 
         let failure = hew_tls_connect_failure();
         let errno = hew_tls_connect_errno();
         if failure == TLS_CONNECT_INVALID_ARGUMENT {
-            return error NetError.InvalidArgument(hew_tls_last_error());
+            return error net.NetError.InvalidArgument(hew_tls_last_error());
         } else if failure == TLS_CONNECT_TIMED_OUT {
-            return error NetError.TimedOut(errno);
+            return error net.NetError.TimedOut(errno);
         } else if failure == TLS_CONNECT_OS {
             return error net.net_error_from_errno(errno);
         } else {
-            return error NetError.Other(errno);
+            return error net.NetError.Protocol(hew_tls_last_error());
         }
     }
-}
-
-/// Return the last TLS client error observed on this thread.
-///
-/// A failed `connect()` records its detail here, including the alert of a
-/// verification failure. Successful connects clear it.
-pub fn last_error() -> string {
-    unsafe {
-        hew_tls_last_error()
-    }
-}
-
-/// Write raw bytes to a TLS stream.
-///
-/// Returns the number of bytes written, or `Err(net.NetError)` on failure.
-pub fn write(stream: TlsStream, data: bytes) -> Result<i64, net.NetError> {
-    stream.write(data)
-}
-
-/// Read up to `size` bytes from a TLS stream.
-///
-/// Returns `Ok(bytes)` on success or orderly EOF, or `Err(net.NetError)` on
-/// retryable/TLS/I-O failures. Call `last_error()` for the precise detail.
-pub fn read(stream: TlsStream, size: i64) -> Result<bytes, net.NetError> {
-    stream.read(size)
-}
-
-/// Close a TLS connection and release resources.
-pub fn close(consume stream: TlsStream) {
-    unsafe {
-        hew_tls_close(stream)
-    };
 }
 
 // ── FFI bindings ──────────────────────────────────────────────────────
@@ -275,40 +244,4 @@ extern "C" {
     fn hew_tls_write_result(stream: TlsStream, data: bytes) -> TlsWriteFfiResult;
     fn hew_tls_read_result(stream: TlsStream, size: i32) -> TlsReadFfiResult;
     fn hew_tls_close(consume stream: TlsStream);
-}
-
-// ── Status-code parity tests ──────────────────────────────────────────
-// `TLS_STATUS_*` mirrors `hew-std/src/tls.rs`'s `TLS_STATUS_*` constants
-// (pinned cross-side in `hew-std/src/tls.rs`'s
-// `hew_binding_pins_tls_status_constants` test). These tests exercise the
-// Hew-side consumer of those codes, `tls_error_from_status`, which is
-// module-private and therefore only reachable from an inline test here.
-#[test]
-fn tls_error_from_status_retryable_maps_to_timed_out() {
-    assert(tls_error_from_status(TLS_STATUS_RETRYABLE) == NetError.TimedOut(0));
-}
-
-#[test]
-fn tls_error_from_status_success_never_reached_maps_like_other() {
-    // TLS_STATUS_SUCCESS is never actually passed to this function in
-    // production (callers branch on success before calling it), but the
-    // function itself has no dedicated arm for it, so it falls into the
-    // same `else` branch as TLS_ERROR/IO_ERROR. Pinned here so a stray
-    // caller passing SUCCESS gets the current (non-crashing) behavior.
-    assert(tls_error_from_status(TLS_STATUS_SUCCESS) == NetError.Other(0));
-}
-
-#[test]
-fn tls_error_from_status_tls_error_and_io_error_currently_collapse() {
-    // KNOWN SIMPLIFICATION (not a bug): `TLS_STATUS_TLS_ERROR` (2) and
-    // `TLS_STATUS_IO_ERROR` (3) both fall through to `NetError::Other(0)`
-    // today — there is no dedicated `NetError` variant distinguishing a
-    // TLS-protocol failure from a plain I/O failure. This test pins that
-    // collapse as current, deliberate behavior; changing the mapping is a
-    // separate product decision, not something to do incidentally here.
-    let tls_error = tls_error_from_status(TLS_STATUS_TLS_ERROR);
-    let io_error = tls_error_from_status(TLS_STATUS_IO_ERROR);
-    assert(tls_error == NetError.Other(0));
-    assert(io_error == NetError.Other(0));
-    assert(tls_error == io_error);
 }

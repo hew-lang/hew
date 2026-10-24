@@ -5,7 +5,7 @@
 //!
 //! `tls.connect` returns once the handshake has completed, or a typed
 //! `NetError` (`TimedOut` past the deadline, `Other` with the alert in
-//! `tls.last_error()` when verification fails). Request and response bodies
+//! the error detail when verification fails). Request and response bodies
 //! are `bytes`: build a request with `string.to_bytes()` and decode a
 //! response with `utf8.decode()`.
 
@@ -21,7 +21,7 @@ fn main() {
     let stream = match tls.connect(host, 443, options) {
         .Ok(stream) => stream,
         .Err(error) => {
-            println(f"connect failed: {error} {tls.last_error()}");
+            println(f"connect failed: {error}");
             return;
         }
     };
@@ -42,6 +42,6 @@ fn main() {
             };
             println(f"response: {status_line}");
         }
-        .Err(_) => println(f"read error: {tls.last_error()}"),
+        .Err(error) => println(f"read error: {error}"),
     }
 }

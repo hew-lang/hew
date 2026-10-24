@@ -10,9 +10,9 @@ fn test_parse_simple_version_components() {
         .Ok(version) => version,
         .Err(reason) => panic(f"{reason}"),
     };
-    assert(v.major() == 1);
-    assert(v.minor() == 2);
-    assert(v.patch() == 3);
+    assert(v.major().expect("component fits i64") == 1);
+    assert(v.minor().expect("component fits i64") == 2);
+    assert(v.patch().expect("component fits i64") == 3);
 }
 
 #[test]
@@ -21,9 +21,9 @@ fn test_parse_zero_version() {
         .Ok(version) => version,
         .Err(reason) => panic(f"{reason}"),
     };
-    assert(v.major() == 0);
-    assert(v.minor() == 0);
-    assert(v.patch() == 0);
+    assert(v.major().expect("component fits i64") == 0);
+    assert(v.minor().expect("component fits i64") == 0);
+    assert(v.patch().expect("component fits i64") == 0);
 }
 
 #[test]
@@ -32,17 +32,17 @@ fn test_parse_pre_release_label() {
         .Ok(version) => version,
         .Err(reason) => panic(f"{reason}"),
     };
-    assert(v.major() == 2);
-    assert(v.pre() == "alpha.1");
+    assert(v.major().expect("component fits i64") == 2);
+    assert(v.pre() == .Some("alpha.1"));
 }
 
 #[test]
-fn test_parse_no_pre_release_returns_empty_string() {
+fn test_parse_release_has_no_pre_release() {
     let v = match semver.parse("1.0.0") {
         .Ok(version) => version,
         .Err(reason) => panic(f"{reason}"),
     };
-    assert(v.pre() == "");
+    assert(v.pre().is_none());
 }
 
 #[test]
@@ -51,9 +51,9 @@ fn test_parse_large_component_values() {
         .Ok(version) => version,
         .Err(reason) => panic(f"{reason}"),
     };
-    assert(v.major() == 10);
-    assert(v.minor() == 20);
-    assert(v.patch() == 30);
+    assert(v.major().expect("component fits i64") == 10);
+    assert(v.minor().expect("component fits i64") == 20);
+    assert(v.patch().expect("component fits i64") == 30);
 }
 
 #[test]
@@ -68,6 +68,10 @@ fn test_unbounded_core_components_round_trip_and_compare_by_magnitude() {
     };
     assert(huge.to_string() == "184467440737095516161844674407370955161.2.3");
     assert(huge.compare(smaller) == 1);
+    match huge.major() {
+        .Err(.ComponentOutOfRange(component)) => assert(component == "major"),
+        _ => panic("oversized component must return its narrowing error"),
+    }
 }
 
 #[test]

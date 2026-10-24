@@ -16,9 +16,9 @@ actor Client {
 
     receive fn fetch(unused: i64) {
         assert(client.set_timeout(3000ms).is_ok());
-        let resp = client.get(url);
+        let resp = client.get(url).expect("HTTP request succeeds");
         status = resp.status();
-        body = resp.body();
+        body = resp.body().expect("HTTP body decodes");
         resp.close();
     }
 
@@ -41,13 +41,12 @@ actor Client {
 fn test_server_client_roundtrip_returns_200_and_echoes_path() {
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
-            let port = http.server_port(server);
+            let port = server.port();
             let client = spawn Client { url: f"http://127.0.0.1:{port}/ping", status: 0, body: "" };
             let request = fork client.fetch(0);
-            let req = server.accept();
+            let req = server.accept().expect("accept connection");
             let path = req.path();
-            let _ = req.respond_text(200, "pong:" + path);
-            req.close();
+            req.respond_text(200, "pong:" + path).expect("send response");
             server.close();
             assert((await request).is_ok());
             match client.status_result() {

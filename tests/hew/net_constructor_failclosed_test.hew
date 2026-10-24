@@ -87,7 +87,6 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
             match err {
                 NetError.InvalidArgument(detail) => {
                     assert(detail == "http.listen: cannot bind `not an address`: invalid socket address");
-                    assert(http.listen_error() == detail);
                 }
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -95,14 +94,10 @@ fn test_http_listen_reports_an_unparsable_address_as_a_failure() {
     }
 }
 
-/// The detail slot is per-actor and is cleared by a successful construction,
-/// so a later failure cannot be read as a stale success and vice versa.
+/// A failed construction must not poison a later valid listener.
 #[test]
 #[real_time]
-fn test_http_listen_clears_the_detail_slot_on_success() {
-    // An occupied port carries a real errno, so the `Err` branch classifies it
-    // without reading the detail. That leaves the detail for this test to
-    // observe, which is what makes the success clear checkable at all.
+fn test_http_listen_succeeds_after_a_bind_failure() {
     match websocket.listen("127.0.0.1:0") {
         .Ok(held) => {
             let port = held.port();
@@ -124,8 +119,8 @@ fn test_http_listen_clears_the_detail_slot_on_success() {
     }
     match http.listen("127.0.0.1:0") {
         .Ok(server) => {
+            assert(server.port() > 0);
             server.close();
-            assert(http.listen_error() == "");
         }
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");
@@ -186,7 +181,6 @@ fn test_websocket_listen_reports_an_unparsable_address_as_invalid_argument() {
             match err {
                 NetError.InvalidArgument(detail) => {
                     assert(detail == "websocket.listen: cannot bind `not an address`");
-                    assert(websocket.last_error() == detail);
                 }
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -208,8 +202,8 @@ fn test_websocket_connect_reports_a_refused_connection_as_a_failure() {
         }
         .Err(err) => {
             match err {
-                NetError.ConnectionRefused(_errno) => {
-                    assert(!websocket.last_error().is_empty());
+                NetError.ConnectionRefused(errno) => {
+                    assert(errno != 0);
                 }
                 _ => panic(f"expected ConnectionRefused, got {err}"),
             }
@@ -229,7 +223,6 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
             match err {
                 NetError.InvalidArgument(detail) => {
                     assert(detail == "websocket.connect: HTTP format error: invalid uri character");
-                    assert(websocket.last_error() == detail);
                 }
                 _ => panic(f"expected InvalidArgument, got {err}"),
             }
@@ -239,7 +232,7 @@ fn test_websocket_connect_reports_an_unparsable_url_as_a_failure() {
 
 #[test]
 #[real_time]
-fn test_websocket_listen_clears_the_detail_slot_on_success() {
+fn test_websocket_listen_succeeds_after_a_connection_failure() {
     let port = closed_loopback_port();
     let target = f"ws://127.0.0.1:{port}/";
     match websocket.connect(target, websocket.options()) {
@@ -251,8 +244,8 @@ fn test_websocket_listen_clears_the_detail_slot_on_success() {
     }
     match websocket.listen("127.0.0.1:0") {
         .Ok(server) => {
+            assert(server.port() > 0);
             server.close();
-            assert(websocket.last_error() == "");
         }
         .Err(_err) => {
             panic("expected an ephemeral loopback bind to succeed");

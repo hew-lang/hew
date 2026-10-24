@@ -13,11 +13,20 @@
 //!             println("private IP");
 //!         }
 //!     }
-//!     if ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3") {
+//!     if ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3").expect("valid CIDR") {
 //!         println("in range");
 //!     }
 //! }
 //! ```
+
+/// Invalid address syntax or a host count outside the language's integer range.
+pub enum IpNetError {
+    InvalidCidr(string);
+    InvalidAddress(string);
+    HostCountOverflow;
+}
+
+impl Error for IpNetError {}
 
 /// Test whether a string is a valid IP address (v4 or v6).
 pub fn is_valid(addr: string) -> bool {
@@ -62,16 +71,19 @@ pub fn is_private(addr: string) -> bool {
 /// import std.net.ipnet;
 ///
 /// fn main() {
-///     println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));   // true
-///     println(ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1"));   // false
+///     println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3").expect("valid CIDR"));   // true
+///     println(ipnet.cidr_contains("10.0.0.0/8", "172.16.0.1").expect("valid CIDR"));   // false
 /// }
 /// ```
-pub fn cidr_contains(cidr: string, ip: string) -> bool {
+pub fn cidr_contains(cidr: string, ip: string) -> bool fails IpNetError {
+    if !is_valid(ip) {
+        return error IpNetError.InvalidAddress(ip);
+    }
     let contains = unsafe {
         hew_cidr_contains(cidr, ip)
     };
     if contains < 0 {
-        panic("ipnet.cidr_contains: invalid CIDR or IP address");
+        return error IpNetError.InvalidCidr(cidr);
     }
     contains == 1
 }
@@ -84,16 +96,20 @@ pub fn cidr_contains(cidr: string, ip: string) -> bool {
 /// import std.net.ipnet;
 ///
 /// fn main() {
-///     println(ipnet.cidr_network("192.168.1.0/24"));   // "192.168.1.0"
+///     println(ipnet.cidr_network("192.168.1.0/24").expect("valid CIDR"));   // "192.168.1.0"
 /// }
 /// ```
-pub fn cidr_network(cidr: string) -> string {
-    unsafe {
+pub fn cidr_network(cidr: string) -> string fails IpNetError {
+    let network = unsafe {
         hew_cidr_network(cidr)
+    };
+    if network.is_empty() {
+        return error IpNetError.InvalidCidr(cidr);
     }
+    network
 }
 
-/// Return the broadcast address of a CIDR block.
+/// Return the IPv4 broadcast address; IPv6 networks have no broadcast address.
 ///
 /// # Examples
 ///
@@ -101,12 +117,17 @@ pub fn cidr_network(cidr: string) -> string {
 /// import std.net.ipnet;
 ///
 /// fn main() {
-///     println(ipnet.cidr_broadcast("192.168.1.0/24"));   // "192.168.1.255"
+///     println(ipnet.cidr_broadcast("192.168.1.0/24").expect("valid CIDR").expect("IPv4 broadcast"));   // "192.168.1.255"
 /// }
 /// ```
-pub fn cidr_broadcast(cidr: string) -> string {
-    unsafe {
-        hew_cidr_broadcast(cidr)
+pub fn cidr_broadcast(cidr: string) -> Option<string> fails IpNetError {
+    let network = cidr_network(cidr)?;
+    if is_v6(network) {
+        .None
+    } else {
+        .Some(unsafe {
+            hew_cidr_broadcast(cidr)
+        })
     }
 }
 
@@ -118,15 +139,18 @@ pub fn cidr_broadcast(cidr: string) -> string {
 /// import std.net.ipnet;
 ///
 /// fn main() {
-///     println(ipnet.cidr_hosts("192.168.1.0/24"));   // 254
+///     println(ipnet.cidr_hosts("192.168.1.0/24").expect("valid CIDR"));   // 254
 /// }
 /// ```
-pub fn cidr_hosts(cidr: string) -> i64 {
+pub fn cidr_hosts(cidr: string) -> i64 fails IpNetError {
     let hosts = unsafe {
         hew_cidr_hosts(cidr)
     };
-    if hosts < 0 {
-        panic("ipnet.cidr_hosts: invalid CIDR or host count exceeds i64");
+    if hosts == -1 {
+        return error IpNetError.InvalidCidr(cidr);
+    }
+    if hosts == -2 {
+        return error IpNetError.HostCountOverflow;
     }
     hosts
 }

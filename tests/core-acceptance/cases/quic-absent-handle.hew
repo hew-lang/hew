@@ -1,42 +1,20 @@
-import std.net;
-
 import std.net.quic;
 
-fn require_absent(result: Result<(), net.NetError>, message: string) {
-    match result {
-        .Err(.InvalidArgument(reason)) => assert(reason == message),
-        _ => panic("an absent QUIC handle must report why it cannot be used"),
-    }
-}
-
 fn main() {
-    let endpoint = quic.new_client();
-    let connection = endpoint.connect("not-an-address", "localhost");
-    assert(endpoint.observe().last_error.contains("parse failure"));
-    let stream = connection.open_stream();
-    let absent = "this QUIC stream was never opened";
-    require_absent(stream.send_string("unreachable"), absent);
-    require_absent(stream.send_timeout(b"unreachable", 10ms), absent);
-    match stream.recv_timeout(10ms) {
-        .Err(.InvalidArgument(reason)) => assert(reason == absent),
-        _ => panic("an absent QUIC stream must not read as EOF or timeout"),
+    match quic.new_server("not-an-address") {
+        .Err(.Protocol(detail)) => assert(!detail.is_empty()),
+        _ => panic("invalid listener address must fail construction"),
     }
-    // Non-positive typed deadlines disable the timer before ABI narrowing.
-    for timeout in [0ns, -1ns, duration.from_nanos(-9223372036854775807 - 1)] {
-        require_absent(stream.send_timeout(b"unreachable", timeout), absent);
-        match stream.recv_timeout(timeout) {
-            .Err(.InvalidArgument(reason)) => assert(reason == absent),
-            _ => panic("disabled deadline must preserve absent-handle reporting"),
-        }
+    match quic.new_client_with_ca("not a certificate") {
+        .Err(.Protocol(detail)) => assert(!detail.is_empty()),
+        _ => panic("invalid trust must fail construction"),
     }
-    match stream.recv_timeout(duration.from_millis(2147483647) + 1ns) {
-        .Err(.InvalidArgument(reason)) => assert(reason.contains("invalid duration")),
-        _ => panic("rounded deadline must fit the native millisecond range"),
+    let endpoint = quic.new_client().expect("client endpoint");
+    match endpoint.connect("not-an-address", "localhost") {
+        .Err(.Protocol(detail)) => assert(detail.contains("parse failure")),
+        _ => panic("invalid connection address must not produce a handle"),
     }
-    require_absent(stream.finish(), absent);
-    require_absent(stream.stop(0), absent);
-    stream.close();
-    require_absent(connection.disconnect(), "this QUIC connection was never established");
+    assert(endpoint.observe().local_addr.contains(":"));
     endpoint.close();
     println("absent QUIC handles rejected");
 }

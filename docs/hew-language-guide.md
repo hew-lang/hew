@@ -5489,8 +5489,8 @@ fn main() {
 verified handshake before it returns, all within `handshake_timeout`; then
 `io_timeout` bounds each read and write (`0s` is none). Failures are typed
 `NetError`s: `TimedOut` past the deadline, `InvalidArgument` for a bad host,
-port, duration or trust PEM, and `Other` for a certificate the trust does not
-accept, with the alert in `tls.last_error()`. `Trust.Bundled` is the Mozilla
+port, duration or trust PEM, and `Protocol(detail)` for a certificate the trust
+does not accept, with the alert carried by the error. `Trust.Bundled` is the Mozilla
 root programme compiled into Hew, not the operating system's store;
 `Trust.Pem(bytes)` trusts only the CAs given. Each call blocks its worker
 until it finishes.

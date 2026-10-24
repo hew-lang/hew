@@ -1452,11 +1452,11 @@ mod tests {
             r#"
             import std.net;
             import std.net.http.server as http;
-            fn reply(req: http.Request) {
-                let _: Result<(), net.NetError> = req.respond(200, "text/plain", "hello");
-                let _: Result<(), net.NetError> = req.respond_text(200, "hello");
-                let _: Result<(), net.NetError> = req.respond_json(200, "{}");
-                let _: Result<Sink<string>, net.NetError> = req.respond_stream(200, "text/plain");
+            fn reply(consume full: http.Request, consume text: http.Request, consume json: http.Request, consume streamed: http.Request) {
+                let _: Result<(), net.NetError> = full.respond(200, "text/plain", "hello");
+                let _: Result<(), net.NetError> = text.respond_text(200, "hello");
+                let _: Result<(), net.NetError> = json.respond_json(200, "{}");
+                let _: Result<Sink<string>, net.NetError> = streamed.respond_stream(200, "text/plain");
             }
             "#,
         );
@@ -1473,15 +1473,13 @@ mod tests {
         // `net.Connection` no longer carries its own text-read wrappers
         // (`read_string`/`try_read_string`/`ReadStringError`) — a caller
         // decodes the `bytes` a `Stream<bytes>` yields itself (D506). QUIC's
-        // `recv_string`/`stream_recv_string` are unaffected and still surface
-        // `utf8.Utf8Error` on invalid bytes.
+        // `recv_string` retains both transport and UTF-8 decoding failures.
         let parsed = parse(
             r"
             import std.net.quic;
             import std.encoding.utf8;
             fn quic_read(stream: quic.QUICStream) {
-                let _: Result<string, utf8.Utf8Error> = stream.recv_string();
-                let _: Result<string, utf8.Utf8Error> = quic.stream_recv_string(stream);
+                let _: Result<string, quic.ReadError> = stream.recv_string();
             }
         ",
         );

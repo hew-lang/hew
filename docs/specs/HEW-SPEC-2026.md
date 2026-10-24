@@ -1920,7 +1920,7 @@ fn main() {
     // Call module functions with dot-syntax: module.function(args)
     match http.listen("127.0.0.1:0") { // Returns Result<Server, NetError>
         .Ok(server) => {
-            println(f"HTTP server listening on port {http.server_port(server)}");
+            println(f"HTTP server listening on port {server.port()}");
             server.close(); // Explicitly release the listener on every success path.
         }
         .Err(error) => println(error),
@@ -1938,7 +1938,7 @@ This provides clean, namespaced access to stdlib functionality. The module name 
 
 | Module             | Example functions                                                                                                                                            |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `std.net.http.server` | `http.listen`, `http.accept`, `http.path`, `http.method`, `http.body`, `http.header`, `http.respond`, `http.respond_text`, `http.respond_json`, `http.close` |
+| `std.net.http.server` | `http.listen`, listener `.accept()`/`.port()`, request accessors and consuming `.respond*()` methods |
 | `std.fs`           | `fs.read`, `fs.write`, `fs.append`, `fs.exists`, `fs.delete`, `fs.size`                                                                                     |
 | `std.io`           | `io.read_line`, `io.write`, `io.write_err`, `io.read_all`                                                                                                   |
 | `std.os`           | `os.args_count`, `os.args`, `os.env`, `os.set_env`, `os.has_env`, `os.cwd`, `os.home_dir`, `os.hostname`, `os.pid`                                          |
@@ -4493,17 +4493,17 @@ Signatures the rules fix:
 | `observe.read(key)` | `-> Option<i64>` |
 | `observe.barrier()` | `-> Result<(), ObserveError>` |
 | `http.Server.accept()` | `-> Result<Request, NetError>` |
-| `Request.respond*(…)` | `-> Result<(), NetError>` |
+| `Request.respond(…)`, `.respond_text(…)`, `.respond_json(…)` | consume the request; `-> Result<(), NetError>` |
+| `Request.respond_stream(…)` | consumes the request; `-> Result<Sink<string>, NetError>` |
 | `json.decode<T>(text)` | `-> Result<T, wire.DecodeError>` |
 
 **No error is reported by a side channel.** A module does not expose a
 `*_message(e) -> string` function beside its error type — `Display` is the one
 rendering authority (§3.10.2). A module does not expose a `last_error()` poll
 backed by a thread-local slot: an error that is returned cannot be missed,
-while an error that must be fetched can. The `*_message` family is gone at
-edition 2026; the remaining `last_error()` polls and the slots behind them are
-implementation debt rather than an alternative error-return contract. Runtime
-FFI may use internal status channels, but they are not the public recovery API.
+while an error that must be fetched can. Runtime FFI may use internal status
+channels, but wrappers capture their detail in the returned error before another
+operation can replace it. These channels are not the public recovery API.
 
 **`string` and Vec** are built-in generic/runtime-backed types with dot-syntax
 methods. Available `Vec<T>` methods:
@@ -4828,7 +4828,8 @@ Every acquisition and every operation that can fail reports it as a `Result`
 | Type             | Created by                                 | Methods                                                                                                                              |
 | ---------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `http.Server`    | `http.listen(addr) -> Result<Server, NetError>` | `.accept()` → `Result<http.Request, NetError>`, `.close()`                                                                       |
-| `http.Request`   | `server.accept()` or `http.accept(server)` | `.path`, `.method`, `.body`, `.header(name)`, `.respond(status, content_type, body)` → `Result<(), NetError>`, `.respond_text(status, body)` → `Result<(), NetError>`, `.respond_json(status, body)` → `Result<(), NetError>`, `.close()` |
+| `http.Request` | `server.accept()` | `.path()`/`.method()` → `string`, `.body(encoding)` → `Result<string, NetError>`, `.header(name)` → `Result<Option<string>, NetError>`; `.respond*()` consumes the request; `.close()` abandons it |
+| `client.Response` | `client.request/get/post` → `Result<Response, HttpError>` | `.status()`, `.body()` → `Result<string, HttpError>`, `.header(name)`/`.content_type()` → `Result<Option<string>, HttpError>`, `.headers()`, `.close()` |
 | `net.Listener`   | `net.listen(addr) -> Result<Listener, NetError>` | `.accept()` → `Result<net.Connection, NetError>`, `.close()` |
 | `net.Connection` | `listener.accept()` or `net.connect(addr)` | `.recv()` → `Option<bytes>`, `.send(data)` → `Result<(), SendError>`, `.finish()`, `.split()` → `(Stream<bytes>, Sink<bytes>)`, `.set_read_timeout(timeout)`, `.set_write_timeout(timeout)`, `.close()` |
 | `process.Child`  | `process.start(command) -> Result<Child, ProcessError>` | `.id()`, `.stdin()` → `Result<Sink<bytes>, ProcessError>`, `.stdout()`/`.stderr()` → `Result<Stream<bytes>, ProcessError>`, `.wait()` → `Result<ExitStatus, ProcessError>`, `.try_wait()` → `Result<Option<ExitStatus>, ProcessError>`, `.terminate()`, `.kill()` → `Result<(), ProcessError>`, `.close()` (§6.4.7) |

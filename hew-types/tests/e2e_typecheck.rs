@@ -3082,6 +3082,50 @@ fn range_literal_field_access_rejects_unknown_field() {
     );
 }
 
+#[test]
+fn range_bounds_are_read_only_through_direct_and_indexed_places() {
+    for source in [
+        "fn main() { var span = 0..5; span.start = 2; }",
+        "fn main() { var span = 0..5; span.end += 2; }",
+        "fn main() { var spans = [0..5]; spans[0].start = 2; }",
+    ] {
+        let output = typecheck_inline(source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.message.contains("range bounds are read-only")),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+    let output = typecheck_inline(
+        "fn main() { var span = 0..5; span = 2..5; for value in span { println(value); } }",
+    );
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn range_sequence_metadata_is_not_source_accessible_or_constructible() {
+    for field in ["first", "last", "stride", "descending", "nonempty"] {
+        let source = format!("fn main() {{ let span = 0..5; let _ = span.{field}; }}");
+        let output = typecheck_inline(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::UndefinedField),
+            "{source}: {:?}",
+            output.errors
+        );
+    }
+    let output = typecheck_inline("fn main() { let span = Range<i64> { start: 0, end: 5, first: 0, last: 4, stride: 1, descending: false, nonempty: true }; }");
+    assert!(
+        !output.errors.is_empty(),
+        "range storage is not a source record constructor"
+    );
+}
+
 /// Returning an Rc parameter as a bare identifier must be a fail-closed error
 /// under borrow-on-call semantics (double-free at runtime).
 #[test]

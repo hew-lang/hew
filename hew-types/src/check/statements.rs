@@ -1795,7 +1795,7 @@ impl Checker {
                 if let Some(field) = receiver_field.as_ref() {
                     self.record_actor_state_projection_resolution(&target.1, field);
                 }
-                self.reject_indexed_writable_borrow(target);
+                self.reject_invalid_writable_projection(target);
                 // Record the type-shape metadata for every accepted target
                 // immediately after synthesising the target type so the codegen
                 // compound-assignment paths can read signedness without

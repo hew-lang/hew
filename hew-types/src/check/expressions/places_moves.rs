@@ -373,8 +373,9 @@ impl Checker {
     /// ownership slot to attach a fact to, so nothing is recorded for them
     /// rather than a guess being recorded; element-of-collection places are the
     /// known remaining hole and belong to the MIR half of this family.
-    /// Indexed writes and mutating methods need a copy of every indexed parent.
-    pub(in crate::check) fn reject_indexed_writable_borrow(&mut self, target: &Spanned<Expr>) {
+    /// A writable projection needs both a stored field and an independent
+    /// semantic copy of each indexed parent.
+    pub(in crate::check) fn reject_invalid_writable_projection(&mut self, target: &Spanned<Expr>) {
         let mut parent = target;
         loop {
             if self
@@ -386,7 +387,29 @@ impl Checker {
                 return;
             }
             match &parent.0 {
-                Expr::FieldAccess { object, .. } | Expr::Index { object, .. } => parent = object,
+                Expr::FieldAccess { object, field } => {
+                    if matches!(field.0.name.as_str(), "start" | "end")
+                        && self
+                            .expr_types
+                            .get(&SpanKey::in_module(&object.1, self.current_module_idx))
+                            .is_some_and(|ty| {
+                                matches!(
+                                    self.subst.resolve(ty),
+                                    Ty::Named {
+                                        head: crate::TypeHead::Builtin(crate::BuiltinType::Range),
+                                        ..
+                                    }
+                                )
+                            })
+                    {
+                        self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &parent.1,
+                            "range bounds are read-only; replace the whole range to change its bounds".into(),
+                            vec!["construct a new range with `start..end` or `start..=end`".into()]);
+                        return;
+                    }
+                    parent = object;
+                }
+                Expr::Index { object, .. } => parent = object,
                 _ => return,
             }
         }

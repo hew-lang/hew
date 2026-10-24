@@ -72,7 +72,7 @@ impl Checker {
                 "E_OPTIONAL_CHAIN_MUTATES: `?.` cannot mutate its payload; match on the Option and mutate the bound value".to_string());
             return;
         }
-        self.reject_indexed_writable_borrow(receiver);
+        self.reject_invalid_writable_projection(receiver);
         let place = self.expr_place(&receiver.0).or_else(|| {
             self.assignment_root_binding_name(&receiver.0)
                 .map(|root| (root, Vec::new()))

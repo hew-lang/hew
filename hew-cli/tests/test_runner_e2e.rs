@@ -259,7 +259,7 @@ fn doc_directory_peer_uses_its_canonical_module() {
     let root = repo_root();
     let source = root.join("std/net/http/codec/request.hew");
     let output = run_hew_in(
-        &root,
+        root,
         &[
             "test",
             "--doc",

@@ -654,6 +654,18 @@ impl LowerCtx {
                 let Ok(ty) = ResolvedTy::from_ty(checked_ty) else {
                     return self.unsupported_expr(span, "binary expression type is unresolved");
                 };
+                if matches!(op, BinaryOp::Range | BinaryOp::RangeInclusive) {
+                    return self.make_expr(
+                        HirExprKind::RangeValue {
+                            start: Box::new(left),
+                            end: Box::new(right),
+                            inclusive: *op == BinaryOp::RangeInclusive,
+                        },
+                        ty,
+                        intent,
+                        span,
+                    );
+                }
                 (
                     HirExprKind::Binary {
                         op: *op,
@@ -1207,7 +1219,39 @@ impl LowerCtx {
                 receiver,
                 method,
                 args,
-            } => self.lower_method_call(receiver, method.0.name.as_str(), args, span.clone(), site),
+            } => {
+                if let Some(CallTarget::RangeAdapter(adapter)) = self.ordinary_call_target(&span) {
+                    let range = self.lower_expr(receiver, IntentKind::Read);
+                    let ty = range.ty.clone();
+                    let adapter = match adapter {
+                        hew_types::range_value::RangeAdapter::Reverse => HirRangeAdapter::Reverse,
+                        hew_types::range_value::RangeAdapter::Step => {
+                            let Some(step) = args.first() else {
+                                return self
+                                    .unsupported_expr(span, "checked range step has no operand");
+                            };
+                            HirRangeAdapter::Step(Box::new(
+                                self.lower_expr(step.expr(), IntentKind::Read),
+                            ))
+                        }
+                    };
+                    (
+                        HirExprKind::RangeAdapt {
+                            range: Box::new(range),
+                            adapter,
+                        },
+                        ty,
+                    )
+                } else {
+                    self.lower_method_call(
+                        receiver,
+                        method.0.name.as_str(),
+                        args,
+                        span.clone(),
+                        site,
+                    )
+                }
+            }
             // `clone <operand>` reuses the `.clone()` lowering: the checker
             // recorded the method resolution / rewrite at this span (see
             // `synthesize` `Expr::Clone`), so this routes through the same

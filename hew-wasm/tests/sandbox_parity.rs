@@ -1139,6 +1139,26 @@ fn frontend_completion_forms_match_native() {
 
 #[cfg(unix)]
 #[test]
+fn bounded_range_values_match_native() {
+    set_test_hewpath();
+    ensure_native_toolchain();
+    ensure_parity_runner_built();
+    for case in [
+        ParityCase {
+            test_name: "bounded-range-values",
+            source_rel: "tests/core-acceptance/cases/bounded-range-values.hew",
+        },
+        ParityCase {
+            test_name: "bounded-range-step-fault",
+            source_rel: "tests/core-acceptance/cases/bounded-range-step-fault.hew",
+        },
+    ] {
+        assert_case(&case, "");
+    }
+}
+
+#[cfg(unix)]
+#[test]
 fn generic_sort_and_reverse_match_native() {
     set_test_hewpath();
     ensure_native_toolchain();

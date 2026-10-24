@@ -221,20 +221,18 @@ impl LowerCtx {
                 self.wrap_var_self_explicit_expr_returns(condition, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
-            HirExprKind::ForRange {
-                start,
-                end,
-                adapters,
-                body,
-                ..
-            } => {
+            HirExprKind::RangeValue { start, end, .. } => {
                 self.wrap_var_self_explicit_expr_returns(start, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_expr_returns(end, receiver, abi_return_ty);
-                for adapter in adapters {
-                    if let HirRangeAdapter::Step(step) = adapter {
-                        self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
-                    }
+            }
+            HirExprKind::RangeAdapt { range, adapter } => {
+                self.wrap_var_self_explicit_expr_returns(range, receiver, abi_return_ty);
+                if let crate::HirRangeAdapter::Step(step) = adapter {
+                    self.wrap_var_self_explicit_expr_returns(step, receiver, abi_return_ty);
                 }
+            }
+            HirExprKind::ForRange { range, body, .. } => {
+                self.wrap_var_self_explicit_expr_returns(range, receiver, abi_return_ty);
                 self.wrap_var_self_explicit_returns_in_block(body, receiver, abi_return_ty);
             }
             HirExprKind::Loop { body, .. } => {

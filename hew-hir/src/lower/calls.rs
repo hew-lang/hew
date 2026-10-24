@@ -798,6 +798,7 @@ impl LowerCtx {
     /// structured dispatch will carry to MIR.
     pub(super) fn call_target_presentation_name(&self, target: &CallTarget) -> String {
         match target {
+            CallTarget::RangeAdapter(adapter) => format!("range::{adapter:?}"),
             CallTarget::User(declaration)
             | CallTarget::RecordConstructor(declaration)
             | CallTarget::ImplMethod(declaration)

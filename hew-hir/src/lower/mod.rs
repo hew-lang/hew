@@ -92,7 +92,6 @@ use self::captures::*;
 use self::gates::*;
 use self::impl_plan::*;
 use self::imports::*;
-use self::iteration::*;
 use self::patterns::*;
 use self::private_refs::*;
 use self::resource_lifecycles::*;
@@ -591,8 +590,6 @@ impl LowerOutput {
     /// - [`HirDiagnosticKind::NestedSupervisorAccessorUnsupported`] — dead
     ///   code; `sup.nested` field access on a nested supervisor now lowers
     ///   via `hew_supervisor_nested_get` and never constructs this variant.
-    /// - [`HirDiagnosticKind::BinaryOperatorUnsupportedInMir`] — value-position
-    ///   range operator (FC-P1-D).
     /// - [`HirDiagnosticKind::CallableUnsupportedInMir`] — a call expression
     ///   resolves to an item with no MIR body or runtime-ABI lowering.
     /// - [`HirDiagnosticKind::IndirectCallUnsupported`] — a call expression
@@ -634,7 +631,6 @@ impl LowerOutput {
                     | crate::HirDiagnosticKind::TaskSpawnCalleeUnsupported { .. }
                     | crate::HirDiagnosticKind::DeadlineBodyUnsupported { .. }
                     | crate::HirDiagnosticKind::NestedSupervisorAccessorUnsupported { .. }
-                    | crate::HirDiagnosticKind::BinaryOperatorUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::CallableUnsupportedInMir { .. }
                     | crate::HirDiagnosticKind::IndirectCallUnsupported { .. }
                     | crate::HirDiagnosticKind::VecIndexElementTypeUnsupported { .. }

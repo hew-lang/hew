@@ -655,21 +655,10 @@ impl Builder<'_, '_> {
             HirExprKind::ForRange {
                 label,
                 binding,
-                start,
-                end,
-                inclusive,
-                adapters,
+                range,
                 body,
             } => {
-                return self.lower_for_range(
-                    label.as_deref(),
-                    binding,
-                    start,
-                    end,
-                    *inclusive,
-                    adapters,
-                    body,
-                );
+                return self.lower_for_range(label.as_deref(), binding, range, body);
             }
             _ => {}
         }

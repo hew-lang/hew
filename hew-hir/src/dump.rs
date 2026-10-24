@@ -1029,31 +1029,31 @@ fn dump_expr(defs: &hew_types::DefTable, out: &mut String, expr: &HirExpr, inden
             dump_expr(defs, out, condition, indent + 4);
             dump_block(defs, out, body, indent + 4);
         }
-        HirExprKind::ForRange {
-            label,
-            binding,
+        HirExprKind::RangeValue {
             start,
             end,
             inclusive,
-            adapters,
-            body,
         } => {
-            writeln!(
-                out,
-                "{pad}  for-range {} (inclusive={inclusive}, label={label:?})",
-                binding.name
-            )
-            .expect("write to string");
+            writeln!(out, "{pad}  range inclusive={inclusive}").expect("write to string");
             dump_expr(defs, out, start, indent + 4);
             dump_expr(defs, out, end, indent + 4);
-            for adapter in adapters {
-                match adapter {
-                    crate::HirRangeAdapter::Reverse => {
-                        writeln!(out, "{pad}    reverse").expect("write to string");
-                    }
-                    crate::HirRangeAdapter::Step(step) => dump_expr(defs, out, step, indent + 4),
-                }
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            writeln!(out, "{pad}  range-adapter").expect("write to string");
+            dump_expr(defs, out, range, indent + 4);
+            if let crate::HirRangeAdapter::Step(step) = adapter {
+                dump_expr(defs, out, step, indent + 4);
             }
+        }
+        HirExprKind::ForRange {
+            label,
+            binding,
+            range,
+            body,
+        } => {
+            writeln!(out, "{pad}  for-range {} label={label:?}", binding.name)
+                .expect("write to string");
+            dump_expr(defs, out, range, indent + 4);
             dump_block(defs, out, body, indent + 4);
         }
         HirExprKind::Match { scrutinee, arms } => {

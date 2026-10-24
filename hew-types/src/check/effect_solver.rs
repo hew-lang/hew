@@ -987,6 +987,7 @@ impl<'a> EffectSolver<'a> {
             }
             Some(
                 CallTarget::RecordConstructor(_)
+                | CallTarget::RangeAdapter(_)
                 | CallTarget::Builtin { .. }
                 | CallTarget::RuntimeCollection(_),
             ) => {}

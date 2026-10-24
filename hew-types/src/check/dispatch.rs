@@ -185,6 +185,8 @@ pub struct ResolvedActorEndpoints {
 /// never an authority-bearing lookup key.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CallTarget {
+    /// A checked, allocation-free integer-range value transformation.
+    RangeAdapter(crate::range_value::RangeAdapter),
     /// A direct user function declaration.
     User(DefId),
     /// A positional record constructor, lowered to aggregate initialization.

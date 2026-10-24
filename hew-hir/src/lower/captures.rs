@@ -224,20 +224,18 @@ pub(super) fn collect_general_closure_captures_walk(
             collect_general_closure_captures_walk(condition, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
-        HirExprKind::ForRange {
-            start,
-            end,
-            adapters,
-            body,
-            ..
-        } => {
+        HirExprKind::RangeValue { start, end, .. } => {
             collect_general_closure_captures_walk(start, outer_bindings, seen, captures);
             collect_general_closure_captures_walk(end, outer_bindings, seen, captures);
-            for adapter in adapters {
-                if let HirRangeAdapter::Step(step) = adapter {
-                    collect_general_closure_captures_walk(step, outer_bindings, seen, captures);
-                }
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            collect_general_closure_captures_walk(range, outer_bindings, seen, captures);
+            if let crate::HirRangeAdapter::Step(step) = adapter {
+                collect_general_closure_captures_walk(step, outer_bindings, seen, captures);
             }
+        }
+        HirExprKind::ForRange { range, body, .. } => {
+            collect_general_closure_captures_walk(range, outer_bindings, seen, captures);
             collect_general_closure_captures_walk_block(body, outer_bindings, seen, captures);
         }
         HirExprKind::Match { scrutinee, arms } => {

@@ -1824,16 +1824,17 @@ pub enum HirExprKind {
         condition: Box<HirExpr>,
         body: HirBlock,
     },
-    /// `for binding in start..end { body }` / `@label: for ...` — Range iteration
-    /// (exclusive or inclusive) over an integer range.
-    ///
-    /// This node is produced only for `Range`-typed iterables; other
-    /// iterable types (Vec, Stream, etc.) are not yet implemented and
-    /// cause HIR lowering to emit `NotYetImplemented`.
-    ///
-    /// The expression type is always `Unit`.  MIR lowering emits a
-    /// counter local (typed `i64`), a header block (bounds check), a
-    /// body block, and a back-edge.
+    /// Construct one bounded integer-range value from its checked bounds.
+    RangeValue {
+        start: Box<HirExpr>,
+        end: Box<HirExpr>,
+        inclusive: bool,
+    },
+    RangeAdapt {
+        range: Box<HirExpr>,
+        adapter: HirRangeAdapter,
+    },
+    /// Iterate one range value with the checker's exact element width.
     ForRange {
         /// Optional source label targeted by `break @label` / `continue @label`.
         label: Option<String>,
@@ -1841,15 +1842,8 @@ pub enum HirExprKind {
         /// iteration; MIR lowering overwrites the backing local on every
         /// iteration rather than allocating a new one each time.
         binding: HirBinding,
-        /// Resolved start expression (the left side of `..`).
-        start: Box<HirExpr>,
-        /// Resolved end expression (the right side of `..` / `..=`).
-        end: Box<HirExpr>,
-        /// `true` for `..=` (inclusive upper bound).
-        inclusive: bool,
-        /// Iterator adapters in source evaluation order. Reversal and stepping
-        /// compose on the sequence produced by the preceding adapter.
-        adapters: Vec<HirRangeAdapter>,
+        /// The checked range value, evaluated once before the loop.
+        range: Box<HirExpr>,
         /// Loop body.
         body: HirBlock,
     },

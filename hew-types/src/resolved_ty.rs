@@ -437,6 +437,16 @@ impl ResolvedTy {
     #[must_use]
     pub fn nominal_instance(&self, defs: &DefTable) -> Option<NominalInstance> {
         match self {
+            Self::Named {
+                head: TypeHead::Builtin(BuiltinType::Range),
+                args,
+                ..
+            } => Some(NominalInstance {
+                nominal: crate::NominalId::from_minted_declaration(DefTable::anchor(
+                    crate::def_table::BuiltinAnchor::Range,
+                )),
+                args: args.clone(),
+            }),
             // The two compiler-owned cursor records. Both are declared in
             // `std/builtins.hew` as ordinary generic records and are reached
             // only through their closed builtin discriminator, so each names

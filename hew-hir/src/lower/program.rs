@@ -1122,13 +1122,6 @@ pub fn lower_program(
     // any real ones when it produces the canonical HirTypeDecl/HirRecordDecl.
     ctx.diagnostics.clear();
 
-    // FC-P1-D: HIR pre-pass binary-operator gates. Dispatched HERE (after
-    // diagnostics.clear above) so the gate's diagnostics survive into the
-    // final LowerOutput. Unconditional across all targets — these gates
-    // close MIR sites that are unsupported regardless of target until MIR
-    // gains TargetSpec threading (see audit `:5336`, `:5564`, `:5696`).
-    check_binary_operator_gates(&mut ctx, program);
-
     // FC-P1-E: Vec<T> index/slice element-type gates. Dispatched HERE (after
     // the diagnostics.clear above) so the gate's VecIndex/Slice element-type
     // diagnostics survive into the final LowerOutput. Target-independent: the

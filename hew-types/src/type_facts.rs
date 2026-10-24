@@ -926,6 +926,9 @@ impl TypeFactService {
                 ty.user_facing()
             )
         })?;
+        if let Some(fields) = crate::range_value::fields(ty) {
+            return Ok((instance, fields));
+        }
         if let Some(fields) = crate::actor_protocol::interceptor_fields(&self.context.defs, ty) {
             return Ok((instance, fields));
         }
@@ -992,6 +995,9 @@ impl TypeFactService {
     /// Refuses non-nominal types, missing declarations and incorrect arity.
     /// This query does not grant transparent field access.
     pub fn declaration_marker(&self, ty: &ResolvedTy) -> Result<crate::DeclarationMarker, String> {
+        if crate::range_value::fields(ty).is_some() {
+            return Ok(crate::DeclarationMarker::None);
+        }
         let instance = ty
             .nominal_instance(&self.context.defs)
             .ok_or_else(|| format!("`{}` has no nominal declaration", ty.user_facing()))?;

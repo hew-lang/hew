@@ -724,7 +724,6 @@ impl LowerCtx {
         );
         let index_id = index_binding.id;
         let start = self.make_i64_literal(0, operand_span.clone());
-        let step = self.make_i64_literal(1, operand_span.clone());
 
         let container = source_expr(self);
         let index = self.make_binding_ref(
@@ -762,14 +761,12 @@ impl LowerCtx {
             ResolvedTy::Unit,
             operand_span.clone(),
         );
+        let range = self.make_range_value(start, length, false, operand_span.clone());
         let for_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: None,
                 binding: index_binding,
-                start: Box::new(start),
-                end: Box::new(length),
-                inclusive: false,
-                adapters: vec![HirRangeAdapter::Step(Box::new(step))],
+                range: Box::new(range),
                 body,
             },
             ResolvedTy::Unit,
@@ -887,7 +884,6 @@ impl LowerCtx {
             IntentKind::Read,
             count.1.clone(),
         );
-        let step = self.make_i64_literal(1, span.clone());
         let vec_ref = self.make_binding_ref(
             vec_name.clone(),
             vec_id,
@@ -917,14 +913,12 @@ impl LowerCtx {
             span: span.clone(),
         };
         let body = self.make_unit_block(vec![push_stmt], None, ResolvedTy::Unit, span.clone());
+        let range = self.make_range_value(start, end, false, span.clone());
         let for_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: None,
                 binding: i_binding,
-                start: Box::new(start),
-                end: Box::new(end),
-                inclusive: false,
-                adapters: vec![HirRangeAdapter::Step(Box::new(step))],
+                range: Box::new(range),
                 body,
             },
             ResolvedTy::Unit,
@@ -1302,15 +1296,12 @@ impl LowerCtx {
             }
         };
 
-        let step = self.make_i64_literal(1, span.clone());
+        let range = self.make_range_value(start, end, false, span.clone());
         let for_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: None,
                 binding: i_binding,
-                start: Box::new(start),
-                end: Box::new(end),
-                inclusive: false,
-                adapters: vec![HirRangeAdapter::Step(Box::new(step))],
+                range: Box::new(range),
                 body,
             },
             ResolvedTy::Unit,

@@ -376,11 +376,14 @@ fn array_repeat_runtime_count_lowers() {
         );
     };
     let HirStmtKind::Expr(hew_hir::HirExpr {
-        kind: HirExprKind::ForRange { end, .. },
+        kind: HirExprKind::ForRange { range, .. },
         ..
     }) = &block.statements[3].kind
     else {
         panic!("array repeat should emit a for-range loop");
+    };
+    let HirExprKind::RangeValue { end, .. } = &range.kind else {
+        panic!("array repeat should use the ordinary range value");
     };
     assert!(matches!(
         &end.kind,

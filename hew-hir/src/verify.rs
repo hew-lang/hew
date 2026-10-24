@@ -1067,22 +1067,24 @@ impl Verifier {
                     self.expr(&arm.body);
                 }
             }
+            HirExprKind::RangeValue { start, end, .. } => {
+                self.expr(start);
+                self.expr(end);
+            }
+            HirExprKind::RangeAdapt { range, adapter } => {
+                self.expr(range);
+                if let crate::HirRangeAdapter::Step(step) = adapter {
+                    self.expr(step);
+                }
+            }
             HirExprKind::ForRange {
-                binding,
-                start,
-                end,
-                adapters,
+                range,
                 body,
+                binding,
                 ..
             } => {
                 self.binding(binding.id, binding.span.clone());
-                self.expr(start);
-                self.expr(end);
-                for adapter in adapters {
-                    if let crate::HirRangeAdapter::Step(step) = adapter {
-                        self.expr(step);
-                    }
-                }
+                self.expr(range);
                 self.block(body);
             }
             HirExprKind::Break { value, .. } | HirExprKind::Return { value, .. } => {

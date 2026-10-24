@@ -2,21 +2,30 @@
 
 use super::*;
 
-/// The base range plus resolved iteration adapters peeled from a for-loop
-/// iterable by [`LowerCtx::peel_range_adapter_chain`].  Borrows the AST
-/// sub-expressions; lowered into a single `HirExprKind::ForRange`.
-pub(super) struct RangeAdapterChain<'a> {
-    /// Left bound of the base `..` / `..=` range literal.
-    pub(super) range_start: &'a Spanned<Expr>,
-    /// Right bound of the base range literal.
-    pub(super) range_end: &'a Spanned<Expr>,
-    /// `true` for an inclusive (`..=`) upper bound.
-    pub(super) inclusive: bool,
-    /// Each adapter in source evaluation order; `None` means reversal.
-    pub(super) adapters: Vec<Option<&'a Spanned<Expr>>>,
-}
-
 impl LowerCtx {
+    pub(super) fn make_range_value(
+        &mut self,
+        start: HirExpr,
+        end: HirExpr,
+        inclusive: bool,
+        span: Span,
+    ) -> HirExpr {
+        let ty = ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(BuiltinType::Range),
+            args: vec![start.ty.clone()],
+            is_opaque: false,
+        };
+        self.make_expr(
+            HirExprKind::RangeValue {
+                start: Box::new(start),
+                end: Box::new(end),
+                inclusive,
+            },
+            ty,
+            IntentKind::Read,
+            span,
+        )
+    }
     pub(super) fn make_direct_method_call(
         &mut self,
         callee_name: String,
@@ -199,54 +208,6 @@ impl LowerCtx {
         }
     }
 
-    /// Peel a `(a..b).rev()` / `.step_by(k)` adapter chain off a for-loop
-    /// iterable down to its base range literal.
-    ///
-    /// Returns `Some` for a plain range (`a..b` / `a..=b`, no adapters) and for
-    /// any chain of `.rev()` / `.step_by(k)` adapters terminating in a range
-    /// literal; returns `None` for any other iterable shape (Vec, a bare
-    /// identifier, a user method that is not a range adapter, …), which then
-    /// flows to `lower_for_iter_desugar`.
-    ///
-    /// Adapter semantics are left-to-right as written and well-defined on the
-    /// `ForRange` primitive:
-    ///
-    /// Preserve adapter order: reversing a stepped sequence reverses its
-    /// selected elements, and repeated steps compose rather than overwrite.
-    pub(super) fn peel_range_adapter_chain(iterable: &Expr) -> Option<RangeAdapterChain<'_>> {
-        match iterable {
-            Expr::Binary {
-                op: op @ (BinaryOp::Range | BinaryOp::RangeInclusive),
-                left,
-                right,
-            } => Some(RangeAdapterChain {
-                range_start: left,
-                range_end: right,
-                inclusive: matches!(op, BinaryOp::RangeInclusive),
-                adapters: Vec::new(),
-            }),
-            Expr::MethodCall {
-                receiver,
-                method,
-                args,
-            } => {
-                let mut chain = Self::peel_range_adapter_chain(&receiver.0)?;
-                match method.0.name.as_str() {
-                    "rev" => {
-                        chain.adapters.push(None);
-                        Some(chain)
-                    }
-                    "step_by" => {
-                        chain.adapters.push(Some(args.first()?.expr()));
-                        Some(chain)
-                    }
-                    _ => None,
-                }
-            }
-            _ => None,
-        }
-    }
-
     /// `for c in s` over `string` and `for b in raw` over `bytes`.
     ///
     /// Both lower to `for __i in 0..seq.len() { let c = seq[__i]; body }` over
@@ -333,7 +294,6 @@ impl LowerCtx {
         );
         let index_id = index_binding.id;
         let start = self.make_i64_literal(0, iterable_span.clone());
-        let step = self.make_i64_literal(1, iterable_span.clone());
 
         self.push_scope();
         let element_binding = if checked_binding {
@@ -390,14 +350,12 @@ impl LowerCtx {
         loop_body.statements.insert(0, element_stmt);
         self.pop_scope();
 
+        let range = self.make_range_value(start, length, false, iterable_span.clone());
         let loop_expr = self.make_expr(
             HirExprKind::ForRange {
                 label: label.cloned(),
                 binding: index_binding,
-                start: Box::new(start),
-                end: Box::new(length),
-                inclusive: false,
-                adapters: vec![HirRangeAdapter::Step(Box::new(step))],
+                range: Box::new(range),
                 body: loop_body,
             },
             ResolvedTy::Unit,
@@ -444,6 +402,31 @@ impl LowerCtx {
         };
         // Retain the checked iterable and source intent for iterator desugaring.
         let mut lowered_iterable = self.lower_expr(iterable, IntentKind::Read);
+        if let ResolvedTy::Named {
+            head: hew_types::TypeHead::Builtin(BuiltinType::Range),
+            args,
+            ..
+        } = &lowered_iterable.ty
+        {
+            let [element_ty] = args.as_slice() else {
+                return HirExprKind::Unsupported("checked range has no element type".into());
+            };
+            let element_ty = element_ty.clone();
+            self.push_scope();
+            let binding = if matches!(pattern.0, Pattern::Identifier(_)) {
+                self.bind_checked(var_name, element_ty, false, pattern.1.clone())
+            } else {
+                self.bind(var_name, element_ty, false, pattern.1.clone())
+            };
+            let body = self.lower_block(body, &ResolvedTy::Unit);
+            self.pop_scope();
+            return HirExprKind::ForRange {
+                label: label.cloned(),
+                binding,
+                range: Box::new(lowered_iterable),
+                body,
+            };
+        }
 
         // `for c in s` / `for b in raw` are index walks, not cursors: the
         // element is a scalar copy, so there is no iterator object to own and

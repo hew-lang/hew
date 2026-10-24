@@ -229,6 +229,8 @@ impl Builder<'_, '_> {
             HirExprKind::ArrayRepeat { value } => self.lower_array_repeat(expr, value),
             HirExprKind::TupleLiteral { elements } => self.lower_tuple_make(expr, elements),
             HirExprKind::TupleIndex { tuple, index } => self.lower_tuple_get(expr, tuple, *index),
+            HirExprKind::RangeValue { start, end, inclusive } => self.lower_range_value(expr, start, end, *inclusive),
+            HirExprKind::RangeAdapt { range, adapter } => self.lower_range_adapter(expr, range, adapter),
             HirExprKind::StructInit { fields, base, .. } => {
                 self.lower_aggregate_make(expr, fields, base.as_deref())
             }

@@ -44,6 +44,7 @@ pub fn checked_call_target(
             CallTarget::DynamicVtable { method, .. }
             | CallTarget::StaticTraitMethod { method, .. } => Some(*method),
             CallTarget::Runtime(_)
+            | CallTarget::RangeAdapter(_)
             | CallTarget::Builtin { .. }
             | CallTarget::RuntimeCollection(_)
             | CallTarget::IndirectFunctionValue

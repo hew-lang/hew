@@ -435,16 +435,6 @@ pub enum HirDiagnosticKind {
         /// Inner supervisor type name (e.g. `"SubSupervisor"`).
         nested_supervisor: String,
     },
-    /// A binary operator was used in value position but the MIR backend has
-    /// no lowering for it. Currently covers `..` and `..=` range operators
-    /// outside of `for` loops or slice indexing. Closed at HIR pre-pass per
-    /// FC-P1-D so users see a
-    /// compile-time diagnostic instead of MIR's `NotYetImplemented`
-    /// late-stage surprise. LESSONS `boundary-fail-closed`.
-    BinaryOperatorUnsupportedInMir {
-        /// Source-form operator (e.g. `".."`, `"..="`).
-        op: String,
-    },
     /// A unary operator reached HIR with checker-authoritative types that the
     /// MIR/codegen substrate does not support. This is a fail-closed boundary
     /// diagnostic rather than a fallback to `Unit` or a downstream panic.

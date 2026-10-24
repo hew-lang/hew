@@ -833,7 +833,6 @@ fn hir_kind_str(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
         K::TaskSpawnCalleeUnsupported { .. } => "TaskSpawnCalleeUnsupported",
         K::DeadlineBodyUnsupported { .. } => "DeadlineBodyUnsupported",
         K::NestedSupervisorAccessorUnsupported { .. } => "NestedSupervisorAccessorUnsupported",
-        K::BinaryOperatorUnsupportedInMir { .. } => "BinaryOperatorUnsupportedInMir",
         K::UnaryOperatorUnsupportedInMir { .. } => "UnaryOperatorUnsupportedInMir",
         K::CallableUnsupportedInMir { .. } => "CallableUnsupportedInMir",
         K::IndirectCallUnsupported { .. } => "IndirectCallUnsupported",

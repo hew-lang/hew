@@ -166,11 +166,18 @@ fn visit_expr<'a>(expr: &'a HirExpr, out: &mut Vec<&'a HirExpr>) {
             visit_expr(condition, out);
             visit_block(body, out);
         }
-        HirExprKind::ForRange {
-            start, end, body, ..
-        } => {
+        HirExprKind::RangeValue { start, end, .. } => {
             visit_expr(start, out);
             visit_expr(end, out);
+        }
+        HirExprKind::RangeAdapt { range, adapter } => {
+            visit_expr(range, out);
+            if let hew_hir::HirRangeAdapter::Step(step) = adapter {
+                visit_expr(step, out);
+            }
+        }
+        HirExprKind::ForRange { range, body, .. } => {
+            visit_expr(range, out);
             visit_block(body, out);
         }
         HirExprKind::Match { scrutinee, arms } => {

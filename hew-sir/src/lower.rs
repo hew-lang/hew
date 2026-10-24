@@ -65,6 +65,8 @@ mod numeric;
 
 #[path = "lower_loops.rs"]
 mod loops;
+#[path = "lower_range_values.rs"]
+mod range_values;
 
 use hew_hir::{
     BindingId, HirBinding, HirBlock, HirDestructureField, HirDestructureSelector, HirExpr,

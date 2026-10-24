@@ -1692,7 +1692,8 @@ fn confined_primitive_refusal(
         | CallTarget::ImplMethod(_)
         | CallTarget::DynamicVtable { .. }
         | CallTarget::StaticTraitMethod { .. }
-        | CallTarget::IndirectFunctionValue => return None,
+        | CallTarget::IndirectFunctionValue
+        | CallTarget::RangeAdapter(_) => return None,
     };
     match authority {
         Some(RuntimeAuthority::Ambient) => Some("ambient authority acquisition"),

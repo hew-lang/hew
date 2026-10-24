@@ -1756,12 +1756,18 @@ impl Checker {
                         }
                     }
                 }
-                // These adapters construct a new Range value in MIR. They
-                // have no callable target, so the effect graph must not treat
-                // their call syntax as an unresolved body dependency. In an
-                // imported impl, that false dependency otherwise suppresses
-                // the entire checked method body at HIR registration.
+                // These value transformations are not callable bodies. Carry
+                // their checked operation so HIR and effect analysis share
+                // the same selection, including through imported impls.
                 self.record_construct_call(span);
+                self.record_direct_call_target(
+                    span,
+                    crate::CallTarget::RangeAdapter(if method == "rev" {
+                        crate::range_value::RangeAdapter::Reverse
+                    } else {
+                        crate::range_value::RangeAdapter::Step
+                    }),
+                );
                 range_ty
             }
             // User-defined struct/actor methods from type_defs

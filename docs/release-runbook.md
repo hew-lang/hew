@@ -207,11 +207,11 @@ commit. Preserve a completed check's evidence while its inputs remain unchanged.
 - [ ] Required protected `main` checks pass; other results have been assessed
       under the [platform policy](#platform-policy)
       (check [Actions → CI](../../actions/workflows/ci.yml))
-- [ ] The release branch `gate-sanitizers` job is green: ASan executed and passed
-- [ ] The latest completed nightly sanitizer run has been reviewed for its
-      recorded revision and scope (see [Known gaps](#known-gaps-tracked))
-- [ ] The missing TSan/Miri evidence and its coverage implications have an
-      explicit release-acceptance decision (see Known gaps)
+- [ ] Sanitizer and nightly evidence covers the contracts changed for this
+      release. Retained results identify their tested revision and scope; any
+      selected or required job has executed and passed (see [Known gaps](#known-gaps-tracked))
+- [ ] TSan/Miri gaps have been assessed where changed concurrency or unsafe
+      contracts need that evidence; retain applicable prior decisions otherwise
 - [ ] FreeBSD nightly is green or has a known-issue note (check [Actions → FreeBSD CI](../../actions/workflows/freebsd.yml))
 - [ ] CHANGELOG.md has either a populated `[Unreleased]` section or the dated
       `[X.Y.Z]` section for the intended release
@@ -324,8 +324,10 @@ Each toolchain carries one executable. Language-server and Observe entry points
 are `hew lsp` and `hew observe`; neither needs a sibling executable.
 
 Apply the platform policy above to every result on the recorded `release_sha`.
-Require successful Linux qualification, executed `gate-sanitizers` and the
-relevant `release.yml` packaging proof. Record any accepted secondary/optional
+Require successful Linux qualification and the relevant `release.yml` packaging
+proof. Select sanitizer checks by the contracts changed; a selected or required
+`gate-sanitizers` job must execute ASan and pass. Retain prior evidence where its
+scope still applies. Record any accepted secondary/optional
 platform failure and its follow-up; a pending job is not a pass. Rust workspace
 jobs use `make test-strict`; their green result means an all-pass result.
 Report known failures separately from passing tests.
@@ -521,7 +523,7 @@ git merge-base --is-ancestor "$release_sha" origin/main
 ```
 
 1. Confirm the recorded candidate satisfies the platform policy and required
-   checks, including sanitizer evidence, packaging proof, required secrets and
+   checks, including applicable sanitizer evidence, packaging proof, required secrets and
    branch protection. Preserve actual nonblocking failure results and useful follow-up context.
 2. Create the signed tag and push it only after the preceding evidence is recorded:
 
@@ -546,9 +548,11 @@ git merge-base --is-ancestor "$release_sha" origin/main
 Do not tag until the recorded candidate satisfies the platform policy and
 relevant release packaging proof. Resolve major supported-platform build/run
 regressions and preserve actual nonblocking failure results.
-In particular, `gate-sanitizers` must have executed ASan successfully. Review the latest completed nightly run for its recorded revision
-and scope. Current workflows do not execute TSan or Miri; before tagging,
-record the coverage and release-acceptance decision for that missing evidence
+Select sanitizer and nightly review by the contracts changed. An applicable
+prior result remains evidence for its recorded revision and scope; a selected
+or required `gate-sanitizers` job must execute ASan and pass. Current workflows
+do not execute TSan or Miri. Assess that gap when changed concurrency or unsafe
+contracts need it, and retain applicable prior decisions for other changes
 (see [Sanitizer trust contract](#sanitizer-trust-contract)).
 
 macOS release notes:
@@ -621,34 +625,34 @@ cause keyword-highlighting gaps that are invisible from this repo's CI.
 
 ## Coverage matrix summary
 
-| Check                                | Where it runs                                                           | Blocking?                                                  |
-| ------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------- |
-| Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                        |
-| Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                        |
-| Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                        |
-| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Browser-required scope in 0.6; standalone advisory         |
-| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                                |
-| Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                        |
-| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                        |
-| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                               | Linux required; macOS follows platform policy              |
-| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                               | Platform policy                                            |
-| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                                   | Platform policy                                            |
-| Linux package install smoke          | release.yml (`linux-packages`)                                          | Required when shipped; unavailable outputs recorded        |
-| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Required when shipped; unavailable outputs recorded        |
-| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                        |
-| Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                   |
-| macOS build + tests                  | ci.yml + release-gate.yml                                               | Platform policy                                            |
-| Windows build + tests                | ci.yml + release-gate.yml                                               | Platform policy                                            |
-| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Platform policy                                            |
-| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Platform policy                                            |
-| Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Yes for release branches                                   |
-| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review before release               |
-| Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review before release               |
-| Bounded parser fuzz smoke            | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review before release               |
-| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                              | Current CI evidence unavailable; release decision required |
-| Miri                                 | Local `make miri`; no current workflow job                              | Current CI evidence unavailable; release decision required |
-| Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                   |
-| Local cross-platform build           | `make pre-release`                                                      | Recommended                                                |
+| Check                                | Where it runs                                                           | Blocking?                                                 |
+| ------------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------- |
+| Clippy + rustfmt                     | ci.yml (every PR)                                                       | Yes                                                       |
+| Rust workspace tests                 | ci.yml + release-gate.yml                                               | Yes                                                       |
+| Codegen E2E (native)                 | ci.yml + release-gate.yml                                               | Yes                                                       |
+| Codegen E2E (WASM)                   | ci.yml + release-gate.yml                                               | Browser-required scope in 0.6; standalone advisory        |
+| Native↔sandbox-VM parity             | ci.yml (Linux, `make sandbox-parity`)                                   | Yes for PRs                                               |
+| Smoke test (compile+run)             | release-gate.yml                                                        | Yes                                                       |
+| Release-library consumer link+run    | release-gate.yml (except FreeBSD aarch64) + release.yml (every lane)    | Yes                                                       |
+| Packaged archive smoke (Linux/macOS) | release.yml (Unix matrix)                                               | Linux required; macOS follows platform policy             |
+| Packaged archive smoke (Windows zip) | release.yml (Windows job)                                               | Platform policy                                           |
+| FreeBSD packaged archive smoke       | release.yml (FreeBSD VM, x86_64 only)                                   | Platform policy                                           |
+| Linux package install smoke          | release.yml (`linux-packages`)                                          | Required when shipped; unavailable outputs recorded       |
+| Docker image clean-room install test | release.yml (`docker-image`, the image that ships)                      | Required when shipped; unavailable outputs recorded       |
+| Release identity + `release-checks`  | release-gate.yml + release.yml (`validate`)                             | Yes                                                       |
+| Full release DAG dry run             | release.yml on `release/**` pushes                                      | Yes for release branches                                  |
+| macOS build + tests                  | ci.yml + release-gate.yml                                               | Platform policy                                           |
+| Windows build + tests                | ci.yml + release-gate.yml                                               | Platform policy                                           |
+| FreeBSD x86_64 build + tests         | release-gate.yml, freebsd.yml (nightly)                                 | Platform policy                                           |
+| FreeBSD aarch64 compiler + smoke     | release-gate.yml                                                        | Platform policy                                           |
+| Rust runtime ASan (`make asan`)      | release-gate.yml (`gate-sanitizers`) + nightly-sanitizers.yml           | Select for affected contracts; an executed gate must pass |
+| Generated-code/runtime ASan/LSan     | nightly-sanitizers.yml (`core-safety`, six partitions)                  | Blocks nightly result; review when relevant               |
+| Host and extern-byte safety          | nightly-sanitizers.yml (`test-host-safety`, `test-extern-bytes-safety`) | Blocks nightly result; review when relevant               |
+| Bounded parser fuzz smoke            | nightly-sanitizers.yml (`make fuzz-smoke`)                              | Blocks nightly result; review when relevant               |
+| TSan (Rust runtime)                  | Local `make tsan`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
+| Miri                                 | Local `make miri`; no current workflow job                              | Assess gap when affected; prior decisions may apply       |
+| Codegen silent-failure lint          | codegen-lint.yml (PR)                                                   | Advisory                                                  |
+| Local cross-platform build           | `make pre-release`                                                      | Recommended                                               |
 
 The table describes checks and their normal release use. Platform-dependent
 rows follow the [platform policy](#platform-policy), including the major
@@ -666,15 +670,15 @@ waiver parser.
 The current [nightly sanitizer workflow](../.github/workflows/nightly-sanitizers.yml)
 executes `make asan`, six partitions of `make core-safety`, the
 `make test-host-safety` and `make test-extern-bytes-safety` integrations, and
-`make fuzz-smoke`. Every job blocks the nightly result. Record the reviewed
-run's revision and job outcomes; a successful run is evidence only for that
-revision and scope.
+`make fuzz-smoke`. Every job blocks the nightly result. When that evidence is
+relevant, record the reviewed run's revision and job outcomes; a successful
+run is evidence only for that revision and scope.
 
 Current workflows contain no TSan or Miri jobs, so current CI evidence for
 either is unavailable. `make tsan` and `make miri` remain local entry points,
-not recurring CI proof. Before release, review the missing race, aliasing and
-pointer-provenance coverage and record the required coverage and
-release-acceptance decision. A green ASan or nightly result does not supply
+not recurring CI proof. Review missing race, aliasing and pointer-provenance
+coverage when changed contracts need it; retain applicable prior decisions
+otherwise. A green ASan or nightly result does not supply
 that missing evidence or establish safety sign-off.
 
 - **The release-branch ASan gate is only as broad as `make asan`.** Today

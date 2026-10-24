@@ -1,8 +1,26 @@
+import std.lazy;
+
 fn bounds(start: i64, end: i64) -> Range<i64> {
     start..end
 }
 
 fn unchanged<T>(value: T) -> T {
+    value
+}
+
+fn duplicate<T: Copy>(value: T) -> (T, T) {
+    (value, value)
+}
+
+fn copied<T: Clone>(value: T) -> T {
+    value.clone()
+}
+
+fn copied_range<T: Clone>(value: Range<T>) -> Range<T> {
+    value.clone()
+}
+
+fn frozen<T: Frozen>(value: T) -> T {
     value
 }
 
@@ -28,6 +46,21 @@ fn main() {
     assert(span.start == 0);
     assert(span.end == 10);
     assert(total(span) == 45);
+    let (left, right) = duplicate(frozen(span.step_by(3).rev()));
+    assert(total(left) == 18);
+    assert(total(copied(right)) == 18);
+    assert(total(copied_range(right)) == 18);
+    assert(total(right.clone()) == 18);
+    var cached = lazy.new(|| {
+        println("initialize range");
+        bounds(1, 6).step_by(2).rev()
+    });
+    let first = cached.value();
+    let second = cached.value();
+    assert(first.start == 1);
+    assert(second.end == 6);
+    assert(total(first) == 9);
+    assert(total(second) == 9);
     let descending = reversed_even(span);
     assert(descending.start == 0);
     assert(descending.end == 10);

@@ -618,7 +618,11 @@ impl TraitRegistry {
                 head: crate::TypeHead::Builtin(BuiltinType::Range),
                 args,
             } if args.len() == 1 => match marker {
-                MarkerTrait::Send | MarkerTrait::Sync => visiting.query(&args[0], marker),
+                MarkerTrait::Send
+                | MarkerTrait::Sync
+                | MarkerTrait::Copy
+                | MarkerTrait::Clone
+                | MarkerTrait::Frozen => visiting.query(&args[0], marker),
                 _ => false,
             },
 
@@ -1259,31 +1263,47 @@ mod tests {
     }
 
     #[test]
-    fn range_send_and_sync_derive_from_the_element() {
+    fn range_value_markers_derive_from_the_element() {
         let registry = TraitRegistry::new();
         let range = |element| Ty::Named {
             head: crate::TypeHead::Builtin(BuiltinType::Range),
             args: vec![element],
         };
         for element in [Ty::I8, Ty::I64, Ty::U64] {
-            assert!(registry.is_send(&range(element.clone())));
-            assert!(registry.is_sync(&range(element)));
+            for marker in [
+                MarkerTrait::Send,
+                MarkerTrait::Sync,
+                MarkerTrait::Copy,
+                MarkerTrait::Clone,
+                MarkerTrait::Frozen,
+            ] {
+                assert!(registry.implements_marker(&range(element.clone()), marker));
+            }
         }
         let local = Ty::named_for_test("Rc", vec![Ty::I64]);
         assert!(!registry.is_send(&range(local.clone())));
-        assert!(!registry.is_sync(&range(local)));
+        assert!(!registry.is_sync(&range(local.clone())));
+        assert!(!registry.implements_marker(&range(local.clone()), MarkerTrait::Copy));
+        assert!(!registry.implements_marker(&range(local), MarkerTrait::Frozen));
         let borrowed = Ty::Borrow {
             pointee: Box::new(Ty::I64),
         };
         assert!(!registry.is_send(&range(borrowed)));
         let parameter = crate::ParamHead::for_test("RangeElement");
         let abstract_range = range(Ty::param(parameter));
-        assert!(!registry.is_send(&abstract_range));
-        assert!(registry.implements_marker_with_bounds(
-            &abstract_range,
+        for marker in [
             MarkerTrait::Send,
-            &|head, marker| head == parameter && marker == MarkerTrait::Send
-        ));
+            MarkerTrait::Copy,
+            MarkerTrait::Clone,
+            MarkerTrait::Frozen,
+        ] {
+            assert!(!registry.implements_marker(&abstract_range, marker));
+            assert!(registry.implements_marker_with_bounds(
+                &abstract_range,
+                marker,
+                &|head, required| head == parameter && required == marker
+            ));
+        }
     }
 
     #[test]
@@ -1294,8 +1314,11 @@ mod tests {
             args: vec![Ty::named_for_test("Stream", vec![Ty::I64])],
         };
         assert!(registry.is_send(&range));
-        assert!(!registry.implements_marker(&range, MarkerTrait::Copy));
         let authored_range = Ty::user_for_test("Range", vec![Ty::I64]);
+        for marker in [MarkerTrait::Copy, MarkerTrait::Clone, MarkerTrait::Frozen] {
+            assert!(!registry.implements_marker(&range, marker));
+            assert!(!registry.implements_marker(&authored_range, marker));
+        }
         assert!(!registry.is_send(&authored_range));
     }
 

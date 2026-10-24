@@ -671,7 +671,7 @@ impl Checker {
             self.warn_if_blocking_handle_method(&name, method, span);
         }
         // Structural clone admission is member-wise for tuples and built-in
-        // value enums. Collection clones keep their existing runtime rewrites,
+        // value enums and ranges. Collection clones keep their runtime rewrites,
         // but pass through the same affine/member gate first.
         if method == "clone"
             && args.is_empty()
@@ -696,7 +696,9 @@ impl Checker {
                     | Ty::Function { .. }
                     | Ty::Closure { .. }
                     | Ty::Named {
-                        head: crate::TypeHead::Builtin(BuiltinType::Option | BuiltinType::Result),
+                        head: crate::TypeHead::Builtin(
+                            BuiltinType::Option | BuiltinType::Result | BuiltinType::Range,
+                        ),
                         ..
                     }
             );

@@ -6,5 +6,5 @@ suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]
-stdout = "3\n9\n2\nbounded ranges\n"
+stdout = "initialize range\n3\n9\n2\nbounded ranges\n"
 exit = 0

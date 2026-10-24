@@ -1,0 +1,8 @@
+import std.net.http.codec;
+
+pub fn body() -> string {
+    let response = codec.parse_response(
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"
+    ).expect("valid response").expect("complete response");
+    response.body()
+}

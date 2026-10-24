@@ -139,6 +139,39 @@ fn doc_no_run_still_rejects_a_type_error() {
 }
 
 #[test]
+fn doc_main_preserves_the_entry_exit_contract() {
+    require_codegen();
+    for (source, succeeds, error) in [
+        ("fn main() fails string { println(\"ready\"); }", true, None),
+        (
+            "fn main() fails string { return error \"documented failure\"; }",
+            false,
+            Some("documented failure"),
+        ),
+        (
+            "fn main() -> Result<(), string> { .Err(\"explicit failure\") }",
+            false,
+            Some("explicit failure"),
+        ),
+        ("fn main() -> i64 { 7 }", false, None),
+    ] {
+        let dir = support::tempdir();
+        write_file(dir.path(), "guide.md", &format!("```hew\n{source}\n```\n"));
+        let output = run_hew_in(
+            dir.path(),
+            &["test", "--doc", "guide.md", "--format", "json"],
+        );
+        assert_eq!(output.status.success(), succeeds, "{source}: {output:?}");
+        if let Some(error) = error {
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains(error),
+                "{output:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn doc_no_run_compiles_host_operations_without_running_them() {
     require_codegen();
     let dir = support::tempdir();

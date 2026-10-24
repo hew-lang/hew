@@ -268,17 +268,41 @@ fn example_source(module: &str, fence: &Fence, path: &Path, entry_name: &str) ->
     } else {
         "#[test]"
     };
+    let parsed = hew_parser::parse(&fence.code);
+    let main = parsed.program.items.iter().find_map(|(item, _)| {
+        if let hew_parser::ast::Item::Function(function) = item {
+            (function.name == hew_parser::ast::Ident::new("main")).then_some(function)
+        } else {
+            None
+        }
+    });
     let standalone = path.extension().is_some_and(|ext| ext == "md")
-        || fence.code.contains("fn main(")
+        || main.is_some()
         || imports_own_module(&fence.code, path);
     let base = if standalone { "" } else { module };
-    if fence.code.contains("fn main(") {
+    if let Some(main) = main {
+        let call = if main
+            .return_type
+            .as_ref()
+            .is_some_and(|(ty, _)| matches!(ty, hew_parser::ast::TypeExpr::Fallible { .. }))
+        {
+            "main()?"
+        } else {
+            "main()"
+        };
+        let return_clause = main.return_type.as_ref().and_then(|(ty, span)| {
+            if let hew_parser::ast::TypeExpr::Fallible { success, error } = ty {
+                if matches!(&success.0, hew_parser::ast::TypeExpr::Tuple(items) if items.is_empty()) {
+                    return fence.code.get(error.1.clone()).map(|ty| format!(" fails {ty}"));
+                }
+            }
+            fence.code.get(span.clone()).map(|ty| format!(" -> {ty}"))
+        }).unwrap_or_default();
         format!(
-            "{base}\n{}\n{entry_attributes}\nfn {entry_name}() {{ main(); }}\n",
+            "{base}\n{}\n{entry_attributes}\nfn {entry_name}(){return_clause} {{ {call} }}\n",
             fence.code
         )
     } else {
-        let parsed = hew_parser::parse(&fence.code);
         let mut declarations = String::new();
         let mut statements = String::new();
         let mut cursor = 0;

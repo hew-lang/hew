@@ -553,6 +553,25 @@ impl Checker {
         let (freshened_params, freshened_ret, resolved_type_args) =
             self.instantiate_fn_sig_for_receiver_call(sig, type_args, span, receiver_type_args);
 
+        // A contextual result constrains fresh generic parameters before
+        // arguments are checked. Otherwise a literal argument is published at
+        // its default width while this same instance later adopts the result's
+        // width. Failed relations remain for the ordinary result diagnostic.
+        if !sig.type_params.is_empty() {
+            let key = SpanKey::in_module(span, self.current_module_idx);
+            if let Some(expected) = self
+                .call_result_expectations
+                .last()
+                .filter(|(site, _)| *site == key)
+                .map(|(_, ty)| ty.clone())
+            {
+                let snapshot = self.subst.snapshot();
+                if !self.try_unify_inference_with_owner_identity(&expected, &freshened_ret) {
+                    self.subst.restore(snapshot);
+                }
+            }
+        }
+
         match arg_application {
             SignatureArgApplication::PositionalOnly { arity_context } => {
                 if self.refuse_named_arguments(args, &arity_context, span) {

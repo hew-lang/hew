@@ -11,6 +11,10 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     for (name, expected) in [
         ("associated-record-constructor", "ready 42\n"),
         (
+            "generic-numeric-bounds",
+            "9 24\n9 24\n9 24\n0 1\n43\nfirst\nsecond\n",
+        ),
+        (
             "guarded-aggregate-match",
             "equal kept\nother fallback 2 4\nlarge selected 8\nempty\n",
         ),
@@ -63,4 +67,38 @@ fn associated_record_constructors_validate_the_selected_record_fields() {
         !diagnostics.contains("E_NOT_YET_IMPLEMENTED"),
         "{diagnostics}"
     );
+}
+
+#[test]
+fn generic_numeric_arithmetic_keeps_concrete_overflow_semantics() {
+    support::require_codegen();
+    let dir = support::tempdir();
+    let source =
+        support::repo_root().join("tests/core-acceptance/cases/generic-numeric-overflow.hew");
+    for level in ["0", "2"] {
+        let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("overflow-{level}"));
+        let mut build = Command::new(hew_binary());
+        build
+            .arg("build")
+            .arg(&source)
+            .args(["--opt-level", level, "-o"])
+            .arg(&binary);
+        let output = run_bounded_command(build, format!("build generic overflow O{level}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        let output = run_bounded_command(
+            Command::new(binary),
+            format!("run generic overflow O{level}"),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            describe_output(&output)
+        );
+        assert!(output.stdout.is_empty(), "{}", describe_output(&output));
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            "hew: failure: IntegerOverflow (201)\n"
+        );
+    }
 }

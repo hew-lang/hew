@@ -3085,6 +3085,7 @@ impl Checker {
             file_import_const_exports: self.file_import_const_exports.clone(),
             recovery_kinds: self.recovery_kinds.clone(),
             chain_values: self.chain_values.clone(),
+            call_result_expectations: self.call_result_expectations.clone(),
             call_argument_slots: self.call_argument_slots.clone(),
             call_default_arguments: self.call_default_arguments.clone(),
             next_default_span: self.next_default_span,

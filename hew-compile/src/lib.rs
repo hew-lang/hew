@@ -583,6 +583,10 @@ impl Session {
     /// # Errors
     ///
     /// Returns the first failing semantic boundary with its diagnostics.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one semantic session owns verification, completion and selected roots"
+    )]
     pub fn lower_hir_module(
         &self,
         module: &hew_hir::HirModule,

@@ -533,7 +533,7 @@ impl Checker {
         span: &Span,
     ) {
         use hew_parser::ast::CompoundAssignOp as Op;
-        let resolved = self.subst.resolve(target_ty);
+        let resolved = self.normalize_for_use(target_ty);
         let arithmetic = matches!(
             op,
             Op::Add | Op::Subtract | Op::Multiply | Op::Divide | Op::Modulo
@@ -548,6 +548,7 @@ impl Checker {
                 arithmetic
                     && (ty.is_numeric_literal()
                         || ty.is_float()
+                        || self.is_numeric_parameter(ty)
                         || ty.is_duration()
                         || ty.is_instant())
             }

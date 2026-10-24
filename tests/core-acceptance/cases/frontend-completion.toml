@@ -30,3 +30,26 @@ timeout_seconds = 30
 [case.expected]
 stdout = "first\nsecond\n8\n4\n0\n-7\n-1\n5\n9223372036854775806\n-1\n-9223372036854775808\n0\n"
 exit = 0
+
+[[case]]
+id = "generic-numeric-bounds"
+intent = "Numeric bounds justify scalar operations and zero/one identities while structural ordering preserves owned record fields."
+source = "cases/generic-numeric-bounds.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "9 24\n9 24\n9 24\n0 1\n43\nfirst\nsecond\n"
+exit = 0
+
+[[case]]
+id = "generic-numeric-overflow"
+intent = "Arithmetic justified by Num retains the concrete instance's checked overflow and surrounding cleanup."
+source = "cases/generic-numeric-overflow.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = ""
+stderr = "hew: failure: IntegerOverflow (201)\n"
+exit = 1

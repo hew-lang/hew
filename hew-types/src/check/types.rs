@@ -3506,6 +3506,8 @@ pub struct Checker {
     /// Per-call target facts for ordinary `Expr::Call` expressions.
     pub(super) recovery_kinds: HashMap<SpanKey, RecoveryKind>,
     pub(super) chain_values: Vec<ChainValueContext>,
+    /// Contextual result types, scoped to the exact call being checked.
+    pub(super) call_result_expectations: Vec<(SpanKey, Ty)>,
     /// See [`TypeCheckOutput::call_argument_slots`].
     pub(super) call_argument_slots: HashMap<SpanKey, Vec<usize>>,
     pub(super) call_default_arguments: HashMap<SpanKey, Vec<CheckedDefaultArgument>>,
@@ -4526,6 +4528,7 @@ impl Checker {
             file_import_const_exports: HashMap::new(),
             recovery_kinds: HashMap::new(),
             chain_values: Vec::new(),
+            call_result_expectations: Vec::new(),
             call_argument_slots: HashMap::new(),
             call_default_arguments: HashMap::new(),
             next_default_span: 0,

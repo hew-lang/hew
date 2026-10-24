@@ -1096,6 +1096,10 @@ fn frontend_completion_forms_match_native() {
             test_name: "range-adapter-composition",
             source_rel: "tests/core-acceptance/cases/range-adapter-composition.hew",
         },
+        ParityCase {
+            test_name: "generic-numeric-bounds",
+            source_rel: "tests/core-acceptance/cases/generic-numeric-bounds.hew",
+        },
     ] {
         assert_case(&case, "");
     }

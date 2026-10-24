@@ -5301,3 +5301,55 @@ fn trait_object_positional_arguments_match_the_declared_binders() {
         }
     }
 }
+
+#[test]
+fn numeric_bounds_support_scalar_arithmetic_and_common_literals() {
+    let source = r#"
+        fn combine<T: Num>(a: T, b: T) -> T {
+            var result: T = 0;
+            result += a;
+            result *= b;
+            result + 1
+        }
+        type Ranked { rank: i64; label: string; }
+        fn less<T: PartialOrd>(a: T, b: T) -> bool { a < b }
+        fn main() {
+            let signed: i8 = combine(2, 3);
+            let unsigned: u64 = combine(2, 3);
+            let floating: f64 = combine(2, 3);
+            let ranked = less(Ranked { rank: 1, label: "first" }, Ranked { rank: 2, label: "second" });
+        }
+    "#;
+    let output = check_source(source);
+    assert!(output.errors.is_empty(), "{:?}", output.errors);
+}
+
+#[test]
+fn numeric_bounds_do_not_admit_nonuniversal_literals_or_integer_only_operations() {
+    for source in [
+        "fn value<T: Num>() -> T { 128 } fn main() {}",
+        "fn value<T: Num>() -> T { -1 } fn main() {}",
+        "fn value<T: Num>() -> T { 0.5 } fn main() {}",
+        "fn value<T>() -> T { 0 } fn main() {}",
+        "fn value<T: Num>(a: T, b: T) -> T { a & b } fn main() {}",
+    ] {
+        let output = check_source(source);
+        assert!(!output.errors.is_empty(), "accepted {source}");
+    }
+}
+
+#[test]
+fn contextual_generic_results_check_literal_arguments_at_the_selected_width() {
+    for literal in ["256", "-1"] {
+        let source = format!("fn identity<T>(value: T) -> T {{ value }} fn main() {{ let value: u8 = identity({literal}); }}");
+        let output = check_source(&source);
+        assert!(
+            output
+                .errors
+                .iter()
+                .any(|error| error.kind == TypeErrorKind::InvalidOperation),
+            "{:?}",
+            output.errors
+        );
+    }
+}

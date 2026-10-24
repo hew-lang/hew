@@ -6,7 +6,7 @@ import { admitPackage } from "../dist/interpreter/v1/validate.js";
 function packageWithSameDisplayName() {
   return {
     schema_version: "hew.sandbox.bytecode.v1",
-    hew_version: "0.9.0",
+    hew_version: "0.9.1",
     compiler_version: "resource-shape-test",
     profile: "sandbox-vm-export",
     entry: { function: 0, exit: "unit" },

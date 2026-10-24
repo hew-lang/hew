@@ -171,7 +171,7 @@ impl Checker {
         // One parse for every rendering: the source is padded past the
         // program's last span, and each impl reserves room after its text
         // for the fresh spans of its copied header.
-        let mut source = " ".repeat(next_free_span(program));
+        let mut source = " ".repeat(next_free_span(program).max(self.next_default_span));
         let mut layouts = Vec::with_capacity(headers.len());
         for (_, implementation, declaration, _) in &headers {
             let start = source.len();

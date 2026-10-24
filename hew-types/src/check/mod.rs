@@ -2872,7 +2872,36 @@ impl Checker {
             .as_ref()
             .map_or(program, |normalized| &normalized.program);
         self.prepare_program(checked, false);
-        let normalized_program = match self.synthesize_error_displays(checked) {
+        let normalized_program =
+            self.prepare_implied_error_displays(checked, normalized_program.clone());
+        let program = normalized_program
+            .as_ref()
+            .map_or(program, |normalized| &normalized.program);
+        self.next_default_span = normalized_program.as_ref().map_or_else(
+            || machine_normalize::next_free_span(program),
+            |normalized| normalized.next_free_span(),
+        );
+        self.validate_macro_templates(program);
+        self.check_dependency_bodies(program);
+        self.check_embedded_builtin_impl_bodies(program);
+        self.check_root_bodies(program);
+        self.finish_program(source_program, normalized_program)
+    }
+
+    /// Register generated Error rendering providers and publish the exact
+    /// augmented source and origins consumed by body checking and lowering.
+    fn prepare_implied_error_displays(
+        &mut self,
+        checked: &Program,
+        normalized_program: Option<std::sync::Arc<machine_normalize::NormalizedProgram>>,
+    ) -> Option<std::sync::Arc<machine_normalize::NormalizedProgram>> {
+        self.next_default_span =
+            self.next_default_span
+                .max(normalized_program.as_ref().map_or_else(
+                    || machine_normalize::next_free_span(checked),
+                    |normalized| normalized.next_free_span(),
+                ));
+        match self.synthesize_error_displays(checked) {
             Some(displays) => {
                 let normalized =
                     std::sync::Arc::new(machine_normalize::NormalizedProgram::with_error_displays(
@@ -2891,19 +2920,7 @@ impl Checker {
                 Some(normalized)
             }
             None => normalized_program,
-        };
-        let program = normalized_program
-            .as_ref()
-            .map_or(program, |normalized| &normalized.program);
-        self.next_default_span = normalized_program.as_ref().map_or_else(
-            || machine_normalize::next_free_span(program),
-            |normalized| normalized.next_free_span(),
-        );
-        self.validate_macro_templates(program);
-        self.check_dependency_bodies(program);
-        self.check_embedded_builtin_impl_bodies(program);
-        self.check_root_bodies(program);
-        self.finish_program(source_program, normalized_program)
+        }
     }
 
     fn owns_embedded_builtin_bodies(&self, program: &Program) -> bool {

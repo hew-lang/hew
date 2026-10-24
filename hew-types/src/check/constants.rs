@@ -14,7 +14,14 @@ impl Checker {
         impl super::NodeVisitor for Eligibility<'_> {
             fn visit_expr(&mut self, expr: &Expr, span: &Span) {
                 let key = super::SpanKey::in_module(span, self.checker.current_module_idx);
-                if self.failure.is_some() || self.checker.compile_time_values.contains_key(&key) {
+                if self.failure.is_some()
+                    || self.checker.compile_time_values.contains_key(&key)
+                    || self
+                        .checker
+                        .expr_types
+                        .get(&key)
+                        .is_some_and(|ty| matches!(self.checker.subst.resolve(ty), Ty::Error))
+                {
                     return;
                 }
                 let callable = self

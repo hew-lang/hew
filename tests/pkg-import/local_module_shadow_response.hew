@@ -1,0 +1,5 @@
+import user.response;
+
+fn main() {
+    println(response.body());
+}

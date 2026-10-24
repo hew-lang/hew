@@ -56,6 +56,9 @@ fixtures=(
     # Ordinary package registration must leave the builtin Result enum used by
     # unrelated stdlib APIs intact.
     imported_result_does_not_shadow_builtin
+    # A module-local value named like its own imported module must retain its
+    # instance method, even when that module exports a function with the same name.
+    local_module_shadow_response
     imported_trait_method
     local_actor_ask_guard
     mixed_import_impl_collision

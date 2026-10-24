@@ -611,6 +611,17 @@ impl TraitRegistry {
                     | MarkerTrait::Debug
             ),
 
+            // Ranges retain bounds and normalized sequence values by value.
+            // Sharing or moving them retains the element's corresponding
+            // marker obligation, including bounds on abstract element types.
+            Ty::Named {
+                head: crate::TypeHead::Builtin(BuiltinType::Range),
+                args,
+            } if args.len() == 1 => match marker {
+                MarkerTrait::Send | MarkerTrait::Sync => visiting.query(&args[0], marker),
+                _ => false,
+            },
+
             // Stream<T> and Sink<T>: the two halves of one pipe. A half moves
             // between actors and its items cross that boundary, so Send/Sync
             // iff T: Send. Sink clones a producer handle; a Stream has one
@@ -1245,6 +1256,47 @@ mod tests {
         let set_rc = Ty::named_for_test("HashSet", vec![rc_i32]);
         assert!(!registry.is_send(&set_rc));
         assert!(!registry.is_sync(&set_rc));
+    }
+
+    #[test]
+    fn range_send_and_sync_derive_from_the_element() {
+        let registry = TraitRegistry::new();
+        let range = |element| Ty::Named {
+            head: crate::TypeHead::Builtin(BuiltinType::Range),
+            args: vec![element],
+        };
+        for element in [Ty::I8, Ty::I64, Ty::U64] {
+            assert!(registry.is_send(&range(element.clone())));
+            assert!(registry.is_sync(&range(element)));
+        }
+        let local = Ty::named_for_test("Rc", vec![Ty::I64]);
+        assert!(!registry.is_send(&range(local.clone())));
+        assert!(!registry.is_sync(&range(local)));
+        let borrowed = Ty::Borrow {
+            pointee: Box::new(Ty::I64),
+        };
+        assert!(!registry.is_send(&range(borrowed)));
+        let parameter = crate::ParamHead::for_test("RangeElement");
+        let abstract_range = range(Ty::param(parameter));
+        assert!(!registry.is_send(&abstract_range));
+        assert!(registry.implements_marker_with_bounds(
+            &abstract_range,
+            MarkerTrait::Send,
+            &|head, marker| head == parameter && marker == MarkerTrait::Send
+        ));
+    }
+
+    #[test]
+    fn range_send_does_not_make_affine_elements_copyable() {
+        let registry = TraitRegistry::new();
+        let range = Ty::Named {
+            head: crate::TypeHead::Builtin(BuiltinType::Range),
+            args: vec![Ty::named_for_test("Stream", vec![Ty::I64])],
+        };
+        assert!(registry.is_send(&range));
+        assert!(!registry.implements_marker(&range, MarkerTrait::Copy));
+        let authored_range = Ty::user_for_test("Range", vec![Ty::I64]);
+        assert!(!registry.is_send(&authored_range));
     }
 
     #[test]

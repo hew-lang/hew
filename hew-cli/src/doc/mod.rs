@@ -11,7 +11,7 @@ mod template;
 
 pub use extract::extract_docs;
 pub use highlight::highlight;
-pub use render::{render_index, render_module};
+pub use render::{build_reference_index, page_title, render_index, render_module_with_index};
 pub use template::{not_found_page, wrap_page};
 
 /// Derive a module name from a file path relative to a root directory.
@@ -199,6 +199,7 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         }
     } else {
         // Render HTML
+        let reference_index = build_reference_index(&modules);
         let index_body = render_index(&modules);
         let index_html = wrap_page("Index", &index_body, None);
         if let Err(e) = std::fs::write(out.join("index.html"), &index_html) {
@@ -211,9 +212,9 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
         }
 
         for module in &modules {
-            let body = render_module(module);
+            let body = render_module_with_index(module, &reference_index);
             let filename = module_to_filename(&module.name, "html");
-            let display_name = module.name.replace("::", ".");
+            let display_name = page_title(module);
             let escaped_name = crate::util::html_escape(&display_name);
             let breadcrumb = format!(
                 "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"

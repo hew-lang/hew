@@ -39,7 +39,7 @@
 //!
 //! ## Isolation and backpressure
 //!
-//! Messages must satisfy `Send`. Ordinary value data is snapshotted at the
+//! Messages must satisfy [Send](language.ownership.html#send). Ordinary value data is snapshotted at the
 //! actor boundary, while affine owners such as resources and stream halves
 //! move. Actor state is accessed only by that actor's handlers, and each actor
 //! runs one handler at a time.

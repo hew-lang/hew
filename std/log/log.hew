@@ -1,13 +1,10 @@
-//! Structured, leveled logging for Hew programs (slog-style).
+//! Structured logging with level filters and text or JSON output.
 //!
-//! import std.log;
+//! Choose between two entry points:
 //!
-//! Provides two surfaces:
+//! 1. **Module-level functions** use the global level and format settings.
 //!
-//! 1. **Module-level functions** — convenience API using the global level/format
-//!    settings, equivalent to Go's `log/slog` package-level functions.
-//!
-//! 2. **Logger record** — a value that carries its own `level` and `format`,
+//! 2. **Logger values** carry their own `level` and `format`,
 //!    so multiple loggers can coexist with different settings without touching
 //!    the global state.
 //!

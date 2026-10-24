@@ -52,7 +52,18 @@ fn render_function(f: &DocFunction) -> String {
 }
 
 /// Render a type item as Markdown.
-fn render_type(t: &DocType) -> String {
+fn implementation_target_name(target: &str) -> &str {
+    target
+        .split('<')
+        .next()
+        .unwrap_or(target)
+        .rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(target)
+        .trim()
+}
+
+fn render_type(t: &DocType, module_traits: &[DocTrait]) -> String {
     let label = if t.kind == "struct" { "Struct" } else { "Enum" };
     let mut out = format!("### {label} `{}`\n\n", t.name);
     if let Some(doc) = &t.doc {
@@ -72,6 +83,16 @@ fn render_type(t: &DocType) -> String {
         }
         out.push('\n');
     }
+    let methods = module_traits
+        .iter()
+        .filter(|tr| {
+            tr.implementation_targets
+                .iter()
+                .any(|target| implementation_target_name(target) == t.name.as_str())
+        })
+        .flat_map(|tr| tr.methods.iter().cloned())
+        .collect::<Vec<_>>();
+    out.push_str(&render_methods_md("Methods", &methods));
     out
 }
 
@@ -157,10 +178,25 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
 /// Render a full module page as Markdown.
 #[must_use]
 pub fn render_module(module: &DocModule) -> String {
-    let mut out = format!("# Module `{}`\n\n", module.name.replace("::", "."));
+    let is_guide = module.name.starts_with("language::");
+    let mut out = if is_guide {
+        format!("# {}\n\n", super::render::page_title(module))
+    } else {
+        format!("# Module `{}`\n\n", module.name.replace("::", "."))
+    };
 
     if let Some(doc) = &module.doc {
-        out.push_str(doc);
+        if is_guide {
+            let remainder = doc
+                .lines()
+                .skip_while(|line| !line.trim().starts_with("# "))
+                .skip(1)
+                .collect::<Vec<_>>()
+                .join("\n");
+            out.push_str(&remainder);
+        } else {
+            out.push_str(doc);
+        }
         out.push_str("\n\n");
     }
 
@@ -174,7 +210,7 @@ pub fn render_module(module: &DocModule) -> String {
     if !module.types.is_empty() {
         out.push_str("## Types\n\n");
         for t in &module.types {
-            out.push_str(&render_type(t));
+            out.push_str(&render_type(t, &module.traits));
         }
     }
 
@@ -246,6 +282,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
             root_mods.push(m);
         }
     }
+    language_mods.sort_by_key(|module| language_guide_rank(&module.name));
 
     if !language_mods.is_empty() {
         out.push_str("## Language guide\n\n");
@@ -272,12 +309,41 @@ pub fn render_index(modules: &[DocModule]) -> String {
 
 fn render_index_entry_md(out: &mut String, module: &DocModule) {
     let filename = super::module_to_filename(&module.name, "md");
-    let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
+    if module.name.starts_with("language::") {
+        let _ = write!(out, "- [{}]({filename})", super::render::page_title(module));
+    } else {
+        let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
+    }
     let summary = module_summary(module.doc.as_deref());
     if !summary.is_empty() {
         let _ = write!(out, " — {summary}");
     }
     out.push('\n');
+}
+
+fn language_guide_rank(name: &str) -> usize {
+    const ORDER: &[&str] = &[
+        "language::basics",
+        "language::concepts",
+        "language::control_flow",
+        "language::functions",
+        "language::types_traits",
+        "language::ownership",
+        "language::modules",
+        "language::metaprogramming",
+        "language::testing",
+        "language::wire",
+        "language::actors",
+        "language::concurrency",
+        "language::resources",
+        "language::supervision",
+        "language::machines",
+        "language::targets",
+    ];
+    ORDER
+        .iter()
+        .position(|entry| *entry == name)
+        .unwrap_or(ORDER.len())
 }
 
 fn module_summary(doc: Option<&str>) -> String {

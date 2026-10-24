@@ -62,3 +62,6 @@
 //!
 //! Type aliases use `type Name = ExistingType;`. They give another spelling to
 //! the same type rather than creating a new nominal type.
+//!
+//! For the ownership behavior of records, enums, trait objects, and generic
+//! members, see [ownership and sending](language.ownership.html).

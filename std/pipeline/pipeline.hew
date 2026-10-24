@@ -39,7 +39,8 @@ fn produce<I, T>(consume source: I, consume output: Sink<T>) where I: Iterator<I
 
 /// Read ahead into a bounded channel using one producer task.
 ///
-/// `capacity` must be positive. The source and its items must be Send. The
+/// `capacity` must be positive. The source and its items must be
+/// [Send](language.ownership.html#send). The
 /// channel holds at most `capacity` items, with one further item in the producer.
 pub gen fn prefetch<I, T>(consume source: I, capacity: i64 = 8) -> T where I: Iterator<Item = T> + Send, T: Send {
     assert(capacity > 0);
@@ -98,7 +99,8 @@ fn work<T, U>(id: i64, consume input: Stream<Job<T>>, consume output: Sink<Resul
 /// Input order is the default; Completion emits each available result. A
 /// shared admission limit bounds active jobs and results waiting for emission.
 /// Each worker receives its own copy of the cloneable transform, whose captures
-/// must be Send. Failures propagate through the owning scope; items are not retried.
+/// must be [Send](language.ownership.html#send). Failures propagate through
+/// the owning scope; items are not retried.
 /// The transform owns each input. It may return that same resource to forward
 /// ownership downstream, or return a new value. Inputs left in the transform
 /// receive ordinary cleanup on return, fault or cancellation.

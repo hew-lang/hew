@@ -1,4 +1,4 @@
-//! HTTP/1.1 codec over ordinary `std.net` calls.
+//! Parse buffered HTTP/1.1 requests and build server responses over `std.net`.
 //!
 //! Call `conn.recv()` directly; pending reads can suspend the caller.
 //! Use `fork` for concurrent work and `await` for the resulting task.
@@ -110,7 +110,7 @@ impl RequestError {
     }
 }
 
-/// Methods on [`Request`] — the request-side accessor surface.
+/// Methods on [`Request`](#type.Request), the request-side accessor surface.
 trait RequestMethods {
     /// The HTTP method (e.g. `"GET"`, `"POST"`).
     fn method(self) -> string;
@@ -162,7 +162,8 @@ pub fn request_complete(raw: string) -> bool {
 /// closed (F2). True when the buffered bytes exceed the total ceiling, the head
 /// exceeds the header ceiling (even before a terminator is seen), or the declared
 /// `Content-Length` exceeds the body ceiling. The acceptor's read loop checks
-/// this before [`request_complete`] so a malicious peer cannot OOM the worker by
+/// this before [`request_complete`](#fn.request_complete) so a malicious peer
+/// cannot exhaust the worker's buffer by
 /// streaming an unbounded head/body or declaring an enormous `Content-Length`.
 pub fn over_limit(raw: string) -> bool {
     if raw.len() > MAX_REQUEST_BYTES {

@@ -1,5 +1,7 @@
 //! Walk a parsed Hew AST and extract documentation items.
 
+use std::collections::HashMap;
+
 use hew_parser::ast::{
     Expr, Item, Literal, Program, TypeBodyItem, TypeDeclKind, UnaryOp, VariantKind, Visibility,
 };
@@ -114,11 +116,14 @@ pub struct DocTrait {
     /// Whether the trait itself is part of the public API. Private method
     /// traits are retained so their methods can be attached to public types.
     pub is_public: bool,
+    /// Types that implement this trait in the same module.
+    pub implementation_targets: Vec<String>,
 }
 
 /// A documented inherent implementation block.
 #[derive(Debug, Clone)]
 pub struct DocImpl {
+    pub target: String,
     pub signature: String,
     pub methods: Vec<DocMethod>,
     pub doc: Option<String>,
@@ -652,6 +657,23 @@ fn extract_enum_variants(body: &[TypeBodyItem]) -> Vec<DocEnumVariant> {
     reason = "sequential match over each Item variant"
 )]
 pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
+    let mut trait_implementations: HashMap<String, Vec<String>> = HashMap::new();
+    for (item, _) in &program.items {
+        let Item::Impl(implementation) = item else {
+            continue;
+        };
+        let Some(trait_bound) = &implementation.trait_bound else {
+            continue;
+        };
+        let Some((trait_name, _)) = trait_bound.path.segments.last() else {
+            continue;
+        };
+        trait_implementations
+            .entry(trait_name.to_string())
+            .or_default()
+            .push(format_type(&implementation.target_type.0));
+    }
+
     let mut functions = Vec::new();
     let mut types = Vec::new();
     let mut actors = Vec::new();
@@ -756,6 +778,9 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     methods,
                     doc: t.doc_comment.clone(),
                     is_public: t.visibility.is_pub(),
+                    implementation_targets: trait_implementations
+                        .remove(t.name.name.as_str())
+                        .unwrap_or_default(),
                 });
             }
             Item::Impl(i) if i.trait_bound.is_none() => {
@@ -771,6 +796,7 @@ pub fn extract_docs(program: &Program, module_name: &str) -> DocModule {
                     .collect::<Vec<_>>();
                 if !methods.is_empty() {
                     impls.push(DocImpl {
+                        target: format_type(&i.target_type.0),
                         signature: build_impl_signature(i),
                         methods,
                         doc: i.doc_comment.clone(),
@@ -1102,6 +1128,7 @@ package const PKG_C: i32 = 1;
         assert!(result.errors.is_empty(), "errors: {:?}", result.errors);
         let module = extract_docs(&result.program, "test");
         assert_eq!(module.impls.len(), 1);
+        assert_eq!(module.impls[0].target, "Option<T>");
         assert_eq!(module.impls[0].signature, "impl<T> Option<T>");
         assert_eq!(module.impls[0].methods.len(), 1);
         assert!(module.impls[0].methods[0]

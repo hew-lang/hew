@@ -1,4 +1,4 @@
-//! Failure-philosophy stdlib types for lifecycle hooks.
+//! Crash details and recovery decisions for actor lifecycle hooks.
 //!
 //! Import `std.failure` to name `CrashInfo` or `CrashAction` explicitly
 //! in a `#[on(crash)]` hook's signature. The hook observes the actor's last

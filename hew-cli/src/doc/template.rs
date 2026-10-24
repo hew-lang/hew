@@ -159,7 +159,7 @@ pub fn wrap_page(title: &str, body: &str, breadcrumb: Option<&str>) -> String {
 <a href="index.html" aria-current="page">Reference</a>
 <a href="https://hew.sh/learn">Learn</a>
 <a href="https://hew.sh/playground">Playground</a>
-<a href="https://hew.sh/docs">Docs</a>
+<a href="https://hew.sh/docs">Project docs</a>
 <a href="https://github.com/hew-lang/hew">GitHub ↗</a>
 </nav>
 </header>"#

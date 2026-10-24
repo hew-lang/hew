@@ -48,7 +48,8 @@
 //! name collides with a runtime built-in or an already-registered user metric
 //! (`heap_live_bytes` vs the built-in `heap.live_bytes`; `foo.bar` vs `foo_bar`)
 //! is rejected, so a user metric cannot shadow or alias another's scrape output.
-//! The constructors return a [`MetricsError`] when registration is rejected.
+//! The constructors return a [`MetricsError`](#type.MetricsError) when
+//! registration is rejected.
 
 /// Why a metric registration was rejected.
 pub enum MetricsError {

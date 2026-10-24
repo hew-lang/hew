@@ -286,7 +286,8 @@ fn decode_component(s: string, form: bool) -> string fails DecodeError {
 ///
 /// Entries are separated by `&`; each entry must contain `=` and entries
 /// without one are skipped, matching `encode_query`'s invalid-line convention.
-/// Percent-escapes are decoded like [`decode`], and `+` decodes to a space.
+/// Percent-escapes are decoded like [`decode`](#fn.decode), and `+` decodes to
+/// a space.
 /// Invalid encoding fails the whole operation instead of returning partial
 /// pairs. Malformed-escape offsets are relative to the encoded key or value.
 ///

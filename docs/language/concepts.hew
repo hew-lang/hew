@@ -1,0 +1,98 @@
+//! # Core concepts
+//!
+//! Hew combines value-oriented programming with actors and structured
+//! concurrency. This page gives the short version of the ideas that shape most
+//! Hew programs and points to the guide for each one.
+//!
+//! ```hew
+//! actor Counter {
+//!     var value: i64 = 0;
+//!     receive fn add(amount: i64) { value += amount; }
+//!     receive fn read() -> i64 { value }
+//! }
+//!
+//! fn main() {
+//!     let counter = spawn Counter;
+//!     counter.add(2).expect("counter accepts updates");
+//!     println(counter.read().expect("counter replies"));
+//!     stop(counter);
+//!     stopped(counter);
+//! }
+//! ```
+//!
+//! The caller holds an actor reference, not direct access to `Counter`'s
+//! fields. Calls deliver messages, and the actor handles one message at a time.
+//! The completion result says whether the call was handled successfully.
+//!
+//! ## Values, bindings, and ownership
+//!
+//! A value has one or more bindings, such as a local name, a record field, or
+//! a collection element. `let` prevents assignment through a binding; `var`
+//! permits it. Neither word means “shared” or “owned.”
+//!
+//! Ownership answers a different question: which value is responsible for an
+//! owner such as a file, stream, task, or captured closure state? Ordinary data
+//! can produce an independent value when reused. An affine owner transfers
+//! instead; after transfer, the previous place cannot use it. A function marks
+//! that transfer with `consume`. See [ownership and sending](language.ownership.html).
+//!
+//! ## Resources and cleanup
+//!
+//! A resource is affine: it has at most one owner, and leaving scope safely
+//! invokes its consuming `close` method. Explicitly closing it ends ownership
+//! earlier. A linear value is stricter: every path must explicitly consume it,
+//! because there is no safe automatic action. See
+//! [resources and linear values](language.resources.html).
+//!
+//! ## Actors, messages, and isolation
+//!
+//! An actor owns private state and processes one handler at a time. Other code
+//! interacts with it through a typed actor reference. Message data must satisfy
+//! [Send](language.ownership.html#send): ordinary data arrives as an
+//! independent snapshot, actor references preserve identity, and admitted
+//! affine owners transfer. See [actors](language.actors.html) for completion
+//! calls, submissions, mailbox pressure, periodic handlers, and interceptors.
+//!
+//! ## Tasks and structured concurrency
+//!
+//! A task is concurrent work owned by a lexical `scope`. The scope does not
+//! finish until its children and their cleanup settle. `fork` starts a task;
+//! `await`, `race`, and `select` coordinate results. Actors have independent
+//! identities and lifetimes, while tasks remain bounded by their parent scope.
+//! See [structured concurrency](language.concurrency.html).
+//!
+//! ## Failure and supervision
+//!
+//! Expected failure travels through `Result` and a declared `fails E` edge.
+//! Panics, checked traps, and failed actor turns are faults. A supervisor owns
+//! child roles and applies restart or escalation policy after faults; it does
+//! not replace ordinary error handling. See [functions and errors](language.functions.html)
+//! and [supervision](language.supervision.html).
+//!
+//! ## State machines, wire data, and targets
+//!
+//! A `machine` is an ordinary value whose generated `step` method applies
+//! exhaustive transition rules and returns typed outputs. It has no mailbox or
+//! thread of its own. See [state machines](language.machines.html).
+//!
+//! `#[wire]` gives records, enums, and machines stable serialized identities
+//! for service and remote-actor boundaries. See [wire data](language.wire.html).
+//! Native, WASI, and browser runtimes admit different host capabilities; check
+//! [target capabilities](language.targets.html) before choosing a deployment
+//! target.
+//!
+//! ## Further reading
+//!
+//! Hew's guides above define Hew's behavior. External material can provide
+//! background on the broader ideas, but its syntax and lifetime rules do not
+//! replace Hew's language reference.
+//!
+//! - The [Rust ownership chapter](https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html)
+//!   develops ownership and borrowing as a general systems-programming model.
+//!   Rust's references and lifetime syntax are not Hew syntax.
+//! - Oracle's [structured concurrency overview](https://docs.oracle.com/en/java/javase/25/core/structured-concurrency.html)
+//!   explains why child work is grouped under a scope. Its Java API is
+//!   different from Hew's `scope`, `fork`, and cancellation rules.
+//! - The [Erlang/OTP design principles](https://www.erlang.org/doc/system/design_principles.html)
+//!   introduce processes and supervision trees. Hew adopts related fault
+//!   isolation ideas with its own typed messages, ownership, and restart rules.

@@ -66,7 +66,9 @@
 //! `json.parse(text)`. Use `hew check file.hew` to type-check a standalone
 //! program before building or running it.
 //!
-//! Continue with [expressions and control flow](language.control_flow.html),
+//! Continue with [core concepts](language.concepts.html),
+//! [ownership and sending](language.ownership.html),
+//! [expressions and control flow](language.control_flow.html),
 //! [functions and errors](language.functions.html),
 //! [types and traits](language.types_traits.html),
 //! [modules and packages](language.modules.html),

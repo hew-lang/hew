@@ -1,7 +1,7 @@
 //! Render [`DocModule`] items to HTML fragments.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::util::html_escape;
 
@@ -34,7 +34,7 @@ fn shift_level(level: HeadingLevel, offset: u8) -> HeadingLevel {
 ///
 /// Code blocks with language `hew` (or no language) are highlighted using
 /// the lexer-based Shiki-compatible highlighter.
-fn markdown_to_html(md: &str, heading_offset: u8) -> String {
+fn markdown_to_html(md: &str, heading_offset: u8, references: &TypeIndex) -> String {
     let opts =
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_HEADING_ATTRIBUTES;
     let parser = Parser::new_ext(md, opts);
@@ -43,6 +43,7 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
     let mut in_code_block = false;
     let mut code_lang = String::new();
     let mut code_buf = String::new();
+    let mut link_depth = 0usize;
     // Accumulate non-code-block events so push_html sees the full stream
     // and its table state machine stays intact across Event boundaries.
     let mut pending: Vec<Event<'_>> = Vec::new();
@@ -97,6 +98,28 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
             Event::Text(text) if in_code_block => {
                 code_buf.push_str(&text);
             }
+            Event::Start(Tag::Link { .. }) => {
+                link_depth += 1;
+                pending.push(event);
+            }
+            Event::End(TagEnd::Link) => {
+                link_depth = link_depth.saturating_sub(1);
+                pending.push(event);
+            }
+            Event::Code(code) if link_depth == 0 => {
+                if let Some(href) = inline_reference(&code, references) {
+                    pending.push(Event::Html(
+                        format!(
+                            "<a href=\"{}\"><code>{}</code></a>",
+                            html_escape(href),
+                            html_escape(&code)
+                        )
+                        .into(),
+                    ));
+                } else {
+                    pending.push(Event::Code(code));
+                }
+            }
             event => {
                 if !in_code_block {
                     pending.push(event);
@@ -111,29 +134,46 @@ fn markdown_to_html(md: &str, heading_offset: u8) -> String {
     html
 }
 
-fn push_doc(out: &mut String, doc: Option<&String>) {
+fn inline_reference<'a>(code: &str, references: &'a TypeIndex) -> Option<&'a str> {
+    if let Some(href) = references.get(code) {
+        return Some(href);
+    }
+    if let Some((base, _)) = code.split_once('<') {
+        if let Some(href) = references.get(base.trim()) {
+            return Some(href);
+        }
+    }
+    if let Some(call) = code.strip_suffix("()") {
+        if call.contains('.') {
+            return references.get(call).map(String::as_str);
+        }
+    }
+    None
+}
+
+fn push_doc(out: &mut String, doc: Option<&String>, index: &TypeIndex) {
     if let Some(d) = doc {
         out.push_str("<div class=\"doc\">");
         // Items are rendered under <h3>; shift doc `#` → <h4> (offset 3).
-        out.push_str(&markdown_to_html(d, 3));
+        out.push_str(&markdown_to_html(d, 3, index));
         out.push_str("</div>\n");
     }
 }
 
 /// Render an inline doc fragment (used inside dl entries and method lists).
-fn render_inline_doc(doc: Option<&String>) -> String {
+fn render_inline_doc(doc: Option<&String>, index: &TypeIndex) -> String {
     if let Some(d) = doc {
         // Method/field docs sit inside an <h4> context; shift doc `#` → <h5> (offset 4).
         format!(
             "<div class=\"inline-doc\">{}</div>\n",
-            markdown_to_html(d, 4)
+            markdown_to_html(d, 4, index)
         )
     } else {
         String::new()
     }
 }
 
-fn render_fields_dl(fields: &[DocField]) -> String {
+fn render_fields_dl(fields: &[DocField], index: &TypeIndex) -> String {
     if fields.is_empty() {
         return String::new();
     }
@@ -142,11 +182,12 @@ fn render_fields_dl(fields: &[DocField]) -> String {
         out.push_str("<dt>");
         out.push_str(&html_escape(&field.name));
         out.push_str(": <span class=\"ty\">");
-        out.push_str(&html_escape(&field.ty));
+        let highlighted = highlight_signature(&field.ty);
+        out.push_str(&link_signature_types(&highlighted, index));
         out.push_str("</span></dt>\n");
         if let Some(doc) = &field.doc {
             out.push_str("<dd>");
-            out.push_str(&markdown_to_html(doc, 4));
+            out.push_str(&markdown_to_html(doc, 4, index));
             out.push_str("</dd>\n");
         }
     }
@@ -161,14 +202,197 @@ fn render_fields_dl(fields: &[DocField]) -> String {
 /// are always unique within one module so no disambiguation is needed.
 type TypeIndex = HashMap<String, String>;
 
+/// Cross-page destinations that are safe to link by an unqualified name.
+///
+/// A name is omitted as soon as two different declarations claim it. Local
+/// declarations are added separately and always win while rendering their own
+/// module.
+#[derive(Debug, Default)]
+pub struct ReferenceIndex {
+    destinations: HashMap<String, String>,
+    ambiguous: HashSet<String>,
+}
+
+impl ReferenceIndex {
+    fn insert(&mut self, name: String, href: String) {
+        if self.ambiguous.contains(&name) {
+            return;
+        }
+        if let Some(existing) = self.destinations.get(&name) {
+            if existing != &href {
+                self.destinations.remove(&name);
+                self.ambiguous.insert(name);
+            }
+        } else {
+            self.destinations.insert(name, href);
+        }
+    }
+}
+
+fn add_type_reference(
+    index: &mut ReferenceIndex,
+    filename: &str,
+    module_name: &str,
+    alias: &str,
+    name: &str,
+    anchor: &str,
+) {
+    let href = format!("{filename}#{anchor}.{name}");
+    index.insert(name.to_string(), href.clone());
+    index.insert(format!("{module_name}.{name}"), href.clone());
+    index.insert(format!("{alias}.{name}"), href);
+}
+
+fn impl_target_name(target: &str) -> &str {
+    target
+        .split('<')
+        .next()
+        .unwrap_or(target)
+        .rsplit(['.', ':'])
+        .find(|part| !part.is_empty())
+        .unwrap_or(target)
+        .trim()
+}
+
+fn add_private_method_references(
+    index: &mut ReferenceIndex,
+    module: &DocModule,
+    filename: &str,
+    module_name: &str,
+    alias: &str,
+    declared: &HashSet<&str>,
+) {
+    for tr in module.traits.iter().filter(|tr| !tr.is_public) {
+        for target in &tr.implementation_targets {
+            let target = impl_target_name(target);
+            if !declared.contains(target) {
+                continue;
+            }
+            for method in &tr.methods {
+                let href = format!("{filename}#method.{target}.{}", method.name);
+                index.insert(format!("{target}.{}", method.name), href.clone());
+                index.insert(
+                    format!("{module_name}.{target}.{}", method.name),
+                    href.clone(),
+                );
+                index.insert(format!("{alias}.{target}.{}", method.name), href);
+            }
+        }
+    }
+}
+
+/// Build links for public types across all generated modules.
+///
+/// Bare names are retained only when they resolve to one destination. Fully
+/// qualified module and method names remain available even when a bare name is
+/// shared by several modules.
+#[must_use]
+pub fn build_reference_index(modules: &[DocModule]) -> ReferenceIndex {
+    let mut index = ReferenceIndex::default();
+    for module in modules {
+        let filename = super::module_to_filename(&module.name, "html");
+        let module_name = display_module_name(&module.name);
+        index.insert(module_name.clone(), filename.clone());
+        let alias = module_name.rsplit('.').next().unwrap_or(&module_name);
+
+        for function in &module.functions {
+            let href = format!("{filename}#fn.{}", function.name);
+            index.insert(format!("{module_name}.{}", function.name), href.clone());
+            index.insert(format!("{alias}.{}", function.name), href);
+        }
+
+        for ty in &module.types {
+            add_type_reference(&mut index, &filename, &module_name, alias, &ty.name, "type");
+        }
+        for actor in &module.actors {
+            add_type_reference(
+                &mut index,
+                &filename,
+                &module_name,
+                alias,
+                &actor.name,
+                "actor",
+            );
+        }
+        for machine in &module.machines {
+            add_type_reference(
+                &mut index,
+                &filename,
+                &module_name,
+                alias,
+                &machine.name,
+                "machine",
+            );
+        }
+        for tr in module.traits.iter().filter(|tr| tr.is_public) {
+            add_type_reference(
+                &mut index,
+                &filename,
+                &module_name,
+                alias,
+                &tr.name,
+                "trait",
+            );
+            for method in &tr.methods {
+                index.insert(
+                    format!("{}.{}", tr.name, method.name),
+                    format!("{filename}#method.{}.{}", tr.name, method.name),
+                );
+            }
+        }
+        for type_alias in &module.type_aliases {
+            add_type_reference(
+                &mut index,
+                &filename,
+                &module_name,
+                alias,
+                &type_alias.name,
+                "typealias",
+            );
+        }
+
+        let declared = module
+            .types
+            .iter()
+            .map(|ty| ty.name.as_str())
+            .chain(module.actors.iter().map(|actor| actor.name.as_str()))
+            .chain(module.machines.iter().map(|machine| machine.name.as_str()))
+            .chain(module.type_aliases.iter().map(|alias| alias.name.as_str()))
+            .collect::<HashSet<_>>();
+        add_private_method_references(
+            &mut index,
+            module,
+            &filename,
+            &module_name,
+            alias,
+            &declared,
+        );
+        for implementation in &module.impls {
+            let target = impl_target_name(&implementation.target);
+            if !declared.contains(target) {
+                let href = format!("{filename}#impl.{target}");
+                index.insert(target.to_string(), href.clone());
+                index.insert(format!("{module_name}.{target}"), href);
+            }
+            for method in &implementation.methods {
+                index.insert(
+                    format!("{target}.{}", method.name),
+                    format!("{filename}#method.{target}.{}", method.name),
+                );
+            }
+        }
+    }
+    index
+}
+
 /// Build a type index for the current module: maps bare type name → anchor href.
 ///
 /// Types (`#type.Foo`), actors (`#actor.Foo`), and traits (`#trait.Foo`) are
 /// all indexed. Same-module only; inter-module links are out of scope for this
 /// feature — following cross-module refs would require a multi-module index not
 /// available at per-module render time.
-fn build_type_index(module: &DocModule) -> TypeIndex {
-    let mut index = TypeIndex::new();
+fn build_type_index(module: &DocModule, references: &ReferenceIndex) -> TypeIndex {
+    let mut index = references.destinations.clone();
     for t in &module.types {
         index.insert(t.name.clone(), format!("#type.{}", t.name));
     }
@@ -180,6 +404,17 @@ fn build_type_index(module: &DocModule) -> TypeIndex {
     }
     for t in module.traits.iter().filter(|t| t.is_public) {
         index.insert(t.name.clone(), format!("#trait.{}", t.name));
+    }
+    for tr in module.traits.iter().filter(|tr| !tr.is_public) {
+        for target in &tr.implementation_targets {
+            let target = impl_target_name(target);
+            for method in &tr.methods {
+                index.insert(
+                    format!("{target}.{}", method.name),
+                    format!("#method.{target}.{}", method.name),
+                );
+            }
+        }
     }
     index
 }
@@ -265,7 +500,7 @@ fn render_methods_list(
         let highlighted = highlight_signature(&m.signature);
         out.push_str(&link_signature_types(&highlighted, index));
         out.push_str("</span>\n");
-        out.push_str(&render_inline_doc(m.doc.as_ref()));
+        out.push_str(&render_inline_doc(m.doc.as_ref(), index));
         out.push_str("</div>\n");
     }
     out
@@ -283,7 +518,7 @@ fn render_function(f: &DocFunction, index: &TypeIndex) -> String {
     let highlighted = highlight_signature(&f.signature);
     out.push_str(&link_signature_types(&highlighted, index));
     out.push_str("</span>\n");
-    push_doc(&mut out, f.doc.as_ref());
+    push_doc(&mut out, f.doc.as_ref(), index);
     out.push_str("</div>\n");
     out
 }
@@ -320,9 +555,13 @@ fn traits_for_type<'a>(traits: &'a [DocTrait], type_name: &str) -> Vec<&'a DocTr
     traits
         .iter()
         .filter(|tr| {
-            tr.methods
+            tr.implementation_targets
                 .iter()
-                .any(|m| first_param_type(&m.signature) == Some(type_name))
+                .any(|target| impl_target_name(target) == type_name)
+                || tr
+                    .methods
+                    .iter()
+                    .any(|m| first_param_type(&m.signature) == Some(type_name))
         })
         .collect()
 }
@@ -341,20 +580,21 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
     out.push_str(" <code>");
     out.push_str(&html_escape(&t.name));
     out.push_str("</code></h3>\n");
-    push_doc(&mut out, t.doc.as_ref());
-    out.push_str(&render_fields_dl(&t.fields));
+    push_doc(&mut out, t.doc.as_ref(), index);
+    out.push_str(&render_fields_dl(&t.fields, index));
     if !t.variants.is_empty() {
         out.push_str("<h4>Variants</h4>\n<dl class=\"variants\">\n");
         for v in &t.variants {
             out.push_str("<dt><code>");
             out.push_str(&html_escape(&v.name));
             if !v.shape.is_empty() {
-                out.push_str(&html_escape(&v.shape));
+                let highlighted = highlight_signature(&v.shape);
+                out.push_str(&link_signature_types(&highlighted, index));
             }
             out.push_str("</code></dt>\n");
             if let Some(doc) = &v.doc {
                 out.push_str("<dd>");
-                out.push_str(&markdown_to_html(doc, 4));
+                out.push_str(&markdown_to_html(doc, 4, index));
                 out.push_str("</dd>\n");
             }
         }
@@ -365,11 +605,17 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
     let implementors = traits_for_type(module_traits, &t.name);
     if !implementors.is_empty() {
         out.push_str("<h4>Methods</h4>\n");
+        let mut method_anchors = HashSet::new();
         for tr in implementors {
             let applicable: Vec<&DocMethod> = tr
                 .methods
                 .iter()
-                .filter(|m| first_param_type(&m.signature) == Some(t.name.as_str()))
+                .filter(|m| {
+                    tr.implementation_targets
+                        .iter()
+                        .any(|target| impl_target_name(target) == t.name.as_str())
+                        || first_param_type(&m.signature) == Some(t.name.as_str())
+                })
                 .collect();
             if !applicable.is_empty() {
                 if tr.is_public {
@@ -380,11 +626,19 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
                     out.push_str("</code></a></p>\n");
                 }
                 for m in applicable {
-                    out.push_str("<div class=\"method\">\n<span class=\"sig\">");
+                    out.push_str("<div class=\"method\"");
+                    if !tr.is_public && method_anchors.insert(m.name.as_str()) {
+                        out.push_str(" id=\"method.");
+                        out.push_str(&html_escape(&t.name));
+                        out.push('.');
+                        out.push_str(&html_escape(&m.name));
+                        out.push('"');
+                    }
+                    out.push_str(">\n<span class=\"sig\">");
                     let highlighted = highlight_signature(&m.signature);
                     out.push_str(&link_signature_types(&highlighted, index));
                     out.push_str("</span>\n");
-                    out.push_str(&render_inline_doc(m.doc.as_ref()));
+                    out.push_str(&render_inline_doc(m.doc.as_ref(), index));
                     out.push_str("</div>\n");
                 }
             }
@@ -403,8 +657,8 @@ fn render_actor(a: &DocActor, index: &TypeIndex) -> String {
     out.push_str("<h3>Actor <code>");
     out.push_str(&html_escape(&a.name));
     out.push_str("</code></h3>\n");
-    push_doc(&mut out, a.doc.as_ref());
-    out.push_str(&render_fields_dl(&a.fields));
+    push_doc(&mut out, a.doc.as_ref(), index);
+    out.push_str(&render_fields_dl(&a.fields, index));
     out.push_str(&render_methods_list(
         "Handlers",
         &a.name,
@@ -415,7 +669,11 @@ fn render_actor(a: &DocActor, index: &TypeIndex) -> String {
     out
 }
 
-fn render_machine_members(heading: &str, members: &[DocMachineMember]) -> String {
+fn render_machine_members(
+    heading: &str,
+    members: &[DocMachineMember],
+    index: &TypeIndex,
+) -> String {
     if members.is_empty() {
         return String::new();
     }
@@ -426,14 +684,15 @@ fn render_machine_members(heading: &str, members: &[DocMachineMember]) -> String
     for member in members {
         out.push_str("<dt><code>");
         out.push_str(&html_escape(&member.name));
-        out.push_str(&html_escape(&member.shape));
+        let highlighted = highlight_signature(&member.shape);
+        out.push_str(&link_signature_types(&highlighted, index));
         out.push_str("</code></dt>\n");
     }
     out.push_str("</dl>\n");
     out
 }
 
-fn render_machine(machine: &DocMachine) -> String {
+fn render_machine(machine: &DocMachine, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"machine.");
     out.push_str(&html_escape(&machine.name));
     out.push_str("\">\n<h3>Machine <code>");
@@ -441,9 +700,9 @@ fn render_machine(machine: &DocMachine) -> String {
     out.push_str("</code></h3>\n<span class=\"sig\">");
     out.push_str(&highlight_signature(&machine.signature));
     out.push_str("</span>\n");
-    out.push_str(&render_machine_members("States", &machine.states));
-    out.push_str(&render_machine_members("Events", &machine.events));
-    out.push_str(&render_machine_members("Outputs", &machine.outputs));
+    out.push_str(&render_machine_members("States", &machine.states, index));
+    out.push_str(&render_machine_members("Events", &machine.events, index));
+    out.push_str(&render_machine_members("Outputs", &machine.outputs, index));
     out.push_str(
         "<p>See the <a href=\"language.machines.html\">machine reference</a> for generated step, report, output, and state-name APIs.</p>\n",
     );
@@ -459,24 +718,43 @@ fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
     out.push_str("<h3>Trait <code>");
     out.push_str(&html_escape(&t.name));
     out.push_str("</code></h3>\n");
-    push_doc(&mut out, t.doc.as_ref());
+    push_doc(&mut out, t.doc.as_ref(), index);
     out.push_str(&render_methods_list("Methods", &t.name, &t.methods, index));
     out.push_str("</div>\n");
     out
 }
 
 /// Render documented methods from an inherent implementation block.
-fn render_impl(i: &DocImpl, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item impl\">\n<h3><code>");
+fn render_impl(
+    i: &DocImpl,
+    index: &TypeIndex,
+    include_target_anchor: bool,
+    method_anchors: &mut HashSet<String>,
+) -> String {
+    let target = impl_target_name(&i.target);
+    let mut out = String::from("<div class=\"item impl\"");
+    if include_target_anchor {
+        out.push_str(" id=\"impl.");
+        out.push_str(&html_escape(target));
+        out.push('"');
+    }
+    out.push_str(">\n<h3><code>");
     out.push_str(&html_escape(&i.signature));
     out.push_str("</code></h3>\n");
-    push_doc(&mut out, i.doc.as_ref());
+    push_doc(&mut out, i.doc.as_ref(), index);
     for method in &i.methods {
-        out.push_str("<div class=\"method\">\n<span class=\"sig\">");
+        let anchor = format!("method.{target}.{}", method.name);
+        out.push_str("<div class=\"method\"");
+        if method_anchors.insert(anchor.clone()) {
+            out.push_str(" id=\"");
+            out.push_str(&html_escape(&anchor));
+            out.push('"');
+        }
+        out.push_str(">\n<span class=\"sig\">");
         let highlighted = highlight_signature(&method.signature);
         out.push_str(&link_signature_types(&highlighted, index));
         out.push_str("</span>\n");
-        out.push_str(&render_inline_doc(method.doc.as_ref()));
+        out.push_str(&render_inline_doc(method.doc.as_ref(), index));
         out.push_str("</div>\n");
     }
     out.push_str("</div>\n");
@@ -484,7 +762,7 @@ fn render_impl(i: &DocImpl, index: &TypeIndex) -> String {
 }
 
 /// Render a constant item.
-fn render_const(c: &DocConst) -> String {
+fn render_const(c: &DocConst, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"const.");
     out.push_str(&html_escape(&c.name));
     out.push_str("\">\n");
@@ -493,15 +771,16 @@ fn render_const(c: &DocConst) -> String {
     out.push_str("</code></h3>\n");
     let sig = format!("{}const {}: {} = {}", c.visibility, c.name, c.ty, c.value);
     out.push_str("<span class=\"sig\">");
-    out.push_str(&highlight_signature(&sig));
+    let highlighted = highlight_signature(&sig);
+    out.push_str(&link_signature_types(&highlighted, index));
     out.push_str("</span>\n");
-    push_doc(&mut out, c.doc.as_ref());
+    push_doc(&mut out, c.doc.as_ref(), index);
     out.push_str("</div>\n");
     out
 }
 
 /// Render a type-alias item.
-fn render_type_alias(ta: &DocTypeAlias) -> String {
+fn render_type_alias(ta: &DocTypeAlias, index: &TypeIndex) -> String {
     let mut out = String::from("<div class=\"item\" id=\"typealias.");
     out.push_str(&html_escape(&ta.name));
     out.push_str("\">\n");
@@ -510,9 +789,10 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
     out.push_str("</code></h3>\n");
     let sig = format!("{}type {} = {}", ta.visibility, ta.name, ta.ty);
     out.push_str("<span class=\"sig\">");
-    out.push_str(&highlight_signature(&sig));
+    let highlighted = highlight_signature(&sig);
+    out.push_str(&link_signature_types(&highlighted, index));
     out.push_str("</span>\n");
-    push_doc(&mut out, ta.doc.as_ref());
+    push_doc(&mut out, ta.doc.as_ref(), index);
     out.push_str("</div>\n");
     out
 }
@@ -521,28 +801,73 @@ fn display_module_name(name: &str) -> String {
     name.replace("::", ".")
 }
 
+fn doc_title(doc: Option<&str>) -> Option<&str> {
+    doc?.lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("# "))
+}
+
+fn doc_without_title(doc: &str) -> &str {
+    let Some(position) = doc.find("# ") else {
+        return doc;
+    };
+    let after_title = &doc[position..];
+    after_title
+        .find('\n')
+        .map_or("", |newline| &after_title[newline + 1..])
+}
+
+/// Reader-facing title for a generated page.
+#[must_use]
+pub fn page_title(module: &DocModule) -> String {
+    if module.name.starts_with("language::") {
+        if let Some(title) = doc_title(module.doc.as_deref()) {
+            return title.to_string();
+        }
+    }
+    display_module_name(&module.name)
+}
+
 /// Render a full module page body (without the outer HTML wrapper).
+#[cfg(test)]
+#[must_use]
+pub fn render_module(module: &DocModule) -> String {
+    let references = build_reference_index(std::slice::from_ref(module));
+    render_module_with_index(module, &references)
+}
+
+/// Render a module with links to unambiguous declarations in the complete
+/// generated reference.
 #[must_use]
 #[expect(
     clippy::too_many_lines,
     reason = "sequential rendering of each item kind"
 )]
-pub fn render_module(module: &DocModule) -> String {
+pub fn render_module_with_index(module: &DocModule, references: &ReferenceIndex) -> String {
     let mut body = String::new();
+    let index = build_type_index(module, references);
 
-    body.push_str("<h1>Module <code>");
-    body.push_str(&html_escape(&display_module_name(&module.name)));
-    body.push_str("</code></h1>\n");
-
-    // Module-level docs are under <h1>; shift doc `#` → <h2> (offset 1).
-    if let Some(d) = &module.doc {
-        body.push_str("<div class=\"doc\">");
-        body.push_str(&markdown_to_html(d, 1));
-        body.push_str("</div>\n");
+    let is_guide = module.name.starts_with("language::");
+    if is_guide {
+        body.push_str("<h1>");
+        body.push_str(&html_escape(&page_title(module)));
+        body.push_str("</h1>\n");
+    } else {
+        body.push_str("<h1>Module <code>");
+        body.push_str(&html_escape(&display_module_name(&module.name)));
+        body.push_str("</code></h1>\n");
     }
 
-    // Build the intra-page type index for cross-linking in signatures.
-    let index = build_type_index(module);
+    if let Some(d) = &module.doc {
+        body.push_str("<div class=\"doc\">");
+        if is_guide {
+            body.push_str(&markdown_to_html(doc_without_title(d), 0, &index));
+        } else {
+            // Module-level docs are under <h1>; shift doc `#` → <h2>.
+            body.push_str(&markdown_to_html(d, 1, &index));
+        }
+        body.push_str("</div>\n");
+    }
 
     // Table of contents
     let has_items = !module.functions.is_empty()
@@ -636,7 +961,7 @@ pub fn render_module(module: &DocModule) -> String {
     if !module.machines.is_empty() {
         body.push_str("<h2>Machines</h2>\n");
         for machine in &module.machines {
-            body.push_str(&render_machine(machine));
+            body.push_str(&render_machine(machine, &index));
         }
     }
 
@@ -649,22 +974,31 @@ pub fn render_module(module: &DocModule) -> String {
 
     if !module.impls.is_empty() {
         body.push_str("<h2 id=\"implementations\">Inherent methods</h2>\n");
+        let mut target_anchors = HashSet::new();
+        let mut method_anchors = HashSet::new();
         for i in &module.impls {
-            body.push_str(&render_impl(i, &index));
+            let target = impl_target_name(&i.target).to_string();
+            let include_target_anchor = target_anchors.insert(target);
+            body.push_str(&render_impl(
+                i,
+                &index,
+                include_target_anchor,
+                &mut method_anchors,
+            ));
         }
     }
 
     if !module.consts.is_empty() {
         body.push_str("<h2>Constants</h2>\n");
         for c in &module.consts {
-            body.push_str(&render_const(c));
+            body.push_str(&render_const(c, &index));
         }
     }
 
     if !module.type_aliases.is_empty() {
         body.push_str("<h2>Type aliases</h2>\n");
         for ta in &module.type_aliases {
-            body.push_str(&render_type_alias(ta));
+            body.push_str(&render_type_alias(ta, &index));
         }
     }
 
@@ -696,22 +1030,23 @@ pub fn render_index(modules: &[DocModule]) -> String {
             root_mods.push(m);
         }
     }
+    language_mods.sort_by_key(|module| language_guide_rank(&module.name));
 
     if !language_mods.is_empty() {
         body.push_str(
-            "<section class=\"doc-section\"><h2>Language guide</h2>\n<ul class=\"module-list\">\n",
+            "<section class=\"doc-section\"><h2>Language guide</h2>\n<p>Start with <a href=\"language.basics.html\">Language basics</a>, then follow the focused guides as your program needs them.</p>\n<ul class=\"module-list\">\n",
         );
         for m in &language_mods {
-            render_index_entry(&mut body, m);
+            render_index_entry(&mut body, m, true);
         }
         body.push_str("</ul></section>\n");
     }
 
-    body.push_str("<section class=\"doc-section\"><h2>Standard library</h2>\n");
+    body.push_str("<section class=\"doc-section\"><h2>Standard library</h2>\n<p>Import a module by its dotted name. Each page lists its public declarations and methods.</p>\n");
     if !root_mods.is_empty() {
         body.push_str("<ul class=\"module-list\">\n");
         for m in &root_mods {
-            render_index_entry(&mut body, m);
+            render_index_entry(&mut body, m, false);
         }
         body.push_str("</ul>\n");
     }
@@ -721,7 +1056,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
         body.push_str(&html_escape(category));
         body.push_str("</h3>\n<ul class=\"module-list\">\n");
         for m in mods {
-            render_index_entry(&mut body, m);
+            render_index_entry(&mut body, m, false);
         }
         body.push_str("</ul>\n");
     }
@@ -730,17 +1065,52 @@ pub fn render_index(modules: &[DocModule]) -> String {
     body
 }
 
-fn render_index_entry(body: &mut String, m: &DocModule) {
+fn language_guide_rank(name: &str) -> usize {
+    const ORDER: &[&str] = &[
+        "language::basics",
+        "language::concepts",
+        "language::control_flow",
+        "language::functions",
+        "language::types_traits",
+        "language::ownership",
+        "language::modules",
+        "language::metaprogramming",
+        "language::testing",
+        "language::wire",
+        "language::actors",
+        "language::concurrency",
+        "language::resources",
+        "language::supervision",
+        "language::machines",
+        "language::targets",
+    ];
+    ORDER
+        .iter()
+        .position(|entry| *entry == name)
+        .unwrap_or(ORDER.len())
+}
+
+fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool) {
     let filename = super::module_to_filename(&m.name, "html");
     let summary = module_summary(m.doc.as_deref());
-    let display_name = display_module_name(&m.name);
+    let display_name = if is_guide {
+        page_title(m)
+    } else {
+        display_module_name(&m.name)
+    };
     body.push_str("<li class=\"module-entry\" data-search=\"");
     body.push_str(&html_escape(&format!("{display_name} {summary}")));
     body.push_str("\"><a href=\"");
     body.push_str(&html_escape(&filename));
-    body.push_str("\"><code>");
-    body.push_str(&html_escape(&display_name));
-    body.push_str("</code></a>");
+    body.push_str("\">");
+    if is_guide {
+        body.push_str(&html_escape(&display_name));
+    } else {
+        body.push_str("<code>");
+        body.push_str(&html_escape(&display_name));
+        body.push_str("</code>");
+    }
+    body.push_str("</a>");
     if !summary.is_empty() {
         body.push_str("<span class=\"module-desc\"> — ");
         body.push_str(&html_escape(&summary));
@@ -822,7 +1192,8 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains("Variants"));
         assert!(html.contains("First variant."));
         assert!(html.contains("Second variant with payload."));
-        assert!(html.contains("B(i64)"));
+        assert!(html.contains("B"));
+        assert!(html.contains("i64"));
     }
 
     #[test]
@@ -903,13 +1274,13 @@ pub type UserId = i64;
     #[test]
     fn markdown_renders_code_blocks() {
         let md = "Some text.\n\n```\nlet x = 1;\n```\n";
-        let html = markdown_to_html(md, 0);
+        let html = markdown_to_html(md, 0, &TypeIndex::new());
         assert!(html.contains("<code>"));
     }
 
     #[test]
     fn markdown_highlights_hew_fences_with_modifiers() {
-        let html = markdown_to_html("```hew,no_run\nlet value = 1;\n```\n", 0);
+        let html = markdown_to_html("```hew,no_run\nlet value = 1;\n```\n", 0, &TypeIndex::new());
         assert!(html.contains("class=\"shiki\""));
     }
 
@@ -919,7 +1290,7 @@ pub type UserId = i64;
         // When push_html is called once per event the state resets and tbody cells
         // are emitted as <th> instead of <td>. Batching fixes this.
         let md = "| A | B |\n|---|---|\n| a1 | b1 |\n| a2 | b2 |\n";
-        let html = markdown_to_html(md, 0);
+        let html = markdown_to_html(md, 0, &TypeIndex::new());
         assert!(html.contains("<tbody>"), "table body must be present");
         // Count <td> occurrences — expect 4 for a 2-row, 2-col body
         let td_count = html.matches("<td>").count();
@@ -1036,6 +1407,49 @@ pub fn bar() {}
         );
     }
 
+    #[test]
+    fn unique_cross_module_types_and_inline_references_are_linked() {
+        let definition = hew_parser::parse("pub type Widget {}\n");
+        let use_site =
+            hew_parser::parse("//! Accept an `alpha.Widget`.\n\npub fn accept(value: Widget) {}\n");
+        let modules = vec![
+            extract_docs(&definition.program, "std::alpha"),
+            extract_docs(&use_site.program, "std::consumer"),
+        ];
+        let references = build_reference_index(&modules);
+        let html = render_module_with_index(&modules[1], &references);
+        assert!(html.contains("href=\"std.alpha.html#type.Widget\""));
+        assert!(
+            html.contains("<a href=\"std.alpha.html#type.Widget\"><code>alpha.Widget</code></a>")
+        );
+    }
+
+    #[test]
+    fn ambiguous_cross_module_type_names_are_not_linked() {
+        let first = hew_parser::parse("pub type Response {}\n");
+        let second = hew_parser::parse("pub type Response {}\n");
+        let use_site = hew_parser::parse("pub fn accept(value: Response) {}\n");
+        let modules = vec![
+            extract_docs(&first.program, "std::one"),
+            extract_docs(&second.program, "std::two"),
+            extract_docs(&use_site.program, "std::consumer"),
+        ];
+        let references = build_reference_index(&modules);
+        let html = render_module_with_index(&modules[2], &references);
+        assert!(!html.contains("href=\"std.one.html#type.Response\""));
+        assert!(!html.contains("href=\"std.two.html#type.Response\""));
+    }
+
+    #[test]
+    fn language_pages_use_their_reader_facing_title_once() {
+        let source = "//! # Ownership and sending\n//!\n//! Start here.\n";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "language::ownership");
+        let html = render_module(&module);
+        assert_eq!(html.matches("<h1>Ownership and sending</h1>").count(), 1);
+        assert!(!html.contains("Module <code>language.ownership</code>"));
+    }
+
     // ── Feature 3: Methods on opaque types ────────────────────────────────────
 
     /// A `Methods` block appears on a type's entry when a same-module trait
@@ -1078,6 +1492,27 @@ trait ValueMethods {
             0,
             "surfaced private methods must not create duplicate anchors"
         );
+    }
+
+    #[test]
+    fn self_methods_link_from_their_public_type() {
+        let source = r"/// A value. Call `Value.get()` to read it.
+pub type Value { n: i64; }
+trait ValueMethods {
+    /// Read the value.
+    fn get(self) -> i64;
+}
+impl ValueMethods for Value {
+    fn get(self) -> i64 { self.n }
+}
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+
+        assert!(html.contains("href=\"#method.Value.get\""));
+        assert_eq!(html.matches("id=\"method.Value.get\"").count(), 1);
+        assert!(html.contains("Read the value."));
     }
 
     /// A trait whose methods do NOT take the type as first param does not

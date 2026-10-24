@@ -1,0 +1,20 @@
+actor Worker {
+    receive fn ping() -> i64 { 1 }
+}
+
+supervisor Inner {
+    strategy: one_for_one;
+    child worker: Worker;
+}
+
+supervisor Outer {
+    strategy: one_for_one;
+    child inner: Inner stop: 1s;
+}
+
+fn main() {
+    let root = spawn Outer;
+    println(root.inner.worker.ping() handle _ { -1 });
+    stop(root);
+    stopped(root);
+}

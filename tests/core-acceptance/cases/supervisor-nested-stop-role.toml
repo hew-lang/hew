@@ -1,0 +1,10 @@
+[[case]]
+id = "supervisor-nested-stop-role"
+intent = "A declared nested stop timeout preserves the child spawn callable, role projection and ordinary native shutdown."
+source = "cases/supervisor-nested-stop-role.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "1\n"
+exit = 0

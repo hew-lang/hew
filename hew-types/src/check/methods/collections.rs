@@ -1763,7 +1763,14 @@ impl Checker {
                 if self.reject_vec_pipeline_fn_element("fold", &resolved_elem, span) {
                     Ty::Error
                 } else {
-                    self.subst.resolve(&acc_ty)
+                    let resolved_acc = self.subst.resolve(&acc_ty);
+                    self.record_vec_higher_order_rewrite(
+                        VecHigherOrderOp::Fold,
+                        &resolved_elem,
+                        &resolved_acc,
+                        span,
+                    );
+                    resolved_acc
                 }
             }
             _ if runtime_method_declared => self

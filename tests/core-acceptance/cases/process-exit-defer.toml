@@ -1,0 +1,10 @@
+[[case]]
+id = "process-exit-defer"
+intent = "Ordinary return runs its defer; explicit process exit preserves its status and does not run pending defers."
+source = "cases/process-exit-defer.hew"
+suites = ["acceptance"]
+timeout_seconds = 15
+
+[case.expected]
+stdout = "deferred\n"
+exit = 3

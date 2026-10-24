@@ -16,6 +16,24 @@ fn check_source_with_stdlib(source: &str) -> TypeCheckOutput {
 }
 
 #[test]
+fn vec_fold_records_the_seed_first_pipeline_rewrite() {
+    let source = "fn main() { let numbers: Vec<i64> = [1, 2, 3]; let sum = numbers.fold(0, |a, x| a + x); println(sum); }";
+    let output = check_source_with_stdlib(source);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let call = "numbers.fold(0, |a, x| a + x)";
+    let start = source.find(call).expect("fold call in source");
+    let key = SpanKey::in_module(&(start..start + call.len()), 0);
+    assert!(matches!(
+        output.method_call_rewrites.get(&key),
+        Some(MethodCallRewrite::BuiltinVecHigherOrder {
+            op: VecHigherOrderOp::Fold,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn value_mutation_requires_a_mutable_root_for_runtime_and_declared_methods() {
     for (value_type, initializer, operation) in [
         ("bytes", "bytes.new()", "push(7 as u8)"),

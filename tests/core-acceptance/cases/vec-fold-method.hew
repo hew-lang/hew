@@ -1,0 +1,9 @@
+fn main() {
+    let numbers: Vec<i64> = [1, 2, 3];
+    println(numbers.fold(0, |a, x| a + x));
+
+    let empty: Vec<i64> = [];
+    println(empty.fold(7, |a, x| a + x));
+
+    println(numbers.reduce(|a, x| a + x, 0));
+}

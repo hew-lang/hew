@@ -184,3 +184,58 @@ fn catalogue_builtins_lower_through_their_runtime_families() {
         );
     }
 }
+
+#[test]
+fn an_unconditional_exit_does_not_register_an_unrunnable_defer() {
+    let lowered = lower_source(r#"fn main() { defer println("deferred"); exit(3); }"#);
+    let main = lowered_main(&lowered);
+    assert!(runtime_families(main).contains(&RuntimeCallFamily::ProcessExit));
+    assert!(!main
+        .blocks
+        .iter()
+        .flat_map(|block| &block.ops)
+        .any(|op| matches!(op.kind, hew_sir::SemOpKind::RegisterDefer { .. })));
+}
+
+#[test]
+fn a_conditional_exit_retains_cleanup_for_the_returning_path() {
+    let lowered = lower_source(
+        r#"
+        fn finish(code: i64) {
+            defer println("deferred");
+            if code > 0 { exit(code); }
+        }
+        fn main() { finish(3); }
+    "#,
+    );
+    lowered_main(&lowered);
+    let finish = lowered
+        .module
+        .functions
+        .iter()
+        .find(|function| lowered.module.defs.path(function.declaration) == "finish")
+        .unwrap();
+    assert!(finish
+        .blocks
+        .iter()
+        .any(|block| matches!(block.terminator, SemTerminator::EnterDefer { .. })));
+    assert!(runtime_families(finish).contains(&RuntimeCallFamily::ProcessExit));
+}
+
+#[test]
+fn a_registered_defer_without_a_body_entry_is_still_malformed() {
+    let lowered = lower_source(r#"fn main() { defer println("deferred"); }"#);
+    lowered_main(&lowered);
+    let mut module = lowered.module;
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            if matches!(block.terminator, SemTerminator::EnterDefer { .. }) {
+                block.terminator = SemTerminator::Unreachable;
+            }
+        }
+    }
+    assert!(verify_module(&module).iter().any(
+        |diagnostic| matches!(&diagnostic.kind, SirDiagnosticKind::InvalidTerminator { reason, .. }
+            if reason.contains("registered defer has no body entry"))
+    ));
+}

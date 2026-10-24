@@ -83,9 +83,17 @@
 //!
 //! ## Further reading
 //!
-//! Hew's guides above define Hew's behavior. External material can provide
-//! background on the broader ideas, but its syntax and lifetime rules do not
-//! replace Hew's language reference.
+//! The [concepts path on hew.sh](https://hew.sh/docs/concepts) introduces these
+//! ideas in a concept-led, task-oriented sequence. Continue with its guides to
+//! [ownership](https://hew.sh/docs/concepts/ownership),
+//! [message passing](https://hew.sh/docs/concepts/message-passing),
+//! [actor lifecycle](https://hew.sh/docs/concepts/actor-lifecycle), and
+//! [structured concurrency](https://hew.sh/docs/concepts/structured-concurrency).
+//! The reference pages above remain the source for Hew-specific syntax and
+//! behavior.
+//!
+//! External material can provide background on the broader ideas, but its
+//! syntax and lifetime rules do not replace Hew's language reference.
 //!
 //! - The [Rust ownership chapter](https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html)
 //!   develops ownership and borrowing as a general systems-programming model.

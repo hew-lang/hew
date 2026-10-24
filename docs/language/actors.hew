@@ -3,6 +3,8 @@
 //! Actors own state and run one handler at a time, including across suspension.
 //! A call waits for completion. A void handler still returns a completion
 //! outcome; use `match`, `?` or `handle` to deal with failure.
+//! The [message-passing concepts guide](https://hew.sh/docs/concepts/message-passing)
+//! develops the isolation model before this page's syntax and delivery details.
 //!
 //! ```hew
 //! actor Counter {

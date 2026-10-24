@@ -97,4 +97,5 @@
 //! Use [resources](language.resources.html) for deterministic cleanup,
 //! [actors](language.actors.html) for delivery and isolation, and
 //! [functions](language.functions.html) for receiver and callable ownership
-//! contracts.
+//! contracts. For a more gradual introduction, read the
+//! [ownership concepts guide](https://hew.sh/docs/concepts/ownership).

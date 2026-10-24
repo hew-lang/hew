@@ -53,4 +53,6 @@
 //!
 //! Supervisor strategy and runtime support can differ by compilation target;
 //! check the target's capability documentation before relying on supervision
-//! outside the native runtime.
+//! outside the native runtime. The
+//! [actor-lifecycle concepts guide](https://hew.sh/docs/concepts/actor-lifecycle)
+//! connects stopping, faults, restarts, and supervision as one lifecycle.

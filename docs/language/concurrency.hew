@@ -3,6 +3,8 @@
 //! Ordinary calls wait. `fork` creates a `Task<T>` and `await task` yields `T`.
 //! Awaiting a `Vec<Task<T>>` consumes it and yields `Vec<T>` in vector order.
 //! If `T` is a Result, each application error remains a value to handle.
+//! The [structured-concurrency concepts guide](https://hew.sh/docs/concepts/structured-concurrency)
+//! explains the motivation and lifecycle before this reference's syntax.
 //!
 //! A scope owns its child tasks and produces a value after their cleanup. A plain
 //! call in a scope is still a call; it does not implicitly start a task.

@@ -2,7 +2,7 @@
 id = "irrefutable-iteration-bindings"
 source = "cases/irrefutable-iteration-bindings.hew"
 intent = "Irrefutable product bindings compose with iteration; variant selection is explicit inside the body."
-suites = ["acceptance", "sandbox-parity", "core-safety"]
+suites = ["acceptance", "safety"]
 timeout_seconds = 30
 
 [case.expected]

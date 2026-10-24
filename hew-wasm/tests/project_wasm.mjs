@@ -64,7 +64,7 @@ test('directory peers and ordinary manifests share native module semantics', asy
 });
 
 test('project stdin advances and executions do not retain prior input', async () => {
-  const output = compile('main.hew', [source('main.hew', 'import std.io; fn main() { for i in 0..2 { println(io.read_line() ?? "<none>"); } }')]);
+  const output = compile('main.hew', [source('main.hew', 'import std.io; fn main() { for i in 0..2 { println(io.read_line().expect("read stdin") ?? "<none>"); } }')]);
   assert.equal((await execute(output, 'first\nsecond\n')).stdout, 'first\nsecond\n');
   assert.equal((await execute(output, 'third\nfourth\n')).stdout, 'third\nfourth\n');
 });

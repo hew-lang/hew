@@ -236,6 +236,7 @@ Common signs:
   the output directory
 - `No .hew files found` followed by exit 1
 - `No modules to document` followed by exit 1
+- `invalid documentation site config` followed by a TOML location
 - `--open` has no visible effect
 
 What to check:
@@ -252,6 +253,9 @@ What to check:
   current directory — pass at least one file or directory explicitly.
 - To browse the stdlib, point `hew doc` at the shipped stdlib tree itself
   (`hew doc std/` from a repo checkout or install tree root).
+- `--site-config` is optional. If supplied, its TOML must use the documented
+  field names; unknown fields are rejected so a publishing typo does not
+  silently change the generated collection.
 - `--open` only opens `index.html` after HTML generation. It is silently
   ignored when `--format markdown` is set.
 - The output directory (default `./doc`) is created automatically. If creation

@@ -1249,7 +1249,10 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────────
   build-docs:
     needs: [validate, build-linux]
-    if: ${{ !cancelled() && needs.validate.result == 'success' && needs.build-linux.result == 'success' }}
+    # The docs use the x86_64 release archive. Run even if another Linux
+    # matrix leg failed; downloading the required archive will fail clearly if
+    # the compiler needed for the docs was not produced.
+    if: ${{ !cancelled() && needs.validate.result == 'success' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -1263,20 +1266,37 @@ jobs:
           name: hew-${{ needs.validate.outputs.tag }}-linux-x86_64
           path: artifacts
 
+      - name: Setup Node.js for static search
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+
       - name: Generate language and standard-library docs
         run: |
           mkdir -p dist/hew
           tar -xzf "artifacts/hew-v${VERSION}-linux-x86_64.tar.gz" -C dist/hew --strip-components=1
-          dist/hew/bin/hew doc std/ docs/language/ --output-dir dist/docs/
+          dist/hew/bin/hew doc std/ docs/language/ \
+            --site-config docs/docs-site.toml \
+            --output-dir dist/docs/
+          python3 scripts/assemble-docs-site.py dist/docs/ \
+            --base-url https://docs.hew.sh/ \
+            --version "${VERSION}"
+          npx --yes pagefind@1.5.2 \
+            --site dist/docs/ \
+            --output-subdir pagefind
 
       - name: Validate generated docs
         run: |
-          # Keep these implementation-only modules in sync with
-          # hew-cli/src/doc/mod.rs:is_reference_module.
-          source_modules="$(find std -type f -name '*.hew' \
-            ! -path 'std/mem/mem.hew' \
-            ! -path 'std/prelude.hew' \
-            ! -path 'std/machines/toggle.hew' | wc -l | tr -d ' ')"
+          source_files="$(find std -type f -name '*.hew' | wc -l | tr -d ' ')"
+          excluded_std_modules="$(python3 - <<'PY'
+          import tomllib
+          with open("docs/docs-site.toml", "rb") as source:
+              excluded = tomllib.load(source).get("exclude_modules", [])
+          print(sum(name.startswith("std::") for name in excluded))
+          PY
+          )"
+          source_modules="$((source_files - excluded_std_modules))"
           generated_modules="$(find dist/docs -maxdepth 1 -type f -name 'std.*.html' | wc -l | tr -d ' ')"
           if [ "$source_modules" -eq 0 ] || [ "$generated_modules" -ne "$source_modules" ]; then
             echo "::error::Expected $source_modules generated module pages, found $generated_modules"
@@ -1286,19 +1306,43 @@ jobs:
             echo "::error::Generated documentation index is missing or empty"
             exit 1
           fi
-          language_sources="$(find docs/language -type f -name '*.hew' | wc -l | tr -d ' ')"
+          language_files="$(find docs/language -type f -name '*.hew' | wc -l | tr -d ' ')"
+          excluded_language_modules="$(python3 - <<'PY'
+          import tomllib
+          with open("docs/docs-site.toml", "rb") as source:
+              excluded = tomllib.load(source).get("exclude_modules", [])
+          print(sum(name.startswith("language::") for name in excluded))
+          PY
+          )"
+          language_sources="$((language_files - excluded_language_modules))"
           language_pages="$(find dist/docs -maxdepth 1 -type f -name 'language.*.html' | wc -l | tr -d ' ')"
           if [ "$language_sources" -eq 0 ] || [ "$language_pages" -ne "$language_sources" ]; then
             echo "::error::Expected $language_sources generated language pages, found $language_pages"
             exit 1
           fi
           test -s dist/docs/404.html
+          test -s dist/docs/sitemap.xml
+          test -s dist/docs/robots.txt
+          test -s dist/docs/llms.txt
+          test -s dist/docs/agents.txt
+          test -s dist/docs/pagefind/pagefind.js
+          test -s dist/docs/pagefind/pagefind-component-ui.js
+          test -s dist/docs/pagefind/pagefind-component-ui.css
           empty_file="$(find dist/docs -type f -empty -print -quit)"
           if [ -n "$empty_file" ]; then
             echo "::error::Generated documentation contains an empty file: $empty_file"
             exit 1
           fi
           grep -q "Hew ${VERSION}" dist/docs/index.html
+          grep -q '<link rel="canonical" href="https://docs.hew.sh/">' dist/docs/index.html
+          grep -q '<meta name="robots" content="noindex,nofollow">' dist/docs/404.html
+          grep -q 'Sitemap: https://docs.hew.sh/sitemap.xml' dist/docs/robots.txt
+          grep -q "Hew v${VERSION}" dist/docs/llms.txt
+          grep -q '<pagefind-searchbox show-sub-results' dist/docs/index.html
+          if grep -q 'ai-docs-form' dist/docs/index.html; then
+            echo "::error::AI search UI must remain disabled until its Worker is provisioned and approved"
+            exit 1
+          fi
           python3 - <<'PY'
           from html.parser import HTMLParser
           import pathlib
@@ -1683,8 +1727,10 @@ jobs:
   # docs.hew.sh — deploy the site generated by build-docs to Cloudflare Pages.
   # ─────────────────────────────────────────────────────────────────────────
   publish-docs:
-    needs: [validate, github-release, build-docs]
-    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' && needs.github-release.result == 'success' }}
+    needs: [validate, build-docs]
+    # Publishing the reference depends on the tagged docs artifact, not on
+    # unrelated package channels or GitHub release assembly.
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release

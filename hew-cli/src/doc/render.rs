@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::util::html_escape;
 
+use super::config::DocSiteConfig;
 use super::extract::{
     DocActor, DocConst, DocField, DocFunction, DocImpl, DocMachine, DocMachineMember, DocMethod,
     DocModule, DocTrait, DocType, DocTypeAlias,
@@ -90,7 +91,19 @@ fn markdown_to_html(md: &str, heading_offset: u8, references: &TypeIndex) -> Str
                 if primary_lang.is_empty() || primary_lang == "hew" {
                     html.push_str(&highlight::highlight(&code_buf));
                 } else {
-                    html.push_str("<pre><code>");
+                    let language = primary_lang
+                        .chars()
+                        .filter(|character| {
+                            character.is_ascii_alphanumeric() || "_+-".contains(*character)
+                        })
+                        .collect::<String>();
+                    html.push_str("<pre><code");
+                    if !language.is_empty() {
+                        html.push_str(" class=\"language-");
+                        html.push_str(&html_escape(&language));
+                        html.push('"');
+                    }
+                    html.push('>');
                     html.push_str(&html_escape(&code_buf));
                     html.push_str("</code></pre>");
                 }
@@ -491,15 +504,14 @@ fn render_methods_list(
     }
     let mut out = format!("<h4>{}</h4>\n", html_escape(heading));
     for m in methods {
-        out.push_str("<div class=\"method\" id=\"method.");
+        out.push_str("<div class=\"method\">\n<h5 class=\"sig\" id=\"method.");
         out.push_str(&html_escape(owner));
         out.push('.');
         out.push_str(&html_escape(&m.name));
-        out.push_str("\">\n");
-        out.push_str("<span class=\"sig\">");
+        out.push_str("\">");
         let highlighted = highlight_signature(&m.signature);
         out.push_str(&link_signature_types(&highlighted, index));
-        out.push_str("</span>\n");
+        out.push_str("</h5>\n");
         out.push_str(&render_inline_doc(m.doc.as_ref(), index));
         out.push_str("</div>\n");
     }
@@ -508,10 +520,9 @@ fn render_methods_list(
 
 /// Render a function item.
 fn render_function(f: &DocFunction, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"fn.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"fn.");
     out.push_str(&html_escape(&f.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>Function <code>");
+    out.push_str("\">Function <code>");
     out.push_str(&html_escape(&f.name));
     out.push_str("</code></h3>\n");
     out.push_str("<span class=\"sig\">");
@@ -572,10 +583,9 @@ fn traits_for_type<'a>(traits: &'a [DocTrait], type_name: &str) -> Vec<&'a DocTr
 /// parameter, a "Methods" block is rendered on the type's entry so users do
 /// not need to navigate to a separate `Trait FooMethods` section.
 fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"type.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"type.");
     out.push_str(&html_escape(&t.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>");
+    out.push_str("\">");
     out.push_str(if t.kind == "struct" { "Struct" } else { "Enum" });
     out.push_str(" <code>");
     out.push_str(&html_escape(&t.name));
@@ -626,7 +636,7 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
                     out.push_str("</code></a></p>\n");
                 }
                 for m in applicable {
-                    out.push_str("<div class=\"method\"");
+                    out.push_str("<div class=\"method\">\n<h5 class=\"sig\"");
                     if !tr.is_public && method_anchors.insert(m.name.as_str()) {
                         out.push_str(" id=\"method.");
                         out.push_str(&html_escape(&t.name));
@@ -634,10 +644,10 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
                         out.push_str(&html_escape(&m.name));
                         out.push('"');
                     }
-                    out.push_str(">\n<span class=\"sig\">");
+                    out.push('>');
                     let highlighted = highlight_signature(&m.signature);
                     out.push_str(&link_signature_types(&highlighted, index));
-                    out.push_str("</span>\n");
+                    out.push_str("</h5>\n");
                     out.push_str(&render_inline_doc(m.doc.as_ref(), index));
                     out.push_str("</div>\n");
                 }
@@ -651,10 +661,9 @@ fn render_type(t: &DocType, index: &TypeIndex, module_traits: &[DocTrait]) -> St
 
 /// Render an actor item.
 fn render_actor(a: &DocActor, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"actor.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"actor.");
     out.push_str(&html_escape(&a.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>Actor <code>");
+    out.push_str("\">Actor <code>");
     out.push_str(&html_escape(&a.name));
     out.push_str("</code></h3>\n");
     push_doc(&mut out, a.doc.as_ref(), index);
@@ -693,9 +702,9 @@ fn render_machine_members(
 }
 
 fn render_machine(machine: &DocMachine, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"machine.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"machine.");
     out.push_str(&html_escape(&machine.name));
-    out.push_str("\">\n<h3>Machine <code>");
+    out.push_str("\">Machine <code>");
     out.push_str(&html_escape(&machine.name));
     out.push_str("</code></h3>\n<span class=\"sig\">");
     out.push_str(&highlight_signature(&machine.signature));
@@ -712,10 +721,9 @@ fn render_machine(machine: &DocMachine, index: &TypeIndex) -> String {
 
 /// Render a trait item.
 fn render_trait(t: &DocTrait, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"trait.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"trait.");
     out.push_str(&html_escape(&t.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>Trait <code>");
+    out.push_str("\">Trait <code>");
     out.push_str(&html_escape(&t.name));
     out.push_str("</code></h3>\n");
     push_doc(&mut out, t.doc.as_ref(), index);
@@ -732,28 +740,28 @@ fn render_impl(
     method_anchors: &mut HashSet<String>,
 ) -> String {
     let target = impl_target_name(&i.target);
-    let mut out = String::from("<div class=\"item impl\"");
+    let mut out = String::from("<div class=\"item impl\">\n<h3");
     if include_target_anchor {
         out.push_str(" id=\"impl.");
         out.push_str(&html_escape(target));
         out.push('"');
     }
-    out.push_str(">\n<h3><code>");
+    out.push_str("><code>");
     out.push_str(&html_escape(&i.signature));
     out.push_str("</code></h3>\n");
     push_doc(&mut out, i.doc.as_ref(), index);
     for method in &i.methods {
         let anchor = format!("method.{target}.{}", method.name);
-        out.push_str("<div class=\"method\"");
+        out.push_str("<div class=\"method\">\n<h4 class=\"sig\"");
         if method_anchors.insert(anchor.clone()) {
             out.push_str(" id=\"");
             out.push_str(&html_escape(&anchor));
             out.push('"');
         }
-        out.push_str(">\n<span class=\"sig\">");
+        out.push('>');
         let highlighted = highlight_signature(&method.signature);
         out.push_str(&link_signature_types(&highlighted, index));
-        out.push_str("</span>\n");
+        out.push_str("</h4>\n");
         out.push_str(&render_inline_doc(method.doc.as_ref(), index));
         out.push_str("</div>\n");
     }
@@ -763,10 +771,9 @@ fn render_impl(
 
 /// Render a constant item.
 fn render_const(c: &DocConst, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"const.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"const.");
     out.push_str(&html_escape(&c.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>Constant <code>");
+    out.push_str("\">Constant <code>");
     out.push_str(&html_escape(&c.name));
     out.push_str("</code></h3>\n");
     let sig = format!("{}const {}: {} = {}", c.visibility, c.name, c.ty, c.value);
@@ -781,10 +788,9 @@ fn render_const(c: &DocConst, index: &TypeIndex) -> String {
 
 /// Render a type-alias item.
 fn render_type_alias(ta: &DocTypeAlias, index: &TypeIndex) -> String {
-    let mut out = String::from("<div class=\"item\" id=\"typealias.");
+    let mut out = String::from("<div class=\"item\">\n<h3 id=\"typealias.");
     out.push_str(&html_escape(&ta.name));
-    out.push_str("\">\n");
-    out.push_str("<h3>Type alias <code>");
+    out.push_str("\">Type alias <code>");
     out.push_str(&html_escape(&ta.name));
     out.push_str("</code></h3>\n");
     let sig = format!("{}type {} = {}", ta.visibility, ta.name, ta.ty);
@@ -804,7 +810,8 @@ fn display_module_name(name: &str) -> String {
 fn doc_title(doc: Option<&str>) -> Option<&str> {
     doc?.lines()
         .map(str::trim)
-        .find_map(|line| line.strip_prefix("# "))
+        .find(|line| !line.is_empty())?
+        .strip_prefix("# ")
 }
 
 fn doc_without_title(doc: &str) -> &str {
@@ -819,8 +826,8 @@ fn doc_without_title(doc: &str) -> &str {
 
 /// Reader-facing title for a generated page.
 #[must_use]
-pub fn page_title(module: &DocModule) -> String {
-    if module.name.starts_with("language::") {
+pub fn page_title(module: &DocModule, is_guide: bool) -> String {
+    if is_guide {
         if let Some(title) = doc_title(module.doc.as_deref()) {
             return title.to_string();
         }
@@ -833,7 +840,7 @@ pub fn page_title(module: &DocModule) -> String {
 #[must_use]
 pub fn render_module(module: &DocModule) -> String {
     let references = build_reference_index(std::slice::from_ref(module));
-    render_module_with_index(module, &references)
+    render_module_with_index(module, &references, false)
 }
 
 /// Render a module with links to unambiguous declarations in the complete
@@ -843,14 +850,17 @@ pub fn render_module(module: &DocModule) -> String {
     clippy::too_many_lines,
     reason = "sequential rendering of each item kind"
 )]
-pub fn render_module_with_index(module: &DocModule, references: &ReferenceIndex) -> String {
+pub fn render_module_with_index(
+    module: &DocModule,
+    references: &ReferenceIndex,
+    is_guide: bool,
+) -> String {
     let mut body = String::new();
     let index = build_type_index(module, references);
 
-    let is_guide = module.name.starts_with("language::");
     if is_guide {
         body.push_str("<h1>");
-        body.push_str(&html_escape(&page_title(module)));
+        body.push_str(&html_escape(&page_title(module, true)));
         body.push_str("</h1>\n");
     } else {
         body.push_str("<h1>Module <code>");
@@ -1007,10 +1017,15 @@ pub fn render_module_with_index(module: &DocModule, references: &ReferenceIndex)
 
 /// Render an index page listing all documented modules, grouped by section.
 #[must_use]
-pub fn render_index(modules: &[DocModule]) -> String {
-    let mut body = String::from(
-        "<h1>Hew documentation</h1>\n<p>Language guides and the standard-library API for this Hew release.</p>\n<label class=\"search-label\" for=\"module-search\">Find a guide or module</label>\n<input id=\"module-search\" class=\"module-search\" type=\"search\" placeholder=\"Filter by name or description\" autocomplete=\"off\">\n<p id=\"search-status\" class=\"search-status\" aria-live=\"polite\"></p>\n",
+pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
+    let mut body = format!(
+        "<h1>{}</h1>\n<p>{}</p>\n",
+        html_escape(&config.index_title),
+        html_escape(&config.index_description)
     );
+    if config.module_filter {
+        body.push_str("<label class=\"search-label\" for=\"module-search\">Find a guide or module</label>\n<input id=\"module-search\" class=\"module-search\" type=\"search\" placeholder=\"Filter by name or description\" autocomplete=\"off\">\n<p id=\"search-status\" class=\"search-status\" aria-live=\"polite\"></p>\n");
+    }
 
     let mut language_mods: Vec<&DocModule> = Vec::new();
     let mut root_mods: Vec<&DocModule> = Vec::new();
@@ -1018,7 +1033,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
         std::collections::BTreeMap::new();
 
     for m in modules {
-        if m.name.starts_with("language::") {
+        if config.is_guide(&m.name) {
             language_mods.push(m);
             continue;
         }
@@ -1030,19 +1045,39 @@ pub fn render_index(modules: &[DocModule]) -> String {
             root_mods.push(m);
         }
     }
-    language_mods.sort_by_key(|module| language_guide_rank(&module.name));
+    language_mods.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
 
     if !language_mods.is_empty() {
-        body.push_str(
-            "<section class=\"doc-section\"><h2>Language guide</h2>\n<p>Start with <a href=\"language.basics.html\">Language basics</a>, then follow the focused guides as your program needs them.</p>\n<ul class=\"module-list\">\n",
-        );
+        body.push_str("<section class=\"doc-section\"><h2>");
+        body.push_str(&html_escape(&config.guide_title));
+        body.push_str("</h2>\n<p>");
+        if let Some(start) = config
+            .guide_start
+            .as_deref()
+            .and_then(|name| language_mods.iter().find(|module| module.name == name))
+        {
+            body.push_str("Start with <a href=\"");
+            body.push_str(&html_escape(&super::module_to_filename(
+                &start.name,
+                "html",
+            )));
+            body.push_str("\">");
+            body.push_str(&html_escape(&page_title(start, true)));
+            body.push_str("</a>. ");
+        }
+        body.push_str(&html_escape(&config.guide_description));
+        body.push_str("</p>\n<ul class=\"module-list\">\n");
         for m in &language_mods {
             render_index_entry(&mut body, m, true);
         }
         body.push_str("</ul></section>\n");
     }
 
-    body.push_str("<section class=\"doc-section\"><h2>Standard library</h2>\n<p>Import a module by its dotted name. Each page lists its public declarations and methods.</p>\n");
+    body.push_str("<section class=\"doc-section\" id=\"modules\"><h2>");
+    body.push_str(&html_escape(&config.module_title));
+    body.push_str("</h2>\n<p>");
+    body.push_str(&html_escape(&config.module_description));
+    body.push_str("</p>\n");
     if !root_mods.is_empty() {
         body.push_str("<ul class=\"module-list\">\n");
         for m in &root_mods {
@@ -1065,36 +1100,11 @@ pub fn render_index(modules: &[DocModule]) -> String {
     body
 }
 
-fn language_guide_rank(name: &str) -> usize {
-    const ORDER: &[&str] = &[
-        "language::basics",
-        "language::concepts",
-        "language::control_flow",
-        "language::functions",
-        "language::types_traits",
-        "language::ownership",
-        "language::modules",
-        "language::metaprogramming",
-        "language::testing",
-        "language::wire",
-        "language::actors",
-        "language::concurrency",
-        "language::resources",
-        "language::supervision",
-        "language::machines",
-        "language::targets",
-    ];
-    ORDER
-        .iter()
-        .position(|entry| *entry == name)
-        .unwrap_or(ORDER.len())
-}
-
 fn render_index_entry(body: &mut String, m: &DocModule, is_guide: bool) {
     let filename = super::module_to_filename(&m.name, "html");
     let summary = module_summary(m.doc.as_deref());
     let display_name = if is_guide {
-        page_title(m)
+        page_title(m, true)
     } else {
         display_module_name(&m.name)
     };
@@ -1178,7 +1188,7 @@ pub fn add(a: i32, b: i32) -> i32 {
             consts: vec![],
             type_aliases: vec![],
         };
-        let html = render_index(&[module]);
+        let html = render_index(&[module], &DocSiteConfig::default());
         assert!(html.contains("std.math.html"));
         assert!(html.contains("std.math"));
         assert!(html.contains("Math utilities."));
@@ -1202,7 +1212,7 @@ pub fn add(a: i32, b: i32) -> i32 {
             consts: vec![],
             type_aliases: vec![],
         };
-        let html = render_index(&[module]);
+        let html = render_index(&[module], &DocSiteConfig::default());
         assert!(html.contains("Messages must satisfy Send and Result."));
         assert!(!html.contains("[Send]("));
     }
@@ -1274,6 +1284,21 @@ pub trait B { fn shared(); }
     }
 
     #[test]
+    fn api_search_destinations_are_heading_anchors() {
+        let source = r"pub type Value {}
+pub fn make(value: Value) -> Value { value }
+pub trait ValueMethods { fn get(value: Value) -> i64; }
+";
+        let result = hew_parser::parse(source);
+        let module = extract_docs(&result.program, "test");
+        let html = render_module(&module);
+        assert!(html.contains("<h3 id=\"type.Value\">"));
+        assert!(html.contains("<h3 id=\"fn.make\">"));
+        assert!(html.contains("<h3 id=\"trait.ValueMethods\">"));
+        assert!(html.contains("<h5 class=\"sig\" id=\"method.ValueMethods.get\">"));
+    }
+
+    #[test]
     fn render_const_and_type_alias() {
         let source = r"/// The answer.
 pub const ANSWER: i32 = 42;
@@ -1312,6 +1337,13 @@ pub type UserId = i64;
     fn markdown_highlights_hew_fences_with_modifiers() {
         let html = markdown_to_html("```hew,no_run\nlet value = 1;\n```\n", 0, &TypeIndex::new());
         assert!(html.contains("class=\"shiki\""));
+    }
+
+    #[test]
+    fn markdown_preserves_non_hew_fence_language() {
+        let html = markdown_to_html("```json\n{\"ok\": true}\n```\n", 0, &TypeIndex::new());
+        assert!(html.contains("<code class=\"language-json\">"));
+        assert!(!html.contains("class=\"shiki\""));
     }
 
     #[test]
@@ -1447,7 +1479,7 @@ pub fn bar() {}
             extract_docs(&use_site.program, "std::consumer"),
         ];
         let references = build_reference_index(&modules);
-        let html = render_module_with_index(&modules[1], &references);
+        let html = render_module_with_index(&modules[1], &references, false);
         assert!(html.contains("href=\"std.alpha.html#type.Widget\""));
         assert!(
             html.contains("<a href=\"std.alpha.html#type.Widget\"><code>alpha.Widget</code></a>")
@@ -1465,7 +1497,7 @@ pub fn bar() {}
             extract_docs(&use_site.program, "std::consumer"),
         ];
         let references = build_reference_index(&modules);
-        let html = render_module_with_index(&modules[2], &references);
+        let html = render_module_with_index(&modules[2], &references, false);
         assert!(!html.contains("href=\"std.one.html#type.Response\""));
         assert!(!html.contains("href=\"std.two.html#type.Response\""));
     }
@@ -1475,7 +1507,8 @@ pub fn bar() {}
         let source = "//! # Ownership and sending\n//!\n//! Start here.\n";
         let result = hew_parser::parse(source);
         let module = extract_docs(&result.program, "language::ownership");
-        let html = render_module(&module);
+        let references = build_reference_index(std::slice::from_ref(&module));
+        let html = render_module_with_index(&module, &references, true);
         assert_eq!(html.matches("<h1>Ownership and sending</h1>").count(), 1);
         assert!(!html.contains("Module <code>language.ownership</code>"));
     }

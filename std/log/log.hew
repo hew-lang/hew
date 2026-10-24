@@ -57,7 +57,7 @@
 //! ```
 //!
 //! JSON (1) — single-line NDJSON to stderr:
-//! ```text
+//! ```json
 //! {"ts":1234567890.123,"level":"INFO","msg":"server starting","port":"8080"}
 //! ```
 

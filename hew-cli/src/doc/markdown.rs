@@ -2,6 +2,7 @@
 
 use std::fmt::Write;
 
+use super::config::DocSiteConfig;
 use super::extract::{
     DocActor, DocConst, DocField, DocFunction, DocImpl, DocMachine, DocMachineMember, DocMethod,
     DocModule, DocTrait, DocType, DocTypeAlias,
@@ -177,10 +178,9 @@ fn render_type_alias(ta: &DocTypeAlias) -> String {
 
 /// Render a full module page as Markdown.
 #[must_use]
-pub fn render_module(module: &DocModule) -> String {
-    let is_guide = module.name.starts_with("language::");
+pub fn render_module(module: &DocModule, is_guide: bool) -> String {
     let mut out = if is_guide {
-        format!("# {}\n\n", super::render::page_title(module))
+        format!("# {}\n\n", super::render::page_title(module, true))
     } else {
         format!("# Module `{}`\n\n", module.name.replace("::", "."))
     };
@@ -261,8 +261,11 @@ pub fn render_module(module: &DocModule) -> String {
 
 /// Render an index page listing all documented modules as Markdown, grouped by section.
 #[must_use]
-pub fn render_index(modules: &[DocModule]) -> String {
-    let mut out = String::from("# Hew documentation\n\n");
+pub fn render_index(modules: &[DocModule], config: &DocSiteConfig) -> String {
+    let mut out = format!(
+        "# {}\n\n{}\n\n",
+        config.index_title, config.index_description
+    );
 
     let mut language_mods: Vec<&DocModule> = Vec::new();
     let mut root_mods: Vec<&DocModule> = Vec::new();
@@ -270,7 +273,7 @@ pub fn render_index(modules: &[DocModule]) -> String {
         std::collections::BTreeMap::new();
 
     for m in modules {
-        if m.name.starts_with("language::") {
+        if config.is_guide(&m.name) {
             language_mods.push(m);
             continue;
         }
@@ -282,35 +285,39 @@ pub fn render_index(modules: &[DocModule]) -> String {
             root_mods.push(m);
         }
     }
-    language_mods.sort_by_key(|module| language_guide_rank(&module.name));
+    language_mods.sort_by_key(|module| (config.guide_rank(&module.name), &module.name));
 
     if !language_mods.is_empty() {
-        out.push_str("## Language guide\n\n");
+        let _ = writeln!(out, "## {}\n", config.guide_title);
         for m in &language_mods {
-            render_index_entry_md(&mut out, m);
+            render_index_entry_md(&mut out, m, true);
         }
         out.push('\n');
     }
 
-    out.push_str("## Standard library\n\n");
+    let _ = writeln!(out, "## {}\n", config.module_title);
     for m in &root_mods {
-        render_index_entry_md(&mut out, m);
+        render_index_entry_md(&mut out, m, false);
     }
 
     for (category, mods) in &groups {
         let _ = writeln!(out, "\n### {category}\n");
         for m in mods {
-            render_index_entry_md(&mut out, m);
+            render_index_entry_md(&mut out, m, false);
         }
     }
 
     out
 }
 
-fn render_index_entry_md(out: &mut String, module: &DocModule) {
+fn render_index_entry_md(out: &mut String, module: &DocModule, is_guide: bool) {
     let filename = super::module_to_filename(&module.name, "md");
-    if module.name.starts_with("language::") {
-        let _ = write!(out, "- [{}]({filename})", super::render::page_title(module));
+    if is_guide {
+        let _ = write!(
+            out,
+            "- [{}]({filename})",
+            super::render::page_title(module, true)
+        );
     } else {
         let _ = write!(out, "- [`{}`]({filename})", module.name.replace("::", "."));
     }
@@ -319,31 +326,6 @@ fn render_index_entry_md(out: &mut String, module: &DocModule) {
         let _ = write!(out, " — {summary}");
     }
     out.push('\n');
-}
-
-fn language_guide_rank(name: &str) -> usize {
-    const ORDER: &[&str] = &[
-        "language::basics",
-        "language::concepts",
-        "language::control_flow",
-        "language::functions",
-        "language::types_traits",
-        "language::ownership",
-        "language::modules",
-        "language::metaprogramming",
-        "language::testing",
-        "language::wire",
-        "language::actors",
-        "language::concurrency",
-        "language::resources",
-        "language::supervision",
-        "language::machines",
-        "language::targets",
-    ];
-    ORDER
-        .iter()
-        .position(|entry| *entry == name)
-        .unwrap_or(ORDER.len())
 }
 
 fn module_summary(doc: Option<&str>) -> String {
@@ -373,7 +355,7 @@ mod tests {
         let source = "/// Adds numbers.\npub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
         let result = hew_parser::parse(source);
         let module = extract_docs(&result.program, "math");
-        let md = render_module(&module);
+        let md = render_module(&module, false);
         assert!(md.contains("# Module `math`"));
         assert!(md.contains("## Functions"));
         assert!(md.contains("### `pub fn add(a: i32, b: i32) -> i32`"));
@@ -394,7 +376,7 @@ mod tests {
             consts: vec![],
             type_aliases: vec![],
         };
-        let md = render_index(&[module]);
+        let md = render_index(&[module], &DocSiteConfig::default());
         assert!(md.contains("[`std.math`](std.math.md)"));
         assert!(md.contains("Math utilities."));
     }

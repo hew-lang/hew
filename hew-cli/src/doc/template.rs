@@ -1,15 +1,14 @@
 //! Minimal HTML template with embedded CSS for generated documentation.
 
-/// Hew logo SVG (inline, matches hew.sh).
-const LOGO_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" class="logo-icon"><defs><linearGradient id="b" x1="0" x2="0" y1="1" y2="0"><stop offset="0%" stop-color="#1e3a8a"/><stop offset="100%" stop-color="#38bdf8"/></linearGradient><linearGradient id="a" x1="0" x2="0" y1="1" y2="0"><stop offset="0%" stop-color="#1e3a8a" stop-opacity=".6"/><stop offset="100%" stop-color="#38bdf8" stop-opacity=".85"/></linearGradient></defs><path fill="url(#a)" d="M95 78 30 48l28 60z"/><path fill="url(#b)" d="M95 85 50 62l18 50z"/><path fill="url(#a)" d="m105 78 65-30-28 60z"/><path fill="url(#b)" d="m105 85 45-23-18 50z"/><path fill="#fff" d="m52 72 16-7-3 13-17 4zm96 0-16-7 3 13 17 4z" opacity=".6"/><path fill="url(#b)" d="m100 48 18 67-18 57-18-57z"/><path fill="#fff" d="m100 68 10 42-10 45-10-45z" opacity=".8"/><path fill="#38bdf8" d="m100 15 8 37-8-10-8 10z"/><path fill="#1e293b" d="m95 62 5 13 5-13z"/><path fill="url(#a)" d="m90 148-18 37 28-13z"/><path fill="url(#a)" d="m110 148 18 37-28-13z"/><circle cx="93" cy="55" r="2.5" fill="#0f172a"/><circle cx="107" cy="55" r="2.5" fill="#0f172a"/></svg>"##;
+use std::fmt::Write;
 
-const HEW_VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::util::html_escape;
+
+use super::config::DocSiteConfig;
 
 /// Embedded CSS styles for the documentation pages.
 ///
-/// The colour palette matches the Shiki `dark-plus` theme as configured on the
-/// Hew website (`hew.sh`), with the same design-system overrides applied in the
-/// website's `CodeBlock.astro` component.
+/// The colour palette follows the Shiki `dark-plus` syntax theme.
 const CSS: &str = r#"
 :root {
     --bg: #0d1117;
@@ -56,7 +55,6 @@ body {
     color: var(--accent);
 }
 .site-brand:hover { text-decoration: none; }
-.logo-icon { width: 1.75rem; height: 1.75rem; }
 .site-brand-name {
     font-family: Georgia, "Times New Roman", serif;
     font-weight: 700;
@@ -118,7 +116,7 @@ pre.shiki .line::before {
     user-select: none;
     font-size: 0.8em;
 }
-.sig { font-weight: 600; font-family: monospace; font-size: 1rem; background: var(--accent-light); padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid var(--accent); margin-bottom: 0.5rem; display: block; max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; word-break: break-word; }
+.sig { font-weight: 600; font-family: monospace; font-size: 1rem; background: var(--accent-light); padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid var(--accent); margin-top: 0; margin-bottom: 0.5rem; display: block; max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; word-break: break-word; }
 .doc { margin: 0.5rem 0 1.5rem 0; }
 .fields { margin: 0.5rem 0 0.75rem 1rem; }
 .fields dt { font-family: monospace; font-weight: 600; }
@@ -152,7 +150,12 @@ footer a:hover { color: var(--accent); }
 
 /// Wrap HTML body content in a full page with the documentation stylesheet.
 #[must_use]
-pub fn wrap_page(title: &str, body: &str, breadcrumb: Option<&str>) -> String {
+pub fn wrap_page(
+    config: &DocSiteConfig,
+    title: &str,
+    body: &str,
+    breadcrumb: Option<&str>,
+) -> String {
     let nav = breadcrumb.map_or(String::new(), |bc| {
         format!("<nav class=\"breadcrumb\" aria-label=\"Breadcrumb\">{bc}</nav>\n")
     });
@@ -161,32 +164,60 @@ pub fn wrap_page(title: &str, body: &str, breadcrumb: Option<&str>) -> String {
     } else {
         ""
     };
-    let header = format!(
-        r#"<header class="site-header">
-<a href="index.html" class="site-brand">{LOGO_SVG}<span class="site-brand-name">Hew</span><span class="site-brand-tag">Documentation {HEW_VERSION}</span></a>
-<nav class="site-nav" aria-label="Documentation">
-<a href="index.html"{reference_current}>Reference</a>
-<a href="https://hew.sh/learn">Learn</a>
-<a href="https://hew.sh/playground">Playground</a>
-<a href="https://hew.sh/docs">Project docs</a>
-<a href="https://github.com/hew-lang/hew">GitHub ↗</a>
-</nav>
-</header>"#
+    let mut header = format!(
+        "<header class=\"site-header\">\n<a href=\"index.html\" class=\"site-brand\"><span class=\"site-brand-name\">{}</span>",
+        html_escape(&config.brand)
     );
+    if !config.brand_tag.is_empty() {
+        let _ = write!(
+            header,
+            "<span class=\"site-brand-tag\">{}</span>",
+            html_escape(&DocSiteConfig::expand_version(&config.brand_tag))
+        );
+    }
+    header.push_str("</a>\n<nav class=\"site-nav\" aria-label=\"Documentation\">\n");
+    let _ = writeln!(
+        header,
+        "<a href=\"index.html\"{reference_current}>Reference</a>"
+    );
+    for link in &config.nav_links {
+        let _ = writeln!(
+            header,
+            "<a href=\"{}\">{}</a>",
+            html_escape(&link.url),
+            html_escape(&link.label)
+        );
+    }
+    header.push_str("</nav>\n</header>");
+
+    let mut footer = format!(
+        "<span>{}</span>",
+        html_escape(&DocSiteConfig::expand_version(&config.footer_text))
+    );
+    if let (Some(label), Some(url)) = (&config.footer_link_label, &config.footer_link_url) {
+        let _ = write!(
+            footer,
+            "<a href=\"{}\">{}</a>",
+            html_escape(url),
+            html_escape(label)
+        );
+    }
+    let title = html_escape(title);
+    let site_title = html_escape(&config.site_title);
     format!(
         r##"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title} — Hew Documentation</title>
+<title>{title} — {site_title}</title>
 <style>{CSS}</style>
 </head>
 <body>
 <a class="skip-link" href="#main-content">Skip to content</a>
 {header}
 {nav}<main id="main-content">{body}</main>
-<footer><span>Hew {HEW_VERSION} · Generated by <code>hew doc</code></span><a href="https://hew.sh">hew.sh</a></footer>
+<footer>{footer}</footer>
 <script>
 const search = document.getElementById('module-search');
 if (search) {{
@@ -218,27 +249,29 @@ if (search) {{
     )
 }
 
-/// Render the root-level Cloudflare Pages not-found document.
+/// Render a root-level static-hosting not-found document.
 #[must_use]
-pub fn not_found_page() -> String {
-    r#"<!DOCTYPE html>
+pub fn not_found_page(config: &DocSiteConfig) -> String {
+    format!(
+        r#"<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Not found — Hew Documentation</title>
-<style>body{font-family:system-ui,sans-serif;max-width:42rem;margin:5rem auto;padding:0 1rem;background:#0d1117;color:#e2e8f0}a{color:#60a5fa}</style>
+<title>Not found — {}</title>
+<style>body{{font-family:system-ui,sans-serif;max-width:42rem;margin:5rem auto;padding:0 1rem;background:#0d1117;color:#e2e8f0}}a{{color:#60a5fa}}</style>
 </head>
 <body><h1>Page not found</h1><p>The requested documentation page does not exist.</p><p><a href="/">Return to the documentation index</a></p></body>
 </html>
-"#
-    .to_string()
+"#,
+        html_escape(&config.site_title)
+    )
 }
 
 /// Apply syntax highlighting to a code string using the hew-lexer.
 ///
-/// Wraps known Hew tokens in coloured `<span>` elements matching the website's
-/// Shiki theme.
+/// Wraps known Hew tokens in coloured `<span>` elements using the documentation
+/// theme.
 #[must_use]
 pub fn highlight_signature(sig: &str) -> String {
     super::highlight::highlight_signature(sig)
@@ -250,8 +283,9 @@ mod tests {
 
     #[test]
     fn wrap_page_contains_title() {
-        let html = wrap_page("TestMod", "<p>hello</p>", None);
-        assert!(html.contains("<title>TestMod — Hew Documentation</title>"));
+        let config = DocSiteConfig::default();
+        let html = wrap_page(&config, "TestMod", "<p>hello</p>", None);
+        assert!(html.contains("<title>TestMod — Documentation</title>"));
         assert!(html.contains("<main id=\"main-content\">"));
         assert!(html.contains("<p>hello</p>"));
         assert!(!html.contains("fonts.googleapis.com"));
@@ -260,11 +294,29 @@ mod tests {
 
     #[test]
     fn child_page_does_not_mark_reference_as_current() {
+        let config = DocSiteConfig::default();
         let breadcrumb = "<a href=\"index.html\">Index</a><a aria-current=\"page\">std.example</a>";
-        let html = wrap_page("std.example", "<p>hello</p>", Some(breadcrumb));
+        let html = wrap_page(&config, "std.example", "<p>hello</p>", Some(breadcrumb));
         assert!(html.contains("<a href=\"index.html\">Reference</a>"));
         assert!(!html.contains("href=\"index.html\" aria-current=\"page\">Reference"));
         assert!(html.contains("<a aria-current=\"page\">std.example</a>"));
+    }
+
+    #[test]
+    fn site_links_come_from_configuration() {
+        let config = DocSiteConfig {
+            site_title: "Example API".to_string(),
+            brand: "Example".to_string(),
+            nav_links: vec![super::super::config::NavLink {
+                label: "Project".to_string(),
+                url: "https://example.com".to_string(),
+            }],
+            ..DocSiteConfig::default()
+        };
+        let html = wrap_page(&config, "Index", "", None);
+        assert!(html.contains("<title>Index — Example API</title>"));
+        assert!(html.contains("https://example.com"));
+        assert!(!html.contains("hew.sh"));
     }
 
     #[test]

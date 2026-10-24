@@ -191,19 +191,32 @@ The release receipt binds producer results and optional notes to the producer's 
 checksums and provenance cover every shipped asset. Available package outputs
 are retained even if another packaging lane failed. Existing per-platform SDK
 acceptance receipts remain in the producer run. GHCR is skipped when its
-producer failed. After a GitHub Release is published, `publish-docs` fails
-explicitly when `build-docs` did not succeed, so a stale docs site is visible
-in the release run and **Re-run failed jobs** can recover it. That failure is a
-visible incomplete release channel, not proof that the site was updated; the
-release is fully propagated only after `publish-docs` succeeds.
+producer failed.
 
-`build-docs` consumes the x86_64 archive produced by the required Linux build,
-so it cannot run when that packaged compiler was not produced. The GitHub
-Release requires the Linux products too. In that case no new GitHub Release
-exists for the site to describe, `publish-docs` remains skipped, and the site
-correctly stays on the preceding published release. Homebrew waits for all
-three formula archives and is skipped when the macOS archive is unavailable.
-npm and the GitHub Release can proceed with the required Linux and browser products.
+The documentation channel is independent of package publication and GitHub
+Release assembly. `build-docs` waits for the Linux matrix, then consumes its
+x86_64 archive; it still runs when another Linux matrix leg fails. If the
+x86_64 compiler was not produced, the artifact download fails visibly.
+`publish-docs` depends only on release validation and `build-docs`, so unrelated
+channel failures do not leave the site stale. It fails explicitly when
+`build-docs` did not succeed, and **Re-run failed jobs** can recover either
+stage. A failed job is a visible incomplete documentation channel, not proof
+that the site was updated; docs.hew.sh advances only after `publish-docs`
+succeeds.
+
+The packaged compiler runs `hew doc` with `docs/docs-site.toml`. That file owns
+the published collection's title, navigation, guide order, and exclusions;
+plain `hew doc` keeps project-neutral defaults. The release pipeline then runs
+`scripts/assemble-docs-site.py` to add the docs.hew.sh canonical metadata,
+sitemap, crawler policy, and agent discovery files. Keep hosting concerns in
+that assembly step rather than adding docs.hew.sh URLs or SEO output to the
+generic generator.
+
+The same job builds a Pagefind index after assembly. That static index is the
+site's required search path and must remain usable without an external service.
+The optional Cloudflare AI Search Worker under `docs/ai-search/` is deployed and
+enabled separately; absent or disabled AI resources must not alter docs site
+generation, Pagefind assets, or publication.
 
 ## Prerequisites
 
@@ -591,6 +604,10 @@ macOS release notes:
       artefacts have expired (90 days), redeploy from the tagged checkout with
       `make release && make publish-docs` and run the `wrangler pages deploy`
       command it prints
+- [ ] docs.hew.sh local search finds a language concept and a standard-library
+      symbol, with the symbol result opening its declaration anchor
+- [ ] `sitemap.xml`, `robots.txt`, `llms.txt`, and `agents.txt` are reachable;
+      canonical metadata and the discovery files identify the tagged version
 - [ ] VS Code extension tagged and published from vscode-hew
 - [ ] Author blog post at `hew-lang/hew.sh/src/content/blog/<YYYY>/<MM>/release-v<XYZ>.md` — required for any release with breaking changes; recommended for all minor releases.
 - [ ] Verify the live `hew --version` on a freshly-installed binary matches the tagged version.

@@ -1,12 +1,12 @@
 //! Syntax highlighting for Hew code using the hew-lexer.
 //!
 //! Produces HTML `<span>` elements with inline styles matching the Shiki
-//! `dark-plus` theme as configured on the Hew website (`hew.sh`).
+//! `dark-plus` theme.
 
 use hew_lexer::{Lexer, Span, Token};
 use hew_types::Ty;
 
-// ── Hew website design-system colours (dark theme) ───────────────────────────
+// ── Documentation syntax colours (dark theme) ────────────────────────────────
 
 /// Keywords: cyan-400
 const KW: &str = "#22d3ee";

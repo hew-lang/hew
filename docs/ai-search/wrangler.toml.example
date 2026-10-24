@@ -1,0 +1,15 @@
+name = "hew-docs-ai-search"
+main = "worker.mjs"
+compatibility_date = "2026-03-27"
+workers_dev = false
+
+[[routes]]
+pattern = "docs.hew.sh/api/docs-search"
+zone_name = "hew.sh"
+
+[vars]
+AI_SEARCH_ENABLED = "false"
+
+[[ai_search]]
+binding = "DOCS_AI_SEARCH"
+instance_name = "docs-hew-sh-ai-search"

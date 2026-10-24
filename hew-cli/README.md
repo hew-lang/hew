@@ -6,7 +6,7 @@ The Hew programming language compiler driver.
 
 ```sh
 hew compile file.hew [--emit-dir DIR] [--target wasm32-unknown-unknown]
-                                   # Compile through the v0.5 IR ladder
+                                   # Compile through HIR, SIR, MIR, and LLVM
 hew run file.hew [-- args...]     # Compile and run
 hew run file.hew --profile        # Compile, run, and enable the built-in profiler
 hew debug file.hew [-- args...]   # Build with debug info + launch gdb/lldb
@@ -223,6 +223,7 @@ hew doc mylib.hew                           # document a single file → doc/
 hew doc src/                                # document all .hew files under src/
 hew doc src/ --output-dir site/docs         # custom output directory
 hew doc src/ --format markdown              # render Markdown instead of HTML
+hew doc src/ --site-config docs-site.toml   # apply explicit site presentation settings
 hew doc src/ --open                         # open index.html in the browser after generation
 ```
 
@@ -238,6 +239,14 @@ module. Markdown output writes `README.md` and one `<module>.md` per module.
 **`--format html|markdown`** (default: `html`). `md` is accepted as a short
 alias for `markdown`. `--open` opens `index.html` in the default browser after
 HTML generation; it is a no-op when `--format markdown` is set.
+
+**`--site-config FILE`** loads TOML presentation settings such as the site
+title, navigation links, guide order, and modules excluded from a published
+collection. Without it, `hew doc` uses project-neutral labels, includes every
+input module, and adds no external navigation. Publishing metadata such as
+canonical URLs, sitemaps, and crawler files belongs to the hosting pipeline;
+[`../docs/docs-site.toml`](../docs/docs-site.toml) configures this repository's
+reference site without changing the generator defaults.
 
 **Parse-error behaviour**: if one or more input files fail to parse, their
 errors are printed to stderr and those files are skipped. Documentation for

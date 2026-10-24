@@ -12,6 +12,10 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
         ("associated-record-constructor", "ready 42\n"),
         ("execution-context-readers", "true\n"),
         (
+            "intrinsic-function-values",
+            "stored\npassed\n42\nowned\ninferred\nresumed\n",
+        ),
+        (
             "scalar-pattern-composition",
             "five\nother\nnegative\ntimed five\ntimed other\nunit\neffect\ntrue\n",
         ),
@@ -105,5 +109,30 @@ fn generic_numeric_arithmetic_keeps_concrete_overflow_semantics() {
             String::from_utf8_lossy(&output.stderr),
             "hew: failure: IntegerOverflow (201)\n"
         );
+    }
+}
+
+#[test]
+fn checked_extern_function_values_execute_through_ordinary_callables() {
+    support::require_codegen();
+    let dir = support::tempdir();
+    let source = dir.path().join("main.hew");
+    std::fs::write(&source, "extern \"C\" { fn abs(value: i32) -> i32; } fn main() { let absolute: fn(i32) -> i32 = unsafe { abs }; println(absolute(-7)); }").expect("write extern callback source");
+    for level in ["0", "2"] {
+        let binary = hew_testutil::compiled_binary_path(dir.path(), &format!("extern-{level}"));
+        let mut build = Command::new(hew_binary());
+        build
+            .arg("build")
+            .arg(&source)
+            .args(["--opt-level", level, "-o"])
+            .arg(&binary);
+        let output = run_bounded_command(build, format!("build extern callback O{level}"));
+        assert!(output.status.success(), "{}", describe_output(&output));
+        let output = run_bounded_command(
+            Command::new(binary),
+            format!("run extern callback O{level}"),
+        );
+        assert!(output.status.success(), "{}", describe_output(&output));
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "7\n");
     }
 }

@@ -1,0 +1,26 @@
+type Printer { emit: fn(string) -> (); }
+type Message { text: string; }
+
+impl Display for Message {
+    fn fmt(self) -> string { self.text }
+}
+
+fn invoke(emit: fn(string) -> (), text: string) { emit(text); }
+
+fn main() {
+    let emit: fn(string) -> () = println;
+    let printer = Printer { emit: emit };
+    invoke(printer.emit, "stored");
+    invoke(println, "passed");
+    let render: fn(i64) -> string = to_string;
+    println(render(42));
+    let message: fn(Message) -> () = println;
+    message(Message { text: "owned" });
+    let inferred = println;
+    inferred("inferred");
+    let checked: fn(bool) -> () = assert;
+    checked(true);
+    let pause: fn[suspends](duration) -> () = sleep;
+    pause(1ms);
+    println("resumed");
+}

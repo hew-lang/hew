@@ -1549,3 +1549,32 @@ fn generalization_keeps_environment_holes_shared_between_type_instantiations() {
         "captured monotype was freshly instantiated"
     );
 }
+#[test]
+fn intrinsic_function_values_preserve_bounds_parameter_modes_and_effects() {
+    for source in [
+        "type Secret { value: i64; } fn main() { let emit: fn(Secret) -> () = println; }",
+        "fn main() { let emit: fn(consume string) -> () = println; }",
+        "fn main() { let pause: fn(duration) -> () = sleep; }",
+    ] {
+        let output = check_source(source);
+        assert!(
+            !output.errors.is_empty(),
+            "invalid intrinsic callable contract was admitted: {source}"
+        );
+    }
+}
+
+#[test]
+fn extern_function_values_require_the_same_unsafe_authority_as_calls() {
+    let output = check_source("extern \"C\" { fn foreign_number() -> i64; } fn main() { let read: fn() -> i64 = foreign_number; }");
+    assert!(
+        output.errors.iter().any(
+            |error| matches!(error.kind, TypeErrorKind::InvalidOperation)
+                && error.message.contains("requires `unsafe")
+        ),
+        "{:#?}",
+        output.errors
+    );
+    let output = check_source("extern \"C\" { fn foreign_number() -> i64; } fn main() { let read: fn() -> i64 = unsafe { foreign_number }; }");
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}

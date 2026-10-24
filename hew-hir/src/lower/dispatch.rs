@@ -795,7 +795,7 @@ impl LowerCtx {
 
     /// `if !holds { panic(report) }`, retaining compared values separately in
     /// the typed fault so editors can show a diff without parsing report text.
-    fn assertion_guard(
+    pub(super) fn assertion_guard(
         &mut self,
         holds: HirExpr,
         text: &str,

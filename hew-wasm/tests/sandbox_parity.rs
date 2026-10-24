@@ -1085,6 +1085,10 @@ fn frontend_completion_forms_match_native() {
     ensure_parity_runner_built();
     for case in [
         ParityCase {
+            test_name: "intrinsic-function-values",
+            source_rel: "tests/core-acceptance/cases/intrinsic-function-values.hew",
+        },
+        ParityCase {
             test_name: "execution-context-readers",
             source_rel: "tests/core-acceptance/cases/execution-context-readers.hew",
         },

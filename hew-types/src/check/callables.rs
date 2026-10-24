@@ -32,6 +32,10 @@ impl Checker {
             );
             return Ty::Error;
         }
+        // Reifying an extern as a callable performs the same authority check
+        // as invoking it. An unsafe block may wrap that checked operation in
+        // an ordinary callable, as an authored closure can.
+        self.require_unsafe(signature_key, span);
         let sig = self
             .fn_sig(signature_key)
             .cloned()

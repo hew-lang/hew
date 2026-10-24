@@ -3,6 +3,153 @@
 use super::*;
 
 impl LowerCtx {
+    /// Normalize a checker-selected runtime function value into an ordinary
+    /// capture-free callable. The checked signature retains parameter modes
+    /// and suspension effects; its body uses the same invocation as a direct call.
+    pub(super) fn lower_intrinsic_function_value(
+        &mut self,
+        span: &Span,
+    ) -> Option<(HirExprKind, ResolvedTy)> {
+        let target = self.direct_call_targets.get(&self.mk_key(span))?.clone();
+        if !matches!(
+            target,
+            CallTarget::Runtime(_)
+                | CallTarget::Builtin { .. }
+                | CallTarget::Extern { .. }
+                | CallTarget::DeclaredRuntime { .. }
+        ) {
+            return None;
+        }
+        let ty = self.checker_expr_ty_if_present(span)?;
+        let (signature, ret_ty) = Self::closure_signature_from_ty(&ty)?;
+        self.push_scope();
+        let mut params = Vec::with_capacity(signature.len());
+        let mut args = Vec::with_capacity(signature.len());
+        for (index, parameter) in signature.into_iter().enumerate() {
+            let mut binding = self.bind(
+                format!("__hew_intrinsic_arg_{index}"),
+                parameter.ty,
+                false,
+                span.clone(),
+            );
+            binding.is_consume = parameter.ownership == hew_types::ParameterOwnership::Consume;
+            args.push(self.make_binding_ref(
+                binding.name.clone(),
+                binding.id,
+                binding.ty.clone(),
+                IntentKind::Read,
+                span.clone(),
+            ));
+            params.push(binding);
+        }
+        let body = match &target {
+            CallTarget::Builtin { endpoint } if stdlib_catalog::is_overloaded_builtin(endpoint) => {
+                let (kind, result) = self.lower_builtin_overload(endpoint, endpoint, args, span);
+                self.make_expr(kind, result, IntentKind::Read, span.clone())
+            }
+            CallTarget::Builtin { endpoint }
+                if endpoint == hew_types::stdlib_catalog_identity::ASSERT =>
+            {
+                match <Vec<HirExpr> as TryInto<[HirExpr; 1]>>::try_into(args) {
+                    Ok([condition]) => {
+                        self.assertion_guard(condition, "condition", None, None, span)
+                    }
+                    Err(_) => {
+                        self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "assert function value".to_string(),
+                                reason: "checked signature must take one condition".to_string(),
+                            },
+                            span.clone(),
+                            "assert adapter requires its checked condition parameter",
+                        ));
+                        self.make_expr(
+                            HirExprKind::Unsupported("invalid assert signature".to_string()),
+                            ResolvedTy::Unit,
+                            IntentKind::Read,
+                            span.clone(),
+                        )
+                    }
+                }
+            }
+            _ => {
+                let (name, resolved) = match &target {
+                    CallTarget::Runtime(family) | CallTarget::DeclaredRuntime { family, .. } => {
+                        (family.c_symbol().to_string(), ResolvedRef::Builtin(*family))
+                    }
+                    CallTarget::Extern {
+                        declaration,
+                        endpoint,
+                        ..
+                    } => (
+                        endpoint.clone(),
+                        self.source_fn_entries
+                            .get(declaration)
+                            .map_or(ResolvedRef::Unresolved, |(_, entry)| {
+                                ResolvedRef::Item(entry.id)
+                            }),
+                    ),
+                    CallTarget::Builtin { endpoint } => (
+                        endpoint.clone(),
+                        self.fn_registry
+                            .get(endpoint)
+                            .map_or(ResolvedRef::Unresolved, |entry| ResolvedRef::Item(entry.id)),
+                    ),
+                    _ => unreachable!("selected runtime function target"),
+                };
+                let callee = self.make_expr(
+                    HirExprKind::BindingRef { name, resolved },
+                    ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                );
+                self.make_expr(
+                    HirExprKind::Call {
+                        target,
+                        callee: Box::new(callee),
+                        args,
+                        evaluation_order: Vec::new(),
+                    },
+                    ret_ty.clone(),
+                    IntentKind::Read,
+                    span.clone(),
+                )
+            }
+        };
+        self.pop_scope();
+        let mut closure_ty = ty;
+        let mut callable = &mut closure_ty;
+        while let ResolvedTy::GenericCallable {
+            callable: inner, ..
+        } = callable
+        {
+            callable = inner;
+        }
+        if let ResolvedTy::Function {
+            capabilities,
+            params,
+            ret,
+        } = callable
+        {
+            *callable = ResolvedTy::Closure {
+                capabilities: *capabilities,
+                params: params.clone(),
+                ret: ret.clone(),
+                captures: Vec::new(),
+            };
+        }
+        Some((
+            HirExprKind::Closure {
+                params,
+                ret_ty,
+                body: Box::new(body),
+                captures: Vec::new(),
+                escape_kind: hew_types::ClosureEscapeKind::Escapes,
+            },
+            closure_ty,
+        ))
+    }
+
     /// Preserve the selected record field as the indirect-call callee.
     /// SIR decides the projection's borrow or consumption from its capabilities.
     pub(super) fn lower_record_fn_field_call(
@@ -114,6 +261,9 @@ impl LowerCtx {
         span: &std::ops::Range<usize>,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        if let Some(adapter) = self.lower_intrinsic_function_value(span) {
+            return adapter;
+        }
         if !entry.type_params.is_empty() {
             self.record_free_fn_call_type_args(symbol, None, span, site);
         }
@@ -196,6 +346,9 @@ impl LowerCtx {
         span: std::ops::Range<usize>,
         site: SiteId,
     ) -> (HirExprKind, ResolvedTy) {
+        if let Some(adapter) = self.lower_intrinsic_function_value(&span) {
+            return adapter;
+        }
         let key = self.mk_key(&span);
         if let Some(Resolution::Def(declaration)) = self.resolutions.get(&key).copied() {
             if matches!(

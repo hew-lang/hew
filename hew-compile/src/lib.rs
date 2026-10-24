@@ -2409,7 +2409,7 @@ fn stdlib_roots(module_search_paths: Option<&[PathBuf]>) -> Vec<PathBuf> {
             <[PathBuf]>::to_vec,
         )
         .into_iter()
-        .map(|root| root.canonicalize().unwrap_or(root))
+        .map(|root| compile_time::normalize(&root.canonicalize().unwrap_or(root)))
         .collect()
 }
 
@@ -5789,6 +5789,75 @@ mod tests {
         );
         assert_eq!(native[0], Path::new("std/net/http/codec/codec.hew"));
         assert_eq!(in_memory, native);
+    }
+
+    #[test]
+    fn embedded_directory_modules_resolve_peers_from_relative_roots() {
+        let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("repository root");
+        let root = Path::new("./hew-embedded-stdlib");
+        assert!(!root.exists(), "the source root must remain virtual");
+        let mut documents = SourceSet::in_memory();
+        let mut pending = vec![repo.join("std")];
+        while let Some(dir) = pending.pop() {
+            for entry in fs::read_dir(dir)
+                .expect("standard-library sources")
+                .flatten()
+            {
+                let path = entry.path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension().is_some_and(|extension| extension == "hew") {
+                    documents.insert(
+                        root.join(path.strip_prefix(repo).expect("repository source")),
+                        fs::read_to_string(path).expect("source text"),
+                    );
+                }
+            }
+        }
+        for import in ["std.net.http.codec", "std.net.http.codec.request"] {
+            let source = format!("import {import}; fn main() {{}}");
+            let mut program = parse_source(&source, "playground.hew").expect("import source");
+            let roots = [root.to_path_buf()];
+            let mut context = ImportResolutionContext {
+                in_progress_imports: HashSet::new(),
+                resolved_imports: HashMap::new(),
+                manifest_deps: None,
+                extra_pkg_path: None,
+                locked_versions: None,
+                package_name: None,
+                project_dir: Path::new("."),
+                module_search_paths: Some(&roots),
+                documents: &documents,
+            };
+            let graph = build_module_graph(
+                Path::new("playground.hew"),
+                &mut program.items,
+                program.module_doc.clone(),
+                &mut context,
+            )
+            .expect("embedded directory module graph");
+            let owners = graph
+                .modules
+                .values()
+                .filter(|module| {
+                    module
+                        .source_paths
+                        .iter()
+                        .any(|path| path.ends_with("std/net/http/codec/codec.hew"))
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(owners.len(), 1, "one owner for the codec entry");
+            assert!(
+                owners[0]
+                    .source_paths
+                    .iter()
+                    .any(|path| { path.ends_with("std/net/http/codec/request.hew") }),
+                "the entry and private peer helpers must share one module: {:?}",
+                owners[0].source_paths
+            );
+        }
     }
 
     fn manifest_errors(manifest: &str, files: &[(&str, &str)], main: &str) -> Vec<String> {

@@ -1785,7 +1785,7 @@ impl Checker {
         // adopts the non-literal's type instead of defaulting immediately.
         let (left_ty, right_ty) = if left_is_coercible && !right_is_coercible {
             let rt = self.synthesize(&right.0, &right.1);
-            let rt_resolved = self.subst.resolve(&rt);
+            let rt_resolved = self.normalize_for_use(&rt);
             if rt_resolved.is_numeric() {
                 let lt = self.check_against(&left.0, &left.1, &rt_resolved);
                 (lt, rt)
@@ -1795,7 +1795,7 @@ impl Checker {
             }
         } else if right_is_coercible && !left_is_coercible {
             let lt = self.synthesize(&left.0, &left.1);
-            let lt_resolved = self.subst.resolve(&lt);
+            let lt_resolved = self.normalize_for_use(&lt);
             if lt_resolved.is_numeric() {
                 let rt = self.check_against(&right.0, &right.1, &lt_resolved);
                 (lt, rt)
@@ -1807,7 +1807,7 @@ impl Checker {
             types
         } else {
             let lt = self.synthesize(&left.0, &left.1);
-            let expected = self.subst.resolve(&lt);
+            let expected = self.normalize_for_use(&lt);
             let rt = if matches!(op, BinaryOp::Equal | BinaryOp::NotEqual) && !expected.is_numeric()
             {
                 self.check_against(&right.0, &right.1, &expected)
@@ -1819,8 +1819,8 @@ impl Checker {
 
         // Resolve type variables through substitution so we check against
         // concrete types when available (bidirectional inference).
-        let left_resolved = self.subst.resolve(&left_ty);
-        let right_resolved = self.subst.resolve(&right_ty);
+        let left_resolved = self.normalize_for_use(&left_ty);
+        let right_resolved = self.normalize_for_use(&right_ty);
         if matches!(left_resolved, Ty::Error) || matches!(right_resolved, Ty::Error) {
             return Ty::Error;
         }

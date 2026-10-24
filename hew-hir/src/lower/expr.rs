@@ -595,28 +595,6 @@ impl LowerCtx {
             Expr::ContextVariant(_) | Expr::GenericApplySuffix { .. } => {
                 unreachable!("compatibility suffix expressions are lowered before site allocation")
             }
-            Expr::RecordInitSuffix {
-                target,
-                fields,
-                base,
-            } => {
-                self.lower_expr(target, IntentKind::Read);
-                for (_, value) in fields {
-                    self.lower_expr(value, IntentKind::Read);
-                }
-                if let Some(base) = base {
-                    self.lower_expr(base, IntentKind::Read);
-                }
-                self.unsupported(
-                    span.clone(),
-                    "qualified record initializer",
-                    "qualified-record-init",
-                );
-                (
-                    HirExprKind::Unsupported("unsupported qualified record initializer".into()),
-                    ResolvedTy::Unit,
-                )
-            }
             Expr::QualifiedAssoc(path) => {
                 let _ = render_type_expr(&path.base.0);
                 self.unsupported(
@@ -720,7 +698,6 @@ impl LowerCtx {
                 )
             }
             Expr::StructInit {
-                path: named_path,
                 fields,
                 // Surface-level explicit type arguments (`Box<i64> { ... }`).
                 // The HIR-recorded `type_args` below comes from the checker's
@@ -729,8 +706,17 @@ impl LowerCtx {
                 type_args: _,
                 base,
                 ..
-            } => {
-                let name = &named_path.to_string();
+            }
+            | Expr::RecordInitSuffix { fields, base, .. } => {
+                let constructor_name = match &expr.0 {
+                    Expr::StructInit { path, .. } => path.to_string(),
+                    Expr::RecordInitSuffix { .. } => self
+                        .checker_expr_ty_if_present(&span)
+                        .and_then(|ty| ty.head().map(|head| head.registry_key().to_string()))
+                        .unwrap_or_default(),
+                    _ => unreachable!("record initializer match arm"),
+                };
+                let name = &constructor_name;
                 // A coercion changes the published expression type, while the
                 // initializer still constructs the checked concrete value.
                 let checked_constructor = self

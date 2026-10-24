@@ -236,16 +236,7 @@ impl Checker {
                 target,
                 fields,
                 base,
-            } => {
-                let target_ty = self.synthesize(&target.0, &target.1);
-                for (_, (value, value_span)) in fields {
-                    self.synthesize(value, value_span);
-                }
-                if let Some(base) = base {
-                    self.synthesize(&base.0, &base.1);
-                }
-                target_ty
-            }
+            } => self.check_record_init_suffix(target, fields, base.as_deref(), span),
             Expr::QualifiedAssoc(path) => self.synthesize_qualified_assoc(path, span),
 
             // Binary ops
@@ -774,7 +765,7 @@ impl Checker {
             }
             UnaryOp::Negate => {
                 let ty = self.synthesize(&operand.0, &operand.1);
-                let resolved = self.subst.resolve(&ty);
+                let resolved = self.normalize_for_use(&ty);
                 if !resolved.is_numeric()
                     && !resolved.is_duration()
                     && !matches!(resolved, Ty::Var(_))
@@ -790,7 +781,7 @@ impl Checker {
             }
             UnaryOp::BitNot => {
                 let ty = self.synthesize(&operand.0, &operand.1);
-                let resolved = self.subst.resolve(&ty);
+                let resolved = self.normalize_for_use(&ty);
                 if !resolved.is_integer()
                     && !matches!(resolved, Ty::Var(_))
                     && resolved != Ty::Error
@@ -852,8 +843,8 @@ impl Checker {
             (Some(s), Some(e)) => {
                 let start_ty = self.synthesize(&s.0, &s.1);
                 let end_ty = self.synthesize(&e.0, &e.1);
-                let start_resolved = self.subst.resolve(&start_ty);
-                let end_resolved = self.subst.resolve(&end_ty);
+                let start_resolved = self.normalize_for_use(&start_ty);
+                let end_resolved = self.normalize_for_use(&end_ty);
 
                 if start_resolved.is_integer() && end_resolved.is_integer() {
                     if let Some(common_ty) =
@@ -896,8 +887,8 @@ impl Checker {
             self.record_deferred_inference_holes(type_expr, "cast target type", hole_vars.clone());
             self.record_deferred_cast_check(span, &actual, &target, hole_vars);
         }
-        let actual_resolved = self.subst.resolve(&actual);
-        let target_resolved = self.subst.resolve(&target);
+        let actual_resolved = self.normalize_for_use(&actual);
+        let target_resolved = self.normalize_for_use(&target);
 
         if !has_target_holes && !cast_is_valid(&actual_resolved, &target_resolved) {
             self.report_error(
@@ -1557,12 +1548,12 @@ impl Checker {
                 format!("module `{surface_name}` cannot be used as a value"),
             );
             Ty::Error
-        } else if self.type_def_at(surface_name).is_some()
-            || self.known_types.contains(surface_name)
-            || self
-                .lookup_declaration(surface_name)
-                .is_some_and(|declaration| self.type_aliases.contains_key(&declaration))
-            || crate::lookup_builtin_type(surface_name).is_some()
+        } else if self.scope_site().is_some_and(|site| {
+            matches!(
+                self.scopes.value_head(&self.env, site, ident),
+                Some(scope::Resolution::Nominal(_) | scope::Resolution::Builtin(_))
+            )
+        }) || crate::lookup_builtin_type(surface_name).is_some()
             || crate::ty::is_reserved_type_name(surface_name)
         {
             self.report_error(

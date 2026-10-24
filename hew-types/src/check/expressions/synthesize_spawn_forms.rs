@@ -1172,6 +1172,73 @@ impl Checker {
         }
     }
 
+    /// A qualified associated record constructor names a type, rather than
+    /// evaluating its target as a value. Once projection selects a concrete
+    /// declaration, the ordinary record constructor owns field validation.
+    pub(super) fn check_record_init_suffix(
+        &mut self,
+        target: &Spanned<Expr>,
+        fields: &[(Ident, Spanned<Expr>)],
+        base: Option<&Spanned<Expr>>,
+        span: &Span,
+    ) -> Ty {
+        let Expr::QualifiedAssoc(associated) = &target.0 else {
+            let _ = self.synthesize(&target.0, &target.1);
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                "a record initializer requires a type declaration".to_string(),
+            );
+            return Ty::Error;
+        };
+        let projection =
+            TypeExpr::QualifiedAssocPath(Box::new(hew_parser::ast::QualifiedAssocPath {
+                base: associated.base.clone(),
+                trait_path: associated.trait_path.clone(),
+                members: associated.members.clone(),
+            }));
+        let written_ty = self.resolve_type_expr(&(projection, target.1.clone()));
+        let target_ty = self.normalize_for_use(&written_ty);
+        if target_ty == Ty::Error {
+            return Ty::Error;
+        }
+        let Ty::Named { head, .. } = &target_ty else {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                format!(
+                    "record initializer requires a concrete record type; `{}` has no known fields",
+                    target_ty.user_facing()
+                ),
+            );
+            return Ty::Error;
+        };
+        let Some(nominal) = head.nominal() else {
+            self.report_error(
+                TypeErrorKind::PathKindMismatch,
+                &target.1,
+                "record initializer requires a concrete record declaration".to_string(),
+            );
+            return Ty::Error;
+        };
+        let name = self.defs.path(nominal.declaration()).to_string();
+        let path = hew_parser::ast::Path::single(Ident::new(&name), target.1.clone());
+        let constructed = self.check_struct_init(
+            &name,
+            Some(scope::Resolution::Nominal(nominal)),
+            fields,
+            None,
+            base,
+            StructInitSite {
+                span,
+                path: &path,
+                field_labels: &[],
+            },
+        );
+        self.expect_type(&target_ty, &constructed, span);
+        target_ty
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "struct and enum-variant initialization share one exact-owner diagnostic path"

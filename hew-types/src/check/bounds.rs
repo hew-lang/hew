@@ -1137,7 +1137,7 @@ impl Checker {
                 Ty::param,
             )
         }
-        let ty = bound_type(self, ty);
+        let ty = bound_type(self, &self.normalize_for_use(ty));
         self.registry
             .implements_marker_with_bounds(&ty, requested, &|param, marker| {
                 self.param_carries_marker(param.id, marker)

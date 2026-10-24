@@ -3427,6 +3427,7 @@ impl Checker {
             program,
             &self.defs,
             FnSigView::new(&self.fn_sigs, &self.fn_sig_keys, &self.builtin_fn_sigs),
+            |ty| self.normalize_for_use(ty),
         );
         self.register_actor_intercept_types(program);
     }
@@ -5878,6 +5879,7 @@ fn actor_handler_specs(
     fn_sigs: crate::check::types::FnSigView<'_>,
     actor: crate::DefId,
     ad: &ActorDecl,
+    normalize: &impl Fn(&Ty) -> Ty,
 ) -> Option<Vec<crate::actor_protocol::ActorHandlerSpec>> {
     let mut specs: Vec<crate::actor_protocol::ActorHandlerSpec> =
         Vec::with_capacity(ad.receive_fns.len());
@@ -5889,10 +5891,10 @@ fn actor_handler_specs(
         let param_tys = sig
             .params
             .iter()
-            .map(|parameter| crate::ResolvedTy::from_ty(&parameter.ty))
+            .map(|parameter| crate::ResolvedTy::from_ty(&normalize(&parameter.ty)))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
-        let return_ty = crate::ResolvedTy::from_ty(&sig.return_type).ok()?;
+        let return_ty = crate::ResolvedTy::from_ty(&normalize(&sig.return_type)).ok()?;
         // Symbol mangling is owned by MIR/codegen; for slice 1 we record
         // a stable surface-derived symbol string so the descriptor row
         // is self-describing. Downstream consumers may continue to
@@ -5924,6 +5926,7 @@ fn build_actor_protocol_descriptors(
     program: &Program,
     defs: &crate::DefTable,
     fn_sigs: crate::check::types::FnSigView<'_>,
+    normalize: impl Fn(&Ty) -> Ty,
 ) -> HashMap<String, crate::actor_protocol::ActorProtocolDescriptor> {
     use crate::actor_protocol::{CoalesceFallback, MailboxContract, OverflowContract};
     use hew_parser::ast::{OverflowFallback, OverflowPolicy};
@@ -5934,7 +5937,7 @@ fn build_actor_protocol_descriptors(
         let actor_identity = defs.path(actor).to_string();
         // A handler signature that failed to resolve already reported its
         // type error; a partial descriptor is never published.
-        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad) else {
+        let Some(specs) = actor_handler_specs(defs, fn_sigs, actor, ad, &normalize) else {
             continue;
         };
 

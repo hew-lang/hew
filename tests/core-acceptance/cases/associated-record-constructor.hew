@@ -1,0 +1,11 @@
+type Packet<T> { value: T; label: string; }
+type Message = Packet<i64>;
+trait Schema { type Item; }
+type Provider {}
+impl Schema for Provider { type Item = Message; }
+
+fn main() {
+    let packet = <Provider as Schema>.Item { value: 41, label: "ready" };
+    let updated = <Provider as Schema>.Item { value: packet.value + 1, ..packet };
+    println(f"{updated.label} {updated.value}");
+}

@@ -176,7 +176,7 @@ impl Checker {
     ) {
         let names: Vec<&str> = traits
             .iter()
-            .map(|(declaring, _)| self.defs.display(*declaring))
+            .map(|(declaring, _)| self.defs.path(*declaring))
             .collect();
         if let [(first, _), rest @ ..] = traits {
             if rest.iter().all(|(declaring, _)| declaring == first) {

@@ -5,6 +5,31 @@
 pub(super) use super::*;
 
 #[test]
+fn module_aliases_have_their_targets_arithmetic_and_send_behaviour() {
+    let source = r"
+type Count = i64;
+type Counts<T> = Vec<T>;
+type Total = Count;
+actor Counter {
+    let value: Total;
+    receive fn add(amount: Count) -> Count { value + amount }
+}
+pub fn total(value: Count) -> Total {
+    let values: Counts<Count> = [value];
+    let counter = spawn Counter { value: value };
+    let result = match counter.add(value) { .Ok(answer) => answer, .Err(_) => 0 };
+    result + values.len() as i64
+}
+";
+    for output in [
+        check_source(source),
+        check_source_in_module(source, vec!["counts".to_string()]),
+    ] {
+        assert!(output.errors.is_empty(), "{:#?}", output.errors);
+    }
+}
+
+#[test]
 fn root_enum_shadows_generated_delivery_type_member() {
     let mut checker = Checker::new(ModuleRegistry::new(vec![]));
     checker.local_type_defs.insert("Delivery".to_string());

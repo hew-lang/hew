@@ -517,20 +517,36 @@ mod tests {
     }
 
     #[test]
-    fn current_v1_trace_events_are_actionable() {
-        for event_type in CURRENT_TRACE_EVENT_METADATA
+    fn trace_metadata_matches_runtime_and_protocol() {
+        for (_, event_type) in hew_runtime::tracing::EVENT_TYPE_NAMES {
+            let meta = trace_event_meta(event_type);
+            assert_eq!(
+                meta.name, *event_type,
+                "runtime event {event_type} must resolve to concrete Observe metadata"
+            );
+            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
+        }
+
+        // Metadata also covers older producers and reserved future events.
+        // Compare actionability with the protocol, without closing its taxonomy.
+        let actionable: std::collections::BTreeSet<_> = CURRENT_TRACE_EVENT_METADATA
             .iter()
             .filter(|meta| meta.is_actionable())
             .map(|meta| meta.name)
-        {
+            .collect();
+        for event_type in &actionable {
             let meta = trace_event_meta(event_type);
-            assert!(
-                meta.is_actionable(),
-                "{event_type} should be actionable in hew-observe"
-            );
-            assert_ne!(meta.label, "unknown");
+            assert_ne!(meta.label, UNKNOWN_TRACE_EVENT_META.label);
             assert_ne!(meta.glyph, UNKNOWN_TRACE_EVENT_META.glyph);
         }
+        let protocol = hew_observe_protocol::ACTIONABLE_TRACE_EVENT_TYPES
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            actionable, protocol,
+            "Observe and its wire protocol must agree on actionable trace events"
+        );
     }
 
     #[test]

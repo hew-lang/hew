@@ -81,7 +81,7 @@
     "clone": "Prefix clone operator (clone <operand>) and independent-copy capability in fn[clone]; an ordinary identifier otherwise (x.clone(), fn clone(...)).",
     "coalesce": "Mailbox overflow policy",
     "completion": "Machine completion transition trigger (contextual after on).",
-    "consume": "By-move parameter modifier (fn f(consume x: T)) when leading a parameter declaration; an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
+    "consume": "By-move parameter modifier in declarations (fn f(consume x: T)), callable types (fn(consume T)) and lambdas (|consume x: T| x); an ordinary identifier otherwise (fn f(consume: T), x.consume()).",
     "count": "Supervisor pool arity clause (pool ws: Worker { .. } count: N)",
     "default": "Machine fallback transition marker (contextual inside a machine body)",
     "description": "Identifiers that have special meaning in specific parser contexts but are NOT reserved keywords (they can be used as regular identifiers elsewhere).",
@@ -350,5 +350,5 @@
       "timestamp"
     ]
   },
-  "version": "0.8.0"
+  "version": "0.9.0"
 }

@@ -1,29 +1,60 @@
 import std.pipeline;
+import std.semaphore;
+import std.stream;
+import pipeline_support.items;
 
-fn main() -> i64 {
-    var source = pipeline.run(pipeline.from(50));
-    var i: i64 = 0;
-    while i < 50 {
-        let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: i, label: f"drain-owned-{i}", crash_stage: false };
-        match source.push(item) {
-            .Ok(admitted) => {
-                if !admitted {
-                    return 30;
-                }
-            }
-            .Err(_) => {
-                return 31;
-            }
-        }
-        println("queued");
-        i = i + 1;
+type Input {
+    index: i64;
+    created: semaphore.Semaphore;
+    closed: semaphore.Semaphore;
+}
+
+#[resource]
+type Output {
+    index: i64;
+    closed: semaphore.Semaphore;
+}
+
+impl Output {
+    fn close(consume self) {
+        self.closed.release();
     }
-    match source.shutdown(50) {
-        .Ok(drained) => if drained {
-            0
-        } else {
-            32
-        }
-        .Err(_) => 33,
+}
+
+fn main() {
+    let prefetched = semaphore.new(0);
+    for item in pipeline.prefetch(items.source(prefetched), capacity: 1) {
+        assert(item.index == 0);
+        break;
     }
+    assert(prefetched.count() == 6);
+    let mapped = semaphore.new(0);
+    for index in pipeline.map(items.source(mapped), |item: items.Item| item.index, concurrency: 2) {
+        assert(index == 0);
+        break;
+    }
+    assert(mapped.count() == 6);
+    let forwarded = semaphore.new(0);
+    for item in pipeline.map(items.source(forwarded), |consume item: items.Item| item, concurrency: 2) {
+        assert(item.index == 0);
+        break;
+    }
+    assert(forwarded.count() == 6);
+    let created = semaphore.new(0);
+    let output_closed = semaphore.new(0);
+    let (sink, input): (Sink<Input>, Stream<Input>) = stream.pipe(6).expect("outputs");
+    for index in 0..6 {
+        sink.send(Input { index, created: created.clone(), closed: output_closed.clone() }).expect("input");
+    }
+    sink.finish();
+    for output in pipeline.map(input, |item: Input| {
+        item.created.release();
+        Output { index: item.index, closed: item.closed.clone() }
+    }, concurrency: 2) {
+        assert(output.index == 0);
+        break;
+    }
+    assert(created.count() > 0);
+    assert(output_closed.count() == created.count());
+    println("pipeline early close passed");
 }

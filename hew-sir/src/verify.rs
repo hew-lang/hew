@@ -13,6 +13,11 @@ use hew_types::ResolvedTy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SirDiagnosticKind {
+    /// A demanded generator transfer retains a value that is not Send.
+    InvalidGeneratorSend {
+        message: String,
+        site: crate::GeneratorSendSite,
+    },
     /// A source linear owner remains at a normal scope exit or replacement.
     UnconsumedLinear {
         binding: Option<String>,
@@ -765,6 +770,9 @@ pub fn check_module(module: &SemModule) -> Result<CheckedModule<'_>, Vec<SirDiag
         if let Some(analysis) = analysis {
             functions.insert(function.callable, analysis);
         }
+    }
+    if diagnostics.is_empty() {
+        diagnostics.extend(crate::generator_send::verify(module, &functions));
     }
     if diagnostics.is_empty() {
         Ok(CheckedModule { module, functions })
@@ -1922,6 +1930,17 @@ fn verify_callable_table<'a>(
                     diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
                         callable: callable.id,
                         reason: "pool count body is not its declaration's checked count".into(),
+                    }));
+                }
+            }
+            CallableInstance::SupervisorBackoff { supervisor } => {
+                if module
+                    .supervisor(*supervisor)
+                    .is_none_or(|owner| owner.backoff != Some(callable.id))
+                {
+                    diagnostics.push(module_diag(SirDiagnosticKind::InvalidCallable {
+                        callable: callable.id,
+                        reason: "backoff body is not its declaration's checked policy".into(),
                     }));
                 }
             }
@@ -3128,11 +3147,11 @@ fn verify_callable_operation(
                     .get(closure.0 as usize)
                     .filter(|descriptor| descriptor.id == *closure)
                     .ok_or("generator has no exact producer environment")?;
-                let (yielded, returned) = crate::generator_parts(&result.ty)
+                let (_, returned) = crate::generator_parts(&result.ty)
                     .ok_or("generator construction has no checked generator type")?;
                 let (params, output, capabilities) = crate::callable_parts(&descriptor.ty)?;
                 if types.get(&callable.value) != Some(&descriptor.ty)
-                    || descriptor.generator_yield.as_ref() != Some(yielded)
+                    || descriptor.generator_type.as_ref() != Some(&result.ty)
                     || output != returned
                     || !params.is_empty()
                     || capabilities.call != hew_types::CallableCallMode::Once
@@ -4281,11 +4300,15 @@ fn verify_operation_shape(
             }
         }
         SemOpKind::BeginBorrow { owner } => {
-            if types.get(&owner.value) != Some(&result.ty) {
+            if !types.get(&owner.value).is_some_and(|source| {
+                source == &result.ty
+                    || crate::verify_callable_coercion(source, &result.ty, facts).is_ok()
+            }) {
                 invalid_operation(
                     function,
                     operation.id,
-                    "begin_borrow must preserve its exact typed storage".to_string(),
+                    "begin_borrow must preserve its storage and callable argument contract"
+                        .to_string(),
                     diagnostics,
                 );
             }
@@ -4585,7 +4608,7 @@ fn verify_extern_call_terminator(
             diagnostics,
         );
     }
-    if args.len() != signature.params.len() || args.len() != signature.consumes.len() {
+    if args.len() != signature.params.len() {
         invalid_operation(
             function,
             id,
@@ -4599,7 +4622,7 @@ fn verify_extern_call_terminator(
         return;
     }
     for (index, argument) in args.iter().enumerate() {
-        let declared = &signature.params[index];
+        let declared = &signature.params[index].ty;
         let Some(actual) = types.get(&argument.operand.value) else {
             continue;
         };
@@ -6097,8 +6120,8 @@ fn verify_terminator_shape(
                                 .iter()
                                 .zip(&signature.params)
                                 .all(|(input, parameter)| {
-                                    types.get(&input.operand.value) == Some(parameter)
-                                        && match owns(parameter) {
+                                    types.get(&input.operand.value) == Some(&parameter.ty)
+                                        && match owns(&parameter.ty) {
                                             Ok(OwnKind::Owned) => {
                                                 input.decision == crate::BoundaryDecision::Move
                                             }
@@ -6153,7 +6176,7 @@ fn verify_terminator_shape(
                                     .any(|entry| entry.body == function.callable)
                             })
                         })
-                        .and_then(|closure| closure.generator_yield.as_ref());
+                        .and_then(|closure| closure.generator_yield());
                     resumes.len() == 1
                         && matches!(result, crate::CallResult::Unit)
                         && matches!(inputs.as_slice(), [input]

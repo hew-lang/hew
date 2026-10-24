@@ -194,7 +194,7 @@ impl LowerCtx {
                 .expect("catalog entries are seeded before expression lowering");
             (
                 registry_entry.id,
-                registry_entry.param_tys.clone(),
+                registry_entry.params.clone(),
                 registry_entry.return_ty.clone(),
             )
         };
@@ -304,7 +304,7 @@ impl LowerCtx {
     ) -> Option<HirExpr> {
         let (id, param_tys, return_ty) = {
             let entry = self.fn_registry.get(fn_name)?;
-            (entry.id, entry.param_tys.clone(), entry.return_ty.clone())
+            (entry.id, entry.params.clone(), entry.return_ty.clone())
         };
         let fn_ty = ResolvedTy::Function {
             capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,

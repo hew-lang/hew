@@ -1,0 +1,11 @@
+[[case]]
+id = "generator-nested-owners"
+intent = "Started generators retain cleanup through erased return types, record and enum fields, vector elements and closure captures."
+source = "cases/generator-nested-owners.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "record\nrecord cleaned\nenum\nenum cleaned\nvector\nvector cleaned\nclosure\nclosure cleaned\npartial\nEXTRACTED\npartial cleaned\nlazy\nlazy cleaned\ndone\n"
+stderr = ""
+exit = 0

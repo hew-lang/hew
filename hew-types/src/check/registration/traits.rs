@@ -1295,11 +1295,8 @@ impl Checker {
                 && !impl_sig.consumes_receiver
                 && impl_sig.type_params.is_empty()
                 && impl_sig.params.len() == 1
-                && self.subst.resolve(&impl_sig.params[0]) == receiver
-                && matches!(
-                    impl_sig.param_ownership.as_slice(),
-                    [crate::env::ParameterOwnership::Borrow]
-                )
+                && self.subst.resolve(&impl_sig.params[0].ty) == receiver
+                && impl_sig.params[0].ownership == crate::ParameterOwnership::Borrow
                 && self.subst.resolve(&impl_sig.return_type) == Ty::Bool;
             if !valid {
                 let report_span = if method.decl_span.start == method.decl_span.end {
@@ -1408,7 +1405,7 @@ impl Checker {
             if let Some(actual_index_ty) = impl_sig.params.first() {
                 trait_param_map.insert(
                     trait_info.type_params[0],
-                    self.subst.resolve(actual_index_ty),
+                    self.subst.resolve(&actual_index_ty.ty),
                 );
             }
         }
@@ -1419,16 +1416,19 @@ impl Checker {
         );
 
         // Materialise the expected impl-side signature.
-        let expected_params: Vec<Ty> = trait_sig
+        let expected_params: Vec<crate::CallableParameter<Ty>> = trait_sig
             .params
             .iter()
-            .map(|p| {
-                let projected = self.substitute_trait_sig_for_impl(p, &impl_self, &trait_param_map);
-                Self::rename_method_type_params(
-                    &projected,
-                    &trait_sig.type_params,
-                    &impl_parameters,
-                )
+            .map(|parameter| {
+                parameter.map(|p| {
+                    let projected =
+                        self.substitute_trait_sig_for_impl(p, &impl_self, &trait_param_map);
+                    Self::rename_method_type_params(
+                        &projected,
+                        &trait_sig.type_params,
+                        &impl_parameters,
+                    )
+                })
             })
             .collect();
         let expected_return = {
@@ -1442,9 +1442,14 @@ impl Checker {
 
         // Cascading-Ty::Error suppression: if anything in expected or actual
         // is Error, skip — earlier diagnostics already explain the failure.
-        let any_error = expected_params.iter().any(Ty::contains_error)
+        let any_error = expected_params
+            .iter()
+            .any(|parameter| parameter.ty.contains_error())
             || expected_return.contains_error()
-            || impl_sig.params.iter().any(Ty::contains_error)
+            || impl_sig
+                .params
+                .iter()
+                .any(|parameter| parameter.ty.contains_error())
             || impl_sig.return_type.contains_error();
         if any_error {
             return;
@@ -1618,14 +1623,14 @@ impl Checker {
 
         // Each side's types carry their declarations' identities, so the two
         // signatures compare directly once aliases and projections normalize.
-        let canon_expected_params: Vec<Ty> = expected_params
+        let canon_expected_params: Vec<crate::CallableParameter<Ty>> = expected_params
             .iter()
-            .map(|t| self.normalize_for_use(t))
+            .map(|parameter| parameter.map(|ty| self.normalize_for_use(ty)))
             .collect();
-        let canon_actual_params: Vec<Ty> = impl_sig
+        let canon_actual_params: Vec<crate::CallableParameter<Ty>> = impl_sig
             .params
             .iter()
-            .map(|t| self.normalize_for_use(t))
+            .map(|parameter| parameter.map(|ty| self.normalize_for_use(ty)))
             .collect();
         let canon_expected_return = self.normalize_for_use(&expected_return);
         let canon_actual_return = self.normalize_for_use(&impl_sig.return_type);
@@ -1635,6 +1640,24 @@ impl Checker {
             .zip(impl_sig.params.iter())
             .enumerate()
         {
+            if expected.ownership != actual.ownership {
+                let mode = |ownership| match ownership {
+                    crate::ParameterOwnership::Borrow => "borrowed",
+                    crate::ParameterOwnership::Consume => "consuming",
+                };
+                self.report_error_with_note(
+                    TypeErrorKind::TraitImplSignatureMismatch {
+                        trait_name: trait_name.clone(),
+                        method_name: method.name.to_string(),
+                        detail: "parameter ownership",
+                    },
+                    &report_span,
+                    format!("impl method `{type_name}.{}` parameter {} is {} but trait `{trait_name}` requires {}", method.name, i + 1, mode(actual.ownership), mode(expected.ownership)),
+                    &trait_method.span,
+                    format!("trait method `{trait_name}.{}` declared here", method.name),
+                );
+                return;
+            }
             if canon_expected_params[i] != canon_actual_params[i] {
                 let param_label = impl_sig.param_names.get(i).map_or_else(
                     || format!("parameter {}", i + 1),
@@ -1651,8 +1674,8 @@ impl Checker {
                         "impl method `{type_name}.{}` {param_label} has type `{}` but trait `{trait_name}` \
                          requires `{}`",
                         method.name,
-                        actual.user_facing(),
-                        expected.user_facing(),
+                        actual.ty.user_facing(),
+                        expected.ty.user_facing(),
                     ),
                     &trait_method.span,
                     format!(

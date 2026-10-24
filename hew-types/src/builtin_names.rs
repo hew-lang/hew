@@ -318,7 +318,7 @@ impl BuiltinMethodSigTemplate {
         match self {
             Self::ValueToSendResult => FnSig {
                 param_names: vec!["item".to_string()],
-                params: vec![item_ty()],
+                params: vec![crate::CallableParameter::borrowed(item_ty())],
                 return_type: Ty::result(Ty::Unit, Ty::send_error()),
                 ..FnSig::default()
             },
@@ -348,7 +348,7 @@ impl BuiltinMethodSigTemplate {
             },
             Self::CountToSelf => FnSig {
                 param_names: vec!["count".to_string()],
-                params: vec![Ty::I64],
+                params: vec![crate::CallableParameter::borrowed(Ty::I64)],
                 return_type: self_container_ty(owner, item_ty()),
                 ..FnSig::default()
             },

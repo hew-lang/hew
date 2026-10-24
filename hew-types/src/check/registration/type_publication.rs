@@ -43,6 +43,7 @@ impl Checker {
         explored: &mut HashSet<crate::NominalId>,
     ) -> bool {
         match ty {
+            Ty::Generator { .. } => true,
             Ty::Tuple(items) => items
                 .iter()
                 .any(|item_ty| self.ty_contains_owned_handle(item_ty, explored)),
@@ -875,12 +876,14 @@ impl Checker {
                     sig.params = sig
                         .params
                         .iter()
-                        .map(|ty| {
-                            self.canonicalize_registry_signature(
-                                ty,
-                                module_full_path,
-                                &sig.type_params,
-                            )
+                        .map(|parameter| {
+                            parameter.map(|ty| {
+                                self.canonicalize_registry_signature(
+                                    ty,
+                                    module_full_path,
+                                    &sig.type_params,
+                                )
+                            })
                         })
                         .collect();
                     sig.return_type = self.canonicalize_registry_signature(
@@ -2217,8 +2220,13 @@ impl Checker {
         let members = if published.kind == TypeDefKind::Enum {
             Self::structural_member_types_for_type(&published)
         } else if published.kind == TypeDefKind::Record && published.fields.is_empty() {
-            self.fn_sig(&qualified)
-                .map_or_else(Vec::new, |signature| signature.params.clone())
+            self.fn_sig(&qualified).map_or_else(Vec::new, |signature| {
+                signature
+                    .params
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect()
+            })
         } else {
             published.fields.values().cloned().collect()
         };

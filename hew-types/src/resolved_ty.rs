@@ -97,6 +97,13 @@ pub enum ResolvedTy {
     Array(Box<ResolvedTy>, u64),
     /// Slice: `[T]`
     Slice(Box<ResolvedTy>),
+    /// Inferred generator producer evidence, retained through specialization.
+    /// Physical verification discharges its conditional transfer capability.
+    Generator {
+        yields: Box<ResolvedTy>,
+        returns: Box<ResolvedTy>,
+        producers: Vec<crate::ty::GeneratorProducer<ResolvedTy>>,
+    },
     /// Named types (structs, enums, actors, type params).
     Named {
         /// The identity the name resolved to: a declared nominal, an actor
@@ -126,7 +133,7 @@ pub enum ResolvedTy {
         /// Invocation and duplication guarantees of this callable value.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<ResolvedTy>,
+        params: Vec<crate::CallableParameter<ResolvedTy>>,
         /// Return type
         ret: Box<ResolvedTy>,
     },
@@ -135,7 +142,7 @@ pub enum ResolvedTy {
         /// Invocation and duplication guarantees of this concrete closure.
         capabilities: crate::CallableCapabilities,
         /// Parameter types
-        params: Vec<ResolvedTy>,
+        params: Vec<crate::CallableParameter<ResolvedTy>>,
         /// Return type
         ret: Box<ResolvedTy>,
         /// Types of captured variables from the enclosing scope
@@ -494,6 +501,12 @@ impl ResolvedTy {
         };
         let primitive = |anchor: BuiltinAnchor| anchored(anchor, Vec::new());
         match self {
+            Self::Generator {
+                yields, returns, ..
+            } => anchored(
+                BuiltinAnchor::Generator,
+                vec![(**yields).clone(), (**returns).clone()],
+            ),
             Self::Named {
                 args,
                 head: crate::TypeHead::Builtin(builtin),
@@ -508,6 +521,7 @@ impl ResolvedTy {
                     BuiltinType::Generator => BuiltinAnchor::Generator,
                     BuiltinType::Vec => BuiltinAnchor::Vec,
                     BuiltinType::HashMap => BuiltinAnchor::HashMap,
+                    BuiltinType::Stream => BuiltinAnchor::Stream,
 
                     BuiltinType::NodeId => BuiltinAnchor::NodeId,
                     BuiltinType::Location => BuiltinAnchor::Location,
@@ -569,7 +583,24 @@ impl ResolvedTy {
     /// Returns whether this type carries the checker-stamped builtin identity.
     #[must_use]
     pub fn is_builtin(&self, expected: BuiltinType) -> bool {
-        self.head().and_then(TypeHead::builtin) == Some(expected)
+        (expected == BuiltinType::Generator && matches!(self, Self::Generator { .. }))
+            || self.head().and_then(TypeHead::builtin) == Some(expected)
+    }
+
+    /// Yield and return types, independent of retained producer evidence.
+    #[must_use]
+    pub fn generator_parts(&self) -> Option<(&Self, &Self)> {
+        match self {
+            Self::Generator {
+                yields, returns, ..
+            } => Some((yields, returns)),
+            Self::Named {
+                head: TypeHead::Builtin(BuiltinType::Generator),
+                args,
+                ..
+            } if args.len() == 2 => Some((&args[0], &args[1])),
+            _ => None,
+        }
     }
 
     /// Returns whether this type is one of the owning encoding value carriers.
@@ -779,10 +810,10 @@ impl ResolvedTy {
             ) => {
                 left_capabilities == right_capabilities
                     && left_params.len() == right_params.len()
-                    && left_params
-                        .iter()
-                        .zip(right_params)
-                        .all(|(left, right)| left.is_storage_congruent_with(right))
+                    && left_params.iter().zip(right_params).all(|(left, right)| {
+                        left.ownership == right.ownership
+                            && left.ty.is_storage_congruent_with(&right.ty)
+                    })
                     && left_ret.is_storage_congruent_with(right_ret)
             }
             _ => false,
@@ -819,6 +850,27 @@ impl ResolvedTy {
     )]
     pub fn from_ty(ty: &Ty) -> Result<Self, BoundaryError> {
         match ty {
+            Ty::Generator {
+                yields,
+                returns,
+                producers,
+            } => Ok(Self::Generator {
+                yields: Box::new(Self::from_ty(yields)?),
+                returns: Box::new(Self::from_ty(returns)?),
+                producers: producers
+                    .iter()
+                    .map(|producer| {
+                        Ok(crate::ty::GeneratorProducer {
+                            body: producer.body.clone(),
+                            arguments: producer
+                                .arguments
+                                .iter()
+                                .map(|(parameter, ty)| Ok((*parameter, Self::from_ty(ty)?)))
+                                .collect::<Result<_, BoundaryError>>()?,
+                        })
+                    })
+                    .collect::<Result<_, BoundaryError>>()?,
+            }),
             Ty::GenericCallable {
                 parameters,
                 callable,
@@ -912,7 +964,7 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Function {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params)?,
+                params: Self::convert_parameters(params)?,
                 ret: Box::new(Self::from_ty(ret)?),
             }),
             Ty::Closure {
@@ -923,7 +975,7 @@ impl ResolvedTy {
                 ..
             } => Ok(ResolvedTy::Closure {
                 capabilities: *capabilities,
-                params: Self::convert_vec(params)?,
+                params: Self::convert_parameters(params)?,
                 ret: Box::new(Self::from_ty(ret)?),
                 captures: Self::convert_vec(captures)?,
             }),
@@ -953,6 +1005,20 @@ impl ResolvedTy {
                 assoc_name: assoc_name.to_string(),
             }),
         }
+    }
+
+    fn convert_parameters(
+        parameters: &[crate::CallableParameter<Ty>],
+    ) -> Result<Vec<crate::CallableParameter<Self>>, BoundaryError> {
+        parameters
+            .iter()
+            .map(|parameter| {
+                Ok(crate::CallableParameter {
+                    ty: Self::from_ty(&parameter.ty)?,
+                    ownership: parameter.ownership,
+                })
+            })
+            .collect()
     }
 
     fn convert_vec(tys: &[Ty]) -> Result<Vec<ResolvedTy>, BoundaryError> {
@@ -1032,6 +1098,18 @@ impl ResolvedTy {
             ResolvedTy::Tuple(elems) => Ty::Tuple(elems.iter().map(Self::to_ty).collect()),
             ResolvedTy::Array(elem, size) => Ty::Array(Box::new(elem.to_ty()), *size),
             ResolvedTy::Slice(elem) => Ty::Slice(Box::new(elem.to_ty())),
+            ResolvedTy::Generator {
+                yields,
+                returns,
+                producers,
+            } => Ty::Generator {
+                yields: Box::new(yields.to_ty()),
+                returns: Box::new(returns.to_ty()),
+                producers: producers
+                    .iter()
+                    .map(|producer| producer.map(Self::to_ty))
+                    .collect(),
+            },
             ResolvedTy::Named {
                 head,
                 args,
@@ -1057,7 +1135,10 @@ impl ResolvedTy {
                 ..
             } => Ty::Function {
                 capabilities: *capabilities,
-                params: params.iter().map(Self::to_ty).collect(),
+                params: params
+                    .iter()
+                    .map(|parameter| parameter.map(Self::to_ty))
+                    .collect(),
                 ret: Box::new(ret.to_ty()),
             },
             ResolvedTy::Pointer {
@@ -1390,6 +1471,18 @@ pub fn substitute_type_params(
                 callable: Box::new(substitute_type_params(callable, &outer_params, &outer_args)),
             }
         }
+        ResolvedTy::Generator {
+            yields,
+            returns,
+            producers,
+        } => ResolvedTy::Generator {
+            yields: Box::new(substitute_type_params(yields, params, args)),
+            returns: Box::new(substitute_type_params(returns, params, args)),
+            producers: producers
+                .iter()
+                .map(|producer| producer.map(|ty| substitute_type_params(ty, params, args)))
+                .collect(),
+        },
         ResolvedTy::Tuple(elements) => ResolvedTy::Tuple(
             elements
                 .iter()
@@ -1423,7 +1516,7 @@ pub fn substitute_type_params(
             capabilities: *capabilities,
             params: callable_params
                 .iter()
-                .map(|param| substitute_type_params(param, params, args))
+                .map(|param| param.map(|ty| substitute_type_params(ty, params, args)))
                 .collect(),
             ret: Box::new(substitute_type_params(ret, params, args)),
         },
@@ -1436,7 +1529,7 @@ pub fn substitute_type_params(
             capabilities: *capabilities,
             params: callable_params
                 .iter()
-                .map(|param| substitute_type_params(param, params, args))
+                .map(|param| param.map(|ty| substitute_type_params(ty, params, args)))
                 .collect(),
             ret: Box::new(substitute_type_params(ret, params, args)),
             captures: captures
@@ -1511,6 +1604,34 @@ pub fn mangle_resolved_ty_segment(
     type_param_mode: TypeParamMangle,
 ) -> Option<String> {
     match ty {
+        ResolvedTy::Generator {
+            yields,
+            returns,
+            producers,
+        } => {
+            let mut origins = Vec::new();
+            for producer in producers {
+                let identity = match &producer.body {
+                    crate::ty::EffectBody::Generator(id) => format!("f{}", id.index_u32()),
+                    crate::ty::EffectBody::GeneratorBlock(site) => {
+                        format!("b{}i{}i{}", site.module_idx, site.start, site.end)
+                    }
+                    _ => return None,
+                };
+                let args = producer
+                    .arguments
+                    .iter()
+                    .map(|(_, ty)| mangle_resolved_ty_segment(ty, type_param_mode))
+                    .collect::<Option<Vec<_>>>()?;
+                origins.push(format!("{identity}x{}g", args.join("c")));
+            }
+            Some(format!(
+                "gen$x{}$c{}$p{}$g",
+                mangle_resolved_ty_segment(yields, type_param_mode)?,
+                mangle_resolved_ty_segment(returns, type_param_mode)?,
+                origins.join("c")
+            ))
+        }
         ResolvedTy::GenericCallable {
             parameters,
             callable,
@@ -1647,7 +1768,7 @@ fn mangle_named_segment(
 fn mangle_function_like_segment(
     head: &str,
     capabilities: CallableCapabilities,
-    params: &[ResolvedTy],
+    params: &[crate::CallableParameter<ResolvedTy>],
     ret: &ResolvedTy,
     captures: Option<&[ResolvedTy]>,
     type_param_mode: TypeParamMangle,
@@ -1662,7 +1783,16 @@ fn mangle_function_like_segment(
     } else {
         "unique"
     };
-    let params_seg = mangle_type_list_segment(params, type_param_mode)?;
+    let mut params_seg = String::new();
+    for (index, parameter) in params.iter().enumerate() {
+        if index > 0 {
+            params_seg.push_str("$c");
+        }
+        if parameter.ownership == crate::ParameterOwnership::Consume {
+            params_seg.push_str("$kconsume");
+        }
+        params_seg.push_str(&mangle_resolved_ty_segment(&parameter.ty, type_param_mode)?);
+    }
     let ret_seg = mangle_resolved_ty_segment(ret, type_param_mode)?;
     let mut out = format!("{head}$k{call}$k{clone}$x{params_seg}$r{ret_seg}");
     if capabilities.suspends {
@@ -1746,41 +1876,57 @@ mod tests {
         let mut keys = std::collections::HashSet::new();
         let mut canonical = std::collections::HashSet::new();
         let mut functions = Vec::new();
-        for call in [Read, Var, Once] {
-            for (clone, suspends) in [(false, false), (true, false), (false, true), (true, true)] {
-                let capabilities = CallableCapabilities {
-                    call,
-                    clone,
-                    suspends,
-                };
-                let function = ResolvedTy::Function {
-                    capabilities,
-                    params: vec![ResolvedTy::I64],
-                    ret: Box::new(ResolvedTy::Bool),
-                };
-                assert!(functions
-                    .iter()
-                    .all(|previous| !function.is_storage_congruent_with(previous)));
-                functions.push(function.clone());
-                for ty in [
-                    function,
-                    ResolvedTy::Closure {
+        for ownership in [
+            crate::ParameterOwnership::Borrow,
+            crate::ParameterOwnership::Consume,
+        ] {
+            for call in [Read, Var, Once] {
+                for (clone, suspends) in
+                    [(false, false), (true, false), (false, true), (true, true)]
+                {
+                    let capabilities = CallableCapabilities {
+                        call,
+                        clone,
+                        suspends,
+                    };
+                    let function = ResolvedTy::Function {
                         capabilities,
-                        params: vec![ResolvedTy::I64],
+                        params: vec![crate::CallableParameter {
+                            ty: ResolvedTy::I64,
+                            ownership,
+                        }],
                         ret: Box::new(ResolvedTy::Bool),
-                        captures: vec![ResolvedTy::String],
-                    },
-                    ResolvedTy::Closure {
-                        capabilities,
-                        params: vec![ResolvedTy::I64],
-                        ret: Box::new(ResolvedTy::Bool),
-                        captures: vec![ResolvedTy::I64],
-                    },
-                ] {
-                    assert!(keys.insert(
-                        mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
-                    ));
-                    assert!(canonical.insert(ty.canonical_string()));
+                    };
+                    assert!(functions
+                        .iter()
+                        .all(|previous| !function.is_storage_congruent_with(previous)));
+                    functions.push(function.clone());
+                    for ty in [
+                        function,
+                        ResolvedTy::Closure {
+                            capabilities,
+                            params: vec![crate::CallableParameter {
+                                ty: ResolvedTy::I64,
+                                ownership,
+                            }],
+                            ret: Box::new(ResolvedTy::Bool),
+                            captures: vec![ResolvedTy::String],
+                        },
+                        ResolvedTy::Closure {
+                            capabilities,
+                            params: vec![crate::CallableParameter {
+                                ty: ResolvedTy::I64,
+                                ownership,
+                            }],
+                            ret: Box::new(ResolvedTy::Bool),
+                            captures: vec![ResolvedTy::I64],
+                        },
+                    ] {
+                        assert!(keys.insert(
+                            mangle_resolved_ty_segment(&ty, TypeParamMangle::Concrete).unwrap()
+                        ));
+                        assert!(canonical.insert(ty.canonical_string()));
+                    }
                 }
             }
         }
@@ -1954,7 +2100,7 @@ mod tests {
     fn from_ty_rejects_nested_error_in_function_return() {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I32],
+            params: vec![crate::CallableParameter::borrowed(Ty::I32)],
             ret: Box::new(Ty::Error),
         };
         assert_eq!(ResolvedTy::from_ty(&ty), Err(BoundaryError::TaintedError));
@@ -2000,23 +2146,34 @@ mod tests {
         let ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                Ty::Array(Box::new(Ty::I32), 4),
-                Ty::Slice(Box::new(Ty::Bool)),
+                crate::CallableParameter {
+                    ty: Ty::Array(Box::new(Ty::I32), 4),
+                    ownership: crate::ParameterOwnership::Consume,
+                },
+                crate::CallableParameter::borrowed(Ty::Slice(Box::new(Ty::Bool))),
             ],
             ret: Box::new(Ty::Tuple(vec![Ty::String, Ty::Unit])),
         };
         let expected = ResolvedTy::Function {
             capabilities: crate::CallableCapabilities::default(),
             params: vec![
-                ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
-                ResolvedTy::Slice(Box::new(ResolvedTy::Bool)),
+                crate::CallableParameter {
+                    ty: ResolvedTy::Array(Box::new(ResolvedTy::I32), 4),
+                    ownership: crate::ParameterOwnership::Consume,
+                },
+                crate::CallableParameter::borrowed(ResolvedTy::Slice(Box::new(ResolvedTy::Bool))),
             ],
             ret: Box::new(ResolvedTy::Tuple(vec![
                 ResolvedTy::String,
                 ResolvedTy::Unit,
             ])),
         };
-        assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected));
+        assert_eq!(ResolvedTy::from_ty(&ty), Ok(expected.clone()));
+        assert_eq!(expected.to_ty(), ty);
+        assert_eq!(
+            expected.canonical_string(),
+            "fn(consume [i32;4],[bool])->(string,unit)"
+        );
     }
 
     #[test]
@@ -2028,19 +2185,19 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::Pointer {
+            params: vec![crate::CallableParameter::borrowed(Ty::Pointer {
                 is_mutable: true,
                 pointee: Box::new(Ty::I32),
-            }],
+            })],
             ret: Box::new(Ty::Unit),
             captures: vec![Ty::Bool],
         };
         let expected = ResolvedTy::Closure {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![ResolvedTy::Pointer {
+            params: vec![crate::CallableParameter::borrowed(ResolvedTy::Pointer {
                 is_mutable: true,
                 pointee: Box::new(ResolvedTy::I32),
-            }],
+            })],
             ret: Box::new(ResolvedTy::Unit),
             captures: vec![ResolvedTy::Bool],
         };
@@ -2114,7 +2271,7 @@ mod tests {
             },
             Ty::Function {
                 capabilities: crate::CallableCapabilities::default(),
-                params: vec![Ty::I32],
+                params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                 ret: Box::new(Ty::String),
             },
         ];

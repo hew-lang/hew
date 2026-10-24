@@ -414,7 +414,10 @@ fn function_type_traits() {
     let reg = TraitRegistry::new();
     let fn_ty = Ty::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32, Ty::String],
+        params: vec![
+            hew_types::CallableParameter::borrowed(Ty::I32),
+            hew_types::CallableParameter::borrowed(Ty::String),
+        ],
         ret: Box::new(Ty::Bool),
     };
     assert!(!reg.implements_marker(&fn_ty, MarkerTrait::Send));
@@ -440,7 +443,7 @@ fn closure_is_clone_but_not_copy() {
             module_idx: 0,
         }),
         capabilities: hew_parser::ast::CallableCapabilities::FUNCTION_ITEM,
-        params: vec![Ty::I32],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
         ret: Box::new(Ty::Bool),
         captures: vec![Ty::I32],
     };
@@ -591,7 +594,7 @@ fn vec_of_non_eq_is_not_eq() {
     // arm runs (a `builtin: None` "Vec" would be an unknown user type).
     let fn_ty = Ty::Function {
         capabilities: hew_parser::ast::CallableCapabilities::default(),
-        params: vec![Ty::I32],
+        params: vec![hew_types::CallableParameter::borrowed(Ty::I32)],
         ret: Box::new(Ty::Bool),
     };
     let vec_fn = Ty::named_for_test("Vec", vec![fn_ty]);

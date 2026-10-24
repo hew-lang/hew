@@ -615,6 +615,8 @@ struct AnalyzedSource {
 /// Root selection matches native compilation; bytecode execution is a separate
 /// consumer and does not replace semantic verification.
 fn collect_semantic_diagnostics(
+    source: &str,
+    documents: &hew_compile::SourceSet,
     program: &hew_parser::ast::Program,
     hir_module: &hew_hir::HirModule,
     tco: &hew_types::TypeCheckOutput,
@@ -627,6 +629,18 @@ fn collect_semantic_diagnostics(
         .and_then(|roots| session.lower_hir_module(hir_module, tco, &roots));
     match result {
         Ok(_) => Vec::new(),
+        Err(hew_compile::SessionError::Ownership(diagnostics)) => {
+            hew_compile::ownership_diagnostics_to_frontend(
+                program,
+                source,
+                "playground.hew",
+                diagnostics,
+                documents,
+            )
+            .into_iter()
+            .map(frontend_diagnostic_to_wasm)
+            .collect()
+        }
         Err(error) => vec![WasmDiagnostic {
             source_hash: None,
             fixes: Vec::new(),
@@ -708,6 +722,8 @@ fn parse_and_type_check_with_inputs(
                 // that is mid-edit and already erroring.
                 if diags.is_empty() {
                     semantic_diagnostics.extend(collect_semantic_diagnostics(
+                        source,
+                        &options.documents,
                         &parse_result.program,
                         &lower_output.module,
                         &tco,

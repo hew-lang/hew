@@ -282,7 +282,8 @@ impl RuntimeCallingConvention {
             | Ty::Task(_)
             | Ty::AssocType { .. }
             | Ty::Var(_)
-            | Ty::Error => Self::LayoutDescriptor,
+            | Ty::Error
+            | Ty::Generator { .. } => Self::LayoutDescriptor,
         }
     }
 
@@ -601,7 +602,7 @@ mod tests {
         // convention (no 16-byte width class, no `_layout` witness entry).
         let fn_ty = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::I64],
+            params: vec![crate::CallableParameter::borrowed(Ty::I64)],
             ret: Box::new(Ty::I64),
         };
         let closure_ty = Ty::Closure {

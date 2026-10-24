@@ -356,9 +356,11 @@ pub(crate) fn verify_calls(
             }
             SemTerminator::RtCall { family, .. }
                 if family.is_async_suspending().is_some()
-                    || family
-                        .semantic_contract()
-                        .is_none_or(hew_types::RuntimeSemanticContract::propagates_fault) =>
+                    || family.semantic_contract().is_none_or(|contract| {
+                        contract
+                            .failures
+                            .contains(&hew_types::RuntimeLogicalFailure::CallbackFault)
+                    }) =>
             {
                 return Err("defer call has unproven or suspending effects");
             }

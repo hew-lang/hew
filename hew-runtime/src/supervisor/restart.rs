@@ -457,6 +457,39 @@ pub(crate) unsafe fn restart_with_budget_and_strategy(
 /// # Safety
 ///
 /// `sup` must be valid and `failed_index` must be within `child_supervisors`.
+pub(crate) unsafe fn restart_child_supervisor_after_failure(
+    sup: *mut HewSupervisor,
+    failed_index: usize,
+    record: FaultRecord,
+) -> FaultRuling {
+    let delayed = {
+        // SAFETY: dispatch retains the parent; policy evaluation is scalar only.
+        let mut roster = unsafe { &(*sup).roster }.lock_or_recover();
+        roster
+            .child_supervisor_specs
+            .get_mut(failed_index)
+            .and_then(Option::as_mut)
+            .filter(|spec| spec.backoff.selected && spec.restart_policy != RESTART_TEMPORARY)
+            .map(|spec| {
+                // SAFETY: restart window is immutable throughout the parent lifetime.
+                let window = u64::try_from(unsafe { (*sup).window_secs })
+                    .unwrap_or(0)
+                    .saturating_mul(1_000_000_000);
+                spec.backoff.advance(monotonic_time_ns(), window);
+                (spec.identity, spec.backoff.delay_ns)
+            })
+    };
+    if let Some((identity, delay)) = delayed {
+        // SAFETY: this dispatch retains the parent through timer admission.
+        return unsafe {
+            arm_backoff_restart(sup, identity, delay, record, supervisor_actor_id(sup))
+        };
+    }
+    // SAFETY: forwarded from the retained dispatch.
+    unsafe { restart_child_supervisor_with_budget(sup, failed_index, record) }
+}
+
+/// Apply the existing budget and strategy after any selected delay has elapsed.
 pub(crate) unsafe fn restart_child_supervisor_with_budget(
     sup: *mut HewSupervisor,
     failed_index: usize,
@@ -607,21 +640,21 @@ unsafe fn apply_restart(
 unsafe fn arm_backoff_restart(
     sup: *mut HewSupervisor,
     spec_identity: u64,
-    delay_ms: u64,
+    delay_ns: u64,
     record: FaultRecord,
     sup_actor_id: u64,
 ) -> FaultRuling {
     crate::tracing::record_supervisor_event(
         sup_actor_id,
         crate::tracing::SPAN_SUPERVISOR_BACKOFF,
-        i32::try_from(delay_ms).unwrap_or(i32::MAX),
+        i32::try_from(delay_ns / 1_000_000).unwrap_or(i32::MAX),
     );
     // Scheduling retains its own timer lease and carries the stable child
     // identity, never an index.
     if schedule_delayed_restart(
         sup,
         spec_identity,
-        std::time::Duration::from_millis(delay_ms),
+        std::time::Duration::from_nanos(delay_ns),
         record,
     ) {
         FaultRuling::ArmedForRestart
@@ -708,7 +741,7 @@ unsafe fn decide_child_failure(
         _ => {}
     }
 
-    let delay_ms = {
+    let delay_ns = {
         // SAFETY: caller keeps `sup` live; find the stable identity again so a
         // concurrent swap-remove cannot apply policy to a sibling.
         let mut guard = unsafe { &(*sup).roster }.lock_or_recover();
@@ -724,8 +757,12 @@ unsafe fn decide_child_failure(
             return FaultRuling::Unrecovered;
         };
 
-        if crashed && spec.restart_delay_ms > 0 {
-            apply_restart_backoff(spec);
+        if crashed && (spec.backoff.selected || spec.backoff.delay_ns > 0) {
+            // SAFETY: the restart window is immutable while this parent lives.
+            let window_ns = u64::try_from(unsafe { (*sup).window_secs })
+                .unwrap_or(0)
+                .saturating_mul(1_000_000_000);
+            spec.backoff.advance(monotonic_time_ns(), window_ns);
         }
         if spec.restart_policy == RESTART_TEMPORARY
             || (spec.restart_policy == RESTART_TRANSIENT
@@ -742,21 +779,27 @@ unsafe fn decide_child_failure(
             return FaultRuling::Unrecovered;
         }
         if restart_delay_allows_restart(spec) {
-            if crashed && spec.restart_delay_ms == 0 {
-                spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
+            if crashed && spec.backoff.delay_ns == 0 {
+                spec.backoff.delay_ns = INITIAL_RESTART_DELAY_MS * 1_000_000;
             }
             None
         } else {
             let remaining = spec
+                .backoff
                 .next_restart_time_ns
                 .saturating_sub(monotonic_time_ns());
-            Some((remaining / 1_000_000).max(1))
+            Some(if spec.backoff.selected {
+                remaining
+            } else {
+                // Preserve the established implicit policy's millisecond rounding.
+                (remaining / 1_000_000).max(1) * 1_000_000
+            })
         }
     };
 
-    if let Some(delay_ms) = delay_ms {
+    if let Some(delay_ns) = delay_ns {
         // SAFETY: the caller keeps `sup` live across the arm and its ruling.
-        return unsafe { arm_backoff_restart(sup, spec_identity, delay_ms, record, sup_actor_id) };
+        return unsafe { arm_backoff_restart(sup, spec_identity, delay_ns, record, sup_actor_id) };
     }
 
     // SAFETY: budget/strategy resolves the stable identity under the roster

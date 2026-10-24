@@ -242,19 +242,9 @@ pub struct HirExternFn {
     pub name: String,
     /// The checked foreign ABI: `"C"` or the stable runtime boundary `"rt"`.
     pub abi: String,
-    /// Parameter types in declaration order. Names are dropped — extern fns
-    /// have no body, so there is no scope to bind names into.
-    pub param_tys: Vec<ResolvedTy>,
-    /// The `consume` ownership modifier for each parameter, parallel to
-    /// `param_tys`. An `extern` fn has no visible body, so the borrow-vs-consume
-    /// disposition of a `#[resource]`/`#[linear]` value parameter cannot be
-    /// inferred — it is pinned at the surface with `consume` and preserved here
-    /// as the durable boundary signature (the surface `Param.is_consume` would
-    /// otherwise be dropped at lowering). The checker refuses any affine
-    /// resource parameter that is NOT `consume` with
-    /// `E_BOUNDARY_RESOURCE_MUST_CONSUME`, so every `true` here on a resource
-    /// parameter records a caller-side move-in / callee-(ABI-)owns transfer.
-    pub param_consume: Vec<bool>,
+    /// Parameter types and ownership in declaration order. Names are dropped
+    /// because extern functions have no body or parameter binding scope.
+    pub params: Vec<hew_types::CallableParameter<ResolvedTy>>,
     pub return_ty: ResolvedTy,
     /// The module this `extern` block was declared in, captured from the HIR
     /// lowering context at construction. Drives C-ABI string-return ownership
@@ -671,6 +661,8 @@ pub struct HirSupervisorDecl {
     /// Window duration as a raw string from the parser (e.g. `"60s"`).
     /// Parsed to a concrete `Duration` in S-C when wiring is lowered.
     pub window: Option<String>,
+    /// Checked policy expression, evaluated once against construction config.
+    pub backoff: Option<Box<HirExpr>>,
     pub children: Vec<HirSupervisorChild>,
     pub span: Span,
 }

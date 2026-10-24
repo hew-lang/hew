@@ -1,0 +1,10 @@
+[[case]]
+id = "pipeline-bounded-admission"
+intent = "A suspended consumer bounds source advancement, early close cancels parked admission, and invalid bounds close the source without advancing it."
+source = "cases/pipeline-bounded-admission.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "pipeline admission bounded\n"
+stderr = ""
+exit = 0

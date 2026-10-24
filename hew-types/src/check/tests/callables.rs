@@ -911,7 +911,10 @@ fn inferred_lambda_returns_join_callable_guarantees() {
 fn invariant_test_callable(params: Vec<Ty>, ret: Ty) -> Ty {
     Ty::Function {
         capabilities: crate::CallableCapabilities::default(),
-        params,
+        params: params
+            .into_iter()
+            .map(crate::CallableParameter::borrowed)
+            .collect(),
         ret: Box::new(ret),
     }
 }
@@ -1028,24 +1031,50 @@ fn generic_function_values_enforce_explicit_arity_and_inferred_bounds() {
 }
 
 #[test]
-fn consuming_function_items_cannot_erase_parameter_ownership() {
+fn consuming_function_values_preserve_parameter_ownership() {
     for source in [
-        "fn invoke(consume f: fn[once]() -> i64) { f(); } fn main() { let erased = invoke; }",
-        "fn take<T>(consume value: T) {} fn main() { let erased = take<i64>; }",
-        "fn take<T>(consume value: T) {} fn main() { let erased: fn(i64) = take; }",
+        "fn invoke(consume f: fn[once]() -> i64) -> i64 { f() } fn main() { let erased = invoke; erased(|| 1); }",
+        "fn take<T>(consume value: T) -> T { value } fn main() { let erased = take<i64>; erased(7); }",
+        "fn take<T>(consume value: T) -> T { value } fn main() { let erased: fn[suspends](consume i64) -> i64 = take; erased(7); }",
+        "fn take<T>(consume value: T) -> T { value } fn main() { let erased = take; erased(7); erased(8); }",
+        "fn take<T>(consume value: T) -> T { value } fn main() { let erased: fn[suspends]<T>(consume T) -> T = |value| take(value); erased(7); erased(\"hew\"); }",
     ] {
         let output = check_source(source);
-        assert!(
-            output.errors.iter().any(|error| error
-                .message
-                .contains("callable types do not preserve parameter ownership modes")),
-            "{source}: {:?}",
-            output.errors
-        );
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+        assert!(output.expr_types.values().any(|ty| {
+            ty.callable_signature().is_some_and(|(_, params, _)| params.iter().any(|parameter| parameter.ownership == crate::ParameterOwnership::Consume))
+        }), "consuming mode must survive function-value typing: {source}");
     }
-    let output = check_source(
-        "fn invoke(consume f: fn[once]() -> i64) { f(); } fn main() { invoke(|| 1); }",
-    );
+}
+
+#[test]
+fn callable_parameter_ownership_requires_an_exact_match() {
+    for source in [
+        "fn take(consume value: i64) -> i64 { value } fn main() { let f: fn(i64) -> i64 = take; }",
+        "fn inspect(value: i64) -> i64 { value } fn main() { let f: fn(consume i64) -> i64 = inspect; }",
+        "fn take<T>(consume value: T) -> T { value } fn main() { let f: fn(i64) -> i64 = take; }",
+        "fn inspect<T>(value: T) -> T { value } fn main() { let f: fn(consume i64) -> i64 = inspect; }",
+        "fn main() { let f: fn(i64) -> i64 = |consume value: i64| value; }",
+        "fn apply(callback: fn(consume i64) -> i64) -> i64 { callback(1) } fn main() { let f: fn(fn(i64) -> i64) -> i64 = apply; }",
+        "fn apply(callback: fn(i64) -> i64) -> i64 { callback(1) } fn main() { let f: fn(fn(consume i64) -> i64) -> i64 = apply; }",
+    ] {
+        let output = check_source(source);
+        assert!(output.errors.iter().any(|error| matches!(&error.kind,
+            TypeErrorKind::Mismatch { expected, actual }
+                if expected.contains("consume") != actual.contains("consume")
+        )), "expected ownership mode mismatch for {source}: {:?}", output.errors);
+    }
+}
+
+#[test]
+fn consuming_lambda_parameters_are_explicit_or_inherit_the_expected_mode() {
+    for expression in ["|consume f: fn[once]() -> i64| f()", "|f| f()"] {
+        let source = format!("fn main() {{ let invoke: fn(consume fn[once]() -> i64) -> i64 = {expression}; invoke(|| 7); }}");
+        let output = check_source(&source);
+        assert!(output.errors.is_empty(), "{source}: {:?}", output.errors);
+        assert!(output.expr_types.values().any(|ty| matches!(ty, Ty::Closure { params, .. } if params.first().is_some_and(|parameter| parameter.ownership == crate::ParameterOwnership::Consume))));
+    }
+    let output = check_source("type Packet { value: string; } fn inspect(packet: Packet) -> i64 { packet.value.len() } fn main() { let inspect_owned = |consume packet: Packet| inspect(packet); inspect_owned(Packet { value: \"owned\" }); }");
     assert!(output.errors.is_empty(), "{:?}", output.errors);
 }
 
@@ -1064,8 +1093,8 @@ fn lambda_parameters_keep_the_ordinary_borrow_contract() {
         assert!(error
             .suggestions
             .iter()
-            .any(|suggestion| suggestion.contains("named function")
-                && suggestion.contains("consume f:")));
+            .any(|suggestion| suggestion.contains("consume f")
+                && suggestion.contains("consuming callable signature")));
     }
     let output =
         check_source("fn main() { let invoke = |f: fn() -> i64| { f(); f() }; invoke(|| 7); }");

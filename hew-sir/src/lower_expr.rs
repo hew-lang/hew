@@ -273,13 +273,10 @@ impl Builder<'_, '_> {
                 self.service
                     .callable_facts
                     .record_value(self.callable.id, declaration, target.id);
+                let exposed = self.ty(&expr.ty);
+                let (params, _, _) = crate::callable_parts(&exposed)?;
                 let ty = ResolvedTy::Function {
-                    params: target
-                        .signature
-                        .params
-                        .iter()
-                        .map(|param| param.ty.clone())
-                        .collect(),
+                    params: params.to_vec(),
                     ret: Box::new(target.signature.return_ty.clone()),
                     capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
                 };

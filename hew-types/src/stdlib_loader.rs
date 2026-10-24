@@ -23,7 +23,7 @@ pub struct CFunction {
     /// The C symbol name (e.g. `"hew_json_parse"`).
     pub name: String,
     /// Parameter types.
-    pub params: Vec<Ty>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     /// Return type.
     pub return_type: Ty,
 }
@@ -38,7 +38,7 @@ pub struct HandleMethod {
     /// The C symbol the method resolves to (e.g. `"hew_json_value_get_string"`).
     pub c_symbol: String,
     /// Parameter types (excluding `self`).
-    pub params: Vec<Ty>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     /// Return type.
     pub return_type: Ty,
     /// The method's signature is registry-visible, but its real Hew impl must
@@ -491,16 +491,20 @@ fn extract_impl_info(
 }
 
 /// Convert an extern function declaration to type checker types.
-fn extern_fn_sig(func: &ExternFnDecl, module_short: &str) -> (Vec<Ty>, Ty) {
-    let params: Vec<Ty> = func
+fn extern_fn_sig(
+    func: &ExternFnDecl,
+    module_short: &str,
+) -> (Vec<crate::CallableParameter<Ty>>, Ty) {
+    let params = func
         .params
         .iter()
-        .map(|p| {
-            type_expr_to_ty_with_context(
+        .map(|p| crate::CallableParameter {
+            ty: type_expr_to_ty_with_context(
                 &p.ty.0,
                 module_short,
                 TypeConversionContext::ExternSignature,
-            )
+            ),
+            ownership: crate::ParameterOwnership::from_consume(p.is_consume),
         })
         .collect();
 
@@ -546,8 +550,13 @@ fn type_expr_contains_borrow(type_expr: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        } => {
+            params
+                .iter()
+                .any(|param| type_expr_contains_borrow(&param.ty.0))
+                || type_expr_contains_borrow(&return_type.0)
         }
-        | TypeExpr::ActorFn {
+        TypeExpr::ActorFn {
             params,
             return_type,
         } => {
@@ -760,7 +769,9 @@ fn type_expr_to_ty_with_context(
             capabilities: *capabilities,
             params: params
                 .iter()
-                .map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
+                .map(|parameter| {
+                    parameter.map(|(te, _)| type_expr_to_ty_with_context(te, module_short, context))
+                })
                 .collect(),
             ret: Box::new(type_expr_to_ty_with_context(
                 &return_type.0,
@@ -1224,7 +1235,10 @@ fn extract_handle_methods(
                 .params
                 .iter()
                 .skip(1)
-                .map(|param| type_expr_to_ty(&param.ty.0, module_short))
+                .map(|param| crate::CallableParameter {
+                    ty: type_expr_to_ty(&param.ty.0, module_short),
+                    ownership: crate::ParameterOwnership::from_consume(param.is_consume),
+                })
                 .collect();
             let return_type = method
                 .return_type
@@ -1285,6 +1299,28 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn extracted_extern_signatures_preserve_consuming_parameters() {
+        let parsed = parse("extern \"C\" { fn take(consume value: Packet, callback: fn(consume Packet) -> Packet) -> Packet; }");
+        assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
+        let info = extract_module_info(&parsed.program, "owned");
+        let [function] = info.functions.as_slice() else {
+            panic!("one extern function")
+        };
+        assert_eq!(
+            function.params[0].ownership,
+            crate::ParameterOwnership::Consume
+        );
+        assert_eq!(
+            function.params[1].ownership,
+            crate::ParameterOwnership::Borrow
+        );
+        let Ty::Function { params, .. } = &function.params[1].ty else {
+            panic!("callback")
+        };
+        assert_eq!(params[0].ownership, crate::ParameterOwnership::Consume);
     }
 
     #[test]
@@ -1537,7 +1573,7 @@ mod tests {
             .find(|m| m.type_name == "net.Listener" && m.method_name == "close")
             .expect("net.Listener.close should be extracted");
         assert_eq!(close.c_symbol, "hew_tcp_listener_close");
-        assert_eq!(close.params, Vec::<Ty>::new());
+        assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
         assert_eq!(close.return_type, Ty::Unit);
         assert!(
             close.dispatch_through_impl,
@@ -1564,7 +1600,7 @@ mod tests {
             .find(|m| m.type_name == "http.Request" && m.method_name == "close")
             .expect("http.Request.close should be extracted");
         assert_eq!(close.c_symbol, "hew_http_request_free");
-        assert_eq!(close.params, Vec::<Ty>::new());
+        assert_eq!(close.params, Vec::<crate::CallableParameter<Ty>>::new());
         assert_eq!(close.return_type, Ty::Unit);
     }
 
@@ -1694,7 +1730,7 @@ mod tests {
         let has_string_fn = info
             .functions
             .iter()
-            .any(|f| f.params.contains(&Ty::String));
+            .any(|f| f.params.iter().any(|parameter| parameter.ty == Ty::String));
         assert!(
             has_string_fn,
             "json module should have String-typed functions"

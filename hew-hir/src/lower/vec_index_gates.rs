@@ -388,7 +388,17 @@ pub(super) fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Function { params, ret, .. } => {
             let params = params
                 .iter()
-                .map(render_elem_ty)
+                .map(|parameter| {
+                    format!(
+                        "{}{}",
+                        if parameter.ownership == hew_types::ParameterOwnership::Consume {
+                            "consume "
+                        } else {
+                            ""
+                        },
+                        render_elem_ty(&parameter.ty)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("fn({params}) -> {}", render_elem_ty(ret))
@@ -396,7 +406,17 @@ pub(super) fn render_elem_ty(ty: &ResolvedTy) -> String {
         ResolvedTy::Closure { params, ret, .. } => {
             let params = params
                 .iter()
-                .map(render_elem_ty)
+                .map(|parameter| {
+                    format!(
+                        "{}{}",
+                        if parameter.ownership == hew_types::ParameterOwnership::Consume {
+                            "consume "
+                        } else {
+                            ""
+                        },
+                        render_elem_ty(&parameter.ty)
+                    )
+                })
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("closure({params}) -> {}", render_elem_ty(ret))

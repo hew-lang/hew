@@ -98,6 +98,10 @@ fn public_host_sdk_does_not_grant_source_runtime_call_permission() {
         "hew_host_json_release",
         "hew_host_value_forget",
         "hew_host_value_release",
+        "hew_host_call_new",
+        "hew_host_call_poll",
+        "hew_host_call_cancel",
+        "hew_host_call_release",
     ] {
         let input = directory.path().join(format!("{symbol}.hew"));
         std::fs::write(
@@ -122,6 +126,47 @@ fn public_host_sdk_does_not_grant_source_runtime_call_permission() {
             !stderr.contains("expected"),
             "unexpected parser or signature failure: {stderr}"
         );
+    }
+}
+
+#[test]
+fn asynchronous_exports_refuse_colliding_symbols_before_emitting_artefacts() {
+    let directory = tempdir();
+    let input = directory.path().join("asynchronous.hew");
+    let object = directory.path().join("asynchronous.o");
+    std::fs::write(&input, "pub fn label(value: string) -> string { value }").unwrap();
+    for (options, expected) in [
+        (vec!["--export-c-async", "label=call"], "--emit-obj"),
+        (
+            vec!["--emit-obj", "--export-c-async", "label=HewWaker"],
+            "non-reserved ASCII C identifier",
+        ),
+        (
+            vec![
+                "--emit-obj",
+                "--export-c-async",
+                "label=call",
+                "--export-c",
+                "label=call_poll",
+            ],
+            "generated C export symbols collide",
+        ),
+    ] {
+        let mut command = Command::new(hew_binary());
+        command
+            .arg("build")
+            .args(options)
+            .arg(&input)
+            .arg("-o")
+            .arg(&object)
+            .current_dir(directory.path());
+        let output = run_bounded_command(command, "reject asynchronous host contract");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success() && stderr.contains(expected),
+            "{stderr}"
+        );
+        assert!(!object.exists() && !object.with_extension("h").exists());
     }
 }
 

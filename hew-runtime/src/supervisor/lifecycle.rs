@@ -107,7 +107,7 @@ unsafe fn dispatch_child_supervisor_escalated(
     // This is the parent's RULING on the escalated record: it settles
     // the very record the child transferred, clearing it when the
     // subtree comes back.
-    let ruling = unsafe { restart_child_supervisor_with_budget(sup, idx, record) };
+    let ruling = unsafe { restart_child_supervisor_after_failure(sup, idx, record) };
     crate::exit_status::settle_supervised_fault(record, ruling);
     wake_restart_waiters(sup);
 }
@@ -296,8 +296,21 @@ pub(crate) unsafe fn supervisor_sys_dispatch_impl(
             // SAFETY: the stable identity is resolved under the roster lock;
             // retired dynamic children are ignored. The armed timer transferred
             // the record here; the restart's EFFECT is the ruling.
-            let ruling =
-                unsafe { restart_with_budget_and_strategy(sup, event.child_identity, record) };
+            let nested = {
+                // SAFETY: dispatch retains this parent while resolving the stable roster identity.
+                let roster = unsafe { &(*sup).roster }.lock_or_recover();
+                roster.child_supervisor_specs.iter().position(|spec| {
+                    spec.as_ref()
+                        .is_some_and(|spec| spec.identity == event.child_identity)
+                })
+            };
+            let ruling = if let Some(index) = nested {
+                // SAFETY: the captured identity belongs to this retained parent.
+                unsafe { restart_child_supervisor_with_budget(sup, index, record) }
+            } else {
+                // SAFETY: actor restart resolves the stable identity under its roster guard.
+                unsafe { restart_with_budget_and_strategy(sup, event.child_identity, record) }
+            };
             crate::exit_status::settle_supervised_fault(record, ruling);
             wake_restart_waiters(sup);
         }
@@ -358,6 +371,7 @@ pub unsafe extern "C" fn hew_supervisor_new(
             child_count: 0,
             next_child_spec_identity: 1,
             native_startup_order: Vec::new(),
+            backoff: None,
             construction_events: Vec::new(),
             child_supervisors: Vec::new(),
             child_supervisor_tokens: Vec::new(),
@@ -494,9 +508,7 @@ pub unsafe extern "C" fn hew_supervisor_add_child_spec(
         message_drop_fn: sp.message_drop_fn,
         sys_dispatch: sp.sys_dispatch,
         native_spawn: None,
-        restart_delay_ms: 0,
-        max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
-        next_restart_time_ns: 0,
+        backoff: RestartBackoff::default(),
         circuit_breaker: CircuitBreakerState::default(),
         arena_cap_bytes: sp.arena_cap_bytes,
         cycle_capable: sp.cycle_capable,
@@ -4066,7 +4078,7 @@ mod tests {
                 // Restartable by policy, and already backing off, so the crash
                 // takes the DELAYED path rather than restarting in line.
                 spec.restart_policy = RESTART_PERMANENT;
-                spec.restart_delay_ms = 200;
+                spec.backoff.delay_ns = 200_000_000;
             }
 
             actor::hew_actor_trap(child, 1);
@@ -4158,8 +4170,9 @@ mod tests {
             // Null the slot and set the backoff deadline far in the future.
             store_child_slot(&raw mut *sup, 0, ptr::null_mut());
             // 1 hour from now in nanoseconds
-            locked_roster!(sup).child_specs[0].next_restart_time_ns =
-                monotonic_time_ns().saturating_add(3_600_000_000_000);
+            locked_roster!(sup).child_specs[0]
+                .backoff
+                .next_restart_time_ns = monotonic_time_ns().saturating_add(3_600_000_000_000);
 
             let result = hew_supervisor_child_get(sup, 0);
             assert_eq!(result.tag, 1, "expected Transient (tag=1)");
@@ -4167,7 +4180,9 @@ mod tests {
             assert!(result.handle.is_null());
 
             // Restore before teardown.
-            locked_roster!(sup).child_specs[0].next_restart_time_ns = 0;
+            locked_roster!(sup).child_specs[0]
+                .backoff
+                .next_restart_time_ns = 0;
             store_child_slot(&raw mut *sup, 0, child);
             hew_supervisor_stop(sup);
         }

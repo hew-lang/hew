@@ -553,7 +553,7 @@ impl Checker {
                 for (i, arg) in args.iter().enumerate() {
                     if let Some(param_ty) = sig.params.get(i) {
                         let (expr, sp) = arg.expr();
-                        self.check_against(expr, sp, param_ty);
+                        self.check_against(expr, sp, &param_ty.ty);
                     }
                 }
                 let impl_key = format!("{name}::{method}");
@@ -1596,18 +1596,8 @@ impl Checker {
             (Ty::String, _) => self.dispatch_string_method(method, args, span),
             // Generator methods route through the Iterator contract:
             // .next() returns Option<yielded type>.
-            (
-                Ty::Named {
-                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
-                    args: type_args,
-                    ..
-                },
-                "next",
-            ) => {
-                let yield_ty = type_args
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Var(TypeVar::fresh()));
+            (generator, "next") if generator.as_generator().is_some() => {
+                let yield_ty = generator.as_generator().expect("generator guard").0.clone();
                 // Record the consumption rewrite so HIR lowering emits the
                 // dedicated `GeneratorNext` node (codegen drives `hew_gen_next`
                 // and unboxes the result into `Option<yield_ty>`). Without this
@@ -1683,7 +1673,7 @@ impl Checker {
                         if let Some(arg) = args.first() {
                             let (expr, sp) = arg.expr();
                             if let Some(param_ty) = sig.params.first() {
-                                self.check_against(expr, sp, param_ty);
+                                self.check_against(expr, sp, &param_ty.ty);
                             }
                         }
                         let Some(c_symbol) = self.require_builtin_runtime_symbol(
@@ -3018,7 +3008,7 @@ impl Checker {
         sig.params = sig
             .params
             .iter()
-            .map(|ty| ty.substitute_type_params_parallel(&substitution))
+            .map(|parameter| parameter.map(|ty| ty.substitute_type_params_parallel(&substitution)))
             .collect();
         sig.return_type = sig
             .return_type
@@ -3066,7 +3056,7 @@ impl Checker {
         // Application freshens the signature's open variables; link the
         // holes to their applied copies, which the arguments have filled.
         for (declared, applied) in sig.params.iter().zip(&applied.params) {
-            self.try_unify_with_owner_identity(declared, applied);
+            self.try_unify_with_owner_identity(&declared.ty, applied);
         }
         if trait_params.is_empty() {
             return Some((applied, 0));

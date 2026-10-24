@@ -196,6 +196,7 @@ pub(crate) fn verify_value_capability(
         | CallableInstance::EntryAdapter
         | CallableInstance::SupervisorChild { .. }
         | CallableInstance::SupervisorPoolCount { .. }
+        | CallableInstance::SupervisorBackoff { .. }
         | CallableInstance::ActorConstruction { .. } => false,
         CallableInstance::Monomorphic => type_args.is_empty(),
         CallableInstance::Generic(key) => {

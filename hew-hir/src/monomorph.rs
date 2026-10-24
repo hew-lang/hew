@@ -190,7 +190,10 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             capabilities,
             params: params
                 .into_iter()
-                .map(shorten_named_arg_qualifiers)
+                .map(|parameter| hew_types::CallableParameter {
+                    ty: shorten_named_arg_qualifiers(parameter.ty),
+                    ownership: parameter.ownership,
+                })
                 .collect(),
             ret: shorten_boxed(*ret),
         },
@@ -203,7 +206,10 @@ pub fn shorten_named_arg_qualifiers(ty: ResolvedTy) -> ResolvedTy {
             capabilities,
             params: params
                 .into_iter()
-                .map(shorten_named_arg_qualifiers)
+                .map(|parameter| hew_types::CallableParameter {
+                    ty: shorten_named_arg_qualifiers(parameter.ty),
+                    ownership: parameter.ownership,
+                })
                 .collect(),
             ret: shorten_boxed(*ret),
             // Captures are not part of the call-type identity (see

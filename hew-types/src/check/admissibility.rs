@@ -144,8 +144,14 @@ fn class_description(class: ValueClass) -> &'static str {
     }
 }
 
-pub(crate) fn signature_contains_error_type(params: &[Ty], ret: &Ty) -> bool {
-    params.iter().any(ty_contains_error) || ty_contains_error(ret)
+pub(crate) fn signature_contains_error_type(
+    params: &[crate::CallableParameter<Ty>],
+    ret: &Ty,
+) -> bool {
+    params
+        .iter()
+        .any(|parameter| ty_contains_error(&parameter.ty))
+        || ty_contains_error(ret)
 }
 
 // ── Layout computation helpers (C-2c) ─────────────────────────────────────────
@@ -434,7 +440,10 @@ fn variant_def_has_inference_var(variant: &VariantDef) -> bool {
 }
 
 fn fn_sig_has_inference_var(sig: &FnSig) -> bool {
-    sig.params.iter().any(Ty::has_inference_var) || sig.return_type.has_inference_var()
+    sig.params
+        .iter()
+        .any(|parameter| parameter.ty.has_inference_var())
+        || sig.return_type.has_inference_var()
 }
 
 fn variant_def_contains_error_type(variant: &VariantDef) -> bool {
@@ -1088,7 +1097,12 @@ impl Checker {
         head.nominal()
             .and_then(|id| self.fn_sigs.get(&id.declaration()))
             .filter(|sig| sig.return_type.head() == Some(head))
-            .map(|sig| sig.params.clone())
+            .map(|sig| {
+                sig.params
+                    .iter()
+                    .map(|parameter| parameter.ty.clone())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -1723,10 +1737,9 @@ impl Checker {
                 self.validate_concrete_collection_type(elem, span, collection)
             }
             Ty::Function { params, ret, .. } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_collection_type(param, span, collection))
-                    && self.validate_concrete_collection_type(ret, span, collection)
+                params.iter().all(|param| {
+                    self.validate_concrete_collection_type(&param.ty, span, collection)
+                }) && self.validate_concrete_collection_type(ret, span, collection)
             }
             Ty::Closure {
                 params,
@@ -1734,10 +1747,9 @@ impl Checker {
                 captures,
                 ..
             } => {
-                params
-                    .iter()
-                    .all(|param| self.validate_concrete_collection_type(param, span, collection))
-                    && self.validate_concrete_collection_type(ret, span, collection)
+                params.iter().all(|param| {
+                    self.validate_concrete_collection_type(&param.ty, span, collection)
+                }) && self.validate_concrete_collection_type(ret, span, collection)
                     && captures.iter().all(|capture| {
                         self.validate_concrete_collection_type(capture, span, collection)
                     })
@@ -2208,10 +2220,10 @@ mod tests {
                 module_idx: 0,
             }),
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::named_for_test(
+            params: vec![crate::CallableParameter::borrowed(Ty::named_for_test(
                 "Result",
                 vec![Ty::I32, Ty::Tuple(vec![Ty::Error])],
-            )],
+            ))],
             ret: Box::new(Ty::Bool),
             captures: vec![],
         };
@@ -2221,15 +2233,20 @@ mod tests {
 
     #[test]
     fn signature_contains_error_type_flags_error_anywhere_in_signature() {
-        let params = vec![Ty::I32];
+        let params = vec![crate::CallableParameter::borrowed(Ty::I32)];
         let ret = Ty::Function {
             capabilities: crate::CallableCapabilities::default(),
-            params: vec![Ty::Tuple(vec![Ty::Error])],
+            params: vec![crate::CallableParameter::borrowed(Ty::Tuple(vec![
+                Ty::Error,
+            ]))],
             ret: Box::new(Ty::Bool),
         };
 
         assert!(signature_contains_error_type(&params, &ret));
-        assert!(!signature_contains_error_type(&[Ty::I32], &Ty::Bool));
+        assert!(!signature_contains_error_type(
+            &[crate::CallableParameter::borrowed(Ty::I32)],
+            &Ty::Bool
+        ));
     }
 
     /// Regression guard for issue #789: `validate_checker_output_contract` must
@@ -2243,7 +2260,7 @@ mod tests {
             (
                 crate::DefId::for_test("good_fn"),
                 FnSig {
-                    params: vec![Ty::I32],
+                    params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                     return_type: Ty::Bool,
                     ..FnSig::default()
                 },
@@ -2251,7 +2268,7 @@ mod tests {
             (
                 crate::DefId::for_test("error_param_fn"),
                 FnSig {
-                    params: vec![Ty::Error],
+                    params: vec![crate::CallableParameter::borrowed(Ty::Error)],
                     return_type: Ty::I32,
                     ..FnSig::default()
                 },
@@ -2259,7 +2276,7 @@ mod tests {
             (
                 crate::DefId::for_test("error_return_fn"),
                 FnSig {
-                    params: vec![Ty::I32],
+                    params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                     return_type: Ty::Error,
                     ..FnSig::default()
                 },
@@ -2304,7 +2321,7 @@ mod tests {
             (
                 crate::DefId::for_test("good_fn"),
                 FnSig {
-                    params: vec![Ty::I32],
+                    params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                     return_type: Ty::Bool,
                     ..FnSig::default()
                 },
@@ -2312,10 +2329,10 @@ mod tests {
             (
                 crate::DefId::for_test("normalized_param_fn"),
                 FnSig {
-                    params: vec![Ty::named_for_test(
+                    params: vec![crate::CallableParameter::borrowed(Ty::named_for_test(
                         "Sender",
                         vec![Ty::Var(normalized_param_var)],
-                    )],
+                    ))],
                     return_type: Ty::Unit,
                     ..FnSig::default()
                 },
@@ -2323,7 +2340,7 @@ mod tests {
             (
                 crate::DefId::for_test("normalized_return_fn"),
                 FnSig {
-                    params: vec![Ty::I32],
+                    params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                     return_type: Ty::named_for_test(
                         "Receiver",
                         vec![Ty::Var(normalized_return_var)],
@@ -2334,7 +2351,9 @@ mod tests {
             (
                 crate::DefId::for_test("leaked_param_fn"),
                 FnSig {
-                    params: vec![Ty::Tuple(vec![Ty::Var(leaked_param_var)])],
+                    params: vec![crate::CallableParameter::borrowed(Ty::Tuple(vec![
+                        Ty::Var(leaked_param_var),
+                    ]))],
                     return_type: Ty::Unit,
                     ..FnSig::default()
                 },
@@ -2342,7 +2361,7 @@ mod tests {
             (
                 crate::DefId::for_test("leaked_return_fn"),
                 FnSig {
-                    params: vec![Ty::I32],
+                    params: vec![crate::CallableParameter::borrowed(Ty::I32)],
                     return_type: Ty::option(Ty::Var(leaked_return_var)),
                     ..FnSig::default()
                 },
@@ -2429,10 +2448,10 @@ mod tests {
                     methods: HashMap::from([(
                         "close".to_string(),
                         FnSig {
-                            params: vec![Ty::named_for_test(
+                            params: vec![crate::CallableParameter::borrowed(Ty::named_for_test(
                                 "Sender",
                                 vec![Ty::Var(normalized_method_var)],
-                            )],
+                            ))],
                             return_type: Ty::Unit,
                             ..FnSig::default()
                         },
@@ -2763,14 +2782,15 @@ mod tests {
                 receiver_obligations: vec![],
                 bounds: crate::check::ParamBounds::default(),
                 param_names: vec!["item".to_string()],
-                params: vec![Ty::param(crate::ParamHead::for_test("T"))],
+                params: vec![crate::CallableParameter::borrowed(Ty::param(
+                    crate::ParamHead::for_test("T"),
+                ))],
                 return_type: Ty::Unit,
                 doc_comment: None,
                 extern_symbol: None,
                 requires_mutable_receiver: false,
                 associated: false,
                 receiver_update: crate::ReceiverUpdate::Replace,
-                param_ownership: vec![],
                 consumes_receiver: false,
                 returns_receiver_identity: false,
                 is_builtin_variant: false,
@@ -3403,7 +3423,7 @@ mod tests {
         checker.test_fn_sig(
             "left.Pair",
             FnSig {
-                params: vec![Ty::I64],
+                params: vec![crate::CallableParameter::borrowed(Ty::I64)],
                 return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },
@@ -3413,7 +3433,7 @@ mod tests {
         checker.test_fn_sig(
             "Pair",
             FnSig {
-                params: vec![Ty::Bool],
+                params: vec![crate::CallableParameter::borrowed(Ty::Bool)],
                 return_type: Ty::named_for_test("left.Pair", Vec::new()),
                 ..FnSig::default()
             },

@@ -1,0 +1,45 @@
+import generator_send_support.safe;
+
+fn require_send<T: Send>(consume value: T) {}
+
+gen fn scoped_local() -> i64 {
+    {
+        let local = Rc.new(7);
+        defer { assert(local.get() == 7); }
+    }
+    yield 8;
+}
+
+gen fn no_yield() -> i64 {
+    let local = Rc.new(9);
+    assert(local.get() == 9);
+}
+
+fn forward<T>(consume value: T) -> T { value }
+
+gen fn nested() -> i64 {
+    let values = forward(safe.values(10));
+    yield 0;
+    for value in values { yield value; }
+}
+
+fn main() {
+    var values: Generator<i64, ()> = scoped_local();
+    values = safe.values(12);
+    assert(values.next() == .Some(12));
+    require_send(values);
+    var inferred = scoped_local();
+    inferred = safe.values(13);
+    require_send(inferred);
+    require_send(scoped_local());
+    require_send(no_yield());
+    require_send(safe.values(10));
+    require_send(nested());
+    var total: i64 = 0;
+    for value in nested() { total += value; }
+    assert(total == 10);
+    for value in safe.values(10) { assert(value == 10); }
+    for value in scoped_local() { assert(value == 8); }
+    for value in no_yield() { assert(false); }
+    println("local generator state stays local");
+}

@@ -1,0 +1,11 @@
+fn require_send<T: Send>(consume value: T) {}
+
+gen fn from_callback(consume callback: fn() -> i64) -> i64 {
+    yield callback();
+}
+
+fn main() {
+    require_send(from_callback(|| 1));
+    let local = Rc.new(7);
+    require_send(from_callback(move || local.get()));
+}

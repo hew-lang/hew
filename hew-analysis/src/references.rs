@@ -823,6 +823,9 @@ fn count_idents_in_item(item: &Item, counts: &mut HashMap<String, usize>) {
         }
         Item::Const(c) => count_idents_in_expr(&c.value.0, counts),
         Item::Supervisor(s) => {
+            if let Some(backoff) = &s.backoff {
+                count_idents_in_expr(&backoff.0, counts);
+            }
             for child in &s.children {
                 for (_field_name, arg) in &child.args {
                     count_idents_in_expr(&arg.0, counts);

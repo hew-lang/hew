@@ -184,7 +184,7 @@ fn factory_body(module: &sir::SemModule, weak_once: bool, invoke: bool) -> sir::
     let original = &module.closures[0].ty;
     let exposed = if weak_once {
         ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
                 suspends: false,
@@ -312,7 +312,7 @@ fn counter_module(
     invoke: bool,
 ) -> sir::SemModule {
     let ty = ResolvedTy::Closure {
-        params: vec![ResolvedTy::I64],
+        params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
         ret: Box::new(ResolvedTy::I64),
         captures: vec![ResolvedTy::I64],
         capabilities: CallableCapabilities {
@@ -323,7 +323,7 @@ fn counter_module(
     };
     let exposed = if weak_once {
         ResolvedTy::Function {
-            params: vec![ResolvedTy::I64],
+            params: vec![hew_types::CallableParameter::borrowed(ResolvedTy::I64)],
             ret: Box::new(ResolvedTy::I64),
             capabilities: CallableCapabilities {
                 suspends: false,
@@ -391,7 +391,8 @@ fn counter_module(
         callables: vec![parent, body],
         type_facts: facts.rows().clone(),
         closures: vec![sir::SemClosure {
-            generator_yield: None,
+            generator_type: None,
+            generator_send_sites: Vec::new(),
             id: sir::ClosureId(0),
             instance: sir::ClosureInstanceKey {
                 enclosing: CallableId(0),

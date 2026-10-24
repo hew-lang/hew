@@ -160,7 +160,6 @@ pub(super) struct SourceExternDeclaration {
     /// result provenance to cross one acyclic import edge without treating a
     /// qualified lookalike or transitive dependency as authority.
     pub(super) direct_import_modules: BTreeSet<String>,
-    pub(super) consuming_params: Vec<bool>,
 }
 
 /// An `#[offload]` extern declaration awaiting signature validation, which
@@ -179,9 +178,7 @@ pub(super) struct PendingOffload {
 pub struct ExternMethodSignature {
     /// The linker endpoint the attribute names.
     pub endpoint: String,
-    pub params: Vec<Ty>,
-    /// `consume` disposition per parameter, parallel to `params`.
-    pub consumes: Vec<bool>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     pub result: Ty,
     /// Dotted module path the declaration came from, when it has one.
     pub declaring_module: Option<String>,
@@ -894,6 +891,7 @@ pub struct TypeCheckOutput {
     /// HIR/MIR lowering. Downstream stages must consume this ledger rather than
     /// rediscovering capture legality from expression shape.
     pub closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    pub generator_capture_facts: HashMap<super::effects::EffectBody, Vec<ClosureCaptureFact>>,
     /// Checker-authoritative per-closure escape classification.
     ///
     /// Sibling to `closure_capture_facts` (one entry per closure literal,
@@ -1134,6 +1132,11 @@ pub enum CallableCandidate {
     /// A closure literal in the checked source module.
     Closure(SpanKey),
     GeneratorBlock(SpanKey),
+    /// The lazy value constructed by a named generator declaration.
+    Generator(crate::DefId),
+    /// Exact constructor invocation; its checked expression type owns the
+    /// concrete producer substitutions even after a mutable value is erased.
+    GeneratorCall(SpanKey),
     Erasure {
         site: SpanKey,
         value: Box<IndirectCallCandidates>,
@@ -1796,7 +1799,7 @@ pub struct AssignTargetShape {
 /// `expr_types` map, causing the type-checker's annotation for one file to
 /// overwrite the other's — the root cause of cross-module span-key collisions
 /// (std/fs.hew + std/path.hew unary-minus and `StringLit` defects).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct SpanKey {
     pub start: usize,
     pub end: usize,
@@ -2406,7 +2409,13 @@ impl ImplAssociatedType {
             .collect();
         let pattern = self.receiver.substitute_type_params_parallel(&fresh);
         let mut inference = crate::ty::Substitution::new();
-        crate::unify::unify_exact(&mut inference, &pattern, receiver).ok()?;
+        let declared_receiver = match receiver {
+            Ty::Generator {
+                yields, returns, ..
+            } => Ty::generator((**yields).clone(), (**returns).clone()),
+            other => other.clone(),
+        };
+        crate::unify::unify_exact(&mut inference, &pattern, &declared_receiver).ok()?;
         let instantiated = inference.resolve(&self.ty.substitute_type_params_parallel(&fresh));
         // Receiver-independent binders remain abstract until the impl's
         // associated-type constraints determine them. Never publish the
@@ -2863,10 +2872,7 @@ pub struct FnSig {
     /// A call enforces them where it is checked.
     pub receiver_obligations: Vec<ReceiverObligation>,
     pub param_names: Vec<String>,
-    pub params: Vec<Ty>,
-    /// Ownership explicitly declared for each parameter, aligned with `params`.
-    /// Callable value types cannot preserve consuming slots, so erasure is refused.
-    pub param_ownership: Vec<crate::env::ParameterOwnership>,
+    pub params: Vec<crate::CallableParameter<Ty>>,
     pub return_type: Ty,
     pub doc_comment: Option<String>,
     /// Structured `#[extern_symbol("…")]` attribute attached to the
@@ -2971,7 +2977,6 @@ impl Default for FnSig {
             receiver_obligations: vec![],
             param_names: vec![],
             params: vec![],
-            param_ownership: vec![],
             return_type: Ty::Unit,
             doc_comment: None,
             extern_symbol: None,
@@ -3778,6 +3783,8 @@ pub struct Checker {
     pub(super) dyn_trait_method_calls: HashMap<SpanKey, DynMethodCall>,
     /// Binding-accurate closure capture facts keyed by closure literal span.
     pub(super) closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    pub(super) generator_capture_facts:
+        HashMap<super::effects::EffectBody, Vec<ClosureCaptureFact>>,
     pub(super) select_sources: HashMap<SpanKey, Vec<CheckedSelectSource>>,
     pub(super) race_operands: HashMap<SpanKey, Vec<RaceOperandKind>>,
     pub(super) task_lifetimes: super::task_lifetimes::TaskLifetimes,
@@ -4609,6 +4616,7 @@ impl Checker {
             from_impls: Vec::new(),
             dyn_trait_method_calls: HashMap::new(),
             closure_capture_facts: HashMap::new(),
+            generator_capture_facts: HashMap::new(),
             select_sources: HashMap::new(),
             race_operands: HashMap::new(),
             task_lifetimes: super::task_lifetimes::TaskLifetimes::default(),

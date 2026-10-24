@@ -278,7 +278,7 @@ impl Checker {
             for (trait_param, handler_param) in
                 trait_sig.params.iter().zip(handler.param_tys.iter())
             {
-                if *trait_param != handler_param.to_ty() {
+                if trait_param.ty != handler_param.to_ty() {
                     return false;
                 }
             }
@@ -342,6 +342,30 @@ impl Checker {
         }
         let then_resolved = self.subst.resolve(then_ty);
         let else_resolved = self.subst.resolve(else_ty);
+        if let (Some((ay, ar)), Some((by, br))) =
+            (then_resolved.as_generator(), else_resolved.as_generator())
+        {
+            self.expect_type(ay, by, span);
+            self.expect_type(ar, br, span);
+            let yields = self.subst.resolve(ay);
+            let returns = self.subst.resolve(ar);
+            return match (&then_resolved, &else_resolved) {
+                (Ty::Generator { producers: a, .. }, Ty::Generator { producers: b, .. }) => {
+                    let mut producers = a.clone();
+                    for producer in b {
+                        if !producers.contains(producer) {
+                            producers.push(producer.clone());
+                        }
+                    }
+                    Ty::Generator {
+                        yields: Box::new(yields),
+                        returns: Box::new(returns),
+                        producers,
+                    }
+                }
+                _ => Ty::generator(yields, returns),
+            };
+        }
         if then_resolved.is_numeric() && else_resolved.is_numeric() {
             if let Some(common_ty) =
                 common_numeric_type(&then_resolved, &else_resolved, self.pointer_width())
@@ -1274,8 +1298,11 @@ fn type_expr_mentions_self(expr: &TypeExpr) -> bool {
             params,
             return_type,
             ..
+        } => {
+            params.iter().any(|p| type_expr_mentions_self(&p.ty.0))
+                || type_expr_mentions_self(&return_type.0)
         }
-        | TypeExpr::ActorFn {
+        TypeExpr::ActorFn {
             params,
             return_type,
         } => {

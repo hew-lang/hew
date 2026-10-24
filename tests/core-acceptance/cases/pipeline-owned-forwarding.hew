@@ -1,0 +1,28 @@
+import std.pipeline;
+import std.semaphore;
+import pipeline_support.items;
+
+fn check_forwarding(transform: fn[clone, suspends](consume items.Item) -> items.Item) {
+    let closed = semaphore.new(0);
+    var expected = 0;
+    for item in pipeline.map(items.source(closed), transform, concurrency: 2) {
+        assert(item.index == expected);
+        // Forwarded owners stay live until the consumer finishes with them.
+        assert(closed.count() == expected);
+        expected = expected + 1;
+    }
+    assert(expected == 6);
+    assert(closed.count() == 6);
+}
+
+fn main() {
+    check_forwarding(items.forward);
+    check_forwarding(|consume item: items.Item| item);
+    check_forwarding(|item| item);
+    let inspect: fn[clone](items.Item) -> i64 = items.index;
+    check_forwarding(move |consume item: items.Item| {
+        assert(inspect(item) == item.index);
+        item
+    });
+    println("pipeline resource owners forwarded");
+}

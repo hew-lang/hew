@@ -132,7 +132,8 @@ impl LowerCtx {
     /// Callable joins carry the guarantee intersection selected by the checker.
     /// Arm order cannot select the ownership contract of the resulting value.
     pub(super) fn callable_join_type(&mut self, span: &Span, inferred: ResolvedTy) -> ResolvedTy {
-        if !inferred.to_ty().contains_callable() {
+        if !inferred.to_ty().contains_callable() && !inferred.to_ty().contains_inferred_generator()
+        {
             return inferred;
         }
         self.checker_expr_ty(span, "callable join")

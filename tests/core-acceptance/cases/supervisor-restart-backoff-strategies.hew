@@ -1,0 +1,93 @@
+import std.restart;
+
+actor Worker {
+    receive fn instance() -> Worker {
+        self
+    }
+    receive fn fail() {
+        panic("restart strategy");
+    }
+}
+
+supervisor All {
+    strategy: one_for_all;
+    backoff: restart.exponential(initial: 100ms, maximum: 1s);
+    child first: Worker;
+    child second: Worker;
+}
+
+supervisor Rest {
+    strategy: rest_for_one;
+    backoff: restart.exponential(initial: 100ms, maximum: 1s);
+    child first: Worker;
+    child second: Worker;
+    child third: Worker;
+}
+
+supervisor Farm(size: i64) {
+    strategy: simple_one_for_one;
+    backoff: restart.exponential(initial: 100ms, maximum: 1s);
+    pool workers: Worker count: size;
+}
+
+supervisor Branch {
+    intensity: 0 within 60s;
+    child worker: Worker;
+}
+
+supervisor Root {
+    backoff: restart.exponential(initial: 100ms, maximum: 1s);
+    child branch: Branch;
+}
+
+fn crash(role: Worker, expected: i64) {
+    let started = instant.now();
+    let _ = role.fail();
+    restarted(role);
+    assert(started.elapsed().millis() == expected);
+}
+
+fn main() {
+    let all = spawn All;
+    let first = all.first.instance().expect("first");
+    let second = all.second.instance().expect("second");
+    crash(all.first, 100);
+    assert(!(first is all.first.instance().expect("new first")));
+    assert(!(second is all.second.instance().expect("new second")));
+    stop(all);
+    stopped(all);
+    let rest = spawn Rest;
+    let before = rest.first.instance().expect("before");
+    let failed = rest.second.instance().expect("failed");
+    let after = rest.third.instance().expect("after");
+    crash(rest.second, 100);
+    assert(before is rest.first.instance().expect("retained prefix"));
+    assert(!(failed is rest.second.instance().expect("new failed")));
+    assert(!(after is rest.third.instance().expect("new suffix")));
+    stop(rest);
+    stopped(rest);
+    let farm = spawn Farm { size: 2 };
+    let member = farm.workers.get(0).expect("member");
+    let neighbour = farm.workers.get(1).expect("neighbour");
+    let previous = neighbour.instance().expect("neighbour instance");
+    crash(member, 100);
+    crash(member, 200);
+    assert(previous is neighbour.instance().expect("neighbour retained"));
+    crash(neighbour, 100);
+    stop(farm);
+    stopped(farm);
+    let root = spawn Root;
+    let branch = root.branch;
+    let worker = branch.worker;
+    for expected in [100, 200] {
+        let started = instant.now();
+        let _ = worker.fail();
+        restarted(branch);
+        assert(started.elapsed().millis() == expected);
+        assert(branch is root.branch);
+        let _ = worker.instance().expect("replacement subtree");
+    }
+    stop(root);
+    stopped(root);
+    println("strategies retain their roles");
+}

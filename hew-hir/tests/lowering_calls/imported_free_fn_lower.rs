@@ -571,29 +571,40 @@ fn generic_function_value_keeps_an_imported_private_helper_reachable() {
 }
 
 #[test]
-fn consuming_module_function_values_are_refused_before_hir() {
+fn consuming_module_function_values_preserve_ownership_in_hir() {
     for root in [
-        "import m; fn main() { let erased = m.take; }",
-        "import m as helpers; fn main() { let erased = helpers.take<i64>; }",
-        "import m; fn main() { let erased: fn(i64) = m.take; }",
+        "import m; fn main() { let erased = m.take; erased(4); }",
+        "import m as helpers; fn main() { let erased = helpers.take<i64>; erased(4); }",
+        "import m; fn main() { let erased: fn[suspends](consume i64) -> i64 = m.take; erased(4); }",
     ] {
-        let program =
-            build_program_with_imported_module("pub fn take<T>(consume value: T) {}", root);
-        let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-        let tco = checker.check_program(&program);
+        let program = build_program_with_imported_module(
+            "pub fn take<T>(consume value: T) -> T { value }",
+            root,
+        );
+        let (output, checked) = lower_with_checker(&program);
+        assert!(checked.errors.is_empty(), "{root}: {:?}", checked.errors);
         assert!(
-            tco.errors.iter().any(|error| error
-                .message
-                .contains("callable types do not preserve parameter ownership modes")),
+            output.diagnostics.is_empty(),
             "{root}: {:?}",
-            tco.errors
+            output.diagnostics
+        );
+        assert!(
+            output.module.items.iter().any(|item| matches!(item,
+                hew_hir::HirItem::Function(function)
+                    if output.module.defs.path(function.declaration) == "m.take"
+                        && function.params[0].is_consume
+            )),
+            "imported function must retain its consuming input"
         );
     }
     let program = build_program_with_imported_module(
-        "pub fn take<T>(consume value: T) {}",
-        "import m; fn main() { m.take(4); }",
+        "pub fn take(consume value: i64) -> i64 { value }",
+        "import m; fn main() { let erased: fn(i64) -> i64 = m.take; }",
     );
-    let (output, tco) = lower_with_checker(&program);
-    assert!(tco.errors.is_empty(), "{:?}", tco.errors);
-    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
+    let result = checker.check_program(&program);
+    assert!(
+        !result.errors.is_empty(),
+        "borrowed contract must not erase consume"
+    );
 }

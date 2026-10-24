@@ -228,8 +228,13 @@ impl TemplateNames<'_> {
                 params,
                 return_type,
                 ..
+            } => {
+                for ty in params {
+                    self.ty(&ty.ty)?;
+                }
+                self.ty(return_type)?;
             }
-            | TypeExpr::ActorFn {
+            TypeExpr::ActorFn {
                 params,
                 return_type,
             } => {
@@ -487,6 +492,9 @@ impl TemplateNames<'_> {
                 }
             }
             Item::Supervisor(supervisor) => {
+                if let Some(value) = &mut supervisor.backoff {
+                    self.expr(value)?;
+                }
                 self.types.define(Ident::new("Self"), Ty::Error, false);
                 self.bind(Ident::new("self"));
                 for child in &supervisor.children {

@@ -117,7 +117,7 @@ fn contextual_lambda_binding_records_lambda_expr_type() {
         Some(&Ty::Closure {
             identity: crate::ty::EffectBody::Closure(SpanKey::from(&lambda_span)),
             capabilities: crate::CallableCapabilities::FUNCTION_ITEM,
-            params: vec![Ty::I64],
+            params: vec![crate::CallableParameter::borrowed(Ty::I64)],
             ret: Box::new(Ty::I64),
             captures: vec![],
         })

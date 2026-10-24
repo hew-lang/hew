@@ -1153,12 +1153,12 @@ pub type Receiver {
     );
     let params = &output.sigs()["probe"].params;
     assert!(matches!(
-        &params[0],
+        &params[0].ty,
         Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
             if head.spelling() == "std.channel.Sender" && args.is_empty()
     ));
     assert!(matches!(
-        &params[1],
+        &params[1].ty,
         Ty::Named { head: head @ crate::TypeHead::Nominal(_), args }
             if head.spelling() == "std.channel.Receiver" && args.is_empty()
     ));
@@ -1912,7 +1912,7 @@ fn same_leaf_named_imports_publish_one_resolved_ty_spelling_per_owner() {
         let signature = output.sigs().get(function).expect("function signature");
         assert!(matches!(
             signature.params.as_slice(),
-            [Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }] if head.spelling() == expected
+            [crate::CallableParameter { ty: Ty::Named { head: head @ crate::TypeHead::Nominal(_), .. }, .. }] if head.spelling() == expected
         ));
         assert!(matches!(
             &signature.return_type,
@@ -2407,8 +2407,8 @@ fn user_module_fn_sig_has_correct_types() {
         .get("math.add")
         .expect("math.add should be registered");
     assert_eq!(sig.params.len(), 2, "should have 2 params");
-    assert_eq!(sig.params[0], Ty::I32);
-    assert_eq!(sig.params[1], Ty::I32);
+    assert_eq!(sig.params[0].ty, Ty::I32);
+    assert_eq!(sig.params[1].ty, Ty::I32);
     assert_eq!(sig.return_type, Ty::I32);
     assert_eq!(sig.param_names, vec!["a", "b"]);
 }
@@ -2967,7 +2967,11 @@ fn import_alias_in_enum_payload_resolves_to_source_identity() {
         "enum variant payload `Has(Tag)` must resolve to `myapp.mod_a.Payload`"
     );
     assert_eq!(
-        output.sigs().get("Has").map(|sig| sig.params.clone()),
+        output.sigs().get("Has").map(|sig| sig
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect::<Vec<_>>()),
         Some(vec![Ty::named_in(
             &output.defs,
             "myapp.mod_a.Payload",

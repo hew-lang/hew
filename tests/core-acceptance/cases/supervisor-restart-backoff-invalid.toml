@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor-restart-backoff-invalid"
+intent = "Invalid ordinary backoff values are refused before any child starts, including zero, negative and inverted bounds."
+source = "cases/supervisor-restart-backoff-invalid.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "invalid policies refused before construction\n"
+stderr = ""
+exit = 0

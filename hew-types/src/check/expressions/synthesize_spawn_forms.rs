@@ -959,7 +959,7 @@ impl Checker {
                 // must still be rejected when the expected param type is `bool`.
                 if let Some((expected_params, _)) = &expected {
                     if let Some(expected_ty) = expected_params.get(i) {
-                        self.expect_type(expected_ty, &annotated_ty, &annotation.1);
+                        self.expect_type(&expected_ty.ty, &annotated_ty, &annotation.1);
                     }
                 }
                 if !hole_vars.is_empty() {
@@ -971,19 +971,30 @@ impl Checker {
                 }
                 self.subst.resolve(&annotated_ty)
             } else if let Some((expected_params, _)) = &expected {
-                expected_params
-                    .get(i)
-                    .cloned()
-                    .unwrap_or_else(|| Ty::Var(TypeVar::fresh()))
+                expected_params.get(i).map_or_else(
+                    || Ty::Var(TypeVar::fresh()),
+                    |parameter| parameter.ty.clone(),
+                )
             } else {
                 Ty::Var(TypeVar::fresh())
             };
             self.check_shadowing(p.name, &p.name_span);
             self.env
                 .define_param_with_span(p.name, ty.clone(), false, p.name_span.clone());
+            let ownership = p
+                .ownership
+                .or_else(|| {
+                    expected
+                        .as_ref()
+                        .and_then(|(parameters, _)| parameters.get(i))
+                        .map(|parameter| parameter.ownership)
+                })
+                .unwrap_or_default();
+            self.env
+                .set_parameter_consume(p.name, ownership == crate::ParameterOwnership::Consume);
             self.record_local_resolution(p.name, &p.name_span);
             self.record_callable_formal_candidate(p.name);
-            param_tys.push(ty);
+            param_tys.push(crate::CallableParameter { ty, ownership });
         }
 
         // Save enclosing return type and install the lambda's own return type so
@@ -1911,7 +1922,7 @@ impl Checker {
                     .param_names
                     .iter()
                     .position(|name| name == field_name.name.as_str())
-                    .map(|index| signature.params[index].clone())
+                    .map(|index| signature.params[index].ty.clone())
             });
             let declared = declared_init_param.as_ref().or_else(|| {
                 actor_fields
@@ -1986,7 +1997,7 @@ impl Checker {
             let params: Vec<_> = signature
                 .params
                 .iter()
-                .map(|ty| ty.substitute_type_params_parallel(type_subst))
+                .map(|parameter| parameter.ty.substitute_type_params_parallel(type_subst))
                 .collect();
             self.check_default_arguments(&signature, &supplied, resolved_type_args, &params, span);
             for default in self
@@ -2268,6 +2279,7 @@ impl Checker {
                 // Initial construction may await child callbacks and rollback,
                 // independently of any particular child's inferred effects.
                 self.mark_body_suspends("supervisor construction");
+                self.record_call_edge(&name);
                 "supervisor"
             } else {
                 "actor"

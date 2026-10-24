@@ -151,7 +151,7 @@ impl LowerCtx {
             // declaration without a separate value expression in the checker.
             ResolvedTy::Function {
                 capabilities: hew_types::CallableCapabilities::FUNCTION_ITEM,
-                params: entry.param_tys,
+                params: entry.params,
                 ret: Box::new(entry.return_ty),
             }
         };

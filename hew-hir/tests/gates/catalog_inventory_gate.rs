@@ -4,7 +4,7 @@
 //! inventory. A missing endpoint indicates stale linkage or classification.
 
 use hew_hir::stdlib_catalog::{entries, BuiltinLinkage};
-use hew_types::{module_registry::ModuleRegistry, stdlib_catalog_identity, Checker, Ty};
+use hew_types::{module_registry::ModuleRegistry, stdlib_catalog_identity, Checker};
 use std::collections::HashSet;
 
 #[test]
@@ -134,7 +134,10 @@ fn checker_accepted_monomorphic_catalog_callables_have_target_identities() {
         .filter_map(|entry| {
             let signature = output.sigs().get(entry.name)?;
             let concrete = signature.type_params.is_empty()
-                && !signature.params.iter().any(Ty::has_inference_var)
+                && !signature
+                    .params
+                    .iter()
+                    .any(|parameter| parameter.ty.has_inference_var())
                 && !signature.return_type.has_inference_var();
             concrete.then_some(entry.name)
         })

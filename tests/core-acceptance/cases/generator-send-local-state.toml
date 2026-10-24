@@ -1,0 +1,10 @@
+[[case]]
+id = "generator-send-local-state"
+intent = "Local Rc values can be used and released before yielding, including a producer that completes without yielding."
+source = "cases/generator-send-local-state.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "local generator state stays local\n"
+stderr = ""
+exit = 0

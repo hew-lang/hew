@@ -58,7 +58,7 @@ impl Checker {
             })
             .collect();
         for parameter in &mut sig.params {
-            *parameter = parameter.substitute_type_params_parallel(&substitutions);
+            *parameter = parameter.map(|ty| ty.substitute_type_params_parallel(&substitutions));
         }
         sig.return_type = sig
             .return_type
@@ -69,7 +69,8 @@ impl Checker {
         for owner in self.trait_closure(trait_id) {
             let trait_key = self.defs.path(owner);
             for param_ty in &mut sig.params {
-                *param_ty = substitute_trait_object_assoc_bindings(param_ty, trait_key, bound);
+                *param_ty =
+                    param_ty.map(|ty| substitute_trait_object_assoc_bindings(ty, trait_key, bound));
             }
             sig.return_type =
                 substitute_trait_object_assoc_bindings(&sig.return_type, trait_key, bound);
@@ -134,7 +135,11 @@ impl Checker {
         span: &Span,
         receiver_type_args: &[Ty],
     ) -> (Vec<Ty>, Ty, Vec<Ty>) {
-        let mut params = sig.params.clone();
+        let mut params: Vec<_> = sig
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect();
         let mut ret = sig.return_type.clone();
         let mut resolved_type_args = Vec::new();
 
@@ -212,7 +217,12 @@ impl Checker {
                 crate::DeclarationKind::Closure | crate::DeclarationKind::CallableType
             )
         }) {
-            for ty in sig.params.iter().chain(std::iter::once(&sig.return_type)) {
+            for ty in sig
+                .params
+                .iter()
+                .map(|parameter| &parameter.ty)
+                .chain(std::iter::once(&sig.return_type))
+            {
                 collect_unresolved_inference_vars(&self.subst.resolve(ty), &mut receiver_vars);
             }
         }
@@ -250,6 +260,26 @@ impl Checker {
     /// signature's binders, so they are instantiated with the same arguments.
     pub(super) fn enforce_signature_bounds(&mut self, sig: &FnSig, type_args: &[Ty], span: &Span) {
         let bounds = self.instantiate_bounds(&sig.type_params, &sig.bounds, type_args);
+        for (parameter, argument) in sig.type_params.iter().zip(type_args) {
+            if bounds
+                .of(parameter.id)
+                .any(|bound| self.trait_marker(bound.trait_id) == Some(MarkerTrait::Send))
+            {
+                self.effect_graph.conditional_send_bounds.push(
+                    super::generator_send::ConditionalSendBound {
+                        site: SpanKey::in_module(span, self.current_module_idx),
+                        parameter: *parameter,
+                        argument: argument.clone(),
+                        inputs: sig
+                            .params
+                            .iter()
+                            .map(|parameter| parameter.ty.clone())
+                            .collect(),
+                        source: self.current_module.clone(),
+                    },
+                );
+            }
+        }
         self.enforce_named_type_param_bounds(&sig.type_params, &bounds, type_args, span, None);
     }
 
@@ -471,7 +501,14 @@ impl Checker {
                 self.record_eq_requirement(resolved_arg, span);
                 continue;
             }
+            if marker == Some(MarkerTrait::Send) && resolved_arg.contains_generator() {
+                self.record_send_obligation(resolved_arg, span);
+                continue;
+            }
             if self.type_satisfies_bound(resolved_arg, bound) {
+                if marker == Some(MarkerTrait::Send) {
+                    self.record_send_obligation(resolved_arg, span);
+                }
                 self.report_missing_dispatchable_supertrait_impls(
                     param,
                     bound.trait_id,
@@ -829,14 +866,15 @@ impl Checker {
                 .zip(type_sig.params.iter())
                 .enumerate()
             {
-                let expected = trait_param.substitute_type_param(receiver, &concrete_ty);
+                let expected =
+                    trait_param.map(|ty| ty.substitute_type_param(receiver, &concrete_ty));
                 if expected != *type_param {
                     return vec![format!(
                         "`{type_name}.{method_name}` parameter {} has type `{}` but \
                          trait `{trait_display}` requires `{}` — type mismatch",
                         i + 1,
-                        type_param.user_facing(),
-                        expected.user_facing(),
+                        type_param.ty.user_facing(),
+                        expected.ty.user_facing(),
                     )];
                 }
             }
@@ -1061,7 +1099,8 @@ impl Checker {
                 // Per-parameter type check (Self → concrete type in trait side).
                 for (trait_param, type_param) in trait_sig.params.iter().zip(type_sig.params.iter())
                 {
-                    let expected = trait_param.substitute_type_params_parallel(&substitutions);
+                    let expected =
+                        trait_param.map(|ty| ty.substitute_type_params_parallel(&substitutions));
                     if expected != *type_param {
                         return false;
                     }
@@ -1431,14 +1470,14 @@ impl Checker {
             if let Some((_, declaration)) = self.trait_method_ids_of(trait_id, method) {
                 if let Some(mut signature) = self.fn_sigs.get(&declaration).cloned() {
                     if !skip_receiver && m.params.first().is_some_and(|param| param.is_receiver) {
-                        signature
-                            .params
-                            .insert(0, Ty::param(crate::ParamHead::receiver(trait_id)));
-                        signature.param_names.insert(0, "self".to_string());
-                        signature.param_ownership.insert(
+                        signature.params.insert(
                             0,
-                            crate::env::ParameterOwnership::from_consume(m.consumes_self),
+                            crate::CallableParameter {
+                                ty: Ty::param(crate::ParamHead::receiver(trait_id)),
+                                ownership: crate::ParameterOwnership::from_consume(m.consumes_self),
+                            },
                         );
+                        signature.param_names.insert(0, "self".to_string());
                         signature.param_defaults.insert(0, None);
                     }
                     return Some((trait_id, signature));
@@ -1498,7 +1537,16 @@ impl Checker {
                     type_params,
                     bounds,
                     param_names,
-                    params,
+                    params: params
+                        .into_iter()
+                        .zip(m.params.iter().skip(skip))
+                        .map(|(ty, parameter)| crate::CallableParameter {
+                            ty,
+                            ownership: crate::ParameterOwnership::from_consume(
+                                parameter.is_consume,
+                            ),
+                        })
+                        .collect(),
                     return_type,
                     requires_mutable_receiver,
                     consumes_receiver: m.consumes_self,

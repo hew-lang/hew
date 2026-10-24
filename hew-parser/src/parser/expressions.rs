@@ -6,6 +6,7 @@
     reason = "grammar-area submodules share the parent parser namespace via the split"
 )]
 use super::*;
+use crate::ast::ParameterOwnership;
 
 impl Parser<'_> {
     // ── Expressions (Pratt Precedence) ──
@@ -1841,6 +1842,12 @@ impl Parser<'_> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::Pipe) {
+            let ownership = if self.peek_is_consume_param_modifier() {
+                self.advance();
+                Some(ParameterOwnership::Consume)
+            } else {
+                None
+            };
             let name_span = self.peek_span();
             let name = self.expect_ident()?;
 
@@ -1852,6 +1859,7 @@ impl Parser<'_> {
 
             params.push(LambdaParam {
                 name,
+                ownership,
                 ty,
                 name_span,
             });
@@ -1868,6 +1876,12 @@ impl Parser<'_> {
         let mut params = Vec::new();
 
         while !self.at_end() && self.peek() != Some(&Token::RightParen) {
+            let ownership = if self.peek_is_consume_param_modifier() {
+                self.advance();
+                Some(ParameterOwnership::Consume)
+            } else {
+                None
+            };
             let name_span = self.peek_span();
             let name = self.expect_ident()?;
 
@@ -1879,6 +1893,7 @@ impl Parser<'_> {
 
             params.push(LambdaParam {
                 name,
+                ownership,
                 ty,
                 name_span,
             });

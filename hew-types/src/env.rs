@@ -314,26 +314,7 @@ pub struct Binding {
     pub timed_select_arm: Option<Span>,
 }
 
-/// Ownership explicitly declared at a source parameter boundary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ParameterOwnership {
-    /// The caller keeps ownership throughout the call.
-    Borrow,
-    /// The declaration acquires the argument's ownership.
-    Consume,
-}
-
-impl ParameterOwnership {
-    /// Translate an explicit source declaration without inspecting the body.
-    #[must_use]
-    pub fn from_consume(is_consume: bool) -> Self {
-        if is_consume {
-            Self::Consume
-        } else {
-            Self::Borrow
-        }
-    }
-}
+pub use hew_parser::ast::ParameterOwnership;
 
 /// How far a binding's mutation has travelled.
 ///

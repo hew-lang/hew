@@ -58,8 +58,7 @@ pub struct ExternSignature {
     pub failure_domain: hew_types::CallableFailureDomain,
     pub declaration: hew_types::DefId,
     pub symbol: String,
-    pub params: Vec<ResolvedTy>,
-    pub consumes: Vec<bool>,
+    pub params: Vec<hew_types::CallableParameter<ResolvedTy>>,
     pub result: ResolvedTy,
     /// Runtime authority declared by the trusted source extern.
     pub runtime_capability: Option<hew_types::ExternRuntimeCapability>,
@@ -79,7 +78,7 @@ impl ExternSignature {
     pub fn param_decision(&self, index: usize, own: crate::OwnKind) -> crate::BoundaryDecision {
         if own == crate::OwnKind::None {
             crate::BoundaryDecision::Copy
-        } else if self.consumes[index] {
+        } else if self.params[index].ownership == hew_types::ParameterOwnership::Consume {
             crate::BoundaryDecision::Move
         } else {
             crate::BoundaryDecision::Borrow
@@ -124,7 +123,7 @@ impl ResourceRelease {
                 // existing table-token contract is the exact i32 exception.
                 Ok(
                     if matches!(
-                        hew_types::runtime_call::IoHandleKind::of_ty(owner),
+                        hew_types::runtime_call::IoHandleKind::of_ty(&owner.ty),
                         Some(
                             hew_types::runtime_call::IoHandleKind::Connection
                                 | hew_types::runtime_call::IoHandleKind::Listener
@@ -217,8 +216,7 @@ pub(crate) fn resource_release_from_hir(
                     failure_domain: function.failure_domain,
                     declaration: function.declaration,
                     symbol: function.name.clone(),
-                    params: function.param_tys.clone(),
-                    consumes: function.param_consume.clone(),
+                    params: function.params.clone(),
                     result: function.return_ty.clone(),
                     runtime_capability: function.runtime_capability,
                     offload: function.offload,
@@ -524,8 +522,11 @@ fn verify_nominal_release(
 ) -> Result<(), String> {
     if release.declaration != lifecycle.release_declaration
         || release.symbol != lifecycle.release_symbol
-        || release.params != [ty.clone()]
-        || release.consumes != [true]
+        || release.params
+            != [hew_types::CallableParameter {
+                ty: ty.clone(),
+                ownership: hew_types::ParameterOwnership::Consume,
+            }]
         || !(release.result.is_integer()
             || matches!(
                 release.result,
@@ -551,14 +552,16 @@ fn verify_nominal_release(
         || symbols != lifecycle.producer_symbols
         || producers.iter().any(|producer| {
             producer.result != *ty
-                || producer.params.len() != producer.consumes.len()
                 || !extern_ownership_contract(&producer.symbol)
                     .contract()
                     .is_some_and(|contract| {
                         contract.params.len() == producer.params.len()
-                            && producer.consumes.iter().zip(contract.params).all(
-                                |(consume, ownership)| {
-                                    *consume == (*ownership == ExternParamOwnership::Consume)
+                            && producer.params.iter().zip(contract.params).all(
+                                |(parameter, ownership)| {
+                                    parameter.ownership
+                                        == hew_types::ParameterOwnership::from_consume(
+                                            *ownership == ExternParamOwnership::Consume,
+                                        )
                                 },
                             )
                     })

@@ -104,6 +104,14 @@ impl Builder<'_, '_> {
             return Err("mutable method lowering requires a var-self call".into());
         };
         let receiver_ty = self.ty(receiver_ty);
+        if receiver_ty.generator_parts().is_some()
+            && self.service.callable_facts.is_iterator_next(call_target)
+        {
+            if !args.is_empty() {
+                return Err("generator Iterator.next has unexpected arguments".into());
+            }
+            return self.lower_generator_next(expr, receiver);
+        }
         let callee = self.resolve_mutable_callee(expr, call_target, target, &receiver_ty)?;
         let source = self
             .service

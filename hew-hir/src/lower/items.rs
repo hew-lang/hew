@@ -791,7 +791,7 @@ impl LowerCtx {
                             .is_none_or(|expected| expected == source_key)
                         && contract.matches_signature(
                             &self.defs,
-                            &signature.param_tys,
+                            &signature.params.iter().map(|parameter| parameter.ty.clone()).collect::<Vec<_>>(),
                             &signature.return_ty,
                         )
                 });
@@ -916,7 +916,8 @@ impl LowerCtx {
         // `gen { ... }` block expression uses (`lower_gen_block`), so MIR/codegen
         // construction (`Terminator::Yield`, state-record synthesis) is shared.
         if func.is_generator {
-            let (body, generator_ty) = self.lower_generator_fn_body(func, source_return_ty, &span);
+            let (body, generator_ty) =
+                self.lower_generator_fn_body(func, declaration, source_return_ty, &span);
             self.pop_scope();
             self.current_fn_type_params = prior_fn_type_params;
             return Some(HirFn {
@@ -1006,6 +1007,7 @@ impl LowerCtx {
     pub(super) fn lower_generator_fn_body(
         &mut self,
         func: &FnDecl,
+        declaration: hew_types::DefId,
         source_return_ty: ResolvedTy,
         span: &std::ops::Range<usize>,
     ) -> (HirBlock, ResolvedTy) {
@@ -1027,13 +1029,23 @@ impl LowerCtx {
         });
         self.failing_generator_item = enclosing_failing;
         self.generator_yield_tys.pop();
-        let captures = Self::collect_gen_captures(&gen_body, &outer_bindings);
+        let captures = self.collect_gen_captures(
+            &hew_types::ty::EffectBody::Generator(declaration),
+            &outer_bindings,
+            span,
+        );
 
-        let generator_ty = ResolvedTy::Named {
-            args: vec![yield_ty.clone(), gen_return_ty.clone()],
-            head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
-            is_opaque: false,
-        };
+        let generator_ty = self
+            .fn_sigs
+            .get(&declaration)
+            .and_then(|signature| {
+                ResolvedTy::from_ty(&signature.return_type.materialize_literal_defaults()).ok()
+            })
+            .unwrap_or_else(|| ResolvedTy::Named {
+                args: vec![yield_ty.clone(), gen_return_ty.clone()],
+                head: hew_types::TypeHead::Builtin(hew_types::BuiltinType::Generator),
+                is_opaque: false,
+            });
         let gen_block_expr = HirExpr {
             node: self.ids.node(),
             site: self.ids.site(),
@@ -1197,7 +1209,7 @@ impl LowerCtx {
             ResolvedTy::Function { params, ret, .. } | ResolvedTy::Closure { params, ret, .. } => {
                 params
                     .iter()
-                    .all(|part| self.imported_signature_type_available(part, receiver))
+                    .all(|part| self.imported_signature_type_available(&part.ty, receiver))
                     && self.imported_signature_type_available(ret, receiver)
             }
             // A trait object names its traits by checked identity; its

@@ -1186,6 +1186,12 @@ impl Builder<'_, '_> {
             }
             values.push(value);
         }
+        let backoff = match &operation {
+            crate::ActorOperation::SupervisorSpawn(id) => {
+                self.service.supervisors[id.0 as usize].backoff
+            }
+            _ => None,
+        };
         let pool_count = match &operation {
             crate::ActorOperation::SupervisorSpawn(id) => self.service.supervisors[id.0 as usize]
                 .children
@@ -1193,7 +1199,11 @@ impl Builder<'_, '_> {
                 .find_map(|child| child.pool_count),
             _ => None,
         };
-        if argument_order.len() + usize::from(pool_count.is_some()) != signature.params.len() {
+        if argument_order.len()
+            + 2 * usize::from(backoff.is_some())
+            + usize::from(pool_count.is_some())
+            != signature.params.len()
+        {
             return Err("actor argument count differs from its protocol".into());
         }
         let mut args = Vec::new();
@@ -1239,8 +1249,26 @@ impl Builder<'_, '_> {
                 Provenance::Site(expression.site),
             )?);
         }
+        if let Some(backoff) = backoff {
+            let value = self.lower_supervisor_configuration(expression, backoff, &args)?;
+            let ty = self.value_ty(value).ok_or("backoff value has no type")?;
+            let shape = self.service.require_aggregate_shape(&ty)?;
+            for field in 0..2 {
+                args.push(self.emit_typed(
+                    Provenance::Site(expression.site),
+                    &ResolvedTy::Duration,
+                    SemOpKind::AggregateProjectCopy {
+                        shape,
+                        aggregate: crate::Operand { value },
+                        field,
+                    },
+                )?);
+            }
+        }
         if let Some(count) = pool_count {
-            let count = self.lower_supervisor_pool_count(expression, count, &args)?;
+            let config_count = args.len() - 2 * usize::from(backoff.is_some());
+            let count =
+                self.lower_supervisor_pool_count(expression, count, &args[..config_count])?;
             args.push(count);
         }
         let result = self.emit_actor_call(operation, signature, args)?;

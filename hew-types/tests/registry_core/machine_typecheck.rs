@@ -992,7 +992,11 @@ fn main() {
     }
 
     assert_eq!(
-        machine_td.methods["step"].params,
+        machine_td.methods["step"]
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect::<Vec<_>>(),
         vec![
             Ty::named_in(
                 &output.defs,
@@ -1161,7 +1165,11 @@ fn imported_machine_unit_state_constructor_resolves() {
         "an imported state constructor must return the exact machine identity"
     );
     assert_eq!(
-        output.type_def_at_path("lights.Traffic").unwrap().methods["step"].params,
+        output.type_def_at_path("lights.Traffic").unwrap().methods["step"]
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect::<Vec<_>>(),
         vec![
             Ty::named_in(&output.defs, "lights.Traffic.Event", vec![]),
             Ty::I64

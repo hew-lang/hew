@@ -86,32 +86,19 @@ fn main() {
 "#;
 
 const CRASHING_PIPELINE: &str = r#"import std.pipeline;
-
-fn item(value: i64, label: string, crash_stage: bool) -> pipeline.PipelineItemI64 {
-    pipeline.PipelineItemI64 { value: value, label: label, crash_stage: crash_stage }
-}
+import std.stream;
 
 fn main() {
-    var source = pipeline.run(pipeline.from(1));
-    match source.push(item(9, "crash-owned", true)) {
-        .Ok(admitted) => if admitted {
-            panic("crashing item was admitted")
-        }
-        .Err(_) => panic("crashing push did not settle"),
-    }
-    match source.count() {
-        .Ok(value) => if value != 0 {
-            panic("crashing item reached the sink")
-        }
-        .Err(_) => panic("pipeline count did not settle"),
-    }
-    match source.push(item(10, "after-crash", false)) {
-        .Ok(admitted) => if admitted {
-            panic("post-crash item was admitted")
-        }
-        .Err(_) => panic("post-crash push did not settle"),
-    }
-    println("PIPELINE_CRASH_SETTLED");
+    defer println("PIPELINE_CLOSED");
+    let (sink, source): (Sink<string>, Stream<string>) = stream.pipe(2).expect("pipe");
+    sink.send("crash").expect("send");
+    sink.send("blocked").expect("send");
+    sink.finish();
+    for _value in pipeline.map(source, |value: string| {
+        if value == "crash" { panic("pipeline transform failed"); }
+        sleep(1h);
+        value
+    }, concurrency: 2) {}
 }
 "#;
 
@@ -815,7 +802,7 @@ fn actor_crash_fails_process_without_cascading_to_chat_room() {
 }
 
 #[test]
-fn pipeline_actor_crash_fails_process_after_settling_pending_work() {
+fn pipeline_transform_fault_fails_process_after_closing_children() {
     require_codegen();
 
     let dir = tempdir();
@@ -827,15 +814,15 @@ fn pipeline_actor_crash_fails_process_after_settling_pending_work() {
     assert_eq!(
         output.status.code(),
         Some(1),
-        "the pipeline actor crash must fail the process:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "the pipeline transform fault must fail the process:\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
     assert!(
-        stdout.contains("PIPELINE_CRASH_SETTLED"),
-        "the pipeline must reject pending work before reporting its crash:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        stdout.contains("PIPELINE_CLOSED"),
+        "the pipeline must close children before returning its fault:\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
     assert!(
-        stderr.contains("pipeline S1 stage crash"),
-        "the pipeline stage crash must remain observable:\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        stderr.contains("pipeline transform failed"),
+        "the pipeline transform fault must remain observable:\nstdout:\n{stdout}\nstderr:\n{stderr}",
     );
 }
 

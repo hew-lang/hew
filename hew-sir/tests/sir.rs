@@ -2294,6 +2294,7 @@ fn verifier_refuses_a_generic_template_parameter_carrying_a_borrow_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
     let declaration = DefId::for_test("borrow_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
+        unconstrained_parameters: false,
         id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "borrow_template".to_string(),
@@ -2328,6 +2329,7 @@ fn verifier_admits_a_generic_template_parameter_with_a_read_only_slot() {
     let mut module = borrow_slot_module(SemParamPassing::ReadOnly);
     let declaration = DefId::for_test("read_only_template");
     module.generic_templates = vec![hew_sir::SemGenericTemplate {
+        unconstrained_parameters: false,
         id: GenericTemplateId { declaration },
         function: ItemId(2),
         symbol: "read_only_template".to_string(),

@@ -1,0 +1,37 @@
+import std.pipeline;
+import std.stream;
+
+actor Producer {
+    var count: i64 = 0;
+
+    receive gen fn values(consume gate: Stream<i64>, consume ready: Sink<i64>) -> string {
+        count = count + 1;
+        defer {
+            count = count + 100;
+        }
+        yield f"item {count}";
+        ready.send(1).expect("ready");
+        gate.recv().expect("cancelled read");
+        panic("closed producer resumed");
+    }
+
+    receive fn count() -> i64 {
+        count
+    }
+}
+
+fn main() {
+    let producer = spawn Producer;
+    let (keep, gate): (Sink<i64>, Stream<i64>) = stream.pipe(0).expect("gate");
+    let (ready, entered): (Sink<i64>, Stream<i64>) = stream.pipe(1).expect("ready");
+    for value in pipeline.map(producer.values(gate, ready), |value: string| value + "!", concurrency: 2) {
+        assert(value == "item 1!");
+        entered.recv().expect("producer parked");
+        break;
+    }
+    assert(producer.count().expect("next turn") == 101);
+    keep.close();
+    stop(producer);
+    stopped(producer);
+    println("pipeline actor turn closed");
+}

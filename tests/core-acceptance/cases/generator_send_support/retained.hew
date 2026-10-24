@@ -1,0 +1,5 @@
+pub gen fn values() -> i64 {
+    let local = Rc.new(7);
+    defer { assert(local.get() == 7); }
+    yield 1;
+}

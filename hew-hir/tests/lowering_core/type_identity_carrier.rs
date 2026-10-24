@@ -321,7 +321,10 @@ fn checked_member_types_preserve_nominal_opacity_through_hir() {
         let ResolvedTy::Function { params, ret, .. } = &published[2] else {
             panic!("expected callable member");
         };
-        assert_eq!(params, std::slice::from_ref(&expected));
+        assert_eq!(
+            params,
+            &[hew_types::CallableParameter::borrowed(expected.clone())]
+        );
         assert_eq!(ret.as_ref(), &expected);
         assert_eq!(
             published[3],

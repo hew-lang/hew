@@ -1,10 +1,10 @@
 [[case]]
 id = "pipeline-stdlib-pipeline-owned-normal"
-intent = "Ownership gates for the concrete `std::pipeline` S1 chain. Shape `pipeline_owned_normal_high` (pipeline owned payload lifecycle edges do not double free, pipeline owned payload normal has flat leak slope) runs to its exact outcome with no leak, double free or use after free under ASan/LSan."
+intent = "Generic pipeline mapping preserves input order and owned strings, clones Send captures, emits completed work without waiting for a gated earlier item, and drains an empty prefetch."
 source = "cases/pipeline-stdlib-pipeline-owned-normal.hew"
 suites = ["acceptance", "safety"]
-timeout_seconds = 60
-
+timeout_seconds = 30
 [case.expected]
-stdout = "normal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\nnormal\n"
+stdout = "pipeline normal passed\n"
+stderr = ""
 exit = 0

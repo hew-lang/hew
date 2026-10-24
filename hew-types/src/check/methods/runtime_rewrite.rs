@@ -144,12 +144,17 @@ impl Checker {
         c_symbol: &str,
         sig: &FnSig,
     ) -> Option<crate::runtime_call::RuntimeCallFamily> {
+        let parameter_types: Vec<_> = sig
+            .params
+            .iter()
+            .map(|parameter| parameter.ty.clone())
+            .collect();
         let selected = sig.impl_method.as_ref().map(|method| method.declaration);
         let origin = selected.and_then(|declaration| self.extern_method_origins.get(&declaration));
         if let Some(operation) = crate::runtime_call::ServiceOp::source_method(
             signature_key,
             c_symbol,
-            &sig.params,
+            &parameter_types,
             &sig.return_type,
         ) {
             let canonical = origin
@@ -160,7 +165,7 @@ impl Checker {
         let declaration = crate::runtime_call::canonical_std_io_extern_signature(
             signature_key,
             c_symbol,
-            &sig.params,
+            &parameter_types,
             &sig.return_type,
         )
         .or_else(|| {
@@ -183,7 +188,7 @@ impl Checker {
                     crate::runtime_call::canonical_std_io_extern_signature(
                         entry.signature_key,
                         c_symbol,
-                        &sig.params,
+                        &parameter_types,
                         &sig.return_type,
                     )
                 })
@@ -482,21 +487,16 @@ impl Checker {
         // A receiver method's signature carries only its explicit parameters;
         // the C boundary takes the receiver first, exactly as the source
         // declaration spells it.
-        let params = std::iter::once(receiver_ty.clone())
-            .chain(sig.params.iter().cloned())
-            .map(|ty| self.subst.resolve(&ty).materialize_literal_defaults())
-            .collect::<Vec<_>>();
-        let consumes = std::iter::once(consumes_receiver)
-            .chain(
-                sig.param_ownership
-                    .iter()
-                    .map(|ownership| *ownership == crate::env::ParameterOwnership::Consume),
-            )
-            .collect();
+        let params = std::iter::once(crate::CallableParameter {
+            ty: receiver_ty.clone(),
+            ownership: crate::ParameterOwnership::from_consume(consumes_receiver),
+        })
+        .chain(sig.params.iter().cloned())
+        .map(|parameter| parameter.map(|ty| self.subst.resolve(ty).materialize_literal_defaults()))
+        .collect();
         let signature = crate::check::types::ExternMethodSignature {
             endpoint: identity.endpoint.clone(),
             params,
-            consumes,
             result: self
                 .subst
                 .resolve(&sig.return_type)

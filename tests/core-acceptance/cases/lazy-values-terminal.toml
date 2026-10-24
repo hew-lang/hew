@@ -1,0 +1,10 @@
+[[case]]
+id = "lazy-values-terminal"
+intent = "Initializer faults and cancellation clean captured resources once and leave later demands terminal without implicit replay."
+source = "cases/lazy-values-terminal.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "initialize 1\nclose 1\ninitialize 2\nclose 2\nlazy terminal states passed\n"
+stderr = ""
+exit = 0

@@ -1,0 +1,13 @@
+[[case]]
+id = "generator-send-retained-reject"
+intent = "A discarded Send-bounded call must reject a generator retaining a local Rc across yield."
+source = "cases/generator-send-retained-reject.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+kind = "reject"
+
+[[case.expected.diagnostics]]
+code = "InvalidSend"
+line = 10
+column = 5
+message = "generator cannot be sent: retained `Rc<i64>` is not proven Send"

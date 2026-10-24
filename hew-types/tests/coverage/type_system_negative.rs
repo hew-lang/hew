@@ -1390,7 +1390,10 @@ fn main() {
         .get("id")
         .unwrap_or_else(|| panic!("expected function signature for id"));
     assert!(
-        sig.params.iter().all(|ty| !ty.has_inference_var()) && !sig.return_type.has_inference_var(),
+        sig.params
+            .iter()
+            .all(|parameter| !parameter.ty.has_inference_var())
+            && !sig.return_type.has_inference_var(),
         "signature id leaked unresolved Ty::Var: {sig:?}"
     );
     let ty_def = output

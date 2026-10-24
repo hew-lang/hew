@@ -45,7 +45,10 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
             ret,
         } => ResolvedTy::Function {
             capabilities: *capabilities,
-            params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
+            params: params
+                .iter()
+                .map(|parameter| parameter.map(|ty| substitute_ty(ty, subst)))
+                .collect(),
             ret: Box::new(substitute_ty(ret, subst)),
         },
         ResolvedTy::Closure {
@@ -55,7 +58,10 @@ pub fn substitute_ty<S: std::hash::BuildHasher>(
             captures,
         } => ResolvedTy::Closure {
             capabilities: *capabilities,
-            params: params.iter().map(|p| substitute_ty(p, subst)).collect(),
+            params: params
+                .iter()
+                .map(|parameter| parameter.map(|ty| substitute_ty(ty, subst)))
+                .collect(),
             ret: Box::new(substitute_ty(ret, subst)),
             captures: captures.iter().map(|c| substitute_ty(c, subst)).collect(),
         },
@@ -109,7 +115,10 @@ pub(super) fn contains_abstract_symbol(ty: &ResolvedTy) -> bool {
         ResolvedTy::Tuple(items) => items.iter().any(contains_abstract_symbol),
         ResolvedTy::Array(elem, _) | ResolvedTy::Slice(elem) => contains_abstract_symbol(elem),
         ResolvedTy::Function { params, ret, .. } => {
-            params.iter().any(contains_abstract_symbol) || contains_abstract_symbol(ret)
+            params
+                .iter()
+                .any(|parameter| contains_abstract_symbol(&parameter.ty))
+                || contains_abstract_symbol(ret)
         }
         ResolvedTy::Closure {
             params,
@@ -117,7 +126,9 @@ pub(super) fn contains_abstract_symbol(ty: &ResolvedTy) -> bool {
             captures,
             ..
         } => {
-            params.iter().any(contains_abstract_symbol)
+            params
+                .iter()
+                .any(|parameter| contains_abstract_symbol(&parameter.ty))
                 || contains_abstract_symbol(ret)
                 || captures.iter().any(contains_abstract_symbol)
         }

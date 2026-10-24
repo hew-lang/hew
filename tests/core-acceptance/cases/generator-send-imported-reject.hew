@@ -1,0 +1,7 @@
+import generator_send_support.retained;
+
+fn require_send<T: Send>(consume value: T) {}
+
+fn main() {
+    require_send(retained.values());
+}

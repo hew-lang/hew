@@ -1,0 +1,64 @@
+import std.lazy;
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        println(f"close {self.id}");
+    }
+}
+
+fn main() {
+    let ticket = Ticket { id: 1 };
+    var failed = lazy.new(move || {
+        println(f"initialize {ticket.id}");
+        panic("initializer failed");
+        "unreachable"
+    });
+    let first = scope {
+        failed.value()
+    } handle failure {
+        match failure {
+            .Fault { message } => message,
+            _ => "wrong failure",
+        }
+    };
+    assert(first == "initializer failed");
+    let second = scope {
+        failed.value()
+    } handle failure {
+        match failure {
+            .Fault { message } => message,
+            _ => "wrong failure",
+        }
+    };
+    assert(second == "lazy.value: initialization is active or has failed");
+    let cancelled_ticket = Ticket { id: 2 };
+    var cancelled = lazy.new(move || {
+        println(f"initialize {cancelled_ticket.id}");
+        sleep(60s);
+        "unreachable"
+    });
+    let deadline = scope within 20ms {
+        cancelled.value()
+    } handle failure {
+        match failure {
+            .Deadline { .. } => "cancelled",
+            _ => "wrong failure",
+        }
+    };
+    assert(deadline == "cancelled");
+    let retried = scope {
+        cancelled.value()
+    } handle failure {
+        match failure {
+            .Fault { message } => message,
+            _ => "wrong failure",
+        }
+    };
+    assert(retried == "lazy.value: initialization is active or has failed");
+    println("lazy terminal states passed");
+}

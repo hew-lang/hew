@@ -277,7 +277,8 @@ export function admitPackage(
         const supervisor = pkg.supervisors?.find((layout) => layout.id === id);
         const config =
           term.args.length -
-          (supervisor?.children.some((child) => child.is_pool) ? 1 : 0);
+          (supervisor?.children.some((child) => child.is_pool) ? 1 : 0) -
+          (supervisor?.backoff ? 2 : 0);
         if (
           !supervisor ||
           config < 0 ||

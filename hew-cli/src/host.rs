@@ -13,7 +13,7 @@ pub(super) fn emit(
     input: &Path,
     target: &target::TargetSpec,
     options: &compile::CompileOptions,
-    selections: &[String],
+    exports: (&[String], &[String]),
     output: &Path,
     opt_level: hew_codegen_rs::OptLevel,
     emit_llvm: bool,
@@ -22,13 +22,16 @@ pub(super) fn emit(
     if target.is_wasm() {
         return Err(fail("C exports require a native target"));
     }
+    let (selections, async_selections) = exports;
+    let sync_count = selections.len();
     let selections = selections
         .iter()
+        .chain(async_selections)
         .map(|selection| {
             selection
                 .split_once('=')
                 .filter(|(source, symbol)| !source.is_empty() && !symbol.is_empty())
-                .ok_or_else(|| fail("--export-c expects SOURCE=SYMBOL"))
+                .ok_or_else(|| fail("C export selection expects SOURCE=SYMBOL"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let source_names = selections
@@ -72,7 +75,9 @@ pub(super) fn emit(
                 .ok_or_else(|| fail("C export has no compiled declaration"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let export = HostExport::new(&physical, &selected).map_err(|error| fail(&error.to_string()))?;
+    let export =
+        HostExport::with_async(&physical, &selected[..sync_count], &selected[sync_count..])
+            .map_err(|error| fail(&error.to_string()))?;
     let out_dir = output
         .parent()
         .filter(|path| !path.as_os_str().is_empty())

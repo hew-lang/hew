@@ -89,7 +89,7 @@ pub fn lower_physical_module(
                             .entries
                             .iter()
                             .any(|entry| entry.body == callable.id)
-                            && closure.generator_yield.is_some()
+                            && closure.generator_yield().is_some()
                     })) {
                 None
             } else {
@@ -255,7 +255,7 @@ pub fn lower_physical_module(
                 params: signature
                     .params
                     .iter()
-                    .map(slot)
+                    .map(|parameter| slot(&parameter.ty))
                     .collect::<Result<Vec<_>, PhysicalError>>()?,
                 result: (signature.result != ResolvedTy::Unit)
                     .then(|| slot(&signature.result))
@@ -278,7 +278,7 @@ pub fn lower_physical_module(
             .closures
             .iter()
             .map(|closure| PhysicalClosure {
-                generator_yield: closure.generator_yield.clone(),
+                generator_yield: closure.generator_yield().cloned(),
                 id: closure.id,
                 entries: closure.entries.clone(),
                 ty: closure.ty.clone(),

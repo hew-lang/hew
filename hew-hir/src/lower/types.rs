@@ -208,7 +208,9 @@ impl LowerCtx {
                     signature
                         .params
                         .iter()
-                        .map(|ty| self.checked_member_ty(ty, &definition.type_params, &span))
+                        .map(|parameter| {
+                            self.checked_member_ty(&parameter.ty, &definition.type_params, &span)
+                        })
                         .collect(),
                 )
             }
@@ -287,7 +289,10 @@ impl LowerCtx {
                     capabilities,
                     params: params
                         .into_iter()
-                        .map(|param| self.restore_type_declaration_facts(param))
+                        .map(|parameter| hew_types::CallableParameter {
+                            ty: self.restore_type_declaration_facts(parameter.ty),
+                            ownership: parameter.ownership,
+                        })
                         .collect(),
                     ret: Box::new(self.restore_type_declaration_facts(*ret)),
                 };
@@ -302,7 +307,10 @@ impl LowerCtx {
                     capabilities,
                     params: params
                         .into_iter()
-                        .map(|param| self.restore_type_declaration_facts(param))
+                        .map(|parameter| hew_types::CallableParameter {
+                            ty: self.restore_type_declaration_facts(parameter.ty),
+                            ownership: parameter.ownership,
+                        })
                         .collect(),
                     ret: Box::new(self.restore_type_declaration_facts(*ret)),
                     captures: captures

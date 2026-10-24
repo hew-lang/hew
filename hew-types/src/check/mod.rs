@@ -58,6 +58,7 @@ mod expressions;
 mod generic_callables;
 mod generic_schema;
 pub use generic_schema::AssociatedTypeSchemas;
+mod generator_send;
 mod generics;
 mod items;
 mod lints;
@@ -259,7 +260,12 @@ impl crate::value_class::ClassDeclarations for CheckerClassDeclarations<'_> {
         let mut member_tys: Vec<Ty> = Vec::new();
         if definition.kind == TypeDefKind::Record && definition.fields.is_empty() {
             if let Some(signature) = self.checker.fn_sigs.get(&id.declaration()) {
-                member_tys.extend(signature.params.iter().cloned());
+                member_tys.extend(
+                    signature
+                        .params
+                        .iter()
+                        .map(|parameter| parameter.ty.clone()),
+                );
             }
         }
 
@@ -375,6 +381,21 @@ pub(crate) fn restore_member_opacity(
     is_opaque_type: &impl Fn(crate::NominalId) -> bool,
 ) -> ResolvedTy {
     let resolve = |ty| restore_member_opacity(ty, defs, is_opaque_type);
+    let resolve_parameter =
+        |parameter: crate::CallableParameter<ResolvedTy>| crate::CallableParameter {
+            ty: resolve(parameter.ty),
+            ownership: parameter.ownership,
+        };
+    let resolve_bound = |bound: crate::ResolvedTraitBound| crate::ResolvedTraitBound {
+        trait_name: bound.trait_name,
+        trait_id: bound.trait_id,
+        args: bound.args.into_iter().map(resolve).collect(),
+        assoc_bindings: bound
+            .assoc_bindings
+            .into_iter()
+            .map(|(name, ty)| (name, resolve(ty)))
+            .collect(),
+    };
     match ty {
         ResolvedTy::GenericCallable {
             parameters,
@@ -384,20 +405,7 @@ pub(crate) fn restore_member_opacity(
                 .into_iter()
                 .map(|parameter| crate::CallableTypeParameter {
                     parameter: parameter.parameter,
-                    bounds: parameter
-                        .bounds
-                        .into_iter()
-                        .map(|bound| crate::ResolvedTraitBound {
-                            trait_name: bound.trait_name,
-                            trait_id: bound.trait_id,
-                            args: bound.args.into_iter().map(resolve).collect(),
-                            assoc_bindings: bound
-                                .assoc_bindings
-                                .into_iter()
-                                .map(|(name, ty)| (name, resolve(ty)))
-                                .collect(),
-                        })
-                        .collect(),
+                    bounds: parameter.bounds.into_iter().map(resolve_bound).collect(),
                 })
                 .collect(),
             callable: Box::new(resolve(*callable)),
@@ -430,7 +438,7 @@ pub(crate) fn restore_member_opacity(
             ret,
         } => ResolvedTy::Function {
             capabilities,
-            params: params.into_iter().map(resolve).collect(),
+            params: params.into_iter().map(resolve_parameter).collect(),
             ret: Box::new(resolve(*ret)),
         },
         ResolvedTy::Closure {
@@ -440,7 +448,7 @@ pub(crate) fn restore_member_opacity(
             captures,
         } => ResolvedTy::Closure {
             capabilities,
-            params: params.into_iter().map(resolve).collect(),
+            params: params.into_iter().map(resolve_parameter).collect(),
             ret: Box::new(resolve(*ret)),
             captures: captures.into_iter().map(resolve).collect(),
         },
@@ -455,19 +463,7 @@ pub(crate) fn restore_member_opacity(
             pointee: Box::new(resolve(*pointee)),
         },
         ResolvedTy::TraitObject { traits } => ResolvedTy::TraitObject {
-            traits: traits
-                .into_iter()
-                .map(|bound| crate::resolved_ty::ResolvedTraitBound {
-                    trait_name: bound.trait_name,
-                    trait_id: bound.trait_id,
-                    args: bound.args.into_iter().map(resolve).collect(),
-                    assoc_bindings: bound
-                        .assoc_bindings
-                        .into_iter()
-                        .map(|(name, ty)| (name, resolve(ty)))
-                        .collect(),
-                })
-                .collect(),
+            traits: traits.into_iter().map(resolve_bound).collect(),
         },
         ResolvedTy::Task(inner) => ResolvedTy::Task(Box::new(resolve(*inner))),
         other => other,
@@ -543,7 +539,7 @@ pub(crate) fn declaration_walk_terminates(
             | Ty::Borrow { pointee: inner } => member_heads(inner, out),
             Ty::Function { params, ret, .. } => {
                 for param in params {
-                    member_heads(param, out);
+                    member_heads(&param.ty, out);
                 }
                 member_heads(ret, out);
             }
@@ -553,7 +549,7 @@ pub(crate) fn declaration_walk_terminates(
                 captures,
                 ..
             } => {
-                for param in params.iter().chain(captures) {
+                for param in params.iter().map(|parameter| &parameter.ty).chain(captures) {
                     member_heads(param, out);
                 }
                 member_heads(ret, out);
@@ -1916,7 +1912,9 @@ impl Checker {
         let arguments = signature
             .params
             .iter()
-            .map(|ty| ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(ty))))
+            .map(|parameter| {
+                ResolvedTy::from_ty(&self.normalize_for_use(&self.subst.resolve(&parameter.ty)))
+            })
             .collect::<Result<Vec<_>, _>>();
         let Ok(arguments) = arguments else {
             self.errors.push(TypeError::new(
@@ -2614,8 +2612,13 @@ impl Checker {
                     params,
                     return_type,
                     ..
+                } => {
+                    for ty in params {
+                        annotation_regions(&ty.ty, visit);
+                    }
+                    annotation_regions(return_type, visit);
                 }
-                | TypeExpr::ActorFn {
+                TypeExpr::ActorFn {
                     params,
                     return_type,
                 } => {
@@ -3171,6 +3174,7 @@ impl Checker {
             from_impls: self.from_impls.clone(),
             dyn_trait_method_calls: self.dyn_trait_method_calls.clone(),
             closure_capture_facts: self.closure_capture_facts.clone(),
+            generator_capture_facts: self.generator_capture_facts.clone(),
             select_sources: self.select_sources.clone(),
             race_operands: self.race_operands.clone(),
             task_lifetimes: self.task_lifetimes.clone(),
@@ -3883,7 +3887,7 @@ impl Checker {
                 let params = sig
                     .params
                     .iter()
-                    .map(|ty| ResolvedTy::from_ty(ty).ok())
+                    .map(|parameter| ResolvedTy::from_ty(&parameter.ty).ok())
                     .collect::<Option<Vec<_>>>()?;
                 let return_type = ResolvedTy::from_ty(&sig.return_type).ok()?;
                 let receiver = sig
@@ -4290,6 +4294,7 @@ impl Checker {
             dyn_trait_method_calls: std::mem::take(&mut self.dyn_trait_method_calls),
             trait_object_layouts,
             closure_capture_facts: resolved_closure_capture_facts,
+            generator_capture_facts: self.generator_capture_facts.clone(),
             closure_escape_facts: std::mem::take(&mut self.closure_escape_facts),
             actor_protocol_descriptors,
             lambda_actor_declarations: std::mem::take(&mut self.lambda_actor_declarations),
@@ -5884,7 +5889,7 @@ fn actor_handler_specs(
         let param_tys = sig
             .params
             .iter()
-            .map(crate::ResolvedTy::from_ty)
+            .map(|parameter| crate::ResolvedTy::from_ty(&parameter.ty))
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         let return_ty = crate::ResolvedTy::from_ty(&sig.return_type).ok()?;

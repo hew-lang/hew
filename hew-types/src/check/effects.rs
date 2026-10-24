@@ -43,6 +43,9 @@ impl SuspensionEffect {
 /// Complete body summaries and invocation verdicts.
 #[derive(Debug, Clone, Default)]
 pub struct SuspensionEffects {
+    /// Type-level Send uses whose inferred generator capabilities require
+    /// instantiated retained-frame verification before execution.
+    pub send_obligations: HashMap<SpanKey, Vec<Ty>>,
     pub bodies: HashMap<EffectBody, SuspensionEffect>,
     pub calls: HashMap<SpanKey, SuspensionEffect>,
     /// Checked constructors have no executable callee.
@@ -160,6 +163,8 @@ enum ObligationSlot {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct EffectGraph {
+    pub(super) send_obligations: HashMap<SpanKey, Vec<Ty>>,
+    pub(super) conditional_send_bounds: Vec<super::generator_send::ConditionalSendBound>,
     pub builtin_suspensions: HashSet<CallTarget>,
     pub current_body: Option<EffectBody>,
     expression_owners: HashMap<SpanKey, EffectBody>,
@@ -187,6 +192,15 @@ pub(super) struct EffectGraph {
 }
 
 impl Checker {
+    pub(super) fn record_send_obligation(&mut self, ty: &Ty, span: &Span) {
+        let key = SpanKey::in_module(span, self.current_module_idx);
+        let ty = self.subst.resolve(ty);
+        let requirements = self.effect_graph.send_obligations.entry(key).or_default();
+        if !requirements.contains(&ty) {
+            requirements.push(ty);
+        }
+    }
+
     fn effect_for_method(&self, site: &EffectCallSite) -> Option<&super::types::CheckedForMethod> {
         let plan = self.for_loop_plans.get(site.diagnostic_span())?;
         match site {
@@ -1089,12 +1103,35 @@ impl Checker {
         } in &graph.fork_transfers
         {
             let ty = self.subst.resolve(ty);
+            let (value_send, generator_requirements) = self.value_candidates_have_marker(
+                &ty,
+                candidates,
+                crate::traits::MarkerTrait::Send,
+                flows,
+            );
             let proven = |marker| {
-                self.type_has_marker(&ty, marker)
-                    || self.value_candidates_have_marker(&ty, candidates, marker, flows)
+                (!ty.contains_inferred_generator() && self.type_has_marker(&ty, marker))
+                    || if marker == crate::traits::MarkerTrait::Send {
+                        value_send
+                    } else {
+                        self.value_candidates_have_marker(&ty, candidates, marker, flows)
+                            .0
+                    }
             };
             let is_send = proven(crate::traits::MarkerTrait::Send);
             let is_sync = proven(crate::traits::MarkerTrait::Sync);
+            if is_send && *required == crate::traits::MarkerTrait::Send {
+                output
+                    .send_obligations
+                    .entry(key.clone())
+                    .or_default()
+                    .push(ty.clone());
+                output
+                    .send_obligations
+                    .entry(key.clone())
+                    .or_default()
+                    .extend(generator_requirements);
+            }
             output.fork_transfers.insert(
                 key.clone(),
                 ForkTransferFact {
@@ -1103,7 +1140,20 @@ impl Checker {
                     acquisition: *acquisition,
                 },
             );
-            if !proven(*required) {
+            // An uninstantiated generic declaration has no callback value to
+            // inspect yet. Keep its transfer fact unproved; checking a caller
+            // supplies the actual origins and must discharge the requirement.
+            let deferred = *context == "fork"
+                && matches!(ty.callable_body(), Ty::Function { .. })
+                && !candidates.may_be_unknown
+                && matches!(candidates.known.as_slice(), [super::CallableCandidate::Formal(formal)]
+                if !flows.values().flatten().any(|flow| flow.formal == *formal)
+                    && self.callable_formals.iter().any(|(owner, formals)| {
+                        formals.contains(formal)
+                            && matches!(owner, EffectBody::Declaration(declaration)
+                                if self.fn_sigs.get(declaration).is_some_and(|signature| !signature.type_params.is_empty()))
+                    }));
+            if !proven(*required) && !deferred {
                 let mut error = crate::error::TypeError::new(
                     crate::error::TypeErrorKind::InvalidSend,
                     key.start..key.end,
@@ -1161,6 +1211,16 @@ impl Checker {
             .collect();
         drop(solver);
         let mut output = SuspensionEffects {
+            send_obligations: graph
+                .send_obligations
+                .iter()
+                .map(|(key, types)| {
+                    (
+                        key.clone(),
+                        types.iter().map(|ty| self.normalize_for_use(ty)).collect(),
+                    )
+                })
+                .collect(),
             construct_calls: graph.construct_calls.clone(),
             call_owners: graph.expression_owners.clone(),
             value_operations: graph
@@ -1283,6 +1343,12 @@ impl Checker {
             }
         }
         self.finish_fork_transfers(&graph, &mut output, flows);
+        self.finish_conditional_send_bounds(
+            &graph.conditional_send_bounds,
+            &graph.send_obligations,
+            &mut output,
+            flows,
+        );
         output
     }
 }

@@ -74,6 +74,36 @@ fn separate_generic_calls_keep_their_actual_argument_origins() {
 }
 
 #[test]
+fn generic_fork_callback_requires_send_when_actual_values_arrive() {
+    let declaration = "fn run<T: Send>(consume value: T, callback: fn[clone](T) -> i64) -> i64 {
+        let task = fork callback(value);
+        await task
+    }";
+    let output = common::typecheck(declaration);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let safe = format!("{declaration} fn main() {{ let _ = run(1, |item: i64| item); }}");
+    let output = common::typecheck(&safe);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+
+    let unsafe_capture = format!(
+        "{declaration} fn main() {{
+        let local = Rc.new(7);
+        let _ = run(1, move |item: i64| item + local.strong_count());
+    }}"
+    );
+    let output = common::typecheck(&unsafe_capture);
+    assert!(
+        output
+            .errors
+            .iter()
+            .any(|error| error.kind == hew_types::error::TypeErrorKind::InvalidSend),
+        "{:#?}",
+        output.errors
+    );
+}
+
+#[test]
 fn exact_field_projection_does_not_include_an_unreturned_capture() {
     let source = "type Jobs {
         safe: fn[once,suspends]() -> i64;

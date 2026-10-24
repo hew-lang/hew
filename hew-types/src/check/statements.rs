@@ -107,6 +107,15 @@ impl Checker {
             return actual;
         }
         let resolved_expected = self.subst.resolve(expected);
+        if let (Ty::Generator { producers, .. }, Some((yields, returns))) =
+            (&actual, resolved_expected.as_generator())
+        {
+            return Ty::Generator {
+                yields: Box::new(yields.clone()),
+                returns: Box::new(returns.clone()),
+                producers: producers.clone(),
+            };
+        }
         if resolved_expected.contains_callable()
             || matches!(resolved_expected, Ty::TraitObject { .. })
             || matches!(
@@ -1650,6 +1659,7 @@ impl Checker {
                         more_specific_hole_vars,
                     );
                 }
+                let val_ty = val_ty.erase_generator_producers();
                 self.check_shadowing(*name, span);
                 self.env.define_with_span(*name, val_ty, true, span.clone());
                 self.env.set_binding_declaration(

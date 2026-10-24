@@ -239,8 +239,10 @@ impl Checker {
                 }
                 let msg_ty = match &lambda_ty {
                     Ty::Function { params, .. } | Ty::Closure { params, .. } => {
-                        let param_types: Vec<Ty> =
-                            params.iter().map(|ty| self.subst.resolve(ty)).collect();
+                        let param_types: Vec<Ty> = params
+                            .iter()
+                            .map(|parameter| self.subst.resolve(&parameter.ty))
+                            .collect();
                         match param_types.len() {
                             0 => Ty::Tuple(Vec::new()),
                             1 => param_types.into_iter().next().unwrap(),
@@ -386,10 +388,13 @@ impl Checker {
                     .bodies
                     .entry(effect_body.clone())
                     .or_default();
-                let previous_effect_body = self.effect_graph.current_body.replace(effect_body);
+                let previous_effect_body =
+                    self.effect_graph.current_body.replace(effect_body.clone());
+                let capture_scope = self.begin_generator_captures();
                 self.env.enter_initialization_boundary();
                 let body_ty = self.check_block(body, None);
                 self.env.exit_initialization_boundary();
+                self.finish_generator_captures(effect_body.clone(), capture_scope);
                 self.effect_graph.current_body = previous_effect_body;
 
                 self.in_generator = prev_in_generator;
@@ -431,7 +436,7 @@ impl Checker {
                     } else {
                         resolved_yield
                     };
-                    Ty::generator(final_yield, resolved_return)
+                    self.inferred_generator_type(effect_body, final_yield, resolved_return, &[])
                 }
             }
             _ => Ty::Unit,

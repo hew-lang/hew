@@ -233,6 +233,9 @@ interface SupervisorInstance {
   teardownChild: VmValue | null;
   teardownCancelTimer: (() => void) | null;
   restartTimes: number[];
+  backoff: { initial: bigint; maximum: bigint } | null;
+  restartDelays: Map<number, { delay: bigint; publishedAt: number | null }>;
+  restartTimers: Map<number, () => void>;
   specs: SupervisorShape["children"];
   offsets: number[];
   recovering: Set<number>;
@@ -302,6 +305,9 @@ interface Activation {
   /// back on the unwind edge.
   handback?: ValueDef | null;
   erasedHandback?: Extract<VmValue, { kind: "dyn" }>;
+  /// A consuming invocation of a borrowed closure body owns this receiver
+  /// until both the body and its capture cleanup have completed.
+  consumedCallable?: Extract<VmValue, { kind: "closure" }>;
 }
 
 /// Ends the run. The status is already recorded on the trace.
@@ -464,6 +470,13 @@ class ExecutorV1 {
     this.host = {
       argv: [...(options.argv ?? ["main.hew"])],
       unixTimeMillis: () => this.trace.virtualTimeMs,
+      monotonicTimeNanos: () => {
+        const millis = this.trace.virtualTimeMs;
+        return (
+          BigInt(Math.trunc(millis)) * 1_000_000n +
+          BigInt(Math.round((millis % 1) * 1_000_000))
+        );
+      },
       calendarBridge: options.calendarBridge,
       codecBridge: options.codecBridge,
       encodingError: (format, message) => {
@@ -1739,14 +1752,26 @@ class ExecutorV1 {
         // `self`. A plain function value carries none.
         const callee = this.boundary(act, term.callee);
         const args = term.args.map((operand) => this.boundary(act, operand));
+        const body = this.functionAt(
+          calleeFunction(callee, term.specialization),
+        );
         this.current = this.activate(
-          this.functionAt(calleeFunction(callee, term.specialization)),
+          body,
           callee.kind === "closure" ? [callee.environment, ...args] : args,
           act,
           term.result,
           term.normal,
           term.unwind,
         );
+        // SIR already distinguishes a consuming body from a borrowed body
+        // exposed through a once-callable view. Only the latter leaves its
+        // receiver cleanup to this invocation boundary.
+        if (
+          callee.kind === "closure" &&
+          term.callee.decision === "move" &&
+          body.params[0]?.own !== "owned"
+        )
+          this.current.consumedCallable = callee;
         return;
       }
       case "actor.call":
@@ -2448,6 +2473,10 @@ class ExecutorV1 {
   }
 
   private returnFrom(act: Activation, value: VmValue): void {
+    if (
+      this.finishConsumedCallable(act, value, () => this.returnFrom(act, value))
+    )
+      return;
     if (this.finishConstruction(act, () => this.returnFrom(act, value))) return;
     const caller = act.caller;
     if (!caller) {
@@ -2523,6 +2552,12 @@ class ExecutorV1 {
   }
 
   private resumeUnwind(act: Activation, handback: VmValue | null): void {
+    if (
+      this.finishConsumedCallable(act, null, () =>
+        this.resumeUnwind(act, handback),
+      )
+    )
+      return;
     if (this.finishConstruction(act, () => this.resumeUnwind(act, handback)))
       return;
     const fault = act.fault;
@@ -2556,6 +2591,49 @@ class ExecutorV1 {
     caller.fault = fault;
     this.current = caller;
     this.takeEdge(caller, act.unwind);
+  }
+
+  private finishConsumedCallable(
+    act: Activation,
+    value: VmValue | null,
+    done: () => void,
+  ): boolean {
+    const callable = act.consumedCallable;
+    if (!callable) return false;
+    act.consumedCallable = undefined;
+    this.running = false;
+    this.closeValueAsync(
+      callable,
+      this.faultText(act.fault),
+      (fault) => {
+        act.fault = combineFaults(act.fault, fault);
+        const resume = () => {
+          if (value !== null && act.fault) this.resumeUnwind(act, null);
+          else done();
+          const current = this.current;
+          this.scheduler.enqueue(current.context.id, () =>
+            this.runFrame(current),
+          );
+        };
+        // A successful body result is not observable until receiver cleanup
+        // succeeds. A cleanup fault must release that unpublished result.
+        if (value !== null && act.fault)
+          this.closeValueAsync(
+            value,
+            this.faultText(act.fault),
+            (resultFault) => {
+              act.fault = combineFaults(act.fault, resultFault);
+              resume();
+            },
+            act.context.actor,
+            act.rcOwner,
+          );
+        else resume();
+      },
+      act.context.actor,
+      act.rcOwner,
+    );
+    return true;
   }
 
   private suspend(
@@ -4237,14 +4315,33 @@ class ExecutorV1 {
         const count = isPool ? args[args.length - 1] : undefined;
         if (isPool && count?.kind !== "i64")
           throw new Error("pool construction has no count");
-        const config = isPool ? args.slice(0, -1) : args;
+        const configured = isPool ? args.slice(0, -1) : args;
+        const initial = layout.backoff
+          ? configured[configured.length - 2]
+          : undefined;
+        const maximum = layout.backoff
+          ? configured[configured.length - 1]
+          : undefined;
+        const backoff =
+          initial?.kind === "i64" && maximum?.kind === "i64"
+            ? { initial: initial.value, maximum: maximum.value }
+            : null;
+        const validBackoff =
+          !layout.backoff ||
+          (backoff !== null &&
+            backoff.initial > 0n &&
+            backoff.maximum >= backoff.initial);
+        const config = layout.backoff ? configured.slice(0, -2) : configured;
         if (
-          count?.kind === "i64" &&
-          (count.value <= 0n || count.value > 2147483647n)
+          !validBackoff ||
+          (count?.kind === "i64" &&
+            (count.value <= 0n || count.value > 2147483647n))
         ) {
           const fault: Fault = {
             kind: "panic",
-            message: "supervisor pool count must be between 1 and 2147483647",
+            message: !validBackoff
+              ? "supervisor backoff requires positive initial and maximum >= initial"
+              : "supervisor pool count must be between 1 and 2147483647",
           };
           this.running = false;
           this.closeValueAsync(
@@ -4286,6 +4383,9 @@ class ExecutorV1 {
           teardownChild: null,
           teardownCancelTimer: null,
           restartTimes: [],
+          backoff,
+          restartDelays: new Map(),
+          restartTimers: new Map(),
           closed: [],
         };
         this.supervisors.set(owner.id, owner);
@@ -4793,6 +4893,30 @@ class ExecutorV1 {
     for (const timer of [...actor.timers]) timer.cancel();
   }
 
+  private bindActorStream(context: FrameContext, sink: VmValue): () => void {
+    let unwatch = () => {};
+    let active = true;
+    const detach = () => {
+      active = false;
+      unwatch();
+    };
+    const closed = () => {
+      if (!active || !this.pipes.peerClosed(sink)) return;
+      // Bind the reader to this exact producer turn, including while it waits
+      // on another operation. Later reader closes must not cancel a new turn.
+      detach();
+      context.pendingCancellation ??= {
+        kind: "panic",
+        message: "actor stream reader closed",
+        cancelled: true,
+      };
+      context.cancel?.(context.pendingCancellation);
+    };
+    unwatch = this.pipes.observe(sink, closed);
+    closed();
+    return detach;
+  }
+
   private dispatchActor(actor: ActorInstance): void {
     if (actor.busy || !actor.alive || actor.drainingMailbox) return;
     if (actor.disposals.length > 0) {
@@ -4866,6 +4990,7 @@ class ExecutorV1 {
         actor_id: actor.id,
         handler: message.handler.name,
       });
+      let unwatchStream = () => {};
       const frame = this.activate(
         this.functionAt(message.handler.callable),
         [actor.state, ...message.payload],
@@ -4880,6 +5005,7 @@ class ExecutorV1 {
           requestDeadline: message.requestDeadline,
           reply: message.reply,
           returned: (value) => {
+            unwatchStream();
             actor.active = null;
             const drained = (fault: Fault | null) => {
               actor.busy = false;
@@ -4915,6 +5041,7 @@ class ExecutorV1 {
             }
           },
           failed: (fault) => {
+            unwatchStream();
             actor.active = null;
             actor.busy = false;
             if (
@@ -4936,6 +5063,13 @@ class ExecutorV1 {
         },
       );
       actor.active = frame.context;
+      if (message.handler.streams) {
+        // StreamStart's checked producer protocol appends its output sink.
+        const sink = message.payload.at(-1);
+        if (sink?.kind !== "sink")
+          throw new Error("actor stream producer has no final sink");
+        unwatchStream = this.bindActorStream(frame.context, sink);
+      }
       this.runFrame(frame);
     });
   }
@@ -5239,6 +5373,7 @@ class ExecutorV1 {
     owner: SupervisorInstance,
     child: number,
     debts: number[],
+    delayElapsed = false,
   ): void {
     if (
       !owner.alive ||
@@ -5255,6 +5390,29 @@ class ExecutorV1 {
       return;
     }
     const now = this.trace.virtualTimeMs;
+    if (owner.backoff && debts.length > 0 && !delayElapsed) {
+      const previous = owner.restartDelays.get(child);
+      const healthy =
+        previous?.publishedAt != null &&
+        now - previous.publishedAt >= owner.layout.window_secs * 1000;
+      const doubled = previous ? previous.delay * 2n : owner.backoff.initial;
+      const delay =
+        !previous || healthy
+          ? owner.backoff.initial
+          : doubled < owner.backoff.maximum
+            ? doubled
+            : owner.backoff.maximum;
+      owner.restartDelays.set(child, { delay, publishedAt: null });
+      owner.recovering.add(child);
+      owner.restartTimers.set(
+        child,
+        this.scheduler.after(delay, () => {
+          owner.restartTimers.delete(child);
+          this.restartChild(owner, child, debts, true);
+        }),
+      );
+      return;
+    }
     owner.restartTimes = owner.restartTimes.filter(
       (at) => now - at < owner.layout.window_secs * 1000,
     );
@@ -5316,10 +5474,19 @@ class ExecutorV1 {
         if (pending) this.restartChild(owner, pending.child, pending.debts);
         return;
       }
-      this.startChild(owner, index, start, () => {
-        owner.restartBusy = false;
-        this.restartChild(owner, index, debts);
-      });
+      this.startChild(
+        owner,
+        index,
+        () => {
+          const delay = owner.restartDelays.get(index);
+          if (delay) delay.publishedAt = this.trace.virtualTimeMs;
+          start();
+        },
+        () => {
+          owner.restartBusy = false;
+          this.restartChild(owner, index, debts);
+        },
+      );
     };
     stop();
   }
@@ -5396,6 +5563,8 @@ class ExecutorV1 {
     }
     if (!owner.alive) return;
     owner.alive = false;
+    for (const cancel of owner.restartTimers.values()) cancel();
+    owner.restartTimers.clear();
     if (owner.constructor) {
       owner.constructor.pendingCancellation ??= {
         kind: "panic",

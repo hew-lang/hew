@@ -346,7 +346,7 @@ impl Checker {
                 if let Some(arg) = args.first() {
                     let (expr, sp) = arg.expr();
                     if let Some(param_ty) = sig.params.first() {
-                        self.check_against(expr, sp, param_ty);
+                        self.check_against(expr, sp, &param_ty.ty);
                     }
                 }
                 if method != "take" && resolved_inner != Ty::Bytes {
@@ -476,6 +476,7 @@ impl Checker {
             | Ty::Array(_, _)
             | Ty::Slice(_)
             | Ty::Named { .. }
+            | Ty::Generator { .. }
             | Ty::GenericCallable { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }
@@ -1415,7 +1416,7 @@ impl Checker {
                     continue;
                 }
             }
-            self.check_against(expr, arg_span, expected);
+            self.check_against(expr, arg_span, &expected.ty);
             // A value with no copy operation enters the collection by
             // transfer: the slot becomes its only owner, so a later use of the
             // source binding is a use after the move.
@@ -1650,7 +1651,7 @@ impl Checker {
                         suspends: true,
                         ..crate::CallableCapabilities::default()
                     },
-                    params: vec![elem_ty.clone()],
+                    params: vec![crate::CallableParameter::borrowed(elem_ty.clone())],
                     ret: Box::new(ret_ty.clone()),
                 };
                 if let Some(arg) = args.first() {
@@ -1676,7 +1677,7 @@ impl Checker {
                         suspends: true,
                         ..crate::CallableCapabilities::default()
                     },
-                    params: vec![elem_ty.clone()],
+                    params: vec![crate::CallableParameter::borrowed(elem_ty.clone())],
                     ret: Box::new(Ty::Bool),
                 };
                 if let Some(arg) = args.first() {
@@ -1713,7 +1714,10 @@ impl Checker {
                         suspends: true,
                         ..crate::CallableCapabilities::default()
                     },
-                    params: vec![acc_ty.clone(), elem_ty.clone()],
+                    params: vec![
+                        crate::CallableParameter::borrowed(acc_ty.clone()),
+                        crate::CallableParameter::borrowed(elem_ty.clone()),
+                    ],
                     ret: Box::new(acc_ty.clone()),
                 };
                 if let Some(arg) = args.first() {
@@ -1745,7 +1749,10 @@ impl Checker {
                         suspends: true,
                         ..crate::CallableCapabilities::default()
                     },
-                    params: vec![acc_ty.clone(), elem_ty.clone()],
+                    params: vec![
+                        crate::CallableParameter::borrowed(acc_ty.clone()),
+                        crate::CallableParameter::borrowed(elem_ty.clone()),
+                    ],
                     ret: Box::new(acc_ty.clone()),
                 };
                 if let Some(arg) = args.get(1) {

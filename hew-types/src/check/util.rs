@@ -41,7 +41,7 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
         }
         Ty::Function { params, ret, .. } => {
             for param in params {
-                collect_unresolved_inference_vars(param, vars);
+                collect_unresolved_inference_vars(&param.ty, vars);
             }
             collect_unresolved_inference_vars(ret, vars);
         }
@@ -52,7 +52,7 @@ pub(super) fn collect_unresolved_inference_vars(ty: &Ty, vars: &mut HashSet<Type
             ..
         } => {
             for param in params {
-                collect_unresolved_inference_vars(param, vars);
+                collect_unresolved_inference_vars(&param.ty, vars);
             }
             collect_unresolved_inference_vars(ret, vars);
             for capture in captures {
@@ -115,8 +115,11 @@ pub(super) fn first_infer_span_in_type_expr(type_expr: &Spanned<TypeExpr>) -> Op
             params,
             return_type,
             ..
-        }
-        | TypeExpr::ActorFn {
+        } => params
+            .iter()
+            .find_map(|parameter| first_infer_span_in_type_expr(&parameter.ty))
+            .or_else(|| first_infer_span_in_type_expr(return_type)),
+        TypeExpr::ActorFn {
             params,
             return_type,
         } => params

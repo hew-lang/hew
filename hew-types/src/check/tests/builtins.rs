@@ -94,7 +94,7 @@ fn test_builtin_registration() {
     assert!(checker.sigs().contains("println_int"));
     let sig = &checker.sigs()["println_int"];
     assert_eq!(sig.params.len(), 1);
-    assert_eq!(sig.params[0], Ty::I64);
+    assert_eq!(sig.params[0].ty, Ty::I64);
     assert_eq!(sig.return_type, Ty::Unit);
 }
 
@@ -626,7 +626,7 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
     let output = checker.check_program(&result.program);
     assert!(output.errors.is_empty(), "type errors: {:?}", output.errors);
     for ty in [
-        &output.sigs()["stream_id"].params[0],
+        &output.sigs()["stream_id"].params[0].ty,
         &output.sigs()["stream_id"].return_type,
     ] {
         assert!(
@@ -638,7 +638,7 @@ fn qualified_builtin_type_names_keep_their_element_and_builtin_identity() {
             "got: {ty:?}",
         );
     }
-    let sink = &output.sigs()["close_sink"].params[0];
+    let sink = &output.sigs()["close_sink"].params[0].ty;
     assert!(
         matches!(
             sink,

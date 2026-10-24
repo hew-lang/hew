@@ -526,6 +526,14 @@ pub struct BuildArgs {
         conflicts_with = "debug"
     )]
     pub export_c: Vec<String>,
+    /// Experimental wake-driven C export with a typed owned call handle.
+    #[arg(
+        long = "export-c-async",
+        value_name = "SOURCE=SYMBOL",
+        requires = "emit_obj",
+        conflicts_with = "debug"
+    )]
+    pub export_c_async: Vec<String>,
     /// Retain the textual LLVM IR used for object emission beside the output.
     #[arg(long = "emit-llvm")]
     pub emit_llvm: bool,
@@ -571,7 +579,7 @@ pub struct BuildArgs {
     pub link_libs: Vec<String>,
     /// Write a Makefile-format dependency file naming every Hew module,
     /// manifest and native source the build read, with the output as target.
-    #[arg(long = "emit-deps", value_name = "FILE", conflicts_with = "export_c")]
+    #[arg(long = "emit-deps", value_name = "FILE", conflicts_with_all = ["export_c", "export_c_async"])]
     pub emit_deps: Option<PathBuf>,
     #[command(flatten)]
     pub common: CommonBuildArgs,

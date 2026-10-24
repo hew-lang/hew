@@ -186,7 +186,7 @@ impl Checker {
                     *argument = self.finalize_type_for_handoff(argument);
                 }
                 for param in &mut slot.signature.params {
-                    *param = self.finalize_type_for_handoff(param);
+                    param.ty = self.finalize_type_for_handoff(&param.ty);
                 }
                 slot.signature.return_type =
                     self.finalize_type_for_handoff(&slot.signature.return_type);

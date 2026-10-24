@@ -138,7 +138,7 @@ impl LowerCtx {
             .registered_impl_method_symbol(method)
             .and_then(|symbol| {
                 let entry = self.fn_registry.get(&symbol)?;
-                Some((symbol, entry.id, entry.param_tys.clone()))
+                Some((symbol, entry.id, entry.params.clone()))
             });
         let Some((symbol, id, param_tys)) = entry else {
             self.diagnostics.push(HirDiagnostic::new(

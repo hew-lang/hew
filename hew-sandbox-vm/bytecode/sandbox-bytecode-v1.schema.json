@@ -6378,6 +6378,9 @@
     "Supervisor": {
       "description": "One demanded supervisor: its restart policy and the children it starts.",
       "properties": {
+        "backoff": {
+          "type": "boolean"
+        },
         "children": {
           "items": {
             "$ref": "#/$defs/SupervisorChild"

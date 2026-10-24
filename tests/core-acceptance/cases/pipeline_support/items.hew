@@ -1,0 +1,32 @@
+import std.stream;
+import std.semaphore;
+
+#[resource]
+pub type Item {
+    index: i64;
+    closed: semaphore.Semaphore;
+}
+
+impl Item {
+    fn close(consume self) {
+        self.closed.release();
+    }
+}
+
+pub fn source(closed: semaphore.Semaphore) -> Stream<Item> {
+    let (sink, input): (Sink<Item>, Stream<Item>) = stream.pipe(6).expect("items");
+    for index in 0..6 {
+        sink.send(Item { index, closed: closed.clone() }).expect("item");
+    }
+    sink.finish();
+    input
+}
+
+/// Forward the exact resource owner through an imported callable value.
+pub fn forward(consume item: Item) -> Item {
+    item
+}
+
+pub fn index(item: Item) -> i64 {
+    item.index
+}

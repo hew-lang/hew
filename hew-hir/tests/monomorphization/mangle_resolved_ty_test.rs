@@ -117,12 +117,15 @@ fn type_family(depth: usize) -> Vec<ResolvedTy> {
                 ResolvedTy::Slice(Box::new(ty.clone())),
                 ResolvedTy::Function {
                     capabilities: hew_parser::ast::CallableCapabilities::default(),
-                    params: vec![ty.clone(), ResolvedTy::Bool],
+                    params: vec![
+                        hew_types::CallableParameter::borrowed(ty.clone()),
+                        hew_types::CallableParameter::borrowed(ResolvedTy::Bool),
+                    ],
                     ret: Box::new(ResolvedTy::String),
                 },
                 ResolvedTy::Closure {
                     capabilities: hew_parser::ast::CallableCapabilities::default(),
-                    params: vec![ty.clone()],
+                    params: vec![hew_types::CallableParameter::borrowed(ty.clone())],
                     ret: Box::new(ResolvedTy::Bool),
                     captures: vec![],
                 },

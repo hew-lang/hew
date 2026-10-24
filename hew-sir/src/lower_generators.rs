@@ -87,7 +87,7 @@ impl Builder<'_, '_> {
         let id = self
             .service
             .request_closure(self.callable.id, &closure, &self.substitution)?;
-        self.service.closures[id.0 as usize].generator_yield = Some(yielded);
+        self.service.closures[id.0 as usize].generator_type = Some(self.ty(&expression.ty));
         let callable = self.lower_closure(&closure)?;
         self.owned_live.remove(&callable);
         self.emit(
@@ -118,11 +118,7 @@ impl Builder<'_, '_> {
         let CallableInstance::Closure(closure) = self.callable.instance else {
             return Err("yield requires a checked generator body".into());
         };
-        if self.service.closures[closure.0 as usize]
-            .generator_yield
-            .as_ref()
-            != Some(&ty)
-        {
+        if self.service.closures[closure.0 as usize].generator_yield() != Some(&ty) {
             return Err("yield differs from its generator's checked yield type".into());
         }
         let value = self.lower_yield_value(expression, value)?;

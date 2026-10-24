@@ -8845,6 +8845,110 @@
     },
     {
       "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_arguments( *const HewHostCall) -> *mut c_void"
+      },
+      "symbol": "hew_host_call_arguments"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_cancel( *mut HewHostCall)"
+      },
+      "symbol": "hew_host_call_cancel"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_new( *mut HewRuntime, *const HewWaker, *mut *mut HewError, ) -> *mut HewHostCall"
+      },
+      "symbol": "hew_host_call_new"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_poll( *mut HewHostCall) -> i32"
+      },
+      "symbol": "hew_host_call_poll"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_release( *mut *mut HewHostCall, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_call_release"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_result_begin( *mut HewHostCall, *mut *mut HewError, ) -> i32"
+      },
+      "symbol": "hew_host_call_result_begin"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_start( *mut HewHostCall, HewRootStart, *mut c_void, *mut c_void, *mut *mut HewFault, HewHostCallFinish, HewHostCallFree, )"
+      },
+      "symbol": "hew_host_call_start"
+    },
+    {
+      "availability": [
+        "native"
+      ],
+      "classification": "non-declarable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_host_call_status( *const HewHostCall) -> i32"
+      },
+      "symbol": "hew_host_call_status"
+    },
+    {
+      "availability": [
         "native",
         "wasm32-wasip1"
       ],
@@ -18690,8 +18794,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, i64, *const HewWaker, ) -> *mut HewSupervisorConstruction",
-        "wasm32-wasip1": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, i64, *const HewWaker, ) -> *mut HewSupervisorConstruction"
+        "native": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, ) -> *mut HewSupervisorConstruction",
+        "wasm32-wasip1": "fn hew_supervisor_native_spawn_new( c_int, c_int, c_int, *mut c_void, Option<unsafe extern \"C\" fn(*mut c_void)>, *const HewNativeChildSpec, usize, c_int, i64, i64, i64, *const HewWaker, ) -> *mut HewSupervisorConstruction"
       },
       "symbol": "hew_supervisor_native_spawn_new"
     },

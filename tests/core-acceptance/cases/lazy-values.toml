@@ -1,0 +1,10 @@
+[[case]]
+id = "lazy-values"
+intent = "Lazy initialization consumes its captured resource once, caches errors as values, returns independent snapshots and composes with default callable arguments."
+source = "cases/lazy-values.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+[case.expected]
+stdout = "unused initializer retained\nclose 1\ninitialize 2\nclose 2\ninitialize error\nclose 3\nlazy values passed\n"
+stderr = ""
+exit = 0

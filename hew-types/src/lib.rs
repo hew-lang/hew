@@ -51,7 +51,9 @@ pub use callable::{
     ClosureCaptureConsumption,
 };
 
-pub use hew_parser::ast::{CallableCallMode, CallableCapabilities};
+pub use hew_parser::ast::{
+    CallableCallMode, CallableCapabilities, CallableParameter, ParameterOwnership,
+};
 
 pub use actor_protocol::{
     ActorHandlerDescriptor, ActorHandlerSpec, ActorProtocolDescriptor, ReceiveFailureDisplay,

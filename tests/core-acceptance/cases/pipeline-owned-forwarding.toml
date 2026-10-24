@@ -1,0 +1,11 @@
+[[case]]
+id = "pipeline-owned-forwarding"
+intent = "Imported consuming functions and explicit or inferred consuming closures forward each resource input to the pipeline consumer without copying or prematurely closing it."
+source = "cases/pipeline-owned-forwarding.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "pipeline resource owners forwarded\n"
+stderr = ""
+exit = 0

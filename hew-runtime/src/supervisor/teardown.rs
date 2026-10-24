@@ -110,6 +110,14 @@ pub(crate) fn mark_child_spec_spent(sup: *mut HewSupervisor, identity: u64) {
         {
             spec.spent = true;
         }
+        if let Some(spec) = roster
+            .child_supervisor_specs
+            .iter_mut()
+            .flatten()
+            .find(|spec| spec.identity == identity)
+        {
+            spec.spent = true;
+        }
     }
     wake_restart_waiters(sup);
 }
@@ -778,6 +786,9 @@ pub(super) fn publish_restart_snapshot(
         }
     }
     circuit_breaker_record_success(spec, sup_actor_id);
+    if !child.is_null() {
+        spec.backoff.published();
+    }
     // SAFETY: the same roster guard protects child-slot mutation.
     if let Some(slot) = roster.children.get_mut(index) {
         *slot = child;
@@ -1208,6 +1219,9 @@ pub(crate) unsafe fn restart_child_supervisor_from_spec(
         }
         s.child_supervisors[index] = new_child;
         s.child_supervisor_tokens[index] = new_token;
+        if let Some(spec) = s.child_supervisor_specs[index].as_mut() {
+            spec.backoff.published();
+        }
         debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_tokens.len());
         debug_assert_eq!(s.child_supervisors.len(), s.child_supervisor_specs.len());
     }

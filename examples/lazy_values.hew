@@ -1,0 +1,22 @@
+import std.lazy;
+
+type Config {
+    endpoint: string;
+    retries: i64;
+}
+
+fn load_config() -> Config {
+    println("loading configuration");
+    Config { endpoint: "https://example.com", retries: 3 }
+}
+
+fn main() {
+    var config = lazy.new(|| load_config());
+    println("configuration is still deferred");
+    var first = config.value();
+    first.retries = 5;
+    let second = config.value();
+    assert(first.retries == 5);
+    assert(second.retries == 3);
+    println(f"{second.endpoint}: {second.retries} retries");
+}

@@ -1,0 +1,25 @@
+trait Factory {
+    fn make() -> Self;
+}
+
+gen fn safe() -> i64 { yield 1; }
+
+gen fn local_only() -> i64 {
+    let local = Rc.new(7);
+    yield 1;
+    assert(local.get() == 7);
+}
+
+impl Factory for Generator<i64, ()> {
+    fn make() -> Generator<i64, ()> { local_only() }
+}
+
+fn require_send<T: Send>(consume value: T) {}
+
+fn replace<I: Factory + Send>(consume source: I) {
+    require_send(I.make());
+}
+
+fn main() {
+    replace(safe());
+}

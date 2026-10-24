@@ -575,7 +575,20 @@ pub(super) fn render_type_expr(ty: &TypeExpr) -> String {
             return_type,
             ..
         } => {
-            let ps: Vec<String> = params.iter().map(|p| render_type_expr(&p.0)).collect();
+            let ps: Vec<String> = params
+                .iter()
+                .map(|parameter| {
+                    format!(
+                        "{}{}",
+                        if parameter.ownership == hew_types::ParameterOwnership::Consume {
+                            "consume "
+                        } else {
+                            ""
+                        },
+                        render_type_expr(&parameter.ty.0)
+                    )
+                })
+                .collect();
             format!(
                 "fn({}) -> {}",
                 ps.join(", "),

@@ -1131,6 +1131,7 @@ pub(crate) struct SupervisorChildSpec {
     /// Nested supervisors carry no separate deadline; their children do.
     stop_ns: i64,
     spent: bool,
+    backoff: RestartBackoff,
 }
 
 /// All mutable child, nested-supervisor, pool, restart-budget, and child-config
@@ -1138,6 +1139,7 @@ pub(crate) struct SupervisorChildSpec {
 /// unrepresentable and prevents a whole-`HewSupervisor` reference from
 /// aliasing concurrent raw roster updates.
 pub(crate) struct SupervisorRoster {
+    backoff: Option<(u64, u64)>,
     children: Vec<*mut HewActor>,
     child_specs: Vec<InternalChildSpec>,
     child_count: usize,
@@ -1713,6 +1715,64 @@ impl Drop for CircuitBreakerState {
     }
 }
 
+/// Existing per-role delay state, shared by actors, pools and nested supervisors.
+#[derive(Debug)]
+struct RestartBackoff {
+    initial_ns: u64,
+    maximum_ns: u64,
+    delay_ns: u64,
+    next_restart_time_ns: u64,
+    selected: bool,
+    published: bool,
+}
+
+impl Default for RestartBackoff {
+    fn default() -> Self {
+        Self {
+            initial_ns: INITIAL_RESTART_DELAY_MS * 1_000_000,
+            maximum_ns: DEFAULT_MAX_RESTART_DELAY_MS * 1_000_000,
+            delay_ns: 0,
+            next_restart_time_ns: 0,
+            selected: false,
+            published: false,
+        }
+    }
+}
+
+impl RestartBackoff {
+    fn configured(policy: Option<(u64, u64)>) -> Self {
+        policy.map_or_else(Self::default, |(initial_ns, maximum_ns)| Self {
+            initial_ns,
+            maximum_ns,
+            selected: true,
+            ..Self::default()
+        })
+    }
+
+    fn advance(&mut self, now_ns: u64, window_ns: u64) {
+        // Publication replaces the pending deadline with the start of healthy
+        // execution. Downtime must not reset the per-role exponent.
+        let healthy = self.selected
+            && self.published
+            && self.delay_ns > 0
+            && now_ns.saturating_sub(self.next_restart_time_ns) >= window_ns;
+        self.delay_ns = if self.delay_ns == 0 || healthy {
+            self.initial_ns
+        } else {
+            self.delay_ns.saturating_mul(2).min(self.maximum_ns)
+        };
+        self.next_restart_time_ns = now_ns.saturating_add(self.delay_ns);
+        self.published = false;
+    }
+
+    fn published(&mut self) {
+        if self.selected {
+            self.next_restart_time_ns = monotonic_time_ns();
+            self.published = true;
+        }
+    }
+}
+
 /// Internal owned copy of a child spec.
 #[derive(Debug)]
 struct InternalChildSpec {
@@ -1747,12 +1807,7 @@ struct InternalChildSpec {
     coalesce_match_fn: Option<mailbox::HewCoalesceMatchFn>,
     coalesce_fallback: c_int,
     message_drop_fn: Option<mailbox::HewMessageDropFn>,
-    /// Exponential backoff restart delay in milliseconds.
-    restart_delay_ms: u64,
-    /// Maximum restart delay (default 30 seconds).
-    max_restart_delay_ms: u64,
-    /// Next allowed restart time (monotonic nanoseconds).
-    next_restart_time_ns: u64,
+    backoff: RestartBackoff,
     /// Circuit breaker state for this child.
     circuit_breaker: CircuitBreakerState,
     /// Per-dispatch arena cap in bytes. 0 = unbounded. Copied from
@@ -1921,9 +1976,7 @@ impl Default for InternalChildSpec {
             coalesce_fallback: OVERFLOW_DROP_NEW,
             message_drop_fn: None,
             native_spawn: None,
-            restart_delay_ms: 0,
-            max_restart_delay_ms: DEFAULT_MAX_RESTART_DELAY_MS,
-            next_restart_time_ns: 0,
+            backoff: RestartBackoff::default(),
             circuit_breaker: CircuitBreakerState::default(),
             arena_cap_bytes: 0,
             cycle_capable: 0,
@@ -2260,28 +2313,17 @@ fn circuit_breaker_record_success(spec: &mut InternalChildSpec, sup_actor_id: u6
 
 /// Check if enough time has passed for a delayed restart.
 fn restart_delay_allows_restart(spec: &InternalChildSpec) -> bool {
-    if spec.next_restart_time_ns == 0 {
+    if spec.backoff.next_restart_time_ns == 0 {
         return true;
     }
     let now_ns = monotonic_time_ns();
-    now_ns >= spec.next_restart_time_ns
+    now_ns >= spec.backoff.next_restart_time_ns
 }
 
 /// Apply exponential backoff delay to the child spec.
 fn apply_restart_backoff(spec: &mut InternalChildSpec) {
-    if spec.restart_delay_ms == 0 {
-        // First restart, set to initial delay
-        spec.restart_delay_ms = INITIAL_RESTART_DELAY_MS;
-    } else {
-        // Double the delay, capped at max
-        spec.restart_delay_ms = spec
-            .restart_delay_ms
-            .wrapping_mul(2)
-            .min(spec.max_restart_delay_ms);
-    }
-
-    let delay_ns = spec.restart_delay_ms.wrapping_mul(1_000_000);
-    spec.next_restart_time_ns = monotonic_time_ns().wrapping_add(delay_ns);
+    // Legacy allocation-failure recovery retains its established delay policy.
+    spec.backoff.advance(monotonic_time_ns(), u64::MAX);
 }
 
 struct RestartWheelTimer {
@@ -2588,15 +2630,16 @@ fn spawn_owned_deferred_supervisor_stop(
         return false;
     }
 
-    #[cfg(target_arch = "wasm32")]
-    {
+    if cfg!(target_arch = "wasm32") || crate::driver::active() {
         crate::driver::publish_supervisor_stop(QueuedSupervisorStop {
             supervisor: sup,
             root_unregistered: false,
             teardown,
         });
-        true
+        return true;
     }
+    #[cfg(target_arch = "wasm32")]
+    unreachable!("WASI supervisor teardown always uses the driver");
     #[cfg(not(target_arch = "wasm32"))]
     {
         let sup_addr = sup as usize;

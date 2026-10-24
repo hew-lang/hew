@@ -277,7 +277,9 @@ impl RuntimeValueKind {
             ),
             Self::CodecGenerator => {
                 let source = receiver?;
-                if !matches!(source, ResolvedTy::Named { head: crate::TypeHead::Builtin(BuiltinType::Generator), args, .. } if matches!(args.as_slice(), [_, ResolvedTy::Unit]))
+                if source
+                    .generator_parts()
+                    .is_none_or(|(_, returns)| *returns != ResolvedTy::Unit)
                 {
                     return None;
                 }
@@ -293,16 +295,18 @@ impl RuntimeValueKind {
                 source.clone()
             }
             Self::CodecItem => match receiver? {
-                ResolvedTy::Named {
-                    head: crate::TypeHead::Builtin(BuiltinType::Generator),
-                    args,
-                    ..
-                } if matches!(args.as_slice(), [_, ResolvedTy::Unit]) => args[0].clone(),
+                source
+                    if source
+                        .generator_parts()
+                        .is_some_and(|(_, returns)| *returns == ResolvedTy::Unit) =>
+                {
+                    source.generator_parts()?.0.clone()
+                }
                 ResolvedTy::Function { params, ret, .. }
                 | ResolvedTy::Closure { params, ret, .. }
                     if params.len() == 1 && **ret == ResolvedTy::Bytes =>
                 {
-                    params[0].clone()
+                    params[0].ty.clone()
                 }
                 _ => return None,
             },

@@ -1,0 +1,49 @@
+import std.pipeline;
+
+gen fn first() -> string {
+    yield "first";
+}
+
+gen fn second() -> string {
+    yield "second";
+}
+
+gen fn from_callback(consume callback: fn() -> i64) -> i64 {
+    yield callback();
+}
+
+fn identity<I>(consume source: I) -> I {
+    source
+}
+
+fn main() {
+    let annotated: Generator<string, ()> = first();
+    var values: Vec<string> = [];
+    for value in pipeline.prefetch(annotated) {
+        values.push(value);
+    }
+    assert(values == ["first"]);
+    let choose_first = "choice".is_empty();
+    let selected = if choose_first {
+        first()
+    } else {
+        second()
+    };
+    var joined: Vec<string> = [];
+    for value in pipeline.map(pipeline.prefetch(identity(selected)), |value: string| value + "!", concurrency: 2) {
+        joined.push(value);
+    }
+    assert(joined == ["second!"]);
+
+    // A separate local-only construction of the same producer must neither
+    // grant Send to its Rc capture nor taint a safe constructor's proof.
+    let local = Rc.new(7);
+    let private = from_callback(move || local.get());
+    assert(private.next() == .Some(7));
+    var mapped: Vec<i64> = [];
+    for value in pipeline.map(pipeline.map(from_callback(|| 21), |value: i64| value * 2), |value: i64| value + 1) {
+        mapped.push(value);
+    }
+    assert(mapped == [43]);
+    println("generator pipelines compose");
+}

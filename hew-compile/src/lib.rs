@@ -610,6 +610,7 @@ impl Session {
                 matches!(
                     diagnostic.kind,
                     hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
+                        | hew_sir::SirDiagnosticKind::InvalidGeneratorSend { .. }
                 )
             }) {
                 return Err(SessionError::Ownership(diagnostics));
@@ -667,6 +668,15 @@ impl Session {
             // verification of their result.
             let diagnostics = hew_sir::verify_module(&sir.module);
             if !diagnostics.is_empty() {
+                if diagnostics.iter().all(|diagnostic| {
+                    matches!(
+                        diagnostic.kind,
+                        hew_sir::SirDiagnosticKind::UnconsumedLinear { .. }
+                            | hew_sir::SirDiagnosticKind::InvalidGeneratorSend { .. }
+                    )
+                }) {
+                    return Err(SessionError::Ownership(diagnostics));
+                }
                 return Err(SessionError::Semantic(diagnostics));
             }
         }
@@ -1918,6 +1928,30 @@ pub fn ownership_diagnostics_to_frontend(
     diagnostics
         .into_iter()
         .map(|diagnostic| {
+            if let hew_sir::SirDiagnosticKind::InvalidGeneratorSend { message, site } =
+                &diagnostic.kind
+            {
+                let source = match &site.source {
+                    hew_sir::FunctionSourceOrigin::RootUnit => Some((root_source, root_filename)),
+                    hew_sir::FunctionSourceOrigin::Foreign(module) => sources
+                        .get(module)
+                        .map(|(source, filename)| (source.as_str(), filename.as_str())),
+                    hew_sir::FunctionSourceOrigin::Unknown => None,
+                };
+                return source.map_or_else(
+                    || FrontendDiagnostic::coded_message("InvalidSend", message.clone()),
+                    |(source, filename)| FrontendDiagnostic {
+                        source: Some(source.to_string()),
+                        filename: Some(filename.to_string()),
+                        note_sources: Vec::new(),
+                        kind: FrontendDiagnosticKind::Type(hew_types::TypeError::new(
+                            hew_types::error::TypeErrorKind::InvalidSend,
+                            site.span.clone(),
+                            message.clone(),
+                        )),
+                    },
+                );
+            }
             let hew_sir::SirDiagnosticKind::UnconsumedLinear {
                 binding,
                 span,
@@ -6894,7 +6928,7 @@ fn main() {
                     .expect("checker must retain imported read signature")
                     .params
                     .as_slice(),
-                [hew_types::Ty::Named { head, .. }] if head.spelling() == expected
+                [hew_types::CallableParameter { ty: hew_types::Ty::Named { head, .. }, .. }] if head.spelling() == expected
             ),
             "checker parameter type must be the complete module owner: {:#?}",
             tco.sigs().get("hew.selfqualtype.read")
@@ -8895,7 +8929,11 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             {
                 continue;
             }
-            let Some(hew_types::Ty::Named { head, .. }) = sig.params.first() else {
+            let Some(hew_types::CallableParameter {
+                ty: hew_types::Ty::Named { head, .. },
+                ..
+            }) = sig.params.first()
+            else {
                 continue;
             };
             let event = head
@@ -8912,20 +8950,22 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
     }
 
     #[test]
-    fn imported_stdlib_function_can_spawn_and_wire_public_module_actors() {
-        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("hew-compile lives below repository root");
+    fn imported_function_can_spawn_and_wire_module_actors() {
         let dir = tempfile::tempdir().expect("create temp project");
+        write_source(
+            dir.path(),
+            "actor_factory.hew",
+            include_str!("../../tests/core-acceptance/cases/pipeline_support/actors.hew"),
+        );
         let input = write_source(
             dir.path(),
             "main.hew",
-            "import std.pipeline;\n\nfn main() {\n    let chain = pipeline.run(pipeline.from(1));\n    let item: pipeline.PipelineItemI64 = pipeline.PipelineItemI64 { value: 21, label: \"probe\", crash_stage: false };\n    match chain.push(item) {\n        .Ok(_) => {}\n        .Err(_) => {}\n    }\n}\n",
+            "import actor_factory;\nfn main() {\n    let source = actor_factory.run();\n    source.push(21, \"probe\").expect(\"push\");\n}\n",
         );
         let state = run_file_frontend_to_typecheck(
             &input,
             &FrontendOptions {
-                project_dir: Some(repo_root.to_path_buf()),
+                project_dir: Some(dir.path().to_path_buf()),
                 ..FrontendOptions::default()
             },
         )
@@ -8943,15 +8983,10 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
         );
         assert!(
             hir.diagnostics.is_empty(),
-            "imported pipeline bodies must lower: {:#?}",
+            "imported actor bodies must lower: {:#?}",
             hir.diagnostics
         );
-        for actor in [
-            "std.pipeline.AdmissionControlI64",
-            "std.pipeline.SinkI64",
-            "std.pipeline.StageI64",
-            "std.pipeline.SourceI64",
-        ] {
+        for actor in ["actor_factory.Stage", "actor_factory.Source"] {
             assert!(
                 hir.module.items.iter().any(|item| matches!(
                     item, hew_hir::HirItem::Actor(decl) if hir.module.defs.path(decl.declaration) == actor
@@ -9223,7 +9258,7 @@ mod source_analysis_batch_tests {
                 "function:{capabilities:?}:{:?}:{}",
                 params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, ret)
             ),
@@ -9237,7 +9272,7 @@ mod source_analysis_batch_tests {
                 "closure:{capabilities:?}:{:?}:{}:{:?}:{}",
                 params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, ret),
                 captures
@@ -9265,7 +9300,7 @@ mod source_analysis_batch_tests {
                 signature
                     .params
                     .iter()
-                    .map(|ty| checked_type(output, ty))
+                    .map(|parameter| (parameter.ownership, checked_type(output, &parameter.ty)))
                     .collect::<Vec<_>>(),
                 checked_type(output, &signature.return_type)
             )

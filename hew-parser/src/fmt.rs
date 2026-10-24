@@ -12,12 +12,12 @@ use crate::ast::{
     CompoundAssignOp, ConditionItem, ConstDecl, ElseBlock, Expr, ExternBlock, ExternFnDecl,
     FieldDecl, FieldLabel, FnDecl, Ident, ImplDecl, ImportDecl, ImportSpec, IntRadix, Item,
     LambdaParam, Literal, MachineDecl, MachineState, MachineTransition, MachineTransitionBodyForm,
-    MachineTrigger, MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param, Path,
-    Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl, RecordKind, RestartPolicy,
-    SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl, SupervisorStrategy, TimeoutClause,
-    TraitBound, TraitDecl, TraitItem, TraitMethod, TypeAliasDecl, TypeBodyItem, TypeDecl,
-    TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl, VariantKind, Visibility, WhereClause,
-    WireMetadata, WireReserved,
+    MachineTrigger, MatchArm, NamingCase, NominalPatternPayload, OverflowPolicy, Param,
+    ParameterOwnership, Path, Pattern, PatternField, Program, ReceiveFnDecl, RecordDecl,
+    RecordKind, RestartPolicy, SelectArm, Span, Spanned, Stmt, StringPart, SupervisorDecl,
+    SupervisorStrategy, TimeoutClause, TraitBound, TraitDecl, TraitItem, TraitMethod,
+    TypeAliasDecl, TypeBodyItem, TypeDecl, TypeDeclKind, TypeExpr, TypeParam, UnaryOp, VariantDecl,
+    VariantKind, Visibility, WhereClause, WireMetadata, WireReserved,
 };
 
 /// Format a duration in nanoseconds to the most natural unit suffix.
@@ -2803,6 +2803,7 @@ impl<'a> Formatter<'a> {
         enum Member<'a> {
             Strategy,
             Intensity,
+            Backoff,
             Child(&'a ChildSpec),
             Method(&'a FnDecl),
         }
@@ -2839,6 +2840,9 @@ impl<'a> Formatter<'a> {
                 self.machine_section(span_start, span_end, "intensity"),
                 Member::Intensity,
             ));
+        }
+        if let Some(backoff) = &decl.backoff {
+            clauses.push((backoff.1.start, Member::Backoff));
         }
         clauses.extend(
             decl.children
@@ -2889,6 +2893,11 @@ impl<'a> Formatter<'a> {
                         self.write(" within ");
                         self.write(&intensity.window);
                     }
+                }
+                Member::Backoff => {
+                    self.write_indent();
+                    self.write("backoff: ");
+                    self.format_expr(decl.backoff.as_ref().expect("present backoff"));
                 }
             }
             self.write(";\n");
@@ -3082,15 +3091,16 @@ impl<'a> Formatter<'a> {
     }
 
     /// One parameter list and optional reply, shared by `fn` and `actor` types.
-    fn format_callable_type(
+    fn format_callable_type<T>(
         &mut self,
         head: &str,
-        params: &[Spanned<TypeExpr>],
+        params: &[T],
         return_type: &Spanned<TypeExpr>,
+        format_parameter: impl FnMut(&mut Self, &T),
     ) {
         self.write(head);
         self.write("(");
-        self.comma_sep(params, |f, p| f.format_type_expr(&p.0));
+        self.comma_sep(params, format_parameter);
         self.write(")");
         // An omitted return type is unit; keep a unit the author wrote out.
         let written_unit = self
@@ -3183,12 +3193,14 @@ impl<'a> Formatter<'a> {
             } => {
                 self.write(&format!("fn{capabilities}"));
                 self.format_opt_type_params(type_params.as_ref());
-                self.format_callable_type("", params, return_type);
+                self.format_callable_type("", params, return_type, Self::format_callable_parameter);
             }
             TypeExpr::ActorFn {
                 params,
                 return_type,
-            } => self.format_callable_type("actor", params, return_type),
+            } => self.format_callable_type("actor", params, return_type, |f, p| {
+                f.format_type_expr(&p.0);
+            }),
             TypeExpr::Pointer {
                 is_mutable,
                 pointee,
@@ -3219,6 +3231,16 @@ impl<'a> Formatter<'a> {
                 self.write("_");
             }
         }
+    }
+
+    fn format_callable_parameter(
+        &mut self,
+        parameter: &crate::ast::CallableParameter<Spanned<TypeExpr>>,
+    ) {
+        if parameter.ownership == ParameterOwnership::Consume {
+            self.write("consume ");
+        }
+        self.format_type_expr(&parameter.ty.0);
     }
 
     /// Format `<type_params>(params) -> return_type where clause`.
@@ -5027,6 +5049,9 @@ impl<'a> Formatter<'a> {
 
     fn format_lambda_params(&mut self, params: &[LambdaParam]) {
         self.comma_sep(params, |f, p| {
+            if p.ownership == Some(ParameterOwnership::Consume) {
+                f.write("consume ");
+            }
             f.write_ident(p.name);
             if let Some(ty) = &p.ty {
                 f.write(": ");
@@ -7252,6 +7277,12 @@ impl<T> Vec<T> {
     fn fstring_literal_readable_unicode_round_trips() {
         let src = "fn greet(name: string) -> string {\n    f\"bonjour {name} — café\"\n}\n";
         assert_eq!(roundtrip(src), src);
+    }
+
+    #[test]
+    fn supervisor_backoff_expression_roundtrips_in_source_order() {
+        let source = "supervisor Team(config: Config) {\n    intensity: 5 within 60s;\n    backoff: restart.exponential(initial: config.initial, maximum: 5s);\n\n    child worker: Worker;\n}\n";
+        assert_eq!(roundtrip(source), source);
     }
 
     #[test]

@@ -996,15 +996,16 @@ fn emit_obj_only(
     profile: &str,
     output: Option<&Path>,
     host_export: &[String],
+    host_export_async: &[String],
 ) -> Result<(PathBuf, Vec<PathBuf>), DiagChannel> {
     let final_path = resolve_output(Artifact::Object, input, package, profile, target, output);
-    if !host_export.is_empty() {
-        // `--emit-deps` conflicts with `--export-c` at the argument parser.
+    if !host_export.is_empty() || !host_export_async.is_empty() {
+        // `--emit-deps` conflicts with both C selectors at the argument parser.
         host::emit(
             input,
             target,
             options,
-            host_export,
+            (host_export, host_export_async),
             &final_path,
             opt_level,
             emit_llvm,
@@ -1146,6 +1147,7 @@ fn cmd_build_run(a: &args::BuildArgs) -> i32 {
             profile,
             a.output.as_deref(),
             &a.export_c,
+            &a.export_c_async,
         ) {
             Ok((object, prerequisites)) => {
                 write_deps(a.emit_deps.as_deref(), &object, &prerequisites)

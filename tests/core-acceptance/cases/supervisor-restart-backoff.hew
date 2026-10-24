@@ -1,0 +1,92 @@
+import std.restart;
+
+type Config {
+    initial: duration;
+    maximum: duration;
+}
+
+fn configure(config: Config) -> restart.Backoff {
+    println("configured");
+    restart.exponential(initial: config.initial, maximum: config.maximum)
+}
+
+actor Worker {
+    var value: i64 = 7;
+    receive fn read() -> i64 {
+        value
+    }
+    receive fn fail() {
+        panic("restart backoff");
+    }
+}
+
+supervisor Team(config: Config) {
+    strategy: one_for_one;
+    intensity: 20 within 2s;
+    backoff: configure(config);
+    child first: Worker;
+    child second: Worker;
+}
+
+actor SlowWorker {
+    #[on(start)]
+    fn start() {
+        sleep(3s);
+    }
+    receive fn fail() {
+        panic("slow restart backoff");
+    }
+}
+
+supervisor SlowTeam {
+    intensity: 20 within 2s;
+    backoff: restart.exponential(initial: 100ms, maximum: 500ms);
+    child worker: SlowWorker;
+}
+
+fn crash(role: Worker) -> i64 {
+    let started = instant.now();
+    let _ = role.fail();
+    restarted(role);
+    assert(role.read().expect("fresh worker") == 7);
+    assert(instant.now().duration_since(started) == started.elapsed());
+    started.elapsed().millis()
+}
+
+fn main() {
+    let team = spawn Team { config: Config { initial: 100ms, maximum: 500ms } };
+    let role = team.first;
+    for expected in [100, 200, 400, 500, 500] {
+        let elapsed = crash(role);
+        println(elapsed);
+        assert(elapsed == expected);
+        assert(role is team.first);
+    }
+    assert(crash(team.second) == 100);
+    // This advances only the deterministic clock. A healthy restart window
+    // restores the initial delay without another policy setting or timer.
+    sleep(2s);
+    assert(crash(role) == 100);
+    stop(team);
+    stopped(team);
+    // A replacement taking longer than the restart window is downtime.
+    let slow = spawn Team { config: Config { initial: 1s, maximum: 3s } };
+    for expected in [1000, 2000, 3000, 3000] {
+        assert(crash(slow.first) == expected);
+    }
+    sleep(2s);
+    assert(crash(slow.first) == 1000);
+    stop(slow);
+    stopped(slow);
+    // Construction time also precedes publication and is not healthy uptime.
+    let constructing = spawn SlowTeam;
+    for expected in [3100, 3200] {
+        let started = instant.now();
+        let _ = constructing.worker.fail();
+        restarted(constructing.worker);
+        assert(started.elapsed().millis() == expected);
+    }
+    stop(constructing);
+    stopped(constructing);
+    println("backoff recovered");
+}

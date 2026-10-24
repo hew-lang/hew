@@ -3546,6 +3546,30 @@ call-once invocation. A capture without an independent snapshot operation
 requires `move`. Consuming a captured owner during invocation, including
 returning it or transferring it into another value, requires call-once.
 
+Callable parameters carry the same ownership contract as named function
+parameters. `fn(T) -> U` borrows its argument; `fn(consume T) -> U` receives an
+owned argument. These parameter contracts must match exactly when a callable
+is assigned, passed or returned. The compiler does not insert an adapter that
+changes a borrowed argument into an owned one.
+
+A closure can declare `|consume item: T| ...`. When its parameter mode is
+omitted, a checked expected callable signature supplies the mode; without
+such a signature, the parameter is borrowed. Anonymous actor handler
+parameters use the same explicit `consume` spelling as named receive methods.
+Consuming a parameter does not consume the callable or its captures: a
+read-only callable may accept and return a fresh owned input on every call.
+
+```hew
+fn forward(consume text: string) -> string { text }
+
+fn main() {
+    let explicit: fn(consume string) -> string = forward;
+    let inferred: fn(consume string) -> string = |text| text;
+    println(explicit("first"));
+    println(inferred("second"));
+}
+```
+
 Written function types specify invocation and duplication guarantees:
 
 | Type | Invocation | Independent copies |
@@ -6389,6 +6413,9 @@ fn main() {
 - `intensity: N within <duration>`: the restart budget — at most `N` restarts
   within the rolling `<duration>` window. The window is a duration literal
   (`60s`, `5m`, `1h`), not a bare integer. Default `10 within 5s`.
+- `backoff: <expression>`: an optional `std.restart.Backoff`, usually
+  `restart.exponential(initial: 100ms, maximum: 5s)`. The expression runs once
+  during supervisor construction and can use its configuration parameters.
 
 **Child specifications:**
 
@@ -6467,9 +6494,21 @@ hooks and cleanup to finish before any replacement starts.
 
 The supervisor's `intensity: N within <window>` budget caps restarts; exceeding it escalates failure to the parent supervisor. The runtime tracks restarts in a sliding window.
 
-Backoff and circuit-breaker policies are outside this section's core restart
-contract. Their presence in runtime code is not a claim that a corresponding
-source API is implemented; see HEW-FUTURE.md for additional supervision policy.
+An optional `backoff` delays crash recovery per stable child role, including
+nested supervisors and individual pool members. Its first delay is `initial`;
+later failures double it up to `maximum`. Both values are durations, `initial`
+must be positive, and `maximum` must be at least `initial`. Invalid policies
+fail supervisor construction before any child starts.
+
+After a replacement runs without failure for the supervisor's existing restart
+window, its next crash uses `initial` again. That healthy interval begins when
+the replacement is published; time spent waiting or constructing it does not
+count. This reset does not change the restart intensity budget. Stopping a
+supervisor cancels pending delays and waits for their cleanup. Omitting
+`backoff` retains the established restart behaviour.
+
+Circuit-breaker configuration remains outside the source restart contract;
+runtime support alone does not imply a source API.
 
 ### 5.5 Nested Supervisors
 
@@ -7696,12 +7735,12 @@ ordinary confinement, effects, ownership and cleanup checks still apply.
 Fixed-width scalars cross directly; `bool` is a `uint8_t` zero or one, and unit
 needs no C slot. Other concrete values use typed opaque owners. An opaque
 consuming parameter takes an owner-slot pointer and clears it at handoff, even
-when the checked call subsequently faults. Borrowed parameters pin their owners
+when the checked call subsequently faults. The host keeps borrowed owners alive
 until the call completes; mutable borrows require exclusive host access. Text
 inputs preserve the public text API's borrowed-copy contract. Results and errors
 are independent owners. Scalar result slots are written only on success.
 
-Calls and generated typed release functions complete before returning, including
+Synchronous calls and generated typed release functions complete before returning, including
 suspension and mandatory cleanup. Cleanup uses the compiler's existing value
 descriptors and combines cleanup faults with the primary fault. Actor and I/O
 components require the process-default runtime. All owners must be released
@@ -7709,6 +7748,26 @@ before runtime shutdown or unloading their descriptor code. This experimental
 boundary requires one host thread and matching compiler/runtime builds; it adds
 no cross-version or independent-runtime isolation guarantee. The C preconditions
 and an executable supplied-directory component are documented in `tests/host`.
+
+An explicit `--export-c-async SOURCE=SYMBOL` selection generates a typed opaque
+call owner and `SYMBOL_start`, `_poll`, `_cancel`, `_result` and `_release`
+operations. Start requires the existing process runtime and a retained wake
+descriptor. Start and poll run the checked callable cooperatively on the host
+thread; poll returns pending without waiting for readiness. Wake callbacks may
+arrive from runtime threads and schedule a future host poll. Operations on a
+call must remain on its owning host thread and must not overlap or re-enter.
+
+Consuming inputs hand off at successful start admission. Borrowed inputs and
+mutable slots must remain valid until poll reports ready, after all mandatory
+cleanup. Cancel requests cancellation; the host continues polling to completion.
+A terminal result wins late cancellation. Result transfers the value or fault
+once, including combined body and cleanup faults. Early or repeated result and
+release before result transfer return `HEW_INVALID_STATE`, preserving the call
+owner and result storage. Successful release clears the call slot; releasing a
+null slot succeeds. The call keeps its runtime and wake target alive through
+completion, and late operation callbacks keep only the wake target alive.
+Explicit runtime shutdown and code unloading still require all calls and values
+to have finished. Async selection preserves the synchronous C signatures.
 
 ### 8.4 Runtime contract
 

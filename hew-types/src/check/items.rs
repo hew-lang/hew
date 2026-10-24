@@ -470,6 +470,17 @@ impl Checker {
         // positive literal) while config params are still in scope so a
         // `count: config.workers` expr resolves.
         self.check_supervisor_pool_count(sd, span);
+        if let Some(backoff) = &sd.backoff {
+            let ty = self.synthesize(&backoff.0, &backoff.1);
+            let ty = self.subst.resolve(&ty);
+            if !is_canonical_lifecycle_source_type(&ty, "std.restart.Backoff") && ty != Ty::Error {
+                self.errors.push(TypeError::new(
+                    TypeErrorKind::SupervisorError { subkind: SupervisorErrorKind::BackoffType },
+                    backoff.1.clone(),
+                    "supervisor `backoff:` requires a std.restart.Backoff value; use restart.exponential(initial: 100ms, maximum: 5s)",
+                ));
+            }
+        }
         for child in &sd.children {
             if let Some(duration) = &child.stop {
                 self.check_against(&duration.0, &duration.1, &Ty::Duration);
@@ -864,7 +875,15 @@ impl Checker {
     /// falls off its end returns `Ok(())`. Every other body is checked as
     /// written; a `-> Result<T, E>` return is a value the body produces.
     fn check_function_block(&mut self, fd: &FnDecl, block_expected: Option<&Ty>) -> Ty {
+        let generator_captures = fd.is_generator.then(|| self.begin_generator_captures());
         let actual = self.check_block(&fd.body, block_expected);
+        if let (Some(previous), Some(declaration)) = (generator_captures, self.checking_declaration)
+        {
+            self.finish_generator_captures(
+                super::effects::EffectBody::Generator(declaration),
+                previous,
+            );
+        }
         if self.current_failure_edge.is_some()
             && !fd.is_generator
             && !matches!(self.subst.resolve(&actual), Ty::Never | Ty::Error)
@@ -896,7 +915,7 @@ impl Checker {
                     .as_ref()
                     .and_then(|signature| signature.params.get(i - receiver_offset))
                 {
-                    self.expect_type(declared, &ty, &p.ty.1);
+                    self.expect_type(&declared.ty, &ty, &p.ty.1);
                 }
             }
             let private_copy = p.is_mutable
@@ -966,7 +985,16 @@ impl Checker {
         self.check_function_body_as(fd, fn_name);
         self.checking_declaration = previous_declaration;
         if let Some(declaration) = declaration {
-            self.record_callable_body_return(declaration, &fd.body);
+            if fd.is_generator {
+                self.callable_return_candidates.insert(
+                    super::effects::EffectBody::Declaration(declaration),
+                    super::IndirectCallCandidates::single(super::CallableCandidate::Generator(
+                        declaration,
+                    )),
+                );
+            } else {
+                self.record_callable_body_return(declaration, &fd.body);
+            }
             if let Some(tail) = &fd.body.trailing_expr {
                 self.record_task_return(tail);
             }
@@ -986,12 +1014,10 @@ impl Checker {
             .any(|attribute| attribute.name.as_str() == "intercept")
             && self.fn_sig(fn_name).is_some_and(|signature| {
                 signature.return_type.contains_interceptor_token()
-                    || signature.params.iter().zip(&signature.param_ownership).any(
-                        |(ty, ownership)| {
-                            *ownership == crate::env::ParameterOwnership::Consume
-                                && ty.contains_interceptor_token()
-                        },
-                    )
+                    || signature.params.iter().any(|parameter| {
+                        parameter.ownership == crate::ParameterOwnership::Consume
+                            && parameter.ty.contains_interceptor_token()
+                    })
             })
         {
             self.report_error(

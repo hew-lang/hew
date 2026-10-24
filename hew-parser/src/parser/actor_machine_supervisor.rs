@@ -1213,6 +1213,7 @@ impl Parser<'_> {
 
         let mut strategy = None;
         let mut intensity = None;
+        let mut backoff = None;
         let mut children = Vec::new();
         let mut methods = Vec::new();
 
@@ -1355,6 +1356,20 @@ impl Parser<'_> {
                     {
                         self.advance();
                     }
+                    self.expect_member_terminator("field");
+                }
+                Some(Token::Identifier("backoff")) => {
+                    let start = self.peek_span().start;
+                    self.advance();
+                    self.expect(&Token::Colon)?;
+                    let value = self.parse_expr()?;
+                    if backoff.is_some() {
+                        self.error_at(
+                            "duplicate supervisor `backoff:` field".into(),
+                            start..value.1.end,
+                        );
+                    }
+                    backoff = Some(value);
                     self.expect_member_terminator("field");
                 }
                 Some(Token::Child | Token::Identifier("pool")) => {
@@ -1618,6 +1633,7 @@ impl Parser<'_> {
             params,
             strategy,
             intensity,
+            backoff,
             children,
             methods,
         })

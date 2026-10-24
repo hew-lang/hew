@@ -2,10 +2,14 @@
 
 use super::*;
 
+#[path = "physical_host_async.rs"]
+mod asynchronous;
+
 #[derive(Debug)]
 struct ExportedFunction {
     callable: CallableId,
     symbol: String,
+    asynchronous: bool,
 }
 
 /// Explicit checked exports and their opaque C presentation types.
@@ -24,9 +28,20 @@ impl<'a> HostExport<'a> {
         verified: &'a VerifiedPhysicalModule,
         selected: &[(CallableId, &str)],
     ) -> CodegenResult<Self> {
+        Self::with_async(verified, selected, &[])
+    }
+
+    /// Select explicit synchronous and asynchronous C presentations of checked calls.
+    /// # Errors
+    /// Refuses unsupported declarations and colliding generated symbols.
+    pub fn with_async(
+        verified: &'a VerifiedPhysicalModule,
+        selected: &[(CallableId, &str)],
+        asynchronous: &[(CallableId, &str)],
+    ) -> CodegenResult<Self> {
         let module = verified.module();
         let fail = |message: &str| CodegenError::FailClosed(message.into());
-        if selected.is_empty()
+        if (selected.is_empty() && asynchronous.is_empty())
             || module.entry_callable.is_some()
             || !module.test_entries.is_empty()
             || module.target.triple.starts_with("wasm")
@@ -37,7 +52,11 @@ impl<'a> HostExport<'a> {
         }
         let mut functions = Vec::<ExportedFunction>::new();
         let mut types = Vec::<(ResolvedTy, String)>::new();
-        for &(id, symbol) in selected {
+        for (id, symbol, asynchronous) in selected
+            .iter()
+            .map(|&(id, name)| (id, name, false))
+            .chain(asynchronous.iter().map(|&(id, name)| (id, name, true)))
+        {
             if symbol.is_empty()
                 || !symbol.as_bytes()[0].is_ascii_alphabetic()
                 || !symbol
@@ -45,7 +64,7 @@ impl<'a> HostExport<'a> {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
                 || symbol.starts_with("hew_")
                 || symbol.starts_with("HEW_")
-                || ["HewText", "HewJson", "HewError", "HewRuntime"].contains(&symbol)
+                || ["HewText", "HewJson", "HewError", "HewRuntime", "HewWaker"].contains(&symbol)
                 || symbol == "main"
                 || C_KEYWORDS
                     .split_ascii_whitespace()
@@ -97,6 +116,7 @@ impl<'a> HostExport<'a> {
             functions.push(ExportedFunction {
                 callable: id,
                 symbol: symbol.into(),
+                asynchronous,
             });
         }
         for (_, name) in &types {
@@ -109,11 +129,50 @@ impl<'a> HostExport<'a> {
                 ));
             }
         }
-        Ok(Self {
+        let export = Self {
             verified,
             functions,
             types,
-        })
+        };
+        export.validate_public_symbols()?;
+        Ok(export)
+    }
+
+    fn validate_public_symbols(&self) -> CodegenResult<()> {
+        let mut names = std::collections::BTreeSet::new();
+        for (_, name) in &self.types {
+            names.insert(name.clone());
+            names.insert(format!("{name}_release"));
+        }
+        for export in &self.functions {
+            let symbols = if export.asynchronous {
+                vec![
+                    format!("HewCall_{}", export.symbol),
+                    format!("{}_start", export.symbol),
+                    format!("{}_poll", export.symbol),
+                    format!("{}_cancel", export.symbol),
+                    format!("{}_result", export.symbol),
+                    format!("{}_release", export.symbol),
+                ]
+            } else {
+                vec![export.symbol.clone()]
+            };
+            for symbol in symbols {
+                if !names.insert(symbol.clone())
+                    || self
+                        .verified
+                        .module()
+                        .callables
+                        .iter()
+                        .any(|callee| callee.symbol == symbol)
+                {
+                    return Err(CodegenError::FailClosed(
+                        "generated C export symbols collide".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn type_name(&self, ty: &ResolvedTy) -> &str {
@@ -171,6 +230,27 @@ impl<'a> HostExport<'a> {
                     }
                 })
                 .collect::<Vec<_>>();
+            let symbol = if export.asynchronous {
+                let call = format!("HewCall_{}", export.symbol);
+                header.push_str(&format!("typedef struct {call} {call};\n"));
+                let mut start = vec!["HewRuntime *runtime".to_string()];
+                start.append(&mut params);
+                start.extend([
+                    "const HewWaker *waker".into(),
+                    format!("{call} **out"),
+                    "HewError **error".into(),
+                ]);
+                header.push_str(&format!(
+                    "int32_t {}_start({});\n",
+                    export.symbol,
+                    start.join(", ")
+                ));
+                header.push_str(&format!("int32_t {}_poll({call} *call);\nvoid {}_cancel({call} *call);\nint32_t {}_release({call} **owner, HewError **error);\n", export.symbol, export.symbol, export.symbol));
+                params.push(format!("{call} *call"));
+                format!("{}_result", export.symbol)
+            } else {
+                export.symbol.clone()
+            };
             if body.return_ty != ResolvedTy::Unit {
                 params.push(format!(
                     "{} {}out",
@@ -183,11 +263,7 @@ impl<'a> HostExport<'a> {
                 ));
             }
             params.push("HewError **error".into());
-            header.push_str(&format!(
-                "int32_t {}({});\n",
-                export.symbol,
-                params.join(", ")
-            ));
+            header.push_str(&format!("int32_t {}({});\n", symbol, params.join(", ")));
         }
         header.push_str("#ifdef __cplusplus\n}\n#endif\n");
         header
@@ -237,7 +313,11 @@ pub(super) fn emit<'ctx>(
         emit_release(emitter, name)?;
     }
     for function in &export.functions {
-        emit_function(emitter, function)?;
+        if function.asynchronous {
+            asynchronous::emit(emitter, function)?;
+        } else {
+            emit_function(emitter, function)?;
+        }
     }
     Ok(())
 }
@@ -279,9 +359,10 @@ fn emit_release<'ctx>(emitter: &ModuleEmitter<'ctx, '_>, name: &str) -> CodegenR
 fn input_arguments<'ctx>(
     emitter: &ModuleEmitter<'ctx, '_>,
     builder: &Builder<'ctx>,
-    wrapper: FunctionValue<'ctx>,
+    inputs: &[BasicValueEnum<'ctx>],
     body: &PhysicalCallable,
-) -> CodegenResult<(Vec<BasicMetadataValueEnum<'ctx>>, Vec<PointerValue<'ctx>>)> {
+    unit_storage: Option<PointerValue<'ctx>>,
+) -> CodegenResult<(Vec<BasicValueEnum<'ctx>>, Vec<PointerValue<'ctx>>)> {
     let ctx = emitter.ctx;
     let ptr = ctx.ptr_type(AddressSpace::default());
     let mut arguments = Vec::new();
@@ -291,16 +372,19 @@ fn input_arguments<'ctx>(
         if param.ty == ResolvedTy::Unit {
             let ty = llvm_type(ctx, &param.layout.repr)?;
             arguments.push(if param.carrier == ParamCarrier::Indirect {
-                builder
-                    .build_alloca(ty, "unit.argument")
-                    .llvm_ctx("realize host unit argument")?
-                    .into()
+                match unit_storage {
+                    Some(slot) => slot,
+                    None => builder
+                        .build_alloca(ty, "unit.argument")
+                        .llvm_ctx("realize host unit argument")?,
+                }
+                .into()
             } else {
-                ty.const_zero().into()
+                ty.const_zero()
             });
             continue;
         }
-        let input = wrapper.get_nth_param(index as u32).unwrap();
+        let input = inputs[index];
         index += 1;
         let value = if opaque(&param.ty) {
             let mut owner = input.into_pointer_value();
@@ -336,7 +420,7 @@ fn input_arguments<'ctx>(
         } else {
             input
         };
-        arguments.push(value.into());
+        arguments.push(value);
     }
     Ok((arguments, consumed))
 }
@@ -344,7 +428,7 @@ fn input_arguments<'ctx>(
 fn finish_arguments<'ctx>(
     emitter: &ModuleEmitter<'ctx, '_>,
     builder: &Builder<'ctx>,
-    wrapper: FunctionValue<'ctx>,
+    inputs: &[BasicValueEnum<'ctx>],
     body: &PhysicalCallable,
     consumed: &[PointerValue<'ctx>],
 ) -> CodegenResult<()> {
@@ -356,10 +440,7 @@ fn finish_arguments<'ctx>(
         .enumerate()
     {
         if param.ty == ResolvedTy::String && param.carrier == ParamCarrier::Indirect {
-            let slot = wrapper
-                .get_nth_param(index as u32)
-                .unwrap()
-                .into_pointer_value();
+            let slot = inputs[index].into_pointer_value();
             let text = builder
                 .build_load(ptr, slot, "updated.text")
                 .llvm_ctx("load updated host text")?
@@ -383,21 +464,10 @@ fn emit_function<'ctx>(
     let body = callable(emitter.module, export.callable)?;
     let ctx = emitter.ctx;
     let ptr = ctx.ptr_type(AddressSpace::default());
-    let mut params = body
-        .params
-        .iter()
-        .filter(|param| param.ty != ResolvedTy::Unit)
-        .map(|param| {
-            if opaque(&param.ty)
-                || param.ty == ResolvedTy::String
-                || param.carrier == ParamCarrier::Indirect
-            {
-                Ok(ptr.into())
-            } else {
-                Ok(llvm_type(ctx, &param.layout.repr)?.into())
-            }
-        })
-        .collect::<CodegenResult<Vec<BasicMetadataTypeEnum<'ctx>>>>()?;
+    let mut params = public_input_types(emitter, body)?
+        .into_iter()
+        .map(Into::into)
+        .collect::<Vec<_>>();
     if body.return_ty != ResolvedTy::Unit {
         params.push(ptr.into());
     }
@@ -411,7 +481,8 @@ fn emit_function<'ctx>(
     builder.position_at_end(ctx.append_basic_block(wrapper, "entry"));
     let success = ctx.append_basic_block(wrapper, "success");
     let failure = ctx.append_basic_block(wrapper, "failure");
-    let (mut arguments, consumed) = input_arguments(emitter, &builder, wrapper, body)?;
+    let inputs = wrapper.get_params();
+    let (mut arguments, consumed) = input_arguments(emitter, &builder, &inputs, body, None)?;
     let public_param_count = body
         .params
         .iter()
@@ -427,7 +498,7 @@ fn emit_function<'ctx>(
     builder
         .build_store(error, ptr.const_null())
         .llvm_ctx("initialize host error")?;
-    let (result, result_owner) = result_storage(emitter, &builder, body, &export.symbol)?;
+    let (result, result_owner) = result_storage(emitter, &builder, body, &export.symbol, None)?;
     if let Some(out) = out {
         if scalar(&body.return_ty).is_none() {
             builder
@@ -443,9 +514,10 @@ fn emit_function<'ctx>(
         .build_store(fault, ptr.const_null())
         .llvm_ctx("initialize host fault")?;
     arguments.push(fault.into());
+    let arguments = arguments.into_iter().map(Into::into).collect::<Vec<_>>();
     let status = suspend::call_value(&builder, emitter.functions[&body.id], &arguments, "status")?
         .into_int_value();
-    finish_arguments(emitter, &builder, wrapper, body, &consumed)?;
+    finish_arguments(emitter, &builder, &inputs, body, &consumed)?;
     let ok = builder
         .build_int_compare(IntPredicate::EQ, status, ctx.i32_type().const_zero(), "ok")
         .llvm_ctx("check host status")?;
@@ -463,11 +535,47 @@ fn emit_function<'ctx>(
     if let Some(owner) = result_owner {
         call_forget(emitter, &builder, owner)?;
     }
+    let code = publish_failure(emitter, &builder, error, fault)?;
+    builder
+        .build_return(Some(&code))
+        .llvm_ctx("return host failure")?;
+    Ok(())
+}
+
+fn public_input_types<'ctx>(
+    emitter: &ModuleEmitter<'ctx, '_>,
+    body: &PhysicalCallable,
+) -> CodegenResult<Vec<BasicTypeEnum<'ctx>>> {
+    let pointer = emitter.ctx.ptr_type(AddressSpace::default());
+    body.params
+        .iter()
+        .filter(|param| param.ty != ResolvedTy::Unit)
+        .map(|param| {
+            if opaque(&param.ty)
+                || param.ty == ResolvedTy::String
+                || param.carrier == ParamCarrier::Indirect
+            {
+                Ok(pointer.into())
+            } else {
+                llvm_type(emitter.ctx, &param.layout.repr)
+            }
+        })
+        .collect()
+}
+
+fn publish_failure<'ctx>(
+    emitter: &ModuleEmitter<'ctx, '_>,
+    builder: &Builder<'ctx>,
+    error: PointerValue<'ctx>,
+    fault: PointerValue<'ctx>,
+) -> CodegenResult<IntValue<'ctx>> {
+    let ctx = emitter.ctx;
+    let ptr = ctx.ptr_type(AddressSpace::default());
     let fault = builder
         .build_load(ptr, fault, "failure.fault")
         .llvm_ctx("load host failure")?
         .into_pointer_value();
-    let failure = call_pointer(emitter, &builder, "hew_fault_into_host_error", fault)?;
+    let failure = call_pointer(emitter, builder, "hew_fault_into_host_error", fault)?;
     builder
         .build_store(error, failure)
         .llvm_ctx("publish host failure")?;
@@ -476,11 +584,8 @@ fn emit_function<'ctx>(
         "hew_host_error_code",
         ctx.i32_type().fn_type(&[ptr.into()], false),
     )?;
-    let code = suspend::call_value(&builder, code, &[failure.into()], "error.code")?;
-    builder
-        .build_return(Some(&code))
-        .llvm_ctx("return host failure")?;
-    Ok(())
+    let code = suspend::call_value(builder, code, &[failure.into()], "error.code")?;
+    Ok(code.into_int_value())
 }
 
 fn result_storage<'ctx>(
@@ -488,6 +593,7 @@ fn result_storage<'ctx>(
     builder: &Builder<'ctx>,
     body: &PhysicalCallable,
     symbol: &str,
+    persistent: Option<PointerValue<'ctx>>,
 ) -> CodegenResult<(PointerValue<'ctx>, Option<PointerValue<'ctx>>)> {
     if opaque(&body.return_ty) {
         let recipe = body.return_recipe.as_ref().ok_or_else(|| {
@@ -511,9 +617,12 @@ fn result_storage<'ctx>(
         ))
     } else if let Some(layout) = &body.return_layout {
         Ok((
-            builder
-                .build_alloca(llvm_type(emitter.ctx, &layout.repr)?, "result")
-                .llvm_ctx("allocate host result")?,
+            match persistent {
+                Some(slot) => slot,
+                None => builder
+                    .build_alloca(llvm_type(emitter.ctx, &layout.repr)?, "result")
+                    .llvm_ctx("allocate host result")?,
+            },
             None,
         ))
     } else {

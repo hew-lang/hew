@@ -1346,7 +1346,11 @@ impl DefTable {
     #[must_use]
     pub fn module_for_source(&self, source: &Path) -> Option<ModuleId> {
         self.module_by_source
-            .get(&Self::intern_source_key(source))
+            // The module graph already resolves ordinary source paths. Reuse
+            // that interned key; only an unfamiliar spelling needs another
+            // filesystem canonicalization to find its established identity.
+            .get(source)
+            .or_else(|| self.module_by_source.get(&Self::intern_source_key(source)))
             .copied()
     }
 
@@ -1859,6 +1863,32 @@ mod tests {
             .expect("root with a source mints an identity");
         assert_eq!(module, root, "one source = one identity, however reached");
         assert_eq!(table.module_path(root), "oracle_mod");
+    }
+
+    #[test]
+    fn source_lookup_preserves_aliases_and_distinct_module_owners() {
+        let std = Path::new(env!("CARGO_MANIFEST_DIR")).join("../std");
+        let option_source = std.join("option.hew");
+        let option_canonical = option_source.canonicalize().unwrap();
+        let option_alias = std.join("../std/option.hew");
+        let result_source = std.join("result.hew");
+        let mut table = DefTable::new();
+        let option = table.mint_module("std.option", &[option_source]);
+        let result = table.mint_module("std.result", std::slice::from_ref(&result_source));
+
+        assert_eq!(table.module_for_source(&option_canonical), Some(option));
+        assert_eq!(table.module_for_source(&option_alias), Some(option));
+        assert_eq!(table.module_for_source(&result_source), Some(result));
+        assert_ne!(option, result);
+        assert_eq!(
+            table.mint_root_module(std::slice::from_ref(&option_alias)),
+            Some(option),
+            "an alias of the imported source retains its identity as a root"
+        );
+        assert_eq!(
+            table.module_for_source(&std.join("unknown-source.hew")),
+            None
+        );
     }
 
     #[test]

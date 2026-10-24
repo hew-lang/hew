@@ -257,9 +257,17 @@ pub fn dump_hir(module: &HirModule) -> String {
             }
             HirItem::ExternFn(ef) => {
                 let params = ef
-                    .param_tys
+                    .params
                     .iter()
-                    .map(|ty| ty.user_facing().to_string())
+                    .map(|parameter| {
+                        let prefix =
+                            if parameter.ownership == hew_types::ParameterOwnership::Consume {
+                                "consume "
+                            } else {
+                                ""
+                            };
+                        format!("{prefix}{}", parameter.ty.user_facing())
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 writeln!(

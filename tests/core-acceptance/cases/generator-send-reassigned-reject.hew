@@ -1,0 +1,11 @@
+fn require_send<T: Send>(consume value: T) {}
+
+gen fn first() -> i64 { yield 1; }
+gen fn captured(consume callback: fn() -> i64) -> i64 { yield callback(); }
+
+fn main() {
+    var values: Generator<i64, ()> = first();
+    let local = Rc.new(7);
+    values = captured(move || local.get());
+    require_send(values);
+}

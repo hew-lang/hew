@@ -254,6 +254,9 @@ impl<'a> Control<'a> {
                 }
             }
             Item::Supervisor(supervisor) => {
+                if let Some(value) = &mut supervisor.backoff {
+                    self.expr(value)?;
+                }
                 for child in &mut supervisor.children {
                     for (_, value) in &mut child.args {
                         self.expr(value)?;

@@ -1,0 +1,14 @@
+[[case]]
+id = "supervisor-restart-backoff-cancel"
+intent = "Stopping a supervisor cancels a selected long backoff without advancing the deterministic clock or claiming recovery of its interrupted fault."
+source = "cases/supervisor-restart-backoff-cancel.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 10
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "pending restart cancelled\n"
+stderr = "hew: failure: UserPanic (212): cancel restart\nhew: actor crash in Worker.fail (actor 1): UserPanic\n"
+exit = 1

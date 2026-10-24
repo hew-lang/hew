@@ -94,7 +94,10 @@ impl<'ctx> ModuleEmitter<'ctx, '_> {
         .into_int_value())
     }
 
-    fn emit_root_start(&self, callable: &PhysicalCallable) -> CodegenResult<FunctionValue<'ctx>> {
+    pub(super) fn emit_root_start(
+        &self,
+        callable: &PhysicalCallable,
+    ) -> CodegenResult<FunctionValue<'ctx>> {
         let symbol = format!("{}$root_start", emitted_symbol(self.module, callable));
         if let Some(function) = self.llvm.get_function(&symbol) {
             return Ok(function);

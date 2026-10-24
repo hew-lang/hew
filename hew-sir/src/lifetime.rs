@@ -30,6 +30,7 @@ const LIVE: u8 = 2;
 #[derive(Clone)]
 struct State {
     values: Vec<u8>,
+    scalar_values: BTreeSet<ValueId>,
     fault: u8,
     places: Vec<u8>,
     locals: Vec<u8>,
@@ -86,6 +87,8 @@ pub struct PlaceLifetimes {
     /// Merged availability bits per content leaf at each cleanup site.
     contents: BTreeMap<crate::OpId, BTreeMap<crate::PlaceId, u8>>,
     reachable: BTreeSet<BlockId>,
+    /// Existing owners, loans and initialized scalars after a yielded value transfers.
+    generator_residency: BTreeMap<BlockId, BTreeSet<PlaceBase>>,
 }
 
 impl PlaceLifetimes {
@@ -94,6 +97,7 @@ impl PlaceLifetimes {
             operations: BTreeMap::new(),
             contents: BTreeMap::new(),
             reachable: BTreeSet::new(),
+            generator_residency: BTreeMap::new(),
         }
     }
 
@@ -101,6 +105,15 @@ impl PlaceLifetimes {
     #[must_use]
     pub fn is_reachable(&self, block: BlockId) -> bool {
         self.reachable.contains(&block)
+    }
+
+    /// Potentially present ownership and loan contents at each generator yield.
+    /// Aggregate roots are represented by their canonical initialized leaves.
+    /// Copy scalars have no consuming lifetime, so their initialization is
+    /// retained conservatively after their last use.
+    #[must_use]
+    pub fn generator_residency(&self) -> &BTreeMap<BlockId, BTreeSet<PlaceBase>> {
+        &self.generator_residency
     }
 
     /// The checked disposition of a reachable end-lifetime or destroy operation.
@@ -220,6 +233,7 @@ pub(crate) fn verify(
     }
     let mut initial = State {
         values: vec![DEAD; flow.values.len()],
+        scalar_values: BTreeSet::new(),
         fault: DEAD,
         exit: ORDINARY,
         defers: crate::defer::Schedule::default(),
@@ -239,6 +253,9 @@ pub(crate) fn verify(
             .collect(),
     };
     for param in &function.params {
+        if flow.scalars.contains(&param.value) {
+            initial.scalar_values.insert(param.value);
+        }
         if let Some(&index) = flow.indices.get(&param.value) {
             initial.values[index] = LIVE;
         }
@@ -284,6 +301,9 @@ pub(crate) fn verify(
                         && old.exit == state.exit
                         && old.defers.same_faults(&state.defers)
                 }) {
+                    let scalar_count = previous.scalar_values.len();
+                    previous.scalar_values.extend(&state.scalar_values);
+                    changed |= scalar_count != previous.scalar_values.len();
                     changed |= previous.defers.join(&state.defers);
                     changed |= previous.linear_origins.join(&state.linear_origins);
                     for (before, after) in previous
@@ -310,6 +330,7 @@ pub(crate) fn verify(
     // Diagnose the fixed point, not a transient partial predecessor set.
     let mut violations = Vec::new();
     lifetimes.operations.clear();
+    lifetimes.generator_residency.clear();
     lifetimes.reachable.extend(incoming.keys().copied());
     for (block, alternatives) in incoming {
         // Cleanup has one disposition per operation. Keep the exit-cause
@@ -456,6 +477,9 @@ struct Flow<'a> {
     blocks: BTreeMap<BlockId, &'a crate::SemBlock>,
     indices: BTreeMap<ValueId, usize>,
     values: Vec<ValueId>,
+    /// Copy values have no consuming ownership obligation. Retain initialized
+    /// values conservatively for generator transfer checks in this same flow.
+    scalars: BTreeSet<ValueId>,
     guaranteed: BTreeSet<ValueId>,
     local_borrows: BTreeSet<ValueId>,
     /// Prepared invocation loans retain their typed exclusive access until drain.
@@ -501,6 +525,16 @@ impl<'a> Flow<'a> {
     ) -> Self {
         let fault_releases = fault_releases(function, release_may_fault);
         let mut values = BTreeSet::new();
+        let mut scalars = BTreeSet::new();
+        let has_yield = function.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                SemTerminator::Suspend {
+                    kind: crate::SuspendKind::Yield,
+                    ..
+                }
+            )
+        });
         let mut guaranteed = BTreeSet::new();
         let mut linear_values = BTreeSet::new();
         let mut record = |value, own, ty: &hew_types::ResolvedTy| {
@@ -514,6 +548,8 @@ impl<'a> Flow<'a> {
                 values.insert(value);
             } else if own == OwnKind::Guaranteed {
                 guaranteed.insert(value);
+            } else if has_yield {
+                scalars.insert(value);
             }
         };
         for param in &function.params {
@@ -728,6 +764,7 @@ impl<'a> Flow<'a> {
                 .map(|(index, &value)| (value, index))
                 .collect(),
             values,
+            scalars,
             guaranteed,
             local_borrows,
             exclusive_borrows,
@@ -969,6 +1006,9 @@ impl<'a> Flow<'a> {
         state: &mut State,
         emit: &mut impl FnMut(Violation),
     ) {
+        if self.scalars.contains(&value) {
+            state.scalar_values.insert(value);
+        }
         for &index in self.owned_places(value) {
             if self.projections.projection(self.places[index].0).is_some() {
                 state.places[index] = LIVE;
@@ -1079,6 +1119,28 @@ impl<'a> Flow<'a> {
             _ => None,
         };
         self.boundary_inputs(id, &block.terminator, &mut state, emit);
+        if matches!(
+            block.terminator,
+            SemTerminator::Suspend {
+                kind: crate::SuspendKind::Yield,
+                ..
+            }
+        ) {
+            let retained = lifetimes.generator_residency.entry(id).or_default();
+            retained.extend(state.scalar_values.iter().copied().map(PlaceBase::Value));
+            for (index, value) in self.values.iter().enumerate() {
+                if state.values[index] & LIVE != 0
+                    && self.projections.leaves(OwnerRoot::Value(*value)).is_none()
+                {
+                    retained.insert(PlaceBase::Value(*value));
+                }
+            }
+            for (index, (place, _)) in self.places.iter().enumerate() {
+                if state.places[index] & LIVE != 0 {
+                    retained.insert(PlaceBase::Place(*place));
+                }
+            }
+        }
         let mut successors = Vec::new();
         match &block.terminator {
             SemTerminator::EnterDefer { defer, park, body } => {

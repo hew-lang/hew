@@ -1,0 +1,76 @@
+import std.pipeline;
+import std.semaphore;
+
+#[resource]
+type Counting {
+    produced: semaphore.Semaphore;
+    closed: semaphore.Semaphore;
+    next_value: i64;
+}
+
+impl Counting {
+    fn close(consume self) {
+        self.closed.release();
+    }
+}
+
+impl Iterator for Counting {
+    type Item = i64;
+    fn next(var self) -> Option<i64> {
+        let value = self.next_value;
+        self.next_value = value + 1;
+        self.produced.release();
+        .Some(value)
+    }
+}
+
+fn main() {
+    let produced = semaphore.new(0);
+    let closed = semaphore.new(0);
+    {
+        let buffered = pipeline.prefetch(Counting { produced: produced.clone(), closed: closed.clone(), next_value: 0 }, capacity: 1);
+        assert(buffered.next() == .Some(0));
+        // One consumed value, one queued value and one producer blocked on send.
+        for _index in 0..3 {
+            produced.acquire();
+        }
+    };
+    assert(produced.count() == 0);
+    assert(closed.count() == 1);
+    let mapped_produced = semaphore.new(0);
+    let mapped_closed = semaphore.new(0);
+    {
+        let mapped = pipeline.map(Counting { produced: mapped_produced.clone(), closed: mapped_closed.clone(), next_value: 0 }, |value: i64| value, concurrency: 2);
+        assert(mapped.next() == .Some(0));
+        // Two admitted jobs share the emission limit; the dispatcher holds at most
+        // one further source value while waiting for admission.
+        for _index in 0..3 {
+            mapped_produced.acquire();
+        }
+    };
+    assert(mapped_produced.count() == 0);
+    assert(mapped_closed.count() == 1);
+    let rejected_closed = semaphore.new(0);
+    var rejected = false;
+    scope {
+        let invalid = pipeline.prefetch(Counting { produced: produced.clone(), closed: rejected_closed.clone(), next_value: 0 }, capacity: 0);
+        invalid.next();
+    } handle failure {
+        rejected = true;
+    };
+    assert(rejected);
+    assert(produced.count() == 0);
+    assert(rejected_closed.count() == 1);
+    let rejected_map_closed = semaphore.new(0);
+    var rejected_map = false;
+    scope {
+        let invalid = pipeline.map(Counting { produced: produced.clone(), closed: rejected_map_closed.clone(), next_value: 0 }, |value: i64| value, concurrency: 0);
+        invalid.next();
+    } handle failure {
+        rejected_map = true;
+    };
+    assert(rejected_map);
+    assert(produced.count() == 0);
+    assert(rejected_map_closed.count() == 1);
+    println("pipeline admission bounded");
+}

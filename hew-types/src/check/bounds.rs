@@ -603,6 +603,10 @@ impl Checker {
     /// arguments erased.
     pub(in crate::check) fn impl_self_key(ty: &Ty) -> Option<ResolvedTy> {
         let erased = match ty {
+            Ty::Generator { .. } => Ty::named_head(
+                crate::TypeHead::Builtin(crate::BuiltinType::Generator),
+                Vec::new(),
+            ),
             Ty::Named { head, .. } => Ty::named_head(*head, Vec::new()),
             Ty::IntLiteral => Ty::I64,
             Ty::FloatLiteral => Ty::F64,
@@ -740,7 +744,67 @@ impl Checker {
         implemented
     }
 
+    fn trait_preserves_generator_producers(&mut self, receiver: &Ty, bound: &TraitRef) -> bool {
+        // A nominal implementation can return any generator. Its Self
+        // result cannot promise the caller's narrower producer set.
+        fn contains_receiver(ty: &Ty, receiver: &Ty) -> bool {
+            !matches!(ty, Ty::AssocType { .. })
+                && (ty == receiver || ty.any_child(&|child| contains_receiver(child, receiver)))
+        }
+        !self
+            .applied_trait_closure(bound, Some(receiver))
+            .iter()
+            .any(|bound| {
+                let names = self
+                    .trait_info(bound.trait_id)
+                    .map(|info| {
+                        info.methods
+                            .iter()
+                            .map(|method| method.name.name)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                names.iter().any(|name| {
+                    self.lookup_trait_method_with_origin(bound.trait_id, name.as_str())
+                        .is_some_and(|(declaring, method)| {
+                            let intrinsic_next = self
+                                .lang_items
+                                .get(crate::LangItem::IteratorNext.key())
+                                .is_some_and(|binding| {
+                                    self.trait_method_ids_of(declaring, name.as_str())
+                                        == binding
+                                            .method_id
+                                            .map(|method| (binding.trait_id, method))
+                                });
+                            let mut substitutions = HashMap::from([(
+                                crate::ParamHead::receiver(declaring),
+                                receiver.clone(),
+                            )]);
+                            if let Some(info) = self.trait_info(declaring) {
+                                substitutions.extend(
+                                    info.type_params
+                                        .iter()
+                                        .copied()
+                                        .zip(bound.args.iter().cloned()),
+                                );
+                            }
+                            contains_receiver(
+                                &method
+                                    .return_type
+                                    .substitute_type_params_parallel(&substitutions),
+                                receiver,
+                            ) || (method.requires_mutable_receiver && !intrinsic_next)
+                        })
+                })
+            })
+    }
+
     fn prove_trait_impl_ref(&mut self, receiver: &Ty, bound: &TraitRef) -> bool {
+        if matches!(receiver, Ty::Generator { .. })
+            && !self.trait_preserves_generator_producers(receiver, bound)
+        {
+            return false;
+        }
         let Some(key) = Self::impl_self_key(receiver) else {
             return false;
         };
@@ -865,6 +929,20 @@ impl Checker {
         let actual = self
             .normalize_preserving_aliases(actual)
             .materialize_literal_defaults();
+        if let (
+            Ty::Named {
+                head: crate::TypeHead::Builtin(crate::BuiltinType::Generator),
+                args,
+            },
+            Ty::Generator {
+                yields, returns, ..
+            },
+        ) = (&expected, &actual)
+        {
+            return args.len() == 2
+                && self.impl_receiver_matches_inner(&args[0], yields, active_aliases)
+                && self.impl_receiver_matches_inner(&args[1], returns, active_aliases);
+        }
         if matches!(expected, Ty::Var(_)) || matches!(actual, Ty::Var(_)) {
             return crate::unify::unify_exact(&mut self.subst, &expected, &actual).is_ok();
         }

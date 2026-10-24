@@ -1,0 +1,85 @@
+import std.semaphore;
+
+#[resource]
+type Ticket {
+    id: i64;
+    closed: semaphore.Semaphore;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        self.closed.release();
+    }
+}
+
+fn forward(consume ticket: Ticket) -> Ticket {
+    ticket
+}
+
+fn identity<T>(consume value: T) -> T {
+    value
+}
+
+fn inspect(ticket: Ticket) -> i64 {
+    ticket.id
+}
+
+fn check_forwarding(transform: fn[suspends](consume Ticket) -> Ticket, closed: semaphore.Semaphore, id: i64) {
+    let before = closed.count();
+    let input = Ticket { id, closed: closed.clone() };
+    let output = transform(input);
+    assert(output.id == id);
+    assert(closed.count() == before);
+    output.close();
+    assert(closed.count() == before + 1);
+}
+
+fn append(consume var values: Vec<i64>) -> Vec<i64> {
+    values.push(2);
+    values
+}
+
+fn main() {
+    let closed = semaphore.new(0);
+    let named: fn(consume Ticket) -> Ticket = forward;
+    check_forwarding(named, closed, 1);
+    let generic: fn[suspends](consume Ticket) -> Ticket = identity;
+    check_forwarding(generic, closed, 2);
+    let explicit: fn(consume Ticket) -> Ticket = |consume ticket: Ticket| ticket;
+    check_forwarding(explicit, closed, 3);
+    check_forwarding(explicit, closed, 4);
+    check_forwarding(|ticket| ticket, closed, 5);
+    let inspect_value: fn(Ticket) -> i64 = inspect;
+    check_forwarding(move |consume ticket: Ticket| {
+        assert(inspect_value(ticket) == ticket.id);
+        ticket
+    }, closed, 6);
+    let borrow: fn(Ticket) -> i64 = inspect;
+    let reusable = Ticket { id: 7, closed: closed.clone() };
+    assert(borrow(reusable) == 7);
+    assert(borrow(reusable) == 7);
+    assert(closed.count() == 6);
+    reusable.close();
+    assert(closed.count() == 7);
+
+    let service = actor |consume ticket: Ticket| -> Ticket { ticket };
+    let returned = match service(Ticket { id: 8, closed: closed.clone() }) {
+        .Ok(ticket) => ticket,
+        .Err(_) => panic("consuming actor refused its input"),
+    };
+    assert(returned.id == 8);
+    assert(closed.count() == 7);
+    returned.close();
+    assert(closed.count() == 8);
+    stop(service);
+    stopped(service);
+
+    let grow: fn(consume Vec<i64>) -> Vec<i64> = append;
+    let original = [1];
+    let grown = grow(original);
+    assert(original.len() == 1);
+    assert(grown.len() == 2);
+    assert(original[0] == 1);
+    assert(grown[1] == 2);
+    println("callable parameter owners preserved");
+}

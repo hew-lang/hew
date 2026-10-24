@@ -1,0 +1,21 @@
+[[case]]
+id = "lazy-values-refused"
+intent = "Lazy ownership cannot be duplicated and cached results must support independent ordinary value copies."
+source = "cases/lazy-values-refused.hew"
+suites = ["acceptance"]
+kind = "check"
+timeout_seconds = 30
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "UseAfterMove"
+line = 15
+column = 5
+message = "use of moved value `original`"
+
+[[case.expected.diagnostics]]
+severity = "error"
+code = "BoundsNotSatisfied"
+line = 20
+column = 18
+message = "type `Ticket` does not implement trait `Clone` required by `T`"

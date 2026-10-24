@@ -1,0 +1,61 @@
+import std.lazy;
+
+#[resource]
+type Ticket {
+    id: i64;
+}
+
+impl Ticket {
+    fn close(consume self) {
+        sleep(1ms);
+        println(f"close {self.id}");
+    }
+}
+
+fn configured(consume initialize: fn[once, suspends]() -> string = || "default".to_upper()) -> lazy.Lazy<string> {
+    lazy.new(initialize)
+}
+
+fn main() {
+    {
+        let ticket = Ticket { id: 1 };
+        let unused = lazy.new(move || {
+            println(ticket.id);
+            "unused"
+        });
+        println("unused initializer retained");
+    };
+    let ticket = Ticket { id: 2 };
+    var values = lazy.new(move || {
+        println(f"initialize {ticket.id}");
+        sleep(1ms);
+        ["original".to_upper()]
+    });
+    var first = values.value();
+    first.push("changed");
+    let second = values.value();
+    assert(first.len() == 2);
+    assert(second.len() == 1 && second[0] == "ORIGINAL");
+    var result = lazy.new(|| {
+        println("initialize error");
+        let failed: Result<i64, string> = .Err("cached error");
+        failed
+    });
+    assert(result.value() == .Err("cached error"));
+    assert(result.value() == .Err("cached error"));
+    var defaulted = configured();
+    var supplied = configured(|| "supplied");
+    assert(defaulted.value() == "DEFAULT");
+    assert(supplied.value() == "supplied");
+    {
+        let owner = Rc.new(Ticket { id: 3 });
+        var shared = lazy.new(move || owner);
+        {
+            let view = shared.value();
+            assert(view.strong_count() == 2);
+        };
+        let next = shared.value();
+        assert(next.strong_count() == 2);
+    };
+    println("lazy values passed");
+}

@@ -205,6 +205,9 @@ impl Verifier {
                     // wired_to validation are S-B's job.
                     self.node(sup.node, sup.span.clone());
                     self.binding(sup.owner.id, sup.owner.span.clone());
+                    if let Some(backoff) = &sup.backoff {
+                        self.expr(backoff);
+                    }
                     if let Some(interceptor) = &sup.interceptor {
                         self.node(interceptor.node, interceptor.span.clone());
                         for parameter in &interceptor.params {
@@ -901,11 +904,9 @@ impl Verifier {
                         ));
                     }
                 }
-                match &expr.ty {
-                    ResolvedTy::Named { head, args, .. }
-                        if head.registry_key() == "Generator" && args.len() == 2 =>
-                    {
-                        if args[0] != *yield_ty || args[1] != *return_ty {
+                match expr.ty.generator_parts() {
+                    Some((yielded, returned)) => {
+                        if yielded != yield_ty || returned != return_ty {
                             self.diagnostics.push(self.diagnostic(
                                 HirDiagnosticKind::CheckerBoundaryViolation {
                                     name: "gen block".to_string(),
@@ -921,13 +922,13 @@ impl Verifier {
                             ));
                         }
                     }
-                    other => {
+                    None => {
                         self.diagnostics.push(self.diagnostic(
                             HirDiagnosticKind::CheckerBoundaryViolation {
                                 name: "gen block".to_string(),
                                 reason: format!(
                                     "expected Generator<Yield, Return>, got {}",
-                                    other.user_facing()
+                                    expr.ty.user_facing()
                                 ),
                             },
                             expr.span.clone(),

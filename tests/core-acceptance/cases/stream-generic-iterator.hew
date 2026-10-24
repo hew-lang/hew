@@ -1,0 +1,25 @@
+import std.stream;
+
+fn drain<I, T>(consume input: I) -> Vec<T> where I: Iterator<Item = T> {
+    var values: Vec<T> = [];
+    for value in input {
+        values.push(value);
+    }
+    values
+}
+
+fn main() {
+    let (sink, input): (Sink<string>, Stream<string>) = stream.pipe(2).expect("pipe");
+    sink.send("first").expect("send");
+    sink.send("second").expect("send");
+    sink.finish();
+    let values = drain(input);
+    assert(values.len() == 2);
+    assert(values[0] == "first");
+    assert(values[1] == "second");
+
+    let (empty_sink, empty): (Sink<string>, Stream<string>) = stream.pipe(0).expect("pipe");
+    empty_sink.finish();
+    assert(drain(empty).len() == 0);
+    println("stream generic iterator passed");
+}

@@ -1,0 +1,18 @@
+//! Restart delay policies for supervisor declarations.
+
+/// Per-role exponential delay, evaluated once when its supervisor is spawned.
+/// The first crash waits `initial`; subsequent crashes double the delay up to
+/// `maximum`. After a replacement runs for a healthy supervisor restart window,
+/// the next crash starts at `initial` again. Waiting for a replacement does not
+/// count as healthy execution. Each stable role keeps its own delay.
+pub type Backoff {
+    initial: duration;
+    maximum: duration;
+}
+
+/// Construct a bounded exponential restart delay.
+pub fn exponential(initial: duration, maximum: duration) -> Backoff {
+    assert(initial > 0ns, "restart backoff initial delay must be positive");
+    assert(maximum >= initial, "restart backoff maximum must be at least initial");
+    Backoff { initial: initial, maximum: maximum }
+}

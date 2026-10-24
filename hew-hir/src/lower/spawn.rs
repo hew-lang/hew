@@ -243,12 +243,10 @@ impl LowerCtx {
         }
         let mut hir_params: Vec<HirBinding> = Vec::with_capacity(params.len());
         for (param, ty) in params.iter().zip(param_tys) {
-            hir_params.push(self.bind_checked(
-                param.name.to_string(),
-                ty,
-                false,
-                param.name_span.clone(),
-            ));
+            let mut binding =
+                self.bind_checked(param.name.to_string(), ty, false, param.name_span.clone());
+            binding.is_consume = param.ownership == Some(hew_types::ParameterOwnership::Consume);
+            hir_params.push(binding);
         }
         // Lexically scope `current_actor_self` to THIS lambda body. If the
         // caller (`lower_stmt`'s let-pre-bind path) set it before invoking

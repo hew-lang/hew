@@ -39,7 +39,10 @@ fn sample_resolved_tys() -> Vec<Vec<ResolvedTy>> {
         }],
         vec![ResolvedTy::Function {
             capabilities: hew_parser::ast::CallableCapabilities::default(),
-            params: vec![ResolvedTy::I32, ResolvedTy::I32],
+            params: vec![
+                hew_types::CallableParameter::borrowed(ResolvedTy::I32),
+                hew_types::CallableParameter::borrowed(ResolvedTy::I32),
+            ],
             ret: Box::new(ResolvedTy::Bool),
         }],
         vec![ResolvedTy::Task(Box::new(ResolvedTy::Unit))],

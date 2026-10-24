@@ -654,7 +654,7 @@ impl LowerOutput {
 struct FnEntry {
     id: ItemId,
     return_ty: ResolvedTy,
-    param_tys: Vec<ResolvedTy>,
+    params: Vec<hew_types::CallableParameter<ResolvedTy>>,
     linkage: Option<BuiltinLinkage>,
     /// Source-declared generic type parameter names, in order. Empty for
     /// non-generic functions. Consulted at `Expr::Call` lowering sites to
@@ -770,6 +770,7 @@ struct LowerCtx {
     checked_scopes: Vec<HashMap<TypeBindingId, ScopeBinding>>,
     /// Stable actor field identities mapped to this handler's physical state seats.
     checked_field_scopes: Vec<HashMap<(hew_types::NominalId, u32), ScopeBinding>>,
+    checked_actor_fields: HashMap<TypeBindingId, (hew_types::NominalId, u32)>,
     /// Exact source-site resolutions; synthetic expressions have no row.
     resolutions: HashMap<SpanKey, Resolution>,
     current_actor_nominal: Option<hew_types::NominalId>,
@@ -1003,6 +1004,8 @@ struct LowerCtx {
     /// literal span. HIR consumes this ledger fail-closed when materialising
     /// `HirExprKind::Closure`; it does not infer capture legality from syntax.
     closure_capture_facts: HashMap<SpanKey, Vec<ClosureCaptureFact>>,
+    generator_capture_facts: HashMap<hew_types::ty::EffectBody, Vec<ClosureCaptureFact>>,
+    resolved_binding_types: HashMap<TypeBindingId, ResolvedTy>,
     /// Checker-authoritative escape classification keyed by closure literal
     /// span (the checker's `closure_escape_facts`). HIR threads this fact into
     /// `HirExprKind::Closure::escape_kind` so MIR's

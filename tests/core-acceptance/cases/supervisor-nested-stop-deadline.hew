@@ -1,0 +1,51 @@
+actor Worker {
+    let pause: duration = 0ns;
+    receive fn ping() -> i64 { 1 }
+    #[on(stop)]
+    fn done() {
+        sleep(pause);
+        println("leaf stopped");
+    }
+}
+
+supervisor Inner {
+    child worker: Worker;
+}
+
+supervisor Outer {
+    child inner: Inner stop: 1s;
+}
+
+supervisor SlowBranch {
+    child first: Worker { pause: 30ms };
+    child second: Worker { pause: 30ms };
+}
+
+supervisor Middle {
+    child branch: SlowBranch;
+}
+
+supervisor Bounded(grace: duration) {
+    child middle: Middle stop: grace;
+}
+
+fn main() {
+    let root = spawn Outer;
+    println(root.inner.worker.ping() handle _ { -1 });
+    stop(root);
+    stopped(root);
+
+    let bounded = spawn Bounded { grace: 50ms };
+    let started = instant.now();
+    stop(bounded);
+    stopped(bounded);
+    assert(started.elapsed() == 50ms);
+    println("subtree deadline released");
+
+    let immediate = spawn Bounded { grace: 0ns };
+    let immediate_start = instant.now();
+    stop(immediate);
+    stopped(immediate);
+    assert(immediate_start.elapsed() == 0ns);
+    println("immediate subtree released");
+}

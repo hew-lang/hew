@@ -392,6 +392,7 @@ impl<'hir, 'service> Builder<'hir, 'service> {
             places: self.places,
             bindings: self.source_bindings,
         };
+        super::deferred::remove_unentered_registrations(&mut function);
         tasks::remove_empty_scopes(&mut function);
         projection::complete_edge_partitions(
             &mut function,

@@ -585,3 +585,43 @@ fn main() { let app = spawn Shop; stop(app); stopped(app); }
         "{errors:#?}"
     );
 }
+
+#[test]
+fn nested_stop_deadlines_preserve_declared_spawn_identities() {
+    let mut module = lower_source(
+        r"
+        actor Worker { receive fn ping() -> i64 { 1 } }
+        supervisor Inner { child worker: Worker; }
+        supervisor Outer(grace: duration) {
+            child configured: Inner stop: grace;
+            child literal: Inner stop: 1s;
+        }
+        fn main() {
+            let root = spawn Outer { grace: 1s };
+            println(root.configured.worker.ping() handle _ { -1 });
+            stop(root);
+            stopped(root);
+        }
+    ",
+    );
+    let outer = module
+        .supervisors
+        .iter()
+        .find(|supervisor| module.defs.path(supervisor.declaration) == "Outer")
+        .unwrap();
+    assert_eq!(
+        outer.children[0].stop_deadline,
+        hew_sir::SemStopDeadline::Config(0)
+    );
+    assert_eq!(
+        outer.children[1].stop_deadline,
+        hew_sir::SemStopDeadline::Literal(1_000_000_000)
+    );
+    let outer_index = outer.id.0 as usize;
+    module.supervisors[outer_index].children.swap(0, 1);
+    let errors = verify_module(&module);
+    assert!(
+        format!("{errors:?}").contains("declared child's spawn callable"),
+        "{errors:#?}"
+    );
+}

@@ -585,3 +585,23 @@ impl Builder<'_, '_> {
         self.merge_match_exits(exits, &result_ty)
     }
 }
+
+/// Registrations schedule elaborated cleanup, rather than source evaluation.
+/// An action whose entire remaining scope diverges has no cleanup entry and
+/// cannot run; do not leave an orphan scheduling operation in verified SIR.
+pub(super) fn remove_unentered_registrations(function: &mut crate::SemFunction) {
+    let entered: BTreeSet<_> = function
+        .blocks
+        .iter()
+        .filter_map(|block| match block.terminator {
+            SemTerminator::EnterDefer { defer, .. } => Some(defer),
+            _ => None,
+        })
+        .collect();
+    for block in &mut function.blocks {
+        block.ops.retain(|op| {
+            !matches!(op.kind,
+            SemOpKind::RegisterDefer { defer, .. } if !entered.contains(&defer))
+        });
+    }
+}

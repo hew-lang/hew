@@ -31,9 +31,6 @@ fn stop_deadline(
             SemStopDeadline::Literal(-1)
         });
     };
-    if matches!(role, SemSupervisedRole::Supervisor(_)) {
-        return Err("a nested supervisor uses its children's stop deadlines".into());
-    }
     match &stop.kind {
         HirExprKind::Literal(hew_hir::HirLiteral::Duration(ns)) if *ns >= 0 => {
             Ok(SemStopDeadline::Literal(*ns))

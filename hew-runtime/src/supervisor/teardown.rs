@@ -213,6 +213,9 @@ fn wait_for_child_stop_deadline(
     stop_ns: i64,
     control: &crate::lifetime::local_handles::SupervisorControl,
 ) -> bool {
+    let stop_ns = control.remaining_stop_ms().map_or(stop_ns, |remaining| {
+        stop_ns.min(i64::try_from(remaining.saturating_mul(1_000_000)).unwrap_or(i64::MAX))
+    });
     // SAFETY: the teardown owner keeps this child live through the wait.
     let completion = unsafe { (*child).native_completion.clone() };
     let done = || {
@@ -516,6 +519,7 @@ pub(crate) unsafe fn stop_supervisor_owned(
         Supervisor {
             pointer: *mut HewSupervisor,
             token: crate::lifetime::local_handles::HewLocalPidId,
+            stop_ns: i64,
         },
     }
     let mut children = Vec::new();
@@ -523,8 +527,15 @@ pub(crate) unsafe fn stop_supervisor_owned(
         if !pointer.is_null() {
             // Legacy attached supervisors without a declaration sort last.
             let identity = spec.as_ref().map_or(0, |spec| spec.identity);
-            debug_assert!(spec.as_ref().is_none_or(|spec| spec.stop_ns == -1));
-            children.push((identity, TeardownChild::Supervisor { pointer, token }));
+            let stop_ns = spec.as_ref().map_or(-1, |spec| spec.stop_ns);
+            children.push((
+                identity,
+                TeardownChild::Supervisor {
+                    pointer,
+                    token,
+                    stop_ns,
+                },
+            ));
         }
     }
     {
@@ -545,13 +556,15 @@ pub(crate) unsafe fn stop_supervisor_owned(
     children.sort_unstable_by_key(|entry| std::cmp::Reverse(entry.0));
     for (_, entry) in children {
         match entry {
-            TeardownChild::Supervisor { pointer, token } => {
+            TeardownChild::Supervisor {
+                pointer,
+                token,
+                stop_ns,
+            } => {
                 retain_nested_completion(&raw mut *s, token);
                 let nested_control = handles.supervisor_control_for_raw(token, pointer);
-                if control.terminating() {
-                    if let Some(nested_control) = nested_control.as_ref() {
-                        nested_control.request_terminate();
-                    }
+                if let Some(nested_control) = nested_control.as_ref() {
+                    nested_control.inherit_stop_deadline(Arc::clone(&control), stop_ns);
                 }
                 // SAFETY: the extracted pointer and token are one roster entry.
                 if unsafe { claim_nested_supervisor_for_detach(pointer, token) } {

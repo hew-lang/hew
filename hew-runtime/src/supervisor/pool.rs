@@ -436,8 +436,8 @@ pub struct HewNativeChildSpec {
     /// The declared child name as a NUL-terminated string, or null. It labels
     /// the child in the profiler's restart series and tree dump.
     pub name: *const c_char,
-    /// Signed nanoseconds: `-1` for a nested supervisor, zero for immediate
-    /// termination, positive for an actor's graceful stop deadline.
+    /// Signed nanoseconds: `-1` for an unbounded nested subtree, zero for
+    /// immediate termination, positive for the child's graceful stop deadline.
     pub stop_ns: i64,
     /// Dependency-first rank among declarations; slots retain declaration order.
     pub startup_rank: u32,
@@ -451,9 +451,7 @@ fn register_native_child(
     child: &HewNativeChildSpec,
     pool_index: Option<usize>,
 ) -> Option<usize> {
-    if (child.role_kind == ROLE_KIND_SUPERVISOR && child.stop_ns != -1)
-        || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0)
-    {
+    if child.stop_ns < -1 || (child.role_kind == ROLE_KIND_ACTOR && child.stop_ns < 0) {
         return None;
     }
     // ROSTER-GUARDED-HELPER: construction holds the owning supervisor mutex

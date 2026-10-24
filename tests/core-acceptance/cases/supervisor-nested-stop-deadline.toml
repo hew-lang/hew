@@ -1,0 +1,13 @@
+[[case]]
+id = "supervisor-nested-stop-deadline"
+intent = "Nested literal and configured stop deadlines preserve role calls and graceful cleanup, bound the entire descendant subtree without resetting between siblings, and support immediate termination."
+source = "cases/supervisor-nested-stop-deadline.hew"
+suites = ["acceptance", "safety"]
+timeout_seconds = 20
+
+[case.env]
+HEW_DETERMINISTIC = ""
+
+[case.expected]
+stdout = "1\nleaf stopped\nleaf stopped\nsubtree deadline released\nimmediate subtree released\n"
+exit = 0

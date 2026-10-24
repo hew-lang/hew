@@ -3280,7 +3280,7 @@ fn main() { launch(); }
 
     #[test]
     fn imported_methods_use_their_checked_rewrite() {
-        let source = "import std.text.semver;\nfn main() fails semver.VersionError { let version = semver.parse(\"1.2.3-beta\")?; assert(version.pre() == \"beta\"); }";
+        let source = "import std.text.semver;\nfn main() fails semver.VersionError { let version = semver.parse(\"1.2.3-beta\")?; assert(version.pre() == .Some(\"beta\")); }";
         check_source(source, HostAdmission::ProcessEntry).unwrap();
     }
 

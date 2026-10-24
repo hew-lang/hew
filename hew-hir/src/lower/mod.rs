@@ -981,7 +981,8 @@ struct LowerCtx {
     /// checked module dispatched, accumulated across passes. Each becomes one
     /// `HirItem::ExternFn`, so an extern method and an `extern` block reach
     /// later stages through the same declaration shape.
-    extern_method_signatures: HashMap<(hew_types::DefId, String), hew_types::ExternMethodSignature>,
+    extern_method_signatures:
+        HashMap<(hew_types::DefId, String), (ItemId, hew_types::ExternMethodSignature)>,
     /// W4.047 P1.2 — the **typed** checker→HIR handoff map (the shadow of
     /// `expr_types`). Carries `ResolvedTy` (never `Ty::Var`/`Ty::Error`/literal)
     /// for every concrete accepted span; cloned verbatim from

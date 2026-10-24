@@ -2364,7 +2364,7 @@ pub fn lower_program(
     // signature. Emit one extern declaration per dispatched method so later
     // stages read the declared parameters, their `consume` dispositions and
     // the return type from a single shape, exactly as for an `extern` block.
-    for ((declaration, _), signature) in std::mem::take(&mut ctx.extern_method_signatures) {
+    for ((declaration, _), (id, signature)) in std::mem::take(&mut ctx.extern_method_signatures) {
         let (Ok(params), Ok(return_ty)) = (
             signature
                 .params
@@ -2384,7 +2384,7 @@ pub fn lower_program(
         let runtime_capability = extern_runtime_capability(&provenance, &signature.endpoint);
         items.push(HirItem::ExternFn(crate::node::HirExternFn {
             failure_domain: hew_types::CallableFailureDomain::Abort,
-            id: ctx.ids.item(),
+            id,
             node: ctx.ids.node(),
             declaration,
             name: signature.endpoint,

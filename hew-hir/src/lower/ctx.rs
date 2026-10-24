@@ -13,8 +13,14 @@ impl LowerCtx {
         // This registers Sink/Stream resource lifecycle metadata as
         // AffineResource even though they are not user-declared TypeDecl items.
         seed_builtin_type_classes(&mut type_classes);
+        let mut ids = IdGen::default();
+        let extern_method_signatures = tc_output
+            .extern_method_signatures
+            .iter()
+            .map(|(key, signature)| (key.clone(), (ids.item(), signature.clone())))
+            .collect();
         Self {
-            ids: IdGen::default(),
+            ids,
             checked_sites: HashMap::new(),
             binding_scopes: Vec::new(),
             checked_scopes: Vec::new(),
@@ -90,7 +96,7 @@ impl LowerCtx {
             defer_body_depth: 0,
             user_comparison_dispatch: tc_output.user_comparison_dispatch.clone(),
             numeric_operand_coercions: tc_output.numeric_operand_coercions.clone(),
-            extern_method_signatures: tc_output.extern_method_signatures.clone(),
+            extern_method_signatures,
             resolved_expr_types: tc_output.resolved_expr_types.clone(),
             declaration_type_parameters: tc_output.declaration_type_parameters.clone(),
             resolved_annotation_types: tc_output.resolved_annotation_types.clone(),

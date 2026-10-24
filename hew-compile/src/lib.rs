@@ -1801,7 +1801,7 @@ fn build_module_source_map(program: &Program, documents: &SourceSet) -> ModuleSo
             // A prelude module attached without a search path carries its
             // compiled-in source instead.
             if let [std, leaf] = mod_id.segments.as_slice() {
-                if let Some((_, text)) = COMPILED_PRELUDE_STD_SOURCES
+                if let Some((_, text)) = hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
                     .iter()
                     .find(|(name, _)| std.as_str() == "std" && *name == leaf.as_str())
                 {
@@ -2952,7 +2952,7 @@ pub fn attach_prelude_std_modules(program: &mut Program) {
         graph
     });
     add_prelude_std_modules(graph, |name| {
-        let (_, source) = COMPILED_PRELUDE_STD_SOURCES
+        let (_, source) = hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES
             .iter()
             .find(|(leaf, _)| *leaf == name)
             .expect("every prelude module has a compiled-in source");
@@ -2972,7 +2972,7 @@ fn add_prelude_std_modules(
     mut source_for: impl FnMut(&str) -> Result<(Option<PathBuf>, String), FrontendFailure>,
 ) -> Result<(), FrontendFailure> {
     use hew_parser::module::Module;
-    for (name, _) in COMPILED_PRELUDE_STD_SOURCES {
+    for (name, _) in hew_types::stdlib_authority::IMPLICIT_PRELUDE_STD_SOURCES {
         let id = ModulePath::new(["std", name]);
         if graph.modules.contains_key(&id) {
             continue;
@@ -3012,18 +3012,6 @@ fn add_prelude_std_modules(
     }
     Ok(())
 }
-
-/// The prelude standard-library modules by `std.<name>` leaf, with the source
-/// compiled into the host. A build resolves each through the std search path
-/// instead ([`resolve_prelude_std_source`]); only an analysis with no search
-/// path uses this text.
-const COMPILED_PRELUDE_STD_SOURCES: [(&str, &str); 5] = [
-    ("builtins", include_str!("../../std/builtins.hew")),
-    ("option", include_str!("../../std/option.hew")),
-    ("result", include_str!("../../std/result.hew")),
-    ("iter", include_str!("../../std/iter.hew")),
-    ("string", include_str!("../../std/string.hew")),
-];
 
 /// Resolve the prelude source `std/<name>.hew` from the standard-library
 /// root a `std` import uses: the configured search path, or
@@ -4833,7 +4821,8 @@ mod tests {
     #[test]
     fn embedded_prelude_lowers_vector_get_and_println_once() {
         let mut parsed = hew_parser::parse(
-            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); }",
+            "fn main() { let values = [1, 2]; println(values.get(0).expect(\"missing\")); \
+             let text = \"a😀b\"; println(text.len()); println(text.find_from(\"b\", 1).expect(\"missing\")); }",
         );
         assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
         super::attach_prelude_std_modules(&mut parsed.program);

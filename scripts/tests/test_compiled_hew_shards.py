@@ -485,6 +485,31 @@ class CompiledHewShardTests(unittest.TestCase):
         result = self.aggregate("ratchet", expect=1)
         self.assertIn("missing or unsupported semantic type", result.stderr)
 
+    def test_runtime_failure_details_reach_the_ratchet(self) -> None:
+        values = self.full[0::SHARDS]
+        for kind in (
+            "assertion",
+            "panic",
+            "trap",
+            "error_return",
+            "deadlock",
+            "step_budget",
+            "crash",
+            "refused",
+        ):
+            with self.subTest(kind=kind):
+                write_junit(
+                    self.reports / "hew-o0-shard-1.xml",
+                    values,
+                    failed={values[0]},
+                    failure_kind=kind,
+                )
+                result = self.aggregate("ratchet", expect=1)
+                self.assertNotIn("unsupported semantic type", result.stderr)
+                report = self.report()
+                self.assertIn(f"kind={kind}", report.stdout)
+                self.assertIn("forced diagnostic text", report.stdout)
+
     def test_report_names_the_failed_shard_test_and_diagnostic(self) -> None:
         values = self.full[0::SHARDS]
         write_junit(self.reports / "hew-o0-shard-1.xml", values, failed={values[0]})

@@ -1314,6 +1314,24 @@ fn junit_failing_suite_emits_failure_element_and_exits_one() {
         "stdout: {stdout}"
     );
     assert!(stdout.contains("boom"), "stdout: {stdout}");
+
+    let dir = support::tempdir();
+    let report = dir.path().join("failure.xml");
+    std::fs::write(&report, &output.stdout).unwrap();
+    let parsed = Command::new(std::env::var_os("PYTHON").unwrap_or_else(|| "python3".into()))
+        .arg(repo_root().join("scripts/lib/hew_junit.py"))
+        .args(["--runner-exit", "1"])
+        .arg(&report)
+        .output()
+        .expect("run the compiled-test JUnit consumer");
+    assert!(
+        parsed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&parsed.stderr)
+    );
+    let outcomes = String::from_utf8_lossy(&parsed.stdout);
+    assert!(outcomes.contains("::bad\tpanic"), "{outcomes}");
+    assert!(outcomes.contains("__SUMMARY__\t1\t1\t0"), "{outcomes}");
 }
 
 #[test]

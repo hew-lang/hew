@@ -24,7 +24,20 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-FAILURE_KINDS = frozenset({"compile", "runtime", "timeout", "launch"})
+# Ledger policy is narrower than the outcomes emitted by TestFailureKind.
+LEDGER_FAILURE_KINDS = frozenset({"compile", "runtime", "timeout", "launch"})
+FAILURE_KINDS = LEDGER_FAILURE_KINDS | frozenset(
+    {
+        "assertion",
+        "panic",
+        "trap",
+        "error_return",
+        "deadlock",
+        "step_budget",
+        "crash",
+        "refused",
+    }
+)
 
 
 class JUnitError(ValueError):

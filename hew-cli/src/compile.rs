@@ -307,7 +307,9 @@ fn push_frontend_diagnostics_json(diagnostics: &[FrontendDiagnostic]) {
                 _ => message_diagnostic(&error.message),
             },
             FrontendDiagnosticKind::Type(error) => match (source, filename) {
-                (Some(source), Some(filename)) => from_type_error(source, filename, error),
+                (Some(source), Some(filename)) => {
+                    from_type_error(source, filename, error, &diagnostic.note_sources)
+                }
                 _ => message_diagnostic(&error.message),
             },
             FrontendDiagnosticKind::Hir(error) => from_hir_diagnostic(source, filename, error),

@@ -78,6 +78,12 @@ pub(crate) fn push_json_diagnostic(mut diagnostic: JsonDiagnostic) {
     diagnostic.message = paths.display_text(&diagnostic.message);
     for note in &mut diagnostic.notes {
         note.message = paths.display_text(&note.message);
+        if let Some(file) = &mut note.file {
+            *file = crate::diagnostic::display_filename(file);
+        }
+    }
+    for help in &mut diagnostic.help {
+        *help = paths.display_text(help);
     }
     JSON_DIAGNOSTICS.with(|d| d.borrow_mut().push(diagnostic));
 }
@@ -156,6 +162,8 @@ impl JsonSpan {
 pub(crate) struct JsonNote {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<JsonSpan>,
 }
 
@@ -206,6 +214,8 @@ pub(crate) struct JsonDiagnostic {
     pub message: String,
     /// Secondary notes (related locations / context).
     pub notes: Vec<JsonNote>,
+    /// Human-readable guidance from the diagnostic producer.
+    pub help: Vec<String>,
     /// Producer-owned alternatives with explicit applicability.
     pub fixes: Vec<JsonFix>,
 }
@@ -265,6 +275,7 @@ pub(crate) fn coded_message_diagnostic(
         span: JsonSpan::zero(),
         message: message.to_string(),
         notes: Vec::new(),
+        help: Vec::new(),
         fixes: Vec::new(),
     }
 }
@@ -304,33 +315,26 @@ pub(crate) fn from_coded_message_diagnostic(
     diagnostic: &hew_compile::FrontendMessageDiagnostic,
     filename: Option<&str>,
 ) -> JsonDiagnostic {
-    // Cross-file notes (the import-cycle diagnostic's remaining edges) carry
-    // their own span, but `JsonNote` locates within the *diagnostic's* file —
-    // there is no per-note file field — so they surface as message-only notes
-    // here, same as a parser hint. Help lines join the same list; a JSON
-    // consumer distinguishes them by content, matching how `= help:` already
-    // reads inline with `= note:` in the plain-text renderer's output stream.
     let notes: Vec<JsonNote> = diagnostic
         .notes
         .iter()
         .map(|note| JsonNote {
             message: note.message.clone(),
-            span: None,
+            file: Some(note.filename.clone()),
+            span: Some(JsonSpan::from_range(&note.source, &note.span)),
         })
-        .chain(diagnostic.help.iter().map(|help| JsonNote {
-            message: format!("help: {help}"),
-            span: None,
-        }))
         .collect();
     match (&diagnostic.span, diagnostic.source.as_deref()) {
         (Some(span), Some(source)) => JsonDiagnostic {
             span: JsonSpan::from_range(source, span),
             file: filename.unwrap_or_default().to_string(),
             notes,
+            help: diagnostic.help.clone(),
             ..coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User)
         },
         _ => JsonDiagnostic {
             notes,
+            help: diagnostic.help.clone(),
             ..coded_message_diagnostic(&diagnostic.code, &diagnostic.message, DiagChannel::User)
         },
     }
@@ -346,14 +350,6 @@ pub(crate) fn from_parse_error(
         hew_parser::Severity::Warning => SEVERITY_WARNING,
         hew_parser::Severity::Error => SEVERITY_ERROR,
     };
-    let notes = error
-        .hint
-        .iter()
-        .map(|hint| JsonNote {
-            message: hint.clone(),
-            span: None,
-        })
-        .collect();
     JsonDiagnostic {
         source_hash: Some(hew_analysis::code_actions::source_hash(source)),
         code: error.kind.as_kind_str().to_string(),
@@ -363,7 +359,8 @@ pub(crate) fn from_parse_error(
         file: filename.to_string(),
         span: JsonSpan::from_range(source, &error.span),
         message: error.message.clone(),
-        notes,
+        notes: Vec::new(),
+        help: error.hint.iter().cloned().collect(),
         fixes: fixes_from_code_actions(source, &error.fixes),
     }
 }
@@ -374,6 +371,7 @@ pub(crate) fn from_type_error(
     source: &str,
     filename: &str,
     error: &hew_types::TypeError,
+    note_sources: &[Option<(String, String)>],
 ) -> JsonDiagnostic {
     let severity = match error.severity {
         hew_types::error::Severity::Warning => SEVERITY_WARNING,
@@ -383,9 +381,19 @@ pub(crate) fn from_type_error(
     let notes = error
         .notes
         .iter()
-        .map(|(span, message, _)| JsonNote {
-            message: message.clone(),
-            span: Some(JsonSpan::from_range(source, span)),
+        .enumerate()
+        .map(|(index, (span, message, _))| {
+            let (note_source, note_filename) = note_sources
+                .get(index)
+                .and_then(Option::as_ref)
+                .map_or((source, filename), |(source, filename)| {
+                    (source.as_str(), filename.as_str())
+                });
+            JsonNote {
+                message: message.clone(),
+                file: Some(note_filename.to_string()),
+                span: Some(JsonSpan::from_range(note_source, span)),
+            }
         })
         .collect();
     let fixes = fixes_from_code_actions(source, &error.fixes);
@@ -399,6 +407,7 @@ pub(crate) fn from_type_error(
         span: JsonSpan::from_range(source, &error.span),
         message: error.message.clone(),
         notes,
+        help: error.suggestions.clone(),
         fixes,
     }
 }
@@ -419,6 +428,7 @@ pub(crate) fn from_hir_diagnostic(
             .iter()
             .map(|(span, label)| JsonNote {
                 message: label.clone(),
+                file: filename.map(str::to_string),
                 span: Some(JsonSpan::from_range(src, span)),
             })
             .collect()
@@ -433,6 +443,7 @@ pub(crate) fn from_hir_diagnostic(
         span,
         message: crate::diagnostic::hir_diagnostic_user_message(diagnostic),
         notes,
+        help: Vec::new(),
         fixes: Vec::new(),
     }
 }
@@ -452,7 +463,7 @@ mod tests {
             29..35,
             "type mismatch: expected `i64`, found `string`",
         );
-        let diag = from_type_error(source, "main.hew", &error);
+        let diag = from_type_error(source, "main.hew", &error, &[]);
         assert_eq!(diag.code, "Mismatch");
         assert_eq!(diag.severity, "error");
         assert_eq!(diag.channel, "user");
@@ -486,7 +497,7 @@ mod tests {
         let mut changed_prose = error.clone();
         changed_prose.message = "different prose".into();
         changed_prose.suggestions = vec!["this prose is not an edit".into()];
-        let diag = from_type_error(source, "main.hew", &changed_prose);
+        let diag = from_type_error(source, "main.hew", &changed_prose, &[]);
         assert_eq!(diag.fixes.len(), error.fixes.len());
         assert_eq!(diag.fixes[0].edits[0].new_text, "food");
         let edit = &diag.fixes[0].edits[0];

@@ -44,6 +44,59 @@ fn parse_json_array(output: &std::process::Output) -> Vec<Value> {
         .clone()
 }
 
+#[test]
+fn json_help_preserves_the_type_checkers_guidance() {
+    let (_dir, path) = write_fixture("fn main() { let food = 42; println(foob); }");
+    let json = run(&["check", "--format=json", path.to_str().unwrap()]);
+    let text = run(&["check", path.to_str().unwrap()]);
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(text.status.code(), Some(1));
+    let diagnostics = parse_json_array(&json);
+    let undefined = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "UndefinedVariable")
+        .expect("undefined variable diagnostic");
+    let help = undefined["help"].as_array().expect("structured help");
+    assert!(!help.is_empty(), "the typo should offer guidance");
+    let rendered = strip_ansi(&String::from_utf8_lossy(&text.stderr));
+    for suggestion in help {
+        assert!(rendered.contains(suggestion.as_str().unwrap()));
+    }
+}
+
+#[test]
+fn json_import_cycle_notes_locate_their_own_source_files() {
+    let dir = support::tempdir();
+    let first = dir.path().join("a.hew");
+    let second = dir.path().join("b.hew");
+    let second_source = "// 🦉\n\nimport \"a.hew\";\npub fn noop_b() {}\n";
+    fs::write(&first, "import \"b.hew\";\npub fn noop_a() {}\n").unwrap();
+    fs::write(&second, second_source).unwrap();
+    let json = run(&["check", "--format=json", first.to_str().unwrap()]);
+    assert_eq!(json.status.code(), Some(1));
+    let diagnostics = parse_json_array(&json);
+    let cycle = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "E_IMPORT_CYCLE")
+        .expect("import cycle diagnostic");
+    let note = cycle["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|note| {
+            note["file"]
+                .as_str()
+                .is_some_and(|file| file.ends_with("b.hew"))
+        })
+        .expect("the other import edge has its own file");
+    let span = &note["span"];
+    assert_eq!(span["start_line"], 3);
+    let start = usize::try_from(span["start_byte"].as_u64().unwrap()).unwrap();
+    let end = usize::try_from(span["end_byte"].as_u64().unwrap()).unwrap();
+    assert!(second_source[start..end].contains("\"a.hew\""));
+    assert!(!cycle["help"].as_array().unwrap().is_empty());
+}
+
 /// A type error emits a parseable JSON array carrying at least
 /// `{code, severity, file, span, message}` and exits 1.
 #[test]

@@ -2,6 +2,6 @@ import std.text.regex;
 
 fn main() {
     let re = regex.new("[0-9]+").expect("valid pattern");
-    println(re.find("abc123"));
+    println(re.find("abc123").expect("matching digits"));
     re.close();
 }

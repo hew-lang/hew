@@ -235,15 +235,23 @@ make build-docs-site \
   DOCS_HEW="$docs_hew" \
   DOCS_SITE_DIR="$docs_out" \
   DOCS_VERSION=0.9.2 \
+  DOCS_STABLE_REF=v0.9.2 \
+  DOCS_STD_SOURCE=std/ \
+  DOCS_LANGUAGE_SOURCE=docs/language/ \
   DOCS_LAST_MODIFIED="$(git show -s --format=%cs HEAD)"
 npx --yes wrangler@4.147.0 pages deploy "$docs_out" --project-name hew-docs
 ```
 
-`--site-version` keeps every generated page on the explicitly documented
-release even when a newer `hew doc` binary provides the renderer. Use this path
-only for content and generator maintenance whose language surface has been
-checked against that stable release. A normal language release continues to use
-the tagged packaged compiler through `release.yml`.
+`DOCS_STABLE_REF` checks that the candidate has exactly the tagged
+standard-library module set and that every `.hew` source is byte-identical to
+the stable tag after removing only `//!` and `///` documentation lines. It fails
+before generation if code, signatures, or module availability drifted.
+`DOCS_STD_SOURCE` and `DOCS_LANGUAGE_SOURCE` make the selected inputs explicit;
+the maintained guides remain the reviewed documentation sources whose examples
+were checked with the stable compiler. `--site-version` then keeps every
+generated page on the explicitly documented release even when a newer `hew
+doc` binary provides the renderer. A normal language release continues to use
+the tagged packaged compiler and tagged sources through `release.yml`.
 
 The first maintenance deployment leaves the AI UI disabled and makes the new
 sitemap available to the paused AI Search instance. After the instance is in
@@ -257,6 +265,9 @@ make build-docs-site \
   DOCS_HEW="$docs_hew" \
   DOCS_SITE_DIR="$ai_docs_out" \
   DOCS_VERSION=0.9.2 \
+  DOCS_STABLE_REF=v0.9.2 \
+  DOCS_STD_SOURCE=std/ \
+  DOCS_LANGUAGE_SOURCE=docs/language/ \
   DOCS_LAST_MODIFIED="$(git show -s --format=%cs HEAD)" \
   DOCS_AI_SEARCH_ENDPOINT=/api/docs-search
 npx --yes wrangler@4.147.0 pages deploy "$ai_docs_out" --project-name hew-docs

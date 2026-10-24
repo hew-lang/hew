@@ -962,6 +962,9 @@ DOCS_SITE_DIR ?= $(CARGO_TARGET_ROOT)/doc
 DOCS_VERSION ?=
 DOCS_LAST_MODIFIED ?=
 DOCS_AI_SEARCH_ENDPOINT ?=
+DOCS_STD_SOURCE ?= std/
+DOCS_LANGUAGE_SOURCE ?= docs/language/
+DOCS_STABLE_REF ?=
 
 build-docs-site: ## Release: generate, assemble and index the complete docs site
 	@test -f "$(DOCS_HEW)" \
@@ -977,7 +980,12 @@ build-docs-site: ## Release: generate, assemble and index the complete docs site
 	fi; \
 	[ -n "$$version" ] || { echo "Error: could not determine the Hew version" >&2; exit 1; }; \
 	[ -n "$$last_modified" ] || { echo "Error: could not determine the source revision date" >&2; exit 1; }; \
-	"$(DOCS_HEW)" doc std/ docs/language/ \
+	if [ -n "$(DOCS_STABLE_REF)" ]; then \
+		$(PYTHON) scripts/check-doc-source-fidelity.py \
+			--stable-ref "$(DOCS_STABLE_REF)" \
+			--candidate-std "$(DOCS_STD_SOURCE)"; \
+	fi; \
+	"$(DOCS_HEW)" doc "$(DOCS_STD_SOURCE)" "$(DOCS_LANGUAGE_SOURCE)" \
 		--site-config docs/docs-site.toml \
 		--site-version "$$version" \
 		--output-dir "$(DOCS_SITE_DIR)"; \

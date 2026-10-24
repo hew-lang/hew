@@ -47,7 +47,7 @@ function fakeTrace() {
     trace_id: "trace:playground-contract",
     fixture_id: "playground-contract",
     profile: "sandbox.educational.v0",
-    hew_version: "0.9.2-rc1",
+    hew_version: "0.9.3-rc1",
     sandbox_version: "0.0.0-spec",
     result: "ok",
     replay: replay(42, 12),

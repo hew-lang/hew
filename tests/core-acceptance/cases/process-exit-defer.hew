@@ -1,0 +1,12 @@
+fn finish(code: i64) {
+    defer println("deferred");
+    if code > 0 {
+        exit(code);
+    }
+}
+
+fn main() {
+    finish(0);
+    defer println("unreachable defer");
+    exit(3);
+}

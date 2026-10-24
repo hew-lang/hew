@@ -5,6 +5,26 @@
 pub(super) use super::*;
 
 #[test]
+fn crash_hook_tail_inherits_its_declared_crash_action_type() {
+    let source = r#"
+import std.failure.{CrashInfo, CrashAction};
+
+actor Cache {
+    receive fn poison() { panic("x"); }
+
+    #[on(crash)]
+    fn on_crash(info: CrashInfo) -> CrashAction { .Restart }
+}
+
+fn main() { let cache = spawn Cache; let _ = cache.poison(); }
+"#;
+    let parsed = hew_parser::parse(source);
+    assert!(parsed.errors.is_empty(), "{:#?}", parsed.errors);
+    let output = Checker::new(test_registry()).check_program(&parsed.program);
+    assert!(output.errors.is_empty(), "{:#?}", output.errors);
+}
+
+#[test]
 fn supervisor_backoff_requires_the_stdlib_policy_identity() {
     for value in ["100", "Backoff { initial: 100ms, maximum: 1s }"] {
         let output = check_source(&format!(

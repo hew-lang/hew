@@ -2282,14 +2282,16 @@ impl Checker {
             self.record_local_resolution(p.name, &p.name_span);
         }
 
-        self.current_return_type = Some(return_ty);
+        self.current_return_type = Some(return_ty.clone());
         // M-4: the `CrashAction` enum-variant return is now wired end-to-end
         // (MIR extracts the variant tag at the return boundary; the supervisor
         // honours it). The former `in_crash_hook` fail-closed gate that rejected
         // a `CrashAction`-returning body is removed — a `#[on(crash)]` hook may
         // now return `Restart`/`Escalate`/`Kill` (or `panic(...)`) freely. The
         // standard return-type checking against `current_return_type` covers it.
-        let _body_ty = self.check_block(&hook.body, None);
+        let block_expected =
+            (!matches!(self.subst.resolve(&return_ty), Ty::Error)).then_some(&return_ty);
+        let _body_ty = self.check_block(&hook.body, block_expected);
         self.record_scope_cleanup_effects();
         self.effect_graph.current_body = previous_effect_body;
         self.crash_hook_consumed_fields.clear();

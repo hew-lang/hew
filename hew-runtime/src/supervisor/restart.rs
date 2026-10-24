@@ -266,12 +266,15 @@ unsafe fn stop_group_role(
                         roster.child_supervisors[index] = ptr::null_mut();
                         roster.child_supervisor_tokens[index] =
                             crate::lifetime::local_handles::HewLocalPidId::INVALID;
-                        Some((child, token))
+                        let stop_ns = roster.child_supervisor_specs[index]
+                            .as_ref()
+                            .map_or(-1, |spec| spec.stop_ns);
+                        Some((child, token, stop_ns))
                     }
                     _ => None,
                 }
             };
-            let Some((child, token)) = entry else {
+            let Some((child, token, stop_ns)) = entry else {
                 return;
             };
             if let Some(completion) =
@@ -284,7 +287,7 @@ unsafe fn stop_group_role(
                     completion,
                 });
             }
-            stop_detached_nested_supervisor(child, token);
+            stop_detached_nested_supervisor(sup, child, token, stop_ns);
         }
     }
 }
@@ -294,9 +297,19 @@ unsafe fn stop_group_role(
 /// hand it back still reaches canonical cleanup; the stop runs off the
 /// parent's turn.
 fn stop_detached_nested_supervisor(
+    parent: *mut HewSupervisor,
     child: *mut HewSupervisor,
     token: crate::lifetime::local_handles::HewLocalPidId,
+    stop_ns: i64,
 ) {
+    // SAFETY: the dispatch owner retains the parent through this handoff.
+    let parent_token = unsafe { (*parent).local_pid_id };
+    if let (Some(parent), Some(child)) = (
+        crate::lifetime::local_handles::current_supervisor_control_for_raw(parent_token, parent),
+        crate::lifetime::local_handles::current_supervisor_control_for_raw(token, child),
+    ) {
+        child.inherit_stop_deadline(parent, stop_ns);
+    }
     // Admission closes only once runtime cleanup has joined every worker, so
     // a supervisor turn that reaches here is always admitted.
     let Some(teardown) = crate::lifetime::local_handles::begin_current_supervisor_teardown() else {

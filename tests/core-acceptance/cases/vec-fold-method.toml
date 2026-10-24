@@ -1,0 +1,10 @@
+[[case]]
+id = "vec-fold-method"
+intent = "Vec.fold lowers through the collection pipeline with a seed-first closure and preserves the empty-vector seed; Vec.reduce keeps its closure-first order."
+source = "cases/vec-fold-method.hew"
+suites = ["acceptance"]
+timeout_seconds = 30
+
+[case.expected]
+stdout = "6\n7\n6\n"
+exit = 0

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use crate::lifetime::PoisonSafe;
 use crate::runtime_id::RuntimeId;
+use crate::util::MutexExt;
 
 /// One-word semantic identity carried by an in-language actor handle.
 ///
@@ -158,6 +159,11 @@ type RoleWaitTargets = (
     Vec<Option<crate::actor_native::NativeWaitTarget>>,
 );
 
+struct SupervisorStopConstraint {
+    parent: Arc<SupervisorControl>,
+    deadline_ms: Option<u64>,
+}
+
 pub(crate) struct SupervisorControl {
     supervisor_addr: usize,
     direct_id: HewLocalPidId,
@@ -167,6 +173,7 @@ pub(crate) struct SupervisorControl {
     /// Forceful request remains reachable after the direct route closes so a
     /// terminate can escalate an in-progress graceful supervisor stop.
     terminate_requested: AtomicBool,
+    stop_constraint: Mutex<Option<SupervisorStopConstraint>>,
     completion: Arc<crate::actor_native::NativeActorCompletion>,
     role_wait_targets: Mutex<Option<RoleWaitTargets>>,
     parent_stop_notification: Mutex<Option<(HewLocalPidId, u32)>>,
@@ -187,6 +194,7 @@ impl SupervisorControl {
             access_state: AtomicUsize::new(0),
             teardown_claimed: AtomicBool::new(false),
             terminate_requested: AtomicBool::new(false),
+            stop_constraint: Mutex::new(None),
             completion: Arc::default(),
             role_wait_targets: Mutex::new(None),
             parent_stop_notification: Mutex::new(None),
@@ -200,7 +208,39 @@ impl SupervisorControl {
     }
 
     pub(crate) fn terminating(&self) -> bool {
-        self.terminate_requested.load(Ordering::Acquire)
+        self.remaining_stop_ms() == Some(0)
+    }
+
+    /// The parent retains a stable control, rather than a raw subtree pointer,
+    /// until descendant cleanup finishes. Each subtree shares its ancestor's
+    /// absolute stop deadline; visiting another child cannot reset the budget.
+    pub(crate) fn inherit_stop_deadline(&self, parent: Arc<Self>, stop_ns: i64) {
+        let deadline_ms = (stop_ns >= 0).then(|| {
+            // SAFETY: the runtime clock has no pointer arguments.
+            unsafe { crate::clock::hew_now_ms() }
+                .saturating_add(stop_ns.cast_unsigned().div_ceil(1_000_000))
+        });
+        *self.stop_constraint.lock_or_recover() = Some(SupervisorStopConstraint {
+            parent,
+            deadline_ms,
+        });
+    }
+
+    pub(crate) fn remaining_stop_ms(&self) -> Option<u64> {
+        if self.terminate_requested.load(Ordering::Acquire) {
+            return Some(0);
+        }
+        let constraint = self.stop_constraint.lock_or_recover();
+        let constraint = constraint.as_ref()?;
+        let inherited = constraint.parent.remaining_stop_ms();
+        // SAFETY: the runtime clock has no pointer arguments.
+        let local = constraint
+            .deadline_ms
+            .map(|deadline| deadline.saturating_sub(unsafe { crate::clock::hew_now_ms() }));
+        match (local, inherited) {
+            (Some(local), Some(inherited)) => Some(local.min(inherited)),
+            (local, inherited) => local.or(inherited),
+        }
     }
 
     pub(crate) fn finish_terminal(&self) {

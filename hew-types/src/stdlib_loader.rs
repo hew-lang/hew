@@ -1740,14 +1740,14 @@ mod tests {
         let info = load_module("std::net::http::server", &test_root()).unwrap();
 
         assert!(
-            info.drop_types.contains(&"http.Request".to_string()),
-            "http.Request should be a drop type as a `#[resource]`, got: {:?}",
+            info.drop_types.contains(&"server.Request".to_string()),
+            "server.Request should be a drop type as a `#[resource]`, got: {:?}",
             info.drop_types
         );
 
         assert!(
-            info.drop_types.contains(&"http.Server".to_string()),
-            "http.Server should be a closeable opaque drop type: {:?}",
+            info.drop_types.contains(&"server.Server".to_string()),
+            "server.Server should be a closeable opaque drop type: {:?}",
             info.drop_types
         );
     }
@@ -1756,26 +1756,29 @@ mod tests {
     fn drop_funcs_extracted() {
         let info = load_module("std::net::http::server", &test_root()).unwrap();
 
-        let request_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Request");
+        let request_drop = info
+            .drop_funcs
+            .iter()
+            .find(|(ty, _)| ty == "server.Request");
         assert_eq!(
             request_drop,
             Some(&(
-                "http.Request".to_string(),
+                "server.Request".to_string(),
                 "hew_http_request_free".to_string()
             )),
-            "http.Request.close consumes the handle itself, so it registers a \
+            "server.Request.close consumes the handle itself, so it registers a \
              direct drop func: {:?}",
             info.drop_funcs
         );
 
-        let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "http.Server");
+        let server_drop = info.drop_funcs.iter().find(|(ty, _)| ty == "server.Server");
         assert_eq!(
             server_drop,
             Some(&(
-                "http.Server".to_string(),
+                "server.Server".to_string(),
                 "hew_http_server_close".to_string()
             )),
-            "http.Server should register its exact raw disposer: {:?}",
+            "server.Server should register its exact raw disposer: {:?}",
             info.drop_funcs
         );
     }

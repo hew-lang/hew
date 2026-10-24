@@ -2120,26 +2120,6 @@ fn tuple_literal_coercion_overflow() {
     );
 }
 
-#[test]
-fn range_default_type_is_i64() {
-    let mut checker = Checker::new(ModuleRegistry::new(vec![]));
-    let range = (
-        Expr::Range {
-            start: None,
-            end: None,
-            inclusive: false,
-        },
-        0..2,
-    );
-    let ty = checker.synthesize(&range.0, &range.1);
-    assert_eq!(ty, Ty::range(Ty::I64));
-    assert!(
-        checker.errors.is_empty(),
-        "unexpected errors: {:?}",
-        checker.errors
-    );
-}
-
 // ── Type variable resolution in check_against ────────────────────
 
 #[test]

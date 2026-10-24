@@ -512,20 +512,17 @@ pub unsafe extern "C" fn hew_jwt_decode_insecure(token: *const HewString) -> *mu
         serde_json::to_string(&data.claims).ok()
     };
 
-    match decode_inner() {
-        Some(json) => {
-            let result = string_from_str(&json);
-            set_last_jwt_error(if result.is_null() {
-                HewJwtError::AllocationFailure
-            } else {
-                HewJwtError::None
-            });
-            result
-        }
-        None => {
-            set_last_jwt_error(HewJwtError::TokenMalformed);
-            std::ptr::null_mut()
-        }
+    if let Some(json) = decode_inner() {
+        let result = string_from_str(&json);
+        set_last_jwt_error(if result.is_null() {
+            HewJwtError::AllocationFailure
+        } else {
+            HewJwtError::None
+        });
+        result
+    } else {
+        set_last_jwt_error(HewJwtError::TokenMalformed);
+        std::ptr::null_mut()
     }
 }
 

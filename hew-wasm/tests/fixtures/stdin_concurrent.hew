@@ -1,7 +1,7 @@
 import std.io;
 
 fn reader() -> string {
-    (io.read_line() ?? "<none>")
+    (io.read_line().expect("standard I/O") ?? "<none>")
 }
 
 fn main() {
@@ -20,5 +20,5 @@ fn main() {
     } else {
         println(f"unexpected {first} {second}");
     }
-    println(f"rest=[{io.read_all()}]");
+    println(f"rest=[{io.read_all().expect("standard I/O")}]");
 }

@@ -915,7 +915,7 @@ impl<'a, 'ctx> FunctionEmitter<'a, 'ctx> {
             RuntimeCallFamily::StderrWrite => {
                 let function = get_or_declare_external(
                     self.llvm,
-                    "hew_io_write_err",
+                    "hew_report_stderr",
                     self.ctx.void_type().fn_type(&[ptr.into()], false),
                 )?;
                 self.runtime_call_void(

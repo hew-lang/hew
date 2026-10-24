@@ -220,7 +220,7 @@ fn run_wasi_foreground_stdin_is_readable() {
     let source = dir.path().join("stdin.hew");
     std::fs::write(
         &source,
-        "import std.io;\nfn main() { println(\"ready\"); println(io.read_line() ?? \"eof\"); }\n",
+        "import std.io;\nfn main() { println(\"ready\"); println(io.read_line().expect(\"standard I/O\") ?? \"eof\"); }\n",
     )
     .unwrap();
     let mut command = Command::new(support::hew_binary());

@@ -1752,7 +1752,7 @@ fn assert_exact_stdout(case: &ParityCase, native: &Output) {
         }
         "identity_w7_sandbox" | "identity_w7_sandbox_control" => Some("7\n8\n"),
         "stdin_concurrent" => Some("one line each\nrest=[three\nfour]\n"),
-        "stdin_lines" => Some("first=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
+        "stdin_lines" => Some("literal io.read_line()\nfirst=[alpha] second=[]\nrest=[beta\r\ngamma]\nafter end\n"),
         "closure_edges" => Some(
             "Err(empty) Ok(6) Err(not a number: x)\nOk(4) Err(not a number: x)\nprinted\nErr(nothing to print) Ok(())\nOk(7) Ok(3) Err(not a number: x)\nOk([6, 6])\nErr(not a number: x)\nErr(blank entry)\n[Some(2), None]\nSome(9) None\n",
         ),

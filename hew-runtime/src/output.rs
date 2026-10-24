@@ -2,7 +2,8 @@
 //!
 //! Every write from Hew code (`print`, `println`, `io.write`, `io.write_err`)
 //! and every user-visible runtime report copies its bytes into one
-//! process-wide queue and returns. One dedicated drainer thread writes the
+//! process-wide queue. Checked writes wait for their result on the offload pool.
+//! One dedicated drainer thread writes the
 //! queue to the two streams in order, so stdout and stderr writes never
 //! reorder against each other and a worker never waits on a slow terminal or
 //! pipe. The drainer shares no pool with program work, so blocked offloaded
@@ -28,8 +29,14 @@ pub(crate) enum Stream {
     Err,
 }
 
+struct Chunk {
+    stream: Stream,
+    bytes: Vec<u8>,
+    completion: Option<std::sync::mpsc::SyncSender<std::io::Result<()>>>,
+}
+
 struct Queue {
-    chunks: VecDeque<(Stream, Vec<u8>)>,
+    chunks: VecDeque<Chunk>,
     /// Bytes queued or being written.
     bytes: usize,
     /// Chunks are queued or being written; flush waits for this to clear.
@@ -48,7 +55,30 @@ static WORK: Condvar = Condvar::new();
 
 /// Queue a copy of `bytes` for `stream`, in order with every other write.
 pub(crate) fn write(stream: Stream, bytes: &[u8]) {
+    enqueue(stream, bytes, None);
+}
+
+/// Queue a write and wait for its result. Call from the offload pool so a
+/// slow stream does not occupy a scheduler worker.
+pub(crate) fn write_checked(stream: Stream, bytes: &[u8]) -> std::io::Result<()> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    enqueue(stream, bytes, Some(sender));
+    receiver.recv().unwrap_or_else(|_| {
+        Err(std::io::Error::other(
+            "output writer stopped before completing the write",
+        ))
+    })
+}
+
+fn enqueue(
+    stream: Stream,
+    bytes: &[u8],
+    completion: Option<std::sync::mpsc::SyncSender<std::io::Result<()>>>,
+) {
     if bytes.is_empty() {
+        if let Some(sender) = completion {
+            let _ = sender.send(Ok(()));
+        }
         return;
     }
     let mut queue = QUEUE.lock_or_recover();
@@ -57,12 +87,23 @@ pub(crate) fn write(stream: Stream, bytes: &[u8]) {
     }
     if !queue.draining && !drainer_running() {
         // Nothing queued and no drainer: write in place, in order under the lock.
-        emit(stream, bytes);
+        let result = emit(stream, bytes);
+        if let Some(sender) = completion {
+            let _ = sender.send(result);
+        }
         return;
     }
     match queue.chunks.back_mut() {
-        Some((last, chunk)) if *last == stream => chunk.extend_from_slice(bytes),
-        _ => queue.chunks.push_back((stream, bytes.to_vec())),
+        Some(last)
+            if last.stream == stream && last.completion.is_none() && completion.is_none() =>
+        {
+            last.bytes.extend_from_slice(bytes);
+        }
+        _ => queue.chunks.push_back(Chunk {
+            stream,
+            bytes: bytes.to_vec(),
+            completion,
+        }),
     }
     queue.bytes += bytes.len();
     queue.draining = true;
@@ -114,9 +155,12 @@ fn drain() {
         let batch = std::mem::take(&mut queue.chunks);
         drop(queue);
         let mut written = 0;
-        for (stream, bytes) in &batch {
-            emit(*stream, bytes);
-            written += bytes.len();
+        for chunk in batch {
+            let result = emit(chunk.stream, &chunk.bytes);
+            written += chunk.bytes.len();
+            if let Some(sender) = chunk.completion {
+                let _ = sender.send(result);
+            }
         }
         queue = QUEUE.lock_or_recover();
         queue.bytes -= written;
@@ -124,15 +168,14 @@ fn drain() {
     }
 }
 
-fn emit(stream: Stream, bytes: &[u8]) {
-    // A closed or failing stream drops its output; the program goes on.
-    let _ = match stream {
+fn emit(stream: Stream, bytes: &[u8]) -> std::io::Result<()> {
+    match stream {
         Stream::Out => {
             let mut out = std::io::stdout().lock();
             out.write_all(bytes).and_then(|()| out.flush())
         }
         Stream::Err => std::io::stderr().lock().write_all(bytes),
-    };
+    }
 }
 
 /// An `io::Write` that queues what it collects when dropped, for formatters

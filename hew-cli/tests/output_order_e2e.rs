@@ -22,7 +22,7 @@ import std.io;
 actor Echo {
     receive fn say(n: i64) -> i64 {
         println(f"actor out {n}");
-        io.write_err(f"actor err {n}\n");
+        io.write_err(f"actor err {n}\n").expect("standard I/O");
         n
     }
 }
@@ -36,9 +36,9 @@ fn main() {
             .Ok(_) => {}
             .Err(_) => println("lost"),
         }
-        io.write_err(f"main err {i}\n");
+        io.write_err(f"main err {i}\n").expect("standard I/O");
     }
-    io.write("before panic\n");
+    io.write("before panic\n").expect("standard I/O");
     panic("last words");
 }
 "#;
@@ -142,5 +142,47 @@ fn a_reader_that_stops_early_ends_the_writer() {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn standard_io_failures_are_recoverable_values() {
+    require_codegen();
+    let dir = tempfile::tempdir().expect("temp dir");
+    let source = r#"
+import std.io;
+
+fn main() {
+    match io.read_line() {
+        .Err(io.IoError.Read(message)) => assert(!message.is_empty()),
+        _ => panic("expected a read error"),
+    }
+    match io.write("cannot write") {
+        .Err(io.IoError.Write(message)) => assert(!message.is_empty()),
+        _ => panic("expected a stdout error"),
+    }
+    match io.write_err("cannot write") {
+        .Err(io.IoError.Write(message)) => assert(!message.is_empty()),
+        _ => panic("expected a stderr error"),
+    }
+    io.write("").expect("empty write clears the previous error");
+}
+"#;
+    for opt in ["O0", "O2"] {
+        let binary = build(dir.path(), "io-errors", source, opt);
+        let full = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/full")
+            .expect("open full device");
+        let status = Command::new(binary)
+            .stdin(Stdio::from(
+                std::fs::File::open(dir.path()).expect("open directory"),
+            ))
+            .stdout(Stdio::from(full.try_clone().expect("clone full device")))
+            .stderr(Stdio::from(full))
+            .status()
+            .expect("run error recovery");
+        assert!(status.success(), "{opt}: {status}");
     }
 }

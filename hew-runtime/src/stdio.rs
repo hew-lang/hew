@@ -10,7 +10,7 @@
 
 use hew_cabi::string::{string_as_bytes, HewString};
 
-use crate::output::{write, Stream};
+use crate::output::{write_checked, Stream};
 
 /// Write a string to stdout without a trailing newline.
 ///
@@ -18,9 +18,9 @@ use crate::output::{write, Stream};
 ///
 /// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_io_write(s: *const HewString) {
+pub unsafe extern "C" fn hew_io_write(s: *const HewString) -> i32 {
     // SAFETY: the caller supplies a live managed string handle; null is empty.
-    write(Stream::Out, unsafe { string_as_bytes(s) });
+    write_result(write_checked(Stream::Out, unsafe { string_as_bytes(s) }))
 }
 
 /// Write a string to stderr without a trailing newline.
@@ -29,9 +29,33 @@ pub unsafe extern "C" fn hew_io_write(s: *const HewString) {
 ///
 /// `s` must be null or a live managed string handle.
 #[no_mangle]
-pub unsafe extern "C" fn hew_io_write_err(s: *const HewString) {
+pub unsafe extern "C" fn hew_io_write_err(s: *const HewString) -> i32 {
     // SAFETY: the caller supplies a live managed string handle; null is empty.
-    write(Stream::Err, unsafe { string_as_bytes(s) });
+    write_result(write_checked(Stream::Err, unsafe { string_as_bytes(s) }))
+}
+
+/// Queue a compiler-generated diagnostic without making reporting fallible.
+///
+/// # Safety
+///
+/// `s` must be null or a live managed string handle.
+#[no_mangle]
+pub unsafe extern "C" fn hew_report_stderr(s: *const HewString) {
+    // SAFETY: the caller supplies a live managed string handle; null is empty.
+    crate::output::write(Stream::Err, unsafe { string_as_bytes(s) });
+}
+
+fn write_result(result: std::io::Result<()>) -> i32 {
+    match result {
+        Ok(()) => {
+            crate::file_io::clear_file_io_error();
+            0
+        }
+        Err(error) => {
+            crate::file_io::set_file_io_error("write", &error);
+            -1
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

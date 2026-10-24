@@ -245,12 +245,11 @@ pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
         return -1;
     };
     match std::fs::metadata(rust_path) {
-        Ok(meta) => match i64::try_from(meta.len()) {
-            Ok(len) => {
+        Ok(meta) => {
+            if let Ok(len) = i64::try_from(meta.len()) {
                 clear_file_io_error();
                 len
-            }
-            Err(_) => {
+            } else {
                 set_file_io_error(
                     "hew_file_size",
                     &std::io::Error::new(
@@ -260,7 +259,7 @@ pub unsafe extern "C" fn hew_file_size(path: *const HewString) -> i64 {
                 );
                 -1
             }
-        },
+        }
         Err(error) => {
             set_file_io_error("hew_file_size", &error);
             -1

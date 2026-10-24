@@ -38,6 +38,20 @@ export class ShimFault extends Error {
   }
 }
 
+function checkedWrite(host: ShimHost, value: string, stderr: boolean): VmValue {
+  try {
+    if (value.length !== 0) {
+      if (stderr) host.writeStderr(value);
+      else host.writeStdout(value);
+    }
+    host.setFileError(null);
+    return int(0n);
+  } catch (error) {
+    host.setFileError(error instanceof Error ? error.message : String(error));
+    return int(-1n);
+  }
+}
+
 /// What a shim may reach for. The executor owns faults and traces; a shim
 /// never touches the frame stack or the value environment.
 export interface ShimHost {
@@ -48,6 +62,7 @@ export interface ShimHost {
   fileError(
     operation: "HasError" | "LastErrorKind" | "LastErrno" | "LastError",
   ): VmValue;
+  setFileError(message: string | null): void;
   calendarBridge?: (request: string) => string;
   codecBridge?: (request: string) => string;
   encodingError?(format: EncodingFormat, message?: string): string;
@@ -1464,7 +1479,9 @@ const EXTERN_SHIMS: Record<string, RuntimeShim | Ordinary | undefined> = {
     host.pipes!.freePair(arg(args, 0));
     return UNIT;
   },
-  hew_stream_last_error: () => str(""),
+  hew_stream_last_error: (host) => host.fileError("LastError"),
+  hew_io_write: (host, args) => checkedWrite(host, text(args, 0), false),
+  hew_io_write_err: (host, args) => checkedWrite(host, text(args, 0), true),
 
   hew_regex_new: (host, args) => compileRegex(host, args),
   hew_regex_clone: (_host, args) => cloneValue(arg(args, 0)),

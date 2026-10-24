@@ -21,8 +21,8 @@ fn exercise() {
     let home = os.home_dir();
     let host = os.hostname();
     let temp = os.temp_dir();
-    let line = io.read_line();
-    let all = io.read_all();
+    let line = io.read_line().expect("standard I/O");
+    let all = io.read_all().expect("standard I/O");
     let filename = path.combine(temp, f"hew-retention-{os.pid()}.txt");
     fs.write(filename, "file-owner").expect("write fixture");
     let direct_file = fs.read(filename).expect("read fixture");

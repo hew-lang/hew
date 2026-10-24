@@ -386,6 +386,7 @@ stable = [
   "hew_io_watch_readable",
   "hew_io_write",
   "hew_io_write_err",
+  "hew_report_stderr",
   "hew_iter_free",
   "hew_iter_next",
   "hew_iter_reset",
@@ -2844,6 +2845,13 @@ discharge-depth = "none"
 
 [[ownership.contracts]]
 symbol = "hew_io_write_err"
+result = "none"
+params = ["borrow"]
+release-symbol = ""
+discharge-depth = "none"
+
+[[ownership.contracts]]
+symbol = "hew_report_stderr"
 result = "none"
 params = ["borrow"]
 release-symbol = ""

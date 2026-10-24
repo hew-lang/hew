@@ -4653,7 +4653,7 @@ fn main() {
     println(fmt.to_hex(255));
     println(iter.sum(ints.into_iter()));
     assert(set.len() == 0);
-    println(io.read_all());
+    println(io.read_all().expect("standard input"));
 }
 ```
 

@@ -20,7 +20,7 @@ pub fn alive(pid: string) -> bool {
     };
     let output = probe.expect("process probe runs");
     if windows && !output.stderr.is_empty() {
-        io.write_err(output.stderr);
+        io.write_err(output.stderr).expect("standard I/O");
     }
     match output.status {
         .Exited(0) => true,

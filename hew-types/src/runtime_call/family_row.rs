@@ -7160,7 +7160,7 @@ impl RuntimeCallFamily {
             },
             Self::StderrWrite => RuntimeOpRow {
                 authority: RuntimeAuthority::Ambient,
-                symbol: "hew_io_write_err",
+                symbol: "hew_report_stderr",
                 contract: Some(RuntimeSemanticContract {
                     arguments: &[A {
                         ty: K::String,

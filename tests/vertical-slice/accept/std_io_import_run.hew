@@ -1,5 +1,5 @@
 import std.io;
 
 fn main() {
-    io.write("stdlib-io:write\n");
+    io.write("stdlib-io:write\n").expect("standard I/O");
 }

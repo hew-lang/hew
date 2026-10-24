@@ -7,12 +7,12 @@
 //! ```hew,no_run
 //! import std.io;
 //!
-//! fn main() {
-//!     io.write("enter your name: ");
-//!     let name = io.read_line() ?? "stranger";
-//!     io.write("hello, ");
-//!     io.write(name);
-//!     io.write("\n");
+//! fn main() fails io.IoError {
+//!     io.write("enter your name: ")?;
+//!     let name = io.read_line()? ?? "stranger";
+//!     io.write("hello, ")?;
+//!     io.write(name)?;
+//!     io.write("\n")?;
 //! }
 //! ```
 
@@ -20,18 +20,35 @@ import std.encoding.utf8;
 
 import std.stream;
 
+/// A standard input or output operation failed.
+pub enum IoError {
+    Read(string);
+    Write(string);
+}
+
+impl Display for IoError {
+    fn fmt(self) -> string {
+        match self {
+            .Read(message) => f"Read: {message}",
+            .Write(message) => f"Write: {message}",
+        }
+    }
+}
+
+impl Error for IoError {}
+
 /// Read one line from standard input.
 ///
 /// The call waits without holding a scheduler thread, so other tasks keep
 /// running while input is silent. The trailing `\n` or `\r\n` is removed and
 /// invalid UTF-8 becomes U+FFFD. Returns `None` at end of input; a final line
-/// without a newline is still returned first. A read error traps.
+/// without a newline is still returned first. Read failures return `IoError.Read`.
 ///
 /// Concurrent reads take lines in the order they started, each line going to
 /// exactly one of them. A read that a deadline or an enclosing scope cancels
 /// consumes nothing: the next read returns the line that was pending.
-pub fn read_line() -> Option<string> {
-    var line = next_line();
+pub fn read_line() -> Option<string> fails IoError {
+    var line = next_line()?;
     if line.is_empty() {
         return .None;
     }
@@ -51,28 +68,38 @@ pub fn read_line() -> Option<string> {
 }
 
 /// Write a string to standard output without a trailing newline.
-pub fn write(s: string) {
-    unsafe {
+pub fn write(s: string) fails IoError {
+    let status = unsafe {
         hew_io_write(s)
     };
+    if status != 0 {
+        return error IoError.Write(unsafe {
+            hew_stream_last_error()
+        });
+    }
 }
 
 /// Write a string to standard error without a trailing newline.
-pub fn write_err(s: string) {
-    unsafe {
+pub fn write_err(s: string) fails IoError {
+    let status = unsafe {
         hew_io_write_err(s)
     };
+    if status != 0 {
+        return error IoError.Write(unsafe {
+            hew_stream_last_error()
+        });
+    }
 }
 
 /// Read standard input to its end.
 ///
-/// Waits like `read_line`, and a read error traps. Invalid UTF-8 becomes
+/// Waits like `read_line`, and returns `IoError.Read` on failure. Invalid UTF-8 becomes
 /// U+FFFD.
-pub fn read_all() -> string {
-    var all = next_line();
+pub fn read_all() -> string fails IoError {
+    var all = next_line()?;
     var reading = !all.is_empty();
     while reading {
-        let more = next_line();
+        let more = next_line()?;
         reading = !more.is_empty();
         all.append(more);
     }
@@ -81,7 +108,7 @@ pub fn read_all() -> string {
 
 /// One raw line with its newline; empty only at end of input. A failed read
 /// leaves its message in the stream error slot, which a success clears.
-fn next_line() -> bytes {
+fn next_line() -> bytes fails IoError {
     let line = unsafe {
         hew_stdin_read_line()
     };
@@ -90,7 +117,7 @@ fn next_line() -> bytes {
             hew_stream_last_error()
         };
         if failure != "" {
-            panic(f"io: {failure}");
+            return error IoError.Read(failure);
         }
     }
     line
@@ -203,8 +230,10 @@ extern "C" {
     // end of input. A waiting call: it suspends the task.
     fn hew_stdin_read_line() -> bytes;
     fn hew_stream_last_error() -> string;
-    fn hew_io_write(s: string);
-    fn hew_io_write_err(s: string);
+    #[offload]
+    fn hew_io_write(s: string) -> i32;
+    #[offload]
+    fn hew_io_write_err(s: string) -> i32;
     fn hew_io_watch_check(fd: i32) -> i32;
     fn hew_io_watch_readable(fd: i32) -> stream.StreamPair;
     fn hew_stream_pair_is_valid(pair: stream.StreamPair) -> bool;

@@ -870,7 +870,7 @@ fn eval_large_stderr_completes_before_timeout() {
     let path = dir.path().join("large_stderr_eval.hew");
     std::fs::write(
         &path,
-        "import std.io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
+        "import std.io;\n\nfn spam_err() {\n    var i = 0;\n    while i < 20000 {\n        io.write_err(\"line\\n\").expect(\"standard I/O\");\n        i = i + 1;\n    }\n}\n\nspam_err()\n42\n",
     )
     .unwrap();
 

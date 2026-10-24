@@ -9786,8 +9786,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_write( *const HewString)",
-        "wasm32-wasip1": "fn hew_io_write( *const HewString)"
+        "native": "fn hew_io_write( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_io_write( *const HewString) -> i32"
       },
       "symbol": "hew_io_write"
     },
@@ -9801,8 +9801,8 @@
       "nul": "not-applicable",
       "ownership": "unmeasured",
       "signature": {
-        "native": "fn hew_io_write_err( *const HewString)",
-        "wasm32-wasip1": "fn hew_io_write_err( *const HewString)"
+        "native": "fn hew_io_write_err( *const HewString) -> i32",
+        "wasm32-wasip1": "fn hew_io_write_err( *const HewString) -> i32"
       },
       "symbol": "hew_io_write_err"
     },
@@ -15393,6 +15393,21 @@
         "wasm32-wasip1": "fn hew_reply_wait_timeout( *mut HewReplyChannel, i32, ) -> *mut c_void"
       },
       "symbol": "hew_reply_wait_timeout"
+    },
+    {
+      "availability": [
+        "native",
+        "wasm32-wasip1"
+      ],
+      "classification": "stable",
+      "extent": "no-in-signature-extent",
+      "nul": "not-applicable",
+      "ownership": "unmeasured",
+      "signature": {
+        "native": "fn hew_report_stderr( *const HewString)",
+        "wasm32-wasip1": "fn hew_report_stderr( *const HewString)"
+      },
+      "symbol": "hew_report_stderr"
     },
     {
       "availability": [

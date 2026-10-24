@@ -1291,10 +1291,10 @@ fn run_imports_std_io_and_round_trips_stdin_to_stdout() {
         "import std.io;\n\
          \n\
          fn main() {\n\
-         \x20   let line = io.read_line() ?? \"\";\n\
-         \x20   io.write(\"echo: \");\n\
-         \x20   io.write(line);\n\
-         \x20   io.write(\"\\n\");\n\
+         \x20   let line = io.read_line().expect(\"standard I/O\") ?? \"\";\n\
+         \x20   io.write(\"echo: \").expect(\"standard I/O\");\n\
+         \x20   io.write(line).expect(\"standard I/O\");\n\
+         \x20   io.write(\"\\n\").expect(\"standard I/O\");\n\
          }\n",
     )
     .unwrap();

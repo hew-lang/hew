@@ -371,7 +371,7 @@ pub enum RuntimeCallFamily {
     /// Flush the standard streams and terminate the process with a Hew exit
     /// code. The call never returns.
     ProcessExit,
-    /// Write one borrowed string to the standard error stream.
+    /// Queue one borrowed diagnostic string on standard error.
     StderrWrite,
     BoolToString,
 

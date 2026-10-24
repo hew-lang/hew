@@ -130,8 +130,8 @@ pub fn from_string(s: string) -> Scanner {
 /// This v0.5 implementation reads stdin to completion before scanning, rather
 /// than looping on `io.read_line()`, so EOF is not confused with a real empty
 /// line.
-pub fn from_stdin() -> Scanner {
-    from_string(io.read_all())
+pub fn from_stdin() -> Scanner fails io.IoError {
+    from_string(io.read_all()?)
 }
 
 /// Read `path` into memory and create a scanner over its contents.

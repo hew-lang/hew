@@ -16,10 +16,10 @@ struct hew_cabi_manifest_row {
   enum hew_cabi_manifest_ownership ownership;
 };
 
-#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1664u
+#define HEW_CABI_MANIFEST_FUNCTION_COUNT 1665u
 #define HEW_CABI_MANIFEST_STATIC_COUNT 24u
 
-static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
+static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1665] = {
     {"hew_actor_abort_construction",
      "{\"native\": \"fn hew_actor_abort_construction( HewLocalPidId, *mut "
      "HewCoroState, )\", \"wasm32-wasip1\": \"fn hew_actor_abort_construction( "
@@ -3817,13 +3817,13 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
      "native", "stable", "not-applicable", "no-in-signature-extent",
      HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_io_write",
-     "{\"native\": \"fn hew_io_write( *const HewString)\", \"wasm32-wasip1\": "
-     "\"fn hew_io_write( *const HewString)\"}",
+     "{\"native\": \"fn hew_io_write( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_io_write( *const HewString) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_io_write_err",
-     "{\"native\": \"fn hew_io_write_err( *const HewString)\", "
-     "\"wasm32-wasip1\": \"fn hew_io_write_err( *const HewString)\"}",
+     "{\"native\": \"fn hew_io_write_err( *const HewString) -> i32\", "
+     "\"wasm32-wasip1\": \"fn hew_io_write_err( *const HewString) -> i32\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_ip_is_loopback",
@@ -5888,6 +5888,11 @@ static const struct hew_cabi_manifest_row hew_cabi_manifest_functions[1664] = {
      "{\"native\": \"fn hew_reply_wait_timeout( *mut HewReplyChannel, i32, ) "
      "-> *mut c_void\", \"wasm32-wasip1\": \"fn hew_reply_wait_timeout( *mut "
      "HewReplyChannel, i32, ) -> *mut c_void\"}",
+     "native,wasm32-wasip1", "stable", "not-applicable",
+     "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
+    {"hew_report_stderr",
+     "{\"native\": \"fn hew_report_stderr( *const HewString)\", "
+     "\"wasm32-wasip1\": \"fn hew_report_stderr( *const HewString)\"}",
      "native,wasm32-wasip1", "stable", "not-applicable",
      "no-in-signature-extent", HEW_CABI_OWNERSHIP_UNMEASURED},
     {"hew_require_execution_context",

@@ -40,7 +40,7 @@ fn main() {
         .Ok(status) => println(f"child {status}"),
         .Err(e) => println(f"child wait failed {e}"),
     }
-    match io.read_line() {
+    match io.read_line().expect("standard I/O") {
         .Some(_) => println("stdin line"),
         .None => println("stdin end"),
     }

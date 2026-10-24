@@ -27,8 +27,8 @@ fn main() {
             wait_for(args[5]);
             let chunk = "é\0data".repeat(2048);
             for i in 0..32 {
-                io.write(chunk);
-                io.write_err(chunk);
+                io.write(chunk).expect("standard I/O");
+                io.write_err(chunk).expect("standard I/O");
             }
             exit(7);
         }

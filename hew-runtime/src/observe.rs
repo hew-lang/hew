@@ -313,7 +313,7 @@ fn computed_dispatch_watermark() -> u64 {
     DISPATCH_ACTIVE_TICKETS
         .iter()
         .filter_map(|slot| {
-            let ticket = slot.load(Ordering::Acquire);
+            let ticket = slot.load(Ordering::SeqCst);
             (ticket != 0 && ticket <= published_ticket).then_some(ticket)
         })
         .min()
@@ -349,7 +349,7 @@ pub(crate) fn observe_dispatch_begin() -> ObserveDispatchTicket {
 fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
     let shard = current_shard();
     if DISPATCH_ACTIVE_TICKETS[shard]
-        .compare_exchange(ticket.0, 0, Ordering::Release, Ordering::Relaxed)
+        .compare_exchange(ticket.0, 0, Ordering::SeqCst, Ordering::Relaxed)
         .is_ok()
     {
         return;
@@ -357,7 +357,7 @@ fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
 
     for slot in &DISPATCH_ACTIVE_TICKETS {
         if slot
-            .compare_exchange(ticket.0, 0, Ordering::Release, Ordering::Relaxed)
+            .compare_exchange(ticket.0, 0, Ordering::SeqCst, Ordering::Relaxed)
             .is_ok()
         {
             return;
@@ -372,9 +372,11 @@ fn clear_active_dispatch_ticket(ticket: ObserveDispatchTicket) {
 
 fn observe_dispatch_close(ticket: ObserveDispatchTicket) {
     clear_active_dispatch_ticket(ticket);
-    publish_dispatch_watermark();
 
-    if DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) > 0 {
+    // Pair slot clearing and the waiter check with registration and scanning
+    // below. Their sequential order rules out both sides missing each other:
+    // either the scan sees this close or the closer sees a registered waiter.
+    if DISPATCH_BARRIER_WAITERS.load(Ordering::SeqCst) > 0 {
         let _guard = dispatch_barrier_lock();
         DISPATCH_BARRIER.cond.notify_all();
     }
@@ -537,26 +539,22 @@ pub extern "C" fn hew_observe_barrier() -> i64 {
 
     let deadline = Instant::now() + OBSERVE_BARRIER_TIMEOUT;
     let mut guard = dispatch_barrier_lock();
-    DISPATCH_BARRIER_WAITERS.fetch_add(1, Ordering::AcqRel);
+    DISPATCH_BARRIER_WAITERS.fetch_add(1, Ordering::SeqCst);
     let _waiter = DispatchBarrierWaiter;
 
-    while DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) < target_ticket {
+    // Completion is derived only when observed. Ordinary dispatch closes clear
+    // their authoritative slot without scanning every possible worker.
+    while publish_dispatch_watermark() < target_ticket {
         let now = Instant::now();
         if now >= deadline {
             crate::set_last_error("observe.barrier: timed out after 30 seconds");
             return OBSERVE_BARRIER_ERR_TIMEOUT;
         }
         let remaining = deadline.saturating_duration_since(now);
-        let (next_guard, wait_result) = DISPATCH_BARRIER
+        let (next_guard, _) = DISPATCH_BARRIER
             .cond
             .wait_timeout_or_recover(guard, remaining);
         guard = next_guard;
-        if wait_result.timed_out()
-            && DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire) < target_ticket
-        {
-            crate::set_last_error("observe.barrier: timed out after 30 seconds");
-            return OBSERVE_BARRIER_ERR_TIMEOUT;
-        }
     }
 
     OBSERVE_BARRIER_OK
@@ -1704,14 +1702,125 @@ mod tests {
         DISPATCH_BARRIER_MUTEX_ACQUISITIONS.store(0, Ordering::Relaxed);
         set_current_worker_shard(0);
 
-        let ticket = observe_dispatch_begin();
-        observe_dispatch_attributed(ticket);
+        for _ in 0..1024 {
+            let ticket = observe_dispatch_begin();
+            observe_dispatch_attributed(ticket);
+        }
 
         assert_eq!(
             DISPATCH_BARRIER_MUTEX_ACQUISITIONS.load(Ordering::Relaxed),
             0,
             "dispatch begin/close should stay on the atomic fast path when no barrier is waiting"
         );
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait_for_barrier_waiters(expected: u64) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while DISPATCH_BARRIER_WAITERS.load(Ordering::Acquire) != expected {
+            assert!(
+                Instant::now() < deadline,
+                "barrier did not register its cut"
+            );
+            std::thread::yield_now();
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barriers_keep_distinct_cuts_when_future_dispatch_remains_live() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        set_current_worker_shard(0);
+        let first = observe_dispatch_begin();
+        let (first_tx, first_rx) = std::sync::mpsc::channel();
+        let first_waiter = std::thread::spawn(move || {
+            first_tx.send(hew_observe_barrier()).unwrap();
+        });
+        wait_for_barrier_waiters(1);
+
+        set_current_worker_shard(1);
+        let second = observe_dispatch_begin();
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second_waiter = std::thread::spawn(move || {
+            second_tx.send(hew_observe_barrier()).unwrap();
+        });
+        wait_for_barrier_waiters(2);
+
+        set_current_worker_shard(0);
+        observe_dispatch_attributed(first);
+        assert_eq!(
+            first_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            OBSERVE_BARRIER_OK
+        );
+        assert!(
+            second_rx.try_recv().is_err(),
+            "a later cut still owns its live dispatch"
+        );
+        assert_eq!(
+            DISPATCH_COMPLETION_WATERMARK.load(Ordering::Acquire),
+            first.0
+        );
+
+        set_current_worker_shard(1);
+        observe_dispatch_abandon(second);
+        assert_eq!(
+            second_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            OBSERVE_BARRIER_OK
+        );
+        first_waiter.join().unwrap();
+        second_waiter.join().unwrap();
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+        reset_all();
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_rechecks_a_close_before_waiter_registration() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        set_current_worker_shard(0);
+        let ticket = observe_dispatch_begin();
+        // The barrier can take its cut before it obtains this mutex. Close
+        // without a waiter notification, then let it register and recheck.
+        let guard = dispatch_barrier_lock();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            done_tx.send(hew_observe_barrier()).unwrap();
+        });
+        observe_dispatch_attributed(ticket);
+        drop(guard);
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            OBSERVE_BARRIER_OK
+        );
+        waiter.join().unwrap();
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn observe_barrier_excludes_a_dispatch_until_begin_is_published() {
+        let _guard = crate::runtime_test_guard();
+        reset_all();
+        set_current_worker_shard(0);
+        // Pause begin after reserving its active slot but before publication.
+        let ticket = NEXT_DISPATCH_TICKET.fetch_add(1, Ordering::Relaxed) + 1;
+        DISPATCH_ACTIVE_TICKETS[current_shard()].store(ticket, Ordering::Release);
+        assert_eq!(hew_observe_barrier(), OBSERVE_BARRIER_OK);
+        publish_dispatch_begin(ticket);
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            done_tx.send(hew_observe_barrier()).unwrap();
+        });
+        wait_for_barrier_waiters(1);
+        assert!(done_rx.try_recv().is_err());
+        observe_dispatch_abandon(ObserveDispatchTicket(ticket));
+        assert_eq!(
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            OBSERVE_BARRIER_OK
+        );
+        waiter.join().unwrap();
     }
 
     #[cfg(not(target_arch = "wasm32"))]

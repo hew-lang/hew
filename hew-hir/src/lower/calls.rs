@@ -861,6 +861,66 @@ impl LowerCtx {
         }
     }
 
+    /// Resolve a checked overloaded builtin over already-lowered arguments.
+    /// Direct calls and compiler-generated callable adapters share this path.
+    pub(super) fn lower_builtin_overload(
+        &mut self,
+        endpoint: &str,
+        name: &str,
+        args: Vec<HirExpr>,
+        span: &Span,
+    ) -> (HirExprKind, ResolvedTy) {
+        let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
+        let explicit_display = stdlib_catalog::is_display_builtin(endpoint)
+            && arg_tys.len() == 1
+            && self.display_facts.has_explicit_display_impl(&arg_tys[0]);
+        if explicit_display {
+            self.try_lower_generic_display_builtin(endpoint, args, span)
+                .expect("explicit Display implementation has one argument")
+        } else if let Some(entry) = stdlib_catalog::resolve_overload(endpoint, &arg_tys) {
+            let result_ty = entry.return_ty.to_resolved();
+            let callee = self.lower_stdlib_callee(entry, span.clone());
+            (
+                HirExprKind::Call {
+                    target: self.registered_symbol_target(entry.name),
+                    callee: Box::new(callee),
+                    args,
+                    evaluation_order: Vec::new(),
+                },
+                result_ty,
+            )
+        } else {
+            match self.try_lower_generic_display_builtin(endpoint, args, span) {
+                Ok(lowered) => lowered,
+                Err(args) => {
+                    let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
+                    self.diagnostics.push(HirDiagnostic::new(
+                            HirDiagnosticKind::UnresolvedBuiltinOverload {
+                                name: name.to_string(),
+                                arg_ty,
+                            },
+                            span.clone(),
+                            "builtin call has no registered monomorphic overload for this argument type",
+                        ));
+                    let callee = self.unresolved_builtin_callee(name, span.clone());
+                    (
+                        HirExprKind::Call {
+                            target: CallTarget::Unsupported {
+                                reason: format!(
+                                    "builtin overload `{name}` was rejected by the checker"
+                                ),
+                            },
+                            callee: Box::new(callee),
+                            args,
+                            evaluation_order: Vec::new(),
+                        },
+                        ResolvedTy::Unit,
+                    )
+                }
+            }
+        }
+    }
+
     /// Lower a call expression. An early-complete call returns its finished
     /// expression; every other shape returns its kind and type for the
     /// caller to finish. Kept out of `lower_expr_inner` so its locals do not
@@ -1135,60 +1195,7 @@ impl LowerCtx {
                         site,
                     )
                 } else if let Some(endpoint) = overload_endpoint {
-                    let arg_tys = args.iter().map(|arg| arg.ty.clone()).collect::<Vec<_>>();
-                    let explicit_display = stdlib_catalog::is_display_builtin(&endpoint)
-                        && arg_tys.len() == 1
-                        && self.display_facts.has_explicit_display_impl(&arg_tys[0]);
-                    if explicit_display {
-                        self.try_lower_generic_display_builtin(&endpoint, args, &span)
-                            .expect("explicit Display implementation has one argument")
-                    } else if let Some(entry) =
-                        stdlib_catalog::resolve_overload(&endpoint, &arg_tys)
-                    {
-                        let result_ty = entry.return_ty.to_resolved();
-                        let callee = self.lower_stdlib_callee(entry, function.1.clone());
-                        (
-                            HirExprKind::Call {
-                                target: self.registered_symbol_target(entry.name),
-                                callee: Box::new(callee),
-                                args,
-                                evaluation_order: Vec::new(),
-                            },
-                            result_ty,
-                        )
-                    } else {
-                        match self.try_lower_generic_display_builtin(&endpoint, args, &span) {
-                            Ok(lowered) => lowered,
-                            Err(args) => {
-                                let arg_ty = arg_tys.first().cloned().unwrap_or(ResolvedTy::Unit);
-                                self.diagnostics.push(HirDiagnostic::new(
-                                        HirDiagnosticKind::UnresolvedBuiltinOverload {
-                                            name: name.to_string(),
-                                            arg_ty,
-                                        },
-                                        span.clone(),
-                                        "builtin call has no registered monomorphic overload for this argument type",
-                                    ));
-                                let callee = self.unresolved_builtin_callee(
-                                    name.name.as_str(),
-                                    function.1.clone(),
-                                );
-                                (
-                                        HirExprKind::Call {
-                                            target: CallTarget::Unsupported {
-                                                reason: format!(
-                                                    "builtin overload `{name}` was rejected by the checker"
-                                                ),
-                                            },
-                                            callee: Box::new(callee),
-                                            args,
-                                            evaluation_order: Vec::new(),
-                                        },
-                                        ResolvedTy::Unit,
-                                    )
-                            }
-                        }
-                    }
+                    self.lower_builtin_overload(&endpoint, name.name.as_str(), args, &span)
                 } else {
                     self.lower_regular_call(
                         function,

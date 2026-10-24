@@ -750,15 +750,14 @@ impl LowerCtx {
                         span.clone(),
                     ),
                     _ => {
-                        // Refutable loop bindings still need a failed-match
-                        // contract; keep that admitted gap explicit.
+                        // The checker rejects refutable iteration bindings.
                         self.diagnostics.push(HirDiagnostic::new(
-                            HirDiagnosticKind::NotYetImplemented {
-                                construct: "refutable for-range binding pattern".to_string(),
-                                owning_pass: "binding-pattern-lowering".to_string(),
+                            HirDiagnosticKind::CheckerBoundaryViolation {
+                                name: "plain binding".into(),
+                                reason: "checker admitted a refutable pattern".into(),
                             },
                             pattern.1.clone(),
-                            "refutable iteration bindings need a defined failed-match path",
+                            "for requires a checked irrefutable binding",
                         ));
                         self.push_scope();
                         let _ = self.lower_block(body, &ResolvedTy::Unit);

@@ -509,33 +509,20 @@ mod tests {
     }
 
     #[test]
-    fn hir_not_yet_implemented_message_names_construct_without_debug_fields() {
+    fn hir_constant_error_uses_source_channel_and_readable_message() {
         let diagnostic = hew_hir::HirDiagnostic::new(
-            hew_hir::HirDiagnosticKind::NotYetImplemented {
-                construct: "expression".to_string(),
-                owning_pass: "slice-2".to_string(),
+            hew_hir::HirDiagnosticKind::ConstIntegerEvaluation {
+                class: "arithmetic-overflow".to_string(),
             },
             0..4,
-            "",
+            "constant arithmetic overflows u8",
         );
         let diag = from_hir_diagnostic(Some("abcd"), Some("main.hew"), &diagnostic);
-        assert_eq!(diag.code, "NotYetImplemented");
-        assert_eq!(diag.channel, "limitation");
-        assert!(
-            !diag.message.contains("owning_pass"),
-            "message must not leak the Rust field name: {}",
-            diag.message
-        );
-        assert!(
-            !diag.message.contains('{'),
-            "message must not be a Debug struct payload: {}",
-            diag.message
-        );
-        assert!(
-            diag.message
-                .contains("unsupported compiler construct: expression"),
-            "message should name the unsupported construct: {}",
-            diag.message
+        assert_eq!(diag.code, "ConstIntegerEvaluation");
+        assert_eq!(diag.channel, "user");
+        assert_eq!(
+            diag.message,
+            "E_CONST_INITIALIZER: constant arithmetic overflows u8"
         );
     }
 }

@@ -72,7 +72,6 @@ const ROOT_SOURCE_CONTEXT_UNAVAILABLE: &str =
 /// Map an HIR diagnostic kind to a user-visible prefix string.
 pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'static str {
     match kind {
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. } => "E_NOT_YET_IMPLEMENTED",
         hew_hir::HirDiagnosticKind::ConstIntegerEvaluation { .. }
         | hew_hir::HirDiagnosticKind::ConstDependencyCycle { .. } => "E_CONST_INITIALIZER",
         hew_hir::HirDiagnosticKind::TuplePatternArityMismatch { .. }
@@ -90,19 +89,7 @@ pub(crate) fn hir_diagnostic_prefix(kind: &hew_hir::HirDiagnosticKind) -> &'stat
 
 /// Build the user-facing message for an HIR diagnostic.
 ///
-/// For a `NotYetImplemented` gap, the message names the unsupported construct
-/// without leaking the Rust `{:?}` field names (`construct`, `owning_pass`).
-/// Other kinds fall back to the stable prefix plus any attached note.
 pub(crate) fn hir_diagnostic_user_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
-    if let hew_hir::HirDiagnosticKind::NotYetImplemented { construct, .. } = &diagnostic.kind {
-        let mut message = format!("unsupported compiler construct: {construct}");
-        if !diagnostic.note.is_empty() {
-            message.push_str(": ");
-            message.push_str(&diagnostic.note);
-        }
-        return message;
-    }
-
     if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
         return format!(
             "{}: this lambda actor names `{name}`, its own handle, so its state would own the \
@@ -685,20 +672,6 @@ fn hir_source_context_unavailable_note(diagnostic: &hew_hir::HirDiagnostic) -> S
 }
 
 fn hir_diagnostic_message(diagnostic: &hew_hir::HirDiagnostic) -> String {
-    // For a `NotYetImplemented` gap, keep the stable `E_NOT_YET_IMPLEMENTED`
-    // family code (grep-able by tooling) but use the limitation-framed body and
-    // never leak the Rust `{:?}` field names. Other kinds fall back to the
-    // stable prefix plus any attached note.
-    if matches!(
-        diagnostic.kind,
-        hew_hir::HirDiagnosticKind::NotYetImplemented { .. }
-    ) {
-        return format!(
-            "{}: {}",
-            hir_diagnostic_prefix(&diagnostic.kind),
-            hir_diagnostic_user_message(diagnostic)
-        );
-    }
     if let hew_hir::HirDiagnosticKind::RecursiveLambdaActorHandle { name } = &diagnostic.kind {
         return format!(
             "{}: this lambda actor names `{name}`, its own handle, so its state would own the \

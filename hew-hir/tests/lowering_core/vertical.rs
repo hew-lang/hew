@@ -1113,7 +1113,7 @@ fn top_level_const_folds_signed_binary_subtraction() {
 }
 
 #[test]
-fn top_level_const_integer_failures_are_semantic_not_nyi() {
+fn top_level_const_integer_failures_keep_precise_source_classes() {
     for (source, class) in [
         ("const BAD: u8 = 0 - 1; fn main() {}", "arithmetic-overflow"),
         (
@@ -1126,20 +1126,12 @@ fn top_level_const_integer_failures_are_semantic_not_nyi() {
         let output = lower(source);
         assert!(
             output.diagnostics.iter().any(|diagnostic| {
-                matches!(
+                diagnostic.kind.channel() == hew_types::error::DiagChannel::User && matches!(
                     &diagnostic.kind,
                     HirDiagnosticKind::ConstIntegerEvaluation { class: actual } if actual == class
                 )
             }),
             "expected {class} for {source}, got {:?}",
-            output.diagnostics
-        );
-        assert!(
-            !output.diagnostics.iter().any(|diagnostic| matches!(
-                diagnostic.kind,
-                HirDiagnosticKind::NotYetImplemented { .. }
-            )),
-            "integer const failure must not surface as NYI: {:?}",
             output.diagnostics
         );
     }

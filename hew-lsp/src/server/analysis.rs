@@ -874,12 +874,7 @@ fn build_hir_lsp_diagnostics(
 }
 
 fn hir_diagnostic_message(kind: &HirDiagnosticKind, note: &str) -> String {
-    let base = match kind {
-        HirDiagnosticKind::NotYetImplemented { construct, .. } => {
-            format!("compiler limitation: unsupported construct: {construct}")
-        }
-        _ => kind.kind_string(),
-    };
+    let base = kind.kind_string();
 
     if note.is_empty() {
         base
@@ -1033,20 +1028,17 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn unsupported_hir_construct_is_identified_as_a_compiler_limitation() {
+    fn constant_hir_error_retains_its_source_note() {
         let message = hir_diagnostic_message(
-            &HirDiagnosticKind::NotYetImplemented {
-                construct: "example form".to_string(),
-                owning_pass: "internal-pass-name".to_string(),
+            &HirDiagnosticKind::ConstIntegerEvaluation {
+                class: "arithmetic-overflow".to_string(),
             },
-            "",
+            "constant arithmetic overflows u8",
         );
-
         assert_eq!(
             message,
-            "compiler limitation: unsupported construct: example form"
+            "ConstIntegerEvaluation\n\nnote: constant arithmetic overflows u8"
         );
-        assert!(!message.contains("internal-pass-name"));
     }
 
     #[test]

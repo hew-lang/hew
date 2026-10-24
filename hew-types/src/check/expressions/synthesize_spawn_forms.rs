@@ -746,6 +746,7 @@ impl Checker {
                 self.mark_expr_moved(&arm.source.0, &arm.source.1);
             }
             self.bind_pattern(&arm.binding.0, source_ty, false, &arm.binding.1);
+            self.require_irrefutable_binding(&arm.binding, source_ty, "select");
             if result_ty.is_none() && super::super::branch_join::expr_needs_context(&arm.body.0) {
                 let start = self.env.ownership_snapshot();
                 waiting.push((arm, self.env.suspend_scope(), start));

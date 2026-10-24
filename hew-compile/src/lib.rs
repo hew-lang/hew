@@ -8619,9 +8619,8 @@ extern "C" { fn hew_tcp_read(foo: Foo); }
             &state.source,
             &main,
             vec![hew_hir::HirDiagnostic::new(
-                hew_hir::HirDiagnosticKind::NotYetImplemented {
-                    construct: "probe".to_string(),
-                    owning_pass: "test".to_string(),
+                hew_hir::HirDiagnosticKind::ConstIntegerEvaluation {
+                    class: "arithmetic-overflow".to_string(),
                 },
                 0..3,
                 "probe",

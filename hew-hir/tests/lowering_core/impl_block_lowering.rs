@@ -40,22 +40,7 @@ fn lower_impl(source: &str, check_types: bool) -> hew_hir::LowerOutput {
 }
 
 fn assert_no_top_level_item_unsupported(output: &hew_hir::LowerOutput) {
-    let leaked: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|d| {
-            matches!(
-                &d.kind,
-                HirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct == "top-level-item"
-            )
-        })
-        .collect();
-    assert!(
-        leaked.is_empty(),
-        "V0b must not drop impl-blocks via the generic top-level-item \
-         catch-all; got: {leaked:#?}"
-    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
 }
 
 #[test]

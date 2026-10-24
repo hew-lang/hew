@@ -185,6 +185,76 @@ enum NestedConstructorPayload<'p> {
 }
 
 impl Checker {
+    /// Plain bindings must match every value of their checked product type.
+    /// Match/if-let/let-else own explicit alternatives and use the same pattern
+    /// checker without this admission rule.
+    pub(super) fn binding_refutable_kind(
+        &self,
+        pattern: &Pattern,
+        ty: &Ty,
+    ) -> Option<&'static str> {
+        let ty = self.normalize_for_use(ty);
+        if matches!(ty, Ty::Error | Ty::Var(_)) {
+            return None;
+        }
+        let fields = match pattern {
+            Pattern::Wildcard => return None,
+            Pattern::Identifier(name) => {
+                return self
+                    .let_identifier_is_unit_variant(name.name.as_str())
+                    .then_some("enum variant")
+            }
+            Pattern::Literal(_) => return Some("literal"),
+            Pattern::Regex { .. } => return Some("regex"),
+            Pattern::Or(_, _) => return Some("or-pattern"),
+            Pattern::ContextVariant(_) => return Some("enum variant"),
+            Pattern::Tuple(elements) => {
+                if let Ty::Tuple(types) = &ty {
+                    return elements
+                        .iter()
+                        .zip(types)
+                        .find_map(|((pattern, _), ty)| self.binding_refutable_kind(pattern, ty));
+                }
+                return None;
+            }
+            Pattern::NominalPath {
+                payload: Some(hew_parser::ast::NominalPatternPayload::Record { fields, .. }),
+                ..
+            }
+            | Pattern::RecordShorthand { fields, .. } => fields,
+            Pattern::NominalPath { .. } => return Some("enum variant"),
+        };
+        let Some(definition) = self.ty_type_def(&ty) else {
+            return None;
+        };
+        if !matches!(definition.kind, TypeDefKind::Record | TypeDefKind::Struct) {
+            return Some("enum variant");
+        }
+        let args = match &ty {
+            Ty::Named { args, .. } => args.as_slice(),
+            _ => &[],
+        };
+        fields.iter().find_map(|field| {
+            let (pattern, _) = field.pattern.as_ref()?;
+            let field_ty = definition.fields.get(field.name.name.as_str())?;
+            let field_ty = substitute_pattern_field_ty(field_ty, &definition.type_params, args);
+            self.binding_refutable_kind(pattern, &field_ty)
+        })
+    }
+
+    pub(super) fn require_irrefutable_binding(
+        &mut self,
+        pattern: &Spanned<Pattern>,
+        ty: &Ty,
+        context: &str,
+    ) {
+        if let Some(kind) = self.binding_refutable_kind(&pattern.0, ty) {
+            self.report_error_with_suggestions(TypeErrorKind::InvalidOperation, &pattern.1,
+                format!("`{context}` requires an irrefutable binding; this {kind} pattern can fail to match"),
+                vec![format!("bind the complete value, then use `if let` or `match` inside the `{context}` body to select variants or values")]);
+        }
+    }
+
     /// Whether a record pattern's type name resolves to the scrutinee's own
     /// declaration. A scrutinee that is not a resolved nominal is left to the
     /// other pattern checks.

@@ -1085,6 +1085,10 @@ fn frontend_completion_forms_match_native() {
     ensure_parity_runner_built();
     for case in [
         ParityCase {
+            test_name: "irrefutable-iteration-bindings",
+            source_rel: "tests/core-acceptance/cases/irrefutable-iteration-bindings.hew",
+        },
+        ParityCase {
             test_name: "selected-product-patterns",
             source_rel: "tests/core-acceptance/cases/selected-product-patterns.hew",
         },

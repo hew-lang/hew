@@ -12,23 +12,16 @@ fn main() {
 
     assert!(
         output.diagnostics.iter().any(|diagnostic| {
-            matches!(
-                diagnostic.kind,
-                HirDiagnosticKind::TuplePatternArityMismatch {
-                    expected: 3,
-                    actual: 2,
-                }
-            )
+            diagnostic.kind.channel() == hew_types::error::DiagChannel::User
+                && matches!(
+                    diagnostic.kind,
+                    HirDiagnosticKind::TuplePatternArityMismatch {
+                        expected: 3,
+                        actual: 2,
+                    }
+                )
         }),
         "tuple arity mismatch must have a structured user-error diagnostic: {:#?}",
-        output.diagnostics
-    );
-    assert!(
-        !output.diagnostics.iter().any(|diagnostic| matches!(
-            diagnostic.kind,
-            HirDiagnosticKind::NotYetImplemented { .. }
-        )),
-        "tuple arity mismatch must not be reported as unsupported: {:#?}",
         output.diagnostics
     );
 }

@@ -10,6 +10,10 @@ fn completed_source_forms_execute_at_both_optimization_levels() {
     let dir = support::tempdir();
     for (name, expected) in [
         (
+            "irrefutable-iteration-bindings",
+            "tuple 7\nrecord 8\nunit\nunit\nrange\nrange\n1\n3\n",
+        ),
+        (
             "selected-product-patterns",
             "tuple 7\nrecord 8\ndiscarded\nreleased 9\nprepared unit\nunit\nprepared unit\n",
         ),
@@ -171,5 +175,63 @@ fn unavailable_constant_and_structural_forms_fail_before_artifact_emission() {
         assert!(diagnostics.contains(detail), "{diagnostics}");
         let structured: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).expect("valid JSON diagnostics");
         assert!(structured.iter().all(|diagnostic| diagnostic["channel"] == "user"), "{diagnostics}");
+    }
+}
+
+#[test]
+fn refutable_iteration_and_selection_bindings_fail_before_artifact_emission() {
+    let dir = support::tempdir();
+    for (name, source, context) in [
+        ("literal-for", "fn main() { for 1 in 0..3 {} }", "for"),
+        ("variant-for", "fn main() { let values: Vec<Option<i64>> = [.Some(1), .None]; for .Some(value) in (values) {} }", "for"),
+        ("nested-for", "type Entry { value: Option<i64>; } fn main() { for Entry { value: .Some(value) } in [Entry { value: .None }] {} }", "for"),
+        ("literal-select", "fn number() -> i64 { 1 } fn main() { select { 1 from number() => {} }; }", "select"),
+        ("variant-select", "fn number() -> Option<i64> { .Some(1) } fn main() { select { .Some(value) from number() => {} }; }", "select"),
+        ("nested-select", "fn number() -> (Option<i64>, i64) { (.None, 2) } fn main() { select { (.Some(value), other) from number() => {} }; }", "select"),
+    ] {
+        let path = dir.path().join(format!("{name}.hew"));
+        std::fs::write(&path, source).unwrap();
+        let binary = hew_testutil::compiled_binary_path(dir.path(), name);
+        let output = Command::new(hew_binary()).arg("build").arg(&path).args(["--format", "json", "-o"]).arg(&binary).output().unwrap();
+        assert!(!output.status.success(), "{}", describe_output(&output));
+        assert!(!binary.exists(), "invalid binding emitted an artifact");
+        let diagnostics = String::from_utf8_lossy(&output.stdout);
+        assert!(diagnostics.contains(&format!("`{context}` requires an irrefutable binding")), "{diagnostics}");
+        assert!(diagnostics.contains("if let") && diagnostics.contains("match"), "{diagnostics}");
+        assert!(!diagnostics.contains("internal"), "{diagnostics}");
+    }
+}
+
+#[test]
+fn invalid_typed_embeds_keep_their_primary_diagnostic_without_constant_cascades() {
+    let dir = support::tempdir();
+    for name in [
+        "typed-embed-custom-eq",
+        "typed-embed-duplicate",
+        "typed-embed-mismatch",
+        "typed-embed-syntax",
+    ] {
+        let input = support::repo_root().join(format!("tests/core-acceptance/cases/{name}.hew"));
+        let artifact = hew_testutil::compiled_binary_path(dir.path(), name);
+        let output = Command::new(hew_binary())
+            .arg("build")
+            .arg(input)
+            .arg("-o")
+            .arg(&artifact)
+            .args(["--format", "json"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{}", describe_output(&output));
+        assert!(!artifact.exists(), "invalid embed emitted an artifact");
+        let diagnostics: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:#?}");
+        assert!(
+            diagnostics[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("E_EMBED_"),
+            "{diagnostics:#?}"
+        );
+        assert_eq!(diagnostics[0]["channel"], "user");
     }
 }

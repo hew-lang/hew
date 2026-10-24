@@ -520,12 +520,12 @@ impl LowerCtx {
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "refutable binding pattern".into(),
-                        owning_pass: "binding-pattern-lowering".into(),
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "plain binding".into(),
+                        reason: "checker admitted a refutable pattern".into(),
                     },
                     pattern.1.clone(),
-                    "refutable iteration and selection bindings need a defined failed-match path",
+                    "for and select require checked irrefutable bindings",
                 ));
                 let name = format!("__unsupported_{}", stmts.len());
                 self.push_pattern_binding_stmt(name, value_ty, value, stmts, span, false);
@@ -583,12 +583,12 @@ impl LowerCtx {
             | Pattern::NominalPath { .. }
             | Pattern::ContextVariant(_) => {
                 self.diagnostics.push(HirDiagnostic::new(
-                    HirDiagnosticKind::NotYetImplemented {
-                        construct: "refutable binding pattern".into(),
-                        owning_pass: "binding-pattern-lowering".into(),
+                    HirDiagnosticKind::CheckerBoundaryViolation {
+                        name: "plain binding".into(),
+                        reason: "checker admitted a refutable pattern".into(),
                     },
                     pattern.1.clone(),
-                    "refutable iteration and selection bindings need a defined failed-match path",
+                    "for and select require checked irrefutable bindings",
                 ));
                 (format!("__unsupported_{}", self.ids.binding().0), false)
             }

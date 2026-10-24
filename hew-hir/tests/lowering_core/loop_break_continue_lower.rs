@@ -8,9 +8,7 @@
 //! the dedicated `HirExprKind::Break` / `Continue` / loop nodes and emit no
 //! `NotYetImplemented`; MIR owns the target selection and defer-flush window.
 
-use hew_hir::{
-    lower_program, HirBlock, HirDiagnosticKind, HirExprKind, HirStmtKind, ResolutionCtx,
-};
+use hew_hir::{lower_program, HirBlock, HirExprKind, HirStmtKind, ResolutionCtx};
 use hew_types::module_registry::ModuleRegistry;
 use hew_types::Checker;
 
@@ -101,13 +99,6 @@ fn main_body(output: &hew_hir::LowerOutput) -> &HirBlock {
     panic!("no `fn main` in lowered module");
 }
 
-fn has_not_yet_implemented(output: &hew_hir::LowerOutput) -> bool {
-    output
-        .diagnostics
-        .iter()
-        .any(|d| matches!(d.kind, HirDiagnosticKind::NotYetImplemented { .. }))
-}
-
 // ── Unlabeled forms lower to the dedicated nodes (no Unsupported) ────────────
 
 #[test]
@@ -122,8 +113,8 @@ fn break_in_while_lowers_to_break_node() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
-        "unlabeled `break;` must not emit NotYetImplemented: {:#?}",
+        output.diagnostics.is_empty(),
+        "unlabeled `break;` must lower without diagnostics: {:#?}",
         output.diagnostics
     );
     let body = main_body(&output);
@@ -149,8 +140,8 @@ fn continue_in_while_lowers_to_continue_node() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
-        "unlabeled `continue;` must not emit NotYetImplemented: {:#?}",
+        output.diagnostics.is_empty(),
+        "unlabeled `continue;` must lower without diagnostics: {:#?}",
         output.diagnostics
     );
     let body = main_body(&output);
@@ -176,8 +167,8 @@ fn bare_loop_with_break_lowers_to_loop_node() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
-        "bare `loop {{ break; }}` must not emit NotYetImplemented: {:#?}",
+        output.diagnostics.is_empty(),
+        "bare `loop {{ break; }}` must lower without diagnostics: {:#?}",
         output.diagnostics
     );
     let body = main_body(&output);
@@ -232,7 +223,7 @@ fn labeled_break_lowers_with_label() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
+        output.diagnostics.is_empty(),
         "labeled `break @outer;` must lower without NotYetImplemented: {:#?}",
         output.diagnostics
     );
@@ -271,7 +262,7 @@ fn labeled_continue_lowers_with_label() {
         ",
     );
     assert!(
-        !has_not_yet_implemented(&output),
+        output.diagnostics.is_empty(),
         "labeled `continue @outer;` must lower without NotYetImplemented: {:#?}",
         output.diagnostics
     );

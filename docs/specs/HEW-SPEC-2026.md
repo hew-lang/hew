@@ -5980,6 +5980,23 @@ consumes that classification:
   The call starts during source preparation and produces its ordinary result.
 - `after <duration-expr>` — the timer arm; carries no binding.
 
+A selected arm binds the completed result with an **irrefutable pattern**:
+an identifier, `_`, or a tuple or record destructure whose fields are also
+irrefutable. Selection waits for source completion; a pattern never filters
+completed results. Bind the complete result and use `if let` or `match` in
+the body when a variant or value determines what to do:
+
+```hew
+fn answer() -> Option<i64> { .Some(42) }
+fn main() {
+    select {
+        result from answer() => {
+            if let .Some(value) = result { println(value); }
+        }
+    };
+}
+```
+
 An arm source never writes `await`: the `select` is what waits (§4.0). The
 spelling is refused at check time with a fix-it that deletes it, and a
 `select` with no arms at all is refused the same way.
@@ -8537,6 +8554,22 @@ fn main() {
 ```
 
 Labels are scoped to the loop they annotate.
+
+A `for` binding must be irrefutable for the iterator's item type. Identifiers,
+`_`, tuples and record destructures compose recursively; literal and enum
+variant tests require an explicit `if let` or `match` inside the body. A loop
+never silently skips an item because its binding pattern failed:
+
+```hew
+fn main() {
+    let values: Vec<Option<i64>> = [.Some(1), .None, .Some(3)];
+    for item in values {
+        if let .Some(value) = item { println(value); }
+    }
+}
+```
+
+
 
 **Loops are statements, not expressions.**
 

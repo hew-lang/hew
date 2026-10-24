@@ -1,4 +1,4 @@
-use hew_hir::{HirDiagnosticKind, HirExprKind, HirItem, HirStmtKind};
+use hew_hir::{HirExprKind, HirItem, HirStmtKind};
 
 use crate::support;
 
@@ -28,21 +28,7 @@ fn top_level_wildcard_let_lowers_rhs_as_expression_statement() {
     ";
 
     let output = support::checker_pipeline::lower_through_checker(source);
-    let pattern_errors: Vec<_> = output
-        .diagnostics
-        .iter()
-        .filter(|diagnostic| {
-            matches!(
-                &diagnostic.kind,
-                HirDiagnosticKind::NotYetImplemented { construct, .. }
-                    if construct == "pattern"
-            )
-        })
-        .collect();
-    assert!(
-        pattern_errors.is_empty(),
-        "top-level wildcard discard must not emit pattern diagnostics: {pattern_errors:#?}"
-    );
+    assert!(output.diagnostics.is_empty(), "{:#?}", output.diagnostics);
 
     let main = main_fn(&output);
     let first = main

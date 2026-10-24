@@ -1645,7 +1645,7 @@ pub(super) mod tests {
         // sharpest regression guard for the inlining fix.
         let source = "import std.text.regex;\n\
                       fn probe(s: string) {\n\
-                      \x20   let one = regex.new(\"a\");\n\
+                      \x20   let one = regex.new(\"a\").expect(\"valid pattern\");\n\
                       \x20   let caps = one.captures(s);\n\
                       \x20   one.close();\n\
                       }\n";

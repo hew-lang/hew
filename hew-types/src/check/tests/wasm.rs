@@ -356,7 +356,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.semaphore;\n",
             "fn main() {\n",
-            "    let sem = semaphore.new(1);\n",
+            "    let sem = semaphore.new(1).expect(\"valid permit count\");\n",
             "    let _ = sem.count();\n",
             "    let _ = sem.try_acquire();\n",
             "    sem.release();\n",
@@ -384,7 +384,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.semaphore;\n",
             "fn main() {\n",
-            "    let sem = semaphore.new(1);\n",
+            "    let sem = semaphore.new(1).expect(\"valid permit count\");\n",
             "    sem.acquire();\n",
             "    let _ = sem.acquire_timeout(10);\n",
             "    sem.close();\n",
@@ -411,7 +411,7 @@ mod wasm_rejects {
         let source = concat!(
             "import std.semaphore;\n",
             "fn main() {\n",
-            "    let sem = semaphore.new(1);\n",
+            "    let sem = semaphore.new(1).expect(\"valid permit count\");\n",
             "    sem.acquire();\n",
             "    let _ = sem.acquire_timeout(10);\n",
             "    sem.release();\n",

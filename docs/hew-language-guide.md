@@ -4312,7 +4312,7 @@ import std.random;
 fn main() {
     random.seed(42);                   // deterministic sequence
     let r = random.random();           // f64 in [0.0, 1.0)
-    let n = random.randint(1, 7);      // i64 in [1, 7)  — like a d6 roll
+    let n = random.randint(1, 7).expect("valid random draw");      // i64 in [1, 7)  — like a d6 roll
     let g = random.gauss(0.0, 1.0);   // Gaussian sample
 
     println(f"{r} {n} {g}");
@@ -4344,13 +4344,13 @@ fn main() {
 
 Advancing an `Rng` requires a `var` binding. Copying one gives an independent stream at the same position. Both `rng.shuffle(values)` and `random.shuffle(values)` return a shuffled vector and preserve `values`.
 
-`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `random.crypto_bytes(n)` and `random.crypto_u64()`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
+`Rng` uses xoshiro256++ rather than MT19937, so it does not produce the same sequence as the module-level functions for the same seed; two `Rng` values created with the same seed always agree with each other. It is not cryptographically secure — for that, use `crypto.random_bytes(n).expect("valid random draw")` and `random.crypto_u64().expect("valid random draw")`, convenience wrappers over `crypto.random_bytes` (`std.crypto.crypto`) that draw from OS entropy:
 
 ```hew
 import std.random;
 fn main() {
-    let key = random.crypto_bytes(32);  // bytes, always freshly drawn
-    let token = random.crypto_u64();
+    let key = crypto.random_bytes(32).expect("valid random draw");  // bytes, always freshly drawn
+    let token = random.crypto_u64().expect("valid random draw");
 }
 ```
 
@@ -5108,7 +5108,7 @@ example: [`examples/pipe/`](../examples/pipe).
 import std.text.regex;
 
 fn main() {
-    let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)");
+    let re = regex.new("(?P<k>[a-z]+)=(?P<v>[0-9]+)").expect("valid pattern");
     let text = "a=1 bb=22";
     match re.capture_named(text, "v") {
         .Some(v) => println(f"first value: {v}"),   // first value: 1
@@ -5124,7 +5124,7 @@ fn main() {
 }
 ```
 
-Compile a pattern with `regex.new`; invalid syntax panics. `capture(input, group)` /
+Compile a pattern with `regex.new`; invalid syntax returns `RegexError.InvalidPattern`. `capture(input, group)` /
 `capture_named(input, name)` return the
 indexed/named submatch of the FIRST match as an `Option<string>` — group 0 is the
 whole match. `find_all` returns every whole match as a `Vec<string>`;
@@ -5150,7 +5150,7 @@ fn main() {
         println(f"template parse failed: {error}");
         return;
     };
-    match template.render_try(t, ctx) {
+    match template.render_template(t, ctx) {
         .Ok(s) => println(s),   // hi Hew: a b
         .Err(_) => println("error"),
     }
@@ -5161,9 +5161,9 @@ Build a flat `Ctx` with `new_ctx()` in a `var` binding, then call its
 `set_str`, `set_int`, `set_bool` or `set_list` methods. `parse` compiles a
 Go-style template — `{{.key}}` substitutes, `{{if .key}}…{{end}}` is conditional,
 `{{range .list}}…{{.}}…{{end}}` iterates with `.` bound to each item. Render with
-the free function `template.render_template(t, ctx)` (panics on error) or
-`template.render_try(t, ctx)` (returns `Result`). `TemplateError` has no `Display`, so handle the `Err` arm
-with a literal message rather than interpolating it. Full example:
+`template.render_template(t, ctx)`, which returns a checked result. Propagate
+its error with `?`, recover with `handle`, or use `expect` for a known-valid
+template. `TemplateError` supports `Display`. Full example:
 [`examples/v05/surfaces/template_render.hew`](../examples/v05/surfaces/template_render.hew).
 
 ### Unicode scalars and character methods

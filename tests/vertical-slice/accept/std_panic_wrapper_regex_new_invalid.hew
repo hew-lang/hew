@@ -1,10 +1,9 @@
 import std.text.regex;
 
-fn main() -> i64 {
-    let re = regex.new("[");
-    if re.is_match("anything") {
-        1
-    } else {
-        0
+fn main() {
+    match regex.new("(") {
+        .Err(.InvalidPattern(input)) => assert(input == "("),
+        _ => panic("expected invalid pattern"),
     }
+    println("invalid pattern recovered");
 }

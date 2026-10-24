@@ -20,6 +20,8 @@
 //! }
 //! ```
 
+import std.iter;
+
 import std.string;
 
 /// A parsed semantic version.
@@ -395,8 +397,8 @@ fn compare_pre(a: string, b: string) -> i64 {
 
 /// Compare two individual pre-release identifiers (numeric or alphanumeric).
 fn compare_pre_id(a: string, b: string) -> i64 {
-    let a_num = a.is_numeric();
-    let b_num = b.is_numeric();
+    let a_num = (!a.is_empty() && iter.all(a.iter(), |c: char| c.is_digit()));
+    let b_num = (!b.is_empty() && iter.all(b.iter(), |c: char| c.is_digit()));
     if a_num && b_num {
         // Numeric identifiers compare numerically at any length, so this must
         // not route through an i64: SemVer 2.0 puts no bound on the number of

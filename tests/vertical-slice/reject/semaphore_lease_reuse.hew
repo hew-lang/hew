@@ -5,7 +5,7 @@ fn release(consume lease: semaphore.Lease) {
 }
 
 fn main() {
-    let sem = semaphore.new(1);
+    let sem = semaphore.new(1).expect("valid permit count");
     let lease = sem.lease();
     release(lease);
     lease.close();

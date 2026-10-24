@@ -8,7 +8,7 @@
 //! import std.text.regex;
 //!
 //! fn main() {
-//!     let re = regex.new("[0-9]+");
+//!     let re = regex.new("[0-9]+").expect("valid pattern");
 //!     if re.is_match("abc123") {
 //!         let m = re.find("abc123");
 //!         println(m);  // "123"
@@ -19,7 +19,7 @@
 
 /// A compiled regular expression pattern.
 ///
-/// Created by `regex.new(pattern)`. Patterns close automatically at scope exit;
+/// Created by `regex.new(pattern).expect("valid pattern")`. Patterns close automatically at scope exit;
 /// call `close()` to release one early.
 #[opaque]
 type PatternHandle {
@@ -49,23 +49,17 @@ trait PatternMethods {
     /// import std.text.regex;
     ///
     /// fn main() {
-    ///     let re = regex.new("^[a-z]+$");
+    ///     let re = regex.new("^[a-z]+$").expect("valid pattern");
     ///     assert(re.is_match("hello"));
     ///     re.close();
     /// }
     /// ```
     fn is_match(self, input: string) -> bool;
 
-    /// Ergonomic alias for `is_match`. Returns `true` when the pattern matches
-    /// anywhere in `input`. Provided so call sites can read as
-    /// `pattern.matches(text)` — a one-to-one replacement for the removed
-    /// `text =~ pattern` operator.
-    fn matches(self, input: string) -> bool;
-
     /// Find the first match of the pattern in the input string.
     ///
-    /// Returns the matched substring, or an empty string if no match.
-    fn find(self, input: string) -> string;
+    /// Returns `None` for no match and `Some("")` for an empty match.
+    fn find(self, input: string) -> Option<string>;
 
     /// Replace all occurrences of the pattern with the replacement string.
     ///
@@ -75,7 +69,7 @@ trait PatternMethods {
     /// import std.text.regex;
     ///
     /// fn main() {
-    ///     let re = regex.new("[0-9]+");
+    ///     let re = regex.new("[0-9]+").expect("valid pattern");
     ///     let result = re.replace("abc123def456", "N");
     ///     // result == "abcNdefN"
     ///     re.close();
@@ -119,17 +113,9 @@ impl PatternMethods for Pattern {
             hew_regex_is_match(self.handle, input)
         }
     }
-    /// Ergonomic alias for `is_match`.
-    fn matches(self, input: string) -> bool {
-        unsafe {
-            hew_regex_is_match(self.handle, input)
-        }
-    }
     /// Find the first match of the pattern in the input string.
-    fn find(self, input: string) -> string {
-        unsafe {
-            hew_regex_find(self.handle, input)
-        }
+    fn find(self, input: string) -> Option<string> {
+        self.capture(input, 0)
     }
     /// Replace all occurrences of the pattern with the replacement string.
     fn replace(self, input: string, replacement: string) -> string {
@@ -254,9 +240,16 @@ impl CaptureMatchesMethods for CaptureMatches {
 }
 
 // ── Module-level functions ────────────────────────────────────────────
+/// A pattern that the regular-expression engine cannot compile.
+pub enum RegexError {
+    InvalidPattern(string);
+}
+
+impl Error for RegexError {}
+
 /// Compile a regular expression pattern.
 ///
-/// Panics if the pattern syntax is invalid.
+/// Returns `RegexError.InvalidPattern` when the pattern cannot compile.
 ///
 /// # Examples
 ///
@@ -264,16 +257,16 @@ impl CaptureMatchesMethods for CaptureMatches {
 /// import std.text.regex;
 ///
 /// fn main() {
-///     let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+");
+///     let email_re = regex.new("[a-z]+@[a-z]+\\.[a-z]+").expect("valid pattern");
 ///     email_re.close();
 /// }
 /// ```
-pub fn new(pattern: string) -> Pattern {
+pub fn new(pattern: string) -> Pattern fails RegexError {
     unsafe {
         let handle = hew_regex_new(pattern);
         let re = Pattern { handle: handle };
         if !hew_regex_is_valid(re.handle) {
-            panic(f"regex.new: invalid pattern: {pattern}");
+            return error RegexError.InvalidPattern(pattern);
         }
         re
     }
@@ -284,7 +277,6 @@ extern "C" {
     fn hew_regex_new(pattern: string) -> PatternHandle;
     fn hew_regex_is_valid(re: PatternHandle) -> bool;
     fn hew_regex_is_match(re: PatternHandle, input: string) -> bool;
-    fn hew_regex_find(re: PatternHandle, input: string) -> string;
     fn hew_regex_replace(re: PatternHandle, input: string, replacement: string) -> string;
     fn hew_regex_find_all(re: PatternHandle, input: string) -> Vec<string>;
     fn hew_regex_capture_index_one(re: PatternHandle, input: string, group: i64) -> Vec<string>;

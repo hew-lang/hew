@@ -1,4 +1,5 @@
 import std.random;
+import std.crypto.crypto;
 
 fn bound() -> i64 {
     5
@@ -31,11 +32,11 @@ fn main() {
     let bounds: Vec<i64> = [0, 1, 2, 3, 4];
     let bound_len = bounds.len();
     for i in 0..8 {
-        let expected = literal.range(0, 5);
-        assert(computed.range(0, bound_len) == expected);
+        let expected = literal.range(0, 5).expect("valid random draw");
+        assert(computed.range(0, bound_len).expect("valid random draw") == expected);
     }
-    assert(computed.range(0, bounds.len()) == literal.range(0, 5));
-    assert(computed.range(0, bound()) == literal.range(0, 5));
+    assert(computed.range(0, bounds.len()).expect("valid random draw") == literal.range(0, 5).expect("valid random draw"));
+    assert(computed.range(0, bound()).expect("valid random draw") == literal.range(0, 5).expect("valid random draw"));
     let saved_position = computed;
     let next = computed.next_u64();
     var restored = saved_position;
@@ -44,10 +45,10 @@ fn main() {
 
     // A nested draw runs before the outer draw and both advance the receiver.
     var nested = random.Rng.new(7);
-    let nested_value = nested.range(0, nested.range(1, 10));
+    let nested_value = nested.range(0, nested.range(1, 10).expect("valid random draw")).expect("valid random draw");
     var hoisted = random.Rng.new(7);
-    let inner = hoisted.range(1, 10);
-    assert(nested_value == hoisted.range(0, inner));
+    let inner = hoisted.range(1, 10).expect("valid random draw");
+    assert(nested_value == hoisted.range(0, inner).expect("valid random draw"));
     assert(nested.next_u64() == hoisted.next_u64());
 
     // Two generators seeded differently diverge.
@@ -64,11 +65,11 @@ fn main() {
     // range(lo, hi) always lands in [lo, hi) and hi <= lo returns lo.
     var g = random.Rng.new(7);
     for i in 0..1000 {
-        let n = g.range(10, 20);
+        let n = g.range(10, 20).expect("valid random draw");
         assert(n >= 10 && n < 20);
     }
-    assert(g.range(5, 5) == 5);
-    assert(g.range(5, 1) == 5);
+    assert(g.range(5, 5).is_err());
+    assert(g.range(5, 1).is_err());
 
     // shuffle returns an independent vector and preserves its multiset.
     var h = random.Rng.new(2026);
@@ -112,14 +113,14 @@ fn main() {
     assert(h.shuffle(singleton) == singleton);
 
     // crypto_bytes(n) returns exactly n bytes; two draws differ.
-    let cb1 = random.crypto_bytes(16);
-    let cb2 = random.crypto_bytes(16);
+    let cb1 = crypto.random_bytes(16).expect("valid random draw");
+    let cb2 = crypto.random_bytes(16).expect("valid random draw");
     assert(cb1.len() == 16);
     assert(cb2.len() == 16);
     assert(cb1 != cb2);
-    assert(random.crypto_bytes(0).len() == 0);
+    assert(crypto.random_bytes(0).expect("valid random draw").len() == 0);
 
     // crypto_u64 draws differ across calls.
-    assert(random.crypto_u64() != random.crypto_u64());
+    assert(random.crypto_u64().expect("valid random draw") != random.crypto_u64().expect("valid random draw"));
     println("Rng matches the independent xoshiro256++ reference and crypto draws are well-formed");
 }

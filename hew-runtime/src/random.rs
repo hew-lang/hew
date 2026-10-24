@@ -289,18 +289,18 @@ pub unsafe extern "C" fn hew_random_gauss(mu: f64, sigma: f64) -> f64 {
 #[no_mangle]
 #[expect(
     clippy::cast_sign_loss,
-    reason = "hi > lo is guaranteed by the check above"
+    reason = "unsigned wrapping subtraction preserves the full signed interval width"
 )]
 #[expect(
     clippy::cast_possible_wrap,
-    reason = "randbelow(range) < range which fits in i64"
+    reason = "wrapping addition maps the unsigned offset into the checked signed interval"
 )]
 pub unsafe extern "C" fn hew_random_randint(lo: i64, hi: i64) -> i64 {
     if hi <= lo {
         return lo;
     }
-    let range = (hi - lo) as u64;
-    MT_STATE.with(|s| lo + s.borrow_mut().randbelow(range) as i64)
+    let range = (hi as u64).wrapping_sub(lo as u64);
+    MT_STATE.with(|s| lo.wrapping_add(s.borrow_mut().randbelow(range) as i64))
 }
 
 /// Shuffle a `HewVec` of i64 in-place (Fisher-Yates).
@@ -454,7 +454,9 @@ fn xoshiro_randbelow(state: &mut [u64; 4], n: u64) -> u64 {
     if n <= 1 {
         return 0;
     }
-    let mask = n.next_power_of_two() - 1;
+    // Keep every bit below the interval's highest bit without rounding a
+    // wide interval up to 2^64, which is not representable in u64.
+    let mask = u64::MAX >> (n - 1).leading_zeros();
     loop {
         let r = xoshiro256pp_next(state) & mask;
         if r < n {
@@ -586,11 +588,11 @@ pub unsafe extern "C" fn hew_rng_next_f64(v: *mut HewVec) -> f64 {
 #[no_mangle]
 #[expect(
     clippy::cast_sign_loss,
-    reason = "hi > lo is guaranteed by the check above"
+    reason = "unsigned wrapping subtraction preserves the full signed interval width"
 )]
 #[expect(
     clippy::cast_possible_wrap,
-    reason = "xoshiro_randbelow(range) < range which fits in i64"
+    reason = "wrapping addition maps the unsigned offset into the checked signed interval"
 )]
 pub unsafe extern "C" fn hew_rng_range(v: *mut HewVec, lo: i64, hi: i64) -> i64 {
     if hi <= lo {
@@ -600,11 +602,11 @@ pub unsafe extern "C" fn hew_rng_range(v: *mut HewVec, lo: i64, hi: i64) -> i64 
     let Some(mut state) = (unsafe { load_rng_state(v, "hew_rng_range") }) else {
         return lo;
     };
-    let range = (hi - lo) as u64;
+    let range = (hi as u64).wrapping_sub(lo as u64);
     let r = xoshiro_randbelow(&mut state, range);
     // SAFETY: load_rng_state validated `v`'s shape above.
     unsafe { store_rng_state(v, state) };
-    lo + r as i64
+    lo.wrapping_add(r as i64)
 }
 
 /// Shuffle a `Vec<i64>` in-place (Fisher-Yates) using an `Rng` state,

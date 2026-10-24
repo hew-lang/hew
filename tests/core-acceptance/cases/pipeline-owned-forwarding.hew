@@ -3,7 +3,7 @@ import std.semaphore;
 import pipeline_support.items;
 
 fn check_forwarding(transform: fn[clone, suspends](consume items.Item) -> items.Item) {
-    let closed = semaphore.new(0);
+    let closed = semaphore.new(0).expect("valid permit count");
     var expected = 0;
     for item in pipeline.map(items.source(closed), transform, concurrency: 2) {
         assert(item.index == expected);

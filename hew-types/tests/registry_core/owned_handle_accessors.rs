@@ -45,7 +45,7 @@ impl PatternWrapper {
 }
 
 fn main() {
-    let wrapper = PatternWrapper { pattern: regex.new("a+") };
+    let wrapper = PatternWrapper { pattern: regex.new("a+").expect("valid pattern") };
     assert(wrapper.matches("aaa"));
 }
 "#,

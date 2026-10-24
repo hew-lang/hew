@@ -13,7 +13,7 @@
 //! fn main() {
 //!     random.seed(42);
 //!     println(random.random());   // ≈ 0.6394267984578837
-//!     println(random.randint(0, 10));
+//!     println(random.randint(0, 10).expect("valid random draw"));
 //! }
 //! ```
 //!
@@ -34,11 +34,20 @@
 //!     var rng = random.Rng.new(42);
 //!     println(rng.next_u64());
 //!     println(rng.next_f64());
-//!     println(rng.range(0, 10));
+//!     println(rng.range(0, 10).expect("valid random draw"));
 //! }
 //! ```
 
 import std.crypto.crypto;
+
+/// Inputs that cannot describe a random draw.
+pub enum RandomError {
+    InvalidRange { lower: i64; upper: i64; }
+    InvalidWeights(string);
+    UnsupportedCount(i64);
+}
+
+impl Error for RandomError {}
 
 // ── Rng: independent seeded generators ─────────────────────────────────
 /// An independent, seedable pseudo-random generator (xoshiro256++).
@@ -58,10 +67,10 @@ trait RngMethods {
 
     fn next_f64(var self) -> f64;
 
-    fn range(var self, lo: i64, hi: i64) -> i64;
+    fn range(var self, lo: i64, hi: i64) -> Result<i64, RandomError>;
 
     /// Return an independently shuffled copy, advancing this generator.
-    fn shuffle(var self, v: Vec<i64>) -> Vec<i64>;
+    fn shuffle<T>(var self, v: Vec<T>) -> Vec<T>;
 }
 
 impl RngMethods for Rng {
@@ -75,17 +84,16 @@ impl RngMethods for Rng {
             hew_rng_next_f64(self.state)
         }
     }
-    fn range(var self, lo: i64, hi: i64) -> i64 {
+    fn range(var self, lo: i64, hi: i64) -> i64 fails RandomError {
+        if hi <= lo {
+            return error RandomError.InvalidRange { lower: lo, upper: hi };
+        }
         unsafe {
             hew_rng_range(self.state, lo, hi)
         }
     }
-    fn shuffle(var self, v: Vec<i64>) -> Vec<i64> {
-        let shuffled = v.clone();
-        unsafe {
-            hew_rng_shuffle_i64(self.state, shuffled);
-        };
-        shuffled
+    fn shuffle<T>(var self, v: Vec<T>) -> Vec<T> {
+        shuffled(v, |limit: i64| self.range(0, limit).expect("positive shuffle bound"))
     }
 }
 
@@ -103,22 +111,9 @@ impl Rng {
 }
 
 // ── Cryptographically secure randomness ─────────────────────────────────
-// Convenience wrappers over `crypto.random_bytes` (the `ring`-backed,
-// OS-entropy authority for secure randomness) — this module adds no second
-// entropy source. Both panic instead of returning `Result`; use
-// `crypto.random_bytes` directly to handle its rare failure cases (invalid
-// length, length above its cap, or entropy-source failure) without a panic.
-/// Return `n` cryptographically secure random bytes drawn from OS entropy.
-pub fn crypto_bytes(n: i64) -> bytes {
-    match crypto.random_bytes(n) {
-        .Ok(b) => b,
-        .Err(e) => panic(f"crypto.random_bytes: {e}"),
-    }
-}
-
 /// Return a cryptographically secure random `u64` drawn from OS entropy.
-pub fn crypto_u64() -> u64 {
-    let b = crypto_bytes(8);
+pub fn crypto_u64() -> u64 fails crypto.RandomError {
+    let b = crypto.random_bytes(8)?;
     var v: u64 = 0;
     for i in 0..8 {
         v = v | b[i] as u64 << i as u64 * 8;
@@ -163,23 +158,34 @@ pub fn gauss(mean: f64, sigma: f64) -> f64 {
 
 /// Return a random integer in the half-open range [`lo`, `hi`).
 ///
-/// Returns `lo` when `hi <= lo`.
-pub fn randint(lo: i64, hi: i64) -> i64 {
+/// Returns `RandomError.InvalidRange` when `hi <= lo`.
+pub fn randint(lo: i64, hi: i64) -> i64 fails RandomError {
+    if hi <= lo {
+        return error RandomError.InvalidRange { lower: lo, upper: hi };
+    }
     unsafe {
         hew_random_randint(lo, hi)
     }
 }
 
-/// Return an independently shuffled copy of a `Vec<i64>` using Fisher-Yates.
+/// Return an independently shuffled copy using Fisher-Yates.
 /// The input and any aliases of it remain unchanged.
 ///
 /// Matches CPython's `random.shuffle` output for the same seed.
-pub fn shuffle(v: Vec<i64>) -> Vec<i64> {
-    let shuffled = v.clone();
-    unsafe {
-        hew_random_shuffle_i64(shuffled);
-    };
-    shuffled
+pub fn shuffle<T>(v: Vec<T>) -> Vec<T> {
+    shuffled(v, |limit: i64| randint(0, limit).expect("positive shuffle bound"))
+}
+
+fn shuffled<T>(var values: Vec<T>, consume var draw: fn[var](i64) -> i64) -> Vec<T> {
+    var remaining = values.len();
+    while remaining > 1 {
+        let other = draw(remaining);
+        remaining -= 1;
+        let saved = values[remaining];
+        values[remaining] = values[other];
+        values[other] = saved;
+    }
+    values
 }
 
 /// Weighted choice by bisecting cumulative weights. Returns the chosen index.
@@ -187,26 +193,26 @@ pub fn shuffle(v: Vec<i64>) -> Vec<i64> {
 /// `weights` is a `Vec<f64>` of cumulative weights (each entry is the sum of
 /// all weights up to and including that index), `total` is the grand total,
 /// and `n` must be `1`.
-pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 {
+pub fn choices(weights: Vec<f64>, total: f64, n: i64) -> i64 fails RandomError {
     if weights.len() == 0 {
-        panic("random.choices: weights must not be empty");
+        return error RandomError.InvalidWeights("weights must not be empty");
     }
     if total <= 0.0 || total != total {
-        panic("random.choices: total must be a positive finite value");
+        return error RandomError.InvalidWeights("total must be a positive finite value");
     }
     if n != 1 {
-        panic("random.choices: only one sample is supported");
+        return error RandomError.UnsupportedCount(n);
     }
     var previous = 0.0;
     for i in 0..weights.len() {
         let weight = weights[i];
         if weight <= previous || weight != weight {
-            panic("random.choices: weights must be strictly increasing");
+            return error RandomError.InvalidWeights("weights must be strictly increasing");
         }
         previous = weight;
     }
     if previous != total {
-        panic("random.choices: total must equal the final cumulative weight");
+        return error RandomError.InvalidWeights("total must equal the final cumulative weight");
     }
     unsafe {
         hew_random_choices_vec(weights, total, n)
@@ -219,11 +225,9 @@ extern "C" {
     fn hew_random_random() -> f64;
     fn hew_random_gauss(mu: f64, sigma: f64) -> f64;
     fn hew_random_randint(lo: i64, hi: i64) -> i64;
-    fn hew_random_shuffle_i64(v: Vec<i64>);
     fn hew_random_choices_vec(v: Vec<f64>, total: f64, n: i64) -> i64;
     fn hew_rng_new(seed: i64) -> Vec<u64>;
     fn hew_rng_next_u64(state: Vec<u64>) -> u64;
     fn hew_rng_next_f64(state: Vec<u64>) -> f64;
     fn hew_rng_range(state: Vec<u64>, lo: i64, hi: i64) -> i64;
-    fn hew_rng_shuffle_i64(state: Vec<u64>, target: Vec<i64>);
 }

@@ -14,7 +14,7 @@ fn main() {
         .Ok(template) => template,
         .Err(_) => panic("valid template failed to parse"),
     };
-    match template.render_try(t, ctx) {
+    match template.render_template(t, ctx) {
         .Ok(s) => println(s),
         .Err(_) => println("missing-error"),
     }

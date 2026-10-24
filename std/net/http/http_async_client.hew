@@ -51,6 +51,8 @@
 //! }
 //! ```
 
+import std.iter;
+
 import std.string;
 
 // ── Hardening limits (fail-closed DoS bounds) ─────────────────────────
@@ -351,7 +353,7 @@ fn parse_status_code(status_line: string) -> i64 {
         return -1;
     }
     let code_str = parts[1];
-    if !code_str.is_numeric() {
+    if !(!code_str.is_empty() && iter.all(code_str.iter(), |c: char| c.is_digit())) {
         return -1;
     }
     if code_str.len() != 3 {
@@ -433,7 +435,7 @@ fn declared_content_length(header_section: string) -> i64 {
     if (value).is_empty() {
         return 0;
     }
-    if !value.is_numeric() {
+    if !(!value.is_empty() && iter.all(value.iter(), |c: char| c.is_digit())) {
         return 0;
     }
     match value.to_int() {

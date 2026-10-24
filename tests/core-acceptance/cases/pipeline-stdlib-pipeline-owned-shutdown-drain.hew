@@ -22,26 +22,26 @@ impl Output {
 }
 
 fn main() {
-    let prefetched = semaphore.new(0);
+    let prefetched = semaphore.new(0).expect("valid permit count");
     for item in pipeline.prefetch(items.source(prefetched), capacity: 1) {
         assert(item.index == 0);
         break;
     }
     assert(prefetched.count() == 6);
-    let mapped = semaphore.new(0);
+    let mapped = semaphore.new(0).expect("valid permit count");
     for index in pipeline.map(items.source(mapped), |item: items.Item| item.index, concurrency: 2) {
         assert(index == 0);
         break;
     }
     assert(mapped.count() == 6);
-    let forwarded = semaphore.new(0);
+    let forwarded = semaphore.new(0).expect("valid permit count");
     for item in pipeline.map(items.source(forwarded), |consume item: items.Item| item, concurrency: 2) {
         assert(item.index == 0);
         break;
     }
     assert(forwarded.count() == 6);
-    let created = semaphore.new(0);
-    let output_closed = semaphore.new(0);
+    let created = semaphore.new(0).expect("valid permit count");
+    let output_closed = semaphore.new(0).expect("valid permit count");
     let (sink, input): (Sink<Input>, Stream<Input>) = stream.pipe(6).expect("outputs");
     for index in 0..6 {
         sink.send(Input { index, created: created.clone(), closed: output_closed.clone() }).expect("input");

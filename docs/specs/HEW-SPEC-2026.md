@@ -1928,7 +1928,7 @@ fn main() {
     let content = fs.read("config.toml").expect("config.toml must be readable");
     let exists = fs.exists("output.txt"); // Returns bool
     let line = io.read_line(); // Preferred stdin surface
-    let re = regex.new("[a-z]+");
+    let re = regex.new("[a-z]+").expect("valid pattern");
     let matched = re.is_match("example"); // Returns bool
     re.close();
 }
@@ -4695,7 +4695,10 @@ Important current details:
 monomorphic twins beside it do not exist: `std.vec`, `std.option`,
 `std.result`, and `std.sort` expose the generic function and
 nothing per element type. A module exposes an operation once — a method or a
-free function, never both — and a `#[resource]` type's release is its `close`
+free function, never both. Iterator adapters and terminals are the explicit
+exception: free generic functions support every `Iterator`, and receiver
+methods provide chaining through the same implementation. A `#[resource]`
+type's release is its `close`
 method, so there is no `Closable` trait and no per-type `free` function
 (`csv.Table.free`, `semver.Version.free`, `json.Value.free` are all deleted;
 scope-exit drop glue and an early `close()` are the two ways a resource ends,
@@ -4849,8 +4852,10 @@ there is no expression timeout combinator.
 replacement, indexed and named captures, and multi-match capture tables.
 `regex.Pattern` is a `#[resource]`-annotated type with RAII handles (§3.7.8):
 `close()` releases early, and the implicit scope-exit drop covers the rest.
-Pattern construction is currently fail-fast: `regex.new()` panics for invalid
-syntax rather than returning a structured compile error.
+`regex.new(pattern)` returns a checked `Result<Pattern, RegexError>`. Invalid
+patterns return `RegexError.InvalidPattern`; `expect` is an explicit caller
+choice. `Pattern.find(input)` returns `Option<string>`, distinguishing no
+match from a matched empty string.
 
 **A `re"..."` literal is also a match-arm pattern (normative, D469).** Each
 literal in a module compiles once, in that module's entry prologue, into a

@@ -85,7 +85,7 @@ fn a_standard_library_import_compiles_without_reading_the_filesystem() {
     // Running here proves the sources are wired into resolution; the browser's
     // own build is proved by compiling this import through the wasm bridge.
     let output = hew_wasm::sandbox::compile_to_sandbox_bytecode(
-        "import std.random;\n\nfn main() {\n    random.seed(1);\n    println(random.randint(0, 99));\n}\n",
+        "import std.random;\n\nfn main() {\n    random.seed(1);\n    println(random.randint(0, 99).expect(\"valid random draw\"));\n}\n",
         Some("sandbox-vm-export"),
     )
     .expect("compilation should not hard-error");

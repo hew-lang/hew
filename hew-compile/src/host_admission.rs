@@ -3294,7 +3294,7 @@ fn main() { launch(); }
     fn imported_numeric_folds_preserve_concrete_iterator_arguments() {
         check_source(
             "import std.iter; fn main() { let values = [1.0, 2.0].into_iter(); \
-             println(iter.sum_f64(values)); }",
+             println(iter.sum(values)); }",
             HostAdmission::ProcessEntry,
         )
         .expect("a numeric fold must select the concrete iterator implementation");

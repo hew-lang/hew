@@ -62,6 +62,8 @@
 //! }
 //! ```
 
+import std.iter;
+
 import std.string;
 
 // ── Hardening limits (fail-closed DoS / injection bounds) ─────────────
@@ -249,7 +251,7 @@ fn request_reject_status(raw: string, sep: Option<i64>, head: string, header_sec
     }
     if cl_count == 1 {
         let value = find_header(header_section, "Content-Length");
-        if !value.is_numeric() {
+        if !(!value.is_empty() && iter.all(value.iter(), |c: char| c.is_digit())) {
             return 400;
         }
         // SF1 — a bounded parse: an oversized OR overflowing numeric
@@ -351,7 +353,7 @@ fn content_length_of(header_section: string) -> i64 {
     if (value).is_empty() {
         return 0;
     }
-    if !value.is_numeric() {
+    if !(!value.is_empty() && iter.all(value.iter(), |c: char| c.is_digit())) {
         return 0;
     }
     match value.to_int() {

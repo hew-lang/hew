@@ -463,10 +463,14 @@ pub fn delete(file_path: string) -> Result<(), IoError> {
 }
 
 /// Returns the size of a file in bytes.
-pub fn size(path: string) -> i64 {
-    unsafe {
+pub fn size(path: string) -> i64 fails IoError {
+    let size = unsafe {
         hew_file_size(path)
+    };
+    if size < 0 {
+        return error last_io_error();
     }
+    size
 }
 
 /// Read the raw bytes of a file into a `bytes` value.

@@ -32,6 +32,8 @@
 //! }
 //! ```
 
+import std.iter;
+
 import std.string;
 
 /// The value accepted by an argument. Strings name its help placeholder.
@@ -477,7 +479,7 @@ fn contains(values: Vec<string>, wanted: string) -> bool {
 }
 
 fn valid_name(name: string) -> bool {
-    if name.is_empty() || !name.is_ascii() || name.starts_with("-") {
+    if name.is_empty() || !iter.all(name.iter(), |c: char| c.is_ascii()) || name.starts_with("-") {
         return false;
     }
     for index in 0..name.len() {

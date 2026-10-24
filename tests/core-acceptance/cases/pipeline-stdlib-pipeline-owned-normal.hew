@@ -19,7 +19,7 @@ fn main() {
         values.push(value);
     }
     assert(values == ["one!", "two!", "three!"]);
-    let gate = semaphore.new(0);
+    let gate = semaphore.new(0).expect("valid permit count");
     let (gated_sink, gated): (Sink<Gated>, Stream<Gated>) = stream.pipe(2).expect("pipe");
     gated_sink.send(Gated { index: 0, gate: gate.clone() }).expect("send");
     gated_sink.send(Gated { index: 1, gate: gate.clone() }).expect("send");

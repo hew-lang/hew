@@ -8,5 +8,5 @@ fn main() {
         .Ok(template) => template,
         .Err(_) => panic("valid template failed to parse"),
     };
-    println(template.render_template(t, ctx));
+    println(template.render_template(t, ctx).expect("template renders"));
 }

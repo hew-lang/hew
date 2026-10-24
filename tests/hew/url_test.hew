@@ -94,7 +94,7 @@ fn test_decode_query_skips_entries_without_equals() {
 
 #[test]
 fn test_port_returns_none_when_absent() {
-    let parsed = url.parse("http://localhost/path");
+    let parsed = url.parse("http://localhost/path").expect("valid URL");
     let port = parsed.port();
     parsed.close();
     if let .Some(value) = port {
@@ -104,7 +104,7 @@ fn test_port_returns_none_when_absent() {
 
 #[test]
 fn test_port_returns_some_when_explicit() {
-    let parsed = url.parse("http://localhost:8080/path");
+    let parsed = url.parse("http://localhost:8080/path").expect("valid URL");
     let port = parsed.port();
     parsed.close();
     match port {

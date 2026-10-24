@@ -262,7 +262,7 @@ fn test_websocket_listen_clears_the_detail_slot_on_success() {
 
 #[test]
 fn test_url_resolve_returns_the_joined_url() {
-    let base = url.parse("https://example.com/a/b");
+    let base = url.parse("https://example.com/a/b").expect("valid URL");
     match base.resolve("../c") {
         .Ok(joined) => {
             assert(joined.to_string() == "https://example.com/c");
@@ -278,7 +278,7 @@ fn test_url_resolve_returns_the_joined_url() {
 /// empty string rather than as a failure.
 #[test]
 fn test_url_resolve_reports_an_unresolvable_path_as_a_failure() {
-    let base = url.parse("https://example.com/a/b");
+    let base = url.parse("https://example.com/a/b").expect("valid URL");
     match base.resolve("http://[") {
         .Ok(joined) => {
             joined.close();

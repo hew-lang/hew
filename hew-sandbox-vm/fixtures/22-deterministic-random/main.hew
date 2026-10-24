@@ -2,5 +2,5 @@ import std.random;
 
 fn main() {
     random.seed(1);
-    println(random.randint(0, 99));
+    println(random.randint(0, 99).expect("valid random draw"));
 }

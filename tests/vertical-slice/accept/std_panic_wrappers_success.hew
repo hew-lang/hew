@@ -9,7 +9,7 @@ import std.text.regex;
 import std.time.cron;
 
 fn main() -> i64 {
-    let re = regex.new("[a-z]+");
+    let re = regex.new("[a-z]+").expect("valid pattern");
     if !re.is_match("abc") {
         return 1;
     }
@@ -25,7 +25,7 @@ fn main() -> i64 {
     if arg0.len() == 0 {
         return 3;
     }
-    let parsed = url.parse("https://x.com");
+    let parsed = url.parse("https://x.com").expect("valid URL");
     let host = parsed.host();
     parsed.close();
     if host != "x.com" {

@@ -2,7 +2,7 @@
 //!
 //! String operations (`.find()`, `.trim()`, etc.)
 //! are methods available on all strings, including checked numeric conversion,
-//! scalar padding, classification and occurrence counting.
+//! scalar padding and occurrence counting.
 //!
 //! # Examples
 //!
@@ -371,37 +371,6 @@ impl string {
     }
 }
 
-/// Check if a string contains only ASCII digits (0-9).
-///
-/// Returns false for empty strings.
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println("123".is_numeric());   // true
-///     println("12a".is_numeric());   // false
-///     println("".is_numeric());   // false
-/// }
-/// ```
-impl string {
-    fn is_numeric(self) -> bool {
-        let slen = self.len();
-        if slen == 0 {
-            return false;
-        }
-        for i in 0..slen {
-            let d = digit_value(self[i .. i + 1]);
-            if d < 0 {
-                return false;
-            }
-        }
-        true
-    }
-}
-
 /// Count the number of non-overlapping occurrences of `needle` in `haystack`.
 ///
 /// # Examples
@@ -432,36 +401,6 @@ impl string {
             pos = idx + nlen;
         }
         n
-    }
-}
-
-/// Check if a string contains only ASCII characters (code points 0–127).
-///
-/// # Examples
-///
-/// ```
-/// import std.string;
-///
-/// fn main() {
-///     println("hello".is_ascii());   // true
-///     println("héllo".is_ascii());   // false
-/// }
-/// ```
-impl string {
-    fn is_ascii(self) -> bool {
-        let len = self.len();
-        for i in 0..len {
-            // In-bounds loop: get(i) is always Some; treat the unreachable
-            // None defensively as non-ASCII rather than unwrapping.
-            let ch = match self.get(i) {
-                .Some(c) => c,
-                .None => return false,
-            };
-            if ch as i64 > 127 {
-                return false;
-            }
-        }
-        true
     }
 }
 

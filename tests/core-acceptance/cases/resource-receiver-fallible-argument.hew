@@ -9,7 +9,7 @@ fn text(ok: bool) -> Result<string, string> {
 }
 
 fn capture(ok: bool) -> bool fails string {
-    let pattern = regex.new("scope gate");
+    let pattern = regex.new("scope gate").expect("valid pattern");
     if pattern.capture(text(ok)?, 0).is_none() {
         return false;
     }

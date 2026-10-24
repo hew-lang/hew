@@ -1,7 +1,7 @@
 import std.semaphore;
 
 fn automatic_cleanup() {
-    let sem = semaphore.new(1);
+    let sem = semaphore.new(1).expect("valid permit count");
     assert(sem.count() == 1);
     assert(sem.try_acquire());
     assert(sem.count() == 0);
@@ -14,7 +14,7 @@ fn automatic_cleanup() {
 
 fn main() {
     automatic_cleanup();
-    let sem = semaphore.new(0);
+    let sem = semaphore.new(0).expect("valid permit count");
     assert(!sem.try_acquire());
     sem.release();
     sem.release();

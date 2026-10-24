@@ -192,14 +192,6 @@ fn test_padding_counts_unicode_characters_not_utf8_bytes() {
 }
 
 #[test]
-fn test_is_numeric_requires_only_ascii_digits() {
-    assert("012345".is_numeric());
-    assert(!"12a3".is_numeric());
-    assert(!"".is_numeric());
-    assert(!"-12".is_numeric());
-}
-
-#[test]
 fn test_count_counts_non_overlapping_occurrences() {
     assert("aaaa".count("aa") == 2);
     assert("banana".count("na") == 2);
@@ -269,29 +261,6 @@ fn test_join_inserts_separator_between_elements() {
 }
 
 // ── is_ascii boundary tests (regression lock for #2082 / PR #2081 fix) ──────
-#[test]
-fn test_is_ascii_accepts_del_127_and_below() {
-    // Empty string and pure-ASCII strings are accepted.
-    assert("".is_ascii());
-    assert("hello".is_ascii());
-    // NUL (0) is within the ASCII range.
-    assert((f"{(0).try_to_char().expect("valid Unicode scalar")}").is_ascii());
-    // Tilde (126) is the last printable ASCII character.
-    assert((f"{(126).try_to_char().expect("valid Unicode scalar")}").is_ascii());
-    // DEL (127) is the last 7-bit ASCII codepoint; must be accepted.
-    // Before PR #2081 the condition was `ch > 126`, which wrongly rejected
-    // DEL.  This assertion locks that fix in place.
-    assert((f"{(127).try_to_char().expect("valid Unicode scalar")}").is_ascii());
-}
-
-#[test]
-fn test_is_ascii_rejects_128_and_above() {
-    // 128 (0x80) is the first codepoint outside the 7-bit ASCII range.
-    assert(!(f"{(128).try_to_char().expect("valid Unicode scalar")}").is_ascii());
-    // A string containing a non-ASCII multibyte sequence is also rejected.
-    assert(!"héllo".is_ascii());
-}
-
 // ── from_char multi-byte round-trip (regression lock for A195 fix) ───────────
 #[test]
 fn test_from_char_emits_full_utf8_for_two_byte_codepoint() {

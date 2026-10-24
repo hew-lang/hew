@@ -3,7 +3,7 @@
 import std.semaphore;
 
 fn main() {
-    let sem = semaphore.new(0);
+    let sem = semaphore.new(0).expect("valid permit count");
     sem.acquire();
     println("never");
 }

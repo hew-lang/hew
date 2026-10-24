@@ -16,15 +16,13 @@
 //!
 //! # Errors
 //!
-//! `parse` and `render_try` return `TemplateError`:
+//! `parse` and `render_template` return `TemplateError`:
 //! `UnclosedDirective`, `UnclosedBlock`, `UnexpectedTag`, `DotOutsideRange`,
-//! or `UnknownDirective`. `render_template` panics with the same human-readable
-//! message.
+//! or `UnknownDirective`.
 //!
 //! # Method-style rendering
 //!
-//! Render with `template.render_template(t, ctx)` or
-//! `template.render_try(t, ctx)`; `Template` has no method-form renderer.
+//! Render with `template.render_template(t, ctx).expect("template renders")`.
 //!
 //! # Data model
 //!
@@ -57,7 +55,7 @@
 //!         .Ok(template) => template,
 //!         .Err(_) => panic("template parse failed"),
 //!     };
-//!     let result = template.render_try(t, ctx);
+//!     let result = template.render_template(t, ctx);
 //!     match result {
 //!         .Ok(s) => println(s),
 //!         .Err(_e) => println("template render failed"),
@@ -101,6 +99,8 @@ pub enum TemplateError {
     UnknownDirective(string);
     DuplicateElse(string);
 }
+
+impl Error for TemplateError {}
 
 impl Display for TemplateError {
     fn fmt(self) -> string {
@@ -495,22 +495,8 @@ pub fn parse(src: string) -> Result<Template, TemplateError> {
 }
 
 /// Render a compiled template, returning a structured error on failure.
-pub fn render_try(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
+pub fn render_template(t: Template, ctx: Ctx) -> Result<string, TemplateError> {
     render_segment(t.src, ctx, "", false)
-}
-
-/// Render a compiled template, panicking if the template is malformed.
-pub fn render_template(t: Template, ctx: Ctx) -> string {
-    // Bound before the match: the segment renderer's result derives from the
-    // caller-owned `t.src` place, so the call is not matched directly.
-    let rendered = render_segment(t.src, ctx, "", false);
-    match rendered {
-        .Ok(s) => s,
-        .Err(err) => {
-            panic(f"{err}");
-            ""
-        }
-    }
 }
 
 /// Create an empty rendering context.
@@ -611,7 +597,7 @@ impl Ctx {
     }
 }
 
-// DEPRECATED: use `parse` + `render_try` for the typed compiled-template API.
+// The string convenience composes parsing and rendering.
 /// Render `tmpl` against `ctx`, returning the substituted string on success.
 ///
 /// Fails with a `TemplateError` if the template is malformed (unclosed `{{`,
@@ -629,7 +615,7 @@ impl Ctx {
 ///         .Ok(template) => template,
 ///         .Err(_) => panic("template parse failed"),
 ///     };
-///     let r = template.render_try(t, ctx);
+///     let r = template.render_template(t, ctx);
 ///     match r {
 ///         .Ok(s) => println(s),    // "hello world!"
 ///         .Err(_) => println("template error"),

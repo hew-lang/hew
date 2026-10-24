@@ -7,21 +7,48 @@ fn test_choices_returns_an_index_for_valid_cumulative_weights() {
     var weights: Vec<f64> = Vec.new();
     weights.push(1.0);
     weights.push(3.0);
-    let chosen = random.choices(weights, 3.0, 1);
+    let chosen = random.choices(weights, 3.0, 1).expect("valid random draw");
     assert(chosen == 0 || chosen == 1);
 }
 
 #[test]
-#[should_panic]
 fn test_choices_rejects_empty_weights() {
     let weights: Vec<f64> = Vec.new();
-    random.choices(weights, 0.0, 1);
+    assert(random.choices(weights, 0.0, 1).is_err());
 }
 
 #[test]
-#[should_panic]
 fn test_choices_rejects_total_that_does_not_match_final_weight() {
     var weights: Vec<f64> = Vec.new();
     weights.push(1.0);
-    random.choices(weights, 2.0, 1);
+    assert(random.choices(weights, 2.0, 1).is_err());
+}
+
+#[test]
+fn test_random_ranges_reject_empty_intervals_and_support_wide_intervals() {
+    var rng = random.Rng.new(42);
+    assert(rng.range(5, 5).is_err());
+    assert(random.randint(5, 1).is_err());
+    let lower = -9223372036854775807 - 1;
+    let upper = 9223372036854775807;
+    for i in 0..32 {
+        let value = rng.range(lower, upper).expect("nonempty interval");
+        assert(value >= lower && value < upper);
+        let shared = random.randint(lower, upper).expect("nonempty interval");
+        assert(shared >= lower && shared < upper);
+    }
+}
+
+#[test]
+fn test_shuffle_preserves_generic_values_and_input_aliases() {
+    let values = ["alpha", "beta", "gamma"];
+    let shared = values;
+    let shuffled = random.shuffle(values);
+    assert(shared == ["alpha", "beta", "gamma"]);
+    assert(shuffled.len() == 3);
+    assert(shuffled.contains("alpha") && shuffled.contains("beta") && shuffled.contains("gamma"));
+    var rng = random.Rng.new(7);
+    let other = rng.shuffle(values);
+    assert(other.len() == 3);
+    assert(other.contains("alpha") && other.contains("beta") && other.contains("gamma"));
 }

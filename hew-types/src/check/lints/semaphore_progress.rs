@@ -87,6 +87,31 @@ fn expression(
 ) -> Option<usize> {
     let (expr, span) = value;
     let key = super::super::types::SpanKey::in_module(span, ctx.module_idx);
+    // A checked constructor still establishes a fresh counter after its
+    // success value is propagated or explicitly unwrapped. Follow only the
+    // standard Result method, whose success value is its original payload.
+    if let Expr::PostfixTry(operand) = expr {
+        return expression(ctx, levels, operand, facts, out);
+    }
+    if let Expr::MethodCall { receiver, args, .. } = expr {
+        let is_expect = ctx
+            .checker
+            .selected_callable_declaration_at(&key)
+            .is_some_and(|declaration| {
+                let defs = &ctx.checker.defs;
+                defs.name(declaration).as_str() == "expect"
+                    && defs
+                        .module(declaration)
+                        .is_some_and(|module| defs.module_path(module) == "std.result")
+            });
+        if is_expect
+            && args
+                .iter()
+                .all(|arg| matches!(arg.expr().0, Expr::Literal(_)))
+        {
+            return expression(ctx, levels, receiver, facts, out);
+        }
+    }
     let constructor = ctx.checker.defs.lookup_path("std.semaphore.new");
     if constructor.is_some() && ctx.checker.selected_callable_declaration_at(&key) == constructor {
         if let Expr::Call { args, .. } | Expr::MethodCall { args, .. } = expr {

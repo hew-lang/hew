@@ -40,7 +40,7 @@ fn append(consume var values: Vec<i64>) -> Vec<i64> {
 }
 
 fn main() {
-    let closed = semaphore.new(0);
+    let closed = semaphore.new(0).expect("valid permit count");
     let named: fn(consume Ticket) -> Ticket = forward;
     check_forwarding(named, closed, 1);
     let generic: fn[suspends](consume Ticket) -> Ticket = identity;
@@ -61,8 +61,9 @@ fn main() {
     assert(closed.count() == 6);
     reusable.close();
     assert(closed.count() == 7);
-
-    let service = actor |consume ticket: Ticket| -> Ticket { ticket };
+    let service = actor |consume ticket: Ticket| -> Ticket {
+        ticket
+    };
     let returned = match service(Ticket { id: 8, closed: closed.clone() }) {
         .Ok(ticket) => ticket,
         .Err(_) => panic("consuming actor refused its input"),
@@ -73,7 +74,6 @@ fn main() {
     assert(closed.count() == 8);
     stop(service);
     stopped(service);
-
     let grow: fn(consume Vec<i64>) -> Vec<i64> = append;
     let original = [1];
     let grown = grow(original);

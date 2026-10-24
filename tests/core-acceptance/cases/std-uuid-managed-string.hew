@@ -31,7 +31,7 @@ fn main() {
     println(ipnet.cidr_contains("10.0.0.0/8", "10.1.2.3"));
 
     // Accessors on an opaque handle each hand back their own owner.
-    let u = url.parse("https://example.test:8080/a/b?q=hew#frag");
+    let u = url.parse("https://example.test:8080/a/b?q=hew#frag").expect("valid URL");
     println(u.scheme() + "|" + u.host() + "|" + u.path() + "|" + u.query() + "|" + u.fragment());
     println(u.to_string());
 

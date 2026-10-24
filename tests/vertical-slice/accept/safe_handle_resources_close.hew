@@ -14,11 +14,11 @@ fn main() -> i64 {
         .Err(error) => panic(to_string(error)),
     };
     glob.close();
-    let sem = semaphore.new(1);
+    let sem = semaphore.new(1).expect("valid permit count");
     sem.close();
     let queue = deque.new();
     queue.close();
-    let parsed_url = url.parse("https://example.com");
+    let parsed_url = url.parse("https://example.com").expect("valid URL");
     parsed_url.close();
     let node = match xml.parse("<root/>") {
         .Ok(node) => node,

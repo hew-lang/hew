@@ -1130,11 +1130,19 @@ fn module_summary(doc: Option<&str>) -> String {
     {
         lines.next();
     }
-    lines
+    let markdown = lines
         .take_while(|line| !line.is_empty())
         .collect::<Vec<_>>()
-        .join(" ")
-        .replace('`', "")
+        .join(" ");
+    let mut plain = String::new();
+    for event in Parser::new_ext(&markdown, Options::ENABLE_STRIKETHROUGH) {
+        match event {
+            Event::Text(text) | Event::Code(text) => plain.push_str(&text),
+            Event::SoftBreak | Event::HardBreak => plain.push(' '),
+            _ => {}
+        }
+    }
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -1175,6 +1183,28 @@ pub fn add(a: i32, b: i32) -> i32 {
         assert!(html.contains("std.math"));
         assert!(html.contains("Math utilities."));
         assert!(html.contains("module-search"));
+    }
+
+    #[test]
+    fn index_summary_uses_plain_text_from_markdown() {
+        let module = DocModule {
+            name: "language::actors".to_string(),
+            doc: Some(
+                "# Actors\n\nMessages must satisfy [Send](language.ownership.html#send) and `Result`."
+                    .to_string(),
+            ),
+            functions: vec![],
+            types: vec![],
+            actors: vec![],
+            machines: vec![],
+            traits: vec![],
+            impls: vec![],
+            consts: vec![],
+            type_aliases: vec![],
+        };
+        let html = render_index(&[module]);
+        assert!(html.contains("Messages must satisfy Send and Result."));
+        assert!(!html.contains("[Send]("));
     }
 
     #[test]

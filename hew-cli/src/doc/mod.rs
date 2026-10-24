@@ -217,7 +217,7 @@ pub fn cmd_doc(args: &crate::args::DocArgs) {
             let display_name = page_title(module);
             let escaped_name = crate::util::html_escape(&display_name);
             let breadcrumb = format!(
-                "<a href=\"index.html\">Index</a><a href=\"{filename}\">{escaped_name}</a>"
+                "<a href=\"index.html\">Index</a><a href=\"{filename}\" aria-current=\"page\">{escaped_name}</a>"
             );
             let html = wrap_page(&display_name, &body, Some(&breadcrumb));
             if let Err(e) = std::fs::write(out.join(&filename), &html) {

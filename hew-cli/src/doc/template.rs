@@ -82,9 +82,13 @@ body {
 }
 .site-nav a:hover { color: var(--fg); text-decoration: none; }
 /* Content */
-h1 { font-size: 2rem; margin-bottom: 0.5rem; }
+h1 { font-size: 2rem; margin-bottom: 0.5rem; overflow-wrap: anywhere; }
 h2 { font-size: 1.5rem; margin: 2rem 0 0.75rem; border-bottom: 1px solid var(--border); padding-bottom: 0.25rem; }
 h3 { font-size: 1.15rem; margin: 1.25rem 0 0.5rem; }
+h1 code, h2 code, h3 code, h4 code, .module-list code {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
 p, .doc ul, .doc ol, .doc blockquote, .doc table { margin: 0.75rem 0; }
 .doc ul, .doc ol { padding-left: 1.5rem; }
 .doc blockquote { border-left: 3px solid var(--border); padding-left: 1rem; color: var(--comment); }
@@ -97,9 +101,9 @@ code, pre {
     font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
     font-size: 0.9em;
 }
-code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; }
+code { background: var(--code-bg); padding: 0.1em 0.35em; border-radius: 3px; overflow-wrap: anywhere; word-break: break-word; }
 pre { background: var(--code-bg); padding: 1em; border-radius: 6px; overflow-x: auto; margin: 0.75rem 0; }
-pre code { background: none; padding: 0; }
+pre code { background: none; padding: 0; overflow-wrap: normal; word-break: normal; }
 pre.shiki { border: 1px solid var(--border); }
 pre.shiki code { counter-reset: line; display: flex; flex-direction: column; }
 pre.shiki .line { display: block; }
@@ -114,7 +118,7 @@ pre.shiki .line::before {
     user-select: none;
     font-size: 0.8em;
 }
-.sig { font-weight: 600; font-family: monospace; font-size: 1rem; background: var(--accent-light); padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid var(--accent); margin-bottom: 0.5rem; display: block; }
+.sig { font-weight: 600; font-family: monospace; font-size: 1rem; background: var(--accent-light); padding: 0.5em 0.75em; border-radius: 6px; border-left: 3px solid var(--accent); margin-bottom: 0.5rem; display: block; max-width: 100%; overflow-x: auto; overflow-wrap: anywhere; word-break: break-word; }
 .doc { margin: 0.5rem 0 1.5rem 0; }
 .fields { margin: 0.5rem 0 0.75rem 1rem; }
 .fields dt { font-family: monospace; font-weight: 600; }
@@ -152,11 +156,16 @@ pub fn wrap_page(title: &str, body: &str, breadcrumb: Option<&str>) -> String {
     let nav = breadcrumb.map_or(String::new(), |bc| {
         format!("<nav class=\"breadcrumb\" aria-label=\"Breadcrumb\">{bc}</nav>\n")
     });
+    let reference_current = if breadcrumb.is_none() {
+        " aria-current=\"page\""
+    } else {
+        ""
+    };
     let header = format!(
         r#"<header class="site-header">
 <a href="index.html" class="site-brand">{LOGO_SVG}<span class="site-brand-name">Hew</span><span class="site-brand-tag">Documentation {HEW_VERSION}</span></a>
 <nav class="site-nav" aria-label="Documentation">
-<a href="index.html" aria-current="page">Reference</a>
+<a href="index.html"{reference_current}>Reference</a>
 <a href="https://hew.sh/learn">Learn</a>
 <a href="https://hew.sh/playground">Playground</a>
 <a href="https://hew.sh/docs">Project docs</a>
@@ -246,6 +255,16 @@ mod tests {
         assert!(html.contains("<main id=\"main-content\">"));
         assert!(html.contains("<p>hello</p>"));
         assert!(!html.contains("fonts.googleapis.com"));
+        assert!(html.contains("href=\"index.html\" aria-current=\"page\">Reference"));
+    }
+
+    #[test]
+    fn child_page_does_not_mark_reference_as_current() {
+        let breadcrumb = "<a href=\"index.html\">Index</a><a aria-current=\"page\">std.example</a>";
+        let html = wrap_page("std.example", "<p>hello</p>", Some(breadcrumb));
+        assert!(html.contains("<a href=\"index.html\">Reference</a>"));
+        assert!(!html.contains("href=\"index.html\" aria-current=\"page\">Reference"));
+        assert!(html.contains("<a aria-current=\"page\">std.example</a>"));
     }
 
     #[test]

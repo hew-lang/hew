@@ -198,19 +198,22 @@ Release assembly. `build-docs` waits for the Linux matrix, then consumes its
 x86_64 archive; it still runs when another Linux matrix leg fails. If the
 x86_64 compiler was not produced, the artifact download fails visibly.
 `publish-docs` depends only on release validation and `build-docs`, so unrelated
-channel failures do not leave the site stale. It fails explicitly when
-`build-docs` did not succeed, and **Re-run failed jobs** can recover either
-stage. A failed job is a visible incomplete documentation channel, not proof
-that the site was updated; docs.hew.sh advances only after `publish-docs`
-succeeds.
+channel failures do not leave the site stale. It publishes stable tags only;
+release candidates cannot replace the stable reference. For a stable tag it
+fails explicitly when `build-docs` did not succeed, and **Re-run failed jobs**
+can recover either stage. A failed job is a visible incomplete documentation
+channel, not proof that the site was updated; docs.hew.sh advances only after
+`publish-docs` succeeds.
 
 The packaged compiler runs `hew doc` with `docs/docs-site.toml`. That file owns
 the published collection's title, navigation, guide order, and exclusions;
 plain `hew doc` keeps project-neutral defaults. The release pipeline then runs
 `scripts/assemble-docs-site.py` to add the docs.hew.sh canonical metadata,
-sitemap, crawler policy, and agent discovery files. Keep hosting concerns in
-that assembly step rather than adding docs.hew.sh URLs or SEO output to the
-generic generator.
+sitemap, crawler policy, and agent discovery files. The sitemap is bounded to
+500 canonical pages and uses the tagged source revision date for `lastmod`, so
+recrawls are stable across recovery builds. Keep hosting concerns in that
+assembly step rather than adding docs.hew.sh URLs or SEO output to the generic
+generator.
 
 The same job builds a Pagefind index after assembly. That static index is the
 site's required search path and must remain usable without an external service.

@@ -24,7 +24,7 @@
 #   make assemble     — also build debug tools, native cross archives and WASI
 #   make release      — build everything (release, optimized)
 #   make pre-release  — release + validate on all platforms before tagging
-#   make publish-docs — build stdlib docs + print wrangler deploy command (operator runs wrangler)
+#   make publish-docs — build the complete docs site + print the operator deploy command
 #   make hew          — release-lib compiler + archive, staged at build/bin/hew
 #   make hew-debug    — debug compiler + archive, staged at build/bin/hew-debug
 #   make hew-native   — compiler driver + native libhew archive for `hew build`
@@ -76,7 +76,7 @@
 .PHONY: test-packaged-sdk
 .PHONY: stdlib-user-build-clean
 .PHONY: clean install uninstall test-cabi-surface cabi-surface cabi-surface-check
-.PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate publish-docs
+.PHONY: assemble assemble-release stage-release-package dev-dist pre-release windows-release-candidate build-docs-site publish-docs
 .PHONY: coverage coverage-runtime
 .PHONY: fuzz-corpus fuzz-oracle fuzz-oracle-selftest fuzz-smoke fuzz-smoke-bootstrap-install
 .PHONY: perf-verify-linear
@@ -956,7 +956,38 @@ windows-release-candidate:
 	git archive --format=tar.gz -o target/hew-windows-candidate.tar.gz HEAD
 	@echo "Wrote target/hew-windows-candidate.tar.gz from $$(git rev-parse HEAD)"
 
-# Build stdlib docs and print the wrangler deploy command.
+# Build the same complete site artifact used by the release workflow.
+DOCS_HEW ?= $(RELEASE_DIR)/hew
+DOCS_SITE_DIR ?= $(CARGO_TARGET_ROOT)/doc
+DOCS_VERSION ?=
+DOCS_LAST_MODIFIED ?=
+
+build-docs-site: ## Release: generate, assemble and index the complete docs site
+	@test -f "$(DOCS_HEW)" \
+		|| { echo "Error: docs compiler not found at $(DOCS_HEW)."; exit 1; }
+	@set -eu; \
+	version="$(DOCS_VERSION)"; \
+	last_modified="$(DOCS_LAST_MODIFIED)"; \
+	if [ -z "$$version" ]; then \
+		version="$$("$(DOCS_HEW)" --version | sed -n 's/^hew //p')"; \
+	fi; \
+	if [ -z "$$last_modified" ]; then \
+		last_modified="$$(git show -s --format=%cs HEAD)"; \
+	fi; \
+	[ -n "$$version" ] || { echo "Error: could not determine the Hew version" >&2; exit 1; }; \
+	[ -n "$$last_modified" ] || { echo "Error: could not determine the source revision date" >&2; exit 1; }; \
+	"$(DOCS_HEW)" doc std/ docs/language/ \
+		--site-config docs/docs-site.toml \
+		--output-dir "$(DOCS_SITE_DIR)"; \
+	$(PYTHON) scripts/assemble-docs-site.py "$(DOCS_SITE_DIR)" \
+		--base-url https://docs.hew.sh/ \
+		--version "$$version" \
+		--last-modified "$$last_modified"; \
+	npx --yes pagefind@1.5.2 \
+		--site "$(DOCS_SITE_DIR)" \
+		--output-subdir pagefind
+
+# Build docs and print the wrangler deploy command.
 # Requires a release binary; run `make release` first if the release hew
 # is absent or stale.  The operator supplies the Cloudflare token via
 # `wrangler login` or CLOUDFLARE_API_TOKEN in the shell — it is never in
@@ -964,10 +995,19 @@ windows-release-candidate:
 publish-docs: ## Release: build docs and print the operator deploy command
 	@test -f "$(RELEASE_DIR)/hew" \
 		|| { echo "Error: release hew not built. Run 'make release' first."; exit 1; }
-	"$(RELEASE_DIR)/hew" doc std/ --output-dir "$(CARGO_TARGET_ROOT)/doc/"
-	@echo ""
-	@echo "Docs generated at $(CARGO_TARGET_ROOT)/doc/."
-	@echo "Deploy with: wrangler pages deploy $(CARGO_TARGET_ROOT)/doc/ --project-name hew-docs"
+	@mkdir -p "$(CARGO_TARGET_ROOT)"
+	@set -eu; \
+	site_dir="$$(mktemp -d "$(CARGO_TARGET_ROOT)/docs-site.XXXXXX")"; \
+	version="$$("$(RELEASE_DIR)/hew" --version | sed -n 's/^hew //p')"; \
+	last_modified="$$(git show -s --format=%cs HEAD)"; \
+	$(MAKE) build-docs-site \
+		DOCS_HEW="$(RELEASE_DIR)/hew" \
+		DOCS_SITE_DIR="$$site_dir" \
+		DOCS_VERSION="$$version" \
+		DOCS_LAST_MODIFIED="$$last_modified"; \
+	echo ""; \
+	echo "Docs generated at $$site_dir."; \
+	echo "Deploy with: wrangler pages deploy $$site_dir --project-name hew-docs"
 
 PACKAGED_SDK_ARCHIVE ?=
 PACKAGED_SDK_RESULTS ?= build/packaged-sdk-acceptance

@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import html
 import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+
+MAX_SITEMAP_URLS = 500
 
 SEARCH_HEAD = """<link rel="stylesheet" href="/pagefind/pagefind-component-ui.css">
 <script type="module" src="/pagefind/pagefind-component-ui.js"></script>
@@ -49,7 +52,7 @@ def ai_search(endpoint: str) -> str:
 <p>This optional search sends only the submitted question to the documentation search service.</p>
 <form id="ai-docs-form">
 <label for="ai-docs-question">Question</label>
-<textarea id="ai-docs-question" maxlength="800" required></textarea>
+<textarea id="ai-docs-question" maxlength="512" required></textarea>
 <button type="submit">Ask documentation</button>
 <p id="ai-docs-status" role="status" aria-live="polite"></p>
 </form>
@@ -183,12 +186,22 @@ def replace_required(source: str, old: str, new: str, page: Path) -> str:
 
 
 def assemble(
-    site: Path, base_url: str, version: str, ai_search_endpoint: str | None = None
+    site: Path,
+    base_url: str,
+    version: str,
+    last_modified: str,
+    ai_search_endpoint: str | None = None,
 ) -> None:
     parsed = urlparse(base_url)
     if parsed.scheme != "https" or not parsed.netloc:
         raise ValueError("--base-url must be an absolute https URL")
     base_url = base_url.rstrip("/") + "/"
+    try:
+        if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", last_modified):
+            raise ValueError
+        dt.date.fromisoformat(last_modified)
+    except ValueError as error:
+        raise ValueError("--last-modified must use YYYY-MM-DD") from error
     if ai_search_endpoint is not None and (
         not ai_search_endpoint.startswith("/") or ai_search_endpoint.startswith("//")
     ):
@@ -245,12 +258,22 @@ def assemble(
         if indexed:
             indexed_urls.append(canonical)
 
+    if len(indexed_urls) > MAX_SITEMAP_URLS:
+        raise ValueError(
+            f"site has {len(indexed_urls)} canonical pages; "
+            f"the publishing limit is {MAX_SITEMAP_URLS}"
+        )
+
     sitemap = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
     ]
     sitemap.extend(
-        f"  <url><loc>{html.escape(url)}</loc></url>" for url in indexed_urls
+        "  <url>"
+        f"<loc>{html.escape(url)}</loc>"
+        f"<lastmod>{last_modified}</lastmod>"
+        "</url>"
+        for url in indexed_urls
     )
     sitemap.append("</urlset>")
     (site / "sitemap.xml").write_text("\n".join(sitemap) + "\n", encoding="utf-8")
@@ -306,9 +329,20 @@ def main() -> None:
     parser.add_argument("site", type=Path)
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--last-modified",
+        required=True,
+        help="source revision date in YYYY-MM-DD form",
+    )
     parser.add_argument("--ai-search-endpoint")
     args = parser.parse_args()
-    assemble(args.site, args.base_url, args.version, args.ai_search_endpoint)
+    assemble(
+        args.site,
+        args.base_url,
+        args.version,
+        args.last_modified,
+        args.ai_search_endpoint,
+    )
 
 
 if __name__ == "__main__":

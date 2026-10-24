@@ -5,11 +5,12 @@
 #   validate ─► build (portable WASI libs, cross libs, Linux, macOS, Windows,
 #   │            FreeBSD x86_64/aarch64, npm packages)
 #   │         ─► package and prove (Linux distro packages, Docker image with
-#   │            its clean-room test, docs site)
+#   │            its clean-room test)
+#   │         ─► build-docs ─► publish-docs
 #   └────────► release-assets (required set + checksums)
 #                ─► github-release (draft, upload, provenance, publish)
 #                     ─► publish-npm, publish-github-packages, publish-ghcr,
-#                        publish-homebrew, publish-docs   [environment release]
+#                        publish-homebrew   [environment release]
 #
 # Every publish job consumes the artefacts built earlier in the same run and
 # verifies a destination already holds identical content, so "Re-run failed
@@ -1272,19 +1273,14 @@ jobs:
           node-version: 22
           package-manager-cache: false
 
-      - name: Generate language and standard-library docs
+      - name: Generate and assemble documentation site
         run: |
           mkdir -p dist/hew
           tar -xzf "artifacts/hew-v${VERSION}-linux-x86_64.tar.gz" -C dist/hew --strip-components=1
-          dist/hew/bin/hew doc std/ docs/language/ \
-            --site-config docs/docs-site.toml \
-            --output-dir dist/docs/
-          python3 scripts/assemble-docs-site.py dist/docs/ \
-            --base-url https://docs.hew.sh/ \
-            --version "${VERSION}"
-          npx --yes pagefind@1.5.2 \
-            --site dist/docs/ \
-            --output-subdir pagefind
+          make build-docs-site \
+            DOCS_HEW=dist/hew/bin/hew \
+            DOCS_SITE_DIR=dist/docs \
+            DOCS_VERSION="${VERSION}"
 
       - name: Validate generated docs
         run: |
@@ -1339,6 +1335,27 @@ jobs:
           grep -q 'Sitemap: https://docs.hew.sh/sitemap.xml' dist/docs/robots.txt
           grep -q "Hew v${VERSION}" dist/docs/llms.txt
           grep -q '<pagefind-searchbox show-sub-results' dist/docs/index.html
+          python3 - <<'PY'
+          import subprocess
+          import xml.etree.ElementTree as ET
+
+          namespace = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+          urls = ET.parse("dist/docs/sitemap.xml").getroot().findall("s:url", namespace)
+          if not 0 < len(urls) <= 500:
+              raise SystemExit(f"sitemap must contain 1–500 URLs, found {len(urls)}")
+          expected_date = subprocess.check_output(
+              ["git", "show", "-s", "--format=%cs", "HEAD"], text=True
+          ).strip()
+          for entry in urls:
+              location = entry.findtext("s:loc", namespaces=namespace)
+              lastmod = entry.findtext("s:lastmod", namespaces=namespace)
+              if not location or not location.startswith("https://docs.hew.sh/"):
+                  raise SystemExit(f"non-canonical sitemap URL: {location!r}")
+              if lastmod != expected_date:
+                  raise SystemExit(
+                      f"sitemap lastmod {lastmod!r} does not match {expected_date!r}"
+                  )
+          PY
           if grep -q 'ai-docs-form' dist/docs/index.html; then
             echo "::error::AI search UI must remain disabled until its Worker is provisioned and approved"
             exit 1
@@ -1729,8 +1746,9 @@ jobs:
   publish-docs:
     needs: [validate, build-docs]
     # Publishing the reference depends on the tagged docs artifact, not on
-    # unrelated package channels or GitHub release assembly.
-    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && github.ref_type == 'tag' }}
+    # unrelated package channels or GitHub release assembly. Prerelease tags
+    # build the artifact for validation but cannot replace the stable site.
+    if: ${{ !cancelled() && needs.validate.outputs.publish == 'true' && needs.validate.outputs.prerelease == 'false' && github.ref_type == 'tag' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release

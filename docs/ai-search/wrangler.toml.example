@@ -12,4 +12,15 @@ AI_SEARCH_ENABLED = "false"
 
 [[ai_search]]
 binding = "DOCS_AI_SEARCH"
-instance_name = "docs-hew-sh-ai-search"
+instance_name = "docs-hew-sh"
+
+[ai]
+binding = "AI"
+
+[[durable_objects.bindings]]
+name = "DOCS_SEARCH_GUARD"
+class_name = "DocsSearchGuard"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["DocsSearchGuard"]
